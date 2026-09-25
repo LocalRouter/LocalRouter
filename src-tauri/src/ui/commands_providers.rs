@@ -1228,7 +1228,16 @@ pub async fn refresh_models_incremental(
         // Another refresh is already in progress
         return Ok(());
     }
+    run_model_refresh(registry, app);
 
+    Ok(())
+}
+
+/// Refresh every enabled provider's models in the background, emitting
+/// `models-refresh-started`, `models-provider-loaded` per provider and
+/// `models-changed` at the end. The caller must hold the refresh lock
+/// (`try_start_refresh`); it is released when the refresh ends.
+fn run_model_refresh(registry: Arc<ProviderRegistry>, app: tauri::AppHandle) {
     tokio::spawn(async move {
         let enabled_instances = registry.get_enabled_instance_names();
 
@@ -1282,8 +1291,34 @@ pub async fn refresh_models_incremental(
         // Notify frontend that all models are loaded
         let _ = app.emit("models-changed", ());
     });
+}
 
-    Ok(())
+/// A provider type's models changed (a download finished, a library model
+/// was added, renamed or removed): drop the cached lists of its instances
+/// and refresh, so open model pickers update. Waits for a running refresh
+/// to finish rather than skipping.
+pub fn notify_provider_models_changed(
+    registry: Arc<ProviderRegistry>,
+    app: tauri::AppHandle,
+    provider_type: &str,
+) {
+    for instance in registry.list_providers() {
+        if instance.provider_type == provider_type {
+            registry.invalidate_provider_cache(&instance.instance_name);
+        }
+    }
+    // Called from Tauri event listeners too, which may run outside the
+    // Tokio runtime.
+    tauri::async_runtime::spawn(async move {
+        for _ in 0..120 {
+            if registry.try_start_refresh() {
+                run_model_refresh(registry, app);
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        tracing::warn!("Model refresh after a model change timed out waiting for another refresh");
+    });
 }
 
 /// Source of pricing information

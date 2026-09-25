@@ -164,6 +164,11 @@ impl DownloadEventBridge {
         }
     }
 
+    /// Tell listeners the library changed (the app refreshes model lists).
+    pub fn library_changed(&self, added_models: Vec<String>) {
+        self.emit(EVENT_LIBRARY_CHANGED, &LibraryChangedEvent { added_models });
+    }
+
     /// Record the result of adding a completed download to the library
     /// (called from the completion hook, before the job is reported done).
     pub fn record_completion(
@@ -668,10 +673,12 @@ pub async fn local_models_import(
 ) -> Result<LibraryEntry, String> {
     let path = validate_import_path(&path)?;
     let library = state.library.clone();
-    tokio::task::spawn_blocking(move || library.import_file(&path))
+    let entry = tokio::task::spawn_blocking(move || library.import_file(&path))
         .await
         .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    state.events.library_changed(vec![entry.id.clone()]);
+    Ok(entry)
 }
 
 #[tauri::command]
@@ -682,7 +689,12 @@ pub async fn local_models_rename(
 ) -> Result<(), String> {
     validate_model_id(&id)?;
     let name = validate_display_name(&display_name)?;
-    state.library.rename(&id, &name).map_err(|e| e.to_string())
+    state
+        .library
+        .rename(&id, &name)
+        .map_err(|e| e.to_string())?;
+    state.events.library_changed(Vec::new());
+    Ok(())
 }
 
 /// Remove a model from the library, unloading it first. With `delete_files`
@@ -712,7 +724,9 @@ pub async fn local_models_remove(
     tokio::task::spawn_blocking(move || library.remove(&id, delete_files))
         .await
         .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    state.events.library_changed(Vec::new());
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

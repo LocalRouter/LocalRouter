@@ -794,6 +794,31 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             app.manage(provider_registry.clone());
             app.manage(engine_supervisor.clone());
             app.manage(local_models_library.clone());
+            // Downloads change which models a Local Embedded provider serves:
+            // refresh the cached model lists so open pickers update.
+            {
+                let registry = provider_registry.clone();
+                let handle = app.handle().clone();
+                lr_providers::embedded::set_models_changed_hook(Arc::new(move |provider_type| {
+                    ui::commands_providers::notify_provider_models_changed(
+                        registry.clone(),
+                        handle.clone(),
+                        provider_type,
+                    );
+                }));
+                let registry = provider_registry.clone();
+                let handle = app.handle().clone();
+                app.listen(
+                    ui::commands_local_models::EVENT_LIBRARY_CHANGED,
+                    move |_event| {
+                        ui::commands_providers::notify_provider_models_changed(
+                            registry.clone(),
+                            handle.clone(),
+                            lr_providers::embedded::llamacpp::PROVIDER_TYPE,
+                        );
+                    },
+                );
+            }
             app.manage(ui::commands_local_models::LocalModels::new(
                 local_models_library.clone(),
                 hf_credentials.clone(),

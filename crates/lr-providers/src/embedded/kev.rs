@@ -561,6 +561,8 @@ mod tests {
         let settings =
             KevSettings::from_config(&cfg(&[("binary_path", fake.to_str().unwrap())])).unwrap();
         let p = KevEmbeddedProvider::new("Kev".into(), settings, supervisor.clone());
+        static CHANGED: parking_lot::Mutex<Vec<String>> = parking_lot::Mutex::new(Vec::new());
+        crate::embedded::set_models_changed_hook(Arc::new(|t| CHANGED.lock().push(t.to_string())));
         p.download("kev-0.8b").await.unwrap();
         for _ in 0..400 {
             if !p.downloads.is_downloading("kev-0.8b") {
@@ -572,6 +574,8 @@ mod tests {
         assert_eq!(p.downloads.error("kev-0.8b"), None);
         assert!(p.downloads.marker("kev-0.8b").is_file());
         assert!(!supervisor.is_running("kev:Kev:download:kev-0.8b"));
+        // The app is told so it refreshes model lists.
+        assert!(CHANGED.lock().iter().any(|t| t == "kev"));
         supervisor.stop_all().await;
     }
 }

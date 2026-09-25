@@ -243,10 +243,13 @@ impl EngineDownloads {
                     let marker = this.marker(&model);
                     let written = std::fs::create_dir_all(&this.marker_dir)
                         .and_then(|_| std::fs::write(&marker, chrono::Utc::now().to_rfc3339()));
-                    if let Err(e) = written {
-                        this.errors
-                            .lock()
-                            .insert(model, format!("could not record the download: {e}"));
+                    match written {
+                        Ok(()) => models_changed(this.provider_type),
+                        Err(e) => {
+                            this.errors
+                                .lock()
+                                .insert(model, format!("could not record the download: {e}"));
+                        }
                     }
                 }
                 Err(_) if cancelled => {}
@@ -310,6 +313,23 @@ pub(crate) fn states_from_supervisor(
 }
 
 type TokenSource = Arc<dyn Fn() -> Option<String> + Send + Sync>;
+
+type ModelsChangedHook = Arc<dyn Fn(&str) + Send + Sync>;
+
+static MODELS_CHANGED_HOOK: RwLock<Option<ModelsChangedHook>> = RwLock::new(None);
+
+/// Register what runs when a Local Embedded provider type's servable models
+/// change (a download finished): the app refreshes its model lists.
+pub fn set_models_changed_hook(hook: ModelsChangedHook) {
+    *MODELS_CHANGED_HOOK.write() = Some(hook);
+}
+
+fn models_changed(provider_type: &str) {
+    let hook = MODELS_CHANGED_HOOK.read().clone();
+    if let Some(hook) = hook {
+        hook(provider_type);
+    }
+}
 
 static HF_TOKEN_SOURCE: RwLock<Option<TokenSource>> = RwLock::new(None);
 
