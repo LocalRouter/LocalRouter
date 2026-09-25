@@ -384,10 +384,16 @@ impl ModelProvider for LlamaCppEmbeddedProvider {
     async fn health_check(&self) -> ProviderHealth {
         // Never starts the engine.
         let found = self.command().await.is_ok();
+        let entries = self.library.list();
+        let no_models = if entries.is_empty() {
+            "No model is in the library yet. Download or import one in the Models tab."
+        } else {
+            "No model in the library can run in llama.cpp. Download or import a chat, completion or embedding model in the Models tab."
+        };
         super::engine_health(
             (!found).then(|| "llama-server was not found on PATH. Install llama.cpp from the provider's Engine tab.".to_string()),
-            self.library.list().iter().any(servable),
-            "No model is in the library yet. Download or import one in the Models tab.",
+            entries.iter().any(servable),
+            no_models,
             &self.supervisor,
             &self.key_prefix(),
         )
