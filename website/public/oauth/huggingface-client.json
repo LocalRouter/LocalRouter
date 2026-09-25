@@ -1,0 +1,18 @@
+{
+  "client_id": "https://localrouter.ai/oauth/huggingface-client.json",
+  "client_name": "LocalRouter",
+  "client_uri": "https://localrouter.ai",
+  "logo_uri": "https://localrouter.ai/favicon.svg",
+  "redirect_uris": [
+    "http://127.0.0.1/callback",
+    "http://localhost/callback"
+  ],
+  "grant_types": [
+    "authorization_code",
+    "refresh_token",
+    "urn:ietf:params:oauth:grant-type:device_code"
+  ],
+  "response_types": ["code"],
+  "token_endpoint_auth_method": "none",
+  "scope": "openid profile read-repos gated-repos"
+}
