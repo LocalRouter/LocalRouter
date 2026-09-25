@@ -71,6 +71,38 @@ function forceProductionForApp(): Plugin {
   }
 }
 
+// Main-app sources under ../src resolve bare imports from the repo root
+// (where node_modules usually is for `cargo tauri` / app installs). The
+// website build only has packages under website/node_modules, so redirect
+// those lookups there — otherwise Rollup fails on deps like `sonner`.
+function resolveMainAppDepsFromWebsite(): Plugin {
+  const mainAppSrc = path.resolve(__dirname, '../src')
+  // Importer path used only to set Node resolution root to website/
+  const websiteImporter = path.resolve(__dirname, 'src/index.tsx')
+
+  return {
+    name: 'resolve-main-app-deps-from-website',
+    enforce: 'pre',
+    resolveId(source, importer, options) {
+      if (!importer || !importer.startsWith(mainAppSrc)) return null
+      // Leave relative / absolute / our @/ alias to other plugins
+      if (
+        source.startsWith('\0') ||
+        source.startsWith('.') ||
+        source.startsWith('/') ||
+        source.startsWith('@/') ||
+        // Leave these to the explicit resolve.alias stubs / dedupe below
+        source.startsWith('@tauri-apps/') ||
+        source === 'openai' ||
+        source === 'reactflow'
+      ) {
+        return null
+      }
+      return this.resolve(source, websiteImporter, { ...options, skipSelf: true })
+    },
+  }
+}
+
 // Serve provider icons from the main app's public/icons/ directory so the
 // website shares the same icon set without duplicating files.
 // Dev: middleware serves files directly. Build: copies into output.
@@ -112,6 +144,7 @@ function sharedIcons(): Plugin {
 export default defineConfig({
   plugins: [
     resolveAppAlias(),
+    resolveMainAppDepsFromWebsite(),
     forceProductionForApp(),
     sharedIcons(),
     react(),
