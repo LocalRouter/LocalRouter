@@ -25,6 +25,7 @@ import { mockData } from './mockData'
 import type { RouteLLMTestResult, GraphData, ProviderFeatureSupport, FeatureEndpointMatrix, InstallSourceInfo, RequestDedupeConfig } from '@app/types/tauri-commands'
 import type {
   EmbeddedCatalogModel,
+  ListProviderModelsDetailedParams,
   LocalModelsEngineCatalogParams,
   LocalModelsEngineDownloadParams,
 } from '@app/types/tauri-commands'
@@ -2593,6 +2594,10 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'list_all_models': () => mockData.models,
   'get_cached_models': () => mockData.models,
   'refresh_models_incremental': (_args?: { force?: boolean }) => {},
+  'list_provider_models_detailed': (args: ListProviderModelsDetailedParams) =>
+    (mockHandlers['list_all_models_detailed']() as Array<{ provider_instance: string }>).filter(
+      (m) => m.provider_instance === args.instanceName,
+    ),
   'list_all_models_detailed': () => {
     const pricingMap: Record<string, { input: number; output: number; source: string }> = {
       'gpt-4o': { input: 2.50, output: 10.00, source: 'catalog' },

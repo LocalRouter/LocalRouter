@@ -55,7 +55,7 @@ import { useIncrementalModels } from "@/hooks/useIncrementalModels"
 import ProviderIcon from "@/components/ProviderIcon"
 import { LlmTab } from "@/views/try-it-out/llm-tab"
 import { cn } from "@/lib/utils"
-import type { FreeTierKind, ProviderFreeTierStatus, ProviderFeatureSupport, GetProviderFeatureSupportParams } from "@/types/tauri-commands"
+import type { FreeTierKind, ProviderFreeTierStatus, ProviderFeatureSupport, GetProviderFeatureSupportParams, ListProviderModelsDetailedParams } from "@/types/tauri-commands"
 import { ModelPricingBadge } from "@/components/shared/model-pricing-badge"
 import { ProviderFeatureTable } from "@/components/shared/feature-support-matrix"
 
@@ -246,23 +246,34 @@ export function ProvidersPanel({
 
     setDetailedModelsLoading(true)
     setSelectedModelId(null)
-    invoke<DetailedModel[]>("list_all_models_detailed")
-      .then((allModels) => {
-        if (cancelled) return
-        setDetailedModels(allModels.filter(m => m.provider_instance === selectedId))
-      })
-      .catch((error) => {
-        if (cancelled) return
-        console.error("Failed to load detailed models:", error)
-        setDetailedModels([])
-      })
-      .finally(() => {
-        if (!cancelled) setDetailedModelsLoading(false)
-      })
+    // Only this provider's models: other providers never hold it up.
+    const loadModels = () =>
+      invoke<DetailedModel[]>("list_provider_models_detailed", {
+        instanceName: selectedId,
+      } satisfies ListProviderModelsDetailedParams)
+        .then((models) => {
+          if (!cancelled) setDetailedModels(models)
+        })
+        .catch((error) => {
+          if (cancelled) return
+          console.error("Failed to load detailed models:", error)
+          setDetailedModels([])
+        })
+        .finally(() => {
+          if (!cancelled) setDetailedModelsLoading(false)
+        })
+    loadModels()
+    // Downloads and refreshes change the list while the page is open.
+    const changed = listenSafe("models-changed", () => {
+      if (!cancelled) loadModels()
+    })
 
     loadFreeTierStatus(selectedId)
 
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+      changed.cleanup()
+    }
   }, [selectedId])
 
   // Load providers and initialize health checks (only on first load)

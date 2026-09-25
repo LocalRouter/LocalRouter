@@ -3953,6 +3953,11 @@ export interface FeatureEndpointMatrix {
   mode_rows: FeatureModeRow[]
 }
 
+/** Params for list_provider_models_detailed */
+export interface ListProviderModelsDetailedParams {
+  instanceName: string
+}
+
 /** Params for get_provider_feature_support */
 export interface GetProviderFeatureSupportParams {
   instanceName: string

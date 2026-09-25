@@ -1351,6 +1351,122 @@ pub struct DetailedModelInfo {
     pub pricing_source: Option<PricingSource>,
 }
 
+/// Detailed info for one model of a provider instance: capabilities as
+/// strings and pricing (override, else catalog; local providers are free).
+fn detailed_model(
+    model: lr_providers::ModelInfo,
+    provider_type: String,
+    config: &lr_config::AppConfig,
+) -> DetailedModelInfo {
+    use lr_catalog as catalog;
+
+    // Convert capabilities enum to strings
+    let capabilities = model
+        .capabilities
+        .iter()
+        .map(|cap| format!("{:?}", cap).to_lowercase())
+        .collect();
+
+    // Format parameter count as string
+    let parameter_count = model.parameter_count.map(|count| {
+        if count >= 1_000_000_000 {
+            format!("{:.1}B", count as f64 / 1_000_000_000.0)
+        } else if count >= 1_000_000 {
+            format!("{:.1}M", count as f64 / 1_000_000.0)
+        } else {
+            count.to_string()
+        }
+    });
+
+    // Fetch pricing from override first, then catalog
+    // Skip pricing for local/free providers unless there's an override
+    let is_local_provider = matches!(
+        provider_type.as_str(),
+        "ollama"
+            | "lmstudio"
+            | "openai_compatible"
+            | "localai"
+            | "laya"
+            | "kev"
+            | "von"
+            | "decider"
+            | "llamacpp_embedded"
+    );
+
+    // Check for pricing override first
+    let override_pricing = config
+        .pricing_overrides
+        .get(&provider_type)
+        .and_then(|models| models.get(&model.id));
+
+    let (input_price_per_million, output_price_per_million, pricing_source) =
+        if let Some(override_price) = override_pricing {
+            // Use override pricing
+            (
+                Some(override_price.input_per_million),
+                Some(override_price.output_per_million),
+                Some(PricingSource::Override),
+            )
+        } else if is_local_provider {
+            // Local providers are free (unless overridden above)
+            (None, None, None)
+        } else {
+            // Try catalog lookup
+            let catalog_model = catalog::find_model(&provider_type, &model.id)
+                .or_else(|| catalog::find_model_by_name(&model.id));
+
+            if let Some(cat_model) = catalog_model {
+                // Convert from per-token to per-million tokens
+                let input_price = cat_model.pricing.prompt_per_token * 1_000_000.0;
+                let output_price = cat_model.pricing.completion_per_token * 1_000_000.0;
+
+                // Only include pricing if it's non-zero
+                let input = if input_price > 0.0 {
+                    Some(input_price)
+                } else {
+                    None
+                };
+                let output = if output_price > 0.0 {
+                    Some(output_price)
+                } else {
+                    None
+                };
+
+                let source = if input.is_some() || output.is_some() {
+                    Some(PricingSource::Catalog)
+                } else {
+                    None
+                };
+
+                (input, output, source)
+            } else {
+                (None, None, None)
+            }
+        };
+
+    DetailedModelInfo {
+        model_id: model.id,
+        provider_instance: model.provider,
+        provider_type,
+        capabilities,
+        context_window: model.context_window,
+        supports_streaming: model.supports_streaming,
+        input_price_per_million,
+        output_price_per_million,
+        parameter_count,
+        pricing_source,
+    }
+}
+
+/// Provider type of each registered instance, by instance name.
+fn instance_types(registry: &ProviderRegistry) -> std::collections::HashMap<String, String> {
+    registry
+        .list_providers()
+        .into_iter()
+        .map(|i| (i.instance_name, i.provider_type))
+        .collect()
+}
+
 /// List all available models with detailed information
 ///
 /// # Returns
@@ -1364,123 +1480,43 @@ pub async fn list_all_models_detailed(
         .list_all_models()
         .await
         .map_err(|e| e.to_string())?;
-
-    let detailed_models = models
+    let types = instance_types(&registry);
+    let config = config_manager.get();
+    Ok(models
         .into_iter()
         .map(|model| {
-            use lr_catalog as catalog;
-
-            // Extract provider type from provider instance name
-            // Format is typically "provider_type/instance_name" or just "provider_type"
-            let provider_type = model
-                .provider
-                .split('/')
-                .next()
-                .unwrap_or(&model.provider)
-                .to_string();
-
-            // Convert capabilities enum to strings
-            let capabilities = model
-                .capabilities
-                .iter()
-                .map(|cap| format!("{:?}", cap).to_lowercase())
-                .collect();
-
-            // Format parameter count as string
-            let parameter_count = model.parameter_count.map(|count| {
-                if count >= 1_000_000_000 {
-                    format!("{:.1}B", count as f64 / 1_000_000_000.0)
-                } else if count >= 1_000_000 {
-                    format!("{:.1}M", count as f64 / 1_000_000.0)
-                } else {
-                    count.to_string()
-                }
-            });
-
-            // Fetch pricing from override first, then catalog
-            // Skip pricing for local/free providers unless there's an override
-            let is_local_provider = matches!(
-                provider_type.as_str(),
-                "ollama"
-                    | "lmstudio"
-                    | "openai_compatible"
-                    | "localai"
-                    | "laya"
-                    | "kev"
-                    | "von"
-                    | "decider"
-                    | "llamacpp_embedded"
-            );
-
-            let config = config_manager.get();
-
-            // Check for pricing override first
-            let override_pricing = config
-                .pricing_overrides
-                .get(&provider_type)
-                .and_then(|models| models.get(&model.id));
-
-            let (input_price_per_million, output_price_per_million, pricing_source) =
-                if let Some(override_price) = override_pricing {
-                    // Use override pricing
-                    (
-                        Some(override_price.input_per_million),
-                        Some(override_price.output_per_million),
-                        Some(PricingSource::Override),
-                    )
-                } else if is_local_provider {
-                    // Local providers are free (unless overridden above)
-                    (None, None, None)
-                } else {
-                    // Try catalog lookup
-                    let catalog_model = catalog::find_model(&provider_type, &model.id)
-                        .or_else(|| catalog::find_model_by_name(&model.id));
-
-                    if let Some(cat_model) = catalog_model {
-                        // Convert from per-token to per-million tokens
-                        let input_price = cat_model.pricing.prompt_per_token * 1_000_000.0;
-                        let output_price = cat_model.pricing.completion_per_token * 1_000_000.0;
-
-                        // Only include pricing if it's non-zero
-                        let input = if input_price > 0.0 {
-                            Some(input_price)
-                        } else {
-                            None
-                        };
-                        let output = if output_price > 0.0 {
-                            Some(output_price)
-                        } else {
-                            None
-                        };
-
-                        let source = if input.is_some() || output.is_some() {
-                            Some(PricingSource::Catalog)
-                        } else {
-                            None
-                        };
-
-                        (input, output, source)
-                    } else {
-                        (None, None, None)
-                    }
-                };
-
-            DetailedModelInfo {
-                model_id: model.id,
-                provider_instance: model.provider,
-                provider_type,
-                capabilities,
-                context_window: model.context_window,
-                supports_streaming: model.supports_streaming,
-                input_price_per_million,
-                output_price_per_million,
-                parameter_count,
-                pricing_source,
-            }
+            let provider_type = types
+                .get(&model.provider)
+                .cloned()
+                .unwrap_or_else(|| model.provider.clone());
+            detailed_model(model, provider_type, &config)
         })
-        .collect();
+        .collect())
+}
 
-    Ok(detailed_models)
+/// Detailed models of one provider instance only (from its model cache when
+/// fresh), so a provider's page does not wait for every other provider.
+#[tauri::command]
+pub async fn list_provider_models_detailed(
+    instance_name: String,
+    registry: State<'_, Arc<ProviderRegistry>>,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<Vec<DetailedModelInfo>, String> {
+    let provider_type = instance_types(&registry)
+        .remove(&instance_name)
+        .ok_or_else(|| format!("Provider '{instance_name}' not found"))?;
+    let models = registry
+        .list_provider_models_cached(&instance_name)
+        .await
+        .map_err(|e| e.to_string())?;
+    let config = config_manager.get();
+    Ok(models
+        .into_iter()
+        .map(|mut model| {
+            model.provider = instance_name.clone();
+            detailed_model(model, provider_type.clone(), &config)
+        })
+        .collect())
 }
 
 // ============================================================================
@@ -1558,4 +1594,54 @@ pub async fn get_api_path_support(
         completions: provider.api_path_support("completions"),
         responses: provider.api_path_support("responses"),
     })
+}
+
+#[cfg(test)]
+mod detailed_model_tests {
+    use super::*;
+
+    fn model(id: &str, provider: &str) -> lr_providers::ModelInfo {
+        lr_providers::ModelInfo {
+            id: id.to_string(),
+            name: id.to_string(),
+            provider: provider.to_string(),
+            parameter_count: Some(8_000_000_000),
+            context_window: 4096,
+            supports_streaming: false,
+            capabilities: vec![lr_providers::Capability::Decision],
+            detailed_capabilities: None,
+        }
+    }
+
+    #[test]
+    fn local_providers_are_free_by_type_not_instance_name() {
+        let config = lr_config::AppConfig::default();
+        // The instance is called "Laya"; the type decides it is local.
+        let d = detailed_model(model("english", "Laya"), "laya".into(), &config);
+        assert_eq!(d.provider_type, "laya");
+        assert_eq!(d.provider_instance, "Laya");
+        assert!(d.input_price_per_million.is_none());
+        assert_eq!(d.capabilities, vec!["decision"]);
+        assert_eq!(d.parameter_count.as_deref(), Some("8.0B"));
+    }
+
+    #[test]
+    fn overrides_are_keyed_by_provider_type() {
+        let mut config = lr_config::AppConfig::default();
+        config.pricing_overrides.insert(
+            "laya".into(),
+            [(
+                "english".to_string(),
+                lr_config::ModelPricingOverride {
+                    input_per_million: 1.0,
+                    output_per_million: 2.0,
+                },
+            )]
+            .into_iter()
+            .collect(),
+        );
+        let d = detailed_model(model("english", "Laya"), "laya".into(), &config);
+        assert_eq!(d.input_price_per_million, Some(1.0));
+        assert!(matches!(d.pricing_source, Some(PricingSource::Override)));
+    }
 }

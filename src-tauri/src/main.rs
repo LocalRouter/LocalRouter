@@ -2605,6 +2605,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::list_provider_models,
             ui::commands::list_all_models,
             ui::commands::list_all_models_detailed,
+            ui::commands::list_provider_models_detailed,
             ui::commands::get_cached_models,
             ui::commands::refresh_models_incremental,
             ui::commands::get_catalog_stats,
