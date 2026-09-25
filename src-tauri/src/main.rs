@@ -3048,8 +3048,9 @@ async fn run_gui_mode() -> anyhow::Result<()> {
         .expect("error while building tauri application")
         .run(move |_app, event| {
             if let tauri::RunEvent::Exit = event {
-                // Engines are child processes; don't leave them running.
-                tauri::async_runtime::block_on(exit_supervisor.stop_all());
+                // Engines are child processes; don't leave them running. This
+                // may run inside the async runtime, so it must not block on it.
+                exit_supervisor.stop_all_blocking();
             }
         });
 

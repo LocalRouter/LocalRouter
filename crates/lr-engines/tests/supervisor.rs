@@ -202,3 +202,24 @@ async fn orphans_from_a_previous_session_are_killed() {
     }
     assert!(gone, "orphaned engine still listening");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn blocking_stop_all_works_inside_the_runtime() {
+    // App exit calls this from inside the async runtime, where blocking on
+    // the runtime would panic.
+    let (sup, _dir) = supervisor();
+    let a = sup.ensure(spec("a", &[])).await.unwrap();
+    let b = sup.ensure(spec("b", &[])).await.unwrap();
+    let urls = [a.base_url(), b.base_url()];
+    sup.stop_all_blocking();
+    assert!(!sup.is_running("a") && !sup.is_running("b"));
+    for url in urls {
+        let reachable = reqwest::Client::new()
+            .get(format!("{url}/health"))
+            .timeout(Duration::from_secs(1))
+            .send()
+            .await
+            .is_ok();
+        assert!(!reachable, "{url} still answers after stop_all_blocking");
+    }
+}

@@ -513,9 +513,62 @@ impl Supervisor {
         }
     }
 
-    /// Stop everything (app exit).
+    /// Stop everything from async code.
     pub async fn stop_all(&self) {
         self.stop_prefix("").await;
+    }
+
+    /// Stop everything without an async runtime: at app exit the event loop
+    /// may already be inside the runtime, where blocking on it panics. Asks
+    /// each engine to terminate, waits up to the grace period, then kills
+    /// what is left.
+    pub fn stop_all_blocking(&self) {
+        let targets: Vec<(String, u32)> = {
+            let mut slots = self.slots.lock();
+            slots
+                .iter_mut()
+                .filter_map(|(key, slot)| {
+                    let running = slot.running.take()?;
+                    running.exited.store(true, Ordering::SeqCst);
+                    running.pid.map(|pid| (key.clone(), pid))
+                })
+                .collect()
+        };
+        if targets.is_empty() {
+            return;
+        }
+        let mut sys = sysinfo::System::new();
+        let pids: Vec<sysinfo::Pid> = targets
+            .iter()
+            .map(|(_, pid)| sysinfo::Pid::from_u32(*pid))
+            .collect();
+        let alive = |sys: &mut sysinfo::System| -> Vec<sysinfo::Pid> {
+            sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&pids), true);
+            pids.iter()
+                .copied()
+                .filter(|p| sys.process(*p).is_some())
+                .collect()
+        };
+        for pid in alive(&mut sys) {
+            if let Some(process) = sys.process(pid) {
+                // SIGTERM where supported; Windows has no graceful signal.
+                if process.kill_with(sysinfo::Signal::Term).is_none() {
+                    process.kill();
+                }
+            }
+        }
+        let deadline = Instant::now() + STOP_GRACE;
+        while Instant::now() < deadline && !alive(&mut sys).is_empty() {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        for pid in alive(&mut sys) {
+            if let Some(process) = sys.process(pid) {
+                process.kill();
+            }
+        }
+        for (key, _) in &targets {
+            remove_pid_record(&self.pid_file, key);
+        }
     }
 
     pub fn is_running(&self, key: &str) -> bool {
