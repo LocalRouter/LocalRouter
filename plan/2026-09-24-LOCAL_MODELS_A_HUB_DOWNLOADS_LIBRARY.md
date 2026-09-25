@@ -1,6 +1,6 @@
 # Phase 2 · Plan A: Hub client, downloads, model library, Hugging Face sign-in, hardware
 
-Part of `plan/2026-09-24-LOCAL_MODELS_PHASE2_OVERVIEW.md`. Read the overview first for the architecture decision (engines are separate processes) and privacy rules.
+Part of `plan/2026-09-24-LOCAL_MODELS_PHASE2_OVERVIEW.md` (revised 2026-09-24: engines are external installs found on PATH; this plan's scope is unchanged apart from CIMD sign-in). Read the overview first for privacy rules.
 
 ## Goal
 
@@ -29,7 +29,7 @@ Base URL from config (`huggingface.endpoint`, default `https://huggingface.co`, 
 - `read_remote_header(url)`: fetch with HTTP Range in 2 MB chunks until the metadata is complete (cap 16 MB); `read_local_header(path)`.
 - Extract: `general.architecture`, `general.type`, `general.file_type` (quant), `general.name`, `split.count`, `{arch}.context_length`, `.embedding_length`, `.block_count`, `.attention.head_count(_kv)`, `.attention.key_length/value_length`, `.attention.sliding_window(+_pattern)`, `.pooling_type`, `.expert_count`, `tokenizer.chat_template` (+ named variants), `clip.*` for projectors.
 - `classify(header, siblings) -> ModelKind` in this order: `architecture == clip` → Projector; `general.type == adapter` → Adapter; `pooling_type == 4` or `cls.*` tensors → Reranker; `pooling_type ∈ {1,2,3}` or `attention.causal == false` → Embedding; causal with a chat template → Chat (plus `tools` if the template references tools or a `tool_use` template exists; `vision` if an `mmproj-*` sibling exists); else Completion. Never by file or repo name.
-- Non-GGUF kinds come from plan C's manifests (Laya ONNX, Kev bundles), not from this classifier.
+- Laya and Kev checkpoints are not in the library: those engines download their own weights (plan C).
 - Quant label from `general.file_type` and the filename only as a display fallback.
 - Tests: tiny synthetic GGUF headers built in-test for each branch; a truncated/garbage file; a split file.
 
@@ -70,8 +70,8 @@ Revive the design of the removed guardrails downloader (`git show ab3708ea^:crat
 ## Step 7: Hugging Face credentials (`auth.rs`)
 Two methods; both store tokens in the keychain via `CachedKeychain` (service `LocalRouter-HuggingFace`), never in `settings.yaml` (the removed guardrails code kept `hf_token` in plain config: do not repeat that).
 - **Token paste:** validate with `whoami-v2`; store; show username and token role. Recommend a fine-grained read token with "Read access to contents of all public gated repos you can access".
-- **Sign in with Hugging Face (OAuth):** authorization code + PKCE (S256), public client (no secret), loopback redirect `http://127.0.0.1:{port}/callback` (HF accepts any port for a port-less registered loopback URI, RFC 8252), scopes `openid profile read-repos gated-repos`. Implement as an `OAuthFlowConfig` for the existing `lr_oauth::browser::OAuthFlowManager` (same machinery as the OpenAI Codex/Anthropic flows); `client_id` is a public constant from the registered app (overview decision 2). Tokens expire after 30 days with rotating refresh tokens: reuse the `token_source` refresh logic (`REFRESH_SKEW_SECS`).
-- `HfCredentials::token() -> Option<String>` used by the Hub client and downloader; `sign_out()` deletes keychain entries.
+- **Sign in with Hugging Face (OAuth):** authorization code + PKCE (S256), public client (no secret), loopback redirect `http://127.0.0.1:{port}/callback` (Hugging Face accepts any port for a port-less loopback URI, RFC 8252), scopes `openid profile read-repos gated-repos`. The client id is a **Client ID Metadata Document** URL, `https://localrouter.ai/oauth/huggingface-client.json` (plan D Step 6), so no app registration on huggingface.co is needed. Implement as an `OAuthFlowConfig` for `lr_oauth::browser::OAuthFlowManager` (same machinery as the OpenAI Codex/Anthropic flows). Tokens expire after 30 days with rotating refresh tokens: reuse the `token_source` refresh logic. The device-code flow (`POST /oauth/device`) is the fallback for the headless CLI/Docker mode.
+- `HfCredentials::token() -> Option<String>` is used by the Hub client and downloader, and passed as `HF_TOKEN` to the Laya and Kev engines (plan C); `sign_out()` deletes keychain entries.
 - Gated-repo UX data: when a repo is gated and the user lacks access, return the gate prompt from `cardData.extra_gated_prompt` and the repo URL so the UI can say "Request access on huggingface.co" (there is no API to request access).
 - Tests: token validation with a mocked `whoami-v2`; OAuth config builds the right authorize URL (PKCE challenge, scopes, redirect); refresh path with a mocked token endpoint.
 
@@ -91,7 +91,7 @@ pub struct LocalModelsConfig {
 
 ## Interfaces consumed by other plans
 - Plan B: `Library::list/get`, `LibraryEntry`, `FitEstimate`, `HardwareInfo`, `DownloadManager` + `DownloadEvents`, `HfCredentials`.
-- Plan C: `DownloadManager::start_bundle(manifest)` for multi-file Laya/Kev bundles with pinned SHA-256s.
+- Plan C: `HfCredentials::token()` (passed as `HF_TOKEN`) and `HardwareInfo` (Kev checkpoint fit).
 - Plan D: types serialized through Tauri commands defined in plan B.
 
 ## Mandatory final steps

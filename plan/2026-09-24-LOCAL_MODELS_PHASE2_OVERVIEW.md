@@ -1,85 +1,63 @@
-# Phase 2 overview: Local Models (download and run Hugging Face models inside LocalRouter)
+# Phase 2 overview: Direct providers (LocalRouter runs llama.cpp, Laya and Kev, models managed in-app)
 
 ## Context
 
-Phase 1 (`plan/2026-09-24-SYSTEMONE_ENDPOINT.md`) added `/v1/systemone` and providers that talk to *externally run* servers (Ollama, LM Studio, llama.cpp, laya-serve, kev.serve). Phase 2 lets a user find a model on Hugging Face, download it, and serve it from LocalRouter with no other software installed: chat and completions (streaming, tools, JSON output, logprobs), embeddings, vision where the model supports it, and System One decisions (Laya, Kev).
+Phase 1 (`plan/2026-09-24-SYSTEMONE_ENDPOINT.md`) added `/v1/systemone` and providers that talk to servers the user runs themselves. Phase 2 adds **direct providers**: LocalRouter starts and stops the inference engine itself and manages the models in-app (search and download from Hugging Face, load and unload on demand).
 
-Two lessons from this repo's history shape the design:
-- **Embedded llama.cpp was tried and removed** (`plan/2026-02-23-REMOVE_EMBEDDED_LLAMA_CPP.md`, commit `ab3708ea`): large C++ build, CI weight, and malformed GGUF files calling `abort()` and killing the app (`plan/2026-02-17-FIX_SAFETY_MODEL_GGUF_LOADING_CRASH_REMOVE_BROKEN.md`). The release profile also sets `panic = "abort"`.
-- **`llama-cpp-2` 0.1.147 (June 2026) removed its Jinja chat templating and tool-call parsing**, so in-process use would mean owning that layer.
+## User decisions (2026-09-24)
 
-## Architecture decision: engines are separate processes, installed on demand
+- **External installs only.** Engines are installed by the user through their OS package manager (Homebrew, WinGet, apt, pacman, uv…). LocalRouter never downloads or hosts engine binaries. It expects the engine on PATH.
+- **Show the install commands.** Each provider shows OS-specific commands, then offers an **Install** button (runs the shown command, with visible output) and a **Refresh** button (re-detects).
+- **Three separate providers:** llama.cpp, Laya, Kev.
+- **New category, listed first** in Add Provider, above Local: **"Direct"**. Description mentions that LocalRouter runs the engine and models are managed directly in-app, including downloads from Hugging Face.
+- **Remove the existing llama.cpp option** (the OpenAI-compatible wrapper around a user-run `llama-server` on localhost) from the Add Provider list. Existing configured instances keep working (config compatibility rule: never remove serde variants), they are just not offered for new setups.
+- **Hugging Face sign-in via a Client ID Metadata Document (CIMD)** hosted on localrouter.ai (no manual app registration). Token paste stays as an alternative.
+- Repo is public (workflows allowed, free); Intel Macs supported where the engines support them.
 
-LocalRouter never loads model weights into its own process. It manages **engines**: small server executables that it downloads (only when the user asks), verifies, starts on `127.0.0.1` with a random API key, health-checks, restarts, and stops. LocalRouter then talks to them with provider code it already has.
+## Engines and how they are found and launched
 
-| Model kind | Engine | Talks through (existing code) |
-|---|---|---|
-| GGUF chat / completion / vision / embedding / rerank | upstream **llama.cpp `llama-server`**, pinned release build per platform and GPU backend (Metal, Vulkan, CUDA, CPU) | `LlamaCppProvider` (OpenAI-compatible; logprobs added in Phase 1) |
-| Laya (ONNX, `receptron/laya-onnx`) | **`localrouter-laya-engine`**: our Rust binary (`ort` + `tokenizers`), built and published by our CI | `SystemOneProvider` (Laya flavor) |
-| Kev (Qwen + LoRA + pointer head) | **`localrouter-kev-engine`**: our Rust binary wrapping `kev-rs`'s `kev-core` (MLX on Apple Silicon, Candle CPU elsewhere) | `SystemOneProvider` (Kev flavor) |
+| Provider (type id) | Engine on PATH | Launch (LocalRouter picks port and API key) | Notes |
+|---|---|---|---|
+| **llama.cpp** (`llamacpp_direct`) | `llama-server`, or the unified `llama` binary (`llama serve …`, same flags) | `llama-server --host 127.0.0.1 --port P -m <gguf> --jinja --no-webui --offline [...]`, API key via `LLAMA_API_KEY` env (not argv) | one process per loaded model; `/health` 503 while loading, 200 ready; flags feature-detected from `--help` for old distro builds |
+| **Laya** (`laya`) | `laya-serve` (from `uv tool install "laya[serve]"`) | env only: `LAYA_HOST=127.0.0.1` (default is 0.0.0.0!), `LAYA_PORT`, `LAYA_API_KEY`, `LAYA_MODELS`, `LAYA_DEVICE`, `LAYA_PRELOAD`, `HF_TOKEN` | one process; port stays closed until preloaded checkpoints are ready; `/health` lists loaded checkpoints; no `/v1/models` |
+| **Kev** (`kev`) | `uv` (Kev has no PyPI package and no console script) | `uvx --python 3.13 --from "kev[serve] @ git+https://github.com/jaredpalmer/kev@<pinned sha>" python -m kev.serve --run jaredpalmer/kev-<size> --port P`, `KEV_API_KEY`, `HF_TOKEN` | one process per checkpoint; binds 127.0.0.1 itself; no `/health` (readiness = `GET /openapi.json`); no Intel Mac (torch range) |
 
-Why this over in-process:
-- A crash, GPU driver fault or `GGML_ASSERT` kills an engine, not the app. The supervisor reports it and restarts with backoff.
-- Unloading a model frees VRAM completely (process exit).
-- The user's GPU gets the right backend (Vulkan or CUDA on Windows/Linux, Metal on Apple Silicon) without shipping hundreds of MB of CUDA in the app.
-- The app binary, main CI and every package format (Flatpak, Scoop, Docker take only the main binary) stay unchanged.
-- llama.cpp can be updated independently of app releases.
-- Client disconnects already cancel generation: dropping the HTTP stream to `llama-server` stops it (the existing `chat.rs` stream-drop path).
+Install commands shown per OS (defaults first):
 
-Costs, accepted: process supervision (ports, orphans, logs), engine updates to curate, and first-use downloads of the engine as well as the model.
+- **llama.cpp**
+  - macOS: `brew install llama.cpp`. Intel Macs build from source (slow, CPU only); `sudo port install llama.cpp` is the alternative.
+  - Windows: `winget install --id ggml.llamacpp -e` (Vulkan build). Scoop alternative: `scoop bucket add versions` then `scoop install versions/llama.cpp-vulkan`.
+  - Linux: `brew install llama.cpp` (Linuxbrew, any distro). Distro packages:
+    - Ubuntu 26.04+ / Debian testing: `sudo apt install llama.cpp`
+    - Arch: `sudo pacman -S llama-cpp ggml-vulkan`
+    - Nix: `nix profile add nixpkgs#llama-cpp-vulkan`
+    - Fedora's package is stale; not recommended.
+- **uv** (needed by Laya and Kev)
+  - macOS/Linux: `curl -LsSf https://astral.sh/uv/install.sh | sh` (Homebrew `brew install uv` fine on Apple Silicon).
+  - Windows: `winget install --id=astral-sh.uv -e`.
+- **Laya:** `uv tool install --python 3.12 --torch-backend auto "laya[serve]"` (all OSes; Intel Mac unsupported by current PyTorch, shown as such).
+- **Kev:** installing uv is enough; the first start prepares Kev's environment (pinned commit). A **Prepare** button runs `uvx … python -c "import kev.serve"` so the multi-GB PyTorch download happens up front with visible output.
 
-Rejected alternatives: in-process `llama-cpp-2` (crash coupling, own Jinja/tool layer, CI weight); `llama-cpp-4` (wraps upstream chat layer but single maintainer); mistral.rs (no Vulkan, Windows GPU only via CUDA, crates.io lagging); Candle (no general GGUF coverage or grammar); bundling engines inside the installer (package-format and size problems).
+## Architecture
 
-## One built-in provider
+- `crates/lr-engines` (new): engine **recipes** (detection names, install commands per OS, version probe), **detection** (reuses `lr_utils::binary::find_binary`/`shell_path`, adds Linuxbrew, Nix, MacPorts and Windows WinGet/Scoop/`.local\bin` dirs, and on Windows re-reads PATH from the registry on every Refresh), **install runner** (runs the shown command in the user's shell, streams output lines as events, cancellable), and the **process supervisor** (ports, API keys, readiness, logs, crash restarts with backoff, idle unload, orphan cleanup, shutdown with the app).
+- `crates/lr-local-models` (new): Hugging Face client, resumable verified downloader, GGUF header parser and classifier, hardware detection and fit estimate, model library, HF credentials (CIMD OAuth + token). Used by the llama.cpp provider (Laya and Kev download their own weights through their HF libraries; LocalRouter passes `HF_TOKEN` and shows checkpoint sizes).
+- Three providers in `crates/lr-providers/src/direct/`, each delegating HTTP to existing code: llama.cpp → `LlamaCppProvider`; Laya and Kev → `SystemOneProvider` (flavors Laya/Kev).
+- New `ProviderCategory::Direct` (serde `direct`), ordered first. Factories get `fn listed(&self) -> bool` (default true); the legacy `llamacpp` factory returns false, so it is hidden from Add Provider but still loads existing configs. `list_provider_types` returns a stable order (category, then display name), which also fixes the Custom tab's random pick between the two `generic` factories.
+- The Phase 1 `laya` and `kev` types (external server URL, unreleased on this branch) become the direct Laya and Kev providers. Remote or self-run System One servers remain reachable through `systemone_compatible`.
 
-A new provider type **`localrouter_local`** ("Local models (built-in)", category Local, `AlwaysFreeLocal`, no catalog id) with exactly one instance, created when the feature is enabled. Its models are the installed library entries; it delegates each request to the engine that serves that model, starting it first if needed. It is distinct from the existing `huggingface` provider type (the HF Inference router) and from the external `llamacpp` / `laya` / `kev` types, which stay as they are.
+## Work streams
 
-## Hugging Face access
+| Plan | Scope |
+|---|---|
+| A: Hub, downloads, library, sign-in | `lr-local-models` (unchanged scope except: sign-in uses CIMD, no Laya/Kev bundles) |
+| B: engines crate, llama.cpp direct provider | `lr-engines`, `llamacpp_direct`, category, hidden legacy llama.cpp, commands and events |
+| C: Laya and Kev direct providers | recipes, launch/env, checkpoint management, readiness quirks |
+| D: UI and website | Direct category, per-provider Engine tab (commands, Install, Refresh, output), llama.cpp model browser/library, Laya/Kev checkpoint lists, HF account card, CIMD document on the website, docs, demo mocks |
 
-Plain HTTPS to the Hub API (search, model info, file tree, resolve) with our own resumable downloader: SHA-256 checked against the Hub's LFS `oid`, Range resume, re-resolving signed CDN URLs after expiry, token sent only to `huggingface.co`. Sign-in is optional and only needed for gated or private repos: **"Sign in with Hugging Face"** (OAuth authorization code + PKCE, public client, loopback redirect, refresh tokens) or **paste an access token**. Tokens live in the keychain.
+## Privacy
 
-## Privacy (CLAUDE.md: network only on user action)
+Network only on user action: search, download, Install/Prepare clicks, starting a provider (which may download checkpoints; the UI says so first). Model cards shown as sanitized text without remote images. Engines bind 127.0.0.1 with per-launch API keys; Laya is forced off 0.0.0.0.
 
-- No Hub request until the user searches, opens a repo, or starts a download. The curated "Recommended" list ships inside the app as static data.
-- Engine installs and updates only on explicit click ("Install engine", "Check for engine updates").
-- Model cards render as sanitized text: images and remote embeds are stripped, links open in the system browser.
-- Engines run with `--offline`, bind `127.0.0.1`, and require a per-launch random API key.
-
-## Work streams (separate plans)
-
-| Plan | Scope | Depends on |
-|---|---|---|
-| **A: Hub, downloads, library, sign-in, hardware** | new crate `lr-local-models`: Hub client, downloader, on-disk library, GGUF header parser, model classification, hardware detection, fit estimator, HF OAuth/token | none |
-| **B: llama.cpp engine and built-in provider** | new crate `lr-engines`: engine pack manifest and installer, process supervisor; `localrouter_local` provider; load/unload; config; Tauri commands | A (library, fit) |
-| **C: System One engines (Laya, Kev)** | `engines/laya-engine`, `engines/kev-engine` (own workspaces), engines CI workflow, pack manifest entries, Kev artifact assembly | B (supervisor, packs); A (downloads) |
-| **D: UI and website** | Local Models view (Discover, Library, Downloads, Engines, Settings), HF account card, provider detail, Try It Out and Monitor touches, tray, docs, demo mocks | A, B command/type contracts (can start against mocks) |
-
-Shared contracts that let the streams run in parallel are fixed in each plan's "Interfaces" section: Tauri command names and payloads (D consumes), `LibraryEntry` / `EngineStatus` types (B and C consume), event names.
-
-## Milestones
-
-1. **M0, prerequisites (in B):** fix the registry leak where `update_provider`/`remove_provider` never unregister the old provider from `HealthCheckManager`; add hardware detection (A).
-2. **M1, download and library (A + D):** search, download, verify, list, delete. Useful on its own for "Import GGUF into LM Studio/Ollama folders" later, but mainly the base for M2.
-3. **M2, chat and embeddings end to end (B + D):** Metal (macOS arm64), CPU (all), Vulkan (Windows/Linux); CUDA as an optional pack.
-4. **M3, Laya engine (C).**
-5. **M4, Kev engine (C):** Apple Silicon (kev-0.8b, kev-4b via MLX) and CPU (kev-0.6b) as supported by kev-rs today.
-6. **M5, polish:** tray, Monitor events, website docs and demo, guardrails safety-model picker integration.
-
-## Cross-cutting features (all reuse existing paths, no special cases)
-
-Local models appear in `/v1/models`, strategies, the model firewall, auto-routing, free-tier (always free), Try It Out, monitoring, metrics and access logs like any provider's. System One translation (Phase 1b) works against local chat models in letter mode, because llama-server returns `top_logprobs`. Guardrails, secret scanning and compression apply unchanged. The guardrails safety-model picker gains the built-in provider as a "pullable" source (M5).
-
-## Decisions needed from the user
-
-1. **Engines downloaded on demand vs bundled in the installer.** Recommended: on demand (above). Bundling would inflate every installer and break Flatpak/Scoop/Docker packaging.
-2. **Register a "LocalRouter" OAuth app on huggingface.co** (free; produces a public client id committed to source). Without it, sign-in is token-paste only.
-3. **Engines CI (plan C) runs macOS, Windows and Linux builds.** GitHub Actions macOS minutes cost money on private repos; confirm the repo's billing situation before enabling the workflow.
-4. **Intel Macs:** llama.cpp CPU works; Laya needs ONNX Runtime ≤ 1.23 (last Intel build) or is unavailable; Kev CPU (kev-0.6b) works. Recommended: support with those limits, clearly labelled.
-5. **Hosting engine binaries:** GitHub Releases of this repo under an `engines-v*` tag (free, no new infra). Recommended.
-
-## Mandatory final steps (every work-stream plan repeats these)
-
-1. Plan review against the implementation.
-2. Test-coverage review.
-3. Bug hunt.
-4. CI parity (`rustup run stable cargo clippy --workspace --all-targets -- -D warnings`, fmt, targeted tests) and commit only touched files.
+## Mandatory final steps (each plan)
+Plan review; test-coverage review; bug hunt; CI parity (clippy `-D warnings`, fmt, targeted tests), commit only touched files.
