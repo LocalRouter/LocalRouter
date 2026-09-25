@@ -23,7 +23,7 @@ use lr_local_models::{
     SecretStore,
 };
 use lr_oauth::browser::{FlowId, OAuthFlowConfig, OAuthFlowManager, OAuthFlowResult};
-use lr_providers::embedded::EmbeddedModelState;
+use lr_providers::embedded::{EmbeddedCatalogModel, EmbeddedModelState};
 use lr_providers::registry::ProviderRegistry;
 
 /// Keychain service holding the Hugging Face credentials.
@@ -787,6 +787,54 @@ pub async fn local_models_states(
         .embedded_control()
         .map(|c| c.model_states())
         .unwrap_or_default())
+}
+
+/// Models a Laya, Kev, Von or Decider provider can download, with their
+/// download state (empty for llama.cpp, whose models live in the library).
+#[tauri::command]
+pub async fn local_models_engine_catalog(
+    instance_name: String,
+    registry: State<'_, Arc<ProviderRegistry>>,
+) -> Result<Vec<EmbeddedCatalogModel>, String> {
+    let provider = embedded_provider(&registry, &instance_name, false)?;
+    Ok(provider
+        .embedded_control()
+        .map(|c| c.catalog())
+        .unwrap_or_default())
+}
+
+/// Start downloading one of the engine's models in the background; poll
+/// [`local_models_engine_catalog`] for progress.
+#[tauri::command]
+pub async fn local_models_engine_download(
+    instance_name: String,
+    model: String,
+    registry: State<'_, Arc<ProviderRegistry>>,
+) -> Result<(), String> {
+    validate_model_id(&model)?;
+    let provider = embedded_provider(&registry, &instance_name, true)?;
+    let control = provider
+        .embedded_control()
+        .ok_or_else(|| format!("Provider '{instance_name}' is not a Local Embedded provider"))?;
+    control.download(&model).await.map_err(|e| e.to_string())
+}
+
+/// Stop a running engine download.
+#[tauri::command]
+pub async fn local_models_engine_download_cancel(
+    instance_name: String,
+    model: String,
+    registry: State<'_, Arc<ProviderRegistry>>,
+) -> Result<(), String> {
+    validate_model_id(&model)?;
+    let provider = embedded_provider(&registry, &instance_name, false)?;
+    if let Some(control) = provider.embedded_control() {
+        control
+            .cancel_download(&model)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

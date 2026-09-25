@@ -159,6 +159,12 @@ pub trait ProviderFactory: Send + Sync {
     fn listed(&self) -> bool {
         true
     }
+
+    /// Position within its category in the Add Provider dialog; lower comes
+    /// first, ties sort by display name.
+    fn list_priority(&self) -> u8 {
+        100
+    }
 }
 
 /// Trait for providers that can be automatically discovered on the local system

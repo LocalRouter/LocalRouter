@@ -61,6 +61,9 @@ interface ChatPanelProps {
   providerInstance?: string | null
 }
 
+const isUnavailable = (level: SupportLevel | undefined) =>
+  level === 'not_supported' || level === 'not_implemented'
+
 export function ChatPanel({
   openaiClient,
   isReady,
@@ -115,6 +118,19 @@ export function ChatPanel({
       .catch(() => { if (!cancelled) setPathSupport(null) })
     return () => { cancelled = true }
   }, [providerInstance])
+
+  // Unavailable endpoints can't be picked; switch to the first one that is.
+  useEffect(() => {
+    if (!pathSupport) return
+    const levels = {
+      chat: pathSupport.chat_completions,
+      responses: pathSupport.responses,
+      completions: pathSupport.completions,
+    } as const
+    if (!isUnavailable(levels[endpoint])) return
+    const first = (["chat", "responses", "completions"] as const).find(e => !isUnavailable(levels[e]))
+    if (first) setEndpoint(first)
+  }, [pathSupport, endpoint])
 
   const endpointLabel = (base: string, level: SupportLevel | undefined): string => {
     if (level === 'translated') return `${base} (Translated)`
@@ -560,13 +576,13 @@ export function ChatPanel({
                   : "Which server endpoint to hit"
               }
             >
-              <option value="chat">
+              <option value="chat" disabled={isUnavailable(pathSupport?.chat_completions)}>
                 {endpointLabel('Chat Completions', pathSupport?.chat_completions)}
               </option>
-              <option value="responses">
+              <option value="responses" disabled={isUnavailable(pathSupport?.responses)}>
                 {endpointLabel('Responses', pathSupport?.responses)}
               </option>
-              <option value="completions">
+              <option value="completions" disabled={isUnavailable(pathSupport?.completions)}>
                 {endpointLabel('Completions (legacy)', pathSupport?.completions)}
               </option>
             </select>

@@ -485,6 +485,11 @@ impl ProviderFactory for LlamaCppEmbeddedProviderFactory {
         ProviderCategory::Embedded
     }
 
+    /// The general-purpose engine leads the Local Embedded list.
+    fn list_priority(&self) -> u8 {
+        0
+    }
+
     fn description(&self) -> &str {
         "Run GGUF models from Hugging Face with llama.cpp. LocalRouter downloads models, starts llama-server on demand and unloads idle models"
     }

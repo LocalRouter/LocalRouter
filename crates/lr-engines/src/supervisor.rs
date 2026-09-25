@@ -206,6 +206,7 @@ struct PidRecord {
 pub struct Supervisor {
     slots: Mutex<HashMap<String, Slot>>,
     start_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    state_dir: PathBuf,
     log_dir: PathBuf,
     pid_file: PathBuf,
     http: reqwest::Client,
@@ -225,6 +226,7 @@ impl Supervisor {
         Arc::new(Self {
             slots: Mutex::new(HashMap::new()),
             start_locks: Mutex::new(HashMap::new()),
+            state_dir: state_dir.to_path_buf(),
             log_dir,
             pid_file,
             http: reqwest::Client::builder()
@@ -233,6 +235,11 @@ impl Supervisor {
                 .build()
                 .unwrap_or_default(),
         })
+    }
+
+    /// The directory given to [`Supervisor::new`].
+    pub fn state_dir(&self) -> &Path {
+        &self.state_dir
     }
 
     /// Return the running engine for `spec.key`, starting (or restarting on a

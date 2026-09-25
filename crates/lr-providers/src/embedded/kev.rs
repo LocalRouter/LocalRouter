@@ -1,6 +1,7 @@
-//! Kev Local Embedded provider: LocalRouter runs Kev (from its Git repository, pinned
-//! to a commit) through uv, one process per enabled checkpoint. Kev downloads
-//! its adapter and Qwen base model from Hugging Face on first start.
+//! Kev Local Embedded provider: LocalRouter runs Kev (from its Git
+//! repository, pinned to a commit) through uv, one process per checkpoint.
+//! Checkpoints are downloaded explicitly from the Models tab; serving runs
+//! offline, so a checkpoint that is not downloaded fails at once.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -17,8 +18,8 @@ use lr_engines::{EngineCommand, LaunchSpec, PortArg, RecipeId, Supervisor};
 use lr_types::{AppError, AppResult};
 
 use super::{
-    engine_error, engine_missing, hf_env, parse_list, parse_minutes, resolve_engine,
-    SystemOneClientCache,
+    download_env, engine_error, engine_missing, not_downloaded, offline_env, parse_minutes,
+    resolve_engine, EmbeddedCatalogModel, EngineDownloads, SystemOneClientCache,
 };
 use crate::factory::{ParameterType, ProviderCategory, ProviderFactory, SetupParameter};
 use crate::systemone::SystemOneFlavor;
@@ -51,21 +52,25 @@ pub const CHECKPOINTS: &[(&str, &str, &str, &str)] = &[
     ),
 ];
 
-/// First start downloads PyTorch and model weights before the port opens.
-const START_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+/// A download fetches PyTorch and the weights before the port opens.
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(3 * 60 * 60);
+/// Loading a downloaded checkpoint.
+const START_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+fn repo_of(checkpoint: &str) -> Option<&'static str> {
+    CHECKPOINTS.iter().find(|c| c.0 == checkpoint).map(|c| c.1)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KevSettings {
     /// Path to `uv` (Kev runs through it); `None` finds it on PATH.
     pub uv_path: Option<PathBuf>,
-    pub checkpoints: Vec<String>,
     pub dtype: Option<String>,
     pub idle_timeout: Option<Duration>,
 }
 
 impl KevSettings {
     pub fn from_config(config: &HashMap<String, String>) -> AppResult<Self> {
-        let ids: Vec<&str> = CHECKPOINTS.iter().map(|c| c.0).collect();
         let dtype = config
             .get("dtype")
             .map(|s| s.trim().to_lowercase())
@@ -83,30 +88,44 @@ impl KevSettings {
                 .map(|s| s.trim())
                 .filter(|s| !s.is_empty())
                 .map(PathBuf::from),
-            checkpoints: parse_list(config, "checkpoints", &ids, &["kev-0.8b"])?,
             dtype,
             idle_timeout: parse_minutes(config, "idle_unload_minutes", 15)?,
         })
     }
 
+    /// The serving launch (offline) or, with `download`, the launch that
+    /// fetches the checkpoint.
     pub fn launch_spec(
         &self,
         instance: &str,
         checkpoint: &str,
         command: &EngineCommand,
-        hf: Vec<(String, String)>,
+        download: bool,
     ) -> Option<LaunchSpec> {
-        let repo = CHECKPOINTS.iter().find(|c| c.0 == checkpoint)?.1;
+        let repo = repo_of(checkpoint)?;
         let mut args = command.leading_args.clone();
         args.push("--run".to_string());
         args.push(repo.to_string());
-        let mut env = hf;
+        let mut env = if download {
+            download_env()
+        } else {
+            offline_env()
+        };
         if let Some(dtype) = &self.dtype {
             env.push(("KEV_DTYPE".to_string(), dtype.clone()));
         }
+        let size = checkpoint.trim_start_matches("kev-");
         Some(LaunchSpec {
-            key: format!("{PROVIDER_TYPE}:{instance}:{checkpoint}"),
-            label: format!("Kev {}", checkpoint.trim_start_matches("kev-")),
+            key: if download {
+                format!("{PROVIDER_TYPE}:{instance}:download:{checkpoint}")
+            } else {
+                format!("{PROVIDER_TYPE}:{instance}:{checkpoint}")
+            },
+            label: if download {
+                format!("Kev {size} (downloading)")
+            } else {
+                format!("Kev {size}")
+            },
             program: command.program.clone(),
             args,
             env,
@@ -116,8 +135,12 @@ impl KevSettings {
             api_key_env: "KEV_API_KEY".to_string(),
             // Kev has no /health; its OpenAPI document is served without a key.
             ready_path: "/openapi.json".to_string(),
-            start_timeout: START_TIMEOUT,
-            idle_timeout: self.idle_timeout,
+            start_timeout: if download {
+                DOWNLOAD_TIMEOUT
+            } else {
+                START_TIMEOUT
+            },
+            idle_timeout: if download { None } else { self.idle_timeout },
         })
     }
 }
@@ -127,37 +150,65 @@ pub struct KevEmbeddedProvider {
     settings: KevSettings,
     supervisor: Arc<Supervisor>,
     clients: SystemOneClientCache,
+    downloads: Arc<EngineDownloads>,
 }
 
 impl KevEmbeddedProvider {
     pub fn new(instance: String, settings: KevSettings, supervisor: Arc<Supervisor>) -> Self {
         Self {
+            downloads: EngineDownloads::new(PROVIDER_TYPE, supervisor.clone()),
             instance,
             settings,
             supervisor,
             clients: SystemOneClientCache::default(),
         }
     }
-}
 
-impl KevEmbeddedProvider {
     fn key_prefix(&self) -> String {
         format!("{PROVIDER_TYPE}:{}:", self.instance)
     }
 
-    /// Start (or reuse) the engine for one checkpoint.
-    async fn ensure_engine(&self, checkpoint: &str) -> AppResult<lr_engines::EngineHandle> {
-        if !self.settings.checkpoints.iter().any(|c| c == checkpoint) {
-            return Err(AppError::ModelNotFound {
-                model: checkpoint.to_string(),
-            });
+    fn is_downloaded(&self, checkpoint: &str) -> bool {
+        self.downloads
+            .is_downloaded(checkpoint, repo_of(checkpoint))
+    }
+
+    fn downloaded(&self) -> Vec<&'static str> {
+        CHECKPOINTS
+            .iter()
+            .map(|c| c.0)
+            .filter(|c| self.is_downloaded(c))
+            .collect()
+    }
+
+    /// A known, downloaded checkpoint (`None` picks the first downloaded).
+    fn servable(&self, model: Option<&str>) -> AppResult<String> {
+        match model {
+            Some(m) if repo_of(m).is_none() => Err(AppError::ModelNotFound {
+                model: m.to_string(),
+            }),
+            Some(m) if !self.is_downloaded(m) => Err(not_downloaded(PROVIDER_TYPE, m)),
+            Some(m) => Ok(m.to_string()),
+            None => self
+                .downloaded()
+                .first()
+                .map(|c| c.to_string())
+                .ok_or_else(|| not_downloaded(PROVIDER_TYPE, CHECKPOINTS[0].0)),
         }
-        let command = resolve_engine(RecipeId::Kev, self.settings.uv_path.clone())
+    }
+
+    async fn command(&self) -> AppResult<EngineCommand> {
+        resolve_engine(RecipeId::Kev, self.settings.uv_path.clone())
             .await
-            .ok_or_else(|| engine_missing(PROVIDER_TYPE, "uv"))?;
+            .ok_or_else(|| engine_missing(PROVIDER_TYPE, "uv"))
+    }
+
+    /// Start (or reuse) the engine for a downloaded checkpoint.
+    async fn ensure_engine(&self, checkpoint: &str) -> AppResult<lr_engines::EngineHandle> {
+        let command = self.command().await?;
         let spec = self
             .settings
-            .launch_spec(&self.instance, checkpoint, &command, hf_env())
+            .launch_spec(&self.instance, checkpoint, &command, false)
             .ok_or_else(|| AppError::ModelNotFound {
                 model: checkpoint.to_string(),
             })?;
@@ -171,7 +222,8 @@ impl KevEmbeddedProvider {
 #[async_trait]
 impl super::EmbeddedControl for KevEmbeddedProvider {
     async fn load(&self, model: &str) -> AppResult<()> {
-        self.ensure_engine(model).await.map(|_| ())
+        let checkpoint = self.servable(Some(model))?;
+        self.ensure_engine(&checkpoint).await.map(|_| ())
     }
 
     async fn unload(&self, model: &str) -> AppResult<()> {
@@ -184,8 +236,44 @@ impl super::EmbeddedControl for KevEmbeddedProvider {
     fn model_states(&self) -> Vec<super::EmbeddedModelState> {
         let prefix = self.key_prefix();
         super::states_from_supervisor(&self.supervisor, &prefix, |k| {
-            vec![k.trim_start_matches(&prefix).to_string()]
+            let rest = k.trim_start_matches(&prefix);
+            if rest.starts_with("download:") {
+                vec![]
+            } else {
+                vec![rest.to_string()]
+            }
         })
+    }
+
+    fn catalog(&self) -> Vec<EmbeddedCatalogModel> {
+        CHECKPOINTS
+            .iter()
+            .map(|(id, _, size, guidance)| EmbeddedCatalogModel {
+                id: id.to_string(),
+                name: format!("Kev {}", id.trim_start_matches("kev-")),
+                download_size: size.to_string(),
+                guidance: Some(guidance.to_string()),
+                downloaded: self.is_downloaded(id),
+                downloading: self.downloads.is_downloading(id),
+                download_error: self.downloads.error(id),
+            })
+            .collect()
+    }
+
+    async fn download(&self, model: &str) -> AppResult<()> {
+        let command = self.command().await?;
+        let spec = self
+            .settings
+            .launch_spec(&self.instance, model, &command, true)
+            .ok_or_else(|| AppError::ModelNotFound {
+                model: model.to_string(),
+            })?;
+        self.downloads.start(model, spec, |_| async { Ok(()) })
+    }
+
+    async fn cancel_download(&self, model: &str) -> AppResult<()> {
+        self.downloads.cancel(model).await;
+        Ok(())
     }
 }
 
@@ -206,9 +294,7 @@ impl ModelProvider for KevEmbeddedProvider {
     }
 
     async fn health_check(&self) -> ProviderHealth {
-        let found = resolve_engine(RecipeId::Kev, self.settings.uv_path.clone())
-            .await
-            .is_some();
+        let found = self.command().await.is_ok();
         ProviderHealth {
             status: if found {
                 HealthStatus::Healthy
@@ -225,11 +311,10 @@ impl ModelProvider for KevEmbeddedProvider {
 
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
         Ok(self
-            .settings
-            .checkpoints
-            .iter()
+            .downloaded()
+            .into_iter()
             .map(|id| ModelInfo {
-                id: id.clone(),
+                id: id.to_string(),
                 name: format!("Kev {}", id.trim_start_matches("kev-")),
                 provider: PROVIDER_TYPE.to_string(),
                 parameter_count: None,
@@ -279,15 +364,7 @@ impl ModelProvider for KevEmbeddedProvider {
     }
 
     async fn systemone(&self, mut request: SystemOneRequest) -> AppResult<SystemOneResponse> {
-        let checkpoint = match request.model.as_deref() {
-            Some(m) if self.settings.checkpoints.iter().any(|c| c == m) => m.to_string(),
-            Some(m) => {
-                return Err(AppError::ModelNotFound {
-                    model: m.to_string(),
-                })
-            }
-            None => self.settings.checkpoints[0].clone(),
-        };
+        let checkpoint = self.servable(request.model.as_deref())?;
         let handle = self.ensure_engine(&checkpoint).await?;
         let _lease = handle.lease();
         let client = self.clients.get(SystemOneFlavor::Kev, &handle)?;
@@ -324,7 +401,7 @@ impl ProviderFactory for KevEmbeddedProviderFactory {
     }
 
     fn description(&self) -> &str {
-        "Kev System One decision models (Qwen-based). LocalRouter runs Kev through uv and downloads checkpoints from Hugging Face"
+        "Kev System One decision models (Qwen-based). LocalRouter runs Kev through uv; download checkpoints from Hugging Face in the Models tab"
     }
 
     fn default_free_tier(&self) -> FreeTierKind {
@@ -333,13 +410,6 @@ impl ProviderFactory for KevEmbeddedProviderFactory {
 
     fn setup_parameters(&self) -> Vec<SetupParameter> {
         vec![
-            SetupParameter::optional(
-                "checkpoints",
-                ParameterType::String,
-                "Checkpoints to serve, comma-separated: kev-0.8b, kev-4b, kev-9b",
-                Some("kev-0.8b"),
-                false,
-            ),
             SetupParameter::optional(
                 "dtype",
                 ParameterType::String,
@@ -397,6 +467,7 @@ impl ProviderFactory for KevEmbeddedProviderFactory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::embedded::EmbeddedControl;
 
     fn cfg(pairs: &[(&str, &str)]) -> HashMap<String, String> {
         pairs
@@ -409,66 +480,77 @@ mod tests {
         lr_engines::detect::command_for(RecipeId::Kev, PathBuf::from("/bin/uv"))
     }
 
+    fn has_env(spec: &LaunchSpec, key: &str, value: &str) -> bool {
+        spec.env.contains(&(key.to_string(), value.to_string()))
+    }
+
     #[test]
-    fn launch_spec_runs_pinned_kev_through_uv() {
-        let s = KevSettings::from_config(&cfg(&[("checkpoints", "kev-4b"), ("dtype", "BF16")]))
+    fn serving_is_offline_and_downloads_are_not() {
+        let s = KevSettings::from_config(&cfg(&[("dtype", "BF16")])).unwrap();
+        let serve = s
+            .launch_spec("Kev", "kev-4b", &uv_command(), false)
             .unwrap();
-        let spec = s
-            .launch_spec("Kev", "kev-4b", &uv_command(), vec![])
-            .unwrap();
-        assert_eq!(spec.program, PathBuf::from("/bin/uv"));
-        assert!(spec
+        assert_eq!(serve.program, PathBuf::from("/bin/uv"));
+        assert!(serve
             .args
             .iter()
             .any(|a| a.contains(lr_engines::KEV_GIT_REV)));
-        let run = spec.args.iter().position(|a| a == "--run").unwrap();
-        assert_eq!(spec.args[run + 1], "jaredpalmer/kev-4b");
-        assert_eq!(spec.api_key_env, "KEV_API_KEY");
-        assert_eq!(spec.ready_path, "/openapi.json");
-        assert!(spec
-            .env
-            .contains(&("KEV_DTYPE".to_string(), "bf16".to_string())));
-        assert_eq!(spec.key, "kev:Kev:kev-4b");
+        let run = serve.args.iter().position(|a| a == "--run").unwrap();
+        assert_eq!(serve.args[run + 1], "jaredpalmer/kev-4b");
+        assert_eq!(serve.api_key_env, "KEV_API_KEY");
+        assert_eq!(serve.ready_path, "/openapi.json");
+        assert!(has_env(&serve, "KEV_DTYPE", "bf16"));
+        assert!(has_env(&serve, "HF_HUB_OFFLINE", "1"));
+        assert_eq!(serve.key, "kev:Kev:kev-4b");
+
+        let dl = s.launch_spec("Kev", "kev-4b", &uv_command(), true).unwrap();
+        assert!(!has_env(&dl, "HF_HUB_OFFLINE", "1"));
+        assert!(has_env(&dl, "HF_HUB_DISABLE_TELEMETRY", "1"));
+        assert_eq!(dl.key, "kev:Kev:download:kev-4b");
+        assert_eq!(dl.idle_timeout, None);
         assert!(s
-            .launch_spec("Kev", "kev-99b", &uv_command(), vec![])
+            .launch_spec("Kev", "kev-99b", &uv_command(), false)
             .is_none());
     }
 
     #[test]
     fn settings_validation() {
-        let d = KevSettings::from_config(&HashMap::new()).unwrap();
-        assert_eq!(d.checkpoints, vec!["kev-0.8b"]);
-        assert!(KevSettings::from_config(&cfg(&[("checkpoints", "kev-27b")])).is_err());
         assert!(KevSettings::from_config(&cfg(&[("dtype", "int4")])).is_err());
+        // Configs from before downloads were explicit still load.
+        assert!(KevSettings::from_config(&cfg(&[("checkpoints", "kev-4b")])).is_ok());
     }
 
     #[tokio::test]
-    async fn models_and_routing_checks() {
+    async fn requests_never_download() {
         let dir = tempfile::tempdir().unwrap();
-        let settings =
-            KevSettings::from_config(&cfg(&[("checkpoints", "kev-0.8b,kev-4b")])).unwrap();
-        let p = KevEmbeddedProvider::new("Kev".into(), settings, Supervisor::new(dir.path()));
-        let ids: Vec<_> = p
-            .list_models()
-            .await
+        let p = KevEmbeddedProvider::new(
+            "Kev".into(),
+            KevSettings::from_config(&HashMap::new()).unwrap(),
+            Supervisor::new(dir.path()),
+        );
+        assert!(p.list_models().await.unwrap().is_empty());
+        let req = |model: &str| -> SystemOneRequest {
+            serde_json::from_value(serde_json::json!({
+                "model": model, "state": "s",
+                "questions": {"q": {"type": "noul", "instructions": "?"}}
+            }))
             .unwrap()
-            .into_iter()
-            .map(|m| m.id)
-            .collect();
-        assert_eq!(ids, vec!["kev-0.8b", "kev-4b"]);
-        let req: SystemOneRequest = serde_json::from_value(serde_json::json!({
-            "model": "kev-9b", "state": "s",
-            "questions": {"q": {"type": "noul", "instructions": "?"}}
-        }))
-        .unwrap();
+        };
         assert!(matches!(
-            p.systemone(req).await,
+            p.systemone(req("kev-4b")).await,
+            Err(AppError::InvalidParams(m)) if m.contains("not downloaded")
+        ));
+        assert!(matches!(
+            p.systemone(req("kev-27b")).await,
             Err(AppError::ModelNotFound { .. })
         ));
+        let catalog = p.catalog();
+        assert_eq!(catalog.len(), 3);
+        assert!(catalog.iter().all(|m| !m.downloaded && !m.downloading));
     }
 
     #[tokio::test]
-    async fn one_engine_per_checkpoint() {
+    async fn download_runs_the_engine_once_and_records_it() {
         let Some(fake) = crate::embedded::fake_engine_path() else {
             eprintln!("skipping: lr-fake-engine not built (run the workspace tests)");
             return;
@@ -476,23 +558,20 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let supervisor = Supervisor::new(dir.path());
         // The fake engine stands in for uv; it reads --port from the args.
-        let settings = KevSettings::from_config(&cfg(&[
-            ("checkpoints", "kev-0.8b,kev-4b"),
-            ("binary_path", fake.to_str().unwrap()),
-        ]))
-        .unwrap();
+        let settings =
+            KevSettings::from_config(&cfg(&[("binary_path", fake.to_str().unwrap())])).unwrap();
         let p = KevEmbeddedProvider::new("Kev".into(), settings, supervisor.clone());
-        for model in ["kev-0.8b", "kev-4b"] {
-            let req: SystemOneRequest = serde_json::from_value(serde_json::json!({
-                "model": model, "state": "s",
-                "questions": {"q": {"type": "noul", "instructions": "?"}}
-            }))
-            .unwrap();
-            let resp = p.systemone(req).await.unwrap();
-            assert_eq!(resp.model, model);
+        p.download("kev-0.8b").await.unwrap();
+        for _ in 0..400 {
+            if !p.downloads.is_downloading("kev-0.8b") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
         }
-        assert!(supervisor.is_running("kev:Kev:kev-0.8b"));
-        assert!(supervisor.is_running("kev:Kev:kev-4b"));
+        assert!(!p.downloads.is_downloading("kev-0.8b"));
+        assert_eq!(p.downloads.error("kev-0.8b"), None);
+        assert!(p.downloads.marker("kev-0.8b").is_file());
+        assert!(!supervisor.is_running("kev:Kev:download:kev-0.8b"));
         supervisor.stop_all().await;
     }
 }

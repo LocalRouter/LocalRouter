@@ -734,6 +734,18 @@ export interface EmbeddedModelState {
   last_error: string | null
 }
 
+/** Rust: crates/lr-providers/src/embedded/mod.rs - EmbeddedCatalogModel struct */
+export interface EmbeddedCatalogModel {
+  id: string
+  name: string
+  /** Approximate download, e.g. "3.8 GB" */
+  download_size: string
+  guidance: string | null
+  downloaded: boolean
+  downloading: boolean
+  download_error: string | null
+}
+
 /** Rust: crates/lr-local-models/src/auth.rs - HfAccount struct */
 export interface HfAccount {
   signed_in: boolean
@@ -4049,6 +4061,17 @@ export interface LocalModelsLoadParams {
 /** Params for local_models_states */
 export interface LocalModelsStatesParams {
   instanceName: string
+}
+
+/** Params for local_models_engine_catalog */
+export interface LocalModelsEngineCatalogParams {
+  instanceName: string
+}
+
+/** Params for local_models_engine_download and local_models_engine_download_cancel */
+export interface LocalModelsEngineDownloadParams {
+  instanceName: string
+  model: string
 }
 
 /** Params for local_models_hf_set_token */

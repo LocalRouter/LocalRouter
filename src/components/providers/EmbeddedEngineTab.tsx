@@ -19,7 +19,6 @@ import { listenSafe } from "@/hooks/useTauriListener"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card"
-import { HuggingFaceAccountCard } from "@/components/providers/HuggingFaceAccountCard"
 import type {
   EngineInstallFinishedEvent,
   EngineInstallOutputEvent,
@@ -144,7 +143,7 @@ function InstallSection({
         )}
       </div>
       <div className="flex items-start gap-2">
-        <pre className="flex-1 overflow-x-auto rounded bg-muted px-3 py-2 font-mono text-xs">
+        <pre className="min-w-0 flex-1 whitespace-pre-wrap break-all rounded bg-muted px-3 py-2 font-mono text-xs">
           {option.command}
         </pre>
         <Button
@@ -203,7 +202,7 @@ function InstallSection({
           </div>
           <pre
             ref={outputRef}
-            className="max-h-64 overflow-auto rounded bg-muted px-3 py-2 font-mono text-xs"
+            className="max-h-64 overflow-y-auto overflow-x-hidden whitespace-pre-wrap break-all rounded bg-muted px-3 py-2 font-mono text-xs"
             aria-live="polite"
           >
             {output.join("\n")}
@@ -345,6 +344,32 @@ export function EmbeddedEngineTab({ providerType, instanceName, binaryPath }: Em
               </div>
             </div>
           )}
+          {status?.supported &&
+            requirements.map((req) => (
+              <div key={req.recipe} className="space-y-2 border-t pt-4">
+                <p className="text-sm font-medium">Step 1: install {req.display_name}</p>
+                <p className="text-xs text-muted-foreground">
+                  {status.display_name} needs {req.display_name}, which was not found on your
+                  PATH.
+                </p>
+                <InstallSection status={req} onFinished={onInstallFinished} />
+              </div>
+            ))}
+          {status?.supported && (!status.found || RUNS_THROUGH_UV.has(status.recipe)) && (
+            <div className="space-y-2 border-t pt-4">
+              <p className="text-sm font-medium">
+                {requirements.length > 0 ? "Step 2: " : ""}
+                {RUNS_THROUGH_UV.has(status.recipe)
+                  ? `Prepare ${status.display_name} (optional)`
+                  : `Install ${status.display_name}`}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Run the command in a terminal, or click Install to run it here. Click Refresh
+                afterwards.
+              </p>
+              <InstallSection status={status} onFinished={onInstallFinished} />
+            </div>
+          )}
           {status && (
             <button
               type="button"
@@ -357,53 +382,12 @@ export function EmbeddedEngineTab({ providerType, instanceName, binaryPath }: Em
         </CardContent>
       </Card>
 
-      {status?.supported &&
-        requirements.map((req) => (
-          <Card key={req.recipe}>
-            <CardHeader>
-              <CardTitle className="text-base">Step 1: install {req.display_name}</CardTitle>
-              <CardDescription>
-                {status.display_name} needs {req.display_name}, which was not found on your PATH.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <InstallSection status={req} onFinished={onInstallFinished} />
-            </CardContent>
-          </Card>
-        ))}
-
-      {status?.supported && (!status.found || RUNS_THROUGH_UV.has(status.recipe)) && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">
-              {requirements.length > 0 ? "Step 2: " : ""}
-              {RUNS_THROUGH_UV.has(status.recipe)
-                ? `Prepare ${status.display_name} (optional)`
-                : `Install ${status.display_name}`}
-            </CardTitle>
-            <CardDescription>
-              Run the command in a terminal, or click Install to run it here. Click Refresh
-              afterwards.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <InstallSection status={status} onFinished={onInstallFinished} />
-          </CardContent>
-        </Card>
-      )}
-
-      {/* llama.cpp shows the account in its Models tab; the System One
-          engines download their checkpoints with it (HF_TOKEN). */}
-      {providerType !== "llamacpp_embedded" && (
-        <HuggingFaceAccountCard description="Optional. The engine downloads its checkpoints from Hugging Face with this account (for gated or private checkpoints and higher rate limits). Shared by all Local Embedded providers." />
-      )}
-
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Running processes</CardTitle>
           <CardDescription>
-            Engines start on the first request and stop after being idle. The first start can
-            take a while because models are downloaded from Hugging Face.
+            Engines start on the first request for a downloaded model (or when you click Load in
+            the Models tab) and stop after being idle.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
@@ -411,7 +395,7 @@ export function EmbeddedEngineTab({ providerType, instanceName, binaryPath }: Em
             <p className="text-sm text-muted-foreground">No engine is running.</p>
           ) : (
             processes.map((p) => (
-              <div key={p.key} className="space-y-1 rounded-md border p-3 text-sm">
+              <div key={p.key} className="min-w-0 space-y-1 rounded-md border p-3 text-sm">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="font-medium">{p.label}</span>
                   <Badge
@@ -449,10 +433,12 @@ export function EmbeddedEngineTab({ providerType, instanceName, binaryPath }: Em
                   </div>
                 </div>
                 {p.last_error && p.state !== "running" && (
-                  <p className="whitespace-pre-wrap text-xs text-red-500">{p.last_error}</p>
+                  <p className="whitespace-pre-wrap break-words text-xs text-red-500">
+                    {p.last_error}
+                  </p>
                 )}
                 {logsFor === p.key && (
-                  <pre className="max-h-64 overflow-auto rounded bg-muted px-3 py-2 font-mono text-xs">
+                  <pre className="max-h-64 overflow-y-auto overflow-x-hidden whitespace-pre-wrap break-all rounded bg-muted px-3 py-2 font-mono text-xs">
                     {logs.join("\n") || "No output yet."}
                   </pre>
                 )}

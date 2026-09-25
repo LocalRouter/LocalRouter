@@ -1,6 +1,8 @@
-//! Laya Local Embedded provider: LocalRouter runs the official `laya-serve` (installed
-//! with `uv tool install "laya[serve]"`) and serves System One decisions from
-//! it. Laya downloads its checkpoints from Hugging Face on first start.
+//! Laya Local Embedded provider: LocalRouter runs the official `laya-serve`
+//! (installed with `uv tool install "laya[serve]"`) and serves System One
+//! decisions from it, one process for every downloaded checkpoint.
+//! Checkpoints are downloaded explicitly from the Models tab; serving runs
+//! offline, so a checkpoint that is not downloaded fails at once.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -17,8 +19,8 @@ use lr_engines::{LaunchSpec, PortArg, RecipeId, Supervisor};
 use lr_types::{AppError, AppResult};
 
 use super::{
-    engine_error, engine_missing, hf_env, parse_list, parse_minutes, resolve_engine,
-    SystemOneClientCache,
+    download_env, engine_error, engine_missing, not_downloaded, offline_env, parse_minutes,
+    resolve_engine, EmbeddedCatalogModel, EngineDownloads, SystemOneClientCache,
 };
 use crate::factory::{ParameterType, ProviderCategory, ProviderFactory, SetupParameter};
 use crate::systemone::SystemOneFlavor;
@@ -36,13 +38,22 @@ pub const CHECKPOINTS: &[(&str, &str, u32, &str)] = &[
     ("typed-decisions", "Laya Typed Decisions", 1_024, "843 MB"),
 ];
 
-/// First start downloads checkpoints before the port opens.
-const START_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// The Hugging Face repository holding every checkpoint (one subfolder
+/// each).
+const BUNDLE_REPO: &str = "convaiinnovations/laya";
+
+/// A download fetches the checkpoint before the port opens.
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
+/// Loading downloaded checkpoints.
+const START_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+fn is_checkpoint(id: &str) -> bool {
+    CHECKPOINTS.iter().any(|c| c.0 == id)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LayaSettings {
     pub binary_path: Option<PathBuf>,
-    pub checkpoints: Vec<String>,
     /// `None` lets Laya pick (CUDA, then MPS, then CPU).
     pub device: Option<String>,
     pub threads: Option<u32>,
@@ -51,7 +62,6 @@ pub struct LayaSettings {
 
 impl LayaSettings {
     pub fn from_config(config: &HashMap<String, String>) -> AppResult<Self> {
-        let ids: Vec<&str> = CHECKPOINTS.iter().map(|c| c.0).collect();
         let device = config
             .get("device")
             .map(|s| s.trim().to_lowercase())
@@ -80,25 +90,26 @@ impl LayaSettings {
                 .map(|s| s.trim())
                 .filter(|s| !s.is_empty())
                 .map(PathBuf::from),
-            checkpoints: parse_list(config, "checkpoints", &ids, &["english"])?,
             device,
             threads,
             idle_timeout: parse_minutes(config, "idle_unload_minutes", 15)?,
         })
     }
 
-    /// The process launch for these settings. The API key and port are added
-    /// by the supervisor.
+    /// The serving launch for `checkpoints` (offline) or, with `download`,
+    /// the launch that fetches one checkpoint. The API key and port are
+    /// added by the supervisor.
     pub fn launch_spec(
         &self,
         instance: &str,
         program: PathBuf,
-        hf: Vec<(String, String)>,
+        checkpoints: &[&str],
+        download: bool,
     ) -> LaunchSpec {
         let mut env = vec![
             // laya-serve binds 0.0.0.0 by default; never expose it.
             ("LAYA_HOST".to_string(), "127.0.0.1".to_string()),
-            ("LAYA_MODELS".to_string(), self.checkpoints.join(",")),
+            ("LAYA_MODELS".to_string(), checkpoints.join(",")),
             ("LAYA_PRELOAD".to_string(), "1".to_string()),
         ];
         if let Some(device) = &self.device {
@@ -107,18 +118,37 @@ impl LayaSettings {
         if let Some(threads) = self.threads {
             env.push(("LAYA_THREADS".to_string(), threads.to_string()));
         }
-        env.extend(hf);
+        env.extend(if download {
+            download_env()
+        } else {
+            offline_env()
+        });
         LaunchSpec {
-            key: format!("{PROVIDER_TYPE}:{instance}"),
-            label: "Laya".to_string(),
+            key: if download {
+                format!(
+                    "{PROVIDER_TYPE}:{instance}:download:{}",
+                    checkpoints.join(",")
+                )
+            } else {
+                format!("{PROVIDER_TYPE}:{instance}")
+            },
+            label: if download {
+                format!("Laya {} (downloading)", checkpoints.join(", "))
+            } else {
+                "Laya".to_string()
+            },
             program,
             args: vec![],
             env,
             port: PortArg::Env("LAYA_PORT".to_string()),
             api_key_env: "LAYA_API_KEY".to_string(),
             ready_path: "/health".to_string(),
-            start_timeout: START_TIMEOUT,
-            idle_timeout: self.idle_timeout,
+            start_timeout: if download {
+                DOWNLOAD_TIMEOUT
+            } else {
+                START_TIMEOUT
+            },
+            idle_timeout: if download { None } else { self.idle_timeout },
         }
     }
 }
@@ -128,11 +158,13 @@ pub struct LayaEmbeddedProvider {
     settings: LayaSettings,
     supervisor: Arc<Supervisor>,
     clients: SystemOneClientCache,
+    downloads: Arc<EngineDownloads>,
 }
 
 impl LayaEmbeddedProvider {
     pub fn new(instance: String, settings: LayaSettings, supervisor: Arc<Supervisor>) -> Self {
         Self {
+            downloads: EngineDownloads::new(PROVIDER_TYPE, supervisor.clone()),
             instance,
             settings,
             supervisor,
@@ -144,14 +176,47 @@ impl LayaEmbeddedProvider {
         format!("{PROVIDER_TYPE}:{}", self.instance)
     }
 
-    /// Start (or reuse) the Laya engine.
-    async fn ensure_engine(&self) -> AppResult<lr_engines::EngineHandle> {
-        let command = resolve_engine(RecipeId::Laya, self.settings.binary_path.clone())
+    fn is_downloaded(&self, checkpoint: &str) -> bool {
+        self.downloads.is_downloaded(checkpoint, Some(BUNDLE_REPO))
+    }
+
+    fn downloaded(&self) -> Vec<&'static str> {
+        CHECKPOINTS
+            .iter()
+            .map(|c| c.0)
+            .filter(|c| self.is_downloaded(c))
+            .collect()
+    }
+
+    /// `model` (when given) must be a known, downloaded checkpoint, and at
+    /// least one checkpoint must be downloaded.
+    fn check_servable(&self, model: Option<&str>) -> AppResult<()> {
+        match model {
+            Some(m) if !is_checkpoint(m) => Err(AppError::ModelNotFound {
+                model: m.to_string(),
+            }),
+            Some(m) if !self.is_downloaded(m) => Err(not_downloaded(PROVIDER_TYPE, m)),
+            None if self.downloaded().is_empty() => {
+                Err(not_downloaded(PROVIDER_TYPE, CHECKPOINTS[0].0))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    async fn program(&self) -> AppResult<PathBuf> {
+        resolve_engine(RecipeId::Laya, self.settings.binary_path.clone())
             .await
-            .ok_or_else(|| engine_missing(PROVIDER_TYPE, "laya-serve"))?;
+            .map(|c| c.program)
+            .ok_or_else(|| engine_missing(PROVIDER_TYPE, "laya-serve"))
+    }
+
+    /// Start (or reuse) the Laya engine serving every downloaded checkpoint
+    /// (it restarts when that set changes).
+    async fn ensure_engine(&self) -> AppResult<lr_engines::EngineHandle> {
+        let program = self.program().await?;
         let spec = self
             .settings
-            .launch_spec(&self.instance, command.program, hf_env());
+            .launch_spec(&self.instance, program, &self.downloaded(), false);
         self.supervisor.ensure(spec).await.map_err(|e| {
             let mut err = engine_error(PROVIDER_TYPE, e);
             if let AppError::Provider(msg) = &mut err {
@@ -168,8 +233,9 @@ impl LayaEmbeddedProvider {
 
 #[async_trait]
 impl super::EmbeddedControl for LayaEmbeddedProvider {
-    async fn load(&self, _model: &str) -> AppResult<()> {
-        // One process serves every enabled checkpoint.
+    async fn load(&self, model: &str) -> AppResult<()> {
+        // One process serves every downloaded checkpoint.
+        self.check_servable(Some(model))?;
         self.ensure_engine().await.map(|_| ())
     }
 
@@ -180,7 +246,7 @@ impl super::EmbeddedControl for LayaEmbeddedProvider {
 
     fn model_states(&self) -> Vec<super::EmbeddedModelState> {
         let key = self.spec_key();
-        let checkpoints = self.settings.checkpoints.clone();
+        let checkpoints: Vec<String> = self.downloaded().iter().map(|c| c.to_string()).collect();
         super::states_from_supervisor(&self.supervisor, &key, |k| {
             if k == key {
                 checkpoints.clone()
@@ -188,6 +254,39 @@ impl super::EmbeddedControl for LayaEmbeddedProvider {
                 vec![]
             }
         })
+    }
+
+    fn catalog(&self) -> Vec<EmbeddedCatalogModel> {
+        CHECKPOINTS
+            .iter()
+            .map(|(id, name, ctx, size)| EmbeddedCatalogModel {
+                id: id.to_string(),
+                name: name.to_string(),
+                download_size: size.to_string(),
+                guidance: Some(format!("Up to {ctx} tokens of state; runs on CPU")),
+                downloaded: self.is_downloaded(id),
+                downloading: self.downloads.is_downloading(id),
+                download_error: self.downloads.error(id),
+            })
+            .collect()
+    }
+
+    async fn download(&self, model: &str) -> AppResult<()> {
+        if !is_checkpoint(model) {
+            return Err(AppError::ModelNotFound {
+                model: model.to_string(),
+            });
+        }
+        let program = self.program().await?;
+        let spec = self
+            .settings
+            .launch_spec(&self.instance, program, &[model], true);
+        self.downloads.start(model, spec, |_| async { Ok(()) })
+    }
+
+    async fn cancel_download(&self, model: &str) -> AppResult<()> {
+        self.downloads.cancel(model).await;
+        Ok(())
     }
 }
 
@@ -229,11 +328,10 @@ impl ModelProvider for LayaEmbeddedProvider {
     }
 
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
-        Ok(self
-            .settings
-            .checkpoints
+        let downloaded = self.downloaded();
+        Ok(CHECKPOINTS
             .iter()
-            .filter_map(|id| CHECKPOINTS.iter().find(|c| c.0 == id))
+            .filter(|c| downloaded.contains(&c.0))
             .map(|(id, name, ctx, _)| ModelInfo {
                 id: id.to_string(),
                 name: name.to_string(),
@@ -285,13 +383,7 @@ impl ModelProvider for LayaEmbeddedProvider {
     }
 
     async fn systemone(&self, request: SystemOneRequest) -> AppResult<SystemOneResponse> {
-        if let Some(model) = request.model.as_deref() {
-            if !self.settings.checkpoints.iter().any(|c| c == model) {
-                return Err(AppError::ModelNotFound {
-                    model: model.to_string(),
-                });
-            }
-        }
+        self.check_servable(request.model.as_deref())?;
         let handle = self.ensure_engine().await?;
         let _lease = handle.lease();
         let client = self.clients.get(SystemOneFlavor::Laya, &handle)?;
@@ -324,7 +416,7 @@ impl ProviderFactory for LayaEmbeddedProviderFactory {
     }
 
     fn description(&self) -> &str {
-        "Laya System One decision models (typed choice, score and yes/no answers). LocalRouter runs laya-serve and downloads checkpoints from Hugging Face"
+        "Laya System One decision models (typed choice, score and yes/no answers). LocalRouter runs laya-serve; download checkpoints from Hugging Face in the Models tab"
     }
 
     fn default_free_tier(&self) -> FreeTierKind {
@@ -333,13 +425,6 @@ impl ProviderFactory for LayaEmbeddedProviderFactory {
 
     fn setup_parameters(&self) -> Vec<SetupParameter> {
         vec![
-            SetupParameter::optional(
-                "checkpoints",
-                ParameterType::String,
-                "Checkpoints to serve, comma-separated: english, multilingual, typed-decisions",
-                Some("english"),
-                false,
-            ),
             SetupParameter::optional(
                 "device",
                 ParameterType::String,
@@ -404,6 +489,7 @@ impl ProviderFactory for LayaEmbeddedProviderFactory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::embedded::EmbeddedControl;
 
     fn cfg(pairs: &[(&str, &str)]) -> HashMap<String, String> {
         pairs
@@ -413,76 +499,91 @@ mod tests {
     }
 
     #[test]
-    fn launch_spec_is_local_only_and_keyed() {
-        let s = LayaSettings::from_config(&cfg(&[
-            ("checkpoints", "multilingual,english"),
-            ("device", "CPU"),
-            ("threads", "4"),
-        ]))
-        .unwrap();
+    fn launch_spec_is_local_only_offline_and_keyed() {
+        let s = LayaSettings::from_config(&cfg(&[("device", "CPU"), ("threads", "4")])).unwrap();
         let spec = s.launch_spec(
             "Laya",
             PathBuf::from("/bin/laya-serve"),
-            vec![("HF_TOKEN".into(), "hf_x".into())],
+            &["english", "multilingual"],
+            false,
         );
         let env: HashMap<_, _> = spec.env.iter().cloned().collect();
         assert_eq!(env["LAYA_HOST"], "127.0.0.1");
-        assert_eq!(env["LAYA_MODELS"], "multilingual,english");
+        assert_eq!(env["LAYA_MODELS"], "english,multilingual");
         assert_eq!(env["LAYA_DEVICE"], "cpu");
         assert_eq!(env["LAYA_THREADS"], "4");
-        assert_eq!(env["HF_TOKEN"], "hf_x");
+        assert_eq!(env["HF_HUB_OFFLINE"], "1");
         assert_eq!(spec.api_key_env, "LAYA_API_KEY");
         assert_eq!(spec.port, PortArg::Env("LAYA_PORT".into()));
+        assert_eq!(spec.key, "laya:Laya");
         assert!(
             spec.args.is_empty(),
             "nothing secret or config goes in argv"
         );
+        let dl = s.launch_spec("Laya", PathBuf::from("/bin/laya-serve"), &["english"], true);
+        let env: HashMap<_, _> = dl.env.iter().cloned().collect();
+        assert!(!env.contains_key("HF_HUB_OFFLINE"));
+        assert_eq!(env["LAYA_MODELS"], "english");
+        assert_eq!(dl.key, "laya:Laya:download:english");
     }
 
     #[test]
     fn settings_validation() {
         let d = LayaSettings::from_config(&HashMap::new()).unwrap();
-        assert_eq!(d.checkpoints, vec!["english"]);
         assert_eq!(d.device, None);
         assert_eq!(d.idle_timeout, Some(Duration::from_secs(900)));
-        assert!(LayaSettings::from_config(&cfg(&[("checkpoints", "klingon")])).is_err());
         assert!(LayaSettings::from_config(&cfg(&[("device", "tpu")])).is_err());
         assert!(LayaSettings::from_config(&cfg(&[("threads", "many")])).is_err());
         assert!(LayaSettings::from_config(&cfg(&[("device", "cuda:1")])).is_ok());
+        // Configs from before downloads were explicit still load.
+        assert!(LayaSettings::from_config(&cfg(&[("checkpoints", "english")])).is_ok());
     }
 
     #[tokio::test]
-    async fn lists_enabled_checkpoints_as_decision_models() {
+    async fn lists_downloaded_checkpoints_only() {
         let dir = tempfile::tempdir().unwrap();
-        let settings =
-            LayaSettings::from_config(&cfg(&[("checkpoints", "english,typed-decisions")])).unwrap();
+        let settings = LayaSettings::from_config(&HashMap::new()).unwrap();
         let p = LayaEmbeddedProvider::new("Laya".into(), settings, Supervisor::new(dir.path()));
+        assert!(p.list_models().await.unwrap().is_empty());
+        let req = |model: &str| -> SystemOneRequest {
+            serde_json::from_value(serde_json::json!({
+                "model": model, "state": "s",
+                "questions": {"q": {"type": "noul", "instructions": "?"}}
+            }))
+            .unwrap()
+        };
+        assert!(matches!(
+            p.systemone(req("english")).await,
+            Err(AppError::InvalidParams(m)) if m.contains("not downloaded")
+        ));
+        assert!(matches!(
+            p.systemone(req("klingon")).await,
+            Err(AppError::ModelNotFound { .. })
+        ));
+        p.downloads
+            .fake_downloaded(&dir.path().join("hub"), "typed-decisions", BUNDLE_REPO);
         let models = p.list_models().await.unwrap();
         let ids: Vec<_> = models.iter().map(|m| m.id.as_str()).collect();
-        assert_eq!(ids, vec!["english", "typed-decisions"]);
+        assert_eq!(ids, vec!["typed-decisions"]);
         assert!(models
             .iter()
             .all(|m| m.capabilities == vec![Capability::Decision]));
         assert!(!p.supports_chat());
-        // Unknown models are rejected before any engine starts.
-        let req: SystemOneRequest = serde_json::from_value(serde_json::json!({
-            "model": "multilingual", "state": "s",
-            "questions": {"q": {"type": "noul", "instructions": "?"}}
-        }))
-        .unwrap();
-        assert!(matches!(
-            p.systemone(req).await,
-            Err(AppError::ModelNotFound { .. })
-        ));
+        let catalog = p.catalog();
+        assert_eq!(
+            catalog.iter().filter(|m| m.downloaded).count(),
+            1,
+            "{catalog:?}"
+        );
     }
 
     #[test]
-    fn factory_is_direct() {
+    fn factory_is_embedded_and_asks_for_nothing_required() {
         let dir = tempfile::tempdir().unwrap();
         let f = LayaEmbeddedProviderFactory::new(Supervisor::new(dir.path()));
         assert_eq!(f.category(), ProviderCategory::Embedded);
         assert!(f.listed());
-        assert!(f.validate_config(&cfg(&[("checkpoints", "nope")])).is_err());
+        assert!(f.setup_parameters().iter().all(|p| !p.required));
     }
 
     #[tokio::test]
@@ -499,6 +600,8 @@ mod tests {
         let settings =
             LayaSettings::from_config(&cfg(&[("binary_path", fake.to_str().unwrap())])).unwrap();
         let p = LayaEmbeddedProvider::new("Laya".into(), settings, supervisor.clone());
+        p.downloads
+            .fake_downloaded(&dir.path().join("hub"), "english", BUNDLE_REPO);
         let req: SystemOneRequest = serde_json::from_value(serde_json::json!({
             "model": "english", "state": "s",
             "questions": {"q": {"type": "noul", "instructions": "?"}}

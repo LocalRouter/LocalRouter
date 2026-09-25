@@ -1,7 +1,8 @@
-//! Decider Local Embedded provider: LocalRouter runs Decider's server (`decider-ai`
-//! has no console script) through `uv tool run … uvicorn decider.serve:app`,
-//! one process per enabled checkpoint. Decider downloads its checkpoint from
-//! Hugging Face and loads it before the port opens.
+//! Decider Local Embedded provider: LocalRouter runs Decider's server
+//! (`decider-ai` has no console script) through `uv tool run … uvicorn
+//! decider.serve:app`, one process per checkpoint. Checkpoints are
+//! downloaded explicitly from the Models tab; serving runs offline, so a
+//! checkpoint that is not downloaded fails at once.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -18,8 +19,8 @@ use lr_engines::{EngineCommand, LaunchSpec, PortArg, RecipeId, Supervisor};
 use lr_types::{AppError, AppResult};
 
 use super::{
-    engine_error, engine_missing, hf_env, parse_list, parse_minutes, resolve_engine,
-    SystemOneClientCache,
+    download_env, engine_error, engine_missing, not_downloaded, offline_env, parse_minutes,
+    resolve_engine, EmbeddedCatalogModel, EngineDownloads, SystemOneClientCache,
 };
 use crate::factory::{ParameterType, ProviderCategory, ProviderFactory, SetupParameter};
 use crate::systemone::SystemOneFlavor;
@@ -54,21 +55,25 @@ pub const CHECKPOINTS: &[(&str, &str, &str, &str)] = &[
 
 pub const DEVICES: &[&str] = &["auto", "cuda", "mps", "cpu"];
 
-/// The port opens only after the download and model load finish.
-const START_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+/// A download fetches PyTorch and the weights before the port opens.
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(3 * 60 * 60);
+/// Loading a downloaded checkpoint (the port opens once it is loaded).
+const START_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+fn repo_of(checkpoint: &str) -> Option<&'static str> {
+    CHECKPOINTS.iter().find(|c| c.0 == checkpoint).map(|c| c.1)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeciderSettings {
     /// Path to `uv` (Decider runs through it); `None` finds it on PATH.
     pub uv_path: Option<PathBuf>,
-    pub checkpoints: Vec<String>,
     pub device: Option<String>,
     pub idle_timeout: Option<Duration>,
 }
 
 impl DeciderSettings {
     pub fn from_config(config: &HashMap<String, String>) -> AppResult<Self> {
-        let ids: Vec<&str> = CHECKPOINTS.iter().map(|c| c.0).collect();
         let device = config
             .get("device")
             .map(|s| s.trim().to_lowercase())
@@ -87,28 +92,42 @@ impl DeciderSettings {
                 .map(|s| s.trim())
                 .filter(|s| !s.is_empty())
                 .map(PathBuf::from),
-            checkpoints: parse_list(config, "checkpoints", &ids, &["decider-0.8b"])?,
             device: device.filter(|d| d != "auto"),
             idle_timeout: parse_minutes(config, "idle_unload_minutes", 15)?,
         })
     }
 
+    /// The serving launch (offline) or, with `download`, the launch that
+    /// fetches the checkpoint.
     pub fn launch_spec(
         &self,
         instance: &str,
         checkpoint: &str,
         command: &EngineCommand,
-        hf: Vec<(String, String)>,
+        download: bool,
     ) -> Option<LaunchSpec> {
-        let repo = CHECKPOINTS.iter().find(|c| c.0 == checkpoint)?.1;
-        let mut env = hf;
+        let repo = repo_of(checkpoint)?;
+        let mut env = if download {
+            download_env()
+        } else {
+            offline_env()
+        };
         env.push(("DECIDER_MODEL".to_string(), repo.to_string()));
         if let Some(device) = &self.device {
             env.push(("DECIDER_DEVICE".to_string(), device.clone()));
         }
+        let size = checkpoint.trim_start_matches("decider-");
         Some(LaunchSpec {
-            key: format!("{PROVIDER_TYPE}:{instance}:{checkpoint}"),
-            label: format!("Decider {}", checkpoint.trim_start_matches("decider-")),
+            key: if download {
+                format!("{PROVIDER_TYPE}:{instance}:download:{checkpoint}")
+            } else {
+                format!("{PROVIDER_TYPE}:{instance}:{checkpoint}")
+            },
+            label: if download {
+                format!("Decider {size} (downloading)")
+            } else {
+                format!("Decider {size}")
+            },
             program: command.program.clone(),
             // `--host 127.0.0.1` is part of the leading args: Decider has no
             // authentication, so it must never listen beyond localhost.
@@ -118,8 +137,12 @@ impl DeciderSettings {
             // Decider ignores it; the supervisor always sets one.
             api_key_env: "DECIDER_API_KEY".to_string(),
             ready_path: "/health".to_string(),
-            start_timeout: START_TIMEOUT,
-            idle_timeout: self.idle_timeout,
+            start_timeout: if download {
+                DOWNLOAD_TIMEOUT
+            } else {
+                START_TIMEOUT
+            },
+            idle_timeout: if download { None } else { self.idle_timeout },
         })
     }
 }
@@ -129,11 +152,13 @@ pub struct DeciderEmbeddedProvider {
     settings: DeciderSettings,
     supervisor: Arc<Supervisor>,
     clients: SystemOneClientCache,
+    downloads: Arc<EngineDownloads>,
 }
 
 impl DeciderEmbeddedProvider {
     pub fn new(instance: String, settings: DeciderSettings, supervisor: Arc<Supervisor>) -> Self {
         Self {
+            downloads: EngineDownloads::new(PROVIDER_TYPE, supervisor.clone()),
             instance,
             settings,
             supervisor,
@@ -145,18 +170,46 @@ impl DeciderEmbeddedProvider {
         format!("{PROVIDER_TYPE}:{}:", self.instance)
     }
 
-    async fn ensure_engine(&self, checkpoint: &str) -> AppResult<lr_engines::EngineHandle> {
-        if !self.settings.checkpoints.iter().any(|c| c == checkpoint) {
-            return Err(AppError::ModelNotFound {
-                model: checkpoint.to_string(),
-            });
+    fn is_downloaded(&self, checkpoint: &str) -> bool {
+        self.downloads
+            .is_downloaded(checkpoint, repo_of(checkpoint))
+    }
+
+    fn downloaded(&self) -> Vec<&'static str> {
+        CHECKPOINTS
+            .iter()
+            .map(|c| c.0)
+            .filter(|c| self.is_downloaded(c))
+            .collect()
+    }
+
+    /// A known, downloaded checkpoint (`None` picks the first downloaded).
+    fn servable(&self, model: Option<&str>) -> AppResult<String> {
+        match model {
+            Some(m) if repo_of(m).is_none() => Err(AppError::ModelNotFound {
+                model: m.to_string(),
+            }),
+            Some(m) if !self.is_downloaded(m) => Err(not_downloaded(PROVIDER_TYPE, m)),
+            Some(m) => Ok(m.to_string()),
+            None => self
+                .downloaded()
+                .first()
+                .map(|c| c.to_string())
+                .ok_or_else(|| not_downloaded(PROVIDER_TYPE, CHECKPOINTS[0].0)),
         }
-        let command = resolve_engine(RecipeId::Decider, self.settings.uv_path.clone())
+    }
+
+    async fn command(&self) -> AppResult<EngineCommand> {
+        resolve_engine(RecipeId::Decider, self.settings.uv_path.clone())
             .await
-            .ok_or_else(|| engine_missing(PROVIDER_TYPE, "uv"))?;
+            .ok_or_else(|| engine_missing(PROVIDER_TYPE, "uv"))
+    }
+
+    async fn ensure_engine(&self, checkpoint: &str) -> AppResult<lr_engines::EngineHandle> {
+        let command = self.command().await?;
         let spec = self
             .settings
-            .launch_spec(&self.instance, checkpoint, &command, hf_env())
+            .launch_spec(&self.instance, checkpoint, &command, false)
             .ok_or_else(|| AppError::ModelNotFound {
                 model: checkpoint.to_string(),
             })?;
@@ -170,7 +223,8 @@ impl DeciderEmbeddedProvider {
 #[async_trait]
 impl super::EmbeddedControl for DeciderEmbeddedProvider {
     async fn load(&self, model: &str) -> AppResult<()> {
-        self.ensure_engine(model).await.map(|_| ())
+        let checkpoint = self.servable(Some(model))?;
+        self.ensure_engine(&checkpoint).await.map(|_| ())
     }
 
     async fn unload(&self, model: &str) -> AppResult<()> {
@@ -183,8 +237,44 @@ impl super::EmbeddedControl for DeciderEmbeddedProvider {
     fn model_states(&self) -> Vec<super::EmbeddedModelState> {
         let prefix = self.key_prefix();
         super::states_from_supervisor(&self.supervisor, &prefix, |k| {
-            vec![k.trim_start_matches(&prefix).to_string()]
+            let rest = k.trim_start_matches(&prefix);
+            if rest.starts_with("download:") {
+                vec![]
+            } else {
+                vec![rest.to_string()]
+            }
         })
+    }
+
+    fn catalog(&self) -> Vec<EmbeddedCatalogModel> {
+        CHECKPOINTS
+            .iter()
+            .map(|(id, _, size, guidance)| EmbeddedCatalogModel {
+                id: id.to_string(),
+                name: format!("Decider {}", id.trim_start_matches("decider-")),
+                download_size: size.to_string(),
+                guidance: Some(guidance.to_string()),
+                downloaded: self.is_downloaded(id),
+                downloading: self.downloads.is_downloading(id),
+                download_error: self.downloads.error(id),
+            })
+            .collect()
+    }
+
+    async fn download(&self, model: &str) -> AppResult<()> {
+        let command = self.command().await?;
+        let spec = self
+            .settings
+            .launch_spec(&self.instance, model, &command, true)
+            .ok_or_else(|| AppError::ModelNotFound {
+                model: model.to_string(),
+            })?;
+        self.downloads.start(model, spec, |_| async { Ok(()) })
+    }
+
+    async fn cancel_download(&self, model: &str) -> AppResult<()> {
+        self.downloads.cancel(model).await;
+        Ok(())
     }
 }
 
@@ -205,9 +295,7 @@ impl ModelProvider for DeciderEmbeddedProvider {
     }
 
     async fn health_check(&self) -> ProviderHealth {
-        let found = resolve_engine(RecipeId::Decider, self.settings.uv_path.clone())
-            .await
-            .is_some();
+        let found = self.command().await.is_ok();
         ProviderHealth {
             status: if found {
                 HealthStatus::Healthy
@@ -224,11 +312,10 @@ impl ModelProvider for DeciderEmbeddedProvider {
 
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
         Ok(self
-            .settings
-            .checkpoints
-            .iter()
+            .downloaded()
+            .into_iter()
             .map(|id| ModelInfo {
-                id: id.clone(),
+                id: id.to_string(),
                 name: format!("Decider {}", id.trim_start_matches("decider-")),
                 provider: PROVIDER_TYPE.to_string(),
                 parameter_count: None,
@@ -278,15 +365,7 @@ impl ModelProvider for DeciderEmbeddedProvider {
     }
 
     async fn systemone(&self, mut request: SystemOneRequest) -> AppResult<SystemOneResponse> {
-        let checkpoint = match request.model.as_deref() {
-            Some(m) if self.settings.checkpoints.iter().any(|c| c == m) => m.to_string(),
-            Some(m) => {
-                return Err(AppError::ModelNotFound {
-                    model: m.to_string(),
-                })
-            }
-            None => self.settings.checkpoints[0].clone(),
-        };
+        let checkpoint = self.servable(request.model.as_deref())?;
         let handle = self.ensure_engine(&checkpoint).await?;
         let _lease = handle.lease();
         let client = self.clients.get(SystemOneFlavor::Generic, &handle)?;
@@ -323,7 +402,7 @@ impl ProviderFactory for DeciderEmbeddedProviderFactory {
     }
 
     fn description(&self) -> &str {
-        "Decider System One decision models (Qwen-based). LocalRouter runs Decider through uv and downloads checkpoints from Hugging Face"
+        "Decider System One decision models (Qwen-based). LocalRouter runs Decider through uv; download checkpoints from Hugging Face in the Models tab"
     }
 
     fn default_free_tier(&self) -> FreeTierKind {
@@ -332,13 +411,6 @@ impl ProviderFactory for DeciderEmbeddedProviderFactory {
 
     fn setup_parameters(&self) -> Vec<SetupParameter> {
         vec![
-            SetupParameter::optional(
-                "checkpoints",
-                ParameterType::String,
-                "Checkpoints to serve, comma-separated: decider-0.8b, decider-2b, decider-4b",
-                Some("decider-0.8b"),
-                false,
-            ),
             SetupParameter::optional(
                 "device",
                 ParameterType::String,
@@ -396,6 +468,7 @@ impl ProviderFactory for DeciderEmbeddedProviderFactory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::embedded::EmbeddedControl;
 
     fn cfg(pairs: &[(&str, &str)]) -> HashMap<String, String> {
         pairs
@@ -404,63 +477,85 @@ mod tests {
             .collect()
     }
 
+    fn uv_command() -> EngineCommand {
+        lr_engines::detect::command_for(RecipeId::Decider, PathBuf::from("/bin/uv"))
+    }
+
+    fn has_env(spec: &LaunchSpec, key: &str, value: &str) -> bool {
+        spec.env.contains(&(key.to_string(), value.to_string()))
+    }
+
     #[test]
     fn launch_spec_runs_uvicorn_on_localhost() {
-        let s =
-            DeciderSettings::from_config(&cfg(&[("checkpoints", "decider-2b"), ("device", "CPU")]))
-                .unwrap();
-        let command = lr_engines::detect::command_for(RecipeId::Decider, PathBuf::from("/bin/uv"));
+        let s = DeciderSettings::from_config(&cfg(&[("device", "CPU")])).unwrap();
         let spec = s
-            .launch_spec("Decider", "decider-2b", &command, vec![])
+            .launch_spec("Decider", "decider-2b", &uv_command(), false)
             .unwrap();
         assert_eq!(spec.program, PathBuf::from("/bin/uv"));
         assert!(spec.args.windows(2).any(|w| w == ["--host", "127.0.0.1"]));
         assert!(spec.args.contains(&"decider.serve:app".to_string()));
-        assert!(spec
-            .env
-            .contains(&("DECIDER_MODEL".to_string(), "Mapika/decider-2b".to_string())));
-        assert!(spec
-            .env
-            .contains(&("DECIDER_DEVICE".to_string(), "cpu".to_string())));
+        assert!(has_env(&spec, "DECIDER_MODEL", "Mapika/decider-2b"));
+        assert!(has_env(&spec, "DECIDER_DEVICE", "cpu"));
+        assert!(has_env(&spec, "HF_HUB_OFFLINE", "1"));
         assert_eq!(spec.key, "decider:Decider:decider-2b");
+        let dl = s
+            .launch_spec("Decider", "decider-2b", &uv_command(), true)
+            .unwrap();
+        assert!(!has_env(&dl, "HF_HUB_OFFLINE", "1"));
+        assert_eq!(dl.key, "decider:Decider:download:decider-2b");
         assert!(s
-            .launch_spec("Decider", "decider-35b", &command, vec![])
+            .launch_spec("Decider", "decider-35b", &uv_command(), false)
             .is_none());
     }
 
     #[test]
     fn settings_validation() {
         let d = DeciderSettings::from_config(&HashMap::new()).unwrap();
-        assert_eq!(d.checkpoints, vec!["decider-0.8b"]);
         assert_eq!(d.device, None);
-        assert!(DeciderSettings::from_config(&cfg(&[("checkpoints", "decider-35b-a3b")])).is_err());
         assert!(DeciderSettings::from_config(&cfg(&[("device", "rocm")])).is_err());
     }
 
     #[tokio::test]
-    async fn one_engine_per_checkpoint() {
+    async fn requests_never_download() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = DeciderEmbeddedProvider::new(
+            "Decider".into(),
+            DeciderSettings::from_config(&HashMap::new()).unwrap(),
+            Supervisor::new(dir.path()),
+        );
+        assert!(p.list_models().await.unwrap().is_empty());
+        let req: SystemOneRequest = serde_json::from_value(serde_json::json!({
+            "state": "s", "questions": {"q": {"type": "noul", "instructions": "?"}}
+        }))
+        .unwrap();
+        assert!(matches!(
+            p.systemone(req).await,
+            Err(AppError::InvalidParams(m)) if m.contains("not downloaded")
+        ));
+        assert_eq!(p.catalog().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn download_runs_the_engine_once_and_records_it() {
         let Some(fake) = crate::embedded::fake_engine_path() else {
             eprintln!("skipping: lr-fake-engine not built (run the workspace tests)");
             return;
         };
         let dir = tempfile::tempdir().unwrap();
         let supervisor = Supervisor::new(dir.path());
-        let settings = DeciderSettings::from_config(&cfg(&[
-            ("checkpoints", "decider-0.8b,decider-2b"),
-            ("binary_path", fake.to_str().unwrap()),
-        ]))
-        .unwrap();
+        let settings =
+            DeciderSettings::from_config(&cfg(&[("binary_path", fake.to_str().unwrap())])).unwrap();
         let p = DeciderEmbeddedProvider::new("Decider".into(), settings, supervisor.clone());
-        for model in ["decider-0.8b", "decider-2b"] {
-            let req: SystemOneRequest = serde_json::from_value(serde_json::json!({
-                "model": model, "state": "s",
-                "questions": {"q": {"type": "noul", "instructions": "?"}}
-            }))
-            .unwrap();
-            assert_eq!(p.systemone(req).await.unwrap().model, model);
+        p.download("decider-2b").await.unwrap();
+        for _ in 0..400 {
+            if !p.downloads.is_downloading("decider-2b") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
         }
-        assert!(supervisor.is_running("decider:Decider:decider-0.8b"));
-        assert!(supervisor.is_running("decider:Decider:decider-2b"));
+        assert_eq!(p.downloads.error("decider-2b"), None);
+        assert!(p.downloads.marker("decider-2b").is_file());
+        assert!(!supervisor.is_running("decider:Decider:download:decider-2b"));
         supervisor.stop_all().await;
     }
 }

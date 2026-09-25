@@ -24,6 +24,11 @@ import { mockData } from './mockData'
 // Types for mock return values - see src/types/tauri-commands.ts for full type definitions
 import type { RouteLLMTestResult, GraphData, ProviderFeatureSupport, FeatureEndpointMatrix, InstallSourceInfo, RequestDedupeConfig } from '@app/types/tauri-commands'
 import type {
+  EmbeddedCatalogModel,
+  LocalModelsEngineCatalogParams,
+  LocalModelsEngineDownloadParams,
+} from '@app/types/tauri-commands'
+import type {
   EngineStatus,
   EngineInstallOptionView,
   EngineProcessInfo,
@@ -67,6 +72,34 @@ import type {
 } from '@app/types/tauri-commands'
 
 // Track warned commands to avoid spam (only warn once per command)
+/** Engine-downloaded models per Local Embedded provider type (mirrors the
+ *  CHECKPOINTS tables in crates/lr-providers/src/embedded/). */
+const cat = (id: string, name: string, size: string, guidance: string, downloaded = false): EmbeddedCatalogModel => ({
+  id, name, download_size: size, guidance, downloaded, downloading: false, download_error: null,
+})
+const mockEngineCatalogs: Record<string, EmbeddedCatalogModel[]> = {
+  laya: [
+    cat('english', 'Laya English', '843 MB', 'Up to 512 tokens of state; runs on CPU', true),
+    cat('multilingual', 'Laya Multilingual', '678 MB', 'Up to 1024 tokens of state; runs on CPU'),
+    cat('typed-decisions', 'Laya Typed Decisions', '843 MB', 'Up to 1024 tokens of state; runs on CPU'),
+  ],
+  kev: [
+    cat('kev-0.8b', 'Kev 0.8b', '1.8 GB', 'Runs on any Apple Silicon Mac or a modest GPU'),
+    cat('kev-4b', 'Kev 4b', '9.5 GB', '32 GB Mac, or a GPU with 9-14 GB VRAM'),
+    cat('kev-9b', 'Kev 9b', '19.5 GB', 'GPU with about 17 GB VRAM'),
+  ],
+  von: [cat('von-latest', 'Von (ModernBERT-large)', '3.2 GB', 'Runs on CPU; faster with a GPU or Apple Silicon')],
+  decider: [
+    cat('decider-0.8b', 'Decider 0.8b', '1.5 GB', 'Runs on any Apple Silicon Mac or a modest GPU'),
+    cat('decider-2b', 'Decider 2b', '3.8 GB', 'About 4 GB of GPU memory'),
+    cat('decider-4b', 'Decider 4b', '8.4 GB', '16 GB Mac, or a GPU with about 9 GB of memory'),
+  ],
+}
+const engineCatalogFor = (instanceName: string): EmbeddedCatalogModel[] => {
+  const type = mockData.providers.find((p) => p.instance_name === instanceName)?.provider_type
+  return (type && mockEngineCatalogs[type]) || []
+}
+
 const warnedCommands = new Set<string>()
 
 // Helper to generate a random ID
@@ -1591,6 +1624,26 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     return mockEngineProcesses
       .filter((p) => p.key.startsWith(prefix))
       .map((p) => ({ model: p.key.slice(prefix.length), state: p.state, port: p.port, idle_secs: p.idle_secs, last_error: p.last_error }))
+  },
+  'local_models_engine_catalog': (args: LocalModelsEngineCatalogParams): EmbeddedCatalogModel[] =>
+    engineCatalogFor(args.instanceName).map((m) => ({ ...m })),
+  'local_models_engine_download': (args: LocalModelsEngineDownloadParams): null => {
+    const model = engineCatalogFor(args.instanceName).find((m) => m.id === args.model)
+    if (!model) throw `Model not found: ${args.model}`
+    model.downloading = true
+    model.download_error = null
+    // Simulated: the demo never downloads anything.
+    setTimeout(() => {
+      if (!model.downloading) return
+      model.downloading = false
+      model.downloaded = true
+    }, 5000)
+    return null
+  },
+  'local_models_engine_download_cancel': (args: LocalModelsEngineDownloadParams): null => {
+    const model = engineCatalogFor(args.instanceName).find((m) => m.id === args.model)
+    if (model) model.downloading = false
+    return null
   },
   'local_models_hf_account': (): HfAccount => ({ ...mockHfAccount }),
   'local_models_hf_set_token': (args: LocalModelsHfSetTokenParams): HfAccount => {

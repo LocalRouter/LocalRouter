@@ -5,6 +5,7 @@ import { isValidHttpUrl } from "@/utils/url"
 import { listenSafe } from "@/hooks/useTauriListener"
 import { EmbeddedEngineTab, isEmbeddedProviderType } from "@/components/providers/EmbeddedEngineTab"
 import { LocalModelsTab } from "@/components/providers/LocalModelsTab"
+import { EngineModelsTab } from "@/components/providers/EngineModelsTab"
 import { toast } from "sonner"
 import { CheckCircle, XCircle, AlertCircle, Plus, Loader2, RefreshCw, FlaskConical, Grid, Settings, ArrowLeft, Eye, EyeOff, Coins, Pencil, RotateCcw, Copy, Trash2, ExternalLink, Terminal, Boxes } from "lucide-react"
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
@@ -565,7 +566,7 @@ export function ProvidersPanel({
                     {isEmbeddedProviderType(selectedProvider.provider_type) && (
                       <TabsTrigger value="engine"><Terminal className={TAB_ICON_CLASS} />Engine</TabsTrigger>
                     )}
-                    {selectedProvider.provider_type === "llamacpp_embedded" && (
+                    {isEmbeddedProviderType(selectedProvider.provider_type) && (
                       <TabsTrigger value="models"><Boxes className={TAB_ICON_CLASS} />Models</TabsTrigger>
                     )}
                     {selectedProvider.enabled && <TabsTrigger value="try-it-out"><TAB_ICONS.tryItOut className={TAB_ICON_CLASS} />Try It Out</TabsTrigger>}
@@ -597,13 +598,22 @@ export function ProvidersPanel({
                     </TabsContent>
                   )}
 
-                  {selectedProvider.provider_type === "llamacpp_embedded" && (
+                  {isEmbeddedProviderType(selectedProvider.provider_type) && (
                     <TabsContent value="models">
-                      <LocalModelsTab
-                        key={selectedProvider.instance_name}
-                        instanceName={selectedProvider.instance_name}
-                        kvCache={editConfig.kv_cache}
-                      />
+                      {selectedProvider.provider_type === "llamacpp_embedded" ? (
+                        <LocalModelsTab
+                          key={selectedProvider.instance_name}
+                          instanceName={selectedProvider.instance_name}
+                          kvCache={editConfig.kv_cache}
+                        />
+                      ) : (
+                        <EngineModelsTab
+                          key={selectedProvider.instance_name}
+                          providerType={selectedProvider.provider_type}
+                          instanceName={selectedProvider.instance_name}
+                          enabled={selectedProvider.enabled}
+                        />
+                      )}
                     </TabsContent>
                   )}
 

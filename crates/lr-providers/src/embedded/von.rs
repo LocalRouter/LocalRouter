@@ -1,8 +1,8 @@
-//! Von Local Embedded provider: LocalRouter runs `von serve` (from `uv tool install
-//! von-sdk`) and warms it up. Von downloads its model (about 3.2 GB) from
-//! Hugging Face the first time it answers, and its `/health` answers before
-//! the model is loaded, so the first start sends a warm-up decision with a
-//! long timeout before any client request goes through.
+//! Von Local Embedded provider: LocalRouter runs `von serve` (from `uv tool
+//! install von-sdk`). Von loads its model (about 3.2 GB) on the first
+//! decision, and its `/health` answers before that, so every start sends a
+//! warm-up decision. The model is downloaded explicitly from the Models tab
+//! (a network-enabled start plus warm-up); serving runs offline.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -20,7 +20,8 @@ use lr_engines::{EngineCommand, EngineHandle, LaunchSpec, PortArg, RecipeId, Sup
 use lr_types::{AppError, AppResult};
 
 use super::{
-    engine_error, engine_missing, hf_env, parse_minutes, resolve_engine, SystemOneClientCache,
+    download_env, engine_error, engine_missing, not_downloaded, offline_env, parse_minutes,
+    resolve_engine, EmbeddedCatalogModel, EngineDownloads, SystemOneClientCache,
 };
 use crate::factory::{ParameterType, ProviderCategory, ProviderFactory, SetupParameter};
 use crate::systemone::SystemOneFlavor;
@@ -34,12 +35,17 @@ pub const PROVIDER_TYPE: &str = "von";
 /// The model id clients use; Von serves one model per process.
 pub const MODEL_ID: &str = "von-latest";
 
+/// The Hugging Face repository Von loads.
+const REPO: &str = "wfzyx/von";
+
 pub const DEVICES: &[&str] = &["auto", "cuda", "rocm", "mps", "openvino", "dml", "cpu"];
 
 /// The port opens as soon as Python has imported the server.
 const START_TIMEOUT: Duration = Duration::from_secs(10 * 60);
-/// The warm-up covers the model download (about 3.2 GB) and load.
-const WARMUP_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+/// The download warm-up covers fetching about 3.2 GB.
+const DOWNLOAD_WARMUP_TIMEOUT: Duration = Duration::from_secs(3 * 60 * 60);
+/// Loading the downloaded model.
+const WARMUP_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VonSettings {
@@ -74,11 +80,13 @@ impl VonSettings {
         })
     }
 
+    /// The serving launch (offline) or, with `download`, the launch whose
+    /// warm-up fetches the model.
     pub fn launch_spec(
         &self,
         instance: &str,
         command: &EngineCommand,
-        hf: Vec<(String, String)>,
+        download: bool,
     ) -> LaunchSpec {
         let mut args = command.leading_args.clone();
         args.extend(["serve", "--host", "127.0.0.1"].map(String::from));
@@ -87,13 +95,25 @@ impl VonSettings {
             args.push(device.clone());
         }
         LaunchSpec {
-            key: format!("{PROVIDER_TYPE}:{instance}"),
-            label: "Von".to_string(),
+            key: if download {
+                format!("{PROVIDER_TYPE}:{instance}:download:{MODEL_ID}")
+            } else {
+                format!("{PROVIDER_TYPE}:{instance}")
+            },
+            label: if download {
+                "Von (downloading)".to_string()
+            } else {
+                "Von".to_string()
+            },
             program: command.program.clone(),
             args,
             // Von allows any CORS origin by default; keep browsers out.
             env: {
-                let mut env = hf;
+                let mut env = if download {
+                    download_env()
+                } else {
+                    offline_env()
+                };
                 env.push((
                     "VON_CORS_ORIGINS".to_string(),
                     "http://127.0.0.1".to_string(),
@@ -104,7 +124,7 @@ impl VonSettings {
             api_key_env: "VON_API_KEY".to_string(),
             ready_path: "/health".to_string(),
             start_timeout: START_TIMEOUT,
-            idle_timeout: self.idle_timeout,
+            idle_timeout: if download { None } else { self.idle_timeout },
         }
     }
 }
@@ -117,11 +137,13 @@ pub struct VonEmbeddedProvider {
     /// Port of the engine process that finished its warm-up. Held across the
     /// warm-up so concurrent first requests wait for one download.
     warmed_port: tokio::sync::Mutex<Option<u16>>,
+    downloads: Arc<EngineDownloads>,
 }
 
 impl VonEmbeddedProvider {
     pub fn new(instance: String, settings: VonSettings, supervisor: Arc<Supervisor>) -> Self {
         Self {
+            downloads: EngineDownloads::new(PROVIDER_TYPE, supervisor.clone()),
             instance,
             settings,
             supervisor,
@@ -134,14 +156,31 @@ impl VonEmbeddedProvider {
         format!("{PROVIDER_TYPE}:{}", self.instance)
     }
 
+    fn is_downloaded(&self) -> bool {
+        self.downloads.is_downloaded(MODEL_ID, Some(REPO))
+    }
+
+    /// `model` must be Von's id (or absent) and downloaded.
+    fn check_servable(&self, model: Option<&str>) -> AppResult<()> {
+        match model {
+            Some(m) if m != MODEL_ID => Err(AppError::ModelNotFound {
+                model: m.to_string(),
+            }),
+            _ if !self.is_downloaded() => Err(not_downloaded(PROVIDER_TYPE, MODEL_ID)),
+            _ => Ok(()),
+        }
+    }
+
+    async fn command(&self) -> AppResult<EngineCommand> {
+        resolve_engine(RecipeId::Von, self.settings.binary_path.clone())
+            .await
+            .ok_or_else(|| engine_missing(PROVIDER_TYPE, "von"))
+    }
+
     /// Start (or reuse) the engine and make sure its model is loaded.
     async fn ensure_engine(&self) -> AppResult<EngineHandle> {
-        let command = resolve_engine(RecipeId::Von, self.settings.binary_path.clone())
-            .await
-            .ok_or_else(|| engine_missing(PROVIDER_TYPE, "von"))?;
-        let spec = self
-            .settings
-            .launch_spec(&self.instance, &command, hf_env());
+        let command = self.command().await?;
+        let spec = self.settings.launch_spec(&self.instance, &command, false);
         let handle = self
             .supervisor
             .ensure(spec)
@@ -151,17 +190,18 @@ impl VonEmbeddedProvider {
         let mut warmed = self.warmed_port.lock().await;
         if *warmed != Some(handle.port) {
             let _lease = handle.lease();
-            warm_up(&handle).await?;
+            warm_up(&handle, WARMUP_TIMEOUT).await?;
             *warmed = Some(handle.port);
         }
         Ok(handle)
     }
 }
 
-/// Send one tiny decision so Von downloads and loads its model.
-async fn warm_up(handle: &EngineHandle) -> AppResult<()> {
+/// Send one tiny decision so Von loads (and, when online, downloads) its
+/// model.
+async fn warm_up(handle: &EngineHandle, timeout: Duration) -> AppResult<()> {
     let client = reqwest::Client::builder()
-        .timeout(WARMUP_TIMEOUT)
+        .timeout(timeout)
         .build()
         .map_err(|e| AppError::Internal(format!("http client: {e}")))?;
     let resp = client
@@ -192,11 +232,7 @@ async fn warm_up(handle: &EngineHandle) -> AppResult<()> {
 #[async_trait]
 impl super::EmbeddedControl for VonEmbeddedProvider {
     async fn load(&self, model: &str) -> AppResult<()> {
-        if model != MODEL_ID {
-            return Err(AppError::ModelNotFound {
-                model: model.to_string(),
-            });
-        }
+        self.check_servable(Some(model))?;
         self.ensure_engine().await.map(|_| ())
     }
 
@@ -214,6 +250,36 @@ impl super::EmbeddedControl for VonEmbeddedProvider {
                 vec![]
             }
         })
+    }
+
+    fn catalog(&self) -> Vec<EmbeddedCatalogModel> {
+        vec![EmbeddedCatalogModel {
+            id: MODEL_ID.to_string(),
+            name: "Von (ModernBERT-large)".to_string(),
+            download_size: "3.2 GB".to_string(),
+            guidance: Some("Runs on CPU; faster with a GPU or Apple Silicon".to_string()),
+            downloaded: self.is_downloaded(),
+            downloading: self.downloads.is_downloading(MODEL_ID),
+            download_error: self.downloads.error(MODEL_ID),
+        }]
+    }
+
+    async fn download(&self, model: &str) -> AppResult<()> {
+        if model != MODEL_ID {
+            return Err(AppError::ModelNotFound {
+                model: model.to_string(),
+            });
+        }
+        let command = self.command().await?;
+        let spec = self.settings.launch_spec(&self.instance, &command, true);
+        self.downloads.start(MODEL_ID, spec, |handle| async move {
+            warm_up(&handle, DOWNLOAD_WARMUP_TIMEOUT).await
+        })
+    }
+
+    async fn cancel_download(&self, model: &str) -> AppResult<()> {
+        self.downloads.cancel(model).await;
+        Ok(())
     }
 }
 
@@ -252,6 +318,9 @@ impl ModelProvider for VonEmbeddedProvider {
     }
 
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
+        if !self.is_downloaded() {
+            return Ok(Vec::new());
+        }
         Ok(vec![ModelInfo {
             id: MODEL_ID.to_string(),
             name: "Von (ModernBERT-large)".to_string(),
@@ -302,13 +371,7 @@ impl ModelProvider for VonEmbeddedProvider {
     }
 
     async fn systemone(&self, mut request: SystemOneRequest) -> AppResult<SystemOneResponse> {
-        if let Some(m) = request.model.as_deref() {
-            if m != MODEL_ID {
-                return Err(AppError::ModelNotFound {
-                    model: m.to_string(),
-                });
-            }
-        }
+        self.check_servable(request.model.as_deref())?;
         let handle = self.ensure_engine().await?;
         let _lease = handle.lease();
         let client = self.clients.get(SystemOneFlavor::Generic, &handle)?;
@@ -409,6 +472,7 @@ impl ProviderFactory for VonEmbeddedProviderFactory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::embedded::EmbeddedControl;
 
     fn cfg(pairs: &[(&str, &str)]) -> HashMap<String, String> {
         pairs
@@ -421,7 +485,7 @@ mod tests {
     fn launch_spec_binds_localhost_with_a_key() {
         let s = VonSettings::from_config(&cfg(&[("device", "MPS")])).unwrap();
         let command = lr_engines::detect::command_for(RecipeId::Von, PathBuf::from("/bin/von"));
-        let spec = s.launch_spec("Von", &command, vec![]);
+        let spec = s.launch_spec("Von", &command, false);
         assert_eq!(spec.program, PathBuf::from("/bin/von"));
         assert_eq!(
             spec.args,
@@ -430,9 +494,17 @@ mod tests {
         assert_eq!(spec.api_key_env, "VON_API_KEY");
         assert_eq!(spec.ready_path, "/health");
         assert_eq!(spec.key, "von:Von");
+        assert!(spec
+            .env
+            .contains(&("HF_HUB_OFFLINE".to_string(), "1".to_string())));
+        let dl = s.launch_spec("Von", &command, true);
+        assert_eq!(dl.key, "von:Von:download:von-latest");
+        assert!(!dl
+            .env
+            .contains(&("HF_HUB_OFFLINE".to_string(), "1".to_string())));
         let auto = VonSettings::from_config(&cfg(&[("device", "auto")])).unwrap();
         assert!(!auto
-            .launch_spec("Von", &command, vec![])
+            .launch_spec("Von", &command, false)
             .args
             .contains(&"--device".to_string()));
     }
@@ -447,22 +519,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unknown_model_is_rejected_before_starting() {
+    async fn requests_never_download() {
         let dir = tempfile::tempdir().unwrap();
         let p = VonEmbeddedProvider::new(
             "Von".into(),
             VonSettings::from_config(&HashMap::new()).unwrap(),
             Supervisor::new(dir.path()),
         );
-        let req: SystemOneRequest = serde_json::from_value(json!({
-            "model": "von-9", "state": "s",
-            "questions": {"q": {"type": "noul", "instructions": "?"}}
-        }))
-        .unwrap();
+        let req = |model: Option<&str>| -> SystemOneRequest {
+            serde_json::from_value(json!({
+                "model": model, "state": "s",
+                "questions": {"q": {"type": "noul", "instructions": "?"}}
+            }))
+            .unwrap()
+        };
         assert!(matches!(
-            p.systemone(req).await,
+            p.systemone(req(Some("von-9"))).await,
             Err(AppError::ModelNotFound { .. })
         ));
+        assert!(matches!(
+            p.systemone(req(None)).await,
+            Err(AppError::InvalidParams(m)) if m.contains("not downloaded")
+        ));
+        assert!(p.list_models().await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -476,6 +555,9 @@ mod tests {
         let settings =
             VonSettings::from_config(&cfg(&[("binary_path", fake.to_str().unwrap())])).unwrap();
         let p = VonEmbeddedProvider::new("Von".into(), settings, supervisor.clone());
+        p.downloads
+            .fake_downloaded(&dir.path().join("hub"), MODEL_ID, REPO);
+        assert_eq!(p.list_models().await.unwrap().len(), 1);
         for _ in 0..2 {
             let req: SystemOneRequest = serde_json::from_value(json!({
                 "state": "s", "questions": {"q": {"type": "noul", "instructions": "?"}}
@@ -485,6 +567,30 @@ mod tests {
         }
         let port = supervisor.processes()[0].port;
         assert_eq!(*p.warmed_port.lock().await, port);
+        supervisor.stop_all().await;
+    }
+
+    #[tokio::test]
+    async fn download_warms_up_and_records_it() {
+        let Some(fake) = crate::embedded::fake_engine_path() else {
+            eprintln!("skipping: lr-fake-engine not built (run the workspace tests)");
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let supervisor = Supervisor::new(dir.path());
+        let settings =
+            VonSettings::from_config(&cfg(&[("binary_path", fake.to_str().unwrap())])).unwrap();
+        let p = VonEmbeddedProvider::new("Von".into(), settings, supervisor.clone());
+        p.download(MODEL_ID).await.unwrap();
+        for _ in 0..400 {
+            if !p.downloads.is_downloading(MODEL_ID) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert_eq!(p.downloads.error(MODEL_ID), None);
+        assert!(p.downloads.marker(MODEL_ID).is_file());
+        assert!(!supervisor.is_running("von:Von:download:von-latest"));
         supervisor.stop_all().await;
     }
 }

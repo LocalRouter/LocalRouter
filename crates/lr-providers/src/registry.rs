@@ -357,7 +357,7 @@ impl ProviderRegistry {
     ///
     /// Used by: UI for showing available provider types
     pub fn list_provider_types(&self) -> Vec<ProviderTypeInfo> {
-        let mut types: Vec<ProviderTypeInfo> = self
+        let mut types: Vec<(u8, ProviderTypeInfo)> = self
             .factories
             .read()
             .values()
@@ -370,7 +370,7 @@ impl ProviderRegistry {
                 } else {
                     long_text
                 };
-                ProviderTypeInfo {
+                let info = ProviderTypeInfo {
                     provider_type: factory.provider_type().to_string(),
                     display_name: factory.display_name().to_string(),
                     category: factory.category(),
@@ -383,21 +383,24 @@ impl ProviderRegistry {
                     docs_url: factory.docs_url().map(|s| s.to_string()),
                     api_key_url: factory.api_key_url().map(|s| s.to_string()),
                     listed: factory.listed(),
-                }
+                };
+                (factory.list_priority(), info)
             })
             .collect();
-        // Stable order for the UI: category order, then display name.
-        types.sort_by(|a, b| {
+        // Stable order for the UI: category order, then the factory's
+        // priority, then display name.
+        types.sort_by(|(pa, a), (pb, b)| {
             a.category
                 .sort_rank()
                 .cmp(&b.category.sort_rank())
+                .then_with(|| pa.cmp(pb))
                 .then_with(|| {
                     a.display_name
                         .to_lowercase()
                         .cmp(&b.display_name.to_lowercase())
                 })
         });
-        types
+        types.into_iter().map(|(_, info)| info).collect()
     }
 
     // ===== INSTANCE MANAGEMENT (Runtime) =====
@@ -1187,6 +1190,29 @@ pub struct SimpleProviderConfig {
 
 #[cfg(test)]
 mod tests {
+
+    #[tokio::test]
+    async fn llama_cpp_leads_the_local_embedded_providers() {
+        let dir = tempfile::tempdir().unwrap();
+        let supervisor = lr_engines::Supervisor::new(dir.path());
+        let library = Arc::new(lr_local_models::Library::open(dir.path().join("models")));
+        let registry = ProviderRegistry::new();
+        registry.register_factory(Arc::new(
+            crate::embedded::DeciderEmbeddedProviderFactory::new(supervisor.clone()),
+        ));
+        registry.register_factory(Arc::new(crate::embedded::KevEmbeddedProviderFactory::new(
+            supervisor.clone(),
+        )));
+        registry.register_factory(Arc::new(
+            crate::embedded::LlamaCppEmbeddedProviderFactory::new(library, supervisor.clone()),
+        ));
+        let types: Vec<String> = registry
+            .list_provider_types()
+            .into_iter()
+            .map(|t| t.provider_type)
+            .collect();
+        assert_eq!(types, vec!["llamacpp_embedded", "decider", "kev"]);
+    }
 
     #[tokio::test]
     async fn provider_types_are_ordered_with_embedded_first_and_legacy_hidden() {

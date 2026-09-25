@@ -293,6 +293,13 @@ export default function ProviderForm({
     !hasOAuthParam || oauthStatus === 'success'
   )
 
+  // Local Embedded providers are added by name only; their engine settings
+  // (all optional) are edited afterwards in the provider's Settings tab.
+  const visibleParameters =
+    mode === 'create' && providerType.category === 'embedded'
+      ? providerType.setup_parameters.filter((p) => p.required)
+      : providerType.setup_parameters
+
   const handleConfigChange = (key: string, value: string) => {
     setConfig((prev) => ({ ...prev, [key]: value }))
   }
@@ -322,7 +329,7 @@ export default function ProviderForm({
       />
 
       {/* Dynamic Parameter Fields */}
-      {providerType.setup_parameters.map((param) => {
+      {visibleParameters.map((param) => {
         // Handle OAuth parameters
         if (param.param_type === 'oauth') {
           return (
