@@ -11,9 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use chrono::Utc;
 use futures::Stream;
-use serde_json::json;
 
 use lr_config::FreeTierKind;
 use lr_engines::{EngineCommand, EngineHandle, LaunchSpec, PortArg, RecipeId, Supervisor};
@@ -21,13 +19,13 @@ use lr_types::{AppError, AppResult};
 
 use super::{
     download_env, engine_error, engine_missing, not_downloaded, offline_env, parse_minutes,
-    resolve_engine, EmbeddedCatalogModel, EngineDownloads, SystemOneClientCache,
+    resolve_engine, warm_up, EmbeddedCatalogModel, EngineDownloads, SystemOneClientCache, Warmups,
 };
 use crate::factory::{ParameterType, ProviderCategory, ProviderFactory, SetupParameter};
 use crate::systemone::SystemOneFlavor;
 use crate::{
-    Capability, CompletionChunk, CompletionRequest, CompletionResponse, HealthStatus, ModelInfo,
-    ModelProvider, PricingInfo, ProviderHealth, SupportLevel, SystemOneRequest, SystemOneResponse,
+    Capability, CompletionChunk, CompletionRequest, CompletionResponse, ModelInfo, ModelProvider,
+    PricingInfo, ProviderHealth, SupportLevel, SystemOneRequest, SystemOneResponse,
 };
 
 pub const PROVIDER_TYPE: &str = "von";
@@ -44,8 +42,6 @@ pub const DEVICES: &[&str] = &["auto", "cuda", "rocm", "mps", "openvino", "dml",
 const START_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// The download warm-up covers fetching about 3.2 GB.
 const DOWNLOAD_WARMUP_TIMEOUT: Duration = Duration::from_secs(3 * 60 * 60);
-/// Loading the downloaded model.
-const WARMUP_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VonSettings {
@@ -134,9 +130,7 @@ pub struct VonEmbeddedProvider {
     settings: VonSettings,
     supervisor: Arc<Supervisor>,
     clients: SystemOneClientCache,
-    /// Port of the engine process that finished its warm-up. Held across the
-    /// warm-up so concurrent first requests wait for one download.
-    warmed_port: tokio::sync::Mutex<Option<u16>>,
+    warmups: Warmups,
     downloads: Arc<EngineDownloads>,
 }
 
@@ -148,7 +142,7 @@ impl VonEmbeddedProvider {
             settings,
             supervisor,
             clients: SystemOneClientCache::default(),
-            warmed_port: tokio::sync::Mutex::new(None),
+            warmups: Warmups::default(),
         }
     }
 
@@ -187,46 +181,9 @@ impl VonEmbeddedProvider {
             .await
             .map_err(|e| engine_error(PROVIDER_TYPE, e))?;
 
-        let mut warmed = self.warmed_port.lock().await;
-        if *warmed != Some(handle.port) {
-            let _lease = handle.lease();
-            warm_up(&handle, WARMUP_TIMEOUT).await?;
-            *warmed = Some(handle.port);
-        }
+        self.warmups.ensure(&handle, PROVIDER_TYPE).await?;
         Ok(handle)
     }
-}
-
-/// Send one tiny decision so Von loads (and, when online, downloads) its
-/// model.
-async fn warm_up(handle: &EngineHandle, timeout: Duration) -> AppResult<()> {
-    let client = reqwest::Client::builder()
-        .timeout(timeout)
-        .build()
-        .map_err(|e| AppError::Internal(format!("http client: {e}")))?;
-    let resp = client
-        .post(format!("{}/v1/systemone", handle.base_url()))
-        .bearer_auth(handle.api_key())
-        .json(&json!({
-            "state": "LocalRouter warm-up",
-            "questions": {"ready": {"type": "noul", "instructions": "Is this a warm-up request?"}}
-        }))
-        .send()
-        .await
-        .map_err(|e| {
-            AppError::Provider(format!(
-                "Provider '{PROVIDER_TYPE}' is unreachable: model warm-up failed: {e}"
-            ))
-        })?;
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        return Err(AppError::Provider(format!(
-            "Provider '{PROVIDER_TYPE}' is unreachable: model warm-up returned {status}: {}",
-            body.chars().take(300).collect::<String>()
-        )));
-    }
-    Ok(())
 }
 
 #[async_trait]
@@ -273,7 +230,7 @@ impl super::EmbeddedControl for VonEmbeddedProvider {
         let command = self.command().await?;
         let spec = self.settings.launch_spec(&self.instance, &command, true);
         self.downloads.start(MODEL_ID, spec, |handle| async move {
-            warm_up(&handle, DOWNLOAD_WARMUP_TIMEOUT).await
+            warm_up(&handle, PROVIDER_TYPE, DOWNLOAD_WARMUP_TIMEOUT).await
         })
     }
 
@@ -300,21 +257,17 @@ impl ModelProvider for VonEmbeddedProvider {
     }
 
     async fn health_check(&self) -> ProviderHealth {
-        let found = resolve_engine(RecipeId::Von, self.settings.binary_path.clone())
-            .await
-            .is_some();
-        ProviderHealth {
-            status: if found {
-                HealthStatus::Healthy
-            } else {
-                HealthStatus::Unhealthy
-            },
-            latency_ms: None,
-            last_checked: Utc::now(),
-            error_message: (!found).then(|| {
+        // Never starts the engine.
+        let found = self.command().await.is_ok();
+        super::engine_health(
+            (!found).then(|| {
                 "von was not found on PATH. Install it from the provider's Engine tab.".to_string()
             }),
-        }
+            self.is_downloaded(),
+            "No model is downloaded yet. Download one in the Models tab.",
+            &self.supervisor,
+            &self.key(),
+        )
     }
 
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
@@ -473,6 +426,7 @@ impl ProviderFactory for VonEmbeddedProviderFactory {
 mod tests {
     use super::*;
     use crate::embedded::EmbeddedControl;
+    use serde_json::json;
 
     fn cfg(pairs: &[(&str, &str)]) -> HashMap<String, String> {
         pairs
@@ -565,8 +519,8 @@ mod tests {
             .unwrap();
             p.systemone(req).await.unwrap();
         }
-        let port = supervisor.processes()[0].port;
-        assert_eq!(*p.warmed_port.lock().await, port);
+        let port = supervisor.processes()[0].port.unwrap();
+        assert!(p.warmups.is_warm("von:Von", port).await);
         supervisor.stop_all().await;
     }
 

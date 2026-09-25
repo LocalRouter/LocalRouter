@@ -11,7 +11,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use chrono::Utc;
 use futures::Stream;
 
 use lr_config::FreeTierKind;
@@ -20,13 +19,13 @@ use lr_types::{AppError, AppResult};
 
 use super::{
     download_env, engine_error, engine_missing, not_downloaded, offline_env, parse_minutes,
-    resolve_engine, EmbeddedCatalogModel, EngineDownloads, SystemOneClientCache,
+    resolve_engine, EmbeddedCatalogModel, EngineDownloads, SystemOneClientCache, Warmups,
 };
 use crate::factory::{ParameterType, ProviderCategory, ProviderFactory, SetupParameter};
 use crate::systemone::SystemOneFlavor;
 use crate::{
-    Capability, CompletionChunk, CompletionRequest, CompletionResponse, HealthStatus, ModelInfo,
-    ModelProvider, PricingInfo, ProviderHealth, SupportLevel, SystemOneRequest, SystemOneResponse,
+    Capability, CompletionChunk, CompletionRequest, CompletionResponse, ModelInfo, ModelProvider,
+    PricingInfo, ProviderHealth, SupportLevel, SystemOneRequest, SystemOneResponse,
 };
 
 pub const PROVIDER_TYPE: &str = "decider";
@@ -153,6 +152,7 @@ pub struct DeciderEmbeddedProvider {
     supervisor: Arc<Supervisor>,
     clients: SystemOneClientCache,
     downloads: Arc<EngineDownloads>,
+    warmups: Warmups,
 }
 
 impl DeciderEmbeddedProvider {
@@ -163,6 +163,7 @@ impl DeciderEmbeddedProvider {
             settings,
             supervisor,
             clients: SystemOneClientCache::default(),
+            warmups: Warmups::default(),
         }
     }
 
@@ -213,10 +214,13 @@ impl DeciderEmbeddedProvider {
             .ok_or_else(|| AppError::ModelNotFound {
                 model: checkpoint.to_string(),
             })?;
-        self.supervisor
+        let handle = self
+            .supervisor
             .ensure(spec)
             .await
-            .map_err(|e| engine_error(PROVIDER_TYPE, e))
+            .map_err(|e| engine_error(PROVIDER_TYPE, e))?;
+        self.warmups.ensure(&handle, PROVIDER_TYPE).await?;
+        Ok(handle)
     }
 }
 
@@ -295,19 +299,17 @@ impl ModelProvider for DeciderEmbeddedProvider {
     }
 
     async fn health_check(&self) -> ProviderHealth {
+        // Never starts the engine.
         let found = self.command().await.is_ok();
-        ProviderHealth {
-            status: if found {
-                HealthStatus::Healthy
-            } else {
-                HealthStatus::Unhealthy
-            },
-            latency_ms: None,
-            last_checked: Utc::now(),
-            error_message: (!found).then(|| {
+        super::engine_health(
+            (!found).then(|| {
                 "uv was not found on PATH. Install it from the provider's Engine tab.".to_string()
             }),
-        }
+            !self.downloaded().is_empty(),
+            "No model is downloaded yet. Download one in the Models tab.",
+            &self.supervisor,
+            &self.key_prefix(),
+        )
     }
 
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {

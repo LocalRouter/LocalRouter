@@ -1755,19 +1755,33 @@ export function ProvidersPanel({
                   const firstPartyProviders = listedTypes.filter(t => t.category === 'first_party')
                   const thirdPartyProviders = listedTypes.filter(t => t.category === 'third_party')
 
-                  const ProviderButton = ({ type }: { type: ProviderType }) => (
+                  const ProviderButton = ({ type }: { type: ProviderType }) => {
+                    const added = providers.filter(p => p.provider_type === type.provider_type).length
+                    // Local and Local Embedded providers use the one engine on
+                    // this machine, so they are added once.
+                    const singleInstance = type.category === 'local' || type.category === 'embedded'
+                    const blocked = singleInstance && added > 0
+                    return (
                     <button
                       key={type.provider_type}
+                      disabled={blocked}
+                      title={blocked ? "Already added" : undefined}
                       onClick={() => {
                         setSelectedProviderType(type.provider_type)
                         setDialogPage("configure")
                       }}
                       className={cn(
-                        "flex flex-col items-center gap-2 p-4 rounded-lg border-2 border-muted",
+                        "relative flex flex-col items-center gap-2 p-4 rounded-lg border-2 border-muted",
                         "hover:border-primary hover:bg-accent transition-colors",
-                        "focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+                        "focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2",
+                        blocked && "cursor-not-allowed opacity-60 hover:border-muted hover:bg-transparent"
                       )}
                     >
+                      {added > 0 && (
+                        <span className="absolute right-2 top-2 rounded-full bg-secondary px-2 py-0.5 text-[10px] font-medium text-secondary-foreground">
+                          {singleInstance || added === 1 ? "Added" : `Added ×${added}`}
+                        </span>
+                      )}
                       <ProviderIcon providerId={type.provider_type.toLowerCase()} size={40} />
                       <div className="text-center">
                         <p className="font-medium text-sm">{type.display_name}</p>
@@ -1781,7 +1795,8 @@ export function ProvidersPanel({
                         )}
                       </div>
                     </button>
-                  )
+                    )
+                  }
 
                   const ProviderSection = ({ title, description, providers }: {
                     title: string

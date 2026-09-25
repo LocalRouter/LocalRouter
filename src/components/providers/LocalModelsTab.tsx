@@ -555,13 +555,47 @@ function DownloadsSection({ jobs, onCleared }: { jobs: DownloadJobView[]; onClea
 
 type InspectState = RemoteModelInspection | "loading" | { error: string }
 
+/** Where a repo variant stands: from the download jobs and the library. */
+type VariantStatus =
+  | { kind: "none" }
+  | { kind: "active"; job: DownloadJobView }
+  | { kind: "failed"; job: DownloadJobView }
+  | { kind: "downloaded" }
+
+function variantStatus(
+  repo: string,
+  variant: GgufVariant,
+  jobs: DownloadJobView[],
+  library: LocalLibraryView | null,
+): VariantStatus {
+  const covers = (files: string[]) => variant.files.every((f) => files.includes(f))
+  const matching = jobs.filter(
+    (j) => j.repo === repo && j.state !== "cancelled" && covers(j.files),
+  )
+  const job = matching[matching.length - 1]
+  if (job && !["done", "failed"].includes(job.state)) return { kind: "active", job }
+  const inLibrary = library?.entries.some(
+    (e) =>
+      e.source.type === "hugging_face" &&
+      e.source.repo === repo &&
+      variant.files.some((f) => (e.source as { files: string[] }).files.includes(f)),
+  )
+  if (inLibrary || job?.state === "done") return { kind: "downloaded" }
+  if (job?.state === "failed") return { kind: "failed", job }
+  return { kind: "none" }
+}
+
 function RepoDialog({
   repo,
   kvCache,
+  jobs,
+  library,
   onClose,
 }: {
   repo: string | null
   kvCache: KvCacheType | null
+  jobs: DownloadJobView[]
+  library: LocalLibraryView | null
   onClose: () => void
 }) {
   const [details, setDetails] = useState<LocalRepoDetails | null>(null)
@@ -700,12 +734,18 @@ function RepoDialog({
                 </div>
                 {details.variants.map((variant) => {
                   const insp = inspections[variant.name]
+                  const status = variantStatus(details.id, variant, jobs, library)
+                  const busy = status.kind === "active" || status.kind === "downloaded"
+                  const percent =
+                    status.kind === "active" && status.job.bytes_total > 0
+                      ? Math.floor((status.job.bytes_done / status.job.bytes_total) * 100)
+                      : null
                   return (
                     <div key={variant.name} className="space-y-1 rounded-md border p-3 text-sm">
                       <div className="flex flex-wrap items-center gap-2">
                         <Checkbox
                           checked={selected.has(variant.name)}
-                          disabled={!variant.complete}
+                          disabled={!variant.complete || busy}
                           onCheckedChange={(v) => toggle(variant.name, v === true)}
                           aria-label={`Select ${variant.name}`}
                         />
@@ -715,6 +755,29 @@ function RepoDialog({
                           {formatBytes(variant.size_bytes)}
                           {variant.files.length > 1 && ` in ${variant.files.length} parts`}
                         </span>
+                        {status.kind === "active" && (
+                          <Badge variant="secondary">
+                            {status.job.state === "paused" ? (
+                              "Paused"
+                            ) : (
+                              <>
+                                <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                                {status.job.state === "verifying" ? "Verifying" : "Downloading"}
+                                {percent != null && ` ${percent}%`}
+                              </>
+                            )}
+                          </Badge>
+                        )}
+                        {status.kind === "downloaded" && (
+                          <Badge variant="secondary" className="text-green-700 dark:text-green-400">
+                            Downloaded
+                          </Badge>
+                        )}
+                        {status.kind === "failed" && (
+                          <Badge variant="outline" className="text-red-500">
+                            Download failed
+                          </Badge>
+                        )}
                         {insp && insp !== "loading" && !("error" in insp) && (
                           <>
                             <Badge variant={VERDICTS[insp.fit.verdict].variant}>
@@ -738,15 +801,42 @@ function RepoDialog({
                           <Button
                             size="sm"
                             onClick={() => download([variant])}
-                            disabled={starting || !variant.complete}
+                            disabled={starting || !variant.complete || busy}
+                            title={
+                              status.kind === "active"
+                                ? "Downloading: see Downloads on the Models tab"
+                                : undefined
+                            }
                           >
-                            <Download className="mr-1 h-4 w-4" />
-                            Download
+                            {status.kind === "active" ? (
+                              <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                            ) : (
+                              <Download className="mr-1 h-4 w-4" />
+                            )}
+                            {status.kind === "downloaded"
+                              ? "Downloaded"
+                              : status.kind === "active"
+                                ? "Downloading"
+                                : status.kind === "failed"
+                                  ? "Retry"
+                                  : "Download"}
                           </Button>
                         </div>
                       </div>
                       {!variant.complete && (
                         <p className="text-xs text-muted-foreground">Some split parts are missing.</p>
+                      )}
+                      {status.kind === "active" && (
+                        <Progress
+                          value={percent ?? 0}
+                          className="h-1.5"
+                          aria-label={`Download progress of ${variant.name}`}
+                        />
+                      )}
+                      {status.kind === "failed" && status.job.error && (
+                        <p className="whitespace-pre-wrap break-words text-xs text-red-500">
+                          {status.job.error}
+                        </p>
                       )}
                       {insp && insp !== "loading" && "error" in insp && (
                         <p className="text-xs text-red-500">{insp.error}</p>
@@ -777,7 +867,15 @@ function RepoDialog({
 // Discover
 // ---------------------------------------------------------------------------
 
-function DiscoverSection({ kvCache }: { kvCache: KvCacheType | null }) {
+function DiscoverSection({
+  kvCache,
+  jobs,
+  library,
+}: {
+  kvCache: KvCacheType | null
+  jobs: DownloadJobView[]
+  library: LocalLibraryView | null
+}) {
   const [query, setQuery] = useState("")
   const [ggufOnly, setGgufOnly] = useState(true)
   const [sort, setSort] = useState<NonNullable<LocalModelsSearchParams["sort"]>>("trendingScore")
@@ -915,7 +1013,13 @@ function DiscoverSection({ kvCache }: { kvCache: KvCacheType | null }) {
           </div>
         )}
       </CardContent>
-      <RepoDialog repo={openRepo} kvCache={kvCache} onClose={() => setOpenRepo(null)} />
+      <RepoDialog
+        repo={openRepo}
+        kvCache={kvCache}
+        jobs={jobs}
+        library={library}
+        onClose={() => setOpenRepo(null)}
+      />
     </Card>
   )
 }
@@ -986,7 +1090,7 @@ export function LocalModelsTab({ instanceName, kvCache }: LocalModelsTabProps) {
     <div className="space-y-6">
       <LibrarySection instanceName={instanceName} library={library} onChanged={loadLibrary} />
       <DownloadsSection jobs={jobs} onCleared={loadJobs} />
-      <DiscoverSection kvCache={kv} />
+      <DiscoverSection kvCache={kv} jobs={jobs} library={library} />
       <HuggingFaceAccountCard />
     </div>
   )

@@ -9,7 +9,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use chrono::Utc;
 use futures::{Stream, StreamExt};
 
 use lr_config::FreeTierKind;
@@ -22,7 +21,7 @@ use crate::factory::{ParameterType, ProviderCategory, ProviderFactory, SetupPara
 use crate::openai_compatible::OpenAICompatibleProvider;
 use crate::{
     Capability, CompletionChunk, CompletionRequest, CompletionResponse, EmbeddingRequest,
-    EmbeddingResponse, HealthStatus, ModelInfo, ModelProvider, PricingInfo, ProviderHealth,
+    EmbeddingResponse, ModelInfo, ModelProvider, PricingInfo, ProviderHealth,
 };
 
 pub const PROVIDER_TYPE: &str = "llamacpp_embedded";
@@ -378,20 +377,15 @@ impl ModelProvider for LlamaCppEmbeddedProvider {
     }
 
     async fn health_check(&self) -> ProviderHealth {
+        // Never starts the engine.
         let found = self.command().await.is_ok();
-        ProviderHealth {
-            status: if found {
-                HealthStatus::Healthy
-            } else {
-                HealthStatus::Unhealthy
-            },
-            latency_ms: None,
-            last_checked: Utc::now(),
-            error_message: (!found).then(|| {
-                "llama-server was not found on PATH. Install llama.cpp from the provider's Engine tab."
-                    .to_string()
-            }),
-        }
+        super::engine_health(
+            (!found).then(|| "llama-server was not found on PATH. Install llama.cpp from the provider's Engine tab.".to_string()),
+            self.library.list().iter().any(servable),
+            "No model is in the library yet. Download or import one in the Models tab.",
+            &self.supervisor,
+            &self.key_prefix(),
+        )
     }
 
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
@@ -594,6 +588,7 @@ impl ProviderFactory for LlamaCppEmbeddedProviderFactory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
 
     fn cfg(pairs: &[(&str, &str)]) -> HashMap<String, String> {
         pairs

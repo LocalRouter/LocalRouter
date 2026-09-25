@@ -11,7 +11,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use chrono::Utc;
 use futures::Stream;
 
 use lr_config::FreeTierKind;
@@ -20,13 +19,13 @@ use lr_types::{AppError, AppResult};
 
 use super::{
     download_env, engine_error, engine_missing, not_downloaded, offline_env, parse_minutes,
-    resolve_engine, EmbeddedCatalogModel, EngineDownloads, SystemOneClientCache,
+    resolve_engine, EmbeddedCatalogModel, EngineDownloads, SystemOneClientCache, Warmups,
 };
 use crate::factory::{ParameterType, ProviderCategory, ProviderFactory, SetupParameter};
 use crate::systemone::SystemOneFlavor;
 use crate::{
-    Capability, CompletionChunk, CompletionRequest, CompletionResponse, HealthStatus, ModelInfo,
-    ModelProvider, PricingInfo, ProviderHealth, SupportLevel, SystemOneRequest, SystemOneResponse,
+    Capability, CompletionChunk, CompletionRequest, CompletionResponse, ModelInfo, ModelProvider,
+    PricingInfo, ProviderHealth, SupportLevel, SystemOneRequest, SystemOneResponse,
 };
 
 pub const PROVIDER_TYPE: &str = "laya";
@@ -159,6 +158,7 @@ pub struct LayaEmbeddedProvider {
     supervisor: Arc<Supervisor>,
     clients: SystemOneClientCache,
     downloads: Arc<EngineDownloads>,
+    warmups: Warmups,
 }
 
 impl LayaEmbeddedProvider {
@@ -169,6 +169,7 @@ impl LayaEmbeddedProvider {
             settings,
             supervisor,
             clients: SystemOneClientCache::default(),
+            warmups: Warmups::default(),
         }
     }
 
@@ -217,7 +218,7 @@ impl LayaEmbeddedProvider {
         let spec = self
             .settings
             .launch_spec(&self.instance, program, &self.downloaded(), false);
-        self.supervisor.ensure(spec).await.map_err(|e| {
+        let handle = self.supervisor.ensure(spec).await.map_err(|e| {
             let mut err = engine_error(PROVIDER_TYPE, e);
             if let AppError::Provider(msg) = &mut err {
                 if msg.contains("did not become ready") {
@@ -227,7 +228,9 @@ impl LayaEmbeddedProvider {
                 }
             }
             err
-        })
+        })?;
+        self.warmups.ensure(&handle, PROVIDER_TYPE).await?;
+        Ok(handle)
     }
 }
 
@@ -308,23 +311,18 @@ impl ModelProvider for LayaEmbeddedProvider {
     }
 
     async fn health_check(&self) -> ProviderHealth {
-        // Never starts the engine: only checks it is installed.
-        let found = resolve_engine(RecipeId::Laya, self.settings.binary_path.clone())
-            .await
-            .is_some();
-        ProviderHealth {
-            status: if found {
-                HealthStatus::Healthy
-            } else {
-                HealthStatus::Unhealthy
-            },
-            latency_ms: None,
-            last_checked: Utc::now(),
-            error_message: (!found).then(|| {
+        // Never starts the engine.
+        let found = self.program().await.is_ok();
+        super::engine_health(
+            (!found).then(|| {
                 "laya-serve was not found on PATH. Install it from the provider's Engine tab."
                     .to_string()
             }),
-        }
+            !self.downloaded().is_empty(),
+            "No model is downloaded yet. Download one in the Models tab.",
+            &self.supervisor,
+            &self.spec_key(),
+        )
     }
 
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {

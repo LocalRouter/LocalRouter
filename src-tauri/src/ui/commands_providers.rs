@@ -232,6 +232,12 @@ pub async fn create_provider_instance(
     provider_type: String,
     config: HashMap<String, String>,
 ) -> Result<(), String> {
+    if let Some(existing) = registry.existing_single_instance(&provider_type) {
+        return Err(format!(
+            "This provider is already added as '{existing}'. Local providers can be added once."
+        ));
+    }
+
     // Create provider in registry (in-memory) — includes api_key for factory use
     registry
         .create_provider(instance_name.clone(), provider_type.clone(), config.clone())

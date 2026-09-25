@@ -78,6 +78,122 @@ pub struct EmbeddedCatalogModel {
     pub download_error: Option<String>,
 }
 
+/// Health of a Local Embedded provider without starting anything: the
+/// engine must be installed, its last serving process must not have failed,
+/// and at least one model must be downloaded.
+pub(crate) fn engine_health(
+    missing: Option<String>,
+    has_models: bool,
+    no_models: &str,
+    supervisor: &lr_engines::Supervisor,
+    key_prefix: &str,
+) -> crate::ProviderHealth {
+    use crate::HealthStatus;
+    let (status, error_message) = if let Some(missing) = missing {
+        (HealthStatus::Unhealthy, Some(missing))
+    } else if let Some(failed) = supervisor.processes().into_iter().find(|p| {
+        p.key.starts_with(key_prefix)
+            && !p.key.contains(":download:")
+            && p.state == lr_engines::EngineState::Failed
+    }) {
+        let detail = failed
+            .last_error
+            .unwrap_or_else(|| "it exited unexpectedly".to_string());
+        (
+            HealthStatus::Unhealthy,
+            Some(format!("The engine failed to run: {detail}")),
+        )
+    } else if !has_models {
+        (HealthStatus::Degraded, Some(no_models.to_string()))
+    } else {
+        (HealthStatus::Healthy, None)
+    };
+    crate::ProviderHealth {
+        status,
+        latency_ms: None,
+        last_checked: chrono::Utc::now(),
+        error_message,
+    }
+}
+
+/// How long a serving engine may take to answer its warm-up decision.
+pub(crate) const WARMUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+/// Send one small decision covering every question type. System One engines
+/// load lazily or compile kernels on their first decision (Decider's first
+/// answer takes seconds, the next ones about one), so a started engine is
+/// warmed up before it counts as loaded.
+pub(crate) async fn warm_up(
+    handle: &lr_engines::EngineHandle,
+    provider: &str,
+    timeout: std::time::Duration,
+) -> Result<(), AppError> {
+    let client = reqwest::Client::builder()
+        .timeout(timeout)
+        .no_proxy()
+        .build()
+        .map_err(|e| AppError::Internal(format!("http client: {e}")))?;
+    let resp = client
+        .post(format!("{}/v1/systemone", handle.base_url()))
+        .bearer_auth(handle.api_key())
+        .json(&serde_json::json!({
+            "state": "LocalRouter warm-up",
+            "questions": {
+                "ready": {"type": "noul", "instructions": "Is this a warm-up request?"},
+                "kind": {"type": "choice", "instructions": "What kind of request is this?",
+                         "criteria": {"warm_up": "a warm-up", "other": "anything else"}},
+                "level": {"type": "score", "instructions": "How ready is the engine?",
+                          "criteria": ["not ready", "ready"]}
+            }
+        }))
+        .send()
+        .await
+        .map_err(|e| {
+            AppError::Provider(format!(
+                "Provider '{provider}' is unreachable: model warm-up failed: {e}"
+            ))
+        })?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(AppError::Provider(format!(
+            "Provider '{provider}' is unreachable: model warm-up returned {status}: {}",
+            body.chars().take(300).collect::<String>()
+        )));
+    }
+    Ok(())
+}
+
+/// Engine processes (by key and port) that finished their warm-up. The lock
+/// is held during a warm-up so concurrent first requests wait for one.
+#[derive(Default)]
+pub(crate) struct Warmups {
+    warmed: tokio::sync::Mutex<HashMap<String, u16>>,
+}
+
+impl Warmups {
+    /// Warm up `handle`'s process unless it already was.
+    pub(crate) async fn ensure(
+        &self,
+        handle: &lr_engines::EngineHandle,
+        provider: &str,
+    ) -> Result<(), AppError> {
+        let mut warmed = self.warmed.lock().await;
+        if warmed.get(&handle.key) == Some(&handle.port) {
+            return Ok(());
+        }
+        let _lease = handle.lease();
+        warm_up(handle, provider, WARMUP_TIMEOUT).await?;
+        warmed.insert(handle.key.clone(), handle.port);
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn is_warm(&self, key: &str, port: u16) -> bool {
+        self.warmed.lock().await.get(key) == Some(&port)
+    }
+}
+
 /// Environment that keeps a serving engine off the network: models must
 /// already be in the Hugging Face cache, so a missing model fails at once
 /// instead of downloading during a request.

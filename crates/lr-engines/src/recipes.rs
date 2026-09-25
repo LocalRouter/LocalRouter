@@ -360,7 +360,7 @@ fn laya(p: &Platform) -> EngineRecipe {
 
 fn kev(p: &Platform) -> EngineRecipe {
     let prepare = format!(
-        "uv tool run --python {KEV_PYTHON} --from \"{}\" python -c \"import kev.serve\"",
+        "uv tool run --python {KEV_PYTHON} --from \"{}\" python -c \"import kev.serve; print('Kev is installed and ready.')\"",
         kev_from_spec()
     );
     EngineRecipe {
@@ -403,7 +403,7 @@ fn von(p: &Platform) -> EngineRecipe {
 
 fn decider(p: &Platform) -> EngineRecipe {
     let prepare = format!(
-        "uv tool run --python {DECIDER_PYTHON} --from \"{}\" python -c \"import decider.serve\"",
+        "uv tool run --python {DECIDER_PYTHON} --from \"{}\" python -c \"import decider.serve; print('Decider is installed and ready.')\"",
         decider_from_spec(p.is_apple_silicon())
     );
     EngineRecipe {

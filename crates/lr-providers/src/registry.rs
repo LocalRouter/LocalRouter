@@ -353,6 +353,23 @@ impl ProviderRegistry {
             .unwrap_or(lr_config::FreeTierKind::None)
     }
 
+    /// Local and Local Embedded providers talk to the one engine on this
+    /// machine, so each type is added once. Returns the existing instance's
+    /// name when `provider_type` is such a type and already added.
+    pub fn existing_single_instance(&self, provider_type: &str) -> Option<String> {
+        let category = self.factories.read().get(provider_type)?.category();
+        if !matches!(
+            category,
+            crate::factory::ProviderCategory::Local | crate::factory::ProviderCategory::Embedded
+        ) {
+            return None;
+        }
+        self.list_providers()
+            .into_iter()
+            .find(|i| i.provider_type == provider_type)
+            .map(|i| i.instance_name)
+    }
+
     /// List all available provider types with setup parameters
     ///
     /// Used by: UI for showing available provider types
@@ -1190,6 +1207,34 @@ pub struct SimpleProviderConfig {
 
 #[cfg(test)]
 mod tests {
+
+    #[tokio::test]
+    async fn local_types_are_added_once() {
+        let registry = ProviderRegistry::new();
+        registry.register_factory(Arc::new(crate::factory::OllamaProviderFactory));
+        registry.register_factory(Arc::new(crate::factory::OpenAICompatibleProviderFactory));
+        assert_eq!(registry.existing_single_instance("ollama"), None);
+        registry
+            .create_provider("Ollama".into(), "ollama".into(), HashMap::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            registry.existing_single_instance("ollama").as_deref(),
+            Some("Ollama")
+        );
+        // Generic types may be added many times.
+        let mut cfg = HashMap::new();
+        cfg.insert(
+            "base_url".to_string(),
+            "http://localhost:1234/v1".to_string(),
+        );
+        registry
+            .create_provider("Custom".into(), "openai_compatible".into(), cfg)
+            .await
+            .unwrap();
+        assert_eq!(registry.existing_single_instance("openai_compatible"), None);
+        assert_eq!(registry.existing_single_instance("unknown"), None);
+    }
 
     #[tokio::test]
     async fn llama_cpp_leads_the_local_embedded_providers() {

@@ -132,13 +132,13 @@ fn shell_for(os: Os, command: &str) -> (PathBuf, Vec<String>) {
                 command.to_string(),
             ],
         ),
-        Os::MacOs | Os::Linux => {
-            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-            (
-                PathBuf::from(shell),
-                vec!["-lc".into(), command.to_string()],
-            )
-        }
+        // `host_command` already supplies the login shell's environment, so
+        // a plain `sh` runs the command without sourcing the user's shell
+        // startup files (whose warnings would read like install errors).
+        Os::MacOs | Os::Linux => (
+            PathBuf::from("/bin/sh"),
+            vec!["-c".into(), command.to_string()],
+        ),
     }
 }
 
