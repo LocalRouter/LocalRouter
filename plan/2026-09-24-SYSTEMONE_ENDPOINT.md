@@ -331,3 +331,25 @@ Phase 1a and 1b are implemented on branch `feat/systemone`; Phase 2 remains a pl
 - **Reverse proxy:** Laya (8000 → 8001) and Kev (8009 → 8010) were added to `DEFAULT_PORTS` with manual relocation plans in `src-tauri/src/launcher/reverse_setup.rs`, plus matching templates in `ClientTemplates.tsx`.
 - **Feature matrix:** for decision-only providers, the chat rows show NotSupported, and Guardrails, Secret Scanning and Prompt Compression show Supported (they run on System One requests). JSON Repair and RouteLLM show NotSupported.
 - **Website type-check:** `website` `npx tsc --noEmit` reports one error in `GuardrailApprovalDemo.tsx` (`model_type` missing), which is untouched by this work and present on the base commit. `npm run build` passes.
+
+---
+
+## Addendum (2026-09-25): Jev on gateways, Von and Decider
+
+**Gateways serving TypeSafe Jev natively** (`crates/lr-providers/src/systemone/gateway.rs`, `SystemOneGateway`). Each gateway provider keeps its chat models on the translation layer and answers its decision models natively. Decision models come from the gateway's own listing, never from model names, cached for 10 minutes (60 s back-off after a failed fetch); `supports_systemone_model` is async so the lookup can happen lazily at routing time.
+
+| Gateway | System One call | Decision models | Default model |
+|---|---|---|---|
+| OpenRouter (existing provider) | `POST {base}/systemone` | `GET {base}/models?output_modalities=decisions`, `architecture.output_modalities` has `decisions` | `~typesafe/jev-latest` |
+| LLM Gateway (new `llmgateway`) | `POST {base}/systemone` | `GET {base}/models`, `output_modalities` has `decision` | `jev-latest` |
+| Vercel AI Gateway (new `vercel_ai_gateway`) | `POST {origin}/typesafe/v1/systemone` (keeps confidence and legend; `/v1/evaluate` drops them) | `GET {base}/models`, `type == "evaluation"` | `typesafe-ai/jev` |
+| Cloudflare Workers AI (existing) | `POST api.cloudflare.com/client/v4/accounts/{id}/ai/run`, body `{model, input:{state, questions}}`, response unwrapped from `result.result` when `state == "Completed"`; AI Gateway base URLs add `cf-aig-gateway-id` | static `typesafe/jev` (partner model, not in the catalog) | `typesafe/jev` |
+
+Listing prices also price the gateways' chat models (LLM Gateway, Vercel). Upstream 4xx bodies pass through raw like every other System One provider.
+
+**Von and Decider** are Local Embedded providers (`crates/lr-providers/src/embedded/{von,decider}.rs`, recipes in `lr-engines`):
+- Von: `uv tool install --python 3.12 von-sdk`; LocalRouter runs `von serve --host 127.0.0.1 --port P [--device D]` with `VON_API_KEY`. Its `/health` passes before the model loads, so the first start sends a warm-up decision with a 60-minute timeout (once per engine process) before serving requests.
+- Decider: no console script, so it runs as `uv tool run --python 3.12 --from "decider-ai[serve(,metal)]" uvicorn decider.serve:app --host 127.0.0.1 --port P`, one process per checkpoint (`decider-0.8b`, `decider-2b`, `decider-4b`) via `DECIDER_MODEL`. Decider has no auth, so it only ever binds localhost. The port opens after the model loads.
+- Neither runs on Intel Macs (current PyTorch wheels).
+
+**Naming**: the provider category shown as "Direct" in earlier drafts is **Local Embedded Providers** (category id `embedded`, module `lr_providers::embedded`, llama.cpp type `llamacpp_embedded`).
