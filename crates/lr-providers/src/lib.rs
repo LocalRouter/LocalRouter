@@ -126,7 +126,7 @@ pub mod anthropic;
 pub mod cerebras;
 pub mod cohere;
 pub mod deepinfra;
-pub mod direct;
+pub mod embedded;
 pub mod factory;
 pub mod features;
 pub mod gemini;
@@ -349,10 +349,24 @@ pub trait ModelProvider: Send + Sync {
         false
     }
 
+    /// Whether `model` is answered natively through `systemone()`, for
+    /// providers that serve both chat models and decision models (gateways
+    /// such as OpenRouter). Other models of such a provider are translated
+    /// onto chat. Default: the provider-level answer.
+    async fn supports_systemone_model(&self, _model: &str) -> bool {
+        self.supports_systemone()
+    }
+
     /// Whether this provider serves chat completions.
     /// Default: true. Decision-only providers override this to false.
     fn supports_chat(&self) -> bool {
         true
+    }
+
+    /// Engine controls for Local Embedded providers (load/unload models, engine
+    /// state). `None` for providers that talk to someone else's server.
+    fn embedded_control(&self) -> Option<&dyn crate::embedded::EmbeddedControl> {
+        None
     }
 
     /// Returns feature support information for this provider.

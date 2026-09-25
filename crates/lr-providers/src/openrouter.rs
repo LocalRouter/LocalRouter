@@ -28,6 +28,8 @@ pub struct OpenRouterProvider {
     app_name: Option<String>,
     app_url: Option<String>,
     base_url: String,
+    /// Hosted decision models (TypeSafe Jev) on `POST /systemone`.
+    systemone: Option<std::sync::Arc<crate::systemone::SystemOneGateway>>,
 }
 
 #[allow(dead_code)]
@@ -39,12 +41,22 @@ impl OpenRouterProvider {
 
     /// Creates a new OpenRouter provider with a custom base URL (for testing)
     pub fn with_base_url(api_key: String, base_url: String) -> Self {
+        let base_url = base_url.trim_end_matches('/').to_string();
+        let systemone = crate::systemone::SystemOneGateway::openrouter(
+            &base_url,
+            &api_key,
+            reqwest::header::HeaderMap::new(),
+        )
+        .map_err(|e| tracing::warn!("OpenRouter System One support unavailable: {e}"))
+        .ok()
+        .map(std::sync::Arc::new);
         Self {
             client: crate::http_client::default_client(),
             api_key,
             app_name: Some("LocalRouter".to_string()),
             app_url: Some("https://github.com/localrouter/localrouter".to_string()),
-            base_url: base_url.trim_end_matches('/').to_string(),
+            base_url,
+            systemone,
         }
     }
 
@@ -185,7 +197,7 @@ impl ModelProvider for OpenRouterProvider {
             .await
             .map_err(|e| AppError::Provider(format!("Failed to parse models response: {}", e)))?;
 
-        Ok(models_response
+        let mut models: Vec<ModelInfo> = models_response
             .data
             .into_iter()
             .map(|model| {
@@ -207,10 +219,21 @@ impl ModelProvider for OpenRouterProvider {
                 }
                 .enrich_with_catalog_by_name() // Use model-only search for multi-provider system
             })
-            .collect())
+            .collect();
+
+        // Decision models are listed only when asked for by modality.
+        if let Some(gateway) = &self.systemone {
+            gateway.merge_into("openrouter", &mut models).await;
+        }
+        Ok(models)
     }
 
     async fn get_pricing(&self, model: &str) -> AppResult<PricingInfo> {
+        if let Some(gateway) = &self.systemone {
+            if let Some(pricing) = gateway.pricing(model).await {
+                return Ok(pricing);
+            }
+        }
         let url = format!("{}/models", self.base_url);
         let response = self
             .build_request(&url)
@@ -565,6 +588,29 @@ impl ModelProvider for OpenRouterProvider {
             }),
             is_free_tier,
         })
+    }
+
+    fn supports_systemone(&self) -> bool {
+        self.systemone.is_some()
+    }
+
+    async fn supports_systemone_model(&self, model: &str) -> bool {
+        match &self.systemone {
+            Some(gateway) => gateway.is_decision_model(model).await,
+            None => false,
+        }
+    }
+
+    async fn systemone(
+        &self,
+        request: crate::SystemOneRequest,
+    ) -> AppResult<crate::SystemOneResponse> {
+        match &self.systemone {
+            Some(gateway) => gateway.systemone(request).await,
+            None => Err(AppError::Provider(
+                "Provider 'openrouter' does not support system one decisions".to_string(),
+            )),
+        }
     }
 
     fn get_feature_support(&self, instance_name: &str) -> super::ProviderFeatureSupport {

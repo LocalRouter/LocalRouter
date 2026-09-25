@@ -75,6 +75,9 @@ pub fn command_for(id: RecipeId, program: PathBuf) -> EngineCommand {
     let leading_args = match id {
         RecipeId::LlamaCpp if binary == "llama" => vec!["serve".to_string()],
         RecipeId::Kev => kev_uv_run_args(&["-m", "kev.serve"]),
+        RecipeId::Decider => {
+            crate::recipes::decider_uv_run_args(Platform::current().is_apple_silicon())
+        }
         _ => vec![],
     };
     EngineCommand {
@@ -197,15 +200,16 @@ pub fn detect_with(
 /// Run `<binary> --version` and parse the result.
 async fn probe_version(id: RecipeId, path: &Path) -> Option<(String, Option<u64>)> {
     match id {
-        RecipeId::LlamaCpp | RecipeId::Uv | RecipeId::Kev => {
+        RecipeId::LlamaCpp | RecipeId::Uv | RecipeId::Kev | RecipeId::Decider => {
             let output = run_capture(path, &["--version"]).await?;
             match id {
                 RecipeId::LlamaCpp => parse_llama_version(&output),
                 _ => parse_uv_version(&output).map(|v| (v, None)),
             }
         }
-        // laya-serve has no version flag and starts the server when run.
-        RecipeId::Laya => None,
+        // laya-serve has no version flag and starts the server when run;
+        // `von --version` is hard-coded upstream, so it says nothing.
+        RecipeId::Laya | RecipeId::Von => None,
     }
 }
 

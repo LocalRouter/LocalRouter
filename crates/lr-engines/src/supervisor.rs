@@ -43,7 +43,7 @@ pub enum PortArg {
 /// Everything needed to launch one engine process.
 #[derive(Debug, Clone)]
 pub struct LaunchSpec {
-    /// Unique key for this process, e.g. `llamacpp_direct:qwen3-8b`.
+    /// Unique key for this process, e.g. `llamacpp_embedded:qwen3-8b`.
     pub key: String,
     /// Human-readable name for logs and the UI.
     pub label: String,

@@ -21,6 +21,7 @@ members = [
     "crates/lr-compression",
     "crates/lr-json-repair",
     "crates/lr-engines",
+    "crates/lr-local-models",
     "crates/lr-mcp-via-llm",
     "crates/lr-context",
     "crates/lr-secret-scanner",
@@ -77,6 +78,7 @@ lr-coding-agents = { path = "crates/lr-coding-agents" }
 lr-compression = { path = "crates/lr-compression" }
 lr-json-repair = { path = "crates/lr-json-repair" }
 lr-engines = { path = "crates/lr-engines" }
+lr-local-models = { path = "crates/lr-local-models" }
 lr-mcp-via-llm = { path = "crates/lr-mcp-via-llm" }
 lr-context = { path = "crates/lr-context" }
 lr-secret-scanner = { path = "crates/lr-secret-scanner" }

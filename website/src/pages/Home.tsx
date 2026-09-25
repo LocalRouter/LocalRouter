@@ -145,26 +145,26 @@ export default function Home() {
             {/* Left Apps - spread from 20% to 62% */}
             <div className="absolute left-[5%] top-[20%] -translate-y-1/2">
               <div className="flex items-center gap-1 sm:gap-2 px-1.5 sm:px-3 py-1 sm:py-2 rounded-lg bg-blue-500/10 border border-blue-500/30 shadow-sm backdrop-blur-sm">
+                <img src="/icons/anthropic.svg" alt="Claude Code" className="h-4 w-4 sm:h-6 sm:w-6" />
+                <span className="text-xs sm:text-sm font-medium hidden sm:inline">Claude Code</span>
+              </div>
+            </div>
+            <div className="absolute left-[5%] top-[34%] -translate-y-1/2">
+              <div className="flex items-center gap-1 sm:gap-2 px-1.5 sm:px-3 py-1 sm:py-2 rounded-lg bg-blue-500/10 border border-blue-500/30 shadow-sm backdrop-blur-sm">
                 <img src="/icons/cursor.svg" alt="Cursor" className="h-4 w-4 sm:h-6 sm:w-6" />
                 <span className="text-xs sm:text-sm font-medium hidden sm:inline">Cursor</span>
               </div>
             </div>
-            <div className="absolute left-[5%] top-[34%] -translate-y-1/2">
+            <div className="absolute left-[5%] top-[48%] -translate-y-1/2">
               <div className="flex items-center gap-1 sm:gap-2 px-1.5 sm:px-3 py-1 sm:py-2 rounded-lg bg-blue-500/10 border border-blue-500/30 shadow-sm backdrop-blur-sm">
                 <div className="h-4 w-4 sm:h-6 sm:w-6 rounded bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-bold text-[8px] sm:text-xs">{'</>'}</div>
                 <span className="text-xs sm:text-sm font-medium hidden sm:inline">OpenCode</span>
               </div>
             </div>
-            <div className="absolute left-[5%] top-[48%] -translate-y-1/2">
+            <div className="absolute left-[5%] top-[62%] -translate-y-1/2">
               <div className="flex items-center gap-1 sm:gap-2 px-1.5 sm:px-3 py-1 sm:py-2 rounded-lg bg-blue-500/10 border border-blue-500/30 shadow-sm backdrop-blur-sm">
                 <img src="/icons/open-webui.png" alt="Open WebUI" className="h-4 w-4 sm:h-6 sm:w-6" />
                 <span className="text-xs sm:text-sm font-medium hidden sm:inline">Open WebUI</span>
-              </div>
-            </div>
-            <div className="absolute left-[5%] top-[62%] -translate-y-1/2">
-              <div className="flex items-center gap-1 sm:gap-2 px-1.5 sm:px-3 py-1 sm:py-2 rounded-lg bg-blue-500/10 border border-blue-500/30 shadow-sm backdrop-blur-sm">
-                <div className="h-4 w-4 sm:h-6 sm:w-6 rounded bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-white font-bold text-[8px] sm:text-xs">C</div>
-                <span className="text-xs sm:text-sm font-medium hidden sm:inline">Cline</span>
               </div>
             </div>
             <div className="absolute left-[5%] top-[74%] text-muted-foreground text-xs hidden sm:block">
@@ -191,7 +191,7 @@ export default function Home() {
                   <span className="text-orange-600 dark:text-orange-400 text-[6px] sm:text-xs font-medium uppercase tracking-wide">Permission Request</span>
                 </div>
                 <div className="text-foreground text-[7px] sm:text-sm mb-1 sm:mb-3">
-                  <span className="text-blue-600 dark:text-blue-400 font-medium">Cursor</span> wants <span className="text-emerald-600 dark:text-emerald-400 font-medium">GitHub</span>
+                  <span className="text-blue-600 dark:text-blue-400 font-medium">Claude Code</span> wants <span className="text-emerald-600 dark:text-emerald-400 font-medium">GitHub</span>
                 </div>
                 <div className="flex gap-0.5 sm:gap-2">
                   <div className="px-1 sm:px-3 py-0.5 sm:py-1 rounded bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 text-[6px] sm:text-xs font-medium">

@@ -475,7 +475,7 @@ export interface EngineRequirementStatus {
 }
 
 /**
- * Detection result for a Direct provider's engine.
+ * Detection result for a Local Embedded provider's engine.
  * Rust: crates/lr-engines/src/detect.rs - EngineStatus
  */
 export interface EngineStatus {

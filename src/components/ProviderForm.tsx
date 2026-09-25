@@ -19,7 +19,7 @@ export interface SetupParameter {
   sensitive: boolean
 }
 
-export type ProviderCategory = 'direct' | 'generic' | 'local' | 'subscription' | 'first_party' | 'third_party'
+export type ProviderCategory = 'embedded' | 'generic' | 'local' | 'subscription' | 'first_party' | 'third_party'
 
 export interface ProviderType {
   provider_type: string

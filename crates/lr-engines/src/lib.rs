@@ -1,4 +1,4 @@
-//! External inference engines for Direct providers.
+//! External inference engines for Local Embedded providers.
 //!
 //! LocalRouter does not ship or download engines. Users install them with
 //! their package manager ([`recipes`]); we find them on PATH ([`detect`]),

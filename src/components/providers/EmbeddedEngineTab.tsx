@@ -27,18 +27,24 @@ import type {
   EngineInstallOptionView,
 } from "@/types/tauri-commands"
 
-/** Engine recipe for each Direct provider type. */
-export const DIRECT_PROVIDER_RECIPES: Record<string, string> = {
-  llamacpp_direct: "llamacpp",
+/** Engine recipe for each Local Embedded provider type. */
+export const EMBEDDED_PROVIDER_RECIPES: Record<string, string> = {
+  llamacpp_embedded: "llamacpp",
   laya: "laya",
   kev: "kev",
+  von: "von",
+  decider: "decider",
 }
 
-export function isDirectProviderType(providerType: string): boolean {
-  return providerType in DIRECT_PROVIDER_RECIPES
+/** Engines run through `uv tool run`: installing uv is enough, and their
+ *  install option only pre-downloads packages. */
+const RUNS_THROUGH_UV = new Set(["kev", "decider"])
+
+export function isEmbeddedProviderType(providerType: string): boolean {
+  return providerType in EMBEDDED_PROVIDER_RECIPES
 }
 
-interface DirectEngineTabProps {
+interface EmbeddedEngineTabProps {
   providerType: string
   instanceName: string
   /** Optional executable path from the provider's settings. */
@@ -207,8 +213,8 @@ function InstallSection({
   )
 }
 
-export function DirectEngineTab({ providerType, instanceName, binaryPath }: DirectEngineTabProps) {
-  const recipeId = DIRECT_PROVIDER_RECIPES[providerType]
+export function EmbeddedEngineTab({ providerType, instanceName, binaryPath }: EmbeddedEngineTabProps) {
+  const recipeId = EMBEDDED_PROVIDER_RECIPES[providerType]
   const [status, setStatus] = useState<EngineStatus | null>(null)
   const [requirements, setRequirements] = useState<EngineStatus[]>([])
   const [loading, setLoading] = useState(false)
@@ -365,12 +371,14 @@ export function DirectEngineTab({ providerType, instanceName, binaryPath }: Dire
           </Card>
         ))}
 
-      {status?.supported && (!status.found || status.recipe === "kev") && (
+      {status?.supported && (!status.found || RUNS_THROUGH_UV.has(status.recipe)) && (
         <Card>
           <CardHeader>
             <CardTitle className="text-base">
               {requirements.length > 0 ? "Step 2: " : ""}
-              {status.recipe === "kev" ? "Prepare Kev (optional)" : `Install ${status.display_name}`}
+              {RUNS_THROUGH_UV.has(status.recipe)
+                ? `Prepare ${status.display_name} (optional)`
+                : `Install ${status.display_name}`}
             </CardTitle>
             <CardDescription>
               Run the command in a terminal, or click Install to run it here. Click Refresh

@@ -1,4 +1,4 @@
-//! Laya direct provider: LocalRouter runs the official `laya-serve` (installed
+//! Laya Local Embedded provider: LocalRouter runs the official `laya-serve` (installed
 //! with `uv tool install "laya[serve]"`) and serves System One decisions from
 //! it. Laya downloads its checkpoints from Hugging Face on first start.
 
@@ -123,14 +123,14 @@ impl LayaSettings {
     }
 }
 
-pub struct LayaDirectProvider {
+pub struct LayaEmbeddedProvider {
     instance: String,
     settings: LayaSettings,
     supervisor: Arc<Supervisor>,
     clients: SystemOneClientCache,
 }
 
-impl LayaDirectProvider {
+impl LayaEmbeddedProvider {
     pub fn new(instance: String, settings: LayaSettings, supervisor: Arc<Supervisor>) -> Self {
         Self {
             instance,
@@ -143,9 +143,55 @@ impl LayaDirectProvider {
     fn spec_key(&self) -> String {
         format!("{PROVIDER_TYPE}:{}", self.instance)
     }
+
+    /// Start (or reuse) the Laya engine.
+    async fn ensure_engine(&self) -> AppResult<lr_engines::EngineHandle> {
+        let command = resolve_engine(RecipeId::Laya, self.settings.binary_path.clone())
+            .await
+            .ok_or_else(|| engine_missing(PROVIDER_TYPE, "laya-serve"))?;
+        let spec = self
+            .settings
+            .launch_spec(&self.instance, command.program, hf_env());
+        self.supervisor.ensure(spec).await.map_err(|e| {
+            let mut err = engine_error(PROVIDER_TYPE, e);
+            if let AppError::Provider(msg) = &mut err {
+                if msg.contains("did not become ready") {
+                    msg.push_str(
+                        "\nIf the unofficial PyPI package 'laya-serve' is installed, it ignores LocalRouter's port: remove it (uv tool uninstall laya-serve) and install the official \"laya[serve]\".",
+                    );
+                }
+            }
+            err
+        })
+    }
 }
 
-impl Drop for LayaDirectProvider {
+#[async_trait]
+impl super::EmbeddedControl for LayaEmbeddedProvider {
+    async fn load(&self, _model: &str) -> AppResult<()> {
+        // One process serves every enabled checkpoint.
+        self.ensure_engine().await.map(|_| ())
+    }
+
+    async fn unload(&self, _model: &str) -> AppResult<()> {
+        self.supervisor.stop(&self.spec_key()).await;
+        Ok(())
+    }
+
+    fn model_states(&self) -> Vec<super::EmbeddedModelState> {
+        let key = self.spec_key();
+        let checkpoints = self.settings.checkpoints.clone();
+        super::states_from_supervisor(&self.supervisor, &key, |k| {
+            if k == key {
+                checkpoints.clone()
+            } else {
+                vec![]
+            }
+        })
+    }
+}
+
+impl Drop for LayaEmbeddedProvider {
     fn drop(&mut self) {
         // The provider was removed or reconfigured: stop its engine.
         let supervisor = self.supervisor.clone();
@@ -157,7 +203,7 @@ impl Drop for LayaDirectProvider {
 }
 
 #[async_trait]
-impl ModelProvider for LayaDirectProvider {
+impl ModelProvider for LayaEmbeddedProvider {
     fn name(&self) -> &str {
         PROVIDER_TYPE
     }
@@ -234,6 +280,10 @@ impl ModelProvider for LayaDirectProvider {
         SupportLevel::NotSupported
     }
 
+    fn embedded_control(&self) -> Option<&dyn super::EmbeddedControl> {
+        Some(self)
+    }
+
     async fn systemone(&self, request: SystemOneRequest) -> AppResult<SystemOneResponse> {
         if let Some(model) = request.model.as_deref() {
             if !self.settings.checkpoints.iter().any(|c| c == model) {
@@ -242,41 +292,25 @@ impl ModelProvider for LayaDirectProvider {
                 });
             }
         }
-        let command = resolve_engine(RecipeId::Laya, self.settings.binary_path.clone())
-            .await
-            .ok_or_else(|| engine_missing(PROVIDER_TYPE, "laya-serve"))?;
-        let spec = self
-            .settings
-            .launch_spec(&self.instance, command.program, hf_env());
-        let handle = self.supervisor.ensure(spec).await.map_err(|e| {
-            let mut err = engine_error(PROVIDER_TYPE, e);
-            if let AppError::Provider(msg) = &mut err {
-                if msg.contains("did not become ready") {
-                    msg.push_str(
-                        "\nIf the unofficial PyPI package 'laya-serve' is installed, it ignores LocalRouter's port: remove it (uv tool uninstall laya-serve) and install the official \"laya[serve]\".",
-                    );
-                }
-            }
-            err
-        })?;
+        let handle = self.ensure_engine().await?;
         let _lease = handle.lease();
         let client = self.clients.get(SystemOneFlavor::Laya, &handle)?;
         client.systemone(request).await
     }
 }
 
-/// Factory for the Laya direct provider.
-pub struct LayaDirectProviderFactory {
+/// Factory for the Laya Local Embedded provider.
+pub struct LayaEmbeddedProviderFactory {
     supervisor: Arc<Supervisor>,
 }
 
-impl LayaDirectProviderFactory {
+impl LayaEmbeddedProviderFactory {
     pub fn new(supervisor: Arc<Supervisor>) -> Self {
         Self { supervisor }
     }
 }
 
-impl ProviderFactory for LayaDirectProviderFactory {
+impl ProviderFactory for LayaEmbeddedProviderFactory {
     fn provider_type(&self) -> &str {
         PROVIDER_TYPE
     }
@@ -286,7 +320,7 @@ impl ProviderFactory for LayaDirectProviderFactory {
     }
 
     fn category(&self) -> ProviderCategory {
-        ProviderCategory::Direct
+        ProviderCategory::Embedded
     }
 
     fn description(&self) -> &str {
@@ -343,7 +377,7 @@ impl ProviderFactory for LayaDirectProviderFactory {
         config: HashMap<String, String>,
     ) -> AppResult<Arc<dyn ModelProvider>> {
         let settings = LayaSettings::from_config(&config)?;
-        Ok(Arc::new(LayaDirectProvider::new(
+        Ok(Arc::new(LayaEmbeddedProvider::new(
             instance_name,
             settings,
             self.supervisor.clone(),
@@ -422,7 +456,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let settings =
             LayaSettings::from_config(&cfg(&[("checkpoints", "english,typed-decisions")])).unwrap();
-        let p = LayaDirectProvider::new("Laya".into(), settings, Supervisor::new(dir.path()));
+        let p = LayaEmbeddedProvider::new("Laya".into(), settings, Supervisor::new(dir.path()));
         let models = p.list_models().await.unwrap();
         let ids: Vec<_> = models.iter().map(|m| m.id.as_str()).collect();
         assert_eq!(ids, vec!["english", "typed-decisions"]);
@@ -445,15 +479,15 @@ mod tests {
     #[test]
     fn factory_is_direct() {
         let dir = tempfile::tempdir().unwrap();
-        let f = LayaDirectProviderFactory::new(Supervisor::new(dir.path()));
-        assert_eq!(f.category(), ProviderCategory::Direct);
+        let f = LayaEmbeddedProviderFactory::new(Supervisor::new(dir.path()));
+        assert_eq!(f.category(), ProviderCategory::Embedded);
         assert!(f.listed());
         assert!(f.validate_config(&cfg(&[("checkpoints", "nope")])).is_err());
     }
 
     #[tokio::test]
     async fn serves_decisions_through_a_supervised_engine() {
-        let Some(fake) = crate::direct::fake_engine_path() else {
+        let Some(fake) = crate::embedded::fake_engine_path() else {
             eprintln!("skipping: lr-fake-engine not built (run the workspace tests)");
             return;
         };
@@ -464,7 +498,7 @@ mod tests {
         let supervisor = Supervisor::new(dir.path());
         let settings =
             LayaSettings::from_config(&cfg(&[("binary_path", fake.to_str().unwrap())])).unwrap();
-        let p = LayaDirectProvider::new("Laya".into(), settings, supervisor.clone());
+        let p = LayaEmbeddedProvider::new("Laya".into(), settings, supervisor.clone());
         let req: SystemOneRequest = serde_json::from_value(serde_json::json!({
             "model": "english", "state": "s",
             "questions": {"q": {"type": "noul", "instructions": "?"}}

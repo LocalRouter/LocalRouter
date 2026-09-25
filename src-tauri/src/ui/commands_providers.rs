@@ -516,6 +516,11 @@ fn provider_type_str_to_enum(provider_type: &str) -> lr_config::ProviderType {
         "laya" => lr_config::ProviderType::Laya,
         "kev" => lr_config::ProviderType::Kev,
         "systemone_compatible" => lr_config::ProviderType::SystemOneCompatible,
+        "von" => lr_config::ProviderType::Von,
+        "decider" => lr_config::ProviderType::Decider,
+        "llamacpp_embedded" => lr_config::ProviderType::LlamaCppEmbedded,
+        "llmgateway" => lr_config::ProviderType::LlmGateway,
+        "vercel_ai_gateway" => lr_config::ProviderType::VercelAiGateway,
         "openai_compatible" => lr_config::ProviderType::Custom,
         _ => lr_config::ProviderType::Custom,
     }
@@ -1361,7 +1366,15 @@ pub async fn list_all_models_detailed(
             // Skip pricing for local/free providers unless there's an override
             let is_local_provider = matches!(
                 provider_type.as_str(),
-                "ollama" | "lmstudio" | "openai_compatible" | "localai" | "laya" | "kev"
+                "ollama"
+                    | "lmstudio"
+                    | "openai_compatible"
+                    | "localai"
+                    | "laya"
+                    | "kev"
+                    | "von"
+                    | "decider"
+                    | "llamacpp_embedded"
             );
 
             let config = config_manager.get();

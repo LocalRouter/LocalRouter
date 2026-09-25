@@ -1,10 +1,12 @@
-//! Direct providers: LocalRouter launches and supervises the inference engine
-//! itself (llama.cpp, Laya, Kev), with models managed in-app. Engines are
+//! Local Embedded providers: LocalRouter launches and supervises the inference engine
+//! itself (llama.cpp, Laya, Kev, Von, Decider), with models managed in-app. Engines are
 //! installed by the user through their package manager and found on PATH
 //! (`lr_engines`).
 
+pub mod decider;
 pub mod kev;
 pub mod laya;
+pub mod von;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -14,14 +16,66 @@ use parking_lot::RwLock;
 use lr_engines::EngineError;
 use lr_types::AppError;
 
-pub use kev::{KevDirectProvider, KevDirectProviderFactory};
-pub use laya::{LayaDirectProvider, LayaDirectProviderFactory};
+pub use decider::{DeciderEmbeddedProvider, DeciderEmbeddedProviderFactory};
+pub use kev::{KevEmbeddedProvider, KevEmbeddedProviderFactory};
+pub use laya::{LayaEmbeddedProvider, LayaEmbeddedProviderFactory};
+pub use von::{VonEmbeddedProvider, VonEmbeddedProviderFactory};
+
+/// State of one model served by a Local Embedded provider.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct EmbeddedModelState {
+    /// Model id as clients use it (without the provider prefix).
+    pub model: String,
+    /// `running`, `exited` or `failed` for models with a process; models
+    /// without one are omitted (unloaded).
+    pub state: lr_engines::EngineState,
+    pub port: Option<u16>,
+    pub idle_secs: Option<u64>,
+    pub last_error: Option<String>,
+}
+
+/// Controls a Local Embedded provider exposes to the app (Load/Unload buttons).
+#[async_trait::async_trait]
+pub trait EmbeddedControl: Send + Sync {
+    /// Start the engine for `model` and wait until it is ready.
+    async fn load(&self, model: &str) -> Result<(), AppError>;
+    /// Stop the engine serving `model` (it starts again on the next request).
+    async fn unload(&self, model: &str) -> Result<(), AppError>;
+    /// Models that currently have (or recently had) an engine process.
+    fn model_states(&self) -> Vec<EmbeddedModelState>;
+}
+
+/// Model states from the supervisor's processes whose key starts with
+/// `prefix`; `model_of` maps a process key to the model id.
+pub(crate) fn states_from_supervisor(
+    supervisor: &lr_engines::Supervisor,
+    prefix: &str,
+    model_of: impl Fn(&str) -> Vec<String>,
+) -> Vec<EmbeddedModelState> {
+    supervisor
+        .processes()
+        .into_iter()
+        .filter(|p| p.key.starts_with(prefix))
+        .flat_map(|p| {
+            model_of(&p.key)
+                .into_iter()
+                .map(|model| EmbeddedModelState {
+                    model,
+                    state: p.state,
+                    port: p.port,
+                    idle_secs: p.idle_secs,
+                    last_error: p.last_error.clone(),
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
 
 type TokenSource = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 
 static HF_TOKEN_SOURCE: RwLock<Option<TokenSource>> = RwLock::new(None);
 
-/// Register where Direct providers get the user's Hugging Face token (passed
+/// Register where Local Embedded providers get the user's Hugging Face token (passed
 /// to engines as `HF_TOKEN` for gated or private downloads).
 pub fn set_hf_token_source(source: TokenSource) {
     *HF_TOKEN_SOURCE.write() = Some(source);

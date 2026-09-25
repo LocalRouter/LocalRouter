@@ -5440,6 +5440,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "lr-local-models"
+version = "0.0.143"
+dependencies = [
+ "chrono",
+ "futures",
+ "hex",
+ "lr-types",
+ "lr-utils",
+ "parking_lot",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sysinfo",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "urlencoding",
+ "uuid",
+ "wiremock",
+]
+
+[[package]]
 name = "lr-marketplace"
 version = "0.0.143"
 dependencies = [
@@ -5657,6 +5682,7 @@ dependencies = [
  "tracing",
  "utoipa",
  "uuid",
+ "wiremock",
 ]
 
 [[package]]

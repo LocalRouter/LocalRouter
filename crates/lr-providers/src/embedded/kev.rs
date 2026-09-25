@@ -1,4 +1,4 @@
-//! Kev direct provider: LocalRouter runs Kev (from its Git repository, pinned
+//! Kev Local Embedded provider: LocalRouter runs Kev (from its Git repository, pinned
 //! to a commit) through uv, one process per enabled checkpoint. Kev downloads
 //! its adapter and Qwen base model from Hugging Face on first start.
 
@@ -122,14 +122,14 @@ impl KevSettings {
     }
 }
 
-pub struct KevDirectProvider {
+pub struct KevEmbeddedProvider {
     instance: String,
     settings: KevSettings,
     supervisor: Arc<Supervisor>,
     clients: SystemOneClientCache,
 }
 
-impl KevDirectProvider {
+impl KevEmbeddedProvider {
     pub fn new(instance: String, settings: KevSettings, supervisor: Arc<Supervisor>) -> Self {
         Self {
             instance,
@@ -140,7 +140,56 @@ impl KevDirectProvider {
     }
 }
 
-impl Drop for KevDirectProvider {
+impl KevEmbeddedProvider {
+    fn key_prefix(&self) -> String {
+        format!("{PROVIDER_TYPE}:{}:", self.instance)
+    }
+
+    /// Start (or reuse) the engine for one checkpoint.
+    async fn ensure_engine(&self, checkpoint: &str) -> AppResult<lr_engines::EngineHandle> {
+        if !self.settings.checkpoints.iter().any(|c| c == checkpoint) {
+            return Err(AppError::ModelNotFound {
+                model: checkpoint.to_string(),
+            });
+        }
+        let command = resolve_engine(RecipeId::Kev, self.settings.uv_path.clone())
+            .await
+            .ok_or_else(|| engine_missing(PROVIDER_TYPE, "uv"))?;
+        let spec = self
+            .settings
+            .launch_spec(&self.instance, checkpoint, &command, hf_env())
+            .ok_or_else(|| AppError::ModelNotFound {
+                model: checkpoint.to_string(),
+            })?;
+        self.supervisor
+            .ensure(spec)
+            .await
+            .map_err(|e| engine_error(PROVIDER_TYPE, e))
+    }
+}
+
+#[async_trait]
+impl super::EmbeddedControl for KevEmbeddedProvider {
+    async fn load(&self, model: &str) -> AppResult<()> {
+        self.ensure_engine(model).await.map(|_| ())
+    }
+
+    async fn unload(&self, model: &str) -> AppResult<()> {
+        self.supervisor
+            .stop(&format!("{}{model}", self.key_prefix()))
+            .await;
+        Ok(())
+    }
+
+    fn model_states(&self) -> Vec<super::EmbeddedModelState> {
+        let prefix = self.key_prefix();
+        super::states_from_supervisor(&self.supervisor, &prefix, |k| {
+            vec![k.trim_start_matches(&prefix).to_string()]
+        })
+    }
+}
+
+impl Drop for KevEmbeddedProvider {
     fn drop(&mut self) {
         let supervisor = self.supervisor.clone();
         let prefix = format!("{PROVIDER_TYPE}:{}:", self.instance);
@@ -151,7 +200,7 @@ impl Drop for KevDirectProvider {
 }
 
 #[async_trait]
-impl ModelProvider for KevDirectProvider {
+impl ModelProvider for KevEmbeddedProvider {
     fn name(&self) -> &str {
         PROVIDER_TYPE
     }
@@ -225,6 +274,10 @@ impl ModelProvider for KevDirectProvider {
         SupportLevel::NotSupported
     }
 
+    fn embedded_control(&self) -> Option<&dyn super::EmbeddedControl> {
+        Some(self)
+    }
+
     async fn systemone(&self, mut request: SystemOneRequest) -> AppResult<SystemOneResponse> {
         let checkpoint = match request.model.as_deref() {
             Some(m) if self.settings.checkpoints.iter().any(|c| c == m) => m.to_string(),
@@ -235,20 +288,7 @@ impl ModelProvider for KevDirectProvider {
             }
             None => self.settings.checkpoints[0].clone(),
         };
-        let command = resolve_engine(RecipeId::Kev, self.settings.uv_path.clone())
-            .await
-            .ok_or_else(|| engine_missing(PROVIDER_TYPE, "uv"))?;
-        let spec = self
-            .settings
-            .launch_spec(&self.instance, &checkpoint, &command, hf_env())
-            .ok_or_else(|| AppError::ModelNotFound {
-                model: checkpoint.clone(),
-            })?;
-        let handle = self
-            .supervisor
-            .ensure(spec)
-            .await
-            .map_err(|e| engine_error(PROVIDER_TYPE, e))?;
+        let handle = self.ensure_engine(&checkpoint).await?;
         let _lease = handle.lease();
         let client = self.clients.get(SystemOneFlavor::Kev, &handle)?;
         // One checkpoint per process; the Kev flavor sends its default model.
@@ -259,18 +299,18 @@ impl ModelProvider for KevDirectProvider {
     }
 }
 
-/// Factory for the Kev direct provider.
-pub struct KevDirectProviderFactory {
+/// Factory for the Kev Local Embedded provider.
+pub struct KevEmbeddedProviderFactory {
     supervisor: Arc<Supervisor>,
 }
 
-impl KevDirectProviderFactory {
+impl KevEmbeddedProviderFactory {
     pub fn new(supervisor: Arc<Supervisor>) -> Self {
         Self { supervisor }
     }
 }
 
-impl ProviderFactory for KevDirectProviderFactory {
+impl ProviderFactory for KevEmbeddedProviderFactory {
     fn provider_type(&self) -> &str {
         PROVIDER_TYPE
     }
@@ -280,7 +320,7 @@ impl ProviderFactory for KevDirectProviderFactory {
     }
 
     fn category(&self) -> ProviderCategory {
-        ProviderCategory::Direct
+        ProviderCategory::Embedded
     }
 
     fn description(&self) -> &str {
@@ -330,7 +370,7 @@ impl ProviderFactory for KevDirectProviderFactory {
         config: HashMap<String, String>,
     ) -> AppResult<Arc<dyn ModelProvider>> {
         let settings = KevSettings::from_config(&config)?;
-        Ok(Arc::new(KevDirectProvider::new(
+        Ok(Arc::new(KevEmbeddedProvider::new(
             instance_name,
             settings,
             self.supervisor.clone(),
@@ -407,7 +447,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let settings =
             KevSettings::from_config(&cfg(&[("checkpoints", "kev-0.8b,kev-4b")])).unwrap();
-        let p = KevDirectProvider::new("Kev".into(), settings, Supervisor::new(dir.path()));
+        let p = KevEmbeddedProvider::new("Kev".into(), settings, Supervisor::new(dir.path()));
         let ids: Vec<_> = p
             .list_models()
             .await
@@ -429,7 +469,7 @@ mod tests {
 
     #[tokio::test]
     async fn one_engine_per_checkpoint() {
-        let Some(fake) = crate::direct::fake_engine_path() else {
+        let Some(fake) = crate::embedded::fake_engine_path() else {
             eprintln!("skipping: lr-fake-engine not built (run the workspace tests)");
             return;
         };
@@ -441,7 +481,7 @@ mod tests {
             ("binary_path", fake.to_str().unwrap()),
         ]))
         .unwrap();
-        let p = KevDirectProvider::new("Kev".into(), settings, supervisor.clone());
+        let p = KevEmbeddedProvider::new("Kev".into(), settings, supervisor.clone());
         for model in ["kev-0.8b", "kev-4b"] {
             let req: SystemOneRequest = serde_json::from_value(serde_json::json!({
                 "model": model, "state": "s",

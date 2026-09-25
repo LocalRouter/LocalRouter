@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core"
 import { open } from "@tauri-apps/plugin-shell"
 import { isValidHttpUrl } from "@/utils/url"
 import { listenSafe } from "@/hooks/useTauriListener"
-import { DirectEngineTab, isDirectProviderType } from "@/components/providers/DirectEngineTab"
+import { EmbeddedEngineTab, isEmbeddedProviderType } from "@/components/providers/EmbeddedEngineTab"
 import { toast } from "sonner"
 import { CheckCircle, XCircle, AlertCircle, Plus, Loader2, RefreshCw, FlaskConical, Grid, Settings, ArrowLeft, Eye, EyeOff, Coins, Pencil, RotateCcw, Copy, Trash2, ExternalLink, Terminal } from "lucide-react"
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
@@ -216,7 +216,7 @@ export function ProvidersPanel({
   }, [])
 
   // Reset detail tab when a different provider is selected (not during rename).
-  // A just-created Direct provider opens on its Engine tab instead.
+  // A just-created Local Embedded provider opens on its Engine tab instead.
   const skipTabResetRef = useRef(false)
   const nextTabRef = useRef<string | null>(null)
   useEffect(() => {
@@ -409,7 +409,7 @@ export function ProvidersPanel({
       setDialogPage("select")
       setCreateTab("templates")
       await loadProvidersOnly()
-      if (isDirectProviderType(selectedProviderType)) nextTabRef.current = "engine"
+      if (isEmbeddedProviderType(selectedProviderType)) nextTabRef.current = "engine"
       onSelect(instanceName)
       // Trigger health check for the new provider
       onRefreshHealth(instanceName)
@@ -561,7 +561,7 @@ export function ProvidersPanel({
                 <Tabs value={detailTab} onValueChange={setDetailTab}>
                   <TabsList>
                     <TabsTrigger value="info"><TAB_ICONS.info className={TAB_ICON_CLASS} />Info</TabsTrigger>
-                    {isDirectProviderType(selectedProvider.provider_type) && (
+                    {isEmbeddedProviderType(selectedProvider.provider_type) && (
                       <TabsTrigger value="engine"><Terminal className={TAB_ICON_CLASS} />Engine</TabsTrigger>
                     )}
                     {selectedProvider.enabled && <TabsTrigger value="try-it-out"><TAB_ICONS.tryItOut className={TAB_ICON_CLASS} />Try It Out</TabsTrigger>}
@@ -582,9 +582,9 @@ export function ProvidersPanel({
                   </TabsContent>
                   )}
 
-                  {isDirectProviderType(selectedProvider.provider_type) && (
+                  {isEmbeddedProviderType(selectedProvider.provider_type) && (
                     <TabsContent value="engine">
-                      <DirectEngineTab
+                      <EmbeddedEngineTab
                         key={selectedProvider.instance_name}
                         providerType={selectedProvider.provider_type}
                         instanceName={selectedProvider.instance_name}
@@ -1714,7 +1714,7 @@ export function ProvidersPanel({
                   // Unlisted types (retired, e.g. the legacy llama.cpp server wrapper) are
                   // hidden; their existing instances keep working.
                   const listedTypes = providerTypes.filter(t => t.listed !== false)
-                  const directProviders = listedTypes.filter(t => t.category === 'direct')
+                  const embeddedProviders = listedTypes.filter(t => t.category === 'embedded')
                   const localProviders = listedTypes.filter(t => t.category === 'local')
                   const subscriptionProviders = listedTypes.filter(t => t.category === 'subscription')
                   const firstPartyProviders = listedTypes.filter(t => t.category === 'first_party')
@@ -1772,9 +1772,9 @@ export function ProvidersPanel({
                   return (
                     <div className="space-y-6">
                       <ProviderSection
-                        title="Direct Providers"
+                        title="Local Embedded Providers"
                         description="LocalRouter runs the engine on your machine and manages models directly in-app: browse and download from Hugging Face, load and unload on demand. Install the engine once with your package manager."
-                        providers={directProviders}
+                        providers={embeddedProviders}
                       />
                       <ProviderSection
                         title="Local Providers"

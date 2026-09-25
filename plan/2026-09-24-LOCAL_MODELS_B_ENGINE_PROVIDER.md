@@ -1,4 +1,4 @@
-# Phase 2 · Plan B: engines crate, Direct category, llama.cpp direct provider
+# Phase 2 · Plan B: engines crate, Local Embedded category, llama.cpp Local Embedded provider
 
 Part of `plan/2026-09-24-LOCAL_MODELS_PHASE2_OVERVIEW.md` (revised 2026-09-24: external installs only). Depends on plan A for the model library, downloads and fit estimates.
 
@@ -9,10 +9,10 @@ Todo items per step.
 - **Registry leak:** `HealthCheckManager` (`crates/lr-providers/src/health.rs`) never unregisters providers replaced or removed through `ProviderRegistry::update_provider`/`remove_provider`, and `check_health` matches on the type name. Key by instance name, add `unregister_provider`, call it from update/remove. A provider that owns child processes must be dropped when removed. Test with a Drop flag.
 - **Stable type order:** `list_provider_types` iterates a `HashMap`. Sort by category order, then display name. This also fixes the Add Provider "Custom" tab, which picks the first `generic` factory (now `openai_compatible` or `systemone_compatible` at random).
 
-## Step 2: Direct category and hidden legacy llama.cpp
-- `ProviderCategory::Direct` (serde `direct`) in `crates/lr-providers/src/factory.rs`; category order `direct, local, subscription, first_party, third_party, generic`.
+## Step 2: Local Embedded category and hidden legacy llama.cpp
+- `ProviderCategory::Embedded` (serde `direct`) in `crates/lr-providers/src/factory.rs`; category order `direct, local, subscription, first_party, third_party, generic`.
 - `ProviderFactory::listed(&self) -> bool { true }`; `ProviderTypeInfo.listed`; the Add Provider UI filters unlisted types. `LlamaCppProviderFactory::listed() == false` (existing `llamacpp` instances keep loading; display name becomes "llama.cpp server (legacy)").
-- TS: `ProviderCategory` union gains `'direct'`; `ProviderTypeInfo.listed`.
+- TS: `ProviderCategory` union gains `'embedded'`; `ProviderTypeInfo.listed`.
 
 ## Step 3: `crates/lr-engines`
 - **Recipes** (`recipes.rs`): `EngineRecipe { id: "llamacpp" | "laya" | "kev" | "uv", display_name, binaries (preference order), requires (Laya and Kev need uv), install: Vec<InstallOption { os, label, command, default, needs_sudo, notes }>, docs_url }`. Commands per the overview; Linux options ordered by distro family from `/etc/os-release` (`ID`, `ID_LIKE`), with Linuxbrew as the universal option.
@@ -29,8 +29,8 @@ Todo items per step.
   - Idle stop per process (`idle_unload_secs`, default 900, 0 = never), in-flight guards, de-duplicated starts, memory guardrail using plan A's fit estimate for llama.cpp models.
 - **Tests:** fake engine binary (`[[bin]] lr-fake-engine`, axum; configurable readiness style, streaming chat, embeddings, crash, hang) via `CARGO_BIN_EXE_lr-fake-engine`: start, each readiness style, crash/restart/fail, idle stop, orphan cleanup, shutdown, de-dup. Detection with a temp dir on PATH; version regex; install runner with harmless test recipes.
 
-## Step 4: llama.cpp direct provider (`llamacpp_direct`)
-- Factory: category Direct, `AlwaysFreeLocal`, no catalog id, optional `binary_path` override. One process per loaded model.
+## Step 4: llama.cpp Local Embedded provider (`llamacpp_embedded`)
+- Factory: category Local Embedded, `AlwaysFreeLocal`, no catalog id, optional `binary_path` override. One process per loaded model.
 - Models: plan A library entries for llama.cpp. `list_models` maps kind to capabilities (Chat, Completion, Vision, FunctionCalling, Embedding).
 - Requests: `ensure_running(model)` → internal `LlamaCppProvider` bound to that port and key → delegate. Streams hold an in-flight guard; a dropped client stream closes the upstream HTTP stream so llama-server stops generating.
 - Launch args (vector, no shell): `--host 127.0.0.1 --port P -m <path> --jinja --no-webui --offline` plus settings (`-c`, `-ngl`/`--fit`, `-fa`, `-ctk/-ctv` with quantized V requiring flash attention, `-np`, `-b/-ub`, `-t`, `--mmproj`, `--embeddings --pooling <type>`, `--rerank`); `LLAMA_API_KEY` env. Flags the detected build lacks are dropped per the capability probe. The unified `llama` binary is launched as `llama serve …`.
@@ -39,7 +39,7 @@ Todo items per step.
 - Router: `ModelProvider::supports_systemone_model(model)` (default `supports_systemone()`), used by `crates/lr-router/src/systemone.rs`.
 
 ## Step 5: wiring, config, commands
-- `ProviderType::LlamaCppDirect` (`llamacpp_direct`); main.rs registrations and the exhaustive match; `provider_type_str_to_enum`; `is_local_provider` gains `llamacpp_direct`.
+- `ProviderType::LlamaCppEmbedded` (`llamacpp_embedded`); main.rs registrations and the exhaustive match; `provider_type_str_to_enum`; `is_local_provider` gains `llamacpp_embedded`.
 - Config: `AppConfig.local_models` (plan A) gains `engines: EngineSettings { idle_unload_secs, max_loaded_models, start_timeout_secs }`.
 - Tauri commands (`src-tauri/src/ui/commands_engines.rs`, mirrored in `src/types/tauri-commands.ts` and the demo mocks): `engine_recipes`, `engine_detect(recipe_id)`, `engine_install(recipe_id, option_index)` → `run_id`, `engine_install_cancel(run_id)`, `engine_processes`, `engine_logs(name)`, `engine_stop(name)`; plan A's model commands.
 - Events: `engine-install-output`, `engine-install-finished`, `local-models-model-state`, plus plan A's download events.

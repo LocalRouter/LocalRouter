@@ -1189,7 +1189,7 @@ pub struct SimpleProviderConfig {
 mod tests {
 
     #[tokio::test]
-    async fn provider_types_are_ordered_with_direct_first_and_legacy_hidden() {
+    async fn provider_types_are_ordered_with_embedded_first_and_legacy_hidden() {
         let registry = ProviderRegistry::new();
         registry.register_factory(Arc::new(crate::factory::OpenAICompatibleProviderFactory));
         registry.register_factory(Arc::new(crate::factory::LlamaCppProviderFactory));

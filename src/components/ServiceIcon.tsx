@@ -163,7 +163,12 @@ const EMOJI_MAP: Record<string, string> = {
   typesafe: '🎲',
   laya: '⚖️',
   kev: '🧭',
+  von: '🎯',
+  decider: '🔱',
   systemone_compatible: '🔀',
+  // Gateways
+  llmgateway: '🛣️',
+  vercel_ai_gateway: '▲',
 
   // OAuth Providers
   'github-copilot': '🐙',

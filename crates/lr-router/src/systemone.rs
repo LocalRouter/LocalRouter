@@ -225,7 +225,11 @@ impl Router {
                 ))
             })?;
 
-        if provider_instance.supports_systemone() {
+        let native = match model {
+            Some(m) => provider_instance.supports_systemone_model(m).await,
+            None => provider_instance.supports_systemone(),
+        };
+        if native {
             request.model = model.map(str::to_string);
             let mut response = match provider_instance.systemone(request).await {
                 Ok(resp) => resp,
@@ -728,6 +732,10 @@ mod tests {
         fn supports_systemone(&self) -> bool {
             self.kind == Kind::Native
         }
+        async fn supports_systemone_model(&self, model: &str) -> bool {
+            // A chat provider that also serves one native decision model.
+            self.kind == Kind::Native || model == "jev-native"
+        }
         async fn systemone(&self, request: SystemOneRequest) -> AppResult<SystemOneResponse> {
             let answers = request
                 .questions
@@ -1051,6 +1059,25 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, AppError::Unauthorized));
+    }
+
+    #[tokio::test]
+    async fn mixed_provider_routes_per_model() {
+        // Same chat provider: its decision model answers natively, its chat
+        // models go through translation.
+        let h = harness(&[("gw", Kind::ChatLogprobs)], &[], |_| {}).await;
+        let native = h
+            .router
+            .systemone(&h.client_id, request(Some("gw/jev-native")))
+            .await
+            .unwrap();
+        assert_eq!(native.backend, SystemOneBackend::Native);
+        let translated = h
+            .router
+            .systemone(&h.client_id, request(Some("gw/some-chat-model")))
+            .await
+            .unwrap();
+        assert_eq!(translated.backend, SystemOneBackend::LetterLogprobs);
     }
 
     #[test]

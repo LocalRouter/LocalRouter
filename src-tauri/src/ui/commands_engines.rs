@@ -1,4 +1,4 @@
-//! Tauri commands for Direct providers' engines: detection, install
+//! Tauri commands for Local Embedded providers' engines: detection, install
 //! commands, and the supervised engine processes.
 
 use std::path::PathBuf;
@@ -104,7 +104,7 @@ pub async fn engine_install_cancel(
     Ok(runner.cancel(&run_id))
 }
 
-/// Engine processes started by Direct providers.
+/// Engine processes started by Local Embedded providers.
 #[tauri::command]
 pub async fn engine_processes(
     supervisor: State<'_, Arc<Supervisor>>,

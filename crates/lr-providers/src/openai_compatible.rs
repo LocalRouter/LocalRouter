@@ -25,6 +25,8 @@ pub struct OpenAICompatibleProvider {
     base_url: String,
     extra_headers: HeaderMap,
     client: ClientWithMiddleware,
+    /// System One support for gateways that also host decision models.
+    systemone_gateway: Option<std::sync::Arc<crate::systemone::SystemOneGateway>>,
 }
 
 /// Parse a `custom_headers` config value into a header map.
@@ -71,7 +73,14 @@ impl OpenAICompatibleProvider {
             base_url: base_url.trim_end_matches('/').to_string(),
             extra_headers: HeaderMap::new(),
             client: crate::http_client::default_client(),
+            systemone_gateway: None,
         }
+    }
+
+    /// Serve the gateway's decision models natively through `/v1/systemone`.
+    pub fn with_systemone_gateway(mut self, gateway: crate::systemone::SystemOneGateway) -> Self {
+        self.systemone_gateway = Some(std::sync::Arc::new(gateway));
+        self
     }
 
     /// Attach custom HTTP headers sent with every request to this provider
@@ -379,13 +388,47 @@ impl ModelProvider for OpenAICompatibleProvider {
             }) // Use model-only search for multi-provider system
             .collect();
 
+        let mut models: Vec<ModelInfo> = models;
+        if let Some(gateway) = &self.systemone_gateway {
+            gateway.merge_into(&self.name, &mut models).await;
+        }
         Ok(models)
     }
 
-    async fn get_pricing(&self, _model: &str) -> AppResult<PricingInfo> {
+    async fn get_pricing(&self, model: &str) -> AppResult<PricingInfo> {
+        // Gateways that publish prices in their model listing.
+        if let Some(gateway) = &self.systemone_gateway {
+            if let Some(pricing) = gateway.pricing(model).await {
+                return Ok(pricing);
+            }
+        }
         // Generic providers don't have standard pricing
         // Return free by default, can be overridden by configuration
         Ok(PricingInfo::free())
+    }
+
+    fn supports_systemone(&self) -> bool {
+        self.systemone_gateway.is_some()
+    }
+
+    async fn supports_systemone_model(&self, model: &str) -> bool {
+        match &self.systemone_gateway {
+            Some(gateway) => gateway.is_decision_model(model).await,
+            None => false,
+        }
+    }
+
+    async fn systemone(
+        &self,
+        request: crate::SystemOneRequest,
+    ) -> AppResult<crate::SystemOneResponse> {
+        match &self.systemone_gateway {
+            Some(gateway) => gateway.systemone(request).await,
+            None => Err(AppError::Provider(format!(
+                "Provider '{}' does not support system one decisions",
+                self.name
+            ))),
+        }
     }
 
     async fn complete(&self, request: CompletionRequest) -> AppResult<CompletionResponse> {

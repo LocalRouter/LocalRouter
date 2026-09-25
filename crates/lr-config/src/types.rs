@@ -4174,6 +4174,21 @@ pub enum ProviderType {
     /// Any server implementing POST /v1/systemone
     #[serde(rename = "systemone_compatible")]
     SystemOneCompatible,
+    /// Von decision model, run by LocalRouter (Local Embedded provider)
+    #[serde(rename = "von")]
+    Von,
+    /// Decider decision models, run by LocalRouter (Local Embedded provider)
+    #[serde(rename = "decider")]
+    Decider,
+    /// llama.cpp server run by LocalRouter with in-app models (Local Embedded provider)
+    #[serde(rename = "llamacpp_embedded")]
+    LlamaCppEmbedded,
+    /// LLM Gateway (llmgateway.io)
+    #[serde(rename = "llmgateway")]
+    LlmGateway,
+    /// Vercel AI Gateway
+    #[serde(rename = "vercel_ai_gateway")]
+    VercelAiGateway,
     /// Custom provider
     Custom,
 }
@@ -5613,6 +5628,11 @@ sampling_permission: "off"
             (ProviderType::Laya, "laya"),
             (ProviderType::Kev, "kev"),
             (ProviderType::SystemOneCompatible, "systemone_compatible"),
+            (ProviderType::Von, "von"),
+            (ProviderType::Decider, "decider"),
+            (ProviderType::LlamaCppEmbedded, "llamacpp_embedded"),
+            (ProviderType::LlmGateway, "llmgateway"),
+            (ProviderType::VercelAiGateway, "vercel_ai_gateway"),
         ];
         for (variant, expected_str) in &variants {
             // Serialize to JSON string
@@ -5661,6 +5681,11 @@ sampling_permission: "off"
             ProviderType::Laya,
             ProviderType::Kev,
             ProviderType::SystemOneCompatible,
+            ProviderType::Von,
+            ProviderType::Decider,
+            ProviderType::LlamaCppEmbedded,
+            ProviderType::LlmGateway,
+            ProviderType::VercelAiGateway,
         ];
         for variant in &variants {
             let yaml = serde_yaml::to_string(variant).unwrap();

@@ -24,11 +24,12 @@ use lr_providers::factory::{
     GPT4AllProviderFactory, GeminiProviderFactory, GitHubCopilotProviderFactory,
     GitHubModelsProviderFactory, GroqProviderFactory, HuggingFaceProviderFactory,
     JanProviderFactory, KlusterAIProviderFactory, LMStudioProviderFactory, LlamaCppProviderFactory,
-    Llm7ProviderFactory, LocalAIProviderFactory, MistralProviderFactory, NvidiaNimProviderFactory,
-    OllamaProviderFactory, OpenAICodexProviderFactory, OpenAICompatibleProviderFactory,
-    OpenAIProviderFactory, OpenCodeGoProviderFactory, OpenCodeZenProviderFactory,
-    OpenRouterProviderFactory, PerplexityProviderFactory, SystemOneProviderFactory,
-    TogetherAIProviderFactory, XAIProviderFactory, ZhipuProviderFactory,
+    Llm7ProviderFactory, LlmGatewayProviderFactory, LocalAIProviderFactory, MistralProviderFactory,
+    NvidiaNimProviderFactory, OllamaProviderFactory, OpenAICodexProviderFactory,
+    OpenAICompatibleProviderFactory, OpenAIProviderFactory, OpenCodeGoProviderFactory,
+    OpenCodeZenProviderFactory, OpenRouterProviderFactory, PerplexityProviderFactory,
+    SystemOneProviderFactory, TogetherAIProviderFactory, VercelAiGatewayProviderFactory,
+    XAIProviderFactory, ZhipuProviderFactory,
 };
 use lr_providers::registry::ProviderRegistry;
 use lr_server::ServerManager;
@@ -328,20 +329,28 @@ async fn run_gui_mode() -> anyhow::Result<()> {
     provider_registry.register_factory(Arc::new(DigitalOceanProviderFactory));
     provider_registry.register_factory(Arc::new(OpenCodeZenProviderFactory));
     provider_registry.register_factory(Arc::new(OpenCodeGoProviderFactory));
+    provider_registry.register_factory(Arc::new(LlmGatewayProviderFactory));
+    provider_registry.register_factory(Arc::new(VercelAiGatewayProviderFactory));
     // System One decision providers for servers the user runs or hosts
     for factory in SystemOneProviderFactory::all() {
         provider_registry.register_factory(Arc::new(factory));
     }
-    // Direct providers: LocalRouter launches the engine itself (found on PATH)
+    // Local Embedded providers: LocalRouter launches the engine itself (found on PATH)
     let engine_supervisor = lr_engines::Supervisor::new(
         &lr_utils::paths::config_dir().unwrap_or_else(|_| std::env::temp_dir()),
     );
     engine_supervisor.spawn_idle_reaper(std::time::Duration::from_secs(30));
     provider_registry.register_factory(Arc::new(
-        lr_providers::direct::LayaDirectProviderFactory::new(engine_supervisor.clone()),
+        lr_providers::embedded::LayaEmbeddedProviderFactory::new(engine_supervisor.clone()),
     ));
     provider_registry.register_factory(Arc::new(
-        lr_providers::direct::KevDirectProviderFactory::new(engine_supervisor.clone()),
+        lr_providers::embedded::KevEmbeddedProviderFactory::new(engine_supervisor.clone()),
+    ));
+    provider_registry.register_factory(Arc::new(
+        lr_providers::embedded::VonEmbeddedProviderFactory::new(engine_supervisor.clone()),
+    ));
+    provider_registry.register_factory(Arc::new(
+        lr_providers::embedded::DeciderEmbeddedProviderFactory::new(engine_supervisor.clone()),
     ));
     // Subscription providers (OAuth-based)
     provider_registry.register_factory(Arc::new(GitHubCopilotProviderFactory));
@@ -422,6 +431,11 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             config::ProviderType::Laya => "laya",
             config::ProviderType::Kev => "kev",
             config::ProviderType::SystemOneCompatible => "systemone_compatible",
+            config::ProviderType::Von => "von",
+            config::ProviderType::Decider => "decider",
+            config::ProviderType::LlamaCppEmbedded => "llamacpp_embedded",
+            config::ProviderType::LlmGateway => "llmgateway",
+            config::ProviderType::VercelAiGateway => "vercel_ai_gateway",
             config::ProviderType::Custom => "openai_compatible",
         };
 

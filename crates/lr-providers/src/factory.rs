@@ -27,7 +27,7 @@ use lr_types::{AppError, AppResult};
 pub enum ProviderCategory {
     /// Engines LocalRouter runs itself (found on PATH), with models managed
     /// in-app: downloaded from Hugging Face, loaded and unloaded on demand
-    Direct,
+    Embedded,
     /// Generic/custom OpenAI-compatible providers
     Generic,
     /// Local providers running on user's machine
@@ -41,10 +41,10 @@ pub enum ProviderCategory {
 }
 
 impl ProviderCategory {
-    /// Display order in the Add Provider dialog (Direct first).
+    /// Display order in the Add Provider dialog (Local Embedded first).
     pub fn sort_rank(&self) -> u8 {
         match self {
-            ProviderCategory::Direct => 0,
+            ProviderCategory::Embedded => 0,
             ProviderCategory::Local => 1,
             ProviderCategory::Subscription => 2,
             ProviderCategory::FirstParty => 3,
@@ -1829,10 +1829,10 @@ impl ProviderFactory for LlamaCppProviderFactory {
     }
 
     fn description(&self) -> &str {
-        "Connect to a llama-server you run yourself. Superseded by the Direct llama.cpp provider; kept so existing setups keep working"
+        "Connect to a llama-server you run yourself. Superseded by the Local Embedded llama.cpp provider; kept so existing setups keep working"
     }
 
-    /// Retired from the Add Provider list in favour of the Direct llama.cpp
+    /// Retired from the Add Provider list in favour of the Local Embedded llama.cpp
     /// provider; existing `llamacpp` instances still load.
     fn listed(&self) -> bool {
         false
@@ -2159,11 +2159,17 @@ impl ProviderFactory for CloudflareAIProviderFactory {
             .ok_or_else(|| AppError::Config("base_url is required".to_string()))?
             .clone();
 
-        Ok(Arc::new(OpenAICompatibleProvider::new(
+        let mut provider = OpenAICompatibleProvider::new(
             "cloudflare_ai".to_string(),
-            base_url,
-            Some(api_key),
-        )))
+            base_url.clone(),
+            Some(api_key.clone()),
+        );
+        // TypeSafe Jev is a partner model served through /ai/run on the account.
+        if let Some(gateway) = crate::systemone::SystemOneGateway::cloudflare(&base_url, &api_key)?
+        {
+            provider = provider.with_systemone_gateway(gateway);
+        }
+        Ok(Arc::new(provider))
     }
 
     fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
@@ -2193,6 +2199,181 @@ impl ProviderFactory for CloudflareAIProviderFactory {
 
     fn api_key_url(&self) -> Option<&str> {
         Some("https://dash.cloudflare.com/profile/api-tokens")
+    }
+}
+
+/// Validate an optional `base_url`: HTTPS only.
+fn validate_optional_https_base_url(config: &HashMap<String, String>) -> AppResult<()> {
+    if let Some(url) = config
+        .get("base_url")
+        .map(|u| u.trim())
+        .filter(|u| !u.is_empty())
+    {
+        if !url.starts_with("https://") {
+            return Err(AppError::Config(
+                "base_url must start with https://".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn required_api_key(config: &HashMap<String, String>) -> AppResult<String> {
+    config
+        .get("api_key")
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty())
+        .ok_or_else(|| AppError::Config("api_key is required".to_string()))
+}
+
+/// Factory for LLM Gateway (llmgateway.io): an OpenAI-compatible gateway
+/// that also serves TypeSafe Jev on `/v1/systemone`.
+pub struct LlmGatewayProviderFactory;
+
+pub const LLMGATEWAY_API_BASE: &str = "https://api.llmgateway.io/v1";
+
+impl ProviderFactory for LlmGatewayProviderFactory {
+    fn provider_type(&self) -> &str {
+        "llmgateway"
+    }
+
+    fn display_name(&self) -> &str {
+        "LLM Gateway"
+    }
+
+    fn category(&self) -> ProviderCategory {
+        ProviderCategory::ThirdParty
+    }
+
+    fn description(&self) -> &str {
+        "Open-source gateway to 290+ models from one API key, including TypeSafe Jev System One decisions"
+    }
+
+    fn setup_parameters(&self) -> Vec<SetupParameter> {
+        vec![
+            SetupParameter::required(
+                "api_key",
+                ParameterType::ApiKey,
+                "LLM Gateway API key",
+                true,
+            ),
+            SetupParameter::optional(
+                "base_url",
+                ParameterType::BaseUrl,
+                "API base URL (change only for a self-hosted gateway)",
+                Some(LLMGATEWAY_API_BASE),
+                false,
+            ),
+        ]
+    }
+
+    fn create(
+        &self,
+        _instance_name: String,
+        config: HashMap<String, String>,
+    ) -> AppResult<Arc<dyn ModelProvider>> {
+        self.validate_config(&config)?;
+        let api_key = required_api_key(&config)?;
+        let base_url = config
+            .get("base_url")
+            .map(|u| u.trim().trim_end_matches('/').to_string())
+            .filter(|u| !u.is_empty())
+            .unwrap_or_else(|| LLMGATEWAY_API_BASE.to_string());
+        let gateway = crate::systemone::SystemOneGateway::llmgateway(&base_url, &api_key)?;
+        Ok(Arc::new(
+            OpenAICompatibleProvider::new("llmgateway".to_string(), base_url, Some(api_key))
+                .with_systemone_gateway(gateway),
+        ))
+    }
+
+    fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
+        required_api_key(config)?;
+        validate_optional_https_base_url(config)
+    }
+
+    fn catalog_provider_id(&self) -> Option<&str> {
+        Some("llmgateway")
+    }
+
+    fn docs_url(&self) -> Option<&str> {
+        Some("https://docs.llmgateway.io")
+    }
+
+    fn api_key_url(&self) -> Option<&str> {
+        Some("https://llmgateway.io/dashboard")
+    }
+}
+
+/// Factory for Vercel AI Gateway: an OpenAI-compatible gateway whose
+/// TypeSafe-compatible API serves Jev System One decisions.
+pub struct VercelAiGatewayProviderFactory;
+
+pub const VERCEL_AI_GATEWAY_API_BASE: &str = "https://ai-gateway.vercel.sh/v1";
+
+impl ProviderFactory for VercelAiGatewayProviderFactory {
+    fn provider_type(&self) -> &str {
+        "vercel_ai_gateway"
+    }
+
+    fn display_name(&self) -> &str {
+        "Vercel AI Gateway"
+    }
+
+    fn category(&self) -> ProviderCategory {
+        ProviderCategory::ThirdParty
+    }
+
+    fn description(&self) -> &str {
+        "Vercel's gateway to hundreds of models with one key and unified billing, including TypeSafe Jev System One decisions"
+    }
+
+    fn setup_parameters(&self) -> Vec<SetupParameter> {
+        vec![
+            SetupParameter::required("api_key", ParameterType::ApiKey, "AI Gateway API key", true),
+            SetupParameter::optional(
+                "base_url",
+                ParameterType::BaseUrl,
+                "API base URL",
+                Some(VERCEL_AI_GATEWAY_API_BASE),
+                false,
+            ),
+        ]
+    }
+
+    fn create(
+        &self,
+        _instance_name: String,
+        config: HashMap<String, String>,
+    ) -> AppResult<Arc<dyn ModelProvider>> {
+        self.validate_config(&config)?;
+        let api_key = required_api_key(&config)?;
+        let base_url = config
+            .get("base_url")
+            .map(|u| u.trim().trim_end_matches('/').to_string())
+            .filter(|u| !u.is_empty())
+            .unwrap_or_else(|| VERCEL_AI_GATEWAY_API_BASE.to_string());
+        let gateway = crate::systemone::SystemOneGateway::vercel(&base_url, &api_key)?;
+        Ok(Arc::new(
+            OpenAICompatibleProvider::new("vercel_ai_gateway".to_string(), base_url, Some(api_key))
+                .with_systemone_gateway(gateway),
+        ))
+    }
+
+    fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
+        required_api_key(config)?;
+        validate_optional_https_base_url(config)
+    }
+
+    fn catalog_provider_id(&self) -> Option<&str> {
+        Some("vercel")
+    }
+
+    fn docs_url(&self) -> Option<&str> {
+        Some("https://vercel.com/docs/ai-gateway")
+    }
+
+    fn api_key_url(&self) -> Option<&str> {
+        Some("https://vercel.com/ai-gateway")
     }
 }
 
@@ -2904,8 +3085,8 @@ impl SystemOneProviderFactory {
     };
 
     /// System One factories for servers the user runs or hosts (TypeSafe,
-    /// any compatible server). Laya and Kev are Direct providers
-    /// (`crate::direct`), which launch their engines themselves.
+    /// any compatible server). Laya and Kev are Local Embedded providers
+    /// (`crate::embedded`), which launch their engines themselves.
     pub fn all() -> [Self; 2] {
         [Self::TYPESAFE, Self::GENERIC]
     }
@@ -3862,13 +4043,78 @@ mod tests {
             Box::new(OpenAICodexProviderFactory),
             Box::new(SystemOneProviderFactory::TYPESAFE),
             Box::new(SystemOneProviderFactory::GENERIC),
-            Box::new(crate::direct::LayaDirectProviderFactory::new(
+            Box::new(crate::embedded::LayaEmbeddedProviderFactory::new(
                 test_supervisor(),
             )),
-            Box::new(crate::direct::KevDirectProviderFactory::new(
+            Box::new(crate::embedded::KevEmbeddedProviderFactory::new(
                 test_supervisor(),
             )),
+            Box::new(crate::embedded::VonEmbeddedProviderFactory::new(
+                test_supervisor(),
+            )),
+            Box::new(crate::embedded::DeciderEmbeddedProviderFactory::new(
+                test_supervisor(),
+            )),
+            Box::new(LlmGatewayProviderFactory),
+            Box::new(VercelAiGatewayProviderFactory),
         ]
+    }
+
+    #[tokio::test]
+    async fn gateways_serve_decision_models_natively() {
+        let key = |extra: &[(&str, &str)]| {
+            let mut c: HashMap<String, String> = [("api_key", "k")]
+                .iter()
+                .chain(extra)
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            c.retain(|_, v| !v.is_empty());
+            c
+        };
+        for (factory, config) in [
+            (
+                Box::new(LlmGatewayProviderFactory) as Box<dyn ProviderFactory>,
+                key(&[]),
+            ),
+            (Box::new(VercelAiGatewayProviderFactory), key(&[])),
+            (
+                Box::new(CloudflareAIProviderFactory),
+                key(&[(
+                    "base_url",
+                    "https://api.cloudflare.com/client/v4/accounts/abc123/ai/v1",
+                )]),
+            ),
+        ] {
+            let p = factory.create("x".into(), config).unwrap();
+            assert!(p.supports_systemone(), "{}", factory.provider_type());
+            assert!(p.supports_chat());
+        }
+        // Cloudflare's default decision model needs no listing.
+        let cf = CloudflareAIProviderFactory
+            .create(
+                "cf".into(),
+                key(&[(
+                    "base_url",
+                    "https://api.cloudflare.com/client/v4/accounts/abc123/ai/v1",
+                )]),
+            )
+            .unwrap();
+        assert!(cf.supports_systemone_model("typesafe/jev").await);
+        assert!(
+            !cf.supports_systemone_model("@cf/meta/llama-3.1-8b-instruct")
+                .await
+        );
+        // A base URL without an account id keeps chat working.
+        let other = CloudflareAIProviderFactory
+            .create("cf".into(), key(&[("base_url", "https://example.com/v1")]))
+            .unwrap();
+        assert!(!other.supports_systemone());
+        assert!(LlmGatewayProviderFactory
+            .validate_config(&key(&[("base_url", "http://insecure")]))
+            .is_err());
+        assert!(VercelAiGatewayProviderFactory
+            .validate_config(&HashMap::new())
+            .is_err());
     }
 
     fn test_supervisor() -> std::sync::Arc<lr_engines::Supervisor> {

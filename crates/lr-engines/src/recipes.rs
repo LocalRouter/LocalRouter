@@ -1,4 +1,4 @@
-//! Install recipes for the engines Direct providers run.
+//! Install recipes for the engines Local Embedded providers run.
 //!
 //! LocalRouter never downloads or ships engine binaries. Each recipe lists the
 //! commands a user runs with their own package manager, in the order we
@@ -21,6 +21,12 @@ pub const KEV_PYTHON: &str = "3.13";
 /// Python version for the Laya tool environment.
 pub const LAYA_PYTHON: &str = "3.12";
 
+/// Python version for Von (requires >=3.12).
+pub const VON_PYTHON: &str = "3.12";
+
+/// Python version for Decider (requires >=3.11; its README uses 3.12).
+pub const DECIDER_PYTHON: &str = "3.12";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RecipeId {
@@ -32,6 +38,10 @@ pub enum RecipeId {
     Laya,
     /// Kev, run through uv from its Git repository
     Kev,
+    /// Von's `von` command (`uv tool install von-sdk`)
+    Von,
+    /// Decider, run through uv (`decider-ai` has no console script)
+    Decider,
 }
 
 impl RecipeId {
@@ -41,6 +51,8 @@ impl RecipeId {
             RecipeId::Uv => "uv",
             RecipeId::Laya => "laya",
             RecipeId::Kev => "kev",
+            RecipeId::Von => "von",
+            RecipeId::Decider => "decider",
         }
     }
 
@@ -50,6 +62,8 @@ impl RecipeId {
             "uv" => Some(RecipeId::Uv),
             "laya" => Some(RecipeId::Laya),
             "kev" => Some(RecipeId::Kev),
+            "von" => Some(RecipeId::Von),
+            "decider" => Some(RecipeId::Decider),
             _ => None,
         }
     }
@@ -133,12 +147,41 @@ pub fn kev_uv_run_args(python_args: &[&str]) -> Vec<String> {
     args
 }
 
+/// The `--from` spec for Decider. Apple Silicon adds the `metal` extra
+/// (MLX kernels).
+pub fn decider_from_spec(apple_silicon: bool) -> String {
+    if apple_silicon {
+        "decider-ai[serve,metal]".to_string()
+    } else {
+        "decider-ai[serve]".to_string()
+    }
+}
+
+/// Arguments (after `uv`) that run Decider's server through uvicorn, which
+/// is a dependency of `decider-ai[serve]`.
+pub fn decider_uv_run_args(apple_silicon: bool) -> Vec<String> {
+    vec![
+        "tool".into(),
+        "run".into(),
+        "--python".into(),
+        DECIDER_PYTHON.into(),
+        "--from".into(),
+        decider_from_spec(apple_silicon),
+        "uvicorn".into(),
+        "decider.serve:app".into(),
+        "--host".into(),
+        "127.0.0.1".into(),
+    ]
+}
+
 pub fn recipe(id: RecipeId, platform: &Platform) -> EngineRecipe {
     match id {
         RecipeId::LlamaCpp => llamacpp(platform),
         RecipeId::Uv => uv(platform),
         RecipeId::Laya => laya(platform),
         RecipeId::Kev => kev(platform),
+        RecipeId::Von => von(platform),
+        RecipeId::Decider => decider(platform),
     }
 }
 
@@ -339,6 +382,49 @@ fn kev(p: &Platform) -> EngineRecipe {
     }
 }
 
+fn von(p: &Platform) -> EngineRecipe {
+    EngineRecipe {
+        id: RecipeId::Von,
+        display_name: "Von",
+        binaries: vec!["von"],
+        requires: vec![RecipeId::Uv],
+        install: vec![opt(
+            "uv-tool",
+            "uv",
+            format!("uv tool install --python {VON_PYTHON} von-sdk"),
+            "uv",
+            false,
+            Some("Installs the von command (downloads PyTorch, about 1-3 GB). The model (about 3 GB) downloads when it first loads."),
+        )],
+        docs_url: "https://github.com/wfzyx/von",
+        unsupported_reason: p.is_intel_mac().then_some(NO_INTEL_MAC_PYTORCH),
+    }
+}
+
+fn decider(p: &Platform) -> EngineRecipe {
+    let prepare = format!(
+        "uv tool run --python {DECIDER_PYTHON} --from \"{}\" python -c \"import decider.serve\"",
+        decider_from_spec(p.is_apple_silicon())
+    );
+    EngineRecipe {
+        id: RecipeId::Decider,
+        display_name: "Decider",
+        // Decider runs through uv; it has no executable of its own.
+        binaries: vec!["uv"],
+        requires: vec![RecipeId::Uv],
+        install: vec![opt(
+            "prepare",
+            "Prepare Decider",
+            prepare,
+            "uv",
+            false,
+            Some("Downloads Decider and PyTorch into uv's cache so the first start is quick. Optional: the first start does this anyway."),
+        )],
+        docs_url: "https://github.com/Mapika/decider",
+        unsupported_reason: p.is_intel_mac().then_some(NO_INTEL_MAC_PYTORCH),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -401,7 +487,12 @@ mod tests {
 
     #[test]
     fn python_engines_need_uv_and_skip_intel_macs() {
-        for id in [RecipeId::Laya, RecipeId::Kev] {
+        for id in [
+            RecipeId::Laya,
+            RecipeId::Kev,
+            RecipeId::Von,
+            RecipeId::Decider,
+        ] {
             let r = recipe(id, &plat(Os::MacOs, Arch::Aarch64, None));
             assert_eq!(r.requires, vec![RecipeId::Uv]);
             assert!(r.unsupported_reason.is_none());
@@ -421,12 +512,26 @@ mod tests {
     }
 
     #[test]
+    fn decider_adds_metal_on_apple_silicon() {
+        let arm = recipe(RecipeId::Decider, &plat(Os::MacOs, Arch::Aarch64, None));
+        assert!(arm.install[0].command.contains("decider-ai[serve,metal]"));
+        let linux = recipe(RecipeId::Decider, &plat(Os::Linux, Arch::X86_64, None));
+        assert!(linux.install[0].command.contains("\"decider-ai[serve]\""));
+        let args = decider_uv_run_args(false);
+        assert_eq!(&args[..2], &["tool", "run"]);
+        assert!(args.windows(2).any(|w| w == ["--host", "127.0.0.1"]));
+        assert!(args.contains(&"decider.serve:app".to_string()));
+    }
+
+    #[test]
     fn recipe_ids_round_trip() {
         for id in [
             RecipeId::LlamaCpp,
             RecipeId::Uv,
             RecipeId::Laya,
             RecipeId::Kev,
+            RecipeId::Von,
+            RecipeId::Decider,
         ] {
             assert_eq!(RecipeId::parse(id.as_str()), Some(id));
         }
