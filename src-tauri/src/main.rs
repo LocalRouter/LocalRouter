@@ -352,6 +352,16 @@ async fn run_gui_mode() -> anyhow::Result<()> {
     provider_registry.register_factory(Arc::new(
         lr_providers::embedded::DeciderEmbeddedProviderFactory::new(engine_supervisor.clone()),
     ));
+    // Models downloaded or imported in-app, served by llama.cpp.
+    let local_models_library = Arc::new(lr_local_models::Library::open(
+        lr_local_models::default_storage_dir(),
+    ));
+    provider_registry.register_factory(Arc::new(
+        lr_providers::embedded::LlamaCppEmbeddedProviderFactory::new(
+            local_models_library.clone(),
+            engine_supervisor.clone(),
+        ),
+    ));
     // Subscription providers (OAuth-based)
     provider_registry.register_factory(Arc::new(GitHubCopilotProviderFactory));
     provider_registry.register_factory(Arc::new(OpenAICodexProviderFactory));
@@ -774,6 +784,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             app.manage(oauth_flow_manager.clone());
             app.manage(provider_registry.clone());
             app.manage(engine_supervisor.clone());
+            app.manage(local_models_library.clone());
             app.manage(Arc::new(lr_engines::InstallRunner::new()));
             app.manage(server_manager.clone());
             app.manage(app_router.clone());

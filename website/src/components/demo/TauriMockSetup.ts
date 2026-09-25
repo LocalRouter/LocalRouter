@@ -23,6 +23,17 @@ import { toast } from 'sonner'
 import { mockData } from './mockData'
 // Types for mock return values - see src/types/tauri-commands.ts for full type definitions
 import type { RouteLLMTestResult, GraphData, ProviderFeatureSupport, FeatureEndpointMatrix, InstallSourceInfo, RequestDedupeConfig } from '@app/types/tauri-commands'
+import type {
+  EngineStatus,
+  EngineInstallOptionView,
+  EngineProcessInfo,
+  EngineInstallOutputEvent,
+  EngineInstallFinishedEvent,
+  EngineStatusParams,
+  EngineInstallParams,
+  EngineInstallCancelParams,
+  EngineKeyParams,
+} from '@app/types/tauri-commands'
 
 // Track warned commands to avoid spam (only warn once per command)
 const warnedCommands = new Set<string>()
@@ -140,7 +151,7 @@ function openaiFeatureSupport(instanceName: string): ProviderFeatureSupport {
   }
 }
 
-// Feature support for a decision-only System One provider (Laya, Kev, TypeSafe):
+// Feature support for a decision-only System One provider (Laya, Kev, Von, Decider, TypeSafe):
 // it answers /v1/systemone natively and has no chat endpoints.
 function systemOneFeatureSupport(base: ProviderFeatureSupport, providerType: string, instanceName: string): ProviderFeatureSupport {
   return {
@@ -155,6 +166,217 @@ function systemOneFeatureSupport(base: ProviderFeatureSupport, providerType: str
     }),
     model_features: base.model_features.map(f => ({ ...f, support: 'not_supported' as const, notes: 'Chat-model feature; not applicable to decision models' })),
   }
+}
+
+// ============================================================================
+// Local Embedded provider engines (engine_* commands)
+// Mirrors crates/lr-engines/src/recipes.rs + detect.rs for an Apple Silicon Mac.
+// ============================================================================
+
+const KEV_GIT_REV = 'eb45fd2381396eb7edc3964b753ebc1b0ab1da2b'
+
+type MockInstallOption = Omit<EngineInstallOptionView, 'runnable' | 'program_found' | 'recommended'>
+
+interface MockEngineRecipe {
+  display_name: string
+  requires: string[]
+  install: MockInstallOption[]
+  docs_url: string
+  /** Where the engine is found once installed (null = not installed yet) */
+  path: string | null
+  binary: string
+  version: string | null
+  build: number | null
+  /** Installing this recipe places this path on PATH */
+  installs_to: string | null
+}
+
+/** Package managers present on the demo machine */
+const DEMO_PROGRAMS_ON_PATH = new Set(['brew', 'curl', 'uv'])
+
+const mockEngineRecipes: Record<string, MockEngineRecipe> = {
+  llamacpp: {
+    display_name: 'llama.cpp',
+    requires: [],
+    install: [
+      { id: 'brew', label: 'Homebrew', command: 'brew install llama.cpp', program: 'brew', needs_sudo: false, notes: null },
+      { id: 'macports', label: 'MacPorts', command: 'sudo port install llama.cpp', program: 'port', needs_sudo: true, notes: null },
+    ],
+    docs_url: 'https://github.com/ggml-org/llama.cpp/blob/master/docs/install.md',
+    path: '/opt/homebrew/bin/llama-server',
+    binary: 'llama-server',
+    version: '0.5.0',
+    build: 11146,
+    installs_to: null,
+  },
+  uv: {
+    display_name: 'uv',
+    requires: [],
+    install: [
+      { id: 'brew', label: 'Homebrew', command: 'brew install uv', program: 'brew', needs_sudo: false, notes: null },
+      { id: 'script', label: 'Installer script', command: 'curl -LsSf https://astral.sh/uv/install.sh | sh', program: 'curl', needs_sudo: false, notes: 'Installs uv into ~/.local/bin.' },
+    ],
+    docs_url: 'https://docs.astral.sh/uv/getting-started/installation/',
+    path: '/opt/homebrew/bin/uv',
+    binary: 'uv',
+    version: '0.12.18',
+    build: null,
+    installs_to: null,
+  },
+  laya: {
+    display_name: 'Laya',
+    requires: ['uv'],
+    install: [
+      { id: 'uv-tool', label: 'uv', command: 'uv tool install --python 3.12 "laya[serve]"', program: 'uv', needs_sudo: false, notes: 'Installs the official laya package and its laya-serve command (downloads PyTorch, about 1-3 GB).' },
+      { id: 'uv-tool-gpu', label: 'uv, GPU-matched PyTorch', command: 'uv tool install --python 3.12 --torch-backend auto "laya[serve]"', program: 'uv', needs_sudo: false, notes: 'Picks the PyTorch build matching your GPU driver (CUDA) instead of the default.' },
+    ],
+    docs_url: 'https://github.com/NandhaKishorM/laya',
+    // The demo's laya-local provider is already set up and running
+    path: '/Users/demo/.local/bin/laya-serve',
+    binary: 'laya-serve',
+    version: null,
+    build: null,
+    installs_to: '/Users/demo/.local/bin/laya-serve',
+  },
+  kev: {
+    display_name: 'Kev',
+    requires: ['uv'],
+    install: [
+      { id: 'prepare', label: 'Prepare Kev', command: `uv tool run --python 3.13 --from "kev[serve] @ git+https://github.com/jaredpalmer/kev@${KEV_GIT_REV}" python -c "import kev.serve"`, program: 'uv', needs_sudo: false, notes: 'Downloads Kev and PyTorch (several GB) into uv\'s cache so the first start is quick. Optional: the first start does this anyway.' },
+    ],
+    docs_url: 'https://github.com/jaredpalmer/kev',
+    // Kev runs through uv, so finding uv is enough
+    path: '/opt/homebrew/bin/uv',
+    binary: 'uv',
+    version: '0.12.18',
+    build: null,
+    installs_to: null,
+  },
+  von: {
+    display_name: 'Von',
+    requires: ['uv'],
+    install: [
+      { id: 'uv-tool', label: 'uv', command: 'uv tool install --python 3.12 von-sdk', program: 'uv', needs_sudo: false, notes: 'Installs the von command (downloads PyTorch, about 1-3 GB). The model (about 3 GB) downloads when it first loads.' },
+    ],
+    docs_url: 'https://github.com/wfzyx/von',
+    path: null,
+    binary: 'von',
+    version: null,
+    build: null,
+    installs_to: '/Users/demo/.local/bin/von',
+  },
+  decider: {
+    display_name: 'Decider',
+    requires: ['uv'],
+    install: [
+      { id: 'prepare', label: 'Prepare Decider', command: 'uv tool run --python 3.12 --from "decider-ai[serve,metal]" python -c "import decider.serve"', program: 'uv', needs_sudo: false, notes: 'Downloads Decider and PyTorch into uv\'s cache so the first start is quick. Optional: the first start does this anyway.' },
+    ],
+    docs_url: 'https://github.com/Mapika/decider',
+    // Decider runs through uv, so finding uv is enough
+    path: '/opt/homebrew/bin/uv',
+    binary: 'uv',
+    version: '0.12.18',
+    build: null,
+    installs_to: null,
+  },
+}
+
+// Returns: EngineStatus (src/types/tauri-commands.ts)
+function mockEngineStatus(recipeId: string): EngineStatus {
+  const recipe = mockEngineRecipes[recipeId]
+  if (!recipe) throw `Unknown engine '${recipeId}'`
+  const requirements = recipe.requires.map((req) => {
+    const r = mockEngineRecipes[req]
+    return { recipe: req, display_name: r.display_name, found: r.path !== null, path: r.path }
+  })
+  const install: EngineInstallOptionView[] = recipe.install.map((o) => ({
+    ...o,
+    runnable: !o.needs_sudo,
+    program_found: DEMO_PROGRAMS_ON_PATH.has(o.program),
+    recommended: false,
+  }))
+  // Recommend the first option the user can run right now, else the first.
+  const pick = install.findIndex((o) => o.runnable && o.program_found)
+  if (install.length > 0) install[pick === -1 ? 0 : pick].recommended = true
+  return {
+    recipe: recipeId,
+    display_name: recipe.display_name,
+    found: recipe.path !== null && requirements.every((r) => r.found),
+    path: recipe.path,
+    binary: recipe.path !== null ? recipe.binary : null,
+    version: recipe.path !== null ? recipe.version : null,
+    build: recipe.path !== null ? recipe.build : null,
+    supported: true,
+    unsupported_reason: null,
+    requirements,
+    install,
+    docs_url: recipe.docs_url,
+  }
+}
+
+/** Simulated install output per recipe (uv / Homebrew style) */
+function mockInstallOutput(recipeId: string): string[] {
+  switch (recipeId) {
+    case 'llamacpp':
+      return ['==> Fetching llama.cpp', '==> Pouring llama.cpp--0.5.0.arm64_sequoia.bottle.tar.gz', '/opt/homebrew/Cellar/llama.cpp/0.5.0: 118 files, 42.1MB']
+    case 'uv':
+      return ['==> Fetching uv', '==> Pouring uv--0.12.18.arm64_sequoia.bottle.tar.gz', '/opt/homebrew/Cellar/uv/0.12.18: 16 files, 41.3MB']
+    case 'kev':
+    case 'decider':
+      return ['Resolved 61 packages in 1.84s', 'Prepared 61 packages in 41.20s', 'Installed 61 packages in 312ms']
+    default:
+      return [
+        'Resolved 58 packages in 1.52s',
+        'Prepared 58 packages in 37.91s',
+        'Installed 58 packages in 287ms',
+        `Installed 1 executable: ${mockEngineRecipes[recipeId]?.binary ?? recipeId}`,
+      ]
+  }
+}
+
+/** Pending install runs, so engine_install_cancel can stop their timers */
+const mockInstallRuns = new Map<string, { recipeId: string; timers: ReturnType<typeof setTimeout>[] }>()
+
+function finishMockInstall(runId: string, payload: Omit<EngineInstallFinishedEvent, 'run_id'>) {
+  const run = mockInstallRuns.get(runId)
+  if (!run) return
+  run.timers.forEach(clearTimeout)
+  mockInstallRuns.delete(runId)
+  if (!payload.cancelled && payload.exit_code === 0) {
+    const recipe = mockEngineRecipes[run.recipeId]
+    if (recipe && recipe.path === null && recipe.installs_to) recipe.path = recipe.installs_to
+  }
+  const event: EngineInstallFinishedEvent = { run_id: runId, ...payload }
+  emit('engine-install-finished', event)
+}
+
+// Engine processes started by the demo's Local Embedded providers (laya-local)
+const mockEngineProcesses: EngineProcessInfo[] = [
+  {
+    key: 'laya:laya-local',
+    label: 'Laya',
+    state: 'running',
+    port: 52814,
+    pid: 48213,
+    uptime_secs: 1260,
+    idle_secs: 42,
+    in_flight: 0,
+    restarts: 0,
+    last_error: null,
+  },
+]
+
+const mockEngineLogs: Record<string, string[]> = {
+  'laya:laya-local': [
+    'INFO:     Started server process [48213]',
+    'INFO:     Waiting for application startup.',
+    'laya: loading checkpoint "english" on mps',
+    'laya: checkpoint "english" ready (843 MB)',
+    'INFO:     Application startup complete.',
+    'INFO:     Uvicorn running on http://127.0.0.1:52814 (Press CTRL+C to quit)',
+    'INFO:     127.0.0.1:52901 - "POST /v1/systemone HTTP/1.1" 200 OK',
+    'INFO:     127.0.0.1:52907 - "POST /v1/systemone HTTP/1.1" 200 OK',
+  ],
 }
 
 /**
@@ -716,6 +938,12 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'get_provider_config': (args) => {
     const provider = mockData.providers.find(p => p.instance_name === args?.instanceName)
     if (!provider) return {}
+    // Local Embedded providers have engine settings, not an API key or URL
+    const embeddedConfigs: Record<string, Record<string, string>> = {
+      laya: { checkpoints: 'english,multilingual', device: 'auto', idle_unload_minutes: '15' },
+      von: { device: 'auto', idle_unload_minutes: '15' },
+    }
+    if (embeddedConfigs[provider.provider_type]) return embeddedConfigs[provider.provider_type]
     return { api_key: 'sk-demo-key-1234567890', base_url: 'https://api.openai.com/v1' }
   },
   'create_provider_instance': (args) => {
@@ -769,6 +997,44 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'set_provider_enabled': (args) => {
     const provider = mockData.providers.find(p => p.instance_name === args?.instanceName)
     if (provider) provider.enabled = args?.enabled ?? true
+    return null
+  },
+
+  // ============================================================================
+  // Local Embedded provider engines
+  // ============================================================================
+  'engine_status': (args: EngineStatusParams): EngineStatus => mockEngineStatus(args.recipeId),
+  'engine_install': (args: EngineInstallParams): string => {
+    const recipe = mockEngineRecipes[args.recipeId]
+    if (!recipe) throw `Unknown engine '${args.recipeId}'`
+    const option = recipe.install.find((o) => o.id === args.optionId)
+    if (!option) throw `Unknown install option '${args.optionId}'`
+    if (option.needs_sudo) throw 'This command needs sudo; run it in a terminal'
+    const runId = generateId()
+    const lines = mockInstallOutput(args.recipeId)
+    const timers = lines.map((line, i) =>
+      setTimeout(() => {
+        const event: EngineInstallOutputEvent = { run_id: runId, stream: 'stderr', line }
+        emit('engine-install-output', event)
+      }, 400 + i * 600),
+    )
+    timers.push(setTimeout(() => finishMockInstall(runId, { exit_code: 0, cancelled: false, error: null }), 400 + lines.length * 600))
+    mockInstallRuns.set(runId, { recipeId: args.recipeId, timers })
+    return runId
+  },
+  'engine_install_cancel': (args: EngineInstallCancelParams): boolean => {
+    if (!mockInstallRuns.has(args.runId)) return false
+    finishMockInstall(args.runId, { exit_code: null, cancelled: true, error: null })
+    return true
+  },
+  'engine_processes': (): EngineProcessInfo[] => mockEngineProcesses.map((p) => ({ ...p })),
+  'engine_logs': (args: EngineKeyParams): string[] => mockEngineLogs[args.key] ?? [],
+  'engine_stop': (args: EngineKeyParams): null => {
+    const process = mockEngineProcesses.find((p) => p.key === args.key)
+    if (process) {
+      Object.assign(process, { state: 'exited', port: null, pid: null, uptime_secs: null, idle_secs: null, in_flight: 0 })
+      toast.success(`${process.label} stopped (demo)`)
+    }
     return null
   },
 
@@ -1701,6 +1967,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       'anthropic-main': 'anthropic',
       'ollama-local': 'ollama',
       'laya-local': 'laya',
+      'von-local': 'von',
       'gemini-google': 'gemini',
       'groq-fast': 'groq',
       'openrouter-backup': 'openrouter',
@@ -1721,6 +1988,8 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       // Laya: System One decision models (no chat)
       'english': ['decision'],
       'multilingual': ['decision'],
+      // Von: System One decision model (no chat)
+      'von-latest': ['decision'],
     }
     return mockData.models.map(m => {
       const pricing = pricingMap[m.id]
@@ -1749,7 +2018,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'get_provider_feature_support': (args): ProviderFeatureSupport => {
     const base = openaiFeatureSupport(args?.instanceName || 'openai')
     const instance = mockData.providers.find(p => p.instance_name === args?.instanceName)
-    const decisionOnlyTypes = ['typesafe', 'laya', 'kev', 'systemone_compatible']
+    const decisionOnlyTypes = ['typesafe', 'laya', 'kev', 'von', 'decider', 'systemone_compatible']
     return instance && decisionOnlyTypes.includes(instance.provider_type)
       ? systemOneFeatureSupport(base, instance.provider_type, instance.instance_name)
       : base

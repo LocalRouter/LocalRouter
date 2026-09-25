@@ -4055,6 +4055,12 @@ mod tests {
             Box::new(crate::embedded::DeciderEmbeddedProviderFactory::new(
                 test_supervisor(),
             )),
+            Box::new(crate::embedded::LlamaCppEmbeddedProviderFactory::new(
+                std::sync::Arc::new(lr_local_models::Library::open(
+                    std::env::temp_dir().join("lr-factory-tests-models"),
+                )),
+                test_supervisor(),
+            )),
             Box::new(LlmGatewayProviderFactory),
             Box::new(VercelAiGatewayProviderFactory),
         ]

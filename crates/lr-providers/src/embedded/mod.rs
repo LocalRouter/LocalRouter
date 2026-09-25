@@ -6,6 +6,7 @@
 pub mod decider;
 pub mod kev;
 pub mod laya;
+pub mod llamacpp;
 pub mod von;
 
 use std::collections::HashMap;
@@ -19,6 +20,7 @@ use lr_types::AppError;
 pub use decider::{DeciderEmbeddedProvider, DeciderEmbeddedProviderFactory};
 pub use kev::{KevEmbeddedProvider, KevEmbeddedProviderFactory};
 pub use laya::{LayaEmbeddedProvider, LayaEmbeddedProviderFactory};
+pub use llamacpp::{LlamaCppEmbeddedProvider, LlamaCppEmbeddedProviderFactory};
 pub use von::{VonEmbeddedProvider, VonEmbeddedProviderFactory};
 
 /// State of one model served by a Local Embedded provider.

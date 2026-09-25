@@ -100,6 +100,7 @@ const sections: DocSection[] = [
     icon: <Server className="h-4 w-4" />,
     subsections: [
       { id: 'supported-providers', title: 'Supported Providers' },
+      { id: 'local-embedded-providers', title: 'Local Embedded Providers' },
       { id: 'systemone-providers', title: 'System One Providers' },
       { id: 'adding-provider-keys', title: 'Adding Provider API Keys' },
       { id: 'provider-health-checks', title: 'Provider Health Checks', children: [
