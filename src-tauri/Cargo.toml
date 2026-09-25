@@ -24,6 +24,7 @@ lr-api-keys = { workspace = true }
 lr-oauth = { workspace = true }
 lr-clients = { workspace = true }
 lr-providers = { workspace = true }
+lr-engines = { workspace = true }
 lr-routellm = { workspace = true }
 lr-monitoring = { workspace = true }
 lr-mcp = { workspace = true }

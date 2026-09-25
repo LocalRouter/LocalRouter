@@ -328,10 +328,21 @@ async fn run_gui_mode() -> anyhow::Result<()> {
     provider_registry.register_factory(Arc::new(DigitalOceanProviderFactory));
     provider_registry.register_factory(Arc::new(OpenCodeZenProviderFactory));
     provider_registry.register_factory(Arc::new(OpenCodeGoProviderFactory));
-    // System One decision providers (TypeSafe Jev, Laya, Kev, compatible)
+    // System One decision providers for servers the user runs or hosts
     for factory in SystemOneProviderFactory::all() {
         provider_registry.register_factory(Arc::new(factory));
     }
+    // Direct providers: LocalRouter launches the engine itself (found on PATH)
+    let engine_supervisor = lr_engines::Supervisor::new(
+        &lr_utils::paths::config_dir().unwrap_or_else(|_| std::env::temp_dir()),
+    );
+    engine_supervisor.spawn_idle_reaper(std::time::Duration::from_secs(30));
+    provider_registry.register_factory(Arc::new(
+        lr_providers::direct::LayaDirectProviderFactory::new(engine_supervisor.clone()),
+    ));
+    provider_registry.register_factory(Arc::new(
+        lr_providers::direct::KevDirectProviderFactory::new(engine_supervisor.clone()),
+    ));
     // Subscription providers (OAuth-based)
     provider_registry.register_factory(Arc::new(GitHubCopilotProviderFactory));
     provider_registry.register_factory(Arc::new(OpenAICodexProviderFactory));
@@ -689,6 +700,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
         svc.sync().await;
     }
 
+    let exit_supervisor = engine_supervisor.clone();
     tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -747,6 +759,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             app.manage(mcp_oauth_browser_manager.clone());
             app.manage(oauth_flow_manager.clone());
             app.manage(provider_registry.clone());
+            app.manage(engine_supervisor.clone());
+            app.manage(Arc::new(lr_engines::InstallRunner::new()));
             app.manage(server_manager.clone());
             app.manage(app_router.clone());
             if let Some(proxy) = proxy_service.clone() {
@@ -2799,6 +2813,12 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::get_request_dedupe_config,
             ui::commands::set_request_dedupe_enabled,
             // RouteLLM intelligent routing commands
+            ui::commands_engines::engine_status,
+            ui::commands_engines::engine_install,
+            ui::commands_engines::engine_install_cancel,
+            ui::commands_engines::engine_processes,
+            ui::commands_engines::engine_logs,
+            ui::commands_engines::engine_stop,
             ui::commands_routellm::routellm_get_status,
             ui::commands_routellm::routellm_test_prediction,
             ui::commands_routellm::routellm_unload,
@@ -2930,8 +2950,14 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                 tracing::info!("Window close intercepted - app minimized to system tray");
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(move |_app, event| {
+            if let tauri::RunEvent::Exit = event {
+                // Engines are child processes; don't leave them running.
+                tauri::async_runtime::block_on(exit_supervisor.stop_all());
+            }
+        });
 
     Ok(())
 }

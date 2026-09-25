@@ -3,8 +3,9 @@ import { invoke } from "@tauri-apps/api/core"
 import { open } from "@tauri-apps/plugin-shell"
 import { isValidHttpUrl } from "@/utils/url"
 import { listenSafe } from "@/hooks/useTauriListener"
+import { DirectEngineTab, isDirectProviderType } from "@/components/providers/DirectEngineTab"
 import { toast } from "sonner"
-import { CheckCircle, XCircle, AlertCircle, Plus, Loader2, RefreshCw, FlaskConical, Grid, Settings, ArrowLeft, Eye, EyeOff, Coins, Pencil, RotateCcw, Copy, Trash2, ExternalLink } from "lucide-react"
+import { CheckCircle, XCircle, AlertCircle, Plus, Loader2, RefreshCw, FlaskConical, Grid, Settings, ArrowLeft, Eye, EyeOff, Coins, Pencil, RotateCcw, Copy, Trash2, ExternalLink, Terminal } from "lucide-react"
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import {
   Tooltip,
@@ -214,14 +215,17 @@ export function ProvidersPanel({
     }
   }, [])
 
-  // Reset detail tab when a different provider is selected (not during rename)
+  // Reset detail tab when a different provider is selected (not during rename).
+  // A just-created Direct provider opens on its Engine tab instead.
   const skipTabResetRef = useRef(false)
+  const nextTabRef = useRef<string | null>(null)
   useEffect(() => {
     if (skipTabResetRef.current) {
       skipTabResetRef.current = false
       return
     }
-    setDetailTab("info")
+    setDetailTab(nextTabRef.current ?? "info")
+    nextTabRef.current = null
     setFeatureSupport(null)
   }, [selectedId])
 
@@ -405,6 +409,7 @@ export function ProvidersPanel({
       setDialogPage("select")
       setCreateTab("templates")
       await loadProvidersOnly()
+      if (isDirectProviderType(selectedProviderType)) nextTabRef.current = "engine"
       onSelect(instanceName)
       // Trigger health check for the new provider
       onRefreshHealth(instanceName)
@@ -447,7 +452,7 @@ export function ProvidersPanel({
 
   // Load config when switching to settings tab or selecting a different provider
   useEffect(() => {
-    if (detailTab === "settings" && selectedId) {
+    if ((detailTab === "settings" || detailTab === "engine") && selectedId) {
       setConfigLoading(true)
       setVisibleFields(new Set())
       setEditName(selectedId)
@@ -556,6 +561,9 @@ export function ProvidersPanel({
                 <Tabs value={detailTab} onValueChange={setDetailTab}>
                   <TabsList>
                     <TabsTrigger value="info"><TAB_ICONS.info className={TAB_ICON_CLASS} />Info</TabsTrigger>
+                    {isDirectProviderType(selectedProvider.provider_type) && (
+                      <TabsTrigger value="engine"><Terminal className={TAB_ICON_CLASS} />Engine</TabsTrigger>
+                    )}
                     {selectedProvider.enabled && <TabsTrigger value="try-it-out"><TAB_ICONS.tryItOut className={TAB_ICON_CLASS} />Try It Out</TabsTrigger>}
                     <TabsTrigger value="compatibility"><TAB_ICONS.compatibility className={TAB_ICON_CLASS} />Compatibility</TabsTrigger>
                     <TabsTrigger value="free-tier" onClick={() => loadFreeTierStatus(selectedProvider.instance_name)}><TAB_ICONS.freeTier className={TAB_ICON_CLASS} />Free Tier</TabsTrigger>
@@ -572,6 +580,17 @@ export function ProvidersPanel({
                       hideProviderSelector
                     />
                   </TabsContent>
+                  )}
+
+                  {isDirectProviderType(selectedProvider.provider_type) && (
+                    <TabsContent value="engine">
+                      <DirectEngineTab
+                        key={selectedProvider.instance_name}
+                        providerType={selectedProvider.provider_type}
+                        instanceName={selectedProvider.instance_name}
+                        binaryPath={editConfig.binary_path}
+                      />
+                    </TabsContent>
                   )}
 
                   <TabsContent value="info">

@@ -5,6 +5,7 @@
 pub mod commands;
 pub mod commands_clients;
 pub mod commands_coding_agents;
+pub mod commands_engines;
 pub mod commands_free_tier;
 pub mod commands_marketplace;
 pub mod commands_mcp;

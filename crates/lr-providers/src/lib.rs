@@ -126,6 +126,7 @@ pub mod anthropic;
 pub mod cerebras;
 pub mod cohere;
 pub mod deepinfra;
+pub mod direct;
 pub mod factory;
 pub mod features;
 pub mod gemini;

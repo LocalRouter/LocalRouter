@@ -2898,22 +2898,16 @@ impl SystemOneProviderFactory {
     pub const TYPESAFE: Self = Self {
         flavor: crate::systemone::SystemOneFlavor::TypeSafe,
     };
-    /// Convai's Laya via `laya-serve`.
-    pub const LAYA: Self = Self {
-        flavor: crate::systemone::SystemOneFlavor::Laya,
-    };
-    /// Kev via `python -m kev.serve`.
-    pub const KEV: Self = Self {
-        flavor: crate::systemone::SystemOneFlavor::Kev,
-    };
     /// Any other server that implements `POST /v1/systemone`.
     pub const GENERIC: Self = Self {
         flavor: crate::systemone::SystemOneFlavor::Generic,
     };
 
-    /// All System One factories, for registration.
-    pub fn all() -> [Self; 4] {
-        [Self::TYPESAFE, Self::LAYA, Self::KEV, Self::GENERIC]
+    /// System One factories for servers the user runs or hosts (TypeSafe,
+    /// any compatible server). Laya and Kev are Direct providers
+    /// (`crate::direct`), which launch their engines themselves.
+    pub fn all() -> [Self; 2] {
+        [Self::TYPESAFE, Self::GENERIC]
     }
 }
 
@@ -3867,10 +3861,18 @@ mod tests {
             Box::new(GitHubCopilotProviderFactory),
             Box::new(OpenAICodexProviderFactory),
             Box::new(SystemOneProviderFactory::TYPESAFE),
-            Box::new(SystemOneProviderFactory::LAYA),
-            Box::new(SystemOneProviderFactory::KEV),
             Box::new(SystemOneProviderFactory::GENERIC),
+            Box::new(crate::direct::LayaDirectProviderFactory::new(
+                test_supervisor(),
+            )),
+            Box::new(crate::direct::KevDirectProviderFactory::new(
+                test_supervisor(),
+            )),
         ]
+    }
+
+    fn test_supervisor() -> std::sync::Arc<lr_engines::Supervisor> {
+        lr_engines::Supervisor::new(&std::env::temp_dir().join("lr-factory-tests"))
     }
 
     // --- System One (decision) providers ---
@@ -3881,10 +3883,7 @@ mod tests {
             .iter()
             .map(|f| f.provider_type().to_string())
             .collect();
-        assert_eq!(
-            types,
-            vec!["typesafe", "laya", "kev", "systemone_compatible"]
-        );
+        assert_eq!(types, vec!["typesafe", "systemone_compatible"]);
         for f in SystemOneProviderFactory::all() {
             assert!(f.catalog_provider_id().is_none());
         }
@@ -3893,16 +3892,8 @@ mod tests {
             ProviderCategory::FirstParty
         );
         assert_eq!(
-            SystemOneProviderFactory::LAYA.category(),
-            ProviderCategory::Local
-        );
-        assert_eq!(
             SystemOneProviderFactory::GENERIC.category(),
             ProviderCategory::Generic
-        );
-        assert_eq!(
-            SystemOneProviderFactory::KEV.default_free_tier(),
-            FreeTierKind::AlwaysFreeLocal
         );
     }
 
@@ -3920,14 +3911,6 @@ mod tests {
         assert_eq!(p.name(), "typesafe");
         assert!(p.supports_systemone());
         assert!(!p.supports_chat());
-
-        // Laya and Kev work with no config at all.
-        for f in [
-            SystemOneProviderFactory::LAYA,
-            SystemOneProviderFactory::KEV,
-        ] {
-            assert!(f.create("local".into(), HashMap::new()).is_ok());
-        }
 
         // Generic needs a base URL, and it must be http(s).
         assert!(SystemOneProviderFactory::GENERIC

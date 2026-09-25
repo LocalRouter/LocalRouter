@@ -191,8 +191,12 @@ async fn native_decision_end_to_end() {
         .mount(&mock)
         .await;
 
-    let (base_url, secret) =
-        start_server(vec![("laya", "laya", vec![("base_url", mock.uri())])]).await;
+    let (base_url, secret) = start_server(vec![(
+        "laya",
+        "systemone_compatible",
+        vec![("base_url", mock.uri())],
+    )])
+    .await;
     let resp = post(
         &base_url,
         "/v1/systemone",
@@ -220,8 +224,12 @@ async fn unprefixed_route_works() {
         .respond_with(ResponseTemplate::new(200).set_body_json(native_answer()))
         .mount(&mock)
         .await;
-    let (base_url, secret) =
-        start_server(vec![("laya", "laya", vec![("base_url", mock.uri())])]).await;
+    let (base_url, secret) = start_server(vec![(
+        "laya",
+        "systemone_compatible",
+        vec![("base_url", mock.uri())],
+    )])
+    .await;
     let resp = post(
         &base_url,
         "/systemone",
@@ -241,8 +249,12 @@ async fn upstream_422_is_passed_through_verbatim() {
         .respond_with(ResponseTemplate::new(422).set_body_json(detail.clone()))
         .mount(&mock)
         .await;
-    let (base_url, secret) =
-        start_server(vec![("laya", "laya", vec![("base_url", mock.uri())])]).await;
+    let (base_url, secret) = start_server(vec![(
+        "laya",
+        "systemone_compatible",
+        vec![("base_url", mock.uri())],
+    )])
+    .await;
     let resp = post(
         &base_url,
         "/v1/systemone",
@@ -263,8 +275,12 @@ async fn upstream_server_error_is_a_502_envelope() {
         .respond_with(ResponseTemplate::new(529).set_body_string("overloaded"))
         .mount(&mock)
         .await;
-    let (base_url, secret) =
-        start_server(vec![("laya", "laya", vec![("base_url", mock.uri())])]).await;
+    let (base_url, secret) = start_server(vec![(
+        "laya",
+        "systemone_compatible",
+        vec![("base_url", mock.uri())],
+    )])
+    .await;
     let resp = post(
         &base_url,
         "/v1/systemone",

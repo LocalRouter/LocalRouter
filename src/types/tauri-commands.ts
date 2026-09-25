@@ -449,6 +449,80 @@ export interface ProviderInstanceInfo {
 }
 
 /**
+ * One way to install an engine on this platform.
+ * Rust: crates/lr-engines/src/detect.rs - InstallOptionView (flattens recipes::InstallOption)
+ */
+export interface EngineInstallOptionView {
+  id: string
+  label: string
+  command: string
+  /** Package manager the command uses, e.g. "brew" */
+  program: string
+  needs_sudo: boolean
+  notes: string | null
+  /** The app may run this command (no password prompt needed) */
+  runnable: boolean
+  program_found: boolean
+  recommended: boolean
+}
+
+/** Rust: crates/lr-engines/src/detect.rs - RequirementStatus */
+export interface EngineRequirementStatus {
+  recipe: string
+  display_name: string
+  found: boolean
+  path: string | null
+}
+
+/**
+ * Detection result for a Direct provider's engine.
+ * Rust: crates/lr-engines/src/detect.rs - EngineStatus
+ */
+export interface EngineStatus {
+  recipe: string
+  display_name: string
+  found: boolean
+  path: string | null
+  binary: string | null
+  version: string | null
+  build: number | null
+  supported: boolean
+  unsupported_reason: string | null
+  requirements: EngineRequirementStatus[]
+  install: EngineInstallOptionView[]
+  docs_url: string
+}
+
+/** Rust: crates/lr-engines/src/supervisor.rs - EngineProcessInfo */
+export interface EngineProcessInfo {
+  key: string
+  label: string
+  state: 'running' | 'exited' | 'failed'
+  port: number | null
+  pid: number | null
+  uptime_secs: number | null
+  idle_secs: number | null
+  in_flight: number
+  restarts: number
+  last_error: string | null
+}
+
+/** Payload of the `engine-install-output` event */
+export interface EngineInstallOutputEvent {
+  run_id: string
+  stream: 'stdout' | 'stderr'
+  line: string
+}
+
+/** Payload of the `engine-install-finished` event */
+export interface EngineInstallFinishedEvent {
+  run_id: string
+  exit_code: number | null
+  cancelled: boolean
+  error: string | null
+}
+
+/**
  * Provider type information from the registry.
  * Rust: crates/lr-providers/src/registry.rs - ProviderTypeInfo struct
  */
@@ -3649,6 +3723,29 @@ export interface ApiPathSupport {
   chat_completions: SupportLevel
   completions: SupportLevel
   responses: SupportLevel
+}
+
+/** Params for engine_status */
+export interface EngineStatusParams {
+  recipeId: string
+  binaryPath?: string | null
+  refresh?: boolean
+}
+
+/** Params for engine_install */
+export interface EngineInstallParams {
+  recipeId: string
+  optionId: string
+}
+
+/** Params for engine_install_cancel */
+export interface EngineInstallCancelParams {
+  runId: string
+}
+
+/** Params for engine_logs and engine_stop */
+export interface EngineKeyParams {
+  key: string
 }
 
 /** Params for get_api_path_support */
