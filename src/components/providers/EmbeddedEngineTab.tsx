@@ -19,6 +19,7 @@ import { listenSafe } from "@/hooks/useTauriListener"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card"
+import { HuggingFaceAccountCard } from "@/components/providers/HuggingFaceAccountCard"
 import type {
   EngineInstallFinishedEvent,
   EngineInstallOutputEvent,
@@ -389,6 +390,12 @@ export function EmbeddedEngineTab({ providerType, instanceName, binaryPath }: Em
             <InstallSection status={status} onFinished={onInstallFinished} />
           </CardContent>
         </Card>
+      )}
+
+      {/* llama.cpp shows the account in its Models tab; the System One
+          engines download their checkpoints with it (HF_TOKEN). */}
+      {providerType !== "llamacpp_embedded" && (
+        <HuggingFaceAccountCard description="Optional. The engine downloads its checkpoints from Hugging Face with this account (for gated or private checkpoints and higher rate limits). Shared by all Local Embedded providers." />
       )}
 
       <Card>

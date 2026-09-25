@@ -522,6 +522,241 @@ export interface EngineInstallFinishedEvent {
   error: string | null
 }
 
+// ============================================================================
+// Local models (Hugging Face Hub, downloads, library, Hugging Face account)
+// ============================================================================
+
+/** Rust: crates/lr-local-models/src/hub.rs - HubModelSummary struct */
+export interface HubModelSummary {
+  id: string
+  author: string | null
+  downloads: number
+  likes: number
+  last_modified: string | null
+  /** null when not gated, else "auto" / "manual" */
+  gated: string | null
+  pipeline_tag: string | null
+  library_name: string | null
+  tags: string[]
+  /** Parameter count (gguf.total) */
+  parameters: number | null
+  architecture: string | null
+  context_length: number | null
+}
+
+/** Rust: crates/lr-local-models/src/hub.rs - HubPage struct */
+export interface HubPage {
+  models: HubModelSummary[]
+  /** Pass back as `cursor` for the next page */
+  next_cursor: string | null
+}
+
+/** Rust: crates/lr-local-models/src/hub.rs - HubFile struct */
+export interface HubFile {
+  path: string
+  size: number | null
+  sha256: string | null
+}
+
+/** Rust: crates/lr-local-models/src/hub.rs - GgufVariant struct */
+export interface GgufVariant {
+  /** File name without .gguf and the split suffix */
+  name: string
+  /** Repo paths of the parts, in order */
+  files: string[]
+  size_bytes: number | null
+  /** Quantisation guessed from the file name */
+  quant: string | null
+  /** Every split part is present */
+  complete: boolean
+}
+
+/** Rust: src-tauri/src/ui/commands_local_models.rs - LocalRepoDetails struct */
+export interface LocalRepoDetails {
+  id: string
+  /** Commit SHA; pass back as `revision` */
+  sha: string | null
+  gated: string | null
+  gate_prompt: string | null
+  license: string | null
+  pipeline_tag: string | null
+  repo_url: string
+  variants: GgufVariant[]
+  files: HubFile[]
+}
+
+/** Rust: crates/lr-local-models/src/classify.rs - ModelKind enum */
+export type LocalModelKind = 'chat' | 'completion' | 'embedding' | 'reranker' | 'projector' | 'adapter'
+
+/** Rust: crates/lr-local-models/src/gguf.rs - GgufSummary struct */
+export interface GgufSummary {
+  architecture: string | null
+  name: string | null
+  file_type: number | null
+  quant: string | null
+  context_length: number | null
+  embedding_length: number | null
+  block_count: number | null
+  head_count: number | null
+  head_count_kv: number | null
+  key_length: number | null
+  value_length: number | null
+  sliding_window: number | null
+  pooling_type: number | null
+  causal: boolean | null
+  has_chat_template: boolean
+  chat_template_mentions_tools: boolean
+  split_count: number | null
+  expert_count: number | null
+  is_projector: boolean
+  has_cls_tensors: boolean
+}
+
+/** Rust: crates/lr-local-models/src/fit.rs - KvCacheType enum */
+export type KvCacheType = 'f16' | 'q8_0' | 'q4_0'
+
+/** Rust: crates/lr-local-models/src/fit.rs - FitVerdict enum */
+export type FitVerdict = 'fits' | 'tight' | 'too_large' | 'unknown'
+
+/** Rust: crates/lr-local-models/src/fit.rs - FitEstimate struct */
+export interface FitEstimate {
+  weights_bytes: number
+  kv_bytes: number
+  overhead_bytes: number
+  total_bytes: number
+  budget_bytes: number | null
+  verdict: FitVerdict
+  context_length: number
+}
+
+/** Rust: crates/lr-local-models/src/hardware.rs - HardwareInfo struct */
+export interface HardwareInfo {
+  os: string
+  arch: string
+  total_ram_bytes: number
+  available_ram_bytes: number
+  cpu_cores: number
+  unified_memory: boolean
+  gpu_budget_bytes: number | null
+}
+
+/** Rust: src-tauri/src/ui/commands_local_models.rs - RemoteModelInspection struct */
+export interface RemoteModelInspection {
+  summary: GgufSummary
+  kind: LocalModelKind
+  fit: FitEstimate
+  /** Largest standard context (4K-128K) that fits */
+  max_context: number | null
+  hardware: HardwareInfo
+}
+
+/** Rust: crates/lr-local-models/src/download.rs - DownloadState enum */
+export type DownloadState = 'queued' | 'running' | 'paused' | 'verifying' | 'done' | 'failed' | 'cancelled'
+
+/**
+ * A download job. Also the payload of the `local-model-download-progress` event.
+ * Rust: crates/lr-local-models/src/download.rs - DownloadJobView struct
+ */
+export interface DownloadJobView {
+  id: string
+  repo: string
+  /** Commit SHA the job is pinned to */
+  revision: string
+  files: string[]
+  state: DownloadState
+  bytes_done: number
+  bytes_total: number
+  speed_bps: number
+  current_file: string | null
+  error: string | null
+  target_dir: string
+}
+
+/**
+ * Payload of the `local-model-download-finished` event.
+ * Rust: src-tauri/src/ui/commands_local_models.rs - DownloadFinishedEvent struct
+ */
+export interface DownloadFinishedEvent {
+  job: DownloadJobView
+  /** Library ids added by a finished download */
+  added_models: string[]
+  /** Files downloaded but could not be added to the library */
+  library_error: string | null
+}
+
+/**
+ * Payload of the `local-models-library-changed` event.
+ * Rust: src-tauri/src/ui/commands_local_models.rs - LibraryChangedEvent struct
+ */
+export interface LibraryChangedEvent {
+  added_models: string[]
+}
+
+/** Rust: crates/lr-local-models/src/library.rs - EntrySource enum */
+export type LibraryEntrySource =
+  | { type: 'hugging_face'; repo: string; revision: string; files: string[] }
+  | { type: 'imported' }
+
+/** Rust: crates/lr-local-models/src/library.rs - LibraryEntry struct */
+export interface LibraryEntry {
+  id: string
+  display_name: string
+  source: LibraryEntrySource
+  model_path: string
+  extra_parts: string[]
+  projector_path: string | null
+  kind: LocalModelKind
+  quant: string | null
+  architecture: string | null
+  context_length: number | null
+  pooling_type: number | null
+  has_tools: boolean
+  size_bytes: number
+  installed_at: string
+}
+
+/** Rust: src-tauri/src/ui/commands_local_models.rs - LocalLibraryView struct */
+export interface LocalLibraryView {
+  entries: LibraryEntry[]
+  disk_usage_bytes: number
+  storage_dir: string
+}
+
+/**
+ * A model with an engine process; models not listed are unloaded.
+ * Rust: crates/lr-providers/src/embedded/mod.rs - EmbeddedModelState struct
+ */
+export interface EmbeddedModelState {
+  model: string
+  state: 'running' | 'exited' | 'failed'
+  port: number | null
+  idle_secs: number | null
+  last_error: string | null
+}
+
+/** Rust: crates/lr-local-models/src/auth.rs - HfAccount struct */
+export interface HfAccount {
+  signed_in: boolean
+  method: 'token' | 'oauth' | null
+  username: string | null
+  /** OAuth access-token expiry (unix seconds) */
+  expires_at: number | null
+}
+
+/** Rust: src-tauri/src/ui/commands_local_models.rs - HfSignInStart struct */
+export interface HfSignInStart {
+  flow_id: string
+  /** Open in the browser */
+  auth_url: string
+}
+
+/** Rust: src-tauri/src/ui/commands_local_models.rs - HfSignInStatus struct */
+export interface HfSignInStatus {
+  state: 'pending' | 'success' | 'error' | 'timeout' | 'cancelled'
+  message: string | null
+  account: HfAccount | null
+}
+
 /**
  * Provider type information from the registry.
  * Rust: crates/lr-providers/src/registry.rs - ProviderTypeInfo struct
@@ -3746,6 +3981,84 @@ export interface EngineInstallCancelParams {
 /** Params for engine_logs and engine_stop */
 export interface EngineKeyParams {
   key: string
+}
+
+/** Params for local_models_search */
+export interface LocalModelsSearchParams {
+  query?: string | null
+  /** Hub tags, e.g. ["gguf"] */
+  filters?: string[] | null
+  sort?: 'downloads' | 'likes' | 'trendingScore' | 'lastModified' | null
+  cursor?: string | null
+  limit?: number | null
+}
+
+/** Params for local_models_repo */
+export interface LocalModelsRepoParams {
+  repo: string
+  revision?: string | null
+}
+
+/** Params for local_models_inspect_remote */
+export interface LocalModelsInspectRemoteParams {
+  repo: string
+  revision?: string | null
+  /** First part of the variant */
+  path: string
+  /** Total size of the variant */
+  sizeBytes: number
+  contextLength?: number | null
+  kvCache?: KvCacheType | null
+}
+
+/** Params for local_models_download_start */
+export interface LocalModelsDownloadStartParams {
+  repo: string
+  revision?: string | null
+  files: string[]
+}
+
+/** Params for local_models_download_pause, _resume and _cancel */
+export interface LocalModelsDownloadIdParams {
+  id: string
+}
+
+/** Params for local_models_import */
+export interface LocalModelsImportParams {
+  path: string
+}
+
+/** Params for local_models_rename */
+export interface LocalModelsRenameParams {
+  id: string
+  displayName: string
+}
+
+/** Params for local_models_remove */
+export interface LocalModelsRemoveParams {
+  id: string
+  deleteFiles: boolean
+}
+
+/** Params for local_models_load and local_models_unload */
+export interface LocalModelsLoadParams {
+  instanceName: string
+  model: string
+}
+
+/** Params for local_models_states */
+export interface LocalModelsStatesParams {
+  instanceName: string
+}
+
+/** Params for local_models_hf_set_token */
+export interface LocalModelsHfSetTokenParams {
+  token: string
+}
+
+/** Params for local_models_hf_sign_in_poll and local_models_hf_sign_in_cancel */
+export interface LocalModelsHfSignInFlowParams {
+  flowId: string
 }
 
 /** Params for get_api_path_support */

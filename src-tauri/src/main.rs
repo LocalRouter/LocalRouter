@@ -362,6 +362,15 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             engine_supervisor.clone(),
         ),
     ));
+    // Hugging Face account (keychain), shared by downloads and passed to
+    // Local Embedded engines as HF_TOKEN.
+    let hf_hub = lr_local_models::HubClient::default();
+    let hf_credentials =
+        ui::commands_local_models::hf_credentials(keychain.clone(), hf_hub.clone());
+    {
+        let credentials = hf_credentials.clone();
+        lr_providers::embedded::set_hf_token_source(Arc::new(move || credentials.token()));
+    }
     // Subscription providers (OAuth-based)
     provider_registry.register_factory(Arc::new(GitHubCopilotProviderFactory));
     provider_registry.register_factory(Arc::new(OpenAICodexProviderFactory));
@@ -785,6 +794,14 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             app.manage(provider_registry.clone());
             app.manage(engine_supervisor.clone());
             app.manage(local_models_library.clone());
+            app.manage(ui::commands_local_models::LocalModels::new(
+                local_models_library.clone(),
+                hf_credentials.clone(),
+                hf_hub.clone(),
+                Arc::new(ui::commands_local_models::TauriEventSink(
+                    app.handle().clone(),
+                )),
+            ));
             app.manage(Arc::new(lr_engines::InstallRunner::new()));
             app.manage(server_manager.clone());
             app.manage(app_router.clone());
@@ -2844,6 +2861,29 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands_engines::engine_processes,
             ui::commands_engines::engine_logs,
             ui::commands_engines::engine_stop,
+            ui::commands_local_models::local_models_search,
+            ui::commands_local_models::local_models_repo,
+            ui::commands_local_models::local_models_inspect_remote,
+            ui::commands_local_models::local_models_hardware,
+            ui::commands_local_models::local_models_download_start,
+            ui::commands_local_models::local_models_download_pause,
+            ui::commands_local_models::local_models_download_resume,
+            ui::commands_local_models::local_models_download_cancel,
+            ui::commands_local_models::local_models_downloads,
+            ui::commands_local_models::local_models_downloads_clear,
+            ui::commands_local_models::local_models_library,
+            ui::commands_local_models::local_models_import,
+            ui::commands_local_models::local_models_rename,
+            ui::commands_local_models::local_models_remove,
+            ui::commands_local_models::local_models_load,
+            ui::commands_local_models::local_models_unload,
+            ui::commands_local_models::local_models_states,
+            ui::commands_local_models::local_models_hf_account,
+            ui::commands_local_models::local_models_hf_set_token,
+            ui::commands_local_models::local_models_hf_sign_out,
+            ui::commands_local_models::local_models_hf_sign_in,
+            ui::commands_local_models::local_models_hf_sign_in_poll,
+            ui::commands_local_models::local_models_hf_sign_in_cancel,
             ui::commands_routellm::routellm_get_status,
             ui::commands_routellm::routellm_test_prediction,
             ui::commands_routellm::routellm_unload,

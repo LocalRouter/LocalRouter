@@ -32,6 +32,7 @@ pub use fit::{estimate, max_context_that_fits, FitEstimate, FitVerdict, KvCacheT
 pub use gguf::{GgufError, GgufHeader, GgufSummary, GgufValue};
 pub use hardware::HardwareInfo;
 pub use hub::{
-    HubClient, HubError, HubFile, HubModelInfo, HubModelSummary, HubPage, HubSearch, HubUser,
+    gguf_variants, GgufVariant, HubClient, HubError, HubFile, HubModelInfo, HubModelSummary,
+    HubPage, HubSearch, HubUser,
 };
 pub use library::{default_storage_dir, EntrySource, Library, LibraryEntry, LibraryError};

@@ -445,11 +445,79 @@ impl HubClient {
         token: Option<&str>,
     ) -> Result<GgufHeader, GgufError> {
         validate_repo_id(repo)?;
+        crate::download::validate_repo_path(path)?;
         let rev = revision.filter(|r| !r.is_empty()).unwrap_or("main");
         let url = self.parse_url(&self.resolve_url(repo, rev, path))?;
         gguf::read_remote_header_with(&self.inner.client, url, &self.inner.endpoint, token, repo)
             .await
     }
+}
+
+/// A downloadable GGUF model in a repository: a single file, or all parts of
+/// a split model (`-00001-of-00003`).
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct GgufVariant {
+    /// File name without `.gguf` and the split suffix (with its directory).
+    pub name: String,
+    /// Repo paths of the parts, in order (the first one holds the header).
+    pub files: Vec<String>,
+    /// Total size; `None` when the Hub did not report a part's size.
+    pub size_bytes: Option<u64>,
+    /// Quantisation guessed from the file name (display only; the header's
+    /// `general.file_type` is authoritative).
+    pub quant: Option<String>,
+    /// Every split part is present in the listing.
+    pub complete: bool,
+}
+
+/// Group a repository's GGUF files into downloadable variants (split parts
+/// together), smallest first. Non-GGUF files are ignored.
+pub fn gguf_variants(files: &[HubFile]) -> Vec<GgufVariant> {
+    let mut groups: std::collections::BTreeMap<String, Vec<(u32, u32, &HubFile)>> =
+        std::collections::BTreeMap::new();
+    for file in files {
+        let (dir, name) = match file.path.rsplit_once('/') {
+            Some((d, n)) => (format!("{d}/"), n),
+            None => (String::new(), file.path.as_str()),
+        };
+        let stem = gguf::strip_gguf_ext(name);
+        if stem.len() == name.len() {
+            continue;
+        }
+        let (key, part, total) = match gguf::split_suffix(stem) {
+            Some((prefix, part, total)) => (format!("{dir}{prefix}"), part, total),
+            None => (format!("{dir}{stem}"), 1, 1),
+        };
+        groups
+            .entry(format!("{key}#{total}"))
+            .or_default()
+            .push((part, total, file));
+    }
+    let mut variants: Vec<GgufVariant> = groups
+        .into_iter()
+        .map(|(key, mut parts)| {
+            parts.sort_by_key(|p| p.0);
+            parts.dedup_by_key(|p| p.0);
+            let total = parts[0].1;
+            let complete = parts.len() == total as usize
+                && parts.iter().enumerate().all(|(i, p)| p.0 == i as u32 + 1);
+            let name = key.rsplit_once('#').map(|(n, _)| n).unwrap_or(&key);
+            GgufVariant {
+                name: name.to_string(),
+                files: parts.iter().map(|p| p.2.path.clone()).collect(),
+                size_bytes: parts.iter().map(|p| p.2.size).sum(),
+                quant: gguf::quant_from_filename(&parts[0].2.path),
+                complete,
+            }
+        })
+        .collect();
+    variants.sort_by(|a, b| {
+        a.size_bytes
+            .unwrap_or(u64::MAX)
+            .cmp(&b.size_bytes.unwrap_or(u64::MAX))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    variants
 }
 
 /// Validate a repo id (`name` or `org/name`).
@@ -600,6 +668,67 @@ mod tests {
        "gated":"manual","tags":[]},
       {"_id":"3","modelId":"gpt2"}
     ]"#;
+
+    fn file(path: &str, size: Option<u64>) -> HubFile {
+        HubFile {
+            path: path.into(),
+            size,
+            sha256: None,
+        }
+    }
+
+    #[test]
+    fn groups_gguf_variants() {
+        let files = vec![
+            file("README.md", Some(10)),
+            file("Qwen3-8B-Q8_0.gguf", Some(8_000)),
+            file("Qwen3-8B-Q4_K_M.gguf", Some(5_000)),
+            file("big/Qwen3-8B-BF16-00002-of-00002.gguf", Some(9_000)),
+            file("big/Qwen3-8B-BF16-00001-of-00002.gguf", Some(9_000)),
+            file("broken-Q2_K-00001-of-00003.gguf", Some(1)),
+            file("mmproj-F16.GGUF", None),
+        ];
+        let v = gguf_variants(&files);
+        let names: Vec<&str> = v.iter().map(|v| v.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "broken-Q2_K",
+                "Qwen3-8B-Q4_K_M",
+                "Qwen3-8B-Q8_0",
+                "big/Qwen3-8B-BF16",
+                "mmproj-F16"
+            ]
+        );
+        assert!(!v[0].complete);
+        assert_eq!(v[1].quant.as_deref(), Some("Q4_K_M"));
+        assert_eq!(v[1].files, vec!["Qwen3-8B-Q4_K_M.gguf"]);
+        let split = &v[3];
+        assert!(split.complete);
+        assert_eq!(split.size_bytes, Some(18_000));
+        assert_eq!(
+            split.files,
+            vec![
+                "big/Qwen3-8B-BF16-00001-of-00002.gguf",
+                "big/Qwen3-8B-BF16-00002-of-00002.gguf"
+            ]
+        );
+        // Unknown size sorts last.
+        assert_eq!(v[4].size_bytes, None);
+        assert!(gguf_variants(&[file("model.safetensors", Some(1))]).is_empty());
+    }
+
+    #[tokio::test]
+    async fn header_read_rejects_unsafe_paths() {
+        let hub = HubClient::new("http://127.0.0.1:9");
+        for bad in ["../other/x.gguf", "a/../../x.gguf", "/abs.gguf", ""] {
+            let err = hub.gguf_header("org/repo", None, bad, None).await;
+            assert!(
+                matches!(err, Err(GgufError::Hub(HubError::InvalidRequest(_)))),
+                "{bad}"
+            );
+        }
+    }
 
     #[test]
     fn parses_search_fixture() {

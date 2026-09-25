@@ -148,6 +148,13 @@ export const mockData = {
       api_key_set: false,
     },
     {
+      instance_name: "llamacpp-local",
+      provider_type: "llamacpp_embedded",
+      enabled: true,
+      display_name: "llama.cpp (Local)",
+      api_key_set: false,
+    },
+    {
       instance_name: "gemini-google",
       provider_type: "gemini",
       enabled: true,
@@ -639,6 +646,28 @@ export const mockData = {
       api_key_url: "https://console.typesafe.ai/keys",
     },
     {
+      provider_type: "llamacpp_embedded",
+      display_name: "llama.cpp",
+      category: "embedded",
+      description: "Run GGUF models from Hugging Face with llama.cpp. LocalRouter downloads models, starts llama-server on demand and unloads idle models",
+      setup_parameters: [
+        { key: "context", param_type: "string", required: false, description: "Context length in tokens, or auto (fit to memory)", default_value: "auto", sensitive: false },
+        { key: "gpu_layers", param_type: "string", required: false, description: "Layers on the GPU: auto, all, or a number", default_value: "auto", sensitive: false },
+        { key: "flash_attention", param_type: "string", required: false, description: "Flash attention: auto, on or off", default_value: "auto", sensitive: false },
+        { key: "kv_cache", param_type: "string", required: false, description: "KV cache type: f16, q8_0 or q4_0 (quantized saves memory)", default_value: "f16", sensitive: false },
+        { key: "parallel", param_type: "number", required: false, description: "Parallel request slots (default: llama.cpp's choice)", sensitive: false },
+        { key: "threads", param_type: "number", required: false, description: "CPU threads (default: llama.cpp's choice)", sensitive: false },
+        { key: "max_loaded_models", param_type: "number", required: false, description: "Models kept loaded at once; the least recently used idle one is unloaded", default_value: "1", sensitive: false },
+        { key: "idle_unload_minutes", param_type: "number", required: false, description: "Unload a model after this many idle minutes (0 = keep loaded)", default_value: "15", sensitive: false },
+        { key: "binary_path", param_type: "string", required: false, description: "Path to llama-server (leave empty to find it on PATH)", sensitive: false },
+      ],
+      default_free_tier: { kind: "always_free_local" },
+      free_tier_short_text: "Free — runs locally",
+      free_tier_long_text: "Runs entirely on your machine. No API costs, no rate limits.",
+      free_tier_notes: null,
+      docs_url: "https://github.com/ggml-org/llama.cpp",
+    },
+    {
       provider_type: "laya",
       display_name: "Laya",
       category: "embedded",
@@ -935,6 +964,9 @@ export const mockData = {
     { id: "multilingual", provider: "laya-local", display_name: "Laya Multilingual", context_length: 1024 },
     // Von (System One decision model)
     { id: "von-latest", provider: "von-local", display_name: "Von", context_length: 8192 },
+    // llama.cpp Local Embedded (models from the in-app library)
+    { id: "qwen3-8b-q4_k_m", provider: "llamacpp-local", display_name: "Qwen3 8B Q4_K_M", context_length: 40960 },
+    { id: "nomic-embed-text-v1.5-q8_0", provider: "llamacpp-local", display_name: "nomic-embed-text v1.5 Q8_0", context_length: 2048 },
   ],
 
   stats: {
@@ -982,6 +1014,7 @@ export const mockData = {
       "laya-local": { status: "healthy" as const, name: "Laya (Local)", latency_ms: 18, last_check: new Date().toISOString() },
       // Von's engine is not installed yet in the demo (see engine_status)
       "von-local": { status: "unknown" as const, name: "Von (Local)", latency_ms: null, last_check: null },
+      "llamacpp-local": { status: "healthy" as const, name: "llama.cpp (Local)", latency_ms: 12, last_check: new Date().toISOString() },
       "gemini-google": { status: "healthy" as const, name: "Gemini", latency_ms: 198, last_check: new Date().toISOString() },
       "groq-fast": { status: "healthy" as const, name: "Groq (Fast)", latency_ms: 89, last_check: new Date().toISOString() },
       "openrouter-backup": { status: "unknown" as const, name: "OpenRouter (Backup)", latency_ms: null, last_check: null },

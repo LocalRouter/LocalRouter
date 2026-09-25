@@ -4,8 +4,9 @@ import { open } from "@tauri-apps/plugin-shell"
 import { isValidHttpUrl } from "@/utils/url"
 import { listenSafe } from "@/hooks/useTauriListener"
 import { EmbeddedEngineTab, isEmbeddedProviderType } from "@/components/providers/EmbeddedEngineTab"
+import { LocalModelsTab } from "@/components/providers/LocalModelsTab"
 import { toast } from "sonner"
-import { CheckCircle, XCircle, AlertCircle, Plus, Loader2, RefreshCw, FlaskConical, Grid, Settings, ArrowLeft, Eye, EyeOff, Coins, Pencil, RotateCcw, Copy, Trash2, ExternalLink, Terminal } from "lucide-react"
+import { CheckCircle, XCircle, AlertCircle, Plus, Loader2, RefreshCw, FlaskConical, Grid, Settings, ArrowLeft, Eye, EyeOff, Coins, Pencil, RotateCcw, Copy, Trash2, ExternalLink, Terminal, Boxes } from "lucide-react"
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import {
   Tooltip,
@@ -452,7 +453,7 @@ export function ProvidersPanel({
 
   // Load config when switching to settings tab or selecting a different provider
   useEffect(() => {
-    if ((detailTab === "settings" || detailTab === "engine") && selectedId) {
+    if ((detailTab === "settings" || detailTab === "engine" || detailTab === "models") && selectedId) {
       setConfigLoading(true)
       setVisibleFields(new Set())
       setEditName(selectedId)
@@ -564,6 +565,9 @@ export function ProvidersPanel({
                     {isEmbeddedProviderType(selectedProvider.provider_type) && (
                       <TabsTrigger value="engine"><Terminal className={TAB_ICON_CLASS} />Engine</TabsTrigger>
                     )}
+                    {selectedProvider.provider_type === "llamacpp_embedded" && (
+                      <TabsTrigger value="models"><Boxes className={TAB_ICON_CLASS} />Models</TabsTrigger>
+                    )}
                     {selectedProvider.enabled && <TabsTrigger value="try-it-out"><TAB_ICONS.tryItOut className={TAB_ICON_CLASS} />Try It Out</TabsTrigger>}
                     <TabsTrigger value="compatibility"><TAB_ICONS.compatibility className={TAB_ICON_CLASS} />Compatibility</TabsTrigger>
                     <TabsTrigger value="free-tier" onClick={() => loadFreeTierStatus(selectedProvider.instance_name)}><TAB_ICONS.freeTier className={TAB_ICON_CLASS} />Free Tier</TabsTrigger>
@@ -589,6 +593,16 @@ export function ProvidersPanel({
                         providerType={selectedProvider.provider_type}
                         instanceName={selectedProvider.instance_name}
                         binaryPath={editConfig.binary_path}
+                      />
+                    </TabsContent>
+                  )}
+
+                  {selectedProvider.provider_type === "llamacpp_embedded" && (
+                    <TabsContent value="models">
+                      <LocalModelsTab
+                        key={selectedProvider.instance_name}
+                        instanceName={selectedProvider.instance_name}
+                        kvCache={editConfig.kv_cache}
                       />
                     </TabsContent>
                   )}
