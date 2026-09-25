@@ -19,7 +19,7 @@ export interface SetupParameter {
   sensitive: boolean
 }
 
-export type ProviderCategory = 'generic' | 'local' | 'subscription' | 'first_party' | 'third_party'
+export type ProviderCategory = 'direct' | 'generic' | 'local' | 'subscription' | 'first_party' | 'third_party'
 
 export interface ProviderType {
   provider_type: string
@@ -31,6 +31,8 @@ export interface ProviderType {
   free_tier_long_text?: string
   docs_url?: string | null
   api_key_url?: string | null
+  /** False for retired types that are hidden from the Add Provider list */
+  listed?: boolean
 }
 
 interface OAuthFlowResult {

@@ -184,6 +184,7 @@ export function ProvidersPanel({
   // Create form state
   const [dialogPage, setDialogPage] = useState<"select" | "configure">("select")
   const [createTab, setCreateTab] = useState<"templates" | "custom">("templates")
+  const [customTypeId, setCustomTypeId] = useState<string>("openai_compatible")
   const [selectedProviderType, setSelectedProviderType] = useState<string>("")
   const [isSubmitting, setIsSubmitting] = useState(false)
 
@@ -1690,11 +1691,15 @@ export function ProvidersPanel({
               {/* Templates Tab */}
               <TabsContent value="templates" className="mt-4">
                 {(() => {
-                  // Group providers by category from backend (excluding generic for templates)
-                  const localProviders = providerTypes.filter(t => t.category === 'local')
-                  const subscriptionProviders = providerTypes.filter(t => t.category === 'subscription')
-                  const firstPartyProviders = providerTypes.filter(t => t.category === 'first_party')
-                  const thirdPartyProviders = providerTypes.filter(t => t.category === 'third_party')
+                  // Group providers by category from backend (excluding generic for templates).
+                  // Unlisted types (retired, e.g. the legacy llama.cpp server wrapper) are
+                  // hidden; their existing instances keep working.
+                  const listedTypes = providerTypes.filter(t => t.listed !== false)
+                  const directProviders = listedTypes.filter(t => t.category === 'direct')
+                  const localProviders = listedTypes.filter(t => t.category === 'local')
+                  const subscriptionProviders = listedTypes.filter(t => t.category === 'subscription')
+                  const firstPartyProviders = listedTypes.filter(t => t.category === 'first_party')
+                  const thirdPartyProviders = listedTypes.filter(t => t.category === 'third_party')
 
                   const ProviderButton = ({ type }: { type: ProviderType }) => (
                     <button
@@ -1748,6 +1753,11 @@ export function ProvidersPanel({
                   return (
                     <div className="space-y-6">
                       <ProviderSection
+                        title="Direct Providers"
+                        description="LocalRouter runs the engine on your machine and manages models directly in-app: browse and download from Hugging Face, load and unload on demand. Install the engine once with your package manager."
+                        providers={directProviders}
+                      />
+                      <ProviderSection
                         title="Local Providers"
                         description="Connect to models running on your machine"
                         providers={localProviders}
@@ -1775,7 +1785,11 @@ export function ProvidersPanel({
               {/* Custom Tab - Generic/OpenAI-compatible only */}
               <TabsContent value="custom" className="mt-4">
                 {(() => {
-                  const genericType = providerTypes.find(t => t.category === 'generic')
+                  const genericTypes = providerTypes.filter(t => t.category === 'generic' && t.listed !== false)
+                  const genericType =
+                    genericTypes.find(t => t.provider_type === customTypeId) ??
+                    genericTypes.find(t => t.provider_type === 'openai_compatible') ??
+                    genericTypes[0]
                   if (!genericType) {
                     return (
                       <div className="text-center py-8 text-muted-foreground">
@@ -1785,15 +1799,37 @@ export function ProvidersPanel({
                   }
                   return (
                     <div className="space-y-4">
+                      {genericTypes.length > 1 && (
+                        <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label="Custom provider kind">
+                          {genericTypes.map(t => (
+                            <button
+                              key={t.provider_type}
+                              type="button"
+                              role="radio"
+                              aria-checked={t.provider_type === genericType.provider_type}
+                              onClick={() => setCustomTypeId(t.provider_type)}
+                              className={cn(
+                                "rounded border p-2 text-left text-sm transition-colors",
+                                t.provider_type === genericType.provider_type
+                                  ? "border-primary bg-accent"
+                                  : "border-muted hover:bg-accent"
+                              )}
+                            >
+                              {t.display_name}
+                            </button>
+                          ))}
+                        </div>
+                      )}
                       <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded p-3">
                         <p className="text-sm font-medium text-blue-900 dark:text-blue-100">
-                          OpenAI-Compatible Provider
+                          {genericType.display_name}
                         </p>
                         <p className="text-xs text-blue-700 dark:text-blue-300 mt-1">
-                          Connect to any API that follows the OpenAI API format
+                          {genericType.description}
                         </p>
                       </div>
                       <ProviderForm
+                        key={genericType.provider_type}
                         mode="create"
                         providerType={genericType}
                         initialInstanceName={generateDefaultName(genericType.display_name)}

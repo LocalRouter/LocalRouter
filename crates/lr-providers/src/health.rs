@@ -31,12 +31,19 @@ impl Default for HealthCheckConfig {
     }
 }
 
+/// Registered provider instances: (instance name, provider).
+type RegisteredProviders = Arc<RwLock<Vec<(String, Arc<dyn ModelProvider>)>>>;
+
 /// Health check manager for all providers
 pub struct HealthCheckManager {
     /// Configuration
     config: HealthCheckConfig,
-    /// Providers registered for health checking
-    providers: Arc<RwLock<Vec<Arc<dyn ModelProvider>>>>,
+    /// Providers registered for health checking, keyed by instance name.
+    /// Keyed by instance (not `provider.name()`, which is the provider type)
+    /// so two instances of one type don't collide, and so a replaced or
+    /// removed instance can be dropped — providers may own child processes
+    /// or loaded models that must be released.
+    providers: RegisteredProviders,
 }
 
 impl HealthCheckManager {
@@ -48,9 +55,33 @@ impl HealthCheckManager {
         }
     }
 
-    /// Register a provider for health checking
-    pub async fn register_provider(&self, provider: Arc<dyn ModelProvider>) {
-        self.providers.write().await.push(provider);
+    /// Register (or replace) a provider instance for health checking
+    pub async fn register_provider(&self, instance_name: &str, provider: Arc<dyn ModelProvider>) {
+        let mut providers = self.providers.write().await;
+        providers.retain(|(name, _)| name != instance_name);
+        providers.push((instance_name.to_string(), provider));
+    }
+
+    /// Stop health-checking an instance and drop the manager's reference to it
+    pub async fn unregister_provider(&self, instance_name: &str) {
+        self.providers
+            .write()
+            .await
+            .retain(|(name, _)| name != instance_name);
+    }
+
+    /// Unregister an instance only if it is still this exact provider, so a
+    /// deferred unregister can't remove a newer instance registered under
+    /// the same name in the meantime.
+    pub async fn unregister_provider_if_same(
+        &self,
+        instance_name: &str,
+        provider: &Arc<dyn ModelProvider>,
+    ) {
+        let target = Arc::as_ptr(provider) as *const () as usize;
+        self.providers.write().await.retain(|(name, p)| {
+            !(name == instance_name && Arc::as_ptr(p) as *const () as usize == target)
+        });
     }
 
     /// Perform on-demand health checks for all providers
@@ -64,11 +95,11 @@ impl HealthCheckManager {
         // Check all providers in parallel
         let futures: Vec<_> = providers
             .iter()
-            .map(|provider| {
+            .map(|(name, provider)| {
                 let provider = provider.clone();
+                let name = name.clone();
                 let config = self.config.clone();
                 async move {
-                    let name = provider.name().to_string();
                     let health = check_provider_health(provider, &config).await;
                     (name, health)
                 }
@@ -84,16 +115,17 @@ impl HealthCheckManager {
         results
     }
 
-    /// Check health for a single provider by name
+    /// Check health for a single provider instance
     #[allow(dead_code)]
-    pub async fn check_health(&self, provider_name: &str) -> Option<ProviderHealth> {
-        let providers = self.providers.read().await;
-        for provider in providers.iter() {
-            if provider.name() == provider_name {
-                return Some(check_provider_health(provider.clone(), &self.config).await);
-            }
-        }
-        None
+    pub async fn check_health(&self, instance_name: &str) -> Option<ProviderHealth> {
+        let provider = self
+            .providers
+            .read()
+            .await
+            .iter()
+            .find(|(name, _)| name == instance_name)
+            .map(|(_, p)| p.clone())?;
+        Some(check_provider_health(provider, &self.config).await)
     }
 
     /// Perform streaming health checks for all providers
@@ -105,16 +137,15 @@ impl HealthCheckManager {
         F: FnMut(String, ProviderHealth) + Send,
     {
         let providers = self.providers.read().await.clone();
-        let provider_names: Vec<String> = providers.iter().map(|p| p.name().to_string()).collect();
+        let provider_names: Vec<String> = providers.iter().map(|(name, _)| name.clone()).collect();
 
         // Spawn all health checks concurrently
         let config = self.config.clone();
         let mut handles = Vec::new();
 
-        for provider in providers {
+        for (name, provider) in providers {
             let config = config.clone();
             let handle = tokio::spawn(async move {
-                let name = provider.name().to_string();
                 let health = check_provider_health(provider, &config).await;
                 (name, health)
             });
@@ -281,7 +312,7 @@ mod tests {
             should_timeout: false,
         });
 
-        manager.register_provider(provider).await;
+        manager.register_provider("test-provider", provider).await;
 
         let all_health = manager.check_all_health().await;
         assert_eq!(all_health.len(), 1);
@@ -306,7 +337,7 @@ mod tests {
             should_timeout: false,
         });
 
-        manager.register_provider(provider).await;
+        manager.register_provider("slow-provider", provider).await;
 
         let all_health = manager.check_all_health().await;
         let health = all_health.get("slow-provider").unwrap();
@@ -330,12 +361,43 @@ mod tests {
             should_timeout: true,
         });
 
-        manager.register_provider(provider).await;
+        manager
+            .register_provider("timeout-provider", provider)
+            .await;
 
         let all_health = manager.check_all_health().await;
         let health = all_health.get("timeout-provider").unwrap();
         assert_eq!(health.status, HealthStatus::Unhealthy);
         assert!(health.error_message.is_some());
         assert!(health.error_message.as_ref().unwrap().contains("timeout"));
+    }
+
+    #[tokio::test]
+    async fn instances_are_keyed_by_name_and_released() {
+        let manager = HealthCheckManager::new(HealthCheckConfig::default());
+        let make = || {
+            Arc::new(MockProvider {
+                name: "same-type".to_string(),
+                health_status: HealthStatus::Healthy,
+                latency_ms: 1,
+                should_timeout: false,
+            })
+        };
+        let first = make();
+        manager.register_provider("a", first.clone()).await;
+        manager.register_provider("b", make()).await;
+        // Two instances of one provider type are both reported.
+        let all = manager.check_all_health().await;
+        assert!(all.contains_key("a") && all.contains_key("b"));
+
+        // Replacing an instance drops the old provider.
+        manager.register_provider("a", make()).await;
+        assert_eq!(Arc::strong_count(&first), 1);
+
+        manager.unregister_provider("b").await;
+        let all = manager.check_all_health().await;
+        assert_eq!(all.len(), 1);
+        assert!(manager.check_health("b").await.is_none());
+        assert!(manager.check_health("a").await.is_some());
     }
 }

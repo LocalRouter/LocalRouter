@@ -466,6 +466,8 @@ export interface ProviderTypeInfo {
   docs_url?: string | null
   /** Page where the user creates or copies their API key */
   api_key_url?: string | null
+  /** False for retired types hidden from the Add Provider list (existing instances still load) */
+  listed: boolean
 }
 
 /**

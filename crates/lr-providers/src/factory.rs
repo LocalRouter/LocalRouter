@@ -25,6 +25,9 @@ use lr_types::{AppError, AppResult};
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderCategory {
+    /// Engines LocalRouter runs itself (found on PATH), with models managed
+    /// in-app: downloaded from Hugging Face, loaded and unloaded on demand
+    Direct,
     /// Generic/custom OpenAI-compatible providers
     Generic,
     /// Local providers running on user's machine
@@ -35,6 +38,20 @@ pub enum ProviderCategory {
     FirstParty,
     /// Third-party hosting platforms
     ThirdParty,
+}
+
+impl ProviderCategory {
+    /// Display order in the Add Provider dialog (Direct first).
+    pub fn sort_rank(&self) -> u8 {
+        match self {
+            ProviderCategory::Direct => 0,
+            ProviderCategory::Local => 1,
+            ProviderCategory::Subscription => 2,
+            ProviderCategory::FirstParty => 3,
+            ProviderCategory::ThirdParty => 4,
+            ProviderCategory::Generic => 5,
+        }
+    }
 }
 
 /// Where a provider gets its model list from
@@ -134,6 +151,13 @@ pub trait ProviderFactory: Send + Sync {
     /// that need no key (local models) or where the key is not self-serve.
     fn api_key_url(&self) -> Option<&str> {
         None
+    }
+
+    /// Whether this type is offered when adding a new provider. Retired types
+    /// return false: existing instances still load from config, but new ones
+    /// can't be created from the UI.
+    fn listed(&self) -> bool {
+        true
     }
 }
 
@@ -1797,7 +1821,7 @@ impl ProviderFactory for LlamaCppProviderFactory {
     }
 
     fn display_name(&self) -> &str {
-        "llama.cpp"
+        "llama.cpp server (legacy)"
     }
 
     fn category(&self) -> ProviderCategory {
@@ -1805,7 +1829,13 @@ impl ProviderFactory for LlamaCppProviderFactory {
     }
 
     fn description(&self) -> &str {
-        "llama.cpp local inference server with OpenAI-compatible API"
+        "Connect to a llama-server you run yourself. Superseded by the Direct llama.cpp provider; kept so existing setups keep working"
+    }
+
+    /// Retired from the Add Provider list in favour of the Direct llama.cpp
+    /// provider; existing `llamacpp` instances still load.
+    fn listed(&self) -> bool {
+        false
     }
 
     fn default_free_tier(&self) -> FreeTierKind {

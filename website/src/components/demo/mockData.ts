@@ -420,7 +420,7 @@ export const mockData = {
     },
     {
       provider_type: "llamacpp",
-      display_name: "llama.cpp",
+      display_name: "llama.cpp server (legacy)",
       category: "local",
       description: "Run local models with llama.cpp server",
       setup_parameters: [
@@ -431,6 +431,7 @@ export const mockData = {
       free_tier_long_text: "Runs entirely on your machine. No API costs, no rate limits.",
       free_tier_notes: null,
       docs_url: "https://github.com/ggml-org/llama.cpp",
+      listed: false,
     },
     {
       provider_type: "github_models",
