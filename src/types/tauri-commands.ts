@@ -586,7 +586,7 @@ export interface LocalRepoDetails {
 }
 
 /** Rust: crates/lr-local-models/src/classify.rs - ModelKind enum */
-export type LocalModelKind = 'chat' | 'completion' | 'embedding' | 'reranker' | 'projector' | 'adapter'
+export type LocalModelKind = 'chat' | 'completion' | 'embedding' | 'reranker' | 'projector' | 'adapter' | 'unsupported'
 
 /** Rust: crates/lr-local-models/src/gguf.rs - GgufSummary struct */
 export interface GgufSummary {

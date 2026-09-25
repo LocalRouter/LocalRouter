@@ -209,7 +209,12 @@ fn capabilities(entry: &LibraryEntry) -> Vec<Capability> {
         ModelKind::Completion => vec![Capability::Completion],
         ModelKind::Embedding => vec![Capability::Embedding],
         // Not served yet (no rerank endpoint; projectors/adapters aren't models).
-        ModelKind::Reranker | ModelKind::Projector | ModelKind::Adapter => vec![],
+        ModelKind::Reranker
+        | ModelKind::Projector
+        | ModelKind::Adapter
+        | ModelKind::Unsupported => {
+            vec![]
+        }
     }
 }
 

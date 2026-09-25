@@ -116,6 +116,7 @@ const KIND_LABELS: Record<LocalModelKind, string> = {
   reranker: "Reranker",
   projector: "Vision projector",
   adapter: "Adapter",
+  unsupported: "Not a text model (llama.cpp can't run it)",
 }
 
 /** Kinds llama.cpp serves as models. */

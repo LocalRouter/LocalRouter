@@ -17,7 +17,9 @@ use crate::gguf::{self, GgufSummary};
 use crate::util;
 
 /// Index file format version.
-const LIBRARY_VERSION: u32 = 1;
+/// Version 2 added [`ModelKind::Unsupported`]; version 1 entries are
+/// reclassified from their files once.
+const LIBRARY_VERSION: u32 = 2;
 
 /// Where a library entry came from.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -116,12 +118,28 @@ struct Candidate {
     stem: String,
 }
 
+/// Re-derive each entry's kind from its model file (entries written before
+/// a new kind existed). Unreadable files keep their recorded kind.
+fn reclassify(mut entries: Vec<LibraryEntry>) -> Vec<LibraryEntry> {
+    for entry in &mut entries {
+        if entry.kind == ModelKind::Projector {
+            continue;
+        }
+        if let Ok(header) = gguf::read_local_header(&entry.model_path) {
+            let summary = GgufSummary::from_header(&header);
+            entry.kind = classify(&summary, header.general_type());
+        }
+    }
+    entries
+}
+
 impl Library {
     /// Open (or start) the library in `storage_dir`. An unreadable index is
     /// moved aside to `library.json.corrupt-<timestamp>` and an empty library
     /// is used.
     pub fn open(storage_dir: PathBuf) -> Self {
         let path = storage_dir.join("library.json");
+        let mut migrated = false;
         let entries = match std::fs::read(&path) {
             Ok(bytes) => match serde_json::from_slice::<Index>(&bytes) {
                 Ok(index) => {
@@ -132,7 +150,12 @@ impl Library {
                             LIBRARY_VERSION
                         );
                     }
-                    index.entries
+                    if index.version < 2 {
+                        migrated = true;
+                        reclassify(index.entries)
+                    } else {
+                        index.entries
+                    }
                 }
                 Err(e) => {
                     let backup = util::with_suffix(
@@ -149,10 +172,17 @@ impl Library {
             },
             Err(_) => Vec::new(),
         };
-        Self {
+        let library = Self {
             storage_dir,
             entries: Mutex::new(entries),
+        };
+        if migrated {
+            let entries = library.entries.lock().clone();
+            if let Err(e) = library.persist(&entries) {
+                tracing::warn!("could not save the migrated model library: {e}");
+            }
         }
+        library
     }
 
     /// The storage directory.
@@ -572,6 +602,44 @@ mod tests {
             .build_file(1000)
     }
 
+    #[test]
+    fn version_1_entries_are_reclassified_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let diffusion = dir.path().join("image.gguf");
+        std::fs::write(
+            &diffusion,
+            GgufBuilder::new()
+                .str("general.architecture", "qwen_image21")
+                .u32("general.file_type", 2)
+                .tensor("img_in.weight")
+                .build_file(400),
+        )
+        .unwrap();
+        let index = serde_json::json!({
+            "version": 1,
+            "entries": [{
+                "id": "qwen-image", "display_name": "Qwen Image",
+                "source": {"type": "imported"},
+                "model_path": diffusion, "extra_parts": [], "projector_path": null,
+                "kind": "completion", "quant": "Q4_0", "architecture": "qwen_image21",
+                "context_length": null, "pooling_type": null, "has_tools": false,
+                "size_bytes": 400, "installed_at": "2026-09-25T00:00:00Z"
+            }]
+        });
+        std::fs::write(
+            dir.path().join("library.json"),
+            serde_json::to_vec(&index).unwrap(),
+        )
+        .unwrap();
+        let lib = Library::open(dir.path().to_path_buf());
+        assert_eq!(lib.get("qwen-image").unwrap().kind, ModelKind::Unsupported);
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.path().join("library.json")).unwrap())
+                .unwrap();
+        assert_eq!(saved["version"], 2);
+        assert_eq!(saved["entries"][0]["kind"], "unsupported");
+    }
+
     fn projector() -> Vec<u8> {
         GgufBuilder::new()
             .str("general.architecture", "clip")
@@ -643,7 +711,7 @@ mod tests {
         let raw: serde_json::Value =
             serde_json::from_slice(&std::fs::read(env.dir.path().join("library.json")).unwrap())
                 .unwrap();
-        assert_eq!(raw["version"], 1);
+        assert_eq!(raw["version"], LIBRARY_VERSION);
         assert_eq!(raw["entries"][0]["source"]["type"], "hugging_face");
         assert_eq!(raw["entries"][0]["kind"], "chat");
     }

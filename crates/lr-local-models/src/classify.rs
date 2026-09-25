@@ -20,6 +20,9 @@ pub enum ModelKind {
     Projector,
     /// A LoRA / control-vector adapter.
     Adapter,
+    /// Not a model llama.cpp can run: no tokenizer, as in image or video
+    /// diffusion models packed as GGUF.
+    Unsupported,
 }
 
 /// llama.cpp `LLAMA_POOLING_TYPE_RANK`.
@@ -27,7 +30,7 @@ const POOLING_RANK: u32 = 4;
 
 /// Classify a model from its header summary and `general.type`, in this
 /// order: projector (`clip` architecture) → adapter (`general.type ==
-/// adapter`) → reranker (`pooling_type == 4` or `cls.*` tensors) → embedding
+/// adapter`) → unsupported (no tokenizer) → reranker (`pooling_type == 4` or `cls.*` tensors) → embedding
 /// (`pooling_type ∈ {1,2,3}` or `attention.causal == false`) → chat (has a
 /// chat template) → completion.
 pub fn classify(summary: &GgufSummary, general_type: Option<&str>) -> ModelKind {
@@ -36,6 +39,9 @@ pub fn classify(summary: &GgufSummary, general_type: Option<&str>) -> ModelKind 
     }
     if general_type.is_some_and(|t| t.eq_ignore_ascii_case("adapter")) {
         return ModelKind::Adapter;
+    }
+    if !summary.has_tokenizer {
+        return ModelKind::Unsupported;
     }
     if summary.pooling_type == Some(POOLING_RANK) || summary.has_cls_tensors {
         return ModelKind::Reranker;
@@ -109,6 +115,17 @@ mod tests {
             .u32("llama.pooling_type", 0)
             .bool("llama.attention.causal", true);
         assert_eq!(kind(b), ModelKind::Completion);
+    }
+
+    #[test]
+    fn diffusion_models_without_a_tokenizer_are_unsupported() {
+        // An image diffusion transformer packed as GGUF (Qwen-Image style).
+        let b = GgufBuilder::new()
+            .str("general.architecture", "qwen_image21")
+            .u32("general.file_type", 2)
+            .tensor("img_in.weight")
+            .tensor("transformer_blocks.0.attn.to_k.weight");
+        assert_eq!(kind(b), ModelKind::Unsupported);
     }
 
     #[test]

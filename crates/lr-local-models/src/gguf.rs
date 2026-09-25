@@ -586,6 +586,10 @@ pub struct GgufSummary {
     pub expert_count: Option<u64>,
     pub is_projector: bool,
     pub has_cls_tensors: bool,
+    /// The file carries a tokenizer (`tokenizer.ggml.model`), as every
+    /// language model llama.cpp can run does. Image and video diffusion
+    /// models packed as GGUF have none.
+    pub has_tokenizer: bool,
 }
 
 impl GgufSummary {
@@ -647,6 +651,7 @@ impl GgufSummary {
                 .tensor_names
                 .iter()
                 .any(|n| n == "cls" || n.starts_with("cls.")),
+            has_tokenizer: h.get("tokenizer.ggml.model").is_some(),
             architecture,
         }
     }
@@ -860,6 +865,7 @@ pub(crate) mod test_support {
                 .u32(&format!("{arch}.block_count"), 36)
                 .u32(&format!("{arch}.attention.head_count"), 32)
                 .u32(&format!("{arch}.attention.head_count_kv"), 8)
+                .str("tokenizer.ggml.model", "gpt2")
                 .tensor("token_embd.weight")
                 .tensor("blk.0.attn_q.weight")
         }
