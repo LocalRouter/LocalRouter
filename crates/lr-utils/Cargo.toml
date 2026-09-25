@@ -17,6 +17,9 @@ which = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
+
 [dev-dependencies]
 serde_json = { workspace = true }
 
