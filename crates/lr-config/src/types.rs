@@ -4183,6 +4183,9 @@ pub enum ProviderType {
     /// llama.cpp server run by LocalRouter with in-app models (Local Embedded provider)
     #[serde(rename = "llamacpp_embedded")]
     LlamaCppEmbedded,
+    /// stable-diffusion.cpp image generation run by LocalRouter (Local Embedded provider)
+    #[serde(rename = "sdcpp_embedded")]
+    SdCppEmbedded,
     /// LLM Gateway (llmgateway.io)
     #[serde(rename = "llmgateway")]
     LlmGateway,
@@ -5631,6 +5634,7 @@ sampling_permission: "off"
             (ProviderType::Von, "von"),
             (ProviderType::Decider, "decider"),
             (ProviderType::LlamaCppEmbedded, "llamacpp_embedded"),
+            (ProviderType::SdCppEmbedded, "sdcpp_embedded"),
             (ProviderType::LlmGateway, "llmgateway"),
             (ProviderType::VercelAiGateway, "vercel_ai_gateway"),
         ];
@@ -5684,6 +5688,7 @@ sampling_permission: "off"
             ProviderType::Von,
             ProviderType::Decider,
             ProviderType::LlamaCppEmbedded,
+            ProviderType::SdCppEmbedded,
             ProviderType::LlmGateway,
             ProviderType::VercelAiGateway,
         ];

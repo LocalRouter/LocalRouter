@@ -1,4 +1,7 @@
-//! Finding installed engines on PATH and describing how to install them.
+//! Finding installed engines and describing how to install them.
+//!
+//! Lookup order: the provider's chosen file (`binary_path`), LocalRouter's
+//! managed install ([`crate::managed`]), then the user's PATH.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -7,9 +10,10 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use serde::Serialize;
 
+use crate::managed::ManagedInstall;
 use crate::platform::Platform;
 use crate::process::host_command;
-use crate::recipes::{kev_uv_run_args, recipe, EngineRecipe, InstallOption, RecipeId};
+use crate::recipes::{kev_uv_run_args, recipe, EngineRecipe, InstallKind, InstallOption, RecipeId};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -18,9 +22,10 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct InstallOptionView {
     #[serde(flatten)]
     pub option: InstallOption,
-    /// The app may run this command (no password prompt needed).
+    /// The app may run this option (no password prompt needed).
     pub runnable: bool,
-    /// The package manager the command uses was found on PATH.
+    /// The package manager the command uses was found on PATH (always true
+    /// for downloads).
     pub program_found: bool,
     /// The option we suggest for this machine.
     pub recommended: bool,
@@ -34,6 +39,18 @@ pub struct RequirementStatus {
     pub path: Option<String>,
 }
 
+/// Where an engine's executable was found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EngineSource {
+    /// The file chosen in the provider's settings (`binary_path`).
+    Override,
+    /// LocalRouter's managed install.
+    Managed,
+    /// The user's PATH.
+    Path,
+}
+
 /// Detection result for one engine, with everything the Engine tab shows.
 #[derive(Debug, Clone, Serialize)]
 pub struct EngineStatus {
@@ -44,11 +61,21 @@ pub struct EngineStatus {
     pub path: Option<String>,
     /// Which of the recipe's executables was found (e.g. `llama-server`).
     pub binary: Option<String>,
+    /// Where `path` came from.
+    pub source: Option<EngineSource>,
+    /// Release tag of LocalRouter's managed install, when there is one
+    /// (even if a chosen file takes precedence).
+    pub managed_tag: Option<String>,
+    /// Build of the managed install, e.g. `vulkan`.
+    pub managed_build: Option<String>,
     pub version: Option<String>,
     /// llama.cpp build number, when reported.
     pub build: Option<u64>,
     pub supported: bool,
     pub unsupported_reason: Option<String>,
+    /// A chosen or self-built executable works even when `supported` is
+    /// false (the reason only means there is no prebuilt download).
+    pub allow_own_binary: bool,
     pub requirements: Vec<RequirementStatus>,
     pub install: Vec<InstallOptionView>,
     pub docs_url: &'static str,
@@ -100,30 +127,61 @@ pub fn resolve_with(
         .map(|program| command_for(id, program))
 }
 
-/// [`resolve_with`] against the user's PATH, or an explicit override path.
-pub fn resolve(id: RecipeId, override_path: Option<&Path>) -> Option<EngineCommand> {
+/// Find an engine: the override path (if it is a file), then the managed
+/// install, then `find` (PATH).
+pub fn locate(
+    id: RecipeId,
+    platform: &Platform,
+    override_path: Option<&Path>,
+    managed: Option<&ManagedInstall>,
+    find: &dyn Fn(&str) -> Option<PathBuf>,
+) -> Option<(EngineCommand, EngineSource)> {
     if let Some(path) = override_path.filter(|p| p.is_file()) {
-        return Some(command_for(id, path.to_path_buf()));
+        return Some((command_for(id, path.to_path_buf()), EngineSource::Override));
     }
+    if let Some(m) = managed.filter(|m| m.binary.is_file()) {
+        return Some((command_for(id, m.binary.clone()), EngineSource::Managed));
+    }
+    resolve_with(id, platform, find).map(|c| (c, EngineSource::Path))
+}
+
+/// Locate an engine: explicit override path, LocalRouter's managed install,
+/// then the user's PATH.
+pub fn resolve(id: RecipeId, override_path: Option<&Path>) -> Option<EngineCommand> {
     let platform = Platform::current();
-    resolve_with(id, &platform, &|name| lr_utils::binary::find_binary(name))
+    let managed = crate::managed::installed(id);
+    locate(id, &platform, override_path, managed.as_ref(), &|name| {
+        lr_utils::binary::find_binary(name)
+    })
+    .map(|(command, _)| command)
 }
 
 /// Detect an engine. With `refresh`, the cached shell PATH is rebuilt first
 /// (and on Windows re-read from the registry) so tools installed while the
 /// app runs are found.
 pub async fn detect(id: RecipeId, override_path: Option<PathBuf>, refresh: bool) -> EngineStatus {
-    tokio::task::spawn_blocking(move || {
+    let managed = tokio::task::spawn_blocking(move || {
         if refresh {
             lr_utils::binary::refresh_shell_env();
         }
+        crate::managed::installed(id)
     })
     .await
-    .ok();
+    .ok()
+    .flatten();
     let platform = Platform::current();
     let find = |name: &str| lr_utils::binary::find_binary(name);
-    let mut status = detect_with(id, &platform, override_path.as_deref(), &find);
-    if let Some(path) = status.path.clone() {
+    let mut status = detect_with(
+        id,
+        &platform,
+        override_path.as_deref(),
+        managed.as_ref(),
+        &find,
+    );
+    if status.source == Some(EngineSource::Managed) {
+        // The release tag says more than the binary would.
+        status.version = status.managed_tag.clone();
+    } else if let Some(path) = status.path.clone() {
         if let Some((version, build)) = probe_version(id, Path::new(&path)).await {
             status.version = Some(version);
             status.build = build;
@@ -133,18 +191,18 @@ pub async fn detect(id: RecipeId, override_path: Option<PathBuf>, refresh: bool)
 }
 
 /// Detection without running anything (version left empty); injectable
-/// lookup for tests.
+/// managed install and PATH lookup for tests.
 pub fn detect_with(
     id: RecipeId,
     platform: &Platform,
     override_path: Option<&Path>,
+    managed: Option<&ManagedInstall>,
     find: &dyn Fn(&str) -> Option<PathBuf>,
 ) -> EngineStatus {
     let recipe: EngineRecipe = recipe(id, platform);
-    let command = match override_path.filter(|p| p.is_file()) {
-        Some(path) => Some(command_for(id, path.to_path_buf())),
-        None => resolve_with(id, platform, find),
-    };
+    let located = locate(id, platform, override_path, managed, find);
+    let source = located.as_ref().map(|(_, s)| *s);
+    let command = located.map(|(c, _)| c);
 
     let requirements: Vec<RequirementStatus> = recipe
         .requires
@@ -166,7 +224,10 @@ pub fn detect_with(
         .iter()
         .map(|o| InstallOptionView {
             runnable: o.runnable(),
-            program_found: find(o.program).is_some(),
+            program_found: match o.kind {
+                InstallKind::Download => true,
+                InstallKind::Command => o.program.is_some_and(|p| find(p).is_some()),
+            },
             recommended: false,
             option: o.clone(),
         })
@@ -184,13 +245,19 @@ pub fn detect_with(
     EngineStatus {
         recipe: id,
         display_name: recipe.display_name,
-        found: supported && command.is_some() && requirements.iter().all(|r| r.found),
+        found: (supported || recipe.allow_own_binary)
+            && command.is_some()
+            && requirements.iter().all(|r| r.found),
         path: command.as_ref().map(|c| c.program.display().to_string()),
         binary: command.map(|c| c.binary),
+        source,
+        managed_tag: managed.map(|m| m.tag.clone()),
+        managed_build: managed.map(|m| m.build.clone()),
         version: None,
         build: None,
         supported,
         unsupported_reason: recipe.unsupported_reason.map(str::to_string),
+        allow_own_binary: recipe.allow_own_binary,
         requirements,
         install,
         docs_url: recipe.docs_url,
@@ -207,10 +274,29 @@ async fn probe_version(id: RecipeId, path: &Path) -> Option<(String, Option<u64>
                 _ => parse_uv_version(&output).map(|v| (v, None)),
             }
         }
+        // `sd-server --version` (checked as the first argument, before any
+        // other parsing) prints the version and exits.
+        RecipeId::SdCpp => parse_sd_version(&run_capture(path, &["--version"]).await?),
         // laya-serve has no version flag and starts the server when run;
         // `von --version` is hard-coded upstream, so it says nothing.
         RecipeId::Laya | RecipeId::Von => None,
     }
+}
+
+/// Parse `sd-server --version`:
+/// `stable-diffusion.cpp version master-920-2f88688, commit 2f88688`.
+/// Release builds report version `unknown`; the commit is shown instead.
+pub fn parse_sd_version(text: &str) -> Option<(String, Option<u64>)> {
+    let re = regex::Regex::new(r"stable-diffusion\.cpp version (\S+), commit (\w+)").ok()?;
+    let caps = re.captures(text)?;
+    let version = caps.get(1)?.as_str();
+    let commit = caps.get(2)?.as_str();
+    let shown = if version == "unknown" {
+        format!("commit {commit}")
+    } else {
+        version.to_string()
+    };
+    Some((shown, None))
 }
 
 /// Run a program with the user's shell environment and return combined
@@ -370,10 +456,10 @@ mod tests {
     fn detection_reports_requirements_and_recommendation() {
         // Nothing installed except Homebrew.
         let find = |name: &str| (name == "brew").then(|| PathBuf::from("/opt/homebrew/bin/brew"));
-        let s = detect_with(RecipeId::Laya, &mac(), None, &find);
+        let s = detect_with(RecipeId::Laya, &mac(), None, None, &find);
         assert!(!s.found);
         assert!(!s.requirements[0].found, "uv missing");
-        let s = detect_with(RecipeId::LlamaCpp, &mac(), None, &find);
+        let s = detect_with(RecipeId::LlamaCpp, &mac(), None, None, &find);
         assert!(!s.found);
         let rec: Vec<_> = s.install.iter().filter(|o| o.recommended).collect();
         assert_eq!(rec.len(), 1);
@@ -384,7 +470,7 @@ mod tests {
         let find = |name: &str| {
             matches!(name, "laya-serve" | "uv").then(|| PathBuf::from(format!("/bin/{name}")))
         };
-        assert!(detect_with(RecipeId::Laya, &mac(), None, &find).found);
+        assert!(detect_with(RecipeId::Laya, &mac(), None, None, &find).found);
     }
 
     #[test]
@@ -395,8 +481,106 @@ mod tests {
             linux: None,
         };
         let find = |name: &str| Some(PathBuf::from(format!("/bin/{name}")));
-        let s = detect_with(RecipeId::Kev, &intel, None, &find);
+        let s = detect_with(RecipeId::Kev, &intel, None, None, &find);
         assert!(!s.supported);
         assert!(!s.found);
+    }
+
+    fn managed_at(dir: &Path) -> ManagedInstall {
+        let release = dir.join("master-920-2f88688-metal");
+        std::fs::create_dir_all(&release).unwrap();
+        std::fs::write(release.join("sd-server"), b"x").unwrap();
+        ManagedInstall {
+            tag: "master-920-2f88688".into(),
+            build: "metal".into(),
+            asset: "sd-master-2f88688-bin-Darwin-macOS-26.6.2-arm64.zip".into(),
+            binary: release.join("sd-server"),
+            dir: release,
+            installed_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn sdcpp_detection_order_is_override_managed_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let managed = managed_at(tmp.path());
+        let chosen = tmp.path().join("my-sd-server");
+        std::fs::write(&chosen, b"x").unwrap();
+        let on_path =
+            |name: &str| (name == "sd-server").then(|| PathBuf::from("/usr/bin/sd-server"));
+        let nothing = |_: &str| None;
+
+        let s = detect_with(
+            RecipeId::SdCpp,
+            &mac(),
+            Some(&chosen),
+            Some(&managed),
+            &on_path,
+        );
+        assert_eq!(s.source, Some(EngineSource::Override));
+        assert_eq!(s.path.as_deref(), Some(chosen.to_str().unwrap()));
+        assert_eq!(s.managed_tag.as_deref(), Some("master-920-2f88688"));
+        assert!(s.found);
+
+        // A chosen file that no longer exists falls through.
+        let gone = tmp.path().join("gone");
+        let s = detect_with(
+            RecipeId::SdCpp,
+            &mac(),
+            Some(&gone),
+            Some(&managed),
+            &on_path,
+        );
+        assert_eq!(s.source, Some(EngineSource::Managed));
+        assert_eq!(s.binary.as_deref(), Some("sd-server"));
+        assert_eq!(s.managed_build.as_deref(), Some("metal"));
+
+        let s = detect_with(RecipeId::SdCpp, &mac(), None, None, &on_path);
+        assert_eq!(s.source, Some(EngineSource::Path));
+        assert_eq!(s.path.as_deref(), Some("/usr/bin/sd-server"));
+        assert!(s.managed_tag.is_none());
+
+        let s = detect_with(RecipeId::SdCpp, &mac(), None, None, &nothing);
+        assert!(!s.found);
+        assert!(s.source.is_none());
+        // Download options are always "available" and runnable.
+        assert!(s.install.iter().all(|o| o.program_found && o.runnable));
+        assert!(s.install[0].recommended);
+
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["recipe"], "sdcpp");
+        assert_eq!(json["install"][0]["kind"], "download");
+        assert!(json["install"][0]["command"].is_null());
+    }
+
+    #[test]
+    fn sdcpp_runs_a_chosen_binary_where_there_is_no_download() {
+        let tmp = tempfile::tempdir().unwrap();
+        let chosen = tmp.path().join("sd-server");
+        std::fs::write(&chosen, b"x").unwrap();
+        let linux_arm = Platform {
+            os: Os::Linux,
+            arch: Arch::Aarch64,
+            linux: None,
+        };
+        let s = detect_with(RecipeId::SdCpp, &linux_arm, Some(&chosen), None, &|_| None);
+        assert!(!s.supported);
+        assert!(s.allow_own_binary);
+        assert!(s.found);
+        assert_eq!(s.source, Some(EngineSource::Override));
+        assert!(s.install.is_empty());
+    }
+
+    #[test]
+    fn sd_version_parsing() {
+        assert_eq!(
+            parse_sd_version("stable-diffusion.cpp version unknown, commit 2f88688\n"),
+            Some(("commit 2f88688".to_string(), None))
+        );
+        assert_eq!(
+            parse_sd_version("stable-diffusion.cpp version master-920-2f88688, commit 2f88688"),
+            Some(("master-920-2f88688".to_string(), None))
+        );
+        assert_eq!(parse_sd_version("usage: sd-server [options]"), None);
     }
 }

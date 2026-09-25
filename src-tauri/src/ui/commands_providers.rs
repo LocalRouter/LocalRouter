@@ -525,6 +525,7 @@ fn provider_type_str_to_enum(provider_type: &str) -> lr_config::ProviderType {
         "von" => lr_config::ProviderType::Von,
         "decider" => lr_config::ProviderType::Decider,
         "llamacpp_embedded" => lr_config::ProviderType::LlamaCppEmbedded,
+        "sdcpp_embedded" => lr_config::ProviderType::SdCppEmbedded,
         "llmgateway" => lr_config::ProviderType::LlmGateway,
         "vercel_ai_gateway" => lr_config::ProviderType::VercelAiGateway,
         "openai_compatible" => lr_config::ProviderType::Custom,
@@ -1397,6 +1398,7 @@ fn detailed_model(
             | "von"
             | "decider"
             | "llamacpp_embedded"
+            | "sdcpp_embedded"
     );
 
     // Check for pricing override first

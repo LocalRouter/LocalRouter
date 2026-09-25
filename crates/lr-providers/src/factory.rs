@@ -4067,6 +4067,9 @@ mod tests {
                 )),
                 test_supervisor(),
             )),
+            Box::new(crate::embedded::SdCppEmbeddedProviderFactory::new(
+                test_supervisor(),
+            )),
             Box::new(LlmGatewayProviderFactory),
             Box::new(VercelAiGatewayProviderFactory),
         ]

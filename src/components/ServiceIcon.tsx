@@ -164,6 +164,7 @@ const EMOJI_MAP: Record<string, string> = {
   laya: '⚖️',
   kev: '🧭',
   von: '🎯',
+  sdcpp_embedded: '🎨',
   decider: '🔱',
   systemone_compatible: '🔀',
   // Gateways

@@ -668,6 +668,23 @@ export const mockData = {
       docs_url: "https://github.com/ggml-org/llama.cpp",
     },
     {
+      provider_type: "sdcpp_embedded",
+      display_name: "stable-diffusion.cpp",
+      category: "embedded",
+      description: "Generate images locally (Qwen-Image, FLUX.2, Z-Image) with stable-diffusion.cpp. LocalRouter runs sd-server and downloads image models from Hugging Face",
+      setup_parameters: [
+        { key: "offload_to_cpu", param_type: "string", required: false, description: "Keep weights in RAM and move them to the GPU as needed (uses less GPU memory): on or off", default_value: "on", sensitive: false },
+        { key: "flash_attention", param_type: "string", required: false, description: "Flash attention in the diffusion model (faster, less memory): on or off", default_value: "on", sensitive: false },
+        { key: "idle_unload_minutes", param_type: "number", required: false, description: "Unload the image model after this many idle minutes (0 = keep loaded)", default_value: "15", sensitive: false },
+        { key: "binary_path", param_type: "string", required: false, description: "Path to sd-server (leave empty to use the downloaded one or find it on PATH)", sensitive: false },
+      ],
+      default_free_tier: { kind: "always_free_local" },
+      free_tier_short_text: "Free — runs locally",
+      free_tier_long_text: "Runs entirely on your machine. No API costs, no rate limits.",
+      free_tier_notes: null,
+      docs_url: "https://github.com/leejet/stable-diffusion.cpp",
+    },
+    {
       provider_type: "laya",
       display_name: "Laya",
       category: "embedded",

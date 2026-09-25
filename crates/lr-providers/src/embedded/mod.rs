@@ -7,6 +7,7 @@ pub mod decider;
 pub mod kev;
 pub mod laya;
 pub mod llamacpp;
+pub mod sdcpp;
 pub mod von;
 
 use std::collections::HashMap;
@@ -21,6 +22,10 @@ pub use decider::{DeciderEmbeddedProvider, DeciderEmbeddedProviderFactory};
 pub use kev::{KevEmbeddedProvider, KevEmbeddedProviderFactory};
 pub use laya::{LayaEmbeddedProvider, LayaEmbeddedProviderFactory};
 pub use llamacpp::{LlamaCppEmbeddedProvider, LlamaCppEmbeddedProviderFactory};
+pub use sdcpp::{
+    set_image_model_backend, ImageModelBackend, ImageModelStatus, SdCppEmbeddedProvider,
+    SdCppEmbeddedProviderFactory,
+};
 pub use von::{VonEmbeddedProvider, VonEmbeddedProviderFactory};
 
 /// State of one model served by a Local Embedded provider.
@@ -62,6 +67,12 @@ pub trait EmbeddedControl: Send + Sync {
     async fn cancel_download(&self, _model: &str) -> Result<(), AppError> {
         Ok(())
     }
+    /// Delete a downloaded model (only where [`EmbeddedCatalogModel::removable`]).
+    async fn remove_download(&self, model: &str) -> Result<(), AppError> {
+        Err(AppError::InvalidParams(format!(
+            "'{model}' cannot be removed here"
+        )))
+    }
 }
 
 /// A model a Local Embedded engine downloads itself, with its state.
@@ -76,6 +87,10 @@ pub struct EmbeddedCatalogModel {
     pub downloading: bool,
     /// Why the last download failed, if it did.
     pub download_error: Option<String>,
+    /// Download progress 0.0–1.0 while downloading, when known.
+    pub progress: Option<f64>,
+    /// A downloaded model can be deleted from the Models tab.
+    pub removable: bool,
 }
 
 /// Health of a Local Embedded provider without starting anything: the
@@ -438,6 +453,12 @@ static MODELS_CHANGED_HOOK: RwLock<Option<ModelsChangedHook>> = RwLock::new(None
 /// change (a download finished): the app refreshes its model lists.
 pub fn set_models_changed_hook(hook: ModelsChangedHook) {
     *MODELS_CHANGED_HOOK.write() = Some(hook);
+}
+
+/// Tell the app that `provider_type`'s servable models changed (a download
+/// finished), so it refreshes its model lists.
+pub fn notify_models_changed(provider_type: &str) {
+    models_changed(provider_type);
 }
 
 fn models_changed(provider_type: &str) {

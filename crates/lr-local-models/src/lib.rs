@@ -14,6 +14,7 @@ pub mod fit;
 pub mod gguf;
 pub mod hardware;
 pub mod hub;
+pub mod image_models;
 pub mod library;
 
 mod http;
@@ -35,4 +36,5 @@ pub use hub::{
     gguf_variants, GgufVariant, HubClient, HubError, HubFile, HubModelInfo, HubModelSummary,
     HubPage, HubSearch, HubUser,
 };
+pub use image_models::{ImageModel, ImageModelLaunch, ImageModelStore, ImageRole};
 pub use library::{default_storage_dir, EntrySource, Library, LibraryEntry, LibraryError};

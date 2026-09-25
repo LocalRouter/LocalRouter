@@ -101,6 +101,9 @@ pub struct DownloadJobView {
     pub current_file: Option<String>,
     pub error: Option<String>,
     pub target_dir: String,
+    /// What the download is for (e.g. `image:<model>`), as given to
+    /// [`DownloadManager::start_for`]; `None` for library models.
+    pub purpose: Option<String>,
 }
 
 /// Passed to completion hooks once every file of a job is verified and in
@@ -112,6 +115,8 @@ pub struct CompletedDownload {
     pub revision: String,
     /// `(repo path, local path, size, sha256)`.
     pub files: Vec<(String, PathBuf, u64, Option<String>)>,
+    /// The job's purpose (see [`DownloadJobView::purpose`]).
+    pub purpose: Option<String>,
 }
 
 type CompletionHook = Arc<dyn Fn(CompletedDownload) + Send + Sync>;
@@ -141,6 +146,8 @@ struct JobRecord {
     bytes_total: u64,
     error: Option<String>,
     target_dir: PathBuf,
+    #[serde(default)]
+    purpose: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -193,6 +200,7 @@ impl Job {
             current_file: self.rt.current_file.clone(),
             error: self.rec.error.clone(),
             target_dir: self.rec.target_dir.to_string_lossy().into_owned(),
+            purpose: self.rec.purpose.clone(),
         }
     }
 }
@@ -285,6 +293,18 @@ impl DownloadManager {
         revision: Option<&str>,
         files: Vec<String>,
     ) -> Result<String, HubError> {
+        self.start_for(repo, revision, files, None).await
+    }
+
+    /// [`DownloadManager::start`] with a purpose tag carried to the job view
+    /// and the completion hooks (persisted with the job).
+    pub async fn start_for(
+        &self,
+        repo: &str,
+        revision: Option<&str>,
+        files: Vec<String>,
+        purpose: Option<&str>,
+    ) -> Result<String, HubError> {
         validate_repo_id(repo)?;
         if files.is_empty() {
             return Err(HubError::InvalidRequest("no files selected".into()));
@@ -373,6 +393,7 @@ impl DownloadManager {
             bytes_total,
             error: None,
             target_dir,
+            purpose: purpose.map(str::to_string),
         };
         let view = {
             let mut jobs = self.jobs.lock();
@@ -779,6 +800,7 @@ impl DownloadManager {
             repo: rec.repo.clone(),
             revision: rec.commit.clone(),
             files: out,
+            purpose: rec.purpose.clone(),
         })
     }
 
@@ -1801,6 +1823,7 @@ mod tests {
                 bytes_total: 0,
                 error: None,
                 target_dir: fx.dest("m.gguf").parent().unwrap().to_path_buf(),
+                purpose: None,
             };
             fx.mgr.jobs.lock().push(Job {
                 rec,

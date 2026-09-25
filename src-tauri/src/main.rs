@@ -362,6 +362,9 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             engine_supervisor.clone(),
         ),
     ));
+    provider_registry.register_factory(Arc::new(
+        lr_providers::embedded::SdCppEmbeddedProviderFactory::new(engine_supervisor.clone()),
+    ));
     // Hugging Face account (keychain), shared by downloads and passed to
     // Local Embedded engines as HF_TOKEN.
     let hf_hub = lr_local_models::HubClient::default();
@@ -453,6 +456,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             config::ProviderType::Von => "von",
             config::ProviderType::Decider => "decider",
             config::ProviderType::LlamaCppEmbedded => "llamacpp_embedded",
+            config::ProviderType::SdCppEmbedded => "sdcpp_embedded",
             config::ProviderType::LlmGateway => "llmgateway",
             config::ProviderType::VercelAiGateway => "vercel_ai_gateway",
             config::ProviderType::Custom => "openai_compatible",
@@ -819,14 +823,16 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                     },
                 );
             }
-            app.manage(ui::commands_local_models::LocalModels::new(
+            let local_models = ui::commands_local_models::LocalModels::new(
                 local_models_library.clone(),
                 hf_credentials.clone(),
                 hf_hub.clone(),
                 Arc::new(ui::commands_local_models::TauriEventSink(
                     app.handle().clone(),
                 )),
-            ));
+            );
+            lr_providers::embedded::set_image_model_backend(local_models.image_backend());
+            app.manage(local_models);
             app.manage(Arc::new(lr_engines::InstallRunner::new()));
             app.manage(server_manager.clone());
             app.manage(app_router.clone());
@@ -2907,6 +2913,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands_local_models::local_models_engine_catalog,
             ui::commands_local_models::local_models_engine_download,
             ui::commands_local_models::local_models_engine_download_cancel,
+            ui::commands_local_models::local_models_engine_remove,
             ui::commands_local_models::local_models_hf_account,
             ui::commands_local_models::local_models_hf_set_token,
             ui::commands_local_models::local_models_hf_sign_out,

@@ -104,6 +104,17 @@ async fn systemone(
     .await
 }
 
+/// OpenAI-style image generation, as `sd-server` answers it (base64 only):
+/// one image per `n`, whose bytes are the prompt.
+async fn images(Json(req): Json<Value>) -> impl IntoResponse {
+    use base64::Engine as _;
+    let prompt = req.get("prompt").and_then(Value::as_str).unwrap_or("");
+    let n = req.get("n").and_then(Value::as_u64).unwrap_or(1);
+    let b64 = base64::engine::general_purpose::STANDARD.encode(prompt);
+    let data: Vec<Value> = (0..n).map(|_| json!({"b64_json": b64})).collect();
+    Json(json!({"created": 1, "output_format": "png", "data": data, "size": req.get("size")}))
+}
+
 async fn models(State(s): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     guarded(&s, &headers, json!({"data": [{"id": "fake-model"}]})).await
 }
@@ -117,7 +128,7 @@ async fn main() {
     let args: Vec<String> = std::env::args().collect();
     let port = args
         .iter()
-        .position(|a| a == "--port")
+        .position(|a| a == "--port" || a == "--listen-port")
         .and_then(|i| args.get(i + 1).cloned())
         .or_else(|| std::env::var(std::env::var("FAKE_PORT_VAR").ok()?).ok())
         .and_then(|p| p.parse::<u16>().ok())
@@ -149,6 +160,12 @@ async fn main() {
         .route("/v1/models", get(models))
         .route("/v1/chat/completions", post(chat))
         .route("/v1/systemone", post(systemone))
+        .route("/v1/images/generations", post(images))
+        // The command line the engine was started with (tests check it).
+        .route(
+            "/fake/args",
+            get(|| async { Json(json!(std::env::args().collect::<Vec<_>>())) }),
+        )
         .with_state(state);
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
         .await

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { invoke } from "@tauri-apps/api/core"
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog"
 import { open } from "@tauri-apps/plugin-shell"
 import { toast } from "sonner"
 import {
@@ -9,6 +10,8 @@ import {
   Loader2,
   RefreshCw,
   Copy,
+  Download,
+  FolderOpen,
   Play,
   Square,
   Terminal,
@@ -25,6 +28,10 @@ import type {
   EngineProcessInfo,
   EngineStatus,
   EngineInstallOptionView,
+  EngineInstallParams,
+  EngineStatusParams,
+  GetProviderConfigParams,
+  UpdateProviderInstanceParams,
 } from "@/types/tauri-commands"
 
 /** Engine recipe for each Local Embedded provider type. */
@@ -34,6 +41,7 @@ export const EMBEDDED_PROVIDER_RECIPES: Record<string, string> = {
   kev: "kev",
   von: "von",
   decider: "decider",
+  sdcpp_embedded: "sdcpp",
 }
 
 /** Engines run through `uv tool run`: installing uv is enough, and their
@@ -97,13 +105,13 @@ function InstallSection({
   }, [output])
 
   const runOption = async (option: EngineInstallOptionView) => {
-    setOutput([`$ ${option.command}`])
+    setOutput([option.kind === "download" ? (option.description ?? option.label) : `$ ${option.command}`])
     setResult(null)
     try {
       const id = await invoke<string>("engine_install", {
         recipeId: status.recipe,
         optionId: option.id,
-      })
+      } satisfies EngineInstallParams)
       runIdRef.current = id
       setRunId(id)
     } catch (err) {
@@ -127,11 +135,11 @@ function InstallSection({
   const [showOthers, setShowOthers] = useState(false)
 
   const renderOption = (option: EngineInstallOptionView) => (
-    <div key={option.id} className="space-y-2 rounded-md border p-3">
+    <div key={option.id} className="min-w-0 space-y-2 rounded-md border p-3">
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-sm font-medium">{option.label}</span>
         {option.recommended && <Badge variant="secondary">Recommended</Badge>}
-        {!option.program_found && (
+        {option.kind === "command" && !option.program_found && (
           <Badge variant="outline" className="text-muted-foreground">
             {option.program} not found
           </Badge>
@@ -142,30 +150,42 @@ function InstallSection({
           </Badge>
         )}
       </div>
-      <div className="flex items-start gap-2">
-        <pre className="min-w-0 flex-1 whitespace-pre-wrap break-all rounded bg-muted px-3 py-2 font-mono text-xs">
-          {option.command}
-        </pre>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => copy(option.command)}
-          aria-label={`Copy ${option.label} command`}
-        >
-          <Copy className="h-4 w-4" />
-        </Button>
-        {option.runnable && (
-          <Button
-            size="sm"
-            onClick={() => runOption(option)}
-            disabled={!!runId}
-            title={option.program_found ? undefined : `${option.program} was not found on PATH`}
-          >
-            <Play className="mr-1 h-4 w-4" />
-            Install
+      {option.kind === "download" ? (
+        <div className="flex items-start gap-2">
+          <p className="min-w-0 flex-1 break-words text-sm text-muted-foreground">
+            {option.description}
+          </p>
+          <Button size="sm" onClick={() => runOption(option)} disabled={!!runId}>
+            <Download className="mr-1 h-4 w-4" />
+            Download
           </Button>
-        )}
-      </div>
+        </div>
+      ) : (
+        <div className="flex items-start gap-2">
+          <pre className="min-w-0 flex-1 whitespace-pre-wrap break-all rounded bg-muted px-3 py-2 font-mono text-xs">
+            {option.command}
+          </pre>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => copy(option.command ?? "")}
+            aria-label={`Copy ${option.label} command`}
+          >
+            <Copy className="h-4 w-4" />
+          </Button>
+          {option.runnable && (
+            <Button
+              size="sm"
+              onClick={() => runOption(option)}
+              disabled={!!runId}
+              title={option.program_found ? undefined : `${option.program} was not found on PATH`}
+            >
+              <Play className="mr-1 h-4 w-4" />
+              Install
+            </Button>
+          )}
+        </div>
+      )}
       {option.notes && <p className="text-xs text-muted-foreground">{option.notes}</p>}
     </div>
   )
@@ -213,8 +233,47 @@ function InstallSection({
   )
 }
 
+/** Where the engine was found, for the status line. */
+function FoundDescription({ status }: { status: EngineStatus }) {
+  const path = <span className="break-all font-mono text-xs">{status.path}</span>
+  const version = (
+    <>
+      {status.version && <> {status.version}</>}
+      {status.build != null && status.version !== String(status.build) && <> (build {status.build})</>}
+    </>
+  )
+  switch (status.source) {
+    case "managed":
+      return (
+        <>
+          Installed {status.managed_tag}
+          {status.managed_build && <> ({status.managed_build} build)</>} (managed by LocalRouter) at{" "}
+          {path}
+        </>
+      )
+    case "override":
+      return (
+        <>
+          Using chosen file {path}
+          {version}
+        </>
+      )
+    default:
+      return (
+        <>
+          Found <span className="font-mono">{status.binary}</span>
+          {version} on PATH at {path}
+        </>
+      )
+  }
+}
+
 export function EmbeddedEngineTab({ providerType, instanceName, binaryPath }: EmbeddedEngineTabProps) {
   const recipeId = EMBEDDED_PROVIDER_RECIPES[providerType]
+  // The chosen executable. Saved here via the provider's config; the prop
+  // only seeds it (the settings panel reloads config when tabs change).
+  const [chosenPath, setChosenPath] = useState<string | null>(binaryPath?.trim() || null)
+  const [savingPath, setSavingPath] = useState(false)
   const [status, setStatus] = useState<EngineStatus | null>(null)
   const [requirements, setRequirements] = useState<EngineStatus[]>([])
   const [loading, setLoading] = useState(false)
@@ -224,6 +283,10 @@ export function EmbeddedEngineTab({ providerType, instanceName, binaryPath }: Em
 
   const keyPrefix = `${providerType}:${instanceName}`
 
+  useEffect(() => {
+    setChosenPath(binaryPath?.trim() || null)
+  }, [binaryPath])
+
   const refresh = useCallback(
     async (rescanPath: boolean) => {
       if (!recipeId) return
@@ -231,9 +294,9 @@ export function EmbeddedEngineTab({ providerType, instanceName, binaryPath }: Em
       try {
         const s = await invoke<EngineStatus>("engine_status", {
           recipeId,
-          binaryPath: binaryPath || null,
+          binaryPath: chosenPath,
           refresh: rescanPath,
-        })
+        } satisfies EngineStatusParams)
         setStatus(s)
         const reqs = await Promise.all(
           s.requirements
@@ -247,7 +310,7 @@ export function EmbeddedEngineTab({ providerType, instanceName, binaryPath }: Em
         setLoading(false)
       }
     },
-    [recipeId, binaryPath],
+    [recipeId, chosenPath],
   )
 
   const loadProcesses = useCallback(async () => {
@@ -287,6 +350,52 @@ export function EmbeddedEngineTab({ providerType, instanceName, binaryPath }: Em
 
   if (!recipeId) return null
 
+  /** Save (or clear) the provider's `binary_path` setting. */
+  const saveBinaryPath = async (path: string | null) => {
+    setSavingPath(true)
+    try {
+      const config = await invoke<Record<string, string>>("get_provider_config", {
+        instanceName,
+      } satisfies GetProviderConfigParams)
+      const next = { ...config }
+      if (path) next.binary_path = path
+      else delete next.binary_path
+      await invoke("update_provider_instance", {
+        instanceName,
+        providerType,
+        config: next,
+      } satisfies UpdateProviderInstanceParams)
+      setChosenPath(path)
+      toast.success(path ? "Engine file saved" : "Using automatic detection")
+    } catch (err) {
+      toast.error(`Could not save the engine file: ${err}`)
+    } finally {
+      setSavingPath(false)
+    }
+  }
+
+  const chooseFile = async () => {
+    let selected: string | string[] | null
+    try {
+      selected = await openFileDialog({
+        multiple: false,
+        directory: false,
+        title: `Choose the ${status?.display_name ?? "engine"} executable`,
+      })
+    } catch (err) {
+      toast.error(`Could not open the file picker: ${err}`)
+      return
+    }
+    if (!selected || typeof selected !== "string") return
+    await saveBinaryPath(selected)
+  }
+
+  const downloads = status?.install.some((o) => o.kind === "download") ?? false
+  const canUseOwnBinary = !!status && (status.supported || status.allow_own_binary)
+  const showInstall =
+    !!status?.supported &&
+    (!status.found || RUNS_THROUGH_UV.has(status.recipe) || (downloads && status.source === "managed"))
+
   const stop = async (key: string) => {
     await invoke("engine_stop", { key })
     loadProcesses()
@@ -300,8 +409,9 @@ export function EmbeddedEngineTab({ providerType, instanceName, binaryPath }: Em
             <div>
               <CardTitle className="text-base">Engine</CardTitle>
               <CardDescription>
-                LocalRouter runs this engine on your machine. Install it once with your package
-                manager; LocalRouter finds it on your PATH.
+                {downloads
+                  ? "LocalRouter runs this engine on your machine. Download it here, or choose an executable you already have."
+                  : "LocalRouter runs this engine on your machine. Install it once with your package manager; LocalRouter finds it on your PATH, or choose the executable yourself."}
               </CardDescription>
             </div>
             <Button variant="outline" size="sm" onClick={() => refresh(true)} disabled={loading}>
@@ -321,26 +431,54 @@ export function EmbeddedEngineTab({ providerType, instanceName, binaryPath }: Em
               <span>{status.unsupported_reason}</span>
             </div>
           )}
-          {status?.supported && (
+          {canUseOwnBinary && status && (
             <div className="flex items-start gap-2 text-sm">
               {status.found ? (
                 <CheckCircle className="mt-0.5 h-4 w-4 shrink-0 text-green-600" />
               ) : (
                 <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
               )}
-              <div>
+              <div className="min-w-0 break-words">
                 {status.found ? (
-                  <>
-                    Found <span className="font-mono">{status.binary}</span>
-                    {status.version && <> {status.version}</>}
-                    {status.build != null && status.version !== String(status.build) && (
-                      <> (build {status.build})</>
-                    )}{" "}
-                    at <span className="break-all font-mono text-xs">{status.path}</span>
-                  </>
+                  <FoundDescription status={status} />
                 ) : (
                   <>{status.display_name} is not installed (not found on PATH).</>
                 )}
+              </div>
+            </div>
+          )}
+          {canUseOwnBinary && status && (
+            <div className="space-y-2">
+              {chosenPath && status.source !== "override" && (
+                <div className="flex items-start gap-2 text-xs text-amber-600 dark:text-amber-400">
+                  <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  <span className="min-w-0 break-all">
+                    The chosen file {chosenPath} was not found; using automatic detection.
+                  </span>
+                </div>
+              )}
+              <div className="flex flex-wrap items-center gap-2">
+                <Button variant="outline" size="sm" onClick={chooseFile} disabled={savingPath}>
+                  <FolderOpen className="mr-1 h-4 w-4" />
+                  Choose file…
+                </Button>
+                {chosenPath && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => saveBinaryPath(null)}
+                    disabled={savingPath}
+                  >
+                    Clear
+                  </Button>
+                )}
+                <span className="text-xs text-muted-foreground">
+                  {chosenPath
+                    ? "Using the chosen executable. Clear to detect it automatically."
+                    : downloads
+                      ? "Automatic: LocalRouter's download, else PATH."
+                      : "Automatic: found on PATH."}
+                </span>
               </div>
             </div>
           )}
@@ -355,17 +493,20 @@ export function EmbeddedEngineTab({ providerType, instanceName, binaryPath }: Em
                 <InstallSection status={req} onFinished={onInstallFinished} />
               </div>
             ))}
-          {status?.supported && (!status.found || RUNS_THROUGH_UV.has(status.recipe)) && (
+          {status && showInstall && (
             <div className="space-y-2 border-t pt-4">
               <p className="text-sm font-medium">
                 {requirements.length > 0 ? "Step 2: " : ""}
                 {RUNS_THROUGH_UV.has(status.recipe)
                   ? `Prepare ${status.display_name} (optional)`
-                  : `Install ${status.display_name}`}
+                  : status.found
+                    ? `Update ${status.display_name}`
+                    : `Install ${status.display_name}`}
               </p>
               <p className="text-xs text-muted-foreground">
-                Run the command in a terminal, or click Install to run it here. Click Refresh
-                afterwards.
+                {downloads
+                  ? "Click Download to fetch the latest release into LocalRouter's folder. Nothing is downloaded until you click."
+                  : "Run the command in a terminal, or click Install to run it here. Click Refresh afterwards."}
               </p>
               <InstallSection status={status} onFinished={onInstallFinished} />
             </div>

@@ -28,7 +28,7 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable"
 import { CSS } from "@dnd-kit/utilities"
-import { GripVertical, Zap, Ban, Check, Search, ChevronRight, ChevronDown, ArrowUpDown, Brain, Eye, Wrench, Layers, Gift, SlidersHorizontal, Scale } from "lucide-react"
+import { GripVertical, Zap, Ban, Check, Search, ChevronRight, ChevronDown, ArrowUpDown, Brain, Eye, Wrench, Layers, Gift, SlidersHorizontal, Scale, ImageIcon } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Switch } from "@/components/ui/Toggle"
 import { ModelPricingBadge } from "@/components/shared/model-pricing-badge"
@@ -60,6 +60,7 @@ const CAPABILITY_FILTERS: { value: string; label: string; icon: typeof Eye }[] =
   { value: 'functioncalling', label: 'Functions', icon: Wrench },
   { value: 'embedding', label: 'Embedding', icon: Layers },
   { value: 'decision', label: 'Decision', icon: Scale },
+  { value: 'imagegeneration', label: 'Image', icon: ImageIcon },
 ]
 
 /** Parse formatted parameter count string (e.g. "7.0B", "13.5M") to a numeric value for sorting */

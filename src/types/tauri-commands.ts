@@ -455,16 +455,28 @@ export interface ProviderInstanceInfo {
 export interface EngineInstallOptionView {
   id: string
   label: string
-  command: string
-  /** Package manager the command uses, e.g. "brew" */
-  program: string
+  /** `command`: a package-manager command; `download`: LocalRouter downloads the release */
+  kind: EngineInstallKind
+  /** The exact shell command (command options only) */
+  command: string | null
+  /** What a download option does (download options only) */
+  description: string | null
+  /** Package manager the command uses, e.g. "brew" (null for downloads) */
+  program: string | null
   needs_sudo: boolean
   notes: string | null
-  /** The app may run this command (no password prompt needed) */
+  /** The app may run this option (no password prompt needed) */
   runnable: boolean
+  /** The command's program is on PATH (always true for downloads) */
   program_found: boolean
   recommended: boolean
 }
+
+/** Rust: crates/lr-engines/src/recipes.rs - InstallKind */
+export type EngineInstallKind = 'command' | 'download'
+
+/** Where an engine's executable was found. Rust: crates/lr-engines/src/detect.rs - EngineSource */
+export type EngineSource = 'override' | 'managed' | 'path'
 
 /** Rust: crates/lr-engines/src/detect.rs - RequirementStatus */
 export interface EngineRequirementStatus {
@@ -484,10 +496,18 @@ export interface EngineStatus {
   found: boolean
   path: string | null
   binary: string | null
+  /** Where `path` came from: the chosen file, LocalRouter's managed install, or PATH */
+  source: EngineSource | null
+  /** Release tag of LocalRouter's managed install, if any */
+  managed_tag: string | null
+  /** Build of the managed install, e.g. "vulkan" */
+  managed_build: string | null
   version: string | null
   build: number | null
   supported: boolean
   unsupported_reason: string | null
+  /** A chosen/self-built executable still works when `supported` is false */
+  allow_own_binary: boolean
   requirements: EngineRequirementStatus[]
   install: EngineInstallOptionView[]
   docs_url: string
@@ -670,6 +690,8 @@ export interface DownloadJobView {
   current_file: string | null
   error: string | null
   target_dir: string
+  /** What the download is for (e.g. `image:<model>`); null for library models */
+  purpose: string | null
 }
 
 /**
@@ -744,6 +766,10 @@ export interface EmbeddedCatalogModel {
   downloaded: boolean
   downloading: boolean
   download_error: string | null
+  /** 0–1 while downloading, when known */
+  progress: number | null
+  /** A downloaded model can be deleted from the Models tab */
+  removable: boolean
 }
 
 /** Rust: crates/lr-local-models/src/auth.rs - HfAccount struct */

@@ -1057,6 +1057,8 @@ export function LocalModelsTab({ instanceName, kvCache }: LocalModelsTabProps) {
     loadJobs()
     const progress = listenSafe<DownloadJobView>("local-model-download-progress", (e) => {
       const job = e.payload
+      // Image model downloads belong to the stable-diffusion.cpp Models tab.
+      if (job.purpose) return
       setJobs((prev) => {
         const i = prev.findIndex((j) => j.id === job.id)
         if (i === -1) return [...prev, job]
@@ -1067,6 +1069,7 @@ export function LocalModelsTab({ instanceName, kvCache }: LocalModelsTabProps) {
     })
     const finished = listenSafe<DownloadFinishedEvent>("local-model-download-finished", (e) => {
       const { job, added_models, library_error } = e.payload
+      if (job.purpose) return
       if (job.state === "done") {
         if (library_error) toast.error(`Downloaded ${job.repo}, but it could not be added: ${library_error}`)
         else if (added_models.length === 0) toast.warning(`Downloaded ${job.repo}, but it contains no usable model`)

@@ -1,5 +1,6 @@
 //! Tauri commands for Local Embedded providers' engines: detection, install
-//! commands, and the supervised engine processes.
+//! options (package-manager commands, or LocalRouter's managed download of
+//! stable-diffusion.cpp), and the supervised engine processes.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -15,7 +16,8 @@ fn parse_recipe(recipe_id: &str) -> Result<RecipeId, String> {
     RecipeId::parse(recipe_id).ok_or_else(|| format!("Unknown engine '{recipe_id}'"))
 }
 
-/// Detect an engine and list the install commands for this OS.
+/// Detect an engine (chosen file, managed install, then PATH) and list the
+/// install options for this OS.
 ///
 /// `refresh` re-reads PATH first (after the user installed something).
 #[tauri::command]
@@ -80,9 +82,12 @@ impl InstallSink for TauriInstallSink {
     }
 }
 
-/// Run one of an engine's install commands (only commands from the compiled
-/// recipes; commands needing sudo are refused). Output streams as
-/// `engine-install-output` events; `engine-install-finished` ends the run.
+/// Run one of an engine's install options (only options from the compiled
+/// recipes; commands needing sudo are refused). Command options run through
+/// the user's shell; download options fetch the latest release in-process
+/// (the only network access, on this click). Output streams as
+/// `engine-install-output` events; `engine-install-finished` ends the run
+/// (`exit_code` 0 on success).
 #[tauri::command]
 pub async fn engine_install(
     recipe_id: String,

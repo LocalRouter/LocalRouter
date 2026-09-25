@@ -976,6 +976,8 @@ pub enum Capability {
     TextToSpeech,
     /// Typed System One decisions (choice / score / noul) via /v1/systemone
     Decision,
+    /// Image generation via /v1/images/generations
+    ImageGeneration,
 }
 
 /// Core capability categories (for backward compatibility)
@@ -1015,7 +1017,7 @@ impl EndpointType {
                 capabilities.contains(&Capability::Audio)
             }
             EndpointType::Speech => capabilities.contains(&Capability::TextToSpeech),
-            EndpointType::ImageGeneration => false, // TODO: add ImageGeneration capability
+            EndpointType::ImageGeneration => capabilities.contains(&Capability::ImageGeneration),
             // Decision models answer natively; chat models via translation.
             EndpointType::SystemOne => {
                 capabilities.contains(&Capability::Decision)

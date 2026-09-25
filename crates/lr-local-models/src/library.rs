@@ -662,6 +662,7 @@ mod tests {
             CompletedDownload {
                 repo: repo.to_string(),
                 revision: "c0ffee".into(),
+                purpose: None,
                 files: out,
             }
         }

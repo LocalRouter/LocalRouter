@@ -32,6 +32,7 @@ import type {
 import type {
   EngineStatus,
   EngineInstallOptionView,
+  EngineSource,
   EngineProcessInfo,
   EngineInstallOutputEvent,
   EngineInstallFinishedEvent,
@@ -77,6 +78,7 @@ import type {
  *  CHECKPOINTS tables in crates/lr-providers/src/embedded/). */
 const cat = (id: string, name: string, size: string, guidance: string, downloaded = false): EmbeddedCatalogModel => ({
   id, name, download_size: size, guidance, downloaded, downloading: false, download_error: null,
+  progress: null, removable: false,
 })
 const mockEngineCatalogs: Record<string, EmbeddedCatalogModel[]> = {
   laya: [
@@ -90,6 +92,11 @@ const mockEngineCatalogs: Record<string, EmbeddedCatalogModel[]> = {
     cat('kev-9b', 'Kev 9b', '19.5 GB', 'GPU with about 17 GB VRAM'),
   ],
   von: [cat('von-latest', 'Von (ModernBERT-large)', '3.2 GB', 'Runs on CPU; faster with a GPU or Apple Silicon')],
+  sdcpp_embedded: [
+    { ...cat('flux2-klein-4b', 'FLUX.2 Klein 4B', '5.3 GB', 'Fast 4-step text-to-image from Black Forest Labs (Apache-2.0). Runs in about 6 GB of memory.', true), removable: true },
+    cat('z-image-turbo', 'Z-Image Turbo', '6.7 GB', 'Photorealistic 8-step text-to-image from Tongyi (Apache-2.0), good with text in images. Runs in about 7 GB of memory.'),
+    cat('qwen-image-2.1', 'Qwen-Image 2.1', '9.9 GB', "Qwen's image model with strong prompt following and text rendering. Needs about 11 GB of memory."),
+  ],
   decider: [
     cat('decider-0.8b', 'Decider 0.8b', '1.5 GB', 'Runs on any Apple Silicon Mac or a modest GPU'),
     cat('decider-2b', 'Decider 2b', '3.8 GB', 'About 4 GB of GPU memory'),
@@ -240,7 +247,11 @@ function systemOneFeatureSupport(base: ProviderFeatureSupport, providerType: str
 
 const KEV_GIT_REV = 'eb45fd2381396eb7edc3964b753ebc1b0ab1da2b'
 
-type MockInstallOption = Omit<EngineInstallOptionView, 'runnable' | 'program_found' | 'recommended'>
+type MockInstallOption = Omit<
+  EngineInstallOptionView,
+  'runnable' | 'program_found' | 'recommended' | 'kind' | 'description'
+> &
+  Partial<Pick<EngineInstallOptionView, 'kind' | 'description'>>
 
 interface MockEngineRecipe {
   display_name: string
@@ -254,6 +265,11 @@ interface MockEngineRecipe {
   build: number | null
   /** Installing this recipe places this path on PATH */
   installs_to: string | null
+  /** Where the engine was found (default: PATH) */
+  source?: EngineSource
+  /** LocalRouter's managed install (download recipes only) */
+  managed_tag?: string
+  managed_build?: string
 }
 
 /** Package managers present on the demo machine */
@@ -344,6 +360,32 @@ const mockEngineRecipes: Record<string, MockEngineRecipe> = {
     build: null,
     installs_to: null,
   },
+  sdcpp: {
+    display_name: 'stable-diffusion.cpp',
+    requires: [],
+    install: [
+      {
+        id: 'metal',
+        label: 'Metal',
+        kind: 'download',
+        command: null,
+        description: 'Downloads the latest stable-diffusion.cpp release (Metal build) from github.com/leejet/stable-diffusion.cpp',
+        program: null,
+        needs_sudo: false,
+        notes: 'About 35 MB. Runs on the Apple GPU.',
+      },
+    ],
+    docs_url: 'https://github.com/leejet/stable-diffusion.cpp',
+    // Downloaded by LocalRouter into its managed engines folder
+    path: '/Users/demo/.localrouter/engines/managed/sdcpp/master-920-2f88688-metal/sd-server',
+    binary: 'sd-server',
+    version: 'master-920-2f88688',
+    build: null,
+    installs_to: null,
+    source: 'managed',
+    managed_tag: 'master-920-2f88688',
+    managed_build: 'metal',
+  },
 }
 
 // Returns: EngineStatus (src/types/tauri-commands.ts)
@@ -356,8 +398,10 @@ function mockEngineStatus(recipeId: string): EngineStatus {
   })
   const install: EngineInstallOptionView[] = recipe.install.map((o) => ({
     ...o,
+    kind: o.kind ?? 'command',
+    description: o.description ?? null,
     runnable: !o.needs_sudo,
-    program_found: DEMO_PROGRAMS_ON_PATH.has(o.program),
+    program_found: o.kind === 'download' || (o.program !== null && DEMO_PROGRAMS_ON_PATH.has(o.program)),
     recommended: false,
   }))
   // Recommend the first option the user can run right now, else the first.
@@ -369,10 +413,14 @@ function mockEngineStatus(recipeId: string): EngineStatus {
     found: recipe.path !== null && requirements.every((r) => r.found),
     path: recipe.path,
     binary: recipe.path !== null ? recipe.binary : null,
+    source: recipe.path !== null ? (recipe.source ?? 'path') : null,
+    managed_tag: recipe.managed_tag ?? null,
+    managed_build: recipe.managed_build ?? null,
     version: recipe.path !== null ? recipe.version : null,
     build: recipe.path !== null ? recipe.build : null,
     supported: true,
     unsupported_reason: null,
+    allow_own_binary: recipeId === 'sdcpp',
     requirements,
     install,
     docs_url: recipe.docs_url,
@@ -389,6 +437,17 @@ function mockInstallOutput(recipeId: string): string[] {
     case 'kev':
     case 'decider':
       return ['Resolved 61 packages in 1.84s', 'Prepared 61 packages in 41.20s', 'Installed 61 packages in 312ms']
+    case 'sdcpp': {
+      // Mirrors crates/lr-engines/src/download.rs progress lines
+      const asset = 'sd-master-2f88688-bin-Darwin-macOS-26.6.2-arm64.zip'
+      return [
+        'Looking up the latest stable-diffusion.cpp release on github.com/leejet/stable-diffusion.cpp',
+        'Latest release: master-920-2f88688',
+        ...[0, 20, 45, 70, 95, 100].map((pct) => `Downloading ${asset}: ${pct}% (${Math.round((34 * pct) / 100)}/34 MB)`),
+        `Extracting ${asset}`,
+        'Installed stable-diffusion.cpp master-920-2f88688 (Metal build) in /Users/demo/.localrouter/engines/managed/sdcpp/master-920-2f88688-metal',
+      ]
+    }
     default:
       return [
         'Resolved 58 packages in 1.52s',
@@ -1405,7 +1464,11 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     const lines = mockInstallOutput(args.recipeId)
     const timers = lines.map((line, i) =>
       setTimeout(() => {
-        const event: EngineInstallOutputEvent = { run_id: runId, stream: 'stderr', line }
+        const event: EngineInstallOutputEvent = {
+          run_id: runId,
+          stream: option.kind === 'download' ? 'stdout' : 'stderr',
+          line,
+        }
         emit('engine-install-output', event)
       }, 400 + i * 600),
     )
@@ -1507,6 +1570,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       current_file: null,
       error: null,
       target_dir: `${DEMO_MODELS_DIR}/hf/${repo.summary.id}/${repo.sha}`,
+      purpose: null,
     }
     mockDownloadJobs.push(job)
     emitDownload(job)
@@ -1633,12 +1697,29 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     if (!model) throw `Model not found: ${args.model}`
     model.downloading = true
     model.download_error = null
-    // Simulated: the demo never downloads anything.
-    setTimeout(() => {
-      if (!model.downloading) return
+    // Simulated: the demo never downloads anything. Image models (multi-file
+    // bundles) report progress.
+    const bundle = mockEngineCatalogs.sdcpp_embedded.includes(model)
+    if (bundle) model.progress = 0
+    const timer = setInterval(() => {
+      if (!model.downloading) return clearInterval(timer)
+      if (bundle && (model.progress ?? 0) < 1) {
+        model.progress = Math.min(1, (model.progress ?? 0) + 0.2)
+        return
+      }
+      clearInterval(timer)
       model.downloading = false
       model.downloaded = true
-    }, 5000)
+      model.progress = null
+      if (bundle) model.removable = true
+    }, 1000)
+    return null
+  },
+  'local_models_engine_remove': (args: LocalModelsEngineDownloadParams): null => {
+    const model = engineCatalogFor(args.instanceName).find((m) => m.id === args.model)
+    if (!model) throw `Model not found: ${args.model}`
+    model.downloaded = false
+    model.removable = false
     return null
   },
   'local_models_engine_download_cancel': (args: LocalModelsEngineDownloadParams): null => {

@@ -18,7 +18,7 @@ Provider-specific quirks (auth headers, model ID formats, streaming behavior) ar
 
 <!-- @entry local-embedded-providers -->
 
-Local Embedded providers run an inference engine on your machine that LocalRouter launches and manages. You do not start a server or enter a URL. LocalRouter never downloads or ships engine binaries: you install the engine once with your own package manager, and LocalRouter finds it on your PATH (or at the path set in the provider's settings).
+Local Embedded providers run an inference engine on your machine that LocalRouter launches and manages. You do not start a server or enter a URL. You install the engine once with your own package manager, and LocalRouter finds it on your PATH (or at the file you choose in the Engine tab). The one exception is stable-diffusion.cpp, which no package manager carries on macOS or Windows: its Engine tab can download the latest official release for your computer when you click Download.
 
 - **Engine tab**: each Local Embedded provider has an Engine tab. It shows whether the engine was found, lists the install commands for your operating system with a Copy button, and can run commands that need no password prompt (Install button) with live output. Click Refresh after installing from a terminal.
 - **Requirements**: Laya, Kev, Von and Decider are Python engines installed and run with Astral's `uv`. If `uv` is missing, the Engine tab offers its install first (`brew install uv` on macOS, or `curl -LsSf https://astral.sh/uv/install.sh | sh`).
@@ -28,6 +28,14 @@ Local Embedded providers run an inference engine on your machine that LocalRoute
 - **Offline serving**: engines serving requests run with Hugging Face offline mode and telemetry off. Only a download you start contacts Hugging Face.
 - **Local only**: engines listen on `127.0.0.1` on a free port. Where the engine supports it, LocalRouter passes a new API key on every launch, so other programs on the machine cannot use it.
 - **Platforms**: macOS on Apple Silicon, Windows and Linux. The Python engines are not available on Intel Macs, because current PyTorch releases no longer support them.
+
+**stable-diffusion.cpp (image generation)**: LocalRouter runs `sd-server` for `POST /v1/images/generations` (model `<provider>/<model>`, for example `stable-diffusion.cpp/z-image-turbo`). In the Engine tab, choose an `sd-server` you already have, or click Download to fetch the latest release from github.com/leejet/stable-diffusion.cpp: Metal on Apple Silicon Macs; Vulkan (recommended), CUDA 12, CPU or ROCm builds on Windows and Linux. Image models are bundles of three files (diffusion weights, VAE and text encoder), downloaded together in the Models tab:
+
+- **FLUX.2 Klein 4B** (about 5.3 GB): fast 4-step generation.
+- **Z-Image Turbo** (about 6.7 GB): photorealistic 8-step generation, good with text in images.
+- **Qwen-Image 2.1** (about 10 GB): strong prompt following and text rendering.
+
+A Qwen-Image 2.1 GGUF you downloaded or imported in the llama.cpp Models tab (for example a fine-tune) is listed as its own image model and only needs the Qwen-Image 2.1 VAE and text encoder. One image model is loaded at a time. sd-server has no API key option, so it only ever listens on `127.0.0.1` behind LocalRouter's own authentication. Responses carry base64 images; `response_format: "url"` returns a `data:` URL.
 
 Local Embedded providers are always free.
 

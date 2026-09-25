@@ -218,6 +218,8 @@ impl super::EmbeddedControl for VonEmbeddedProvider {
             downloaded: self.is_downloaded(),
             downloading: self.downloads.is_downloading(MODEL_ID),
             download_error: self.downloads.error(MODEL_ID),
+            progress: None,
+            removable: false,
         }]
     }
 

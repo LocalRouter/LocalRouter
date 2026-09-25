@@ -1,8 +1,10 @@
-//! Running a recipe's install command on the user's behalf, streaming its
-//! output. Only commands compiled into the recipes can run: callers pick an
-//! option by `(recipe, option id)`.
+//! Running a recipe's install option on the user's behalf, streaming its
+//! output. Only options compiled into the recipes can run: callers pick an
+//! option by `(recipe, option id)`. Command options run through the user's
+//! shell; download options run in-process ([`crate::download`]) and report
+//! through the same events.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -12,9 +14,10 @@ use serde::Serialize;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio_util::sync::CancellationToken;
 
+use crate::download::{run_download, DownloadError, DownloadJob, GITHUB_API};
 use crate::platform::{Os, Platform};
 use crate::process::host_command;
-use crate::recipes::{recipe, RecipeId};
+use crate::recipes::{recipe, InstallKind, RecipeId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -47,11 +50,16 @@ pub enum InstallError {
     NeedsSudo,
     #[error("{0}")]
     Unsupported(String),
+    #[error("{0} is already being downloaded")]
+    AlreadyRunning(&'static str),
 }
 
 #[derive(Default)]
 pub struct InstallRunner {
     runs: Arc<Mutex<HashMap<String, CancellationToken>>>,
+    /// Recipes with a download in progress (one at a time per recipe: they
+    /// share the managed folder).
+    downloads: Arc<Mutex<HashSet<RecipeId>>>,
 }
 
 impl InstallRunner {
@@ -82,7 +90,65 @@ impl InstallRunner {
         if option.needs_sudo {
             return Err(InstallError::NeedsSudo);
         }
-        Ok(self.run_shell(option.command.clone(), platform.os, sink))
+        let bad_option = || InstallError::UnknownOption {
+            recipe: recipe_id.as_str(),
+            option: option_id.to_string(),
+        };
+        match option.kind {
+            InstallKind::Command => {
+                let command = option.command.clone().ok_or_else(bad_option)?;
+                Ok(self.run_shell(command, platform.os, sink))
+            }
+            InstallKind::Download => {
+                let spec = option.download.ok_or_else(bad_option)?;
+                let dir = crate::managed::recipe_dir(recipe_id).ok_or_else(|| {
+                    InstallError::Unsupported(
+                        "could not find LocalRouter's configuration folder".to_string(),
+                    )
+                })?;
+                let job = DownloadJob {
+                    display_name: recipe.display_name,
+                    label: option.label,
+                    spec,
+                    os: platform.os,
+                    api_base: GITHUB_API.to_string(),
+                    dir,
+                };
+                self.run_download(recipe_id, job, sink)
+            }
+        }
+    }
+
+    /// Run a download install in-process; same events as a command.
+    pub(crate) fn run_download(
+        &self,
+        recipe_id: RecipeId,
+        job: DownloadJob,
+        sink: Arc<dyn InstallSink>,
+    ) -> Result<String, InstallError> {
+        if !self.downloads.lock().insert(recipe_id) {
+            return Err(InstallError::AlreadyRunning(job.display_name));
+        }
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let token = CancellationToken::new();
+        self.runs.lock().insert(run_id.clone(), token.clone());
+        let runs = self.runs.clone();
+        let downloads = self.downloads.clone();
+        let id = run_id.clone();
+        tokio::spawn(async move {
+            let result = run_download(&id, &job, &sink, &token).await;
+            runs.lock().remove(&id);
+            downloads.lock().remove(&recipe_id);
+            match result {
+                Ok(_) => sink.on_finished(&id, Some(0), false, None),
+                Err(DownloadError::Cancelled) => sink.on_finished(&id, None, true, None),
+                Err(DownloadError::Failed(e)) => {
+                    sink.on_line(&id, OutputStream::Stderr, &format!("Error: {e}"));
+                    sink.on_finished(&id, None, false, Some(e))
+                }
+            }
+        });
+        Ok(run_id)
     }
 
     /// Run `command` through the user's shell. Kept separate from `start` so
@@ -104,7 +170,8 @@ impl InstallRunner {
         run_id
     }
 
-    /// Cancel a running install (kills its whole process group).
+    /// Cancel a running install (kills a command's whole process group, or
+    /// stops a download and removes what it wrote).
     pub fn cancel(&self, run_id: &str) -> bool {
         match self.runs.lock().get(run_id) {
             Some(token) => {
@@ -316,5 +383,52 @@ mod tests {
         wait(&sink).await;
         assert_eq!(*sink.finished.lock(), Some((None, true)));
         assert!(!sink.lines.lock().iter().any(|(_, l)| l == "never"));
+    }
+
+    #[tokio::test]
+    async fn downloads_run_one_at_a_time_and_cancel() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/leejet/stable-diffusion.cpp/releases/latest"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"tag_name": "t", "assets": []}))
+                    .set_delay(std::time::Duration::from_secs(30)),
+            )
+            .mount(&server)
+            .await;
+        let tmp = tempfile::tempdir().unwrap();
+        let job = crate::download::DownloadJob {
+            display_name: "stable-diffusion.cpp",
+            label: "Vulkan",
+            spec: crate::recipes::SDCPP_LINUX_VULKAN,
+            os: Os::Linux,
+            api_base: server.uri(),
+            dir: tmp.path().join("sdcpp"),
+        };
+        let runner = InstallRunner::new();
+        let sink = Arc::new(Collect::default());
+        let id = runner
+            .run_download(RecipeId::SdCpp, job.clone(), sink.clone())
+            .unwrap();
+        assert!(matches!(
+            runner.run_download(RecipeId::SdCpp, job.clone(), sink.clone()),
+            Err(InstallError::AlreadyRunning(_))
+        ));
+        assert!(runner.is_running(&id));
+        assert!(runner.cancel(&id));
+        wait(&sink).await;
+        assert_eq!(*sink.finished.lock(), Some((None, true)));
+        assert!(!runner.is_running(&id));
+        // The recipe is free again.
+        let sink = Arc::new(Collect::default());
+        let id = runner
+            .run_download(RecipeId::SdCpp, job, sink.clone())
+            .unwrap();
+        runner.cancel(&id);
+        wait(&sink).await;
     }
 }

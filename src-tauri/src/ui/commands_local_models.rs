@@ -251,6 +251,108 @@ pub struct LocalModels {
     library: Arc<Library>,
     events: Arc<DownloadEventBridge>,
     sign_in_flow: Mutex<Option<FlowId>>,
+    images: Arc<ImageModels>,
+}
+
+/// Image models for the stable-diffusion.cpp provider: bundle files are
+/// downloaded with the shared download manager (tagged with an image
+/// purpose) and tracked by the image model store.
+pub struct ImageModels {
+    store: Arc<lr_local_models::ImageModelStore>,
+    library: Arc<Library>,
+    downloads: Arc<DownloadManager>,
+}
+
+impl ImageModels {
+    fn jobs_for(&self, id: &str) -> Vec<DownloadJobView> {
+        let purpose = lr_local_models::image_models::purpose_for(id);
+        self.downloads
+            .jobs()
+            .into_iter()
+            .filter(|j| j.purpose.as_deref() == Some(purpose.as_str()))
+            .collect()
+    }
+}
+
+#[async_trait::async_trait]
+impl lr_providers::embedded::ImageModelBackend for ImageModels {
+    fn models(&self) -> Vec<lr_providers::embedded::ImageModelStatus> {
+        self.store
+            .catalog(&self.library)
+            .into_iter()
+            .map(|m| {
+                let jobs = self.jobs_for(&m.id);
+                let active: Vec<&DownloadJobView> =
+                    jobs.iter().filter(|j| !j.state.is_finished()).collect();
+                let downloading = !m.downloaded && !active.is_empty();
+                let progress = downloading.then(|| {
+                    let done: u64 = active.iter().map(|j| j.bytes_done).sum();
+                    let total: u64 = active.iter().map(|j| j.bytes_total).sum();
+                    if total == 0 {
+                        0.0
+                    } else {
+                        done as f64 / total as f64
+                    }
+                });
+                let error = (!m.downloaded && active.is_empty())
+                    .then(|| {
+                        jobs.iter()
+                            .rev()
+                            .find(|j| j.state == DownloadState::Failed)
+                            .and_then(|j| j.error.clone())
+                    })
+                    .flatten();
+                lr_providers::embedded::ImageModelStatus {
+                    id: m.id,
+                    name: m.name,
+                    description: m.description,
+                    total_bytes: m.total_bytes,
+                    downloaded: m.downloaded,
+                    downloading,
+                    progress,
+                    error,
+                }
+            })
+            .collect()
+    }
+
+    fn launch(&self, id: &str) -> Option<lr_local_models::ImageModelLaunch> {
+        self.store.launch(id, &self.library)
+    }
+
+    async fn start_download(&self, id: &str) -> Result<(), String> {
+        let plan = self
+            .store
+            .download_plan(id, &self.library)
+            .ok_or_else(|| format!("Unknown image model '{id}'"))?;
+        let purpose = lr_local_models::image_models::purpose_for(id);
+        for (repo, files) in plan {
+            self.downloads
+                .start_for(&repo, None, files, Some(&purpose))
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    fn cancel_download(&self, id: &str) {
+        for job in self.jobs_for(id) {
+            if !job.state.is_finished() {
+                self.downloads.cancel(&job.id);
+            }
+        }
+    }
+
+    fn remove(&self, id: &str) -> Result<(), String> {
+        if self.store.remove(id, &self.library, true) {
+            lr_providers::embedded::notify_models_changed(
+                lr_providers::embedded::sdcpp::PROVIDER_TYPE,
+            );
+            Ok(())
+        } else {
+            Err(format!("Unknown image model '{id}'"))
+        }
+    }
 }
 
 impl LocalModels {
@@ -272,14 +374,31 @@ impl LocalModels {
             events.clone(),
             Arc::new(move || token_creds.token()),
         );
+        let image_store = Arc::new(lr_local_models::ImageModelStore::open(
+            library.storage_dir(),
+        ));
         {
             let library = library.clone();
             let events = events.clone();
+            let image_store = image_store.clone();
             downloads.on_complete(Arc::new(move |done: CompletedDownload| {
+                // Image model files belong to the image store, not the
+                // llama.cpp library.
+                if image_store.record_completed(&done) {
+                    lr_providers::embedded::notify_models_changed(
+                        lr_providers::embedded::sdcpp::PROVIDER_TYPE,
+                    );
+                    return;
+                }
                 let result = library.add_downloaded(&done);
                 events.record_completion(&done, result);
             }));
         }
+        let images = Arc::new(ImageModels {
+            store: image_store,
+            library: library.clone(),
+            downloads: downloads.clone(),
+        });
         Arc::new(Self {
             hub,
             credentials,
@@ -287,7 +406,13 @@ impl LocalModels {
             library,
             events,
             sign_in_flow: Mutex::new(None),
+            images,
         })
+    }
+
+    /// The image model backend for the stable-diffusion.cpp provider.
+    pub fn image_backend(&self) -> Arc<dyn lr_providers::embedded::ImageModelBackend> {
+        self.images.clone()
     }
 
     /// The token to send to the Hub (refreshing an expiring OAuth token).
@@ -624,7 +749,13 @@ pub async fn local_models_download_cancel(
 pub async fn local_models_downloads(
     state: State<'_, Arc<LocalModels>>,
 ) -> Result<Vec<DownloadJobView>, String> {
-    Ok(state.downloads.jobs())
+    // Image model downloads show in the stable-diffusion.cpp Models tab.
+    Ok(state
+        .downloads
+        .jobs()
+        .into_iter()
+        .filter(|j| j.purpose.is_none())
+        .collect())
 }
 
 /// Forget finished download jobs.
@@ -831,6 +962,24 @@ pub async fn local_models_engine_download(
         .embedded_control()
         .ok_or_else(|| format!("Provider '{instance_name}' is not a Local Embedded provider"))?;
     control.download(&model).await.map_err(|e| e.to_string())
+}
+
+/// Delete a downloaded engine model (image models of stable-diffusion.cpp).
+#[tauri::command]
+pub async fn local_models_engine_remove(
+    instance_name: String,
+    model: String,
+    registry: State<'_, Arc<ProviderRegistry>>,
+) -> Result<(), String> {
+    validate_model_id(&model)?;
+    let provider = embedded_provider(&registry, &instance_name, false)?;
+    let control = provider
+        .embedded_control()
+        .ok_or_else(|| format!("Provider '{instance_name}' is not a Local Embedded provider"))?;
+    control
+        .remove_download(&model)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Stop a running engine download.
@@ -1075,6 +1224,7 @@ mod tests {
             current_file: None,
             error: None,
             target_dir: "/models/hf/org/model-GGUF/abc123".into(),
+            purpose: None,
         }
     }
 
@@ -1101,6 +1251,7 @@ mod tests {
         CompletedDownload {
             repo: "org/model-GGUF".into(),
             revision: "abc123".into(),
+            purpose: None,
             // Reverse order: matching must not depend on it.
             files: vec![
                 (

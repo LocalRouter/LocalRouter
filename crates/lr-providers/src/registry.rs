@@ -717,6 +717,7 @@ impl ProviderRegistry {
                     capabilities.push(crate::Capability::Embedding);
                 } else if m.modality == lr_catalog::Modality::Image || m.capabilities.image_output {
                     // Image generation model — don't add Chat
+                    capabilities.push(crate::Capability::ImageGeneration);
                 } else {
                     // Chat model (or unknown)
                     capabilities.push(crate::Capability::Chat);
@@ -1003,6 +1004,7 @@ impl ProviderRegistry {
             || catalog_model.capabilities.image_output
         {
             // Image generation model — don't add Chat
+            caps.push(crate::Capability::ImageGeneration);
         } else {
             caps.push(crate::Capability::Chat);
             if catalog_model.modality == lr_catalog::Modality::Multimodal {

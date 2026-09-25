@@ -1,7 +1,18 @@
 import { useCallback, useEffect, useState } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { AlertCircle, CheckCircle, Download, Loader2, Play, ScrollText, Square, X } from "lucide-react"
+import { AlertCircle, CheckCircle, Download, Loader2, Play, ScrollText, Square, Trash2, X } from "lucide-react"
+import { Progress } from "@/components/ui/progress"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card"
@@ -31,6 +42,7 @@ export function EngineModelsTab({ providerType, instanceName, enabled }: EngineM
   const [states, setStates] = useState<EmbeddedModelState[]>([])
   const [busy, setBusy] = useState<string | null>(null)
   const [logsFor, setLogsFor] = useState<string | null>(null)
+  const [removing, setRemoving] = useState<EmbeddedCatalogModel | null>(null)
   const [logs, setLogs] = useState<string[]>([])
 
   const refresh = useCallback(async () => {
@@ -119,6 +131,17 @@ export function EngineModelsTab({ providerType, instanceName, enabled }: EngineM
       invoke("local_models_unload", { instanceName, model } satisfies LocalModelsLoadParams),
     )
 
+  const remove = (model: string) =>
+    run(
+      model,
+      () =>
+        invoke("local_models_engine_remove", {
+          instanceName,
+          model,
+        } satisfies LocalModelsEngineDownloadParams),
+      `Removed ${model}`,
+    )
+
   const stateOf = (model: string) => states.find((s) => s.model === model)
 
   return (
@@ -150,6 +173,7 @@ export function EngineModelsTab({ providerType, instanceName, enabled }: EngineM
                       <Badge variant="secondary">
                         <Loader2 className="mr-1 h-3 w-3 animate-spin" />
                         Downloading
+                        {m.progress != null && ` ${Math.floor(m.progress * 100)}%`}
                       </Badge>
                     ) : m.downloaded ? (
                       <Badge variant="secondary" className="text-green-700 dark:text-green-400">
@@ -161,16 +185,29 @@ export function EngineModelsTab({ providerType, instanceName, enabled }: EngineM
                     )}
                     {loaded && <Badge variant="secondary">Loaded</Badge>}
                     <div className="ml-auto flex flex-wrap gap-2">
+                      {m.downloaded && m.removable && !loaded && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setRemoving(m)}
+                          disabled={busy === m.id}
+                        >
+                          <Trash2 className="mr-1 h-4 w-4" />
+                          Remove
+                        </Button>
+                      )}
                       {m.downloading ? (
                         <>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => setLogsFor(logsFor === m.id ? null : m.id)}
-                          >
-                            <ScrollText className="mr-1 h-4 w-4" />
-                            Progress
-                          </Button>
+                          {m.progress == null && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setLogsFor(logsFor === m.id ? null : m.id)}
+                            >
+                              <ScrollText className="mr-1 h-4 w-4" />
+                              Progress
+                            </Button>
+                          )}
                           <Button
                             variant="outline"
                             size="sm"
@@ -222,6 +259,13 @@ export function EngineModelsTab({ providerType, instanceName, enabled }: EngineM
                     </div>
                   </div>
                   {m.guidance && <p className="text-xs text-muted-foreground">{m.guidance}</p>}
+                  {m.downloading && m.progress != null && (
+                    <Progress
+                      value={m.progress * 100}
+                      className="h-1.5"
+                      aria-label={`Download progress of ${m.name}`}
+                    />
+                  )}
                   {m.download_error && !m.downloading && (
                     <p className="flex items-start gap-1 whitespace-pre-wrap break-words text-xs text-red-500">
                       <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
@@ -246,6 +290,29 @@ export function EngineModelsTab({ providerType, instanceName, enabled }: EngineM
       </Card>
 
       <HuggingFaceAccountCard description="Optional. Downloads use this account (for gated or private checkpoints and higher rate limits). Shared by all Local Embedded providers." />
+
+      <AlertDialog open={removing !== null} onOpenChange={(o) => !o && setRemoving(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove {removing?.name}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Its downloaded files are deleted, except files another downloaded model still uses
+              and your own library files. You can download it again later.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (removing) remove(removing.id)
+                setRemoving(null)
+              }}
+            >
+              Remove
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }
