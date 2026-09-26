@@ -29,11 +29,11 @@ Local Embedded providers run an inference engine on your machine that LocalRoute
 - **Local only**: engines listen on `127.0.0.1` on a free port. Where the engine supports it, LocalRouter passes a new API key on every launch, so other programs on the machine cannot use it.
 - **Platforms**: macOS on Apple Silicon, Windows and Linux. The Python engines are not available on Intel Macs, because current PyTorch releases no longer support them.
 
-**stable-diffusion.cpp (image generation)**: LocalRouter runs `sd-server` for `POST /v1/images/generations` (model `<provider>/<model>`, for example `stable-diffusion.cpp/z-image-turbo`). In the Engine tab, choose an `sd-server` you already have, or click Download to fetch the latest release from github.com/leejet/stable-diffusion.cpp: Metal on Apple Silicon Macs; Vulkan (recommended), CUDA 12, CPU or ROCm builds on Windows and Linux. Image models are bundles of three files (diffusion weights, VAE and text encoder), downloaded together in the Models tab:
+**stable-diffusion.cpp (image generation)**: LocalRouter runs `sd-server` for `POST /v1/images/generations` and `POST /v1/images/edits` (model `<provider>/<model>`, for example `stable-diffusion.cpp/z-image-turbo`). In the Engine tab, choose an `sd-server` you already have, or click Download to fetch the latest release from github.com/leejet/stable-diffusion.cpp: Metal on Apple Silicon Macs; Vulkan (recommended), CUDA 12, CPU or ROCm builds on Windows and Linux. Image models are bundles of three files (diffusion weights, VAE and text encoder), downloaded together in the Models tab:
 
 - **FLUX.2 Klein 4B** (about 5.3 GB): fast 4-step generation.
 - **Z-Image Turbo** (about 6.7 GB): photorealistic 8-step generation, good with text in images.
-- **Qwen-Image 2.1** (about 10 GB): strong prompt following and text rendering.
+- **Qwen-Image 2.1** (about 11 GB): strong prompt following, text rendering and image edits.
 
 A Qwen-Image 2.1 GGUF you downloaded or imported in the llama.cpp Models tab (for example a fine-tune) is listed as its own image model and only needs the Qwen-Image 2.1 VAE and text encoder. One image model is loaded at a time. sd-server has no API key option, so it only ever listens on `127.0.0.1` behind LocalRouter's own authentication. Responses carry base64 images; `response_format: "url"` returns a `data:` URL.
 

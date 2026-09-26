@@ -220,6 +220,17 @@ pub trait ModelProvider: Send + Sync {
         )))
     }
 
+    /// Edit images with a text prompt (reference images plus an optional
+    /// mask).
+    ///
+    /// Used by: POST /v1/images/edits endpoint
+    async fn edit_image(&self, _request: ImageEditRequest) -> AppResult<ImageGenerationResponse> {
+        Err(AppError::Provider(format!(
+            "Provider '{}' does not support image edits",
+            self.name()
+        )))
+    }
+
     /// Check if this provider supports a specific feature
     ///
     /// Features include things like:
@@ -262,6 +273,11 @@ pub trait ModelProvider: Send + Sync {
     /// Whether this provider supports image generation.
     /// Default: false. Override to true in providers that implement generate_image().
     fn supports_image_generation(&self) -> bool {
+        false
+    }
+
+    /// Whether this provider supports image edits (`edit_image`).
+    fn supports_image_edits(&self) -> bool {
         false
     }
 
@@ -486,6 +502,20 @@ pub fn default_feature_support(
                 "Generate images from text prompts".into()
             } else {
                 "This provider does not offer image generation".into()
+            }),
+        },
+        EndpointSupport {
+            name: "Image Edits".into(),
+            endpoint: "/v1/images/edits".into(),
+            support: if provider.supports_image_edits() {
+                SupportLevel::Supported
+            } else {
+                SupportLevel::NotSupported
+            },
+            notes: Some(if provider.supports_image_edits() {
+                "Edit images with a prompt (reference images and an optional mask)".into()
+            } else {
+                "This provider does not offer image edits".into()
             }),
         },
         EndpointSupport {
@@ -1933,6 +1963,30 @@ pub struct ImageGenerationResponse {
     pub created: i64,
     /// Array of generated images
     pub data: Vec<GeneratedImage>,
+}
+
+/// An uploaded image (reference image or mask) for an image edit.
+#[derive(Debug, Clone)]
+pub struct ImageInput {
+    pub data: Vec<u8>,
+    pub file_name: String,
+    /// MIME type, e.g. `image/png`.
+    pub content_type: String,
+}
+
+/// Image edit request (POST /v1/images/edits).
+#[derive(Debug, Clone)]
+pub struct ImageEditRequest {
+    pub model: String,
+    pub prompt: String,
+    /// Reference images, in order (at least one).
+    pub images: Vec<ImageInput>,
+    /// Optional mask: transparent areas are edited.
+    pub mask: Option<ImageInput>,
+    pub n: Option<u32>,
+    pub size: Option<String>,
+    pub response_format: Option<String>,
+    pub user: Option<String>,
 }
 
 /// Single generated image

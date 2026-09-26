@@ -35,6 +35,9 @@ pub enum ImageRole {
     Vae,
     /// LLM text encoder (Qwen-Image, Z-Image, FLUX.2).
     Llm,
+    /// Vision projector of the LLM text encoder, needed to edit images
+    /// with a GGUF text encoder (Qwen-Image 2.1).
+    LlmVision,
     T5xxl,
     ClipL,
     ClipG,
@@ -47,6 +50,7 @@ impl ImageRole {
             ImageRole::Diffusion => "--diffusion-model",
             ImageRole::Vae => "--vae",
             ImageRole::Llm => "--llm",
+            ImageRole::LlmVision => "--llm_vision",
             ImageRole::T5xxl => "--t5xxl",
             ImageRole::ClipL => "--clip_l",
             ImageRole::ClipG => "--clip_g",
@@ -140,7 +144,7 @@ pub const BUNDLES: &[ImageBundle] = &[
     ImageBundle {
         id: "qwen-image-2.1",
         name: "Qwen-Image 2.1",
-        description: "Qwen's image model with strong prompt following and text rendering. Needs about 11 GB of memory.",
+        description: "Qwen's image model with strong prompt following, text rendering and image editing. Needs about 12 GB of memory.",
         files: &[
             BundleFile {
                 role: ImageRole::Diffusion,
@@ -159,6 +163,12 @@ pub const BUNDLES: &[ImageBundle] = &[
                 repo: "Qwen/Qwen3-VL-8B-Instruct-GGUF",
                 path: "Qwen3VL-8B-Instruct-Q4_K_M.gguf",
                 size_bytes: 5_030_000_000,
+            },
+            BundleFile {
+                role: ImageRole::LlmVision,
+                repo: "Qwen/Qwen3-VL-8B-Instruct-GGUF",
+                path: "mmproj-Qwen3VL-8B-Instruct-F16.gguf",
+                size_bytes: 1_160_000_000,
             },
         ],
         server_args: &["--cfg-scale", "6.0", "--sampling-method", "euler"],
@@ -592,7 +602,7 @@ mod tests {
         // Only the support files are fetched.
         let plan = store.download_plan(&entry.id, &library).unwrap();
         let files: Vec<&String> = plan.iter().flat_map(|(_, f)| f).collect();
-        assert_eq!(files.len(), 2);
+        assert_eq!(files.len(), 3, "VAE, text encoder and its vision projector");
         assert!(files
             .iter()
             .all(|f| !f.ends_with("qwen_image_2.1-Q4_K.gguf")));

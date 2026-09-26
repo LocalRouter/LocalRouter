@@ -415,6 +415,7 @@ const sections: DocSection[] = [
       { id: 'systemone', title: 'POST /systemone' },
       { id: 'openai-moderations', title: 'POST /moderations' },
       { id: 'openai-image-generations', title: 'POST /images/generations' },
+      { id: 'openai-image-edits', title: 'POST /images/edits' },
       { id: 'openai-health', title: 'GET /health' },
       { id: 'openai-spec', title: 'GET /openapi.json' },
       { id: 'openai-streaming', title: 'Streaming (SSE)' },

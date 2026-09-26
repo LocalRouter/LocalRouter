@@ -39,6 +39,10 @@ use utoipa::OpenApi;
         crate::routes::audio::audio_translations,
         crate::routes::audio::audio_speech,
 
+        // Image endpoints
+        crate::routes::images::image_generations,
+        crate::routes::images::image_edits,
+
         // System One typed decisions
         crate::routes::systemone::systemone,
 
@@ -68,6 +72,10 @@ use utoipa::OpenApi;
             // Request types
             crate::types::ChatCompletionRequest,
             crate::types::CompletionRequest,
+            crate::types::ImageGenerationRequest,
+            crate::types::ImageGenerationResponse,
+            crate::types::ImageData,
+            crate::routes::images::ImageEditForm,
             crate::types::EmbeddingRequest,
 
             // Response types

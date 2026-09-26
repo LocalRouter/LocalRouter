@@ -115,6 +115,40 @@ async fn images(Json(req): Json<Value>) -> impl IntoResponse {
     Json(json!({"created": 1, "output_format": "png", "data": data, "size": req.get("size")}))
 }
 
+/// Multipart image edit, as `sd-server` answers it: one image per `n`, whose
+/// bytes describe what arrived (`prompt|images=N|mask=yes|no|size=S`).
+async fn image_edits(mut form: axum::extract::Multipart) -> impl IntoResponse {
+    use base64::Engine as _;
+    let (mut prompt, mut images, mut mask, mut n, mut size) =
+        (String::new(), 0, false, 1u64, String::from("-"));
+    while let Ok(Some(field)) = form.next_field().await {
+        match field.name().unwrap_or("") {
+            "prompt" => prompt = field.text().await.unwrap_or_default(),
+            "n" => {
+                n = field
+                    .text()
+                    .await
+                    .ok()
+                    .and_then(|t| t.parse().ok())
+                    .unwrap_or(1)
+            }
+            "size" => size = field.text().await.unwrap_or_default(),
+            "image[]" | "image" => {
+                images += usize::from(!field.bytes().await.unwrap_or_default().is_empty())
+            }
+            "mask" => mask = !field.bytes().await.unwrap_or_default().is_empty(),
+            _ => {}
+        }
+    }
+    let summary = format!(
+        "{prompt}|images={images}|mask={}|size={size}",
+        if mask { "yes" } else { "no" }
+    );
+    let b64 = base64::engine::general_purpose::STANDARD.encode(summary);
+    let data: Vec<Value> = (0..n).map(|_| json!({"b64_json": b64})).collect();
+    Json(json!({"created": 1, "output_format": "png", "data": data}))
+}
+
 async fn models(State(s): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     guarded(&s, &headers, json!({"data": [{"id": "fake-model"}]})).await
 }
@@ -161,6 +195,7 @@ async fn main() {
         .route("/v1/chat/completions", post(chat))
         .route("/v1/systemone", post(systemone))
         .route("/v1/images/generations", post(images))
+        .route("/v1/images/edits", post(image_edits))
         // The command line the engine was started with (tests check it).
         .route(
             "/fake/args",

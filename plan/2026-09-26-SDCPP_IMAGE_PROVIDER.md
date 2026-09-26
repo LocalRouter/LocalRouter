@@ -14,7 +14,7 @@ User decision (2026-09-25): stable-diffusion.cpp for all platforms. In the UI th
 - Modern image models are bundles: diffusion weights + VAE + text encoder. Starter bundles (all ungated on Hugging Face):
   - **Z-Image Turbo** (~6.7 GB): `leejet/Z-Image-Turbo-GGUF` `z_image_turbo-Q4_K.gguf`; VAE `Comfy-Org/z_image_turbo` `split_files/vae/ae.safetensors`; LLM `unsloth/Qwen3-4B-Instruct-2507-GGUF` `Qwen3-4B-Instruct-2507-Q4_K_M.gguf`; `--cfg-scale 1.0 --steps 8`.
   - **FLUX.2 Klein 4B** (~5.3 GB): `leejet/FLUX.2-klein-4B-GGUF` `flux-2-klein-4b-Q4_0.gguf`; VAE `Comfy-Org/flux2-dev` `split_files/vae/flux2-vae.safetensors`; LLM `unsloth/Qwen3-4B-GGUF` `Qwen3-4B-Q4_K_M.gguf`; `--cfg-scale 1.0 --steps 4 --sampling-method euler`.
-  - **Qwen-Image 2.1** (~10 GB): `leejet/Qwen-Image-2.1-GGUF` `qwen_image_2.1-Q4_K.gguf`; VAE `Comfy-Org/Qwen-Image-2.1` `vae/qwen_image_2.1_vae_bf16.safetensors`; LLM `Qwen/Qwen3-VL-8B-Instruct-GGUF` `Qwen3VL-8B-Instruct-Q4_K_M.gguf`; `--cfg-scale 6.0 --sampling-method euler`.
+  - **Qwen-Image 2.1** (~11 GB): `leejet/Qwen-Image-2.1-GGUF` `qwen_image_2.1-Q4_K.gguf`; VAE `Comfy-Org/Qwen-Image-2.1` `vae/qwen_image_2.1_vae_bf16.safetensors`; LLM `Qwen/Qwen3-VL-8B-Instruct-GGUF` `Qwen3VL-8B-Instruct-Q4_K_M.gguf` plus its vision projector `mmproj-Qwen3VL-8B-Instruct-F16.gguf` (`--llm_vision`, required for image edits with a GGUF text encoder); `--cfg-scale 6.0 --sampling-method euler`.
 - A library GGUF whose header says `general.architecture = qwen_image21` (e.g. the Qwen-Image-2.1-Uncensored file) can replace the Qwen-Image 2.1 bundle's diffusion file; it needs that bundle's VAE and text encoder.
 
 ## Design
@@ -50,3 +50,8 @@ User decision (2026-09-25): stable-diffusion.cpp for all platforms. In the UI th
 2. Test coverage review: asset selection per platform/build, extract + current pointer, detection order, bundle catalog integrity, store routing and persistence, derived bundles, launch args, response mapping.
 3. Bug hunt: partial downloads/extractions, cancellation, Windows exe names, dylib/DLL placement, one-model-at-a-time eviction, path handling with spaces.
 4. fmt, clippy (stable), targeted tests, tsc (app + website), commit.
+
+## Addendum (2026-09-26): image edits
+- `POST /v1/images/edits` (and `/images/edits`): multipart `model`, `prompt`, `image[]`/`image` (1–16, ≤20 MB each), optional `mask`, `n`, `size` (`auto` or `WxH` 64–4096), `response_format`, `user`. Same client/access/strategy checks as generation (added to generation too). 50 MB route body limit with axum's multipart `DefaultBodyLimit` raised (the audio upload routes had the same 2 MB multipart cap; raised to 25 MB).
+- `ModelProvider::edit_image` / `supports_image_edits`; feature-support row "Image Edits". stable-diffusion.cpp forwards the images, mask and prompt as multipart to `sd-server` `/v1/images/edits` (`image[]` fields; no size = first image's size).
+- Try It Out Images: Generate / Edit modes, image upload (multiple, drag and drop), optional mask, number of images, "Same as input" size, and an Edit button on every result.

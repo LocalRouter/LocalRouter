@@ -23,7 +23,7 @@ pub use chat::chat_completions;
 pub use completions::completions;
 pub use embeddings::embeddings;
 pub use generation::get_generation;
-pub use images::image_generations;
+pub use images::{image_edits, image_generations};
 pub use mcp::{
     elicitation_response_handler, mcp_gateway_get_handler, mcp_gateway_handler,
     sampling_passthrough_response_handler,

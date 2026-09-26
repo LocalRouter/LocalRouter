@@ -168,7 +168,13 @@ The response follows the OpenAI moderation format with category flags and confid
 
 `POST /images/generations` creates images from text prompts. The JSON request body accepts `prompt`, `model`, `n`, `size`, `quality`, and `style` parameters.
 
-Provider support for image generation varies — not all providers or models support every parameter combination.
+Provider support for image generation varies — not all providers or models support every parameter combination. `size` accepts `auto` or any `WIDTHxHEIGHT` from 64 to 4096 pixels per side; each provider rejects sizes its models cannot produce.
+
+<!-- @entry openai-image-edits -->
+
+`POST /images/edits` changes existing images with a prompt. The request is `multipart/form-data`, as in OpenAI's API: `model` (`provider/model`), `prompt`, one or more images (`image[]`, or `image` for a single one; PNG, JPEG or WebP, up to 20 MB each and 16 images), an optional `mask` (its transparent areas are the ones edited), `n` (1 to 10), `size` (defaults to the first image's size) and `response_format` (`b64_json` or `url`). Several images are passed to the model as references in order, for example to combine a subject with a style.
+
+Image edits need a provider that supports them; today that is the stable-diffusion.cpp Local Embedded provider (for example `stable-diffusion.cpp/qwen-image-2.1` or `stable-diffusion.cpp/flux2-klein-4b`). Other providers answer with a 400 error. Try It Out's Images section has an Edit mode, and any generated image can be sent back to it for further edits.
 
 <!-- @entry openai-health -->
 

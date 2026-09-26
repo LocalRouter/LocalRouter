@@ -574,11 +574,14 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
       ? selectedProvider || null
       : providerModels.find(m => m.id === selectedModel)?.provider ?? null
   const [sectionAvailable, setSectionAvailable] = useState<Record<Section, boolean> | null>(null)
+  // Image edits are a mode of the Images section, not a section of their own.
+  const [imageEditsAvailable, setImageEditsAvailable] = useState<boolean | null>(null)
 
   useEffect(() => {
     let cancelled = false
     if (!availabilityProvider) {
       setSectionAvailable(null)
+      setImageEditsAvailable(null)
       return
     }
     Promise.all([
@@ -603,9 +606,13 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
           available[section as Section] = isAvailable(endpointLevel(path))
         }
         setSectionAvailable(available)
+        setImageEditsAvailable(isAvailable(endpointLevel("/v1/images/edits")))
       })
       .catch(() => {
-        if (!cancelled) setSectionAvailable(null)
+        if (!cancelled) {
+          setSectionAvailable(null)
+          setImageEditsAvailable(null)
+        }
       })
     return () => {
       cancelled = true
@@ -1011,6 +1018,7 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
             openaiClient={openaiClient}
             isReady={isReady()}
             selectedModel={getModelWithProvider()}
+            supportsEdits={imageEditsAvailable}
           />
         </TabsContent>
 

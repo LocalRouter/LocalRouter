@@ -26,8 +26,8 @@ use super::{engine_error, engine_missing, not_downloaded, parse_minutes, resolve
 use crate::factory::{ParameterType, ProviderCategory, ProviderFactory, SetupParameter};
 use crate::{
     Capability, CompletionChunk, CompletionRequest, CompletionResponse, GeneratedImage,
-    ImageGenerationRequest, ImageGenerationResponse, ModelInfo, ModelProvider, PricingInfo,
-    ProviderHealth, SupportLevel,
+    ImageEditRequest, ImageGenerationRequest, ImageGenerationResponse, ImageInput, ModelInfo,
+    ModelProvider, PricingInfo, ProviderHealth, SupportLevel,
 };
 
 pub const PROVIDER_TYPE: &str = "sdcpp_embedded";
@@ -161,6 +161,36 @@ fn generation_body(request: &ImageGenerationRequest, default_size: &str) -> Valu
         "size": request.size.as_deref().filter(|s| !s.is_empty()).unwrap_or(default_size),
         "output_format": "png",
     })
+}
+
+/// The multipart form for `sd-server`'s `POST /v1/images/edits`: every
+/// reference image as `image[]`, the optional mask, and the prompt. Without
+/// a size, sd-server takes the first image's dimensions.
+fn edit_form(request: &ImageEditRequest) -> AppResult<reqwest::multipart::Form> {
+    let part = |img: &ImageInput| -> AppResult<reqwest::multipart::Part> {
+        reqwest::multipart::Part::bytes(img.data.clone())
+            .file_name(img.file_name.clone())
+            .mime_str(&img.content_type)
+            .map_err(|e| AppError::InvalidParams(format!("invalid image type: {e}")))
+    };
+    let mut form = reqwest::multipart::Form::new()
+        .text("prompt", request.prompt.clone())
+        .text("n", request.n.unwrap_or(1).clamp(1, 10).to_string())
+        .text("output_format", "png");
+    if let Some(size) = request
+        .size
+        .as_deref()
+        .filter(|s| !s.is_empty() && *s != "auto")
+    {
+        form = form.text("size", size.to_string());
+    }
+    for img in &request.images {
+        form = form.part("image[]", part(img)?);
+    }
+    if let Some(mask) = &request.mask {
+        form = form.part("mask", part(mask)?);
+    }
+    Ok(form)
 }
 
 /// Map `sd-server`'s response (base64 only) to ours; `url` requests get a
@@ -418,6 +448,10 @@ impl ModelProvider for SdCppEmbeddedProvider {
         Some(self)
     }
 
+    fn supports_image_edits(&self) -> bool {
+        true
+    }
+
     async fn generate_image(
         &self,
         request: ImageGenerationRequest,
@@ -429,32 +463,57 @@ impl ModelProvider for SdCppEmbeddedProvider {
             .post(format!("{}/v1/images/generations", handle.base_url()))
             .json(&generation_body(&request, &launch.default_size))
             .send()
-            .await
-            .map_err(|e| {
-                AppError::Provider(format!(
-                    "Provider '{PROVIDER_TYPE}' is unreachable: image request failed: {e}"
-                ))
-            })?;
-        let status = resp.status();
-        let body = resp
-            .text()
-            .await
-            .map_err(|e| AppError::Provider(format!("failed to read the image response: {e}")))?;
-        if !status.is_success() {
-            let message: String = body.chars().take(500).collect();
-            return Err(if status.is_client_error() {
-                AppError::InvalidParams(format!(
-                    "stable-diffusion.cpp rejected the request: {message}"
-                ))
-            } else {
-                AppError::Provider(format!("stable-diffusion.cpp error {status}: {message}"))
-            });
-        }
-        let json: Value = serde_json::from_str(&body).map_err(|e| {
-            AppError::Provider(format!("stable-diffusion.cpp returned invalid JSON: {e}"))
-        })?;
-        map_response(&json, request.response_format.as_deref() == Some("url"))
+            .await;
+        read_images(resp, request.response_format.as_deref() == Some("url")).await
     }
+
+    async fn edit_image(&self, request: ImageEditRequest) -> AppResult<ImageGenerationResponse> {
+        if request.images.is_empty() {
+            return Err(AppError::InvalidParams(
+                "An image edit needs at least one image".into(),
+            ));
+        }
+        let (handle, _launch) = self.ensure_engine(&request.model).await?;
+        let _lease = handle.lease();
+        let resp = self
+            .client
+            .post(format!("{}/v1/images/edits", handle.base_url()))
+            .multipart(edit_form(&request)?)
+            .send()
+            .await;
+        read_images(resp, request.response_format.as_deref() == Some("url")).await
+    }
+}
+
+/// Turn an `sd-server` images reply into our response or error.
+async fn read_images(
+    resp: Result<reqwest::Response, reqwest::Error>,
+    want_url: bool,
+) -> AppResult<ImageGenerationResponse> {
+    let resp = resp.map_err(|e| {
+        AppError::Provider(format!(
+            "Provider '{PROVIDER_TYPE}' is unreachable: image request failed: {e}"
+        ))
+    })?;
+    let status = resp.status();
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| AppError::Provider(format!("failed to read the image response: {e}")))?;
+    if !status.is_success() {
+        let message: String = body.chars().take(500).collect();
+        return Err(if status.is_client_error() {
+            AppError::InvalidParams(format!(
+                "stable-diffusion.cpp rejected the request: {message}"
+            ))
+        } else {
+            AppError::Provider(format!("stable-diffusion.cpp error {status}: {message}"))
+        });
+    }
+    let json: Value = serde_json::from_str(&body).map_err(|e| {
+        AppError::Provider(format!("stable-diffusion.cpp returned invalid JSON: {e}"))
+    })?;
+    map_response(&json, want_url)
 }
 
 /// Factory for the stable-diffusion.cpp Local Embedded provider.
@@ -769,6 +828,49 @@ mod engine_tests {
             Some(dir.path().join("one.gguf").display().to_string())
         );
         assert_eq!(at("--steps").as_deref(), Some("4"));
+
+        // An edit sends the images, the mask and the prompt as multipart.
+        let img = |name: &str| crate::ImageInput {
+            data: b"png".to_vec(),
+            file_name: name.into(),
+            content_type: "image/png".into(),
+        };
+        let edited = p
+            .edit_image(crate::ImageEditRequest {
+                model: "one".into(),
+                prompt: "make it blue".into(),
+                images: vec![img("a.png"), img("b.png")],
+                mask: Some(img("mask.png")),
+                n: Some(1),
+                size: Some("768x512".into()),
+                response_format: Some("url".into()),
+                user: None,
+            })
+            .await
+            .unwrap();
+        let url = edited.data[0].url.as_deref().unwrap();
+        let b64 = url.strip_prefix("data:image/png;base64,").unwrap();
+        let summary = base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(summary).unwrap(),
+            "make it blue|images=2|mask=yes|size=768x512"
+        );
+        assert!(matches!(
+            p.edit_image(crate::ImageEditRequest {
+                model: "one".into(),
+                prompt: "x".into(),
+                images: vec![],
+                mask: None,
+                n: None,
+                size: None,
+                response_format: None,
+                user: None,
+            })
+            .await,
+            Err(AppError::InvalidParams(_))
+        ));
 
         // Loading another image model unloads the first.
         p.load("two").await.unwrap();

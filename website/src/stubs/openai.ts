@@ -29,6 +29,9 @@ const mockImages = {
   generate: async () => {
     throw new DemoError()
   },
+  edit: async () => {
+    throw new DemoError()
+  },
 }
 
 // Mock embeddings

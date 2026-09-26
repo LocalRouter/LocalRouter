@@ -95,7 +95,7 @@ const mockEngineCatalogs: Record<string, EmbeddedCatalogModel[]> = {
   sdcpp_embedded: [
     { ...cat('flux2-klein-4b', 'FLUX.2 Klein 4B', '5.3 GB', 'Fast 4-step text-to-image from Black Forest Labs (Apache-2.0). Runs in about 6 GB of memory.', true), removable: true },
     cat('z-image-turbo', 'Z-Image Turbo', '6.7 GB', 'Photorealistic 8-step text-to-image from Tongyi (Apache-2.0), good with text in images. Runs in about 7 GB of memory.'),
-    cat('qwen-image-2.1', 'Qwen-Image 2.1', '9.9 GB', "Qwen's image model with strong prompt following and text rendering. Needs about 11 GB of memory."),
+    cat('qwen-image-2.1', 'Qwen-Image 2.1', '11.1 GB', "Qwen's image model with strong prompt following, text rendering and image editing. Needs about 12 GB of memory."),
   ],
   decider: [
     cat('decider-0.8b', 'Decider 0.8b', '1.5 GB', 'Runs on any Apple Silicon Mac or a modest GPU'),

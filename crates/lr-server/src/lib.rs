@@ -312,9 +312,23 @@ fn build_app(state: AppState, enable_cors: bool, shutdown: CancellationToken) ->
         .route("/audio/translations", post(routes::audio_translations))
         .with_state(state.clone())
         .layer(AuthLayer::new(state.clone()))
+        // axum's multipart extractor has its own 2 MB default; lift it to
+        // the route limit.
+        .layer(axum::extract::DefaultBodyLimit::max(25 * 1024 * 1024))
         .layer(RequestBodyLimitLayer::new(25 * 1024 * 1024));
 
     router = router.merge(audio_upload_routes);
+
+    // Image edit uploads (reference images + mask), up to 50 MB in total.
+    let image_upload_routes = Router::new()
+        .route("/v1/images/edits", post(routes::image_edits))
+        .route("/images/edits", post(routes::image_edits))
+        .with_state(state.clone())
+        .layer(AuthLayer::new(state.clone()))
+        .layer(axum::extract::DefaultBodyLimit::max(50 * 1024 * 1024))
+        .layer(RequestBodyLimitLayer::new(50 * 1024 * 1024));
+
+    router = router.merge(image_upload_routes);
 
     // Merge OAuth routes (no auth required - these ARE the auth endpoints)
     router = router.merge(oauth_routes);

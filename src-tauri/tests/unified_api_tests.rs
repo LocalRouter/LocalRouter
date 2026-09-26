@@ -382,6 +382,8 @@ async fn test_all_api_routes_require_auth() {
         // Images
         ("POST", "/images/generations"),
         ("POST", "/v1/images/generations"),
+        ("POST", "/images/edits"),
+        ("POST", "/v1/images/edits"),
         // Audio
         ("POST", "/audio/speech"),
         ("POST", "/v1/audio/speech"),
