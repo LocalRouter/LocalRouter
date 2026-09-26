@@ -1209,6 +1209,7 @@ pub(crate) fn inject_mcp_tools(request: &mut CompletionRequest, mcp_tools: &[Mcp
                 name: t.name.clone(),
                 description: t.description.clone(),
                 parameters: t.input_schema.clone(),
+                strict: None,
             },
         })
         .collect();
@@ -1337,6 +1338,7 @@ pub(crate) fn inject_resource_read_tool(request: &mut CompletionRequest) {
                 "required": ["name"],
                 "additionalProperties": false
             }),
+            strict: None,
         },
     };
 
@@ -1452,6 +1454,7 @@ pub(crate) fn inject_prompt_read_tool(
                 "required": ["name"],
                 "additionalProperties": false
             }),
+            strict: None,
         },
     };
 

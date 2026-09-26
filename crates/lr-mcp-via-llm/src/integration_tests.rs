@@ -455,6 +455,7 @@ mod helpers {
                 name: name.to_string(),
                 description: Some("Client-side tool".to_string()),
                 parameters: json!({"type": "object", "properties": {}}),
+                strict: None,
             },
         }
     }

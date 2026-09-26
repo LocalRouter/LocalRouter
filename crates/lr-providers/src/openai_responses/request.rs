@@ -20,6 +20,10 @@
 //! - `response_format: JsonSchema` → `text.format = JsonSchema`.
 //! - `tool_choice` hardcoded `"auto"` (Codex default; ChatGPT-backend
 //!   ignores other values).
+//! - Function tools always carry `strict`: the client's value, else
+//!   `false`. The Responses API treats a missing `strict` as `true`, which
+//!   would make every property required, while a Chat Completions tool
+//!   without `strict` is non-strict (Codex also sends `strict: false`).
 
 use super::types::{
     ContentItem, Reasoning, ResponseItem, ResponsesApiRequest, TextControls, TextFormat,
@@ -202,13 +206,15 @@ fn chat_content_to_items(content: &ChatMessageContent, is_output: bool) -> Vec<C
 }
 
 /// Convert our internal `Tool` into the Responses API's tool wire
-/// format (`{ "type": "function", "name": ..., "parameters": ... }`).
+/// format (`{ "type": "function", "name": ..., "parameters": ...,
+/// "strict": ... }`).
 fn tool_to_value(tool: &crate::Tool) -> serde_json::Value {
     json!({
         "type": tool.tool_type,
         "name": tool.function.name,
         "description": tool.function.description,
         "parameters": tool.function.parameters,
+        "strict": tool.function.strict.unwrap_or(false),
     })
 }
 
@@ -385,11 +391,62 @@ mod tests {
                 name: "search".into(),
                 description: Some("search the web".into()),
                 parameters: serde_json::json!({"type":"object"}),
+                strict: None,
             },
         }]);
         let out = plain(req);
         assert_eq!(out.tools.len(), 1);
         assert_eq!(out.tools[0]["type"], "function");
         assert_eq!(out.tools[0]["name"], "search");
+    }
+
+    /// The Responses API treats a missing `strict` as true (every property
+    /// required). A Chat Completions tool without `strict` is non-strict,
+    /// so the translation must say `false`, and keep an explicit value.
+    #[test]
+    fn tool_strict_is_always_explicit() {
+        let tool = |strict: Option<bool>| Tool {
+            tool_type: "function".into(),
+            function: crate::FunctionDefinition {
+                name: "record".into(),
+                description: None,
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {"a": {"type": "string"}, "b": {"type": "string"}},
+                    "required": ["a"]
+                }),
+                strict,
+            },
+        };
+        let mut req = base_request(vec![msg("user", "hi")]);
+        req.tools = Some(vec![tool(None), tool(Some(true)), tool(Some(false))]);
+        let out = plain(req);
+        assert_eq!(out.tools[0]["strict"], false);
+        assert_eq!(out.tools[1]["strict"], true);
+        assert_eq!(out.tools[2]["strict"], false);
+        // The schema is untouched: optional fields stay optional.
+        assert_eq!(
+            out.tools[0]["parameters"]["required"],
+            serde_json::json!(["a"])
+        );
+    }
+
+    /// A client's `strict` survives parsing and is omitted when unset.
+    #[test]
+    fn function_definition_strict_round_trip() {
+        let with: crate::FunctionDefinition = serde_json::from_value(serde_json::json!({
+            "name": "f", "parameters": {"type": "object"}, "strict": true
+        }))
+        .unwrap();
+        assert_eq!(with.strict, Some(true));
+        let without: crate::FunctionDefinition = serde_json::from_value(serde_json::json!({
+            "name": "f", "parameters": {"type": "object"}
+        }))
+        .unwrap();
+        assert_eq!(without.strict, None);
+        assert!(serde_json::to_value(&without)
+            .unwrap()
+            .get("strict")
+            .is_none());
     }
 }

@@ -245,6 +245,7 @@ mod tool_injection_tests {
                 name: "client_tool".to_string(),
                 description: Some("A client tool".to_string()),
                 parameters: json!({}),
+                strict: None,
             },
         }]);
 
@@ -266,6 +267,7 @@ mod tool_injection_tests {
                     name: "conflict".to_string(),
                     description: Some("Client version".to_string()),
                     parameters: json!({}),
+                    strict: None,
                 },
             },
             lr_providers::Tool {
@@ -274,6 +276,7 @@ mod tool_injection_tests {
                     name: "safe_tool".to_string(),
                     description: Some("No conflict".to_string()),
                     parameters: json!({}),
+                    strict: None,
                 },
             },
         ]);

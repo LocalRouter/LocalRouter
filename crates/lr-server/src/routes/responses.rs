@@ -654,6 +654,7 @@ fn provider_tool_to_server(t: &lr_providers::Tool) -> ServerTool {
             name: t.function.name.clone(),
             description: t.function.description.clone(),
             parameters: t.function.parameters.clone(),
+            strict: t.function.strict,
         },
     }
 }
@@ -784,6 +785,7 @@ fn value_to_server_tool(v: &Value) -> Option<ServerTool> {
             name,
             description,
             parameters,
+            strict: obj.get("strict").and_then(Value::as_bool),
         },
     })
 }
