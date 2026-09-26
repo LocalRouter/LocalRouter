@@ -23,8 +23,91 @@ import { toast } from 'sonner'
 import { mockData } from './mockData'
 // Types for mock return values - see src/types/tauri-commands.ts for full type definitions
 import type { RouteLLMTestResult, GraphData, ProviderFeatureSupport, FeatureEndpointMatrix, InstallSourceInfo, RequestDedupeConfig } from '@app/types/tauri-commands'
+import type {
+  EmbeddedCatalogModel,
+  ListProviderModelsDetailedParams,
+  LocalModelsEngineCatalogParams,
+  LocalModelsEngineDownloadParams,
+} from '@app/types/tauri-commands'
+import type {
+  EngineStatus,
+  EngineInstallOptionView,
+  EngineSource,
+  EngineProcessInfo,
+  EngineInstallOutputEvent,
+  EngineInstallFinishedEvent,
+  EngineStatusParams,
+  EngineInstallParams,
+  EngineInstallCancelParams,
+  EngineKeyParams,
+  DownloadFinishedEvent,
+  DownloadJobView,
+  EmbeddedModelState,
+  FitEstimate,
+  FitVerdict,
+  GgufSummary,
+  GgufVariant,
+  HardwareInfo,
+  HfAccount,
+  HfSignInStart,
+  HfSignInStatus,
+  HubModelSummary,
+  HubPage,
+  LibraryChangedEvent,
+  LibraryEntry,
+  LocalLibraryView,
+  LocalModelKind,
+  LocalModelsDownloadIdParams,
+  LocalModelsDownloadStartParams,
+  LocalModelsHfSetTokenParams,
+  LocalModelsHfSignInFlowParams,
+  LocalModelsImportParams,
+  LocalModelsInspectRemoteParams,
+  LocalModelsLoadParams,
+  LocalModelsRemoveParams,
+  LocalModelsRenameParams,
+  LocalModelsRepoParams,
+  LocalModelsSearchParams,
+  LocalModelsStatesParams,
+  LocalRepoDetails,
+  RemoteModelInspection,
+} from '@app/types/tauri-commands'
 
 // Track warned commands to avoid spam (only warn once per command)
+/** Engine-downloaded models per Local Embedded provider type (mirrors the
+ *  CHECKPOINTS tables in crates/lr-providers/src/embedded/). */
+const cat = (id: string, name: string, size: string, guidance: string, downloaded = false): EmbeddedCatalogModel => ({
+  id, name, download_size: size, guidance, downloaded, downloading: false, download_error: null,
+  progress: null, removable: false,
+})
+const mockEngineCatalogs: Record<string, EmbeddedCatalogModel[]> = {
+  laya: [
+    cat('english', 'Laya English', '843 MB', 'Up to 512 tokens of state; runs on CPU', true),
+    cat('multilingual', 'Laya Multilingual', '678 MB', 'Up to 1024 tokens of state; runs on CPU'),
+    cat('typed-decisions', 'Laya Typed Decisions', '843 MB', 'Up to 1024 tokens of state; runs on CPU'),
+  ],
+  kev: [
+    cat('kev-0.8b', 'Kev 0.8b', '1.8 GB', 'Runs on any Apple Silicon Mac or a modest GPU'),
+    cat('kev-4b', 'Kev 4b', '9.5 GB', '32 GB Mac, or a GPU with 9-14 GB VRAM'),
+    cat('kev-9b', 'Kev 9b', '19.5 GB', 'GPU with about 17 GB VRAM'),
+  ],
+  von: [cat('von-latest', 'Von (ModernBERT-large)', '3.2 GB', 'Runs on CPU; faster with a GPU or Apple Silicon')],
+  sdcpp_embedded: [
+    { ...cat('flux2-klein-4b', 'FLUX.2 Klein 4B', '5.3 GB', 'Fast 4-step text-to-image from Black Forest Labs (Apache-2.0). Runs in about 6 GB of memory.', true), removable: true },
+    cat('z-image-turbo', 'Z-Image Turbo', '6.7 GB', 'Photorealistic 8-step text-to-image from Tongyi (Apache-2.0), good with text in images. Runs in about 7 GB of memory.'),
+    cat('qwen-image-2.1', 'Qwen-Image 2.1', '11.1 GB', "Qwen's image model with strong prompt following, text rendering and image editing. Needs about 12 GB of memory."),
+  ],
+  decider: [
+    cat('decider-0.8b', 'Decider 0.8b', '1.5 GB', 'Runs on any Apple Silicon Mac or a modest GPU'),
+    cat('decider-2b', 'Decider 2b', '3.8 GB', 'About 4 GB of GPU memory'),
+    cat('decider-4b', 'Decider 4b', '8.4 GB', '16 GB Mac, or a GPU with about 9 GB of memory'),
+  ],
+}
+const engineCatalogFor = (instanceName: string): EmbeddedCatalogModel[] => {
+  const type = mockData.providers.find((p) => p.instance_name === instanceName)?.provider_type
+  return (type && mockEngineCatalogs[type]) || []
+}
+
 const warnedCommands = new Set<string>()
 
 // Helper to generate a random ID
@@ -94,6 +177,655 @@ function generateMockGraphData(datasetLabel = "Requests", baseValue = 200, varia
       background_color: "#3b82f6",
     }],
   }
+}
+
+// Feature support for an OpenAI-like chat provider (base for the other mocks).
+function openaiFeatureSupport(instanceName: string): ProviderFeatureSupport {
+  return {
+    provider_type: 'openai',
+    provider_instance: instanceName,
+    endpoints: [
+      { name: 'Chat Completions', endpoint: '/v1/chat/completions', support: 'supported', notes: 'Send messages and receive AI responses' },
+      { name: 'Completions (legacy)', endpoint: '/v1/completions', support: 'supported', notes: 'Converted to chat completions internally by LocalRouter' },
+      { name: 'Streaming', endpoint: '/v1/chat/completions', support: 'supported', notes: 'Server-sent events for real-time token streaming' },
+      { name: 'Embeddings', endpoint: '/v1/embeddings', support: 'supported', notes: 'Generate vector embeddings for text' },
+      { name: 'Image Generation', endpoint: '/v1/images/generations', support: 'supported', notes: 'DALL-E 3 and DALL-E 2 image generation' },
+      { name: 'Audio Transcription', endpoint: '/v1/audio/transcriptions', support: 'supported', notes: 'Whisper for speech-to-text, TTS-1/TTS-1-HD for text-to-speech' },
+      { name: 'Audio Speech (TTS)', endpoint: '/v1/audio/speech', support: 'supported', notes: 'Whisper for speech-to-text, TTS-1/TTS-1-HD for text-to-speech' },
+      { name: 'System One Decisions', endpoint: '/v1/systemone', support: 'translated', notes: 'Translated onto chat completions by LocalRouter (logprobs when available, otherwise JSON)' },
+      { name: 'Moderations', endpoint: '/v1/moderations', support: 'not_implemented', notes: 'OpenAI supports natively via text-moderation-latest; LocalRouter proxy not yet built' },
+      { name: 'Responses API', endpoint: '/v1/responses', support: 'not_implemented', notes: 'OpenAI supports natively; LocalRouter proxy not yet built' },
+      { name: 'Batch Processing', endpoint: '/v1/batches', support: 'not_implemented', notes: 'OpenAI supports native async batches; LocalRouter proxy not yet built' },
+      { name: 'Realtime (WebSocket)', endpoint: '/v1/realtime', support: 'not_implemented', notes: 'WebSocket-based real-time audio/text streaming not yet available in LocalRouter' },
+    ],
+    model_features: [
+      { name: 'Function Calling', support: 'supported', notes: 'GPT-4o, GPT-4 Turbo, and GPT-3.5 Turbo support tool calling' },
+      { name: 'Vision', support: 'supported', notes: 'GPT-4o and GPT-4 Turbo can process images' },
+      { name: 'Structured Outputs', support: 'supported', notes: 'GPT-4o supports strict JSON schema enforcement via response_format' },
+      { name: 'JSON Mode', support: 'supported', notes: 'All GPT-4 and GPT-3.5 Turbo models support JSON output mode' },
+      { name: 'Log Probabilities', support: 'supported', notes: 'Available on GPT-4o and GPT-3.5 Turbo via logprobs parameter' },
+      { name: 'Reasoning Tokens', support: 'partial', notes: 'Only o1-preview and o1-mini models use reasoning tokens; other models do not' },
+      { name: 'Extended Thinking', support: 'not_supported', notes: 'OpenAI does not support extended thinking; this is an Anthropic feature' },
+      { name: 'Thinking Level', support: 'not_supported', notes: 'OpenAI does not support thinking level; this is a Gemini feature' },
+      { name: 'Prompt Caching', support: 'not_supported', notes: 'OpenAI does not support server-side prompt caching' },
+    ],
+    optimization_features: [
+      { name: 'Guardrails', support: 'supported', notes: 'Content safety scanning on chat/completion requests' },
+      { name: 'Prompt Compression', support: 'supported', notes: 'LLMLingua-2 token-level compression for chat requests' },
+      { name: 'JSON Repair', support: 'supported', notes: 'Automatic fix of malformed JSON responses' },
+      { name: 'RouteLLM Routing', support: 'supported', notes: 'Strong/weak model routing based on request complexity' },
+      { name: 'Secret Scanning', support: 'supported', notes: 'Detect potential secrets in outbound requests' },
+      { name: 'Rate Limiting', support: 'supported', notes: 'Available for all endpoints' },
+      { name: 'Model Firewall', support: 'supported', notes: 'Available for all LLM endpoints' },
+      { name: 'Generation Tracking', support: 'supported', notes: 'Available for all endpoints' },
+      { name: 'Cost Calculation', support: 'supported', notes: 'Based on catalog pricing data' },
+    ],
+  }
+}
+
+// Feature support for a decision-only System One provider (Laya, Kev, Von, Decider, TypeSafe):
+// it answers /v1/systemone natively and has no chat endpoints.
+function systemOneFeatureSupport(base: ProviderFeatureSupport, providerType: string, instanceName: string): ProviderFeatureSupport {
+  return {
+    ...base,
+    provider_type: providerType,
+    provider_instance: instanceName,
+    endpoints: base.endpoints.map(e => {
+      if (e.name === 'System One Decisions') return { ...e, support: 'supported' as const, notes: 'Typed choice / score / yes-no decisions with calibrated probabilities' }
+      if (e.name === 'Chat Completions' || e.name === 'Completions (legacy)' || e.name === 'Streaming') return { ...e, support: 'not_supported' as const, notes: 'Decision-only provider: answers System One questions, not chat' }
+      if (e.support === 'supported') return { ...e, support: 'not_supported' as const, notes: 'Not offered by this provider' }
+      return e
+    }),
+    model_features: base.model_features.map(f => ({ ...f, support: 'not_supported' as const, notes: 'Chat-model feature; not applicable to decision models' })),
+  }
+}
+
+// ============================================================================
+// Local Embedded provider engines (engine_* commands)
+// Mirrors crates/lr-engines/src/recipes.rs + detect.rs for an Apple Silicon Mac.
+// ============================================================================
+
+const KEV_GIT_REV = 'eb45fd2381396eb7edc3964b753ebc1b0ab1da2b'
+
+type MockInstallOption = Omit<
+  EngineInstallOptionView,
+  'runnable' | 'program_found' | 'recommended' | 'kind' | 'description'
+> &
+  Partial<Pick<EngineInstallOptionView, 'kind' | 'description'>>
+
+interface MockEngineRecipe {
+  display_name: string
+  requires: string[]
+  install: MockInstallOption[]
+  docs_url: string
+  /** Where the engine is found once installed (null = not installed yet) */
+  path: string | null
+  binary: string
+  version: string | null
+  build: number | null
+  /** Installing this recipe places this path on PATH */
+  installs_to: string | null
+  /** Where the engine was found (default: PATH) */
+  source?: EngineSource
+  /** LocalRouter's managed install (download recipes only) */
+  managed_tag?: string
+  managed_build?: string
+}
+
+/** Package managers present on the demo machine */
+const DEMO_PROGRAMS_ON_PATH = new Set(['brew', 'curl', 'uv'])
+
+const mockEngineRecipes: Record<string, MockEngineRecipe> = {
+  llamacpp: {
+    display_name: 'llama.cpp',
+    requires: [],
+    install: [
+      { id: 'brew', label: 'Homebrew', command: 'brew install llama.cpp', program: 'brew', needs_sudo: false, notes: null },
+      { id: 'macports', label: 'MacPorts', command: 'sudo port install llama.cpp', program: 'port', needs_sudo: true, notes: null },
+    ],
+    docs_url: 'https://github.com/ggml-org/llama.cpp/blob/master/docs/install.md',
+    path: '/opt/homebrew/bin/llama-server',
+    binary: 'llama-server',
+    version: '0.5.0',
+    build: 11146,
+    installs_to: null,
+  },
+  uv: {
+    display_name: 'uv',
+    requires: [],
+    install: [
+      { id: 'brew', label: 'Homebrew', command: 'brew install uv', program: 'brew', needs_sudo: false, notes: null },
+      { id: 'script', label: 'Installer script', command: 'curl -LsSf https://astral.sh/uv/install.sh | sh', program: 'curl', needs_sudo: false, notes: 'Installs uv into ~/.local/bin.' },
+    ],
+    docs_url: 'https://docs.astral.sh/uv/getting-started/installation/',
+    path: '/opt/homebrew/bin/uv',
+    binary: 'uv',
+    version: '0.12.18',
+    build: null,
+    installs_to: null,
+  },
+  laya: {
+    display_name: 'Laya',
+    requires: ['uv'],
+    install: [
+      { id: 'uv-tool', label: 'uv', command: 'uv tool install --python 3.12 "laya[serve]"', program: 'uv', needs_sudo: false, notes: 'Installs the official laya package and its laya-serve command (downloads PyTorch, about 1-3 GB).' },
+      { id: 'uv-tool-gpu', label: 'uv, GPU-matched PyTorch', command: 'uv tool install --python 3.12 --torch-backend auto "laya[serve]"', program: 'uv', needs_sudo: false, notes: 'Picks the PyTorch build matching your GPU driver (CUDA) instead of the default.' },
+    ],
+    docs_url: 'https://github.com/NandhaKishorM/laya',
+    // The demo's laya-local provider is already set up and running
+    path: '/Users/demo/.local/bin/laya-serve',
+    binary: 'laya-serve',
+    version: null,
+    build: null,
+    installs_to: '/Users/demo/.local/bin/laya-serve',
+  },
+  kev: {
+    display_name: 'Kev',
+    requires: ['uv'],
+    install: [
+      { id: 'prepare', label: 'Prepare Kev', command: `uv tool run --python 3.13 --from "kev[serve] @ git+https://github.com/jaredpalmer/kev@${KEV_GIT_REV}" python -c "import kev.serve"`, program: 'uv', needs_sudo: false, notes: 'Downloads Kev and PyTorch (several GB) into uv\'s cache so the first start is quick. Optional: the first start does this anyway.' },
+    ],
+    docs_url: 'https://github.com/jaredpalmer/kev',
+    // Kev runs through uv, so finding uv is enough
+    path: '/opt/homebrew/bin/uv',
+    binary: 'uv',
+    version: '0.12.18',
+    build: null,
+    installs_to: null,
+  },
+  von: {
+    display_name: 'Von',
+    requires: ['uv'],
+    install: [
+      { id: 'uv-tool', label: 'uv', command: 'uv tool install --python 3.12 von-sdk', program: 'uv', needs_sudo: false, notes: 'Installs the von command (downloads PyTorch, about 1-3 GB). The model (about 3 GB) downloads when it first loads.' },
+    ],
+    docs_url: 'https://github.com/wfzyx/von',
+    path: null,
+    binary: 'von',
+    version: null,
+    build: null,
+    installs_to: '/Users/demo/.local/bin/von',
+  },
+  decider: {
+    display_name: 'Decider',
+    requires: ['uv'],
+    install: [
+      { id: 'prepare', label: 'Prepare Decider', command: 'uv tool run --python 3.12 --from "decider-ai[serve,metal]" python -c "import decider.serve"', program: 'uv', needs_sudo: false, notes: 'Downloads Decider and PyTorch into uv\'s cache so the first start is quick. Optional: the first start does this anyway.' },
+    ],
+    docs_url: 'https://github.com/Mapika/decider',
+    // Decider runs through uv, so finding uv is enough
+    path: '/opt/homebrew/bin/uv',
+    binary: 'uv',
+    version: '0.12.18',
+    build: null,
+    installs_to: null,
+  },
+  sdcpp: {
+    display_name: 'stable-diffusion.cpp',
+    requires: [],
+    install: [
+      {
+        id: 'metal',
+        label: 'Metal',
+        kind: 'download',
+        command: null,
+        description: 'Downloads the latest stable-diffusion.cpp release (Metal build) from github.com/leejet/stable-diffusion.cpp',
+        program: null,
+        needs_sudo: false,
+        notes: 'About 35 MB. Runs on the Apple GPU.',
+      },
+    ],
+    docs_url: 'https://github.com/leejet/stable-diffusion.cpp',
+    // Downloaded by LocalRouter into its managed engines folder
+    path: '/Users/demo/.localrouter/engines/managed/sdcpp/master-920-2f88688-metal/sd-server',
+    binary: 'sd-server',
+    version: 'master-920-2f88688',
+    build: null,
+    installs_to: null,
+    source: 'managed',
+    managed_tag: 'master-920-2f88688',
+    managed_build: 'metal',
+  },
+}
+
+// Returns: EngineStatus (src/types/tauri-commands.ts)
+function mockEngineStatus(recipeId: string): EngineStatus {
+  const recipe = mockEngineRecipes[recipeId]
+  if (!recipe) throw `Unknown engine '${recipeId}'`
+  const requirements = recipe.requires.map((req) => {
+    const r = mockEngineRecipes[req]
+    return { recipe: req, display_name: r.display_name, found: r.path !== null, path: r.path }
+  })
+  const install: EngineInstallOptionView[] = recipe.install.map((o) => ({
+    ...o,
+    kind: o.kind ?? 'command',
+    description: o.description ?? null,
+    runnable: !o.needs_sudo,
+    program_found: o.kind === 'download' || (o.program !== null && DEMO_PROGRAMS_ON_PATH.has(o.program)),
+    recommended: false,
+  }))
+  // Recommend the first option the user can run right now, else the first.
+  const pick = install.findIndex((o) => o.runnable && o.program_found)
+  if (install.length > 0) install[pick === -1 ? 0 : pick].recommended = true
+  return {
+    recipe: recipeId,
+    display_name: recipe.display_name,
+    found: recipe.path !== null && requirements.every((r) => r.found),
+    path: recipe.path,
+    binary: recipe.path !== null ? recipe.binary : null,
+    source: recipe.path !== null ? (recipe.source ?? 'path') : null,
+    managed_tag: recipe.managed_tag ?? null,
+    managed_build: recipe.managed_build ?? null,
+    version: recipe.path !== null ? recipe.version : null,
+    build: recipe.path !== null ? recipe.build : null,
+    supported: true,
+    unsupported_reason: null,
+    allow_own_binary: recipeId === 'sdcpp',
+    requirements,
+    install,
+    docs_url: recipe.docs_url,
+  }
+}
+
+/** Simulated install output per recipe (uv / Homebrew style) */
+function mockInstallOutput(recipeId: string): string[] {
+  switch (recipeId) {
+    case 'llamacpp':
+      return ['==> Fetching llama.cpp', '==> Pouring llama.cpp--0.5.0.arm64_sequoia.bottle.tar.gz', '/opt/homebrew/Cellar/llama.cpp/0.5.0: 118 files, 42.1MB']
+    case 'uv':
+      return ['==> Fetching uv', '==> Pouring uv--0.12.18.arm64_sequoia.bottle.tar.gz', '/opt/homebrew/Cellar/uv/0.12.18: 16 files, 41.3MB']
+    case 'kev':
+    case 'decider':
+      return ['Resolved 61 packages in 1.84s', 'Prepared 61 packages in 41.20s', 'Installed 61 packages in 312ms']
+    case 'sdcpp': {
+      // Mirrors crates/lr-engines/src/download.rs progress lines
+      const asset = 'sd-master-2f88688-bin-Darwin-macOS-26.6.2-arm64.zip'
+      return [
+        'Looking up the latest stable-diffusion.cpp release on github.com/leejet/stable-diffusion.cpp',
+        'Latest release: master-920-2f88688',
+        ...[0, 20, 45, 70, 95, 100].map((pct) => `Downloading ${asset}: ${pct}% (${Math.round((34 * pct) / 100)}/34 MB)`),
+        `Extracting ${asset}`,
+        'Installed stable-diffusion.cpp master-920-2f88688 (Metal build) in /Users/demo/.localrouter/engines/managed/sdcpp/master-920-2f88688-metal',
+      ]
+    }
+    default:
+      return [
+        'Resolved 58 packages in 1.52s',
+        'Prepared 58 packages in 37.91s',
+        'Installed 58 packages in 287ms',
+        `Installed 1 executable: ${mockEngineRecipes[recipeId]?.binary ?? recipeId}`,
+      ]
+  }
+}
+
+/** Pending install runs, so engine_install_cancel can stop their timers */
+const mockInstallRuns = new Map<string, { recipeId: string; timers: ReturnType<typeof setTimeout>[] }>()
+
+function finishMockInstall(runId: string, payload: Omit<EngineInstallFinishedEvent, 'run_id'>) {
+  const run = mockInstallRuns.get(runId)
+  if (!run) return
+  run.timers.forEach(clearTimeout)
+  mockInstallRuns.delete(runId)
+  if (!payload.cancelled && payload.exit_code === 0) {
+    const recipe = mockEngineRecipes[run.recipeId]
+    if (recipe && recipe.path === null && recipe.installs_to) recipe.path = recipe.installs_to
+  }
+  const event: EngineInstallFinishedEvent = { run_id: runId, ...payload }
+  emit('engine-install-finished', event)
+}
+
+// Engine processes started by the demo's Local Embedded providers (laya-local)
+const mockEngineProcesses: EngineProcessInfo[] = [
+  {
+    key: 'laya:laya-local',
+    label: 'Laya',
+    state: 'running',
+    port: 52814,
+    pid: 48213,
+    uptime_secs: 1260,
+    idle_secs: 42,
+    in_flight: 0,
+    restarts: 0,
+    last_error: null,
+  },
+  {
+    key: 'llamacpp_embedded:llamacpp-local:qwen3-8b-q4_k_m',
+    label: 'Qwen3 8B Q4_K_M',
+    state: 'running',
+    port: 53120,
+    pid: 48877,
+    uptime_secs: 640,
+    idle_secs: 95,
+    in_flight: 0,
+    restarts: 0,
+    last_error: null,
+  },
+]
+
+const mockEngineLogs: Record<string, string[]> = {
+  'llamacpp_embedded:llamacpp-local:qwen3-8b-q4_k_m': [
+    'build: 11146 (a1b2c3d4) with Apple clang version 17.0.0 for arm64-apple-darwin25.0.0',
+    'llama_model_loader: loaded meta data with 32 key-value pairs and 399 tensors from Qwen3-8B-Q4_K_M.gguf',
+    'load_tensors: offloaded 37/37 layers to GPU',
+    'llama_context: n_ctx = 40960',
+    'main: server is listening on http://127.0.0.1:53120 - starting the main loop',
+    'srv  update_slots: all slots are idle',
+  ],
+  'laya:laya-local': [
+    'INFO:     Started server process [48213]',
+    'INFO:     Waiting for application startup.',
+    'laya: loading checkpoint "english" on mps',
+    'laya: checkpoint "english" ready (843 MB)',
+    'INFO:     Application startup complete.',
+    'INFO:     Uvicorn running on http://127.0.0.1:52814 (Press CTRL+C to quit)',
+    'INFO:     127.0.0.1:52901 - "POST /v1/systemone HTTP/1.1" 200 OK',
+    'INFO:     127.0.0.1:52907 - "POST /v1/systemone HTTP/1.1" 200 OK',
+  ],
+}
+
+// ============================================================================
+// Local models (llama.cpp Local Embedded provider, local_models_* commands)
+// Simulated entirely in the browser: the demo never contacts huggingface.co.
+// ============================================================================
+
+const GIB = 1024 * 1024 * 1024
+const DEMO_MODELS_DIR = '/Users/demo/Library/Application Support/LocalRouter/models'
+
+const mockHardware: HardwareInfo = {
+  os: 'macos',
+  arch: 'aarch64',
+  total_ram_bytes: 36 * GIB,
+  available_ram_bytes: 17 * GIB,
+  cpu_cores: 12,
+  unified_memory: true,
+  // (total - 2.5 GiB) x 0.9, as lr-local-models computes it
+  gpu_budget_bytes: Math.round((36 - 2.5) * 0.9 * GIB),
+}
+
+const mockLibraryEntries: LibraryEntry[] = [
+  {
+    id: 'qwen3-8b-q4_k_m',
+    display_name: 'Qwen3 8B Q4_K_M',
+    source: { type: 'hugging_face', repo: 'unsloth/Qwen3-8B-GGUF', revision: '7ba5fcd1b1c4e8e1a0d7c1ef0f1c2e3d4b5a6978', files: ['Qwen3-8B-Q4_K_M.gguf'] },
+    model_path: `${DEMO_MODELS_DIR}/hf/unsloth/Qwen3-8B-GGUF/7ba5fcd1b1c4e8e1a0d7c1ef0f1c2e3d4b5a6978/Qwen3-8B-Q4_K_M.gguf`,
+    extra_parts: [],
+    projector_path: null,
+    kind: 'chat',
+    quant: 'Q4_K_M',
+    architecture: 'qwen3',
+    context_length: 40960,
+    pooling_type: null,
+    has_tools: true,
+    size_bytes: 5_027_783_488,
+    installed_at: '2026-09-20T14:12:00Z',
+  },
+  {
+    id: 'nomic-embed-text-v1.5-q8_0',
+    display_name: 'nomic-embed-text v1.5 Q8_0',
+    source: { type: 'hugging_face', repo: 'nomic-ai/nomic-embed-text-v1.5-GGUF', revision: '0188f09e4ba3c0cd1d2b0f76e0f4a1b2c3d4e5f6', files: ['nomic-embed-text-v1.5.Q8_0.gguf'] },
+    model_path: `${DEMO_MODELS_DIR}/hf/nomic-ai/nomic-embed-text-v1.5-GGUF/0188f09e4ba3c0cd1d2b0f76e0f4a1b2c3d4e5f6/nomic-embed-text-v1.5.Q8_0.gguf`,
+    extra_parts: [],
+    projector_path: null,
+    kind: 'embedding',
+    quant: 'Q8_0',
+    architecture: 'nomic-bert',
+    context_length: 2048,
+    pooling_type: 1,
+    has_tools: false,
+    size_bytes: 146_146_432,
+    installed_at: '2026-09-21T09:30:00Z',
+  },
+]
+
+/** What the demo "knows" about each Hub repository */
+interface MockHubRepo {
+  summary: HubModelSummary
+  sha: string
+  license: string
+  gate_prompt: string | null
+  kind: LocalModelKind
+  /** Trained context and KV bytes per token (for fit estimates) */
+  context: number
+  kvPerToken: number
+  variants: { name: string; quant: string; size: number; parts?: number; kind?: LocalModelKind }[]
+}
+
+function hubSummary(id: string, downloads: number, likes: number, extra: Partial<HubModelSummary>): HubModelSummary {
+  return {
+    id,
+    author: id.split('/')[0],
+    downloads,
+    likes,
+    last_modified: '2026-08-30T10:00:00.000Z',
+    gated: null,
+    pipeline_tag: 'text-generation',
+    library_name: 'gguf',
+    tags: ['gguf'],
+    parameters: null,
+    architecture: null,
+    context_length: null,
+    ...extra,
+  }
+}
+
+const mockHubRepos: MockHubRepo[] = [
+  {
+    summary: hubSummary('unsloth/Qwen3-8B-GGUF', 412_830, 318, { parameters: 8_190_735_360, architecture: 'qwen3', context_length: 40960 }),
+    sha: '7ba5fcd1b1c4e8e1a0d7c1ef0f1c2e3d4b5a6978',
+    license: 'apache-2.0',
+    gate_prompt: null,
+    kind: 'chat',
+    context: 40960,
+    kvPerToken: 147_456,
+    variants: [
+      { name: 'Qwen3-8B-Q2_K', quant: 'Q2_K', size: 3_281_874_240 },
+      { name: 'Qwen3-8B-Q4_K_M', quant: 'Q4_K_M', size: 5_027_783_488 },
+      { name: 'Qwen3-8B-Q6_K', quant: 'Q6_K', size: 6_725_900_064 },
+      { name: 'Qwen3-8B-Q8_0', quant: 'Q8_0', size: 8_709_518_624 },
+      { name: 'Qwen3-8B-BF16', quant: 'BF16', size: 16_388_044_064, parts: 2 },
+    ],
+  },
+  {
+    summary: hubSummary('unsloth/gemma-3-4b-it-GGUF', 298_114, 241, { parameters: 3_880_263_168, architecture: 'gemma3', context_length: 131072, pipeline_tag: 'image-text-to-text' }),
+    sha: 'c3d5e7f9a1b2c3d4e5f60718293a4b5c6d7e8f90',
+    license: 'gemma',
+    gate_prompt: null,
+    kind: 'chat',
+    context: 131072,
+    kvPerToken: 69_632,
+    variants: [
+      { name: 'gemma-3-4b-it-Q4_K_M', quant: 'Q4_K_M', size: 2_489_757_856 },
+      { name: 'gemma-3-4b-it-Q8_0', quant: 'Q8_0', size: 4_130_401_952 },
+      { name: 'mmproj-F16', quant: 'F16', size: 851_251_104, kind: 'projector' },
+    ],
+  },
+  {
+    summary: hubSummary('google/gemma-3-12b-it-qat-q4_0-gguf', 88_402, 197, { parameters: 11_765_788_416, architecture: 'gemma3', context_length: 131072, gated: 'manual', pipeline_tag: 'image-text-to-text' }),
+    sha: 'e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4',
+    license: 'gemma',
+    gate_prompt: 'To access Gemma on Hugging Face, you\'re required to review and agree to Google\'s usage license.',
+    kind: 'chat',
+    context: 131072,
+    kvPerToken: 196_608,
+    variants: [{ name: 'gemma-3-12b-it-q4_0', quant: 'Q4_0', size: 8_074_301_184 }],
+  },
+  {
+    summary: hubSummary('bartowski/Llama-3.3-70B-Instruct-GGUF', 154_220, 402, { parameters: 70_553_706_496, architecture: 'llama', context_length: 131072 }),
+    sha: 'f0e1d2c3b4a5968778695a4b3c2d1e0f9a8b7c6d',
+    license: 'llama3.3',
+    gate_prompt: null,
+    kind: 'chat',
+    context: 131072,
+    kvPerToken: 327_680,
+    variants: [
+      { name: 'Llama-3.3-70B-Instruct-Q4_K_M', quant: 'Q4_K_M', size: 42_520_398_848 },
+      { name: 'Llama-3.3-70B-Instruct-IQ2_XXS', quant: 'IQ2_XXS', size: 19_097_979_904 },
+    ],
+  },
+  {
+    summary: hubSummary('nomic-ai/nomic-embed-text-v1.5-GGUF', 201_553, 176, { parameters: 136_731_648, architecture: 'nomic-bert', context_length: 2048, pipeline_tag: 'sentence-similarity' }),
+    sha: '0188f09e4ba3c0cd1d2b0f76e0f4a1b2c3d4e5f6',
+    license: 'apache-2.0',
+    gate_prompt: null,
+    kind: 'embedding',
+    context: 2048,
+    kvPerToken: 36_864,
+    variants: [
+      { name: 'nomic-embed-text-v1.5.Q4_K_M', quant: 'Q4_K_M', size: 84_106_624 },
+      { name: 'nomic-embed-text-v1.5.Q8_0', quant: 'Q8_0', size: 146_146_432 },
+      { name: 'nomic-embed-text-v1.5.f16', quant: 'F16', size: 274_290_560 },
+    ],
+  },
+]
+
+function mockVariantFiles(v: MockHubRepo['variants'][number]): string[] {
+  const parts = v.parts ?? 1
+  if (parts === 1) return [`${v.name}.gguf`]
+  return Array.from({ length: parts }, (_, i) => `${v.name}/${v.name}-${String(i + 1).padStart(5, '0')}-of-${String(parts).padStart(5, '0')}.gguf`)
+}
+
+function mockGgufVariants(repo: MockHubRepo): GgufVariant[] {
+  return repo.variants
+    .map((v) => ({ name: v.name, files: mockVariantFiles(v), size_bytes: v.size, quant: v.quant, complete: true }))
+    .sort((a, b) => a.size_bytes - b.size_bytes)
+}
+
+function findMockRepo(id: string): MockHubRepo {
+  const repo = mockHubRepos.find((r) => r.summary.id === id)
+  if (!repo) throw `Not found on Hugging Face: ${id}`
+  return repo
+}
+
+function mockFit(repo: MockHubRepo, size: number, ctx: number, kvScale: number): FitEstimate {
+  const kvPerToken = repo.kvPerToken * kvScale
+  const kv_bytes = Math.round(ctx * kvPerToken)
+  const overhead_bytes = Math.round(256 * kvPerToken + size / 20)
+  const total_bytes = size + kv_bytes + overhead_bytes
+  const budget = mockHardware.gpu_budget_bytes ?? mockHardware.available_ram_bytes
+  const ratio = total_bytes / budget
+  const verdict: FitVerdict = ratio <= 0.85 ? 'fits' : ratio <= 1 ? 'tight' : 'too_large'
+  return { weights_bytes: size, kv_bytes, overhead_bytes, total_bytes, budget_bytes: budget, verdict, context_length: ctx }
+}
+
+function mockSummary(repo: MockHubRepo, kind: LocalModelKind, quant: string): GgufSummary {
+  const arch = kind === 'projector' ? 'clip' : repo.summary.architecture
+  return {
+    architecture: arch,
+    name: repo.summary.id.split('/')[1],
+    file_type: null,
+    quant,
+    context_length: kind === 'projector' ? null : repo.context,
+    embedding_length: null,
+    block_count: null,
+    head_count: null,
+    head_count_kv: null,
+    key_length: null,
+    value_length: null,
+    sliding_window: null,
+    pooling_type: kind === 'embedding' ? 1 : null,
+    causal: kind === 'embedding' ? false : null,
+    has_chat_template: kind === 'chat',
+    chat_template_mentions_tools: kind === 'chat',
+    split_count: null,
+    expert_count: null,
+    is_projector: kind === 'projector',
+    has_cls_tensors: false,
+  }
+}
+
+const mockDownloadJobs: DownloadJobView[] = []
+const mockDownloadTimers = new Map<string, ReturnType<typeof setInterval>>()
+
+function emitDownload(job: DownloadJobView) {
+  emit('local-model-download-progress', { ...job })
+}
+
+function finishMockDownload(job: DownloadJobView, added: string[]) {
+  const event: DownloadFinishedEvent = { job: { ...job }, added_models: added, library_error: null }
+  emit('local-model-download-finished', event)
+}
+
+function completeMockDownload(job: DownloadJobView) {
+  const repo = findMockRepo(job.repo)
+  const downloaded = repo.variants.filter((v) => job.files.includes(mockVariantFiles(v)[0]))
+  const kindOf = (v: MockHubRepo['variants'][number]) => v.kind ?? repo.kind
+  const projector = downloaded.find((v) => kindOf(v) === 'projector')
+  const models = downloaded.filter((v) => kindOf(v) !== 'projector')
+  // A projector downloaded with a model is attached to it; alone it is
+  // listed but not served (as lr-local-models does).
+  const added: string[] = []
+  for (const v of models.length > 0 ? models : downloaded) {
+    const kind = kindOf(v)
+    const id = v.name.toLowerCase().replace(/[^a-z0-9._-]+/g, '-')
+    if (!mockLibraryEntries.some((e) => e.id === id)) {
+      const files = mockVariantFiles(v)
+      mockLibraryEntries.push({
+        id,
+        display_name: v.name,
+        source: { type: 'hugging_face', repo: repo.summary.id, revision: repo.sha, files },
+        model_path: `${job.target_dir}/${files[0]}`,
+        extra_parts: files.slice(1).map((f) => `${job.target_dir}/${f}`),
+        projector_path: projector && kind !== 'projector' ? `${job.target_dir}/${mockVariantFiles(projector)[0]}` : null,
+        kind,
+        quant: v.quant,
+        architecture: kind === 'projector' ? 'clip' : repo.summary.architecture,
+        context_length: kind === 'projector' ? null : repo.context,
+        pooling_type: kind === 'embedding' ? 1 : null,
+        has_tools: kind === 'chat',
+        size_bytes: v.size + (projector && kind !== 'projector' ? projector.size : 0),
+        installed_at: new Date().toISOString(),
+      })
+    }
+    added.push(id)
+  }
+  const changed: LibraryChangedEvent = { added_models: added }
+  emit('local-models-library-changed', changed)
+  return added
+}
+
+function runMockDownload(job: DownloadJobView) {
+  job.state = 'running'
+  job.current_file = job.files[0]
+  // Finish in about 15 seconds whatever the size
+  job.speed_bps = Math.max(1, Math.round(job.bytes_total / 15))
+  emitDownload(job)
+  const timer = setInterval(() => {
+    job.bytes_done = Math.min(job.bytes_total, job.bytes_done + Math.round(job.speed_bps / 2))
+    const perFile = job.bytes_total / job.files.length
+    job.current_file = job.files[Math.min(job.files.length - 1, Math.floor(job.bytes_done / perFile))]
+    if (job.bytes_done >= job.bytes_total) {
+      clearInterval(timer)
+      mockDownloadTimers.delete(job.id)
+      job.state = 'verifying'
+      job.speed_bps = 0
+      job.current_file = null
+      emitDownload(job)
+      setTimeout(() => {
+        const added = completeMockDownload(job)
+        job.state = 'done'
+        emitDownload(job)
+        finishMockDownload(job, added)
+      }, 800)
+      return
+    }
+    emitDownload(job)
+  }, 500)
+  mockDownloadTimers.set(job.id, timer)
+}
+
+function stopMockDownloadTimer(id: string) {
+  const timer = mockDownloadTimers.get(id)
+  if (timer) clearInterval(timer)
+  mockDownloadTimers.delete(id)
+}
+
+const SIGNED_OUT: HfAccount = { signed_in: false, method: null, username: null, expires_at: null }
+let mockHfAccount: HfAccount = { ...SIGNED_OUT }
+/** Browser sign-ins in progress: flow id -> polls until "success" */
+const mockSignInFlows = new Map<string, number>()
+
+function llamaProcessKey(instanceName: string, model: string) {
+  return `llamacpp_embedded:${instanceName}:${model}`
 }
 
 /**
@@ -655,6 +1387,13 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'get_provider_config': (args) => {
     const provider = mockData.providers.find(p => p.instance_name === args?.instanceName)
     if (!provider) return {}
+    // Local Embedded providers have engine settings, not an API key or URL
+    const embeddedConfigs: Record<string, Record<string, string>> = {
+      laya: { checkpoints: 'english,multilingual', device: 'auto', idle_unload_minutes: '15' },
+      von: { device: 'auto', idle_unload_minutes: '15' },
+      llamacpp_embedded: { context: 'auto', gpu_layers: 'auto', flash_attention: 'auto', kv_cache: 'f16', max_loaded_models: '1', idle_unload_minutes: '15' },
+    }
+    if (embeddedConfigs[provider.provider_type]) return embeddedConfigs[provider.provider_type]
     return { api_key: 'sk-demo-key-1234567890', base_url: 'https://api.openai.com/v1' }
   },
   'create_provider_instance': (args) => {
@@ -708,6 +1447,320 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'set_provider_enabled': (args) => {
     const provider = mockData.providers.find(p => p.instance_name === args?.instanceName)
     if (provider) provider.enabled = args?.enabled ?? true
+    return null
+  },
+
+  // ============================================================================
+  // Local Embedded provider engines
+  // ============================================================================
+  'engine_status': (args: EngineStatusParams): EngineStatus => mockEngineStatus(args.recipeId),
+  'engine_install': (args: EngineInstallParams): string => {
+    const recipe = mockEngineRecipes[args.recipeId]
+    if (!recipe) throw `Unknown engine '${args.recipeId}'`
+    const option = recipe.install.find((o) => o.id === args.optionId)
+    if (!option) throw `Unknown install option '${args.optionId}'`
+    if (option.needs_sudo) throw 'This command needs sudo; run it in a terminal'
+    const runId = generateId()
+    const lines = mockInstallOutput(args.recipeId)
+    const timers = lines.map((line, i) =>
+      setTimeout(() => {
+        const event: EngineInstallOutputEvent = {
+          run_id: runId,
+          stream: option.kind === 'download' ? 'stdout' : 'stderr',
+          line,
+        }
+        emit('engine-install-output', event)
+      }, 400 + i * 600),
+    )
+    timers.push(setTimeout(() => finishMockInstall(runId, { exit_code: 0, cancelled: false, error: null }), 400 + lines.length * 600))
+    mockInstallRuns.set(runId, { recipeId: args.recipeId, timers })
+    return runId
+  },
+  'engine_install_cancel': (args: EngineInstallCancelParams): boolean => {
+    if (!mockInstallRuns.has(args.runId)) return false
+    finishMockInstall(args.runId, { exit_code: null, cancelled: true, error: null })
+    return true
+  },
+  'engine_processes': (): EngineProcessInfo[] => mockEngineProcesses.map((p) => ({ ...p })),
+  'engine_logs': (args: EngineKeyParams): string[] => mockEngineLogs[args.key] ?? [],
+  'engine_stop': (args: EngineKeyParams): null => {
+    const process = mockEngineProcesses.find((p) => p.key === args.key)
+    if (process) {
+      Object.assign(process, { state: 'exited', port: null, pid: null, uptime_secs: null, idle_secs: null, in_flight: 0 })
+      toast.success(`${process.label} stopped (demo)`)
+    }
+    return null
+  },
+
+  // ============================================================================
+  // Local models (llama.cpp Local Embedded provider)
+  // ============================================================================
+  'local_models_search': (args: LocalModelsSearchParams): HubPage => {
+    const q = (args?.query ?? '').trim().toLowerCase()
+    const words = q.split(/\s+/).filter(Boolean)
+    const models = mockHubRepos
+      .map((r) => r.summary)
+      .filter((m) => words.every((w) => m.id.toLowerCase().includes(w)))
+    const sort = args?.sort ?? 'trendingScore'
+    if (sort === 'likes') models.sort((a, b) => b.likes - a.likes)
+    else if (sort === 'downloads' || sort === 'trendingScore') models.sort((a, b) => b.downloads - a.downloads)
+    return { models: models.map((m) => ({ ...m })), next_cursor: null }
+  },
+  'local_models_repo': (args: LocalModelsRepoParams): LocalRepoDetails => {
+    const repo = findMockRepo(args.repo)
+    const variants = mockGgufVariants(repo)
+    return {
+      id: repo.summary.id,
+      sha: repo.sha,
+      gated: repo.summary.gated,
+      gate_prompt: repo.gate_prompt,
+      license: repo.license,
+      pipeline_tag: repo.summary.pipeline_tag,
+      repo_url: `https://huggingface.co/${repo.summary.id}`,
+      variants,
+      files: [
+        { path: 'README.md', size: 12_480, sha256: null },
+        ...variants.flatMap((v) => v.files.map((path) => ({ path, size: Math.round((v.size_bytes ?? 0) / v.files.length), sha256: null }))),
+      ],
+    }
+  },
+  'local_models_inspect_remote': (args: LocalModelsInspectRemoteParams): Promise<RemoteModelInspection> => {
+    const repo = findMockRepo(args.repo)
+    const variant = repo.variants.find((v) => mockVariantFiles(v)[0] === args.path)
+    if (!variant) throw `Not found on Hugging Face: ${args.path} in ${args.repo}`
+    const kind = variant.kind ?? repo.kind
+    const kvScale = args.kvCache === 'q8_0' ? 0.53 : args.kvCache === 'q4_0' ? 0.28 : 1
+    const ctx = args.contextLength || (kind === 'projector' ? 4096 : repo.context)
+    const fit = kind === 'projector'
+      ? { ...mockFit(repo, args.sizeBytes, 0, 0), context_length: ctx }
+      : mockFit(repo, args.sizeBytes, ctx, kvScale)
+    const steps = [4096, 8192, 16384, 32768, 65536, 131072].filter((c) => c <= repo.context)
+    const max = kind === 'projector'
+      ? null
+      : [...steps].reverse().find((c) => mockFit(repo, args.sizeBytes, c, kvScale).verdict !== 'too_large') ?? null
+    const result: RemoteModelInspection = {
+      summary: mockSummary(repo, kind, variant.quant),
+      kind,
+      fit,
+      max_context: max,
+      hardware: { ...mockHardware },
+    }
+    // A header read takes a moment
+    return new Promise((resolve) => setTimeout(() => resolve(result), 600))
+  },
+  'local_models_hardware': (): HardwareInfo => ({ ...mockHardware }),
+  'local_models_download_start': (args: LocalModelsDownloadStartParams): string => {
+    const repo = findMockRepo(args.repo)
+    if (args.files.length === 0) throw 'no files selected'
+    if (repo.summary.gated && !mockHfAccount.signed_in) {
+      throw `${repo.summary.id} is a gated model. Sign in to Hugging Face and request access on huggingface.co/${repo.summary.id} to download it.`
+    }
+    const variants = repo.variants.filter((v) => mockVariantFiles(v).some((f) => args.files.includes(f)))
+    const existing = mockDownloadJobs.find((j) => j.repo === repo.summary.id && !['done', 'failed', 'cancelled'].includes(j.state) && j.files.join() === args.files.join())
+    if (existing) return existing.id
+    const job: DownloadJobView = {
+      id: generateId(),
+      repo: repo.summary.id,
+      revision: repo.sha,
+      files: [...args.files],
+      state: 'queued',
+      bytes_done: 0,
+      bytes_total: variants.reduce((sum, v) => sum + v.size, 0),
+      speed_bps: 0,
+      current_file: null,
+      error: null,
+      target_dir: `${DEMO_MODELS_DIR}/hf/${repo.summary.id}/${repo.sha}`,
+      purpose: null,
+    }
+    mockDownloadJobs.push(job)
+    emitDownload(job)
+    setTimeout(() => job.state === 'queued' && runMockDownload(job), 300)
+    return job.id
+  },
+  'local_models_download_pause': (args: LocalModelsDownloadIdParams): null => {
+    const job = mockDownloadJobs.find((j) => j.id === args.id)
+    if (job && (job.state === 'queued' || job.state === 'running')) {
+      stopMockDownloadTimer(job.id)
+      job.state = 'paused'
+      job.speed_bps = 0
+      emitDownload(job)
+    }
+    return null
+  },
+  'local_models_download_resume': (args: LocalModelsDownloadIdParams): null => {
+    const job = mockDownloadJobs.find((j) => j.id === args.id)
+    if (job && (job.state === 'paused' || job.state === 'failed')) {
+      job.error = null
+      runMockDownload(job)
+    }
+    return null
+  },
+  'local_models_download_cancel': (args: LocalModelsDownloadIdParams): null => {
+    const job = mockDownloadJobs.find((j) => j.id === args.id)
+    if (job && !['done', 'cancelled', 'verifying'].includes(job.state)) {
+      stopMockDownloadTimer(job.id)
+      job.state = 'cancelled'
+      job.speed_bps = 0
+      job.current_file = null
+      emitDownload(job)
+      finishMockDownload(job, [])
+    }
+    return null
+  },
+  'local_models_downloads': (): DownloadJobView[] => mockDownloadJobs.map((j) => ({ ...j })),
+  'local_models_downloads_clear': (): null => {
+    for (let i = mockDownloadJobs.length - 1; i >= 0; i--) {
+      if (['done', 'failed', 'cancelled'].includes(mockDownloadJobs[i].state)) mockDownloadJobs.splice(i, 1)
+    }
+    return null
+  },
+  'local_models_library': (): LocalLibraryView => ({
+    entries: mockLibraryEntries.map((e) => ({ ...e })),
+    disk_usage_bytes: mockLibraryEntries
+      .filter((e) => e.source.type === 'hugging_face')
+      .reduce((sum, e) => sum + e.size_bytes, 0),
+    storage_dir: DEMO_MODELS_DIR,
+  }),
+  'local_models_import': (args: LocalModelsImportParams): LibraryEntry => {
+    const name = args.path.split('/').pop() ?? args.path
+    if (!name.toLowerCase().endsWith('.gguf')) throw 'Only .gguf files can be imported'
+    const stem = name.slice(0, -5)
+    const entry: LibraryEntry = {
+      id: stem.toLowerCase().replace(/[^a-z0-9._-]+/g, '-'),
+      display_name: stem,
+      source: { type: 'imported' },
+      model_path: args.path,
+      extra_parts: [],
+      projector_path: null,
+      kind: 'chat',
+      quant: null,
+      architecture: 'llama',
+      context_length: 8192,
+      pooling_type: null,
+      has_tools: false,
+      size_bytes: 4_920_734_016,
+      installed_at: new Date().toISOString(),
+    }
+    const existing = mockLibraryEntries.find((e) => e.model_path === args.path)
+    if (existing) return { ...existing }
+    mockLibraryEntries.push(entry)
+    return { ...entry }
+  },
+  'local_models_rename': (args: LocalModelsRenameParams): null => {
+    const name = args.displayName.trim()
+    if (!name) throw 'The name must not be empty'
+    const entry = mockLibraryEntries.find((e) => e.id === args.id)
+    if (!entry) throw `model not found in the library: ${args.id}`
+    entry.display_name = name
+    return null
+  },
+  'local_models_remove': (args: LocalModelsRemoveParams): null => {
+    const idx = mockLibraryEntries.findIndex((e) => e.id === args.id)
+    if (idx === -1) throw `model not found in the library: ${args.id}`
+    mockLibraryEntries.splice(idx, 1)
+    for (const p of mockEngineProcesses) {
+      if (p.key.startsWith('llamacpp_embedded:') && p.key.endsWith(`:${args.id}`)) {
+        Object.assign(p, { state: 'exited', port: null, pid: null, uptime_secs: null, idle_secs: null, in_flight: 0 })
+      }
+    }
+    return null
+  },
+  'local_models_load': (args: LocalModelsLoadParams): Promise<null> => {
+    const entry = mockLibraryEntries.find((e) => e.id === args.model)
+    if (!entry || !['chat', 'completion', 'embedding'].includes(entry.kind)) {
+      throw `Model '${args.model}' not found`
+    }
+    const key = llamaProcessKey(args.instanceName, args.model)
+    return new Promise((resolve) => setTimeout(() => {
+      const running = { key, label: entry.display_name, state: 'running' as const, port: 53000 + Math.floor(Math.random() * 900), pid: 49000 + Math.floor(Math.random() * 900), uptime_secs: 0, idle_secs: 0, in_flight: 0, restarts: 0, last_error: null }
+      const existing = mockEngineProcesses.find((p) => p.key === key)
+      if (existing) Object.assign(existing, running)
+      else mockEngineProcesses.push(running)
+      resolve(null)
+    }, 1500))
+  },
+  'local_models_unload': (args: LocalModelsLoadParams): null => {
+    const process = mockEngineProcesses.find((p) => p.key === llamaProcessKey(args.instanceName, args.model))
+    if (process) Object.assign(process, { state: 'exited', port: null, pid: null, uptime_secs: null, idle_secs: null, in_flight: 0 })
+    return null
+  },
+  'local_models_states': (args: LocalModelsStatesParams): EmbeddedModelState[] => {
+    const prefix = llamaProcessKey(args.instanceName, '')
+    return mockEngineProcesses
+      .filter((p) => p.key.startsWith(prefix))
+      .map((p) => ({ model: p.key.slice(prefix.length), state: p.state, port: p.port, idle_secs: p.idle_secs, last_error: p.last_error }))
+  },
+  'local_models_engine_catalog': (args: LocalModelsEngineCatalogParams): EmbeddedCatalogModel[] =>
+    engineCatalogFor(args.instanceName).map((m) => ({ ...m })),
+  'local_models_engine_download': (args: LocalModelsEngineDownloadParams): null => {
+    const model = engineCatalogFor(args.instanceName).find((m) => m.id === args.model)
+    if (!model) throw `Model not found: ${args.model}`
+    model.downloading = true
+    model.download_error = null
+    // Simulated: the demo never downloads anything. Image models (multi-file
+    // bundles) report progress.
+    const bundle = mockEngineCatalogs.sdcpp_embedded.includes(model)
+    if (bundle) model.progress = 0
+    const timer = setInterval(() => {
+      if (!model.downloading) return clearInterval(timer)
+      if (bundle && (model.progress ?? 0) < 1) {
+        model.progress = Math.min(1, (model.progress ?? 0) + 0.2)
+        return
+      }
+      clearInterval(timer)
+      model.downloading = false
+      model.downloaded = true
+      model.progress = null
+      if (bundle) model.removable = true
+    }, 1000)
+    return null
+  },
+  'local_models_engine_remove': (args: LocalModelsEngineDownloadParams): null => {
+    const model = engineCatalogFor(args.instanceName).find((m) => m.id === args.model)
+    if (!model) throw `Model not found: ${args.model}`
+    model.downloaded = false
+    model.removable = false
+    return null
+  },
+  'local_models_engine_download_cancel': (args: LocalModelsEngineDownloadParams): null => {
+    const model = engineCatalogFor(args.instanceName).find((m) => m.id === args.model)
+    if (model) model.downloading = false
+    return null
+  },
+  'local_models_hf_account': (): HfAccount => ({ ...mockHfAccount }),
+  'local_models_hf_set_token': (args: LocalModelsHfSetTokenParams): HfAccount => {
+    const token = args.token.trim()
+    if (!token) throw 'the token is empty'
+    if (!token.startsWith('hf_') || token.length < 8) throw 'Hugging Face rejected this token'
+    mockHfAccount = { signed_in: true, method: 'token', username: 'demo-user', expires_at: null }
+    return { ...mockHfAccount }
+  },
+  'local_models_hf_sign_out': (): null => {
+    mockHfAccount = { ...SIGNED_OUT }
+    return null
+  },
+  'local_models_hf_sign_in': (): HfSignInStart => {
+    const flowId = generateId()
+    mockSignInFlows.set(flowId, 0)
+    toast.info('Demo: the Hugging Face sign-in page would open in your browser')
+    return {
+      flow_id: flowId,
+      auth_url: 'https://huggingface.co/oauth/authorize?client_id=https%3A%2F%2Flocalrouter.ai%2Foauth%2Fhuggingface-client.json&response_type=code',
+    }
+  },
+  'local_models_hf_sign_in_poll': (args: LocalModelsHfSignInFlowParams): HfSignInStatus => {
+    const polls = mockSignInFlows.get(args.flowId)
+    if (polls === undefined) return { state: 'cancelled', message: null, account: null }
+    if (polls < 2) {
+      mockSignInFlows.set(args.flowId, polls + 1)
+      return { state: 'pending', message: null, account: null }
+    }
+    mockSignInFlows.delete(args.flowId)
+    mockHfAccount = { signed_in: true, method: 'oauth', username: 'demo-user', expires_at: Math.floor(Date.now() / 1000) + 30 * 24 * 3600 }
+    return { state: 'success', message: null, account: { ...mockHfAccount } }
+  },
+  'local_models_hf_sign_in_cancel': (args: LocalModelsHfSignInFlowParams): null => {
+    mockSignInFlows.delete(args.flowId)
     return null
   },
 
@@ -1622,6 +2675,10 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'list_all_models': () => mockData.models,
   'get_cached_models': () => mockData.models,
   'refresh_models_incremental': (_args?: { force?: boolean }) => {},
+  'list_provider_models_detailed': (args: ListProviderModelsDetailedParams) =>
+    (mockHandlers['list_all_models_detailed']() as Array<{ provider_instance: string }>).filter(
+      (m) => m.provider_instance === args.instanceName,
+    ),
   'list_all_models_detailed': () => {
     const pricingMap: Record<string, { input: number; output: number; source: string }> = {
       'gpt-4o': { input: 2.50, output: 10.00, source: 'catalog' },
@@ -1639,6 +2696,9 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       'openai-primary': 'openai',
       'anthropic-main': 'anthropic',
       'ollama-local': 'ollama',
+      'laya-local': 'laya',
+      'von-local': 'von',
+      'llamacpp-local': 'llamacpp_embedded',
       'gemini-google': 'gemini',
       'groq-fast': 'groq',
       'openrouter-backup': 'openrouter',
@@ -1656,6 +2716,14 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       'gemini-1.5-flash': ['chat', 'completion', 'vision', 'functioncalling'],
       'text-embedding-3-small': ['embedding'],
       'text-embedding-3-large': ['embedding'],
+      // Laya: System One decision models (no chat)
+      'english': ['decision'],
+      'multilingual': ['decision'],
+      // Von: System One decision model (no chat)
+      'von-latest': ['decision'],
+      // llama.cpp Local Embedded (library models)
+      'qwen3-8b-q4_k_m': ['chat', 'completion', 'functioncalling'],
+      'nomic-embed-text-v1.5-q8_0': ['embedding'],
     }
     return mockData.models.map(m => {
       const pricing = pricingMap[m.id]
@@ -1681,48 +2749,16 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // ============================================================================
   // Feature Support Matrix
   // ============================================================================
-  'get_provider_feature_support': (args): ProviderFeatureSupport => ({
-    provider_type: 'openai',
-    provider_instance: args?.instanceName || 'openai',
-    endpoints: [
-      { name: 'Chat Completions', endpoint: '/v1/chat/completions', support: 'supported', notes: 'Send messages and receive AI responses' },
-      { name: 'Completions (legacy)', endpoint: '/v1/completions', support: 'supported', notes: 'Converted to chat completions internally by LocalRouter' },
-      { name: 'Streaming', endpoint: '/v1/chat/completions', support: 'supported', notes: 'Server-sent events for real-time token streaming' },
-      { name: 'Embeddings', endpoint: '/v1/embeddings', support: 'supported', notes: 'Generate vector embeddings for text' },
-      { name: 'Image Generation', endpoint: '/v1/images/generations', support: 'supported', notes: 'DALL-E 3 and DALL-E 2 image generation' },
-      { name: 'Audio Transcription', endpoint: '/v1/audio/transcriptions', support: 'supported', notes: 'Whisper for speech-to-text, TTS-1/TTS-1-HD for text-to-speech' },
-      { name: 'Audio Speech (TTS)', endpoint: '/v1/audio/speech', support: 'supported', notes: 'Whisper for speech-to-text, TTS-1/TTS-1-HD for text-to-speech' },
-      { name: 'Moderations', endpoint: '/v1/moderations', support: 'not_implemented', notes: 'OpenAI supports natively via text-moderation-latest; LocalRouter proxy not yet built' },
-      { name: 'Responses API', endpoint: '/v1/responses', support: 'not_implemented', notes: 'OpenAI supports natively; LocalRouter proxy not yet built' },
-      { name: 'Batch Processing', endpoint: '/v1/batches', support: 'not_implemented', notes: 'OpenAI supports native async batches; LocalRouter proxy not yet built' },
-      { name: 'Realtime (WebSocket)', endpoint: '/v1/realtime', support: 'not_implemented', notes: 'WebSocket-based real-time audio/text streaming not yet available in LocalRouter' },
-    ],
-    model_features: [
-      { name: 'Function Calling', support: 'supported', notes: 'GPT-4o, GPT-4 Turbo, and GPT-3.5 Turbo support tool calling' },
-      { name: 'Vision', support: 'supported', notes: 'GPT-4o and GPT-4 Turbo can process images' },
-      { name: 'Structured Outputs', support: 'supported', notes: 'GPT-4o supports strict JSON schema enforcement via response_format' },
-      { name: 'JSON Mode', support: 'supported', notes: 'All GPT-4 and GPT-3.5 Turbo models support JSON output mode' },
-      { name: 'Log Probabilities', support: 'supported', notes: 'Available on GPT-4o and GPT-3.5 Turbo via logprobs parameter' },
-      { name: 'Reasoning Tokens', support: 'partial', notes: 'Only o1-preview and o1-mini models use reasoning tokens; other models do not' },
-      { name: 'Extended Thinking', support: 'not_supported', notes: 'OpenAI does not support extended thinking; this is an Anthropic feature' },
-      { name: 'Thinking Level', support: 'not_supported', notes: 'OpenAI does not support thinking level; this is a Gemini feature' },
-      { name: 'Prompt Caching', support: 'not_supported', notes: 'OpenAI does not support server-side prompt caching' },
-    ],
-    optimization_features: [
-      { name: 'Guardrails', support: 'supported', notes: 'Content safety scanning on chat/completion requests' },
-      { name: 'Prompt Compression', support: 'supported', notes: 'LLMLingua-2 token-level compression for chat requests' },
-      { name: 'JSON Repair', support: 'supported', notes: 'Automatic fix of malformed JSON responses' },
-      { name: 'RouteLLM Routing', support: 'supported', notes: 'Strong/weak model routing based on request complexity' },
-      { name: 'Secret Scanning', support: 'supported', notes: 'Detect potential secrets in outbound requests' },
-      { name: 'Rate Limiting', support: 'supported', notes: 'Available for all endpoints' },
-      { name: 'Model Firewall', support: 'supported', notes: 'Available for all LLM endpoints' },
-      { name: 'Generation Tracking', support: 'supported', notes: 'Available for all endpoints' },
-      { name: 'Cost Calculation', support: 'supported', notes: 'Based on catalog pricing data' },
-    ],
-  }),
+  'get_provider_feature_support': (args): ProviderFeatureSupport => {
+    const base = openaiFeatureSupport(args?.instanceName || 'openai')
+    const instance = mockData.providers.find(p => p.instance_name === args?.instanceName)
+    const decisionOnlyTypes = ['typesafe', 'laya', 'kev', 'von', 'decider', 'systemone_compatible']
+    return instance && decisionOnlyTypes.includes(instance.provider_type)
+      ? systemOneFeatureSupport(base, instance.provider_type, instance.instance_name)
+      : base
+  },
   'get_all_provider_feature_support': (): ProviderFeatureSupport[] => {
-    const mockHandlerFn = mockHandlers['get_provider_feature_support'] as (args?: InvokeArgs) => ProviderFeatureSupport
-    const openai = mockHandlerFn({ instanceName: 'openai' })
+    const openai = openaiFeatureSupport('openai')
 
     const anthropic: ProviderFeatureSupport = {
       ...openai,
@@ -1791,7 +2827,9 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       }),
     }
 
-    return [openai, anthropic, gemini, ollama]
+    const laya = systemOneFeatureSupport(openai, 'laya', 'laya')
+
+    return [openai, anthropic, gemini, ollama, laya]
   },
   'get_api_path_support': () => ({
     chat_completions: 'supported' as const,
@@ -3559,6 +4597,26 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
           responses: { '200': { description: 'Successful response' } },
         },
       },
+      '/v1/systemone': {
+        post: {
+          summary: 'System One decisions',
+          description: 'Answer typed choice / score / yes-no questions about a state with calibrated probabilities (TypeSafe Jev wire format). Also served at /systemone.',
+          operationId: 'systemone',
+          tags: ['systemone'],
+          requestBody: {
+            required: true,
+            content: { 'application/json': { schema: { '$ref': '#/components/schemas/SystemOneRequest' } } },
+          },
+          responses: {
+            '200': { description: 'Answers keyed by question id', content: { 'application/json': { schema: { '$ref': '#/components/schemas/SystemOneResponse' } } } },
+            '400': { description: 'Invalid request' },
+            '401': { description: 'Missing or invalid API key' },
+            '403': { description: 'Model not allowed for this client' },
+            '429': { description: 'Rate limited' },
+            '502': { description: 'Provider error' },
+          },
+        },
+      },
       '/health': {
         get: {
           summary: 'Health check',
@@ -3571,6 +4629,8 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     components: {
       schemas: {
         ChatCompletionRequest: { type: 'object', properties: { model: { type: 'string' }, messages: { type: 'array' } } },
+        SystemOneRequest: { type: 'object', required: ['state', 'questions'], properties: { model: { type: 'string' }, state: {}, questions: { type: 'object', additionalProperties: { type: 'object', properties: { type: { type: 'string', enum: ['choice', 'score', 'noul'] }, instructions: { type: 'string' }, criteria: {} } } } } },
+        SystemOneResponse: { type: 'object', properties: { model: { type: 'string' }, answers: { type: 'object' }, usage: { type: 'object', properties: { input_tokens: { type: 'integer', nullable: true }, output_tokens: { type: 'integer', nullable: true } } } } },
       },
       securitySchemes: {
         BearerAuth: { type: 'http', scheme: 'bearer' },

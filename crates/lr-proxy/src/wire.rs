@@ -8,7 +8,7 @@
 
 use serde_json::Value;
 
-use crate::{anthropic, ollama, openai};
+use crate::{anthropic, ollama, openai, systemone};
 
 /// The request/response encoding of an intercepted LLM call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,6 +22,9 @@ pub enum WireFormat {
     /// Ollama's native API (`POST /api/chat`, `POST /api/generate`), seen by
     /// the reverse proxy when it wraps a local Ollama. Streams NDJSON, not SSE.
     Ollama(ollama::OllamaEndpoint),
+    /// System One decisions (`POST .../v1/systemone`): TypeSafe's hosted Jev,
+    /// or Laya / Kev behind the reverse proxy. Plain JSON, never streamed.
+    SystemOne,
 }
 
 /// Request-side metadata extracted from an intercepted LLM request body.
@@ -63,6 +66,8 @@ pub fn detect(path: &str) -> Option<WireFormat> {
         Some(WireFormat::OpenAiChat)
     } else if path.ends_with("/responses") {
         Some(WireFormat::OpenAiResponses)
+    } else if systemone::is_systemone_path(path) {
+        Some(WireFormat::SystemOne)
     } else {
         ollama::detect(path).map(WireFormat::Ollama)
     }
@@ -75,6 +80,8 @@ pub fn provider_for_host(host: &str) -> &'static str {
         "anthropic"
     } else if host.contains("openai") || host.contains("chatgpt") {
         "openai"
+    } else if host.contains("typesafe") {
+        "typesafe"
     } else {
         "unknown"
     }
@@ -136,7 +143,7 @@ pub fn is_terminal_event(format: WireFormat, event: &Value) -> bool {
         // Chat Completions has no websocket transport; cycles close on
         // connection end instead. Neither does Ollama's native API — the
         // reverse proxy sees plain HTTP request/response pairs.
-        WireFormat::OpenAiChat | WireFormat::Ollama(_) => false,
+        WireFormat::OpenAiChat | WireFormat::Ollama(_) | WireFormat::SystemOne => false,
     }
 }
 
@@ -166,6 +173,7 @@ pub fn parse_request(format: WireFormat, body: &Value) -> RequestMeta {
         WireFormat::OpenAiChat => openai::parse_chat_request(body),
         WireFormat::OpenAiResponses => openai::parse_responses_request(body),
         WireFormat::Ollama(endpoint) => ollama::parse_request(endpoint, body),
+        WireFormat::SystemOne => systemone::parse_request(body),
     }
 }
 
@@ -176,6 +184,7 @@ pub fn parse_response(format: WireFormat, body: &Value) -> ResponseMeta {
         WireFormat::OpenAiChat => openai::parse_chat_response(body),
         WireFormat::OpenAiResponses => openai::parse_responses_response(body),
         WireFormat::Ollama(endpoint) => ollama::parse_response(endpoint, body),
+        WireFormat::SystemOne => systemone::parse_response(body),
     }
 }
 
@@ -188,6 +197,12 @@ pub fn reconstruct_sse(format: WireFormat, raw: &str) -> (ResponseMeta, Value) {
         // Ollama never sends SSE on its native API; treat a mislabeled stream
         // as NDJSON rather than losing the exchange.
         WireFormat::Ollama(endpoint) => ollama::reconstruct_ndjson(endpoint, raw),
+        // System One never streams; if a body was captured as a stream, parse
+        // it as the single JSON object it is.
+        WireFormat::SystemOne => match serde_json::from_str::<Value>(raw.trim()) {
+            Ok(body) => (systemone::parse_response(&body), body),
+            Err(_) => (ResponseMeta::default(), Value::Null),
+        },
     }
 }
 
@@ -219,6 +234,8 @@ mod tests {
             detect("/backend-api/codex/responses"),
             Some(WireFormat::OpenAiResponses)
         );
+        assert_eq!(detect("/v1/systemone"), Some(WireFormat::SystemOne));
+        assert_eq!(detect("/api/v1/systemone"), Some(WireFormat::SystemOne));
         assert_eq!(detect("/v1/models"), None);
         assert_eq!(detect("/api/auth/session"), None);
     }
@@ -272,6 +289,7 @@ mod tests {
         assert_eq!(provider_for_host("api.anthropic.com"), "anthropic");
         assert_eq!(provider_for_host("api.openai.com"), "openai");
         assert_eq!(provider_for_host("chatgpt.com"), "openai");
+        assert_eq!(provider_for_host("api.typesafe.ai"), "typesafe");
         assert_eq!(provider_for_host("example.com"), "unknown");
     }
 }

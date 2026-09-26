@@ -8,7 +8,9 @@ import { useState, useCallback } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import type { MonitorEvent, ReadMemoryArchiveFileParams } from '@/types/tauri-commands'
+import type { LlmProtocol, MonitorEvent, ReadMemoryArchiveFileParams } from '@/types/tauri-commands'
+import type { SystemOneAnswer, SystemOneQuestion } from '@/types/systemone'
+import { SystemOneAnswerView, SystemOneQuestionView } from '@/components/shared/SystemOneAnswers'
 
 const MARKDOWN_STYLES =
   'text-xs leading-relaxed [&_p]:my-1 [&_ul]:list-disc [&_ul]:ml-4 [&_ol]:list-decimal [&_ol]:ml-4 [&_li]:my-0.5 ' +
@@ -469,6 +471,62 @@ const SUB_TAB = "text-[11px] h-6 px-2.5"
 // tab rows above never scroll out of view (fixes "Full Body hides the tabs").
 const SUB_TAB_CONTENT = "flex-1 min-h-0 overflow-auto data-[state=inactive]:hidden"
 
+// ---- System One (POST /v1/systemone) ----
+
+/** Whether an llm_call event is a System One decision request rather than chat. */
+function isSystemOneEvent(data: EventData): boolean {
+  if ((data.protocol as LlmProtocol | undefined) === 'system_one') return true
+  if (data.endpoint === '/v1/systemone' || data.endpoint === '/systemone') return true
+  const body = data.request_body as Record<string, unknown> | undefined
+  return body != null && typeof body.questions === 'object' && body.questions !== null && !('messages' in body)
+}
+
+function systemOneQuestions(body: Record<string, unknown> | undefined): Record<string, SystemOneQuestion> {
+  const q = body?.questions
+  return q && typeof q === 'object' && !Array.isArray(q) ? (q as Record<string, SystemOneQuestion>) : {}
+}
+
+/** Request view: the state being judged and every question asked about it. */
+function SystemOneRequestView({ body }: { body: Record<string, unknown> }) {
+  const state = body.state
+  const questions = Object.entries(systemOneQuestions(body))
+  return (
+    <div className="space-y-2">
+      <div className="space-y-1">
+        <div className="text-[11px] font-medium text-muted-foreground">State</div>
+        <div className="p-2 bg-muted rounded text-xs">
+          {typeof state === 'string'
+            ? <SmartText text={state} />
+            : <pre className="whitespace-pre-wrap font-mono text-[11px]">{JSON.stringify(state, null, 2)}</pre>}
+        </div>
+      </div>
+      <div className="space-y-1">
+        <div className="text-[11px] font-medium text-muted-foreground">Questions ({questions.length})</div>
+        <div className="space-y-1.5">
+          {questions.map(([id, q]) => <SystemOneQuestionView key={id} id={id} question={q} />)}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** Response view: each answer with its probability bars. */
+function SystemOneAnswersList({ data }: { data: EventData }) {
+  const answers = (data.response_body as Record<string, unknown> | undefined)?.answers as
+    Record<string, SystemOneAnswer> | undefined
+  const questions = systemOneQuestions(data.request_body as Record<string, unknown> | undefined)
+  if (!answers || Object.keys(answers).length === 0) {
+    return <p className="text-xs text-muted-foreground italic">No answers in the response.</p>
+  }
+  return (
+    <div className="space-y-2">
+      {Object.entries(answers).map(([id, answer]) => (
+        <SystemOneAnswerView key={id} id={id} answer={answer} question={questions[id]} />
+      ))}
+    </div>
+  )
+}
+
 // ---- LLM Response Content (sub-tabs: Overview | Content | Tool Calls | Full Body) ----
 
 function LlmResponseContent({ data }: { data: EventData }) {
@@ -485,8 +543,11 @@ function LlmResponseContent({ data }: { data: EventData }) {
   const rawResponse = data.raw_response as string | undefined
   const hasRaw = typeof rawResponse === 'string' && rawResponse.length > 0
 
-  const hasEmptyResponse = !data.content_preview && !hasToolCalls && !hasReasoning && responseBody != null
-  const defaultSubTab = hasReasoning ? 'reasoning'
+  const isSystemOne = isSystemOneEvent(data) && responseBody?.answers != null
+
+  const hasEmptyResponse = !isSystemOne && !data.content_preview && !hasToolCalls && !hasReasoning && responseBody != null
+  const defaultSubTab = isSystemOne ? 'answers'
+    : hasReasoning ? 'reasoning'
     : hasEmptyResponse ? 'empty'
     : hasToolCalls && !data.content_preview ? 'tool_calls'
     : data.content_preview ? 'content' : hasRaw ? 'raw' : 'overview'
@@ -550,6 +611,9 @@ function LlmResponseContent({ data }: { data: EventData }) {
 
       <Tabs defaultValue={defaultSubTab} className="flex-1 min-h-0 flex flex-col">
         <TabsList className={SUB_TABS_LIST}>
+          {isSystemOne && (
+            <TabsTrigger value="answers" className={SUB_TAB}>Answers</TabsTrigger>
+          )}
           {hasEmptyResponse && (
             <TabsTrigger value="empty" className={SUB_TAB}>Response</TabsTrigger>
           )}
@@ -571,6 +635,12 @@ function LlmResponseContent({ data }: { data: EventData }) {
             <TabsTrigger value="raw" className={SUB_TAB}>Raw</TabsTrigger>
           )}
         </TabsList>
+
+        {isSystemOne && (
+          <TabsContent value="answers" className={SUB_TAB_CONTENT}>
+            <SystemOneAnswersList data={data} />
+          </TabsContent>
+        )}
 
         {hasEmptyResponse && (
           <TabsContent value="empty" className={SUB_TAB_CONTENT}>
@@ -658,6 +728,7 @@ function LlmCallDetail({ data }: { data: EventData }) {
   const activeBody = (showTransformed && transformedBody) ? transformedBody : body
   const messages = activeBody?.messages as Array<Record<string, unknown>> | undefined
   const tools = activeBody?.tools as Array<Record<string, unknown>> | undefined
+  const isSystemOne = isSystemOneEvent(data) && activeBody?.questions != null
 
   const params = activeBody ? [
     ['temperature', activeBody.temperature],
@@ -683,7 +754,8 @@ function LlmCallDetail({ data }: { data: EventData }) {
     }
   })
 
-  const defaultSubTab = messages && messages.length > 0 ? 'messages'
+  const defaultSubTab = isSystemOne ? 'decision'
+    : messages && messages.length > 0 ? 'messages'
     : tools && tools.length > 0 ? 'tools'
     : params.length > 0 ? 'parameters' : 'body'
 
@@ -700,6 +772,7 @@ function LlmCallDetail({ data }: { data: EventData }) {
         <div className="grid grid-cols-2 gap-2 text-xs">
           <Field label="Endpoint" value={data.endpoint as string} />
           <Field label="Model" value={data.model as string} />
+          {isSystemOne && <Field label="Protocol" value="System One" />}
           <Field label="Stream" value={data.stream != null ? String(data.stream) : undefined} />
         </div>
 
@@ -738,6 +811,11 @@ function LlmCallDetail({ data }: { data: EventData }) {
         {activeBody && (
           <Tabs defaultValue={defaultSubTab} key={showTransformed ? 'transformed' : 'original'} className="flex-1 min-h-0 flex flex-col">
             <TabsList className={SUB_TABS_LIST}>
+              {isSystemOne && (
+                <TabsTrigger value="decision" className={SUB_TAB}>
+                  Decision ({Object.keys(systemOneQuestions(activeBody)).length})
+                </TabsTrigger>
+              )}
               {messages && messages.length > 0 && (
                 <TabsTrigger value="messages" className={SUB_TAB}>
                   Messages ({messages.length})
@@ -760,6 +838,12 @@ function LlmCallDetail({ data }: { data: EventData }) {
                 Raw
               </TabsTrigger>
             </TabsList>
+
+            {isSystemOne && activeBody && (
+              <TabsContent value="decision" className={SUB_TAB_CONTENT}>
+                <SystemOneRequestView body={activeBody} />
+              </TabsContent>
+            )}
 
             {messages && messages.length > 0 && (
               <TabsContent value="messages" className={SUB_TAB_CONTENT}>

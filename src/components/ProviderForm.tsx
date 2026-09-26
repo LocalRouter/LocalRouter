@@ -19,7 +19,7 @@ export interface SetupParameter {
   sensitive: boolean
 }
 
-export type ProviderCategory = 'generic' | 'local' | 'subscription' | 'first_party' | 'third_party'
+export type ProviderCategory = 'embedded' | 'generic' | 'local' | 'subscription' | 'first_party' | 'third_party'
 
 export interface ProviderType {
   provider_type: string
@@ -31,6 +31,8 @@ export interface ProviderType {
   free_tier_long_text?: string
   docs_url?: string | null
   api_key_url?: string | null
+  /** False for retired types that are hidden from the Add Provider list */
+  listed?: boolean
 }
 
 interface OAuthFlowResult {
@@ -291,6 +293,13 @@ export default function ProviderForm({
     !hasOAuthParam || oauthStatus === 'success'
   )
 
+  // Local Embedded providers are added by name only; their engine settings
+  // (all optional) are edited afterwards in the provider's Settings tab.
+  const visibleParameters =
+    mode === 'create' && providerType.category === 'embedded'
+      ? providerType.setup_parameters.filter((p) => p.required)
+      : providerType.setup_parameters
+
   const handleConfigChange = (key: string, value: string) => {
     setConfig((prev) => ({ ...prev, [key]: value }))
   }
@@ -320,7 +329,7 @@ export default function ProviderForm({
       />
 
       {/* Dynamic Parameter Fields */}
-      {providerType.setup_parameters.map((param) => {
+      {visibleParameters.map((param) => {
         // Handle OAuth parameters
         if (param.param_type === 'oauth') {
           return (

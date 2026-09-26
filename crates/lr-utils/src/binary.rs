@@ -18,7 +18,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::RwLock;
 
 /// How long to wait for the login shell to print its PATH before giving up.
 ///
@@ -27,12 +27,27 @@ use std::sync::OnceLock;
 #[cfg(unix)]
 const SHELL_PATH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-static SHELL_ENV: OnceLock<HashMap<String, String>> = OnceLock::new();
+static SHELL_ENV: RwLock<Option<HashMap<String, String>>> = RwLock::new(None);
 
 /// Cached environment (currently just `PATH`) for locating and spawning
 /// user-installed tools.
 pub fn shell_env() -> HashMap<String, String> {
-    SHELL_ENV.get_or_init(build_shell_env).clone()
+    if let Some(env) = SHELL_ENV.read().ok().and_then(|g| g.clone()) {
+        return env;
+    }
+    refresh_shell_env()
+}
+
+/// Rebuild the cached environment, e.g. after the user installed a tool
+/// while the app was running (a "Refresh" button). On Windows this re-reads
+/// PATH from the registry, which is where installers such as WinGet write it;
+/// the running process never sees those changes otherwise.
+pub fn refresh_shell_env() -> HashMap<String, String> {
+    let env = build_shell_env();
+    if let Ok(mut guard) = SHELL_ENV.write() {
+        *guard = Some(env.clone());
+    }
+    env
 }
 
 /// The user's login-shell `PATH`, falling back to the process `PATH`.
@@ -43,7 +58,9 @@ pub fn shell_path() -> Option<String> {
 fn build_shell_env() -> HashMap<String, String> {
     let mut env = HashMap::new();
 
-    let path = login_shell_path().or_else(|| std::env::var("PATH").ok());
+    let path = login_shell_path()
+        .or_else(windows_registry_path)
+        .or_else(|| std::env::var("PATH").ok());
 
     if let Some(path) = path {
         env.insert("PATH".to_string(), path);
@@ -124,6 +141,83 @@ fn login_shell_path() -> Option<String> {
     None
 }
 
+#[cfg(unix)]
+fn windows_registry_path() -> Option<String> {
+    None
+}
+
+/// Current machine + user PATH from the registry, followed by any entries of
+/// the process PATH not already present.
+#[cfg(windows)]
+fn windows_registry_path() -> Option<String> {
+    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+    use winreg::RegKey;
+
+    let read = |root, key: &str| -> Option<String> {
+        RegKey::predef(root)
+            .open_subkey(key)
+            .ok()?
+            .get_value::<String, _>("Path")
+            .ok()
+    };
+    let machine = read(
+        HKEY_LOCAL_MACHINE,
+        r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+    );
+    let user = read(HKEY_CURRENT_USER, "Environment");
+    if machine.is_none() && user.is_none() {
+        return None;
+    }
+    let mut entries: Vec<String> = Vec::new();
+    let process = std::env::var("PATH").unwrap_or_default();
+    for part in [
+        machine.unwrap_or_default(),
+        user.unwrap_or_default(),
+        process,
+    ]
+    .iter()
+    .flat_map(|p| p.split(';'))
+    .map(|p| expand_windows_env(p.trim()))
+    .filter(|p| !p.is_empty())
+    {
+        if !entries.iter().any(|e| e.eq_ignore_ascii_case(&part)) {
+            entries.push(part);
+        }
+    }
+    Some(entries.join(";"))
+}
+
+/// Expand `%NAME%` references using the process environment.
+#[cfg(any(windows, test))]
+fn expand_windows_env(value: &str) -> String {
+    let mut out = String::new();
+    let mut rest = value;
+    while let Some(start) = rest.find('%') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        match after.find('%') {
+            Some(end) => {
+                let name = &after[..end];
+                match std::env::var(name) {
+                    Ok(v) if !name.is_empty() => out.push_str(&v),
+                    _ => {
+                        out.push('%');
+                        out.push_str(name);
+                        out.push('%');
+                    }
+                }
+                rest = &after[end + 1..];
+            }
+            None => {
+                out.push_str(&rest[start..]);
+                rest = "";
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Wait for `child`, giving up after `timeout` and returning its output.
 ///
 /// `std::process::Child` has no timed wait, so poll `try_wait`. The polling
@@ -188,8 +282,47 @@ fn fallback_bin_dirs() -> Vec<PathBuf> {
         PathBuf::from("/opt/homebrew/bin"),
         PathBuf::from("/usr/local/bin"),
         PathBuf::from("/snap/bin"),
+        // Homebrew on Linux, MacPorts, Nix profiles.
+        PathBuf::from("/home/linuxbrew/.linuxbrew/bin"),
+        PathBuf::from("/opt/local/bin"),
+        PathBuf::from("/nix/var/nix/profiles/default/bin"),
+        PathBuf::from("/run/current-system/sw/bin"),
     ]);
 
+    if let Some(home) = dirs::home_dir() {
+        dirs.push(home.join(".nix-profile/bin"));
+    }
+    if let Ok(user) = std::env::var("USER") {
+        dirs.push(PathBuf::from(format!("/etc/profiles/per-user/{user}/bin")));
+    }
+
+    #[cfg(windows)]
+    dirs.extend(windows_fallback_dirs());
+
+    dirs
+}
+
+/// Where Windows package managers put executables: WinGet's alias links and
+/// portable package folders, the Store app-alias folder, `~/.local/bin`
+/// (uv, the llama.app installer) and Scoop shims.
+#[cfg(windows)]
+fn windows_fallback_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        let local = PathBuf::from(local);
+        dirs.push(local.join(r"Microsoft\WinGet\Links"));
+        dirs.push(local.join(r"Microsoft\WindowsApps"));
+        // Portable WinGet packages (e.g. ggml.llamacpp) live in per-package
+        // folders that WinGet adds to the user PATH.
+        if let Ok(entries) = std::fs::read_dir(local.join(r"Microsoft\WinGet\Packages")) {
+            dirs.extend(entries.flatten().map(|e| e.path()).filter(|p| p.is_dir()));
+        }
+    }
+    if let Ok(profile) = std::env::var("USERPROFILE") {
+        let profile = PathBuf::from(profile);
+        dirs.push(profile.join(r".local\bin"));
+        dirs.push(profile.join(r"scoop\shims"));
+    }
     dirs
 }
 
@@ -225,6 +358,13 @@ pub fn find_binary(name: &str) -> Option<PathBuf> {
         let candidate = dir.join(name);
         if is_executable_file(&candidate) {
             return Some(candidate);
+        }
+        #[cfg(windows)]
+        {
+            let exe = dir.join(format!("{name}.exe"));
+            if is_executable_file(&exe) {
+                return Some(exe);
+            }
         }
     }
 
@@ -327,6 +467,26 @@ fn is_executable_file(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expands_windows_env_references() {
+        std::env::set_var("LR_TEST_EXPAND", "C:\\Users\\me");
+        assert_eq!(
+            expand_windows_env("%LR_TEST_EXPAND%\\bin"),
+            "C:\\Users\\me\\bin"
+        );
+        // Unknown variables and stray percent signs are left as-is.
+        assert_eq!(expand_windows_env("%LR_NOPE_X%\\a"), "%LR_NOPE_X%\\a");
+        assert_eq!(expand_windows_env("50%"), "50%");
+    }
+
+    #[test]
+    fn refresh_rebuilds_the_cache() {
+        let before = shell_env();
+        let after = refresh_shell_env();
+        assert_eq!(before.contains_key("PATH"), after.contains_key("PATH"));
+        assert_eq!(shell_env(), after);
+    }
 
     #[test]
     fn shell_env_always_yields_a_path() {

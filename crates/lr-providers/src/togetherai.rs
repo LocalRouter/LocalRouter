@@ -102,6 +102,30 @@ impl TogetherAIProvider {
     }
 }
 
+/// Serialize a chat request for Together. Together takes `logprobs` as the
+/// number of alternatives to return (0-20) rather than OpenAI's boolean plus
+/// `top_logprobs`, so translate those two fields.
+fn together_request_body(request: &CompletionRequest) -> AppResult<serde_json::Value> {
+    let mut body = serde_json::to_value(request)
+        .map_err(|e| AppError::Provider(format!("Failed to serialize request: {}", e)))?;
+    if let Some(obj) = body.as_object_mut() {
+        let top = obj.remove("top_logprobs").and_then(|v| v.as_u64());
+        match obj.get("logprobs").and_then(|v| v.as_bool()) {
+            Some(true) => {
+                obj.insert(
+                    "logprobs".to_string(),
+                    serde_json::json!(top.unwrap_or(1).clamp(1, 20)),
+                );
+            }
+            Some(false) => {
+                obj.remove("logprobs");
+            }
+            None => {}
+        }
+    }
+    Ok(body)
+}
+
 // OpenAI-compatible API types
 #[derive(Debug, Serialize, Deserialize)]
 struct OpenAIChatResponse {
@@ -118,6 +142,8 @@ struct OpenAIChoice {
     index: u32,
     message: ChatMessage,
     finish_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    logprobs: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -318,13 +344,14 @@ impl ModelProvider for TogetherAIProvider {
 
     async fn complete(&self, request: CompletionRequest) -> AppResult<CompletionResponse> {
         let url = format!("{}/chat/completions", TOGETHER_API_BASE);
+        let body = together_request_body(&request)?;
 
         let response = self
             .client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
-            .json(&request)
+            .json(&body)
             .send()
             .await
             .map_err(|e| AppError::Provider(format!("Together AI request failed: {}", e)))?;
@@ -355,7 +382,10 @@ impl ModelProvider for TogetherAIProvider {
                     index: choice.index,
                     message: choice.message,
                     finish_reason: choice.finish_reason,
-                    logprobs: None, // TogetherAI does not support logprobs
+                    logprobs: choice
+                        .logprobs
+                        .as_ref()
+                        .and_then(super::Logprobs::from_wire),
                 })
                 .collect(),
             usage: together_response.usage,
@@ -468,6 +498,11 @@ impl ModelProvider for TogetherAIProvider {
 
     fn supports_transcription(&self) -> bool {
         true
+    }
+
+    /// Together returns per-token logprobs when `logprobs` is set.
+    fn supports_feature(&self, feature: &str) -> bool {
+        feature == "logprobs"
     }
 
     fn supports_speech(&self) -> bool {
@@ -801,6 +836,35 @@ impl ModelProvider for TogetherAIProvider {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn together_body_translates_logprobs_to_integer() {
+        let mut req = CompletionRequest::new("m", vec![]);
+        req.logprobs = Some(true);
+        req.top_logprobs = Some(5);
+        let body = together_request_body(&req).unwrap();
+        assert_eq!(body["logprobs"], serde_json::json!(5));
+        assert!(body.get("top_logprobs").is_none());
+
+        req.top_logprobs = Some(50);
+        assert_eq!(
+            together_request_body(&req).unwrap()["logprobs"],
+            serde_json::json!(20)
+        );
+
+        req.logprobs = Some(false);
+        req.top_logprobs = None;
+        assert!(together_request_body(&req)
+            .unwrap()
+            .get("logprobs")
+            .is_none());
+
+        let plain = CompletionRequest::new("m", vec![]);
+        let body = together_request_body(&plain).unwrap();
+        assert!(body.get("logprobs").is_none());
+        assert_eq!(body["model"], "m");
+    }
+
     use super::*;
 
     #[test]

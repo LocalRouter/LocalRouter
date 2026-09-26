@@ -24,10 +24,11 @@ use lr_providers::factory::{
     GPT4AllProviderFactory, GeminiProviderFactory, GitHubCopilotProviderFactory,
     GitHubModelsProviderFactory, GroqProviderFactory, HuggingFaceProviderFactory,
     JanProviderFactory, KlusterAIProviderFactory, LMStudioProviderFactory, LlamaCppProviderFactory,
-    Llm7ProviderFactory, LocalAIProviderFactory, MistralProviderFactory, NvidiaNimProviderFactory,
-    OllamaProviderFactory, OpenAICodexProviderFactory, OpenAICompatibleProviderFactory,
-    OpenAIProviderFactory, OpenCodeGoProviderFactory, OpenCodeZenProviderFactory,
-    OpenRouterProviderFactory, PerplexityProviderFactory, TogetherAIProviderFactory,
+    Llm7ProviderFactory, LlmGatewayProviderFactory, LocalAIProviderFactory, MistralProviderFactory,
+    NvidiaNimProviderFactory, OllamaProviderFactory, OpenAICodexProviderFactory,
+    OpenAICompatibleProviderFactory, OpenAIProviderFactory, OpenCodeGoProviderFactory,
+    OpenCodeZenProviderFactory, OpenRouterProviderFactory, PerplexityProviderFactory,
+    SystemOneProviderFactory, TogetherAIProviderFactory, VercelAiGatewayProviderFactory,
     XAIProviderFactory, ZhipuProviderFactory,
 };
 use lr_providers::registry::ProviderRegistry;
@@ -328,6 +329,51 @@ async fn run_gui_mode() -> anyhow::Result<()> {
     provider_registry.register_factory(Arc::new(DigitalOceanProviderFactory));
     provider_registry.register_factory(Arc::new(OpenCodeZenProviderFactory));
     provider_registry.register_factory(Arc::new(OpenCodeGoProviderFactory));
+    provider_registry.register_factory(Arc::new(LlmGatewayProviderFactory));
+    provider_registry.register_factory(Arc::new(VercelAiGatewayProviderFactory));
+    // System One decision providers for servers the user runs or hosts
+    for factory in SystemOneProviderFactory::all() {
+        provider_registry.register_factory(Arc::new(factory));
+    }
+    // Local Embedded providers: LocalRouter launches the engine itself (found on PATH)
+    let engine_supervisor = lr_engines::Supervisor::new(
+        &lr_utils::paths::config_dir().unwrap_or_else(|_| std::env::temp_dir()),
+    );
+    engine_supervisor.spawn_idle_reaper(std::time::Duration::from_secs(30));
+    provider_registry.register_factory(Arc::new(
+        lr_providers::embedded::LayaEmbeddedProviderFactory::new(engine_supervisor.clone()),
+    ));
+    provider_registry.register_factory(Arc::new(
+        lr_providers::embedded::KevEmbeddedProviderFactory::new(engine_supervisor.clone()),
+    ));
+    provider_registry.register_factory(Arc::new(
+        lr_providers::embedded::VonEmbeddedProviderFactory::new(engine_supervisor.clone()),
+    ));
+    provider_registry.register_factory(Arc::new(
+        lr_providers::embedded::DeciderEmbeddedProviderFactory::new(engine_supervisor.clone()),
+    ));
+    // Models downloaded or imported in-app, served by llama.cpp.
+    let local_models_library = Arc::new(lr_local_models::Library::open(
+        lr_local_models::default_storage_dir(),
+    ));
+    provider_registry.register_factory(Arc::new(
+        lr_providers::embedded::LlamaCppEmbeddedProviderFactory::new(
+            local_models_library.clone(),
+            engine_supervisor.clone(),
+        ),
+    ));
+    provider_registry.register_factory(Arc::new(
+        lr_providers::embedded::SdCppEmbeddedProviderFactory::new(engine_supervisor.clone()),
+    ));
+    // Hugging Face account (keychain), shared by downloads and passed to
+    // Local Embedded engines as HF_TOKEN.
+    let hf_hub = lr_local_models::HubClient::default();
+    let hf_credentials =
+        ui::commands_local_models::hf_credentials(keychain.clone(), hf_hub.clone());
+    {
+        let credentials = hf_credentials.clone();
+        lr_providers::embedded::set_hf_token_source(Arc::new(move || credentials.token()));
+    }
     // Subscription providers (OAuth-based)
     provider_registry.register_factory(Arc::new(GitHubCopilotProviderFactory));
     provider_registry.register_factory(Arc::new(OpenAICodexProviderFactory));
@@ -403,6 +449,16 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             config::ProviderType::OpenCodeZen => "opencode_zen",
             config::ProviderType::OpenCodeGo => "opencode_go",
             config::ProviderType::ChatGPTPlus => "openai-chatgpt-plus",
+            config::ProviderType::TypeSafe => "typesafe",
+            config::ProviderType::Laya => "laya",
+            config::ProviderType::Kev => "kev",
+            config::ProviderType::SystemOneCompatible => "systemone_compatible",
+            config::ProviderType::Von => "von",
+            config::ProviderType::Decider => "decider",
+            config::ProviderType::LlamaCppEmbedded => "llamacpp_embedded",
+            config::ProviderType::SdCppEmbedded => "sdcpp_embedded",
+            config::ProviderType::LlmGateway => "llmgateway",
+            config::ProviderType::VercelAiGateway => "vercel_ai_gateway",
             config::ProviderType::Custom => "openai_compatible",
         };
 
@@ -681,6 +737,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
         svc.sync().await;
     }
 
+    let exit_supervisor = engine_supervisor.clone();
     tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -739,6 +796,44 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             app.manage(mcp_oauth_browser_manager.clone());
             app.manage(oauth_flow_manager.clone());
             app.manage(provider_registry.clone());
+            app.manage(engine_supervisor.clone());
+            app.manage(local_models_library.clone());
+            // Downloads change which models a Local Embedded provider serves:
+            // refresh the cached model lists so open pickers update.
+            {
+                let registry = provider_registry.clone();
+                let handle = app.handle().clone();
+                lr_providers::embedded::set_models_changed_hook(Arc::new(move |provider_type| {
+                    ui::commands_providers::notify_provider_models_changed(
+                        registry.clone(),
+                        handle.clone(),
+                        provider_type,
+                    );
+                }));
+                let registry = provider_registry.clone();
+                let handle = app.handle().clone();
+                app.listen(
+                    ui::commands_local_models::EVENT_LIBRARY_CHANGED,
+                    move |_event| {
+                        ui::commands_providers::notify_provider_models_changed(
+                            registry.clone(),
+                            handle.clone(),
+                            lr_providers::embedded::llamacpp::PROVIDER_TYPE,
+                        );
+                    },
+                );
+            }
+            let local_models = ui::commands_local_models::LocalModels::new(
+                local_models_library.clone(),
+                hf_credentials.clone(),
+                hf_hub.clone(),
+                Arc::new(ui::commands_local_models::TauriEventSink(
+                    app.handle().clone(),
+                )),
+            );
+            lr_providers::embedded::set_image_model_backend(local_models.image_backend());
+            app.manage(local_models);
+            app.manage(Arc::new(lr_engines::InstallRunner::new()));
             app.manage(server_manager.clone());
             app.manage(app_router.clone());
             if let Some(proxy) = proxy_service.clone() {
@@ -2516,6 +2611,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::list_provider_models,
             ui::commands::list_all_models,
             ui::commands::list_all_models_detailed,
+            ui::commands::list_provider_models_detailed,
             ui::commands::get_cached_models,
             ui::commands::refresh_models_incremental,
             ui::commands::get_catalog_stats,
@@ -2791,6 +2887,39 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::get_request_dedupe_config,
             ui::commands::set_request_dedupe_enabled,
             // RouteLLM intelligent routing commands
+            ui::commands_engines::engine_status,
+            ui::commands_engines::engine_install,
+            ui::commands_engines::engine_install_cancel,
+            ui::commands_engines::engine_processes,
+            ui::commands_engines::engine_logs,
+            ui::commands_engines::engine_stop,
+            ui::commands_local_models::local_models_search,
+            ui::commands_local_models::local_models_repo,
+            ui::commands_local_models::local_models_inspect_remote,
+            ui::commands_local_models::local_models_hardware,
+            ui::commands_local_models::local_models_download_start,
+            ui::commands_local_models::local_models_download_pause,
+            ui::commands_local_models::local_models_download_resume,
+            ui::commands_local_models::local_models_download_cancel,
+            ui::commands_local_models::local_models_downloads,
+            ui::commands_local_models::local_models_downloads_clear,
+            ui::commands_local_models::local_models_library,
+            ui::commands_local_models::local_models_import,
+            ui::commands_local_models::local_models_rename,
+            ui::commands_local_models::local_models_remove,
+            ui::commands_local_models::local_models_load,
+            ui::commands_local_models::local_models_unload,
+            ui::commands_local_models::local_models_states,
+            ui::commands_local_models::local_models_engine_catalog,
+            ui::commands_local_models::local_models_engine_download,
+            ui::commands_local_models::local_models_engine_download_cancel,
+            ui::commands_local_models::local_models_engine_remove,
+            ui::commands_local_models::local_models_hf_account,
+            ui::commands_local_models::local_models_hf_set_token,
+            ui::commands_local_models::local_models_hf_sign_out,
+            ui::commands_local_models::local_models_hf_sign_in,
+            ui::commands_local_models::local_models_hf_sign_in_poll,
+            ui::commands_local_models::local_models_hf_sign_in_cancel,
             ui::commands_routellm::routellm_get_status,
             ui::commands_routellm::routellm_test_prediction,
             ui::commands_routellm::routellm_unload,
@@ -2922,8 +3051,15 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                 tracing::info!("Window close intercepted - app minimized to system tray");
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(move |_app, event| {
+            if let tauri::RunEvent::Exit = event {
+                // Engines are child processes; don't leave them running. This
+                // may run inside the async runtime, so it must not block on it.
+                exit_supervisor.stop_all_blocking();
+            }
+        });
 
     Ok(())
 }

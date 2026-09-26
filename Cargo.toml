@@ -20,6 +20,8 @@ members = [
     "crates/lr-coding-agents",
     "crates/lr-compression",
     "crates/lr-json-repair",
+    "crates/lr-engines",
+    "crates/lr-local-models",
     "crates/lr-mcp-via-llm",
     "crates/lr-context",
     "crates/lr-secret-scanner",
@@ -75,6 +77,8 @@ lr-guardrails = { path = "crates/lr-guardrails", features = ["tauri-support"] }
 lr-coding-agents = { path = "crates/lr-coding-agents" }
 lr-compression = { path = "crates/lr-compression" }
 lr-json-repair = { path = "crates/lr-json-repair" }
+lr-engines = { path = "crates/lr-engines" }
+lr-local-models = { path = "crates/lr-local-models" }
 lr-mcp-via-llm = { path = "crates/lr-mcp-via-llm" }
 lr-context = { path = "crates/lr-context" }
 lr-secret-scanner = { path = "crates/lr-secret-scanner" }
@@ -105,6 +109,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
 toml = { version = "0.8", features = ["preserve_order"] }
+indexmap = { version = "2", features = ["serde"] }
 
 # Logging & tracing
 tracing = "0.1"
@@ -197,7 +202,7 @@ which = "7"
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
 
 # OpenAPI documentation
-utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }
+utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid", "indexmap"] }
 utoipa-axum = "0.2"
 utoipa-scalar = { version = "0.2", features = ["axum"] }
 

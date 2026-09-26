@@ -25,6 +25,9 @@ use lr_types::{AppError, AppResult};
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderCategory {
+    /// Engines LocalRouter runs itself (found on PATH), with models managed
+    /// in-app: downloaded from Hugging Face, loaded and unloaded on demand
+    Embedded,
     /// Generic/custom OpenAI-compatible providers
     Generic,
     /// Local providers running on user's machine
@@ -35,6 +38,20 @@ pub enum ProviderCategory {
     FirstParty,
     /// Third-party hosting platforms
     ThirdParty,
+}
+
+impl ProviderCategory {
+    /// Display order in the Add Provider dialog (Local Embedded first).
+    pub fn sort_rank(&self) -> u8 {
+        match self {
+            ProviderCategory::Embedded => 0,
+            ProviderCategory::Local => 1,
+            ProviderCategory::Subscription => 2,
+            ProviderCategory::FirstParty => 3,
+            ProviderCategory::ThirdParty => 4,
+            ProviderCategory::Generic => 5,
+        }
+    }
 }
 
 /// Where a provider gets its model list from
@@ -134,6 +151,19 @@ pub trait ProviderFactory: Send + Sync {
     /// that need no key (local models) or where the key is not self-serve.
     fn api_key_url(&self) -> Option<&str> {
         None
+    }
+
+    /// Whether this type is offered when adding a new provider. Retired types
+    /// return false: existing instances still load from config, but new ones
+    /// can't be created from the UI.
+    fn listed(&self) -> bool {
+        true
+    }
+
+    /// Position within its category in the Add Provider dialog; lower comes
+    /// first, ties sort by display name.
+    fn list_priority(&self) -> u8 {
+        100
     }
 }
 
@@ -1797,7 +1827,7 @@ impl ProviderFactory for LlamaCppProviderFactory {
     }
 
     fn display_name(&self) -> &str {
-        "llama.cpp"
+        "llama.cpp server (legacy)"
     }
 
     fn category(&self) -> ProviderCategory {
@@ -1805,7 +1835,13 @@ impl ProviderFactory for LlamaCppProviderFactory {
     }
 
     fn description(&self) -> &str {
-        "llama.cpp local inference server with OpenAI-compatible API"
+        "Connect to a llama-server you run yourself. Superseded by the Local Embedded llama.cpp provider; kept so existing setups keep working"
+    }
+
+    /// Retired from the Add Provider list in favour of the Local Embedded llama.cpp
+    /// provider; existing `llamacpp` instances still load.
+    fn listed(&self) -> bool {
+        false
     }
 
     fn default_free_tier(&self) -> FreeTierKind {
@@ -2129,11 +2165,17 @@ impl ProviderFactory for CloudflareAIProviderFactory {
             .ok_or_else(|| AppError::Config("base_url is required".to_string()))?
             .clone();
 
-        Ok(Arc::new(OpenAICompatibleProvider::new(
+        let mut provider = OpenAICompatibleProvider::new(
             "cloudflare_ai".to_string(),
-            base_url,
-            Some(api_key),
-        )))
+            base_url.clone(),
+            Some(api_key.clone()),
+        );
+        // TypeSafe Jev is a partner model served through /ai/run on the account.
+        if let Some(gateway) = crate::systemone::SystemOneGateway::cloudflare(&base_url, &api_key)?
+        {
+            provider = provider.with_systemone_gateway(gateway);
+        }
+        Ok(Arc::new(provider))
     }
 
     fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
@@ -2163,6 +2205,181 @@ impl ProviderFactory for CloudflareAIProviderFactory {
 
     fn api_key_url(&self) -> Option<&str> {
         Some("https://dash.cloudflare.com/profile/api-tokens")
+    }
+}
+
+/// Validate an optional `base_url`: HTTPS only.
+fn validate_optional_https_base_url(config: &HashMap<String, String>) -> AppResult<()> {
+    if let Some(url) = config
+        .get("base_url")
+        .map(|u| u.trim())
+        .filter(|u| !u.is_empty())
+    {
+        if !url.starts_with("https://") {
+            return Err(AppError::Config(
+                "base_url must start with https://".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn required_api_key(config: &HashMap<String, String>) -> AppResult<String> {
+    config
+        .get("api_key")
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty())
+        .ok_or_else(|| AppError::Config("api_key is required".to_string()))
+}
+
+/// Factory for LLM Gateway (llmgateway.io): an OpenAI-compatible gateway
+/// that also serves TypeSafe Jev on `/v1/systemone`.
+pub struct LlmGatewayProviderFactory;
+
+pub const LLMGATEWAY_API_BASE: &str = "https://api.llmgateway.io/v1";
+
+impl ProviderFactory for LlmGatewayProviderFactory {
+    fn provider_type(&self) -> &str {
+        "llmgateway"
+    }
+
+    fn display_name(&self) -> &str {
+        "LLM Gateway"
+    }
+
+    fn category(&self) -> ProviderCategory {
+        ProviderCategory::ThirdParty
+    }
+
+    fn description(&self) -> &str {
+        "Open-source gateway to 290+ models from one API key, including TypeSafe Jev System One decisions"
+    }
+
+    fn setup_parameters(&self) -> Vec<SetupParameter> {
+        vec![
+            SetupParameter::required(
+                "api_key",
+                ParameterType::ApiKey,
+                "LLM Gateway API key",
+                true,
+            ),
+            SetupParameter::optional(
+                "base_url",
+                ParameterType::BaseUrl,
+                "API base URL (change only for a self-hosted gateway)",
+                Some(LLMGATEWAY_API_BASE),
+                false,
+            ),
+        ]
+    }
+
+    fn create(
+        &self,
+        _instance_name: String,
+        config: HashMap<String, String>,
+    ) -> AppResult<Arc<dyn ModelProvider>> {
+        self.validate_config(&config)?;
+        let api_key = required_api_key(&config)?;
+        let base_url = config
+            .get("base_url")
+            .map(|u| u.trim().trim_end_matches('/').to_string())
+            .filter(|u| !u.is_empty())
+            .unwrap_or_else(|| LLMGATEWAY_API_BASE.to_string());
+        let gateway = crate::systemone::SystemOneGateway::llmgateway(&base_url, &api_key)?;
+        Ok(Arc::new(
+            OpenAICompatibleProvider::new("llmgateway".to_string(), base_url, Some(api_key))
+                .with_systemone_gateway(gateway),
+        ))
+    }
+
+    fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
+        required_api_key(config)?;
+        validate_optional_https_base_url(config)
+    }
+
+    fn catalog_provider_id(&self) -> Option<&str> {
+        Some("llmgateway")
+    }
+
+    fn docs_url(&self) -> Option<&str> {
+        Some("https://docs.llmgateway.io")
+    }
+
+    fn api_key_url(&self) -> Option<&str> {
+        Some("https://llmgateway.io/dashboard")
+    }
+}
+
+/// Factory for Vercel AI Gateway: an OpenAI-compatible gateway whose
+/// TypeSafe-compatible API serves Jev System One decisions.
+pub struct VercelAiGatewayProviderFactory;
+
+pub const VERCEL_AI_GATEWAY_API_BASE: &str = "https://ai-gateway.vercel.sh/v1";
+
+impl ProviderFactory for VercelAiGatewayProviderFactory {
+    fn provider_type(&self) -> &str {
+        "vercel_ai_gateway"
+    }
+
+    fn display_name(&self) -> &str {
+        "Vercel AI Gateway"
+    }
+
+    fn category(&self) -> ProviderCategory {
+        ProviderCategory::ThirdParty
+    }
+
+    fn description(&self) -> &str {
+        "Vercel's gateway to hundreds of models with one key and unified billing, including TypeSafe Jev System One decisions"
+    }
+
+    fn setup_parameters(&self) -> Vec<SetupParameter> {
+        vec![
+            SetupParameter::required("api_key", ParameterType::ApiKey, "AI Gateway API key", true),
+            SetupParameter::optional(
+                "base_url",
+                ParameterType::BaseUrl,
+                "API base URL",
+                Some(VERCEL_AI_GATEWAY_API_BASE),
+                false,
+            ),
+        ]
+    }
+
+    fn create(
+        &self,
+        _instance_name: String,
+        config: HashMap<String, String>,
+    ) -> AppResult<Arc<dyn ModelProvider>> {
+        self.validate_config(&config)?;
+        let api_key = required_api_key(&config)?;
+        let base_url = config
+            .get("base_url")
+            .map(|u| u.trim().trim_end_matches('/').to_string())
+            .filter(|u| !u.is_empty())
+            .unwrap_or_else(|| VERCEL_AI_GATEWAY_API_BASE.to_string());
+        let gateway = crate::systemone::SystemOneGateway::vercel(&base_url, &api_key)?;
+        Ok(Arc::new(
+            OpenAICompatibleProvider::new("vercel_ai_gateway".to_string(), base_url, Some(api_key))
+                .with_systemone_gateway(gateway),
+        ))
+    }
+
+    fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
+        required_api_key(config)?;
+        validate_optional_https_base_url(config)
+    }
+
+    fn catalog_provider_id(&self) -> Option<&str> {
+        Some("vercel")
+    }
+
+    fn docs_url(&self) -> Option<&str> {
+        Some("https://vercel.com/docs/ai-gateway")
+    }
+
+    fn api_key_url(&self) -> Option<&str> {
+        Some("https://vercel.com/ai-gateway")
     }
 }
 
@@ -2850,6 +3067,193 @@ impl ProviderFactory for OpenCodeGoProviderFactory {
 }
 
 // ==================== LOCAL PROVIDER DISCOVERY ====================
+
+// ==================== SYSTEM ONE (DECISION) PROVIDERS ====================
+
+/// Factory for providers that speak the System One protocol
+/// (`POST /v1/systemone`) natively: TypeSafe (hosted Jev), Laya, Kev, and any
+/// other Jev-compatible server.
+///
+/// These are deliberately not auto-discovered on first launch: ports 8000
+/// and 8080 are too common to identify reliably.
+pub struct SystemOneProviderFactory {
+    flavor: crate::systemone::SystemOneFlavor,
+}
+
+impl SystemOneProviderFactory {
+    /// TypeSafe's hosted Jev API.
+    pub const TYPESAFE: Self = Self {
+        flavor: crate::systemone::SystemOneFlavor::TypeSafe,
+    };
+    /// Any other server that implements `POST /v1/systemone`.
+    pub const GENERIC: Self = Self {
+        flavor: crate::systemone::SystemOneFlavor::Generic,
+    };
+
+    /// System One factories for servers the user runs or hosts (TypeSafe,
+    /// any compatible server). Laya and Kev are Local Embedded providers
+    /// (`crate::embedded`), which launch their engines themselves.
+    pub fn all() -> [Self; 2] {
+        [Self::TYPESAFE, Self::GENERIC]
+    }
+}
+
+impl ProviderFactory for SystemOneProviderFactory {
+    fn provider_type(&self) -> &str {
+        self.flavor.provider_type()
+    }
+
+    fn display_name(&self) -> &str {
+        self.flavor.display_name()
+    }
+
+    fn category(&self) -> ProviderCategory {
+        use crate::systemone::SystemOneFlavor::*;
+        match self.flavor {
+            TypeSafe => ProviderCategory::FirstParty,
+            Laya | Kev => ProviderCategory::Local,
+            Generic => ProviderCategory::Generic,
+        }
+    }
+
+    fn description(&self) -> &str {
+        use crate::systemone::SystemOneFlavor::*;
+        match self.flavor {
+            TypeSafe => "TypeSafe's hosted Jev System One model: typed choice, score and yes/no decisions with calibrated probabilities",
+            Laya => "Convai's open Laya decision model served locally by laya-serve (pip install \"laya[serve]\")",
+            Kev => "Kev decision models (Qwen-based) served locally by kev.serve",
+            Generic => "Any server implementing TypeSafe's POST /v1/systemone protocol (OpenJev, codesoda systemone, jev-agent, LiteLLM /typesafe passthrough, ...)",
+        }
+    }
+
+    fn default_free_tier(&self) -> FreeTierKind {
+        match self.flavor {
+            crate::systemone::SystemOneFlavor::Laya | crate::systemone::SystemOneFlavor::Kev => {
+                FreeTierKind::AlwaysFreeLocal
+            }
+            _ => FreeTierKind::None,
+        }
+    }
+
+    fn setup_parameters(&self) -> Vec<SetupParameter> {
+        use crate::systemone::SystemOneFlavor::*;
+        match self.flavor {
+            TypeSafe => vec![
+                SetupParameter::required(
+                    "api_key",
+                    ParameterType::ApiKey,
+                    "TypeSafe API key",
+                    true,
+                ),
+                SetupParameter::optional(
+                    "base_url",
+                    ParameterType::BaseUrl,
+                    "TypeSafe API base URL",
+                    self.flavor.default_base_url(),
+                    false,
+                ),
+            ],
+            Laya | Kev => vec![
+                SetupParameter::optional(
+                    "base_url",
+                    ParameterType::BaseUrl,
+                    format!("{} server base URL", self.flavor.display_name()),
+                    self.flavor.default_base_url(),
+                    false,
+                ),
+                SetupParameter::optional(
+                    "api_key",
+                    ParameterType::ApiKey,
+                    format!(
+                        "API key (only if the server sets {})",
+                        if self.flavor == Laya {
+                            "LAYA_API_KEY"
+                        } else {
+                            "KEV_API_KEY"
+                        }
+                    ),
+                    None::<String>,
+                    true,
+                ),
+            ],
+            Generic => vec![
+                SetupParameter::required(
+                    "base_url",
+                    ParameterType::BaseUrl,
+                    "Server base URL (the part before /v1/systemone)",
+                    false,
+                ),
+                SetupParameter::optional(
+                    "api_key",
+                    ParameterType::ApiKey,
+                    "API key sent as a Bearer token (optional)",
+                    None::<String>,
+                    true,
+                ),
+            ],
+        }
+    }
+
+    fn create(
+        &self,
+        _instance_name: String,
+        config: HashMap<String, String>,
+    ) -> AppResult<Arc<dyn ModelProvider>> {
+        self.validate_config(&config)?;
+        Ok(Arc::new(crate::systemone::SystemOneProvider::new(
+            self.flavor,
+            config.get("base_url").cloned(),
+            config.get("api_key").cloned(),
+        )?))
+    }
+
+    fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
+        use crate::systemone::SystemOneFlavor::*;
+        let non_empty = |k: &str| config.get(k).map(|v| !v.trim().is_empty()).unwrap_or(false);
+        if self.flavor == TypeSafe && !non_empty("api_key") {
+            return Err(AppError::Config("TypeSafe requires an api_key".to_string()));
+        }
+        if self.flavor == Generic && !non_empty("base_url") {
+            return Err(AppError::Config(
+                "A System One compatible provider requires a base_url".to_string(),
+            ));
+        }
+        if let Some(url) = config.get("base_url").filter(|u| !u.trim().is_empty()) {
+            if !url.starts_with("http://") && !url.starts_with("https://") {
+                return Err(AppError::Config(
+                    "base_url must start with http:// or https://".to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn catalog_provider_id(&self) -> Option<&str> {
+        // None of these models are in models.dev; pricing comes from the provider.
+        None
+    }
+
+    fn model_list_source(&self) -> ModelListSource {
+        ModelListSource::ApiOnly
+    }
+
+    fn docs_url(&self) -> Option<&str> {
+        use crate::systemone::SystemOneFlavor::*;
+        Some(match self.flavor {
+            TypeSafe => "https://docs.typesafe.ai",
+            Laya => "https://huggingface.co/convaiinnovations/laya",
+            Kev => "https://github.com/jaredpalmer/kev",
+            Generic => "https://docs.typesafe.ai/api",
+        })
+    }
+
+    fn api_key_url(&self) -> Option<&str> {
+        match self.flavor {
+            crate::systemone::SystemOneFlavor::TypeSafe => Some("https://console.typesafe.ai/keys"),
+            _ => None,
+        }
+    }
+}
 
 /// Discovered local provider information
 #[derive(Debug, Clone, Serialize)]
@@ -3643,7 +4047,149 @@ mod tests {
             Box::new(OpenCodeGoProviderFactory),
             Box::new(GitHubCopilotProviderFactory),
             Box::new(OpenAICodexProviderFactory),
+            Box::new(SystemOneProviderFactory::TYPESAFE),
+            Box::new(SystemOneProviderFactory::GENERIC),
+            Box::new(crate::embedded::LayaEmbeddedProviderFactory::new(
+                test_supervisor(),
+            )),
+            Box::new(crate::embedded::KevEmbeddedProviderFactory::new(
+                test_supervisor(),
+            )),
+            Box::new(crate::embedded::VonEmbeddedProviderFactory::new(
+                test_supervisor(),
+            )),
+            Box::new(crate::embedded::DeciderEmbeddedProviderFactory::new(
+                test_supervisor(),
+            )),
+            Box::new(crate::embedded::LlamaCppEmbeddedProviderFactory::new(
+                std::sync::Arc::new(lr_local_models::Library::open(
+                    std::env::temp_dir().join("lr-factory-tests-models"),
+                )),
+                test_supervisor(),
+            )),
+            Box::new(crate::embedded::SdCppEmbeddedProviderFactory::new(
+                test_supervisor(),
+            )),
+            Box::new(LlmGatewayProviderFactory),
+            Box::new(VercelAiGatewayProviderFactory),
         ]
+    }
+
+    #[tokio::test]
+    async fn gateways_serve_decision_models_natively() {
+        let key = |extra: &[(&str, &str)]| {
+            let mut c: HashMap<String, String> = [("api_key", "k")]
+                .iter()
+                .chain(extra)
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            c.retain(|_, v| !v.is_empty());
+            c
+        };
+        for (factory, config) in [
+            (
+                Box::new(LlmGatewayProviderFactory) as Box<dyn ProviderFactory>,
+                key(&[]),
+            ),
+            (Box::new(VercelAiGatewayProviderFactory), key(&[])),
+            (
+                Box::new(CloudflareAIProviderFactory),
+                key(&[(
+                    "base_url",
+                    "https://api.cloudflare.com/client/v4/accounts/abc123/ai/v1",
+                )]),
+            ),
+        ] {
+            let p = factory.create("x".into(), config).unwrap();
+            assert!(p.supports_systemone(), "{}", factory.provider_type());
+            assert!(p.supports_chat());
+        }
+        // Cloudflare's default decision model needs no listing.
+        let cf = CloudflareAIProviderFactory
+            .create(
+                "cf".into(),
+                key(&[(
+                    "base_url",
+                    "https://api.cloudflare.com/client/v4/accounts/abc123/ai/v1",
+                )]),
+            )
+            .unwrap();
+        assert!(cf.supports_systemone_model("typesafe/jev").await);
+        assert!(
+            !cf.supports_systemone_model("@cf/meta/llama-3.1-8b-instruct")
+                .await
+        );
+        // A base URL without an account id keeps chat working.
+        let other = CloudflareAIProviderFactory
+            .create("cf".into(), key(&[("base_url", "https://example.com/v1")]))
+            .unwrap();
+        assert!(!other.supports_systemone());
+        assert!(LlmGatewayProviderFactory
+            .validate_config(&key(&[("base_url", "http://insecure")]))
+            .is_err());
+        assert!(VercelAiGatewayProviderFactory
+            .validate_config(&HashMap::new())
+            .is_err());
+    }
+
+    fn test_supervisor() -> std::sync::Arc<lr_engines::Supervisor> {
+        lr_engines::Supervisor::new(&std::env::temp_dir().join("lr-factory-tests"))
+    }
+
+    // --- System One (decision) providers ---
+
+    #[test]
+    fn systemone_factories_metadata() {
+        let types: Vec<_> = SystemOneProviderFactory::all()
+            .iter()
+            .map(|f| f.provider_type().to_string())
+            .collect();
+        assert_eq!(types, vec!["typesafe", "systemone_compatible"]);
+        for f in SystemOneProviderFactory::all() {
+            assert!(f.catalog_provider_id().is_none());
+        }
+        assert_eq!(
+            SystemOneProviderFactory::TYPESAFE.category(),
+            ProviderCategory::FirstParty
+        );
+        assert_eq!(
+            SystemOneProviderFactory::GENERIC.category(),
+            ProviderCategory::Generic
+        );
+    }
+
+    #[test]
+    fn systemone_factories_validate_and_create() {
+        // TypeSafe needs a key.
+        assert!(SystemOneProviderFactory::TYPESAFE
+            .validate_config(&HashMap::new())
+            .is_err());
+        let mut ts = HashMap::new();
+        ts.insert("api_key".to_string(), "k".to_string());
+        let p = SystemOneProviderFactory::TYPESAFE
+            .create("ts".into(), ts)
+            .unwrap();
+        assert_eq!(p.name(), "typesafe");
+        assert!(p.supports_systemone());
+        assert!(!p.supports_chat());
+
+        // Generic needs a base URL, and it must be http(s).
+        assert!(SystemOneProviderFactory::GENERIC
+            .validate_config(&HashMap::new())
+            .is_err());
+        let mut bad = HashMap::new();
+        bad.insert("base_url".to_string(), "localhost:8080".to_string());
+        assert!(SystemOneProviderFactory::GENERIC
+            .validate_config(&bad)
+            .is_err());
+        let mut good = HashMap::new();
+        good.insert(
+            "base_url".to_string(),
+            "http://localhost:8080/v1".to_string(),
+        );
+        assert!(SystemOneProviderFactory::GENERIC
+            .create("g".into(), good)
+            .is_ok());
     }
 
     #[test]

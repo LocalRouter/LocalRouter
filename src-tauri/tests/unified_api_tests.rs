@@ -382,6 +382,8 @@ async fn test_all_api_routes_require_auth() {
         // Images
         ("POST", "/images/generations"),
         ("POST", "/v1/images/generations"),
+        ("POST", "/images/edits"),
+        ("POST", "/v1/images/edits"),
         // Audio
         ("POST", "/audio/speech"),
         ("POST", "/v1/audio/speech"),
@@ -389,6 +391,9 @@ async fn test_all_api_routes_require_auth() {
         ("POST", "/v1/audio/transcriptions"),
         ("POST", "/audio/translations"),
         ("POST", "/v1/audio/translations"),
+        // System One decisions
+        ("POST", "/systemone"),
+        ("POST", "/v1/systemone"),
         // Models
         ("GET", "/models"),
         ("GET", "/v1/models"),

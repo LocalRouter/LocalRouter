@@ -3,8 +3,11 @@ import { invoke } from "@tauri-apps/api/core"
 import { open } from "@tauri-apps/plugin-shell"
 import { isValidHttpUrl } from "@/utils/url"
 import { listenSafe } from "@/hooks/useTauriListener"
+import { EmbeddedEngineTab, isEmbeddedProviderType } from "@/components/providers/EmbeddedEngineTab"
+import { LocalModelsTab } from "@/components/providers/LocalModelsTab"
+import { EngineModelsTab } from "@/components/providers/EngineModelsTab"
 import { toast } from "sonner"
-import { CheckCircle, XCircle, AlertCircle, Plus, Loader2, RefreshCw, FlaskConical, Grid, Settings, ArrowLeft, Eye, EyeOff, Coins, Pencil, RotateCcw, Copy, Trash2, ExternalLink } from "lucide-react"
+import { CheckCircle, XCircle, AlertCircle, Plus, Loader2, RefreshCw, FlaskConical, Grid, Settings, ArrowLeft, Eye, EyeOff, Coins, Pencil, RotateCcw, Copy, Trash2, ExternalLink, Terminal, Boxes } from "lucide-react"
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import {
   Tooltip,
@@ -52,7 +55,7 @@ import { useIncrementalModels } from "@/hooks/useIncrementalModels"
 import ProviderIcon from "@/components/ProviderIcon"
 import { LlmTab } from "@/views/try-it-out/llm-tab"
 import { cn } from "@/lib/utils"
-import type { FreeTierKind, ProviderFreeTierStatus, ProviderFeatureSupport, GetProviderFeatureSupportParams } from "@/types/tauri-commands"
+import type { FreeTierKind, ProviderFreeTierStatus, ProviderFeatureSupport, GetProviderFeatureSupportParams, ListProviderModelsDetailedParams } from "@/types/tauri-commands"
 import { ModelPricingBadge } from "@/components/shared/model-pricing-badge"
 import { ProviderFeatureTable } from "@/components/shared/feature-support-matrix"
 
@@ -184,6 +187,7 @@ export function ProvidersPanel({
   // Create form state
   const [dialogPage, setDialogPage] = useState<"select" | "configure">("select")
   const [createTab, setCreateTab] = useState<"templates" | "custom">("templates")
+  const [customTypeId, setCustomTypeId] = useState<string>("openai_compatible")
   const [selectedProviderType, setSelectedProviderType] = useState<string>("")
   const [isSubmitting, setIsSubmitting] = useState(false)
 
@@ -213,14 +217,17 @@ export function ProvidersPanel({
     }
   }, [])
 
-  // Reset detail tab when a different provider is selected (not during rename)
+  // Reset detail tab when a different provider is selected (not during rename).
+  // A just-created Local Embedded provider opens on its Engine tab instead.
   const skipTabResetRef = useRef(false)
+  const nextTabRef = useRef<string | null>(null)
   useEffect(() => {
     if (skipTabResetRef.current) {
       skipTabResetRef.current = false
       return
     }
-    setDetailTab("info")
+    setDetailTab(nextTabRef.current ?? "info")
+    nextTabRef.current = null
     setFeatureSupport(null)
   }, [selectedId])
 
@@ -239,23 +246,34 @@ export function ProvidersPanel({
 
     setDetailedModelsLoading(true)
     setSelectedModelId(null)
-    invoke<DetailedModel[]>("list_all_models_detailed")
-      .then((allModels) => {
-        if (cancelled) return
-        setDetailedModels(allModels.filter(m => m.provider_instance === selectedId))
-      })
-      .catch((error) => {
-        if (cancelled) return
-        console.error("Failed to load detailed models:", error)
-        setDetailedModels([])
-      })
-      .finally(() => {
-        if (!cancelled) setDetailedModelsLoading(false)
-      })
+    // Only this provider's models: other providers never hold it up.
+    const loadModels = () =>
+      invoke<DetailedModel[]>("list_provider_models_detailed", {
+        instanceName: selectedId,
+      } satisfies ListProviderModelsDetailedParams)
+        .then((models) => {
+          if (!cancelled) setDetailedModels(models)
+        })
+        .catch((error) => {
+          if (cancelled) return
+          console.error("Failed to load detailed models:", error)
+          setDetailedModels([])
+        })
+        .finally(() => {
+          if (!cancelled) setDetailedModelsLoading(false)
+        })
+    loadModels()
+    // Downloads and refreshes change the list while the page is open.
+    const changed = listenSafe("models-changed", () => {
+      if (!cancelled) loadModels()
+    })
 
     loadFreeTierStatus(selectedId)
 
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+      changed.cleanup()
+    }
   }, [selectedId])
 
   // Load providers and initialize health checks (only on first load)
@@ -404,6 +422,7 @@ export function ProvidersPanel({
       setDialogPage("select")
       setCreateTab("templates")
       await loadProvidersOnly()
+      if (isEmbeddedProviderType(selectedProviderType)) nextTabRef.current = "engine"
       onSelect(instanceName)
       // Trigger health check for the new provider
       onRefreshHealth(instanceName)
@@ -446,7 +465,7 @@ export function ProvidersPanel({
 
   // Load config when switching to settings tab or selecting a different provider
   useEffect(() => {
-    if (detailTab === "settings" && selectedId) {
+    if ((detailTab === "settings" || detailTab === "engine" || detailTab === "models") && selectedId) {
       setConfigLoading(true)
       setVisibleFields(new Set())
       setEditName(selectedId)
@@ -555,6 +574,12 @@ export function ProvidersPanel({
                 <Tabs value={detailTab} onValueChange={setDetailTab}>
                   <TabsList>
                     <TabsTrigger value="info"><TAB_ICONS.info className={TAB_ICON_CLASS} />Info</TabsTrigger>
+                    {isEmbeddedProviderType(selectedProvider.provider_type) && (
+                      <TabsTrigger value="engine"><Terminal className={TAB_ICON_CLASS} />Engine</TabsTrigger>
+                    )}
+                    {isEmbeddedProviderType(selectedProvider.provider_type) && (
+                      <TabsTrigger value="models"><Boxes className={TAB_ICON_CLASS} />Models</TabsTrigger>
+                    )}
                     {selectedProvider.enabled && <TabsTrigger value="try-it-out"><TAB_ICONS.tryItOut className={TAB_ICON_CLASS} />Try It Out</TabsTrigger>}
                     <TabsTrigger value="compatibility"><TAB_ICONS.compatibility className={TAB_ICON_CLASS} />Compatibility</TabsTrigger>
                     <TabsTrigger value="free-tier" onClick={() => loadFreeTierStatus(selectedProvider.instance_name)}><TAB_ICONS.freeTier className={TAB_ICON_CLASS} />Free Tier</TabsTrigger>
@@ -571,6 +596,36 @@ export function ProvidersPanel({
                       hideProviderSelector
                     />
                   </TabsContent>
+                  )}
+
+                  {isEmbeddedProviderType(selectedProvider.provider_type) && (
+                    <TabsContent value="engine">
+                      <EmbeddedEngineTab
+                        key={selectedProvider.instance_name}
+                        providerType={selectedProvider.provider_type}
+                        instanceName={selectedProvider.instance_name}
+                        binaryPath={editConfig.binary_path}
+                      />
+                    </TabsContent>
+                  )}
+
+                  {isEmbeddedProviderType(selectedProvider.provider_type) && (
+                    <TabsContent value="models">
+                      {selectedProvider.provider_type === "llamacpp_embedded" ? (
+                        <LocalModelsTab
+                          key={selectedProvider.instance_name}
+                          instanceName={selectedProvider.instance_name}
+                          kvCache={editConfig.kv_cache}
+                        />
+                      ) : (
+                        <EngineModelsTab
+                          key={selectedProvider.instance_name}
+                          providerType={selectedProvider.provider_type}
+                          instanceName={selectedProvider.instance_name}
+                          enabled={selectedProvider.enabled}
+                        />
+                      )}
+                    </TabsContent>
                   )}
 
                   <TabsContent value="info">
@@ -1690,25 +1745,43 @@ export function ProvidersPanel({
               {/* Templates Tab */}
               <TabsContent value="templates" className="mt-4">
                 {(() => {
-                  // Group providers by category from backend (excluding generic for templates)
-                  const localProviders = providerTypes.filter(t => t.category === 'local')
-                  const subscriptionProviders = providerTypes.filter(t => t.category === 'subscription')
-                  const firstPartyProviders = providerTypes.filter(t => t.category === 'first_party')
-                  const thirdPartyProviders = providerTypes.filter(t => t.category === 'third_party')
+                  // Group providers by category from backend (excluding generic for templates).
+                  // Unlisted types (retired, e.g. the legacy llama.cpp server wrapper) are
+                  // hidden; their existing instances keep working.
+                  const listedTypes = providerTypes.filter(t => t.listed !== false)
+                  const embeddedProviders = listedTypes.filter(t => t.category === 'embedded')
+                  const localProviders = listedTypes.filter(t => t.category === 'local')
+                  const subscriptionProviders = listedTypes.filter(t => t.category === 'subscription')
+                  const firstPartyProviders = listedTypes.filter(t => t.category === 'first_party')
+                  const thirdPartyProviders = listedTypes.filter(t => t.category === 'third_party')
 
-                  const ProviderButton = ({ type }: { type: ProviderType }) => (
+                  const ProviderButton = ({ type }: { type: ProviderType }) => {
+                    const added = providers.filter(p => p.provider_type === type.provider_type).length
+                    // Local and Local Embedded providers use the one engine on
+                    // this machine, so they are added once.
+                    const singleInstance = type.category === 'local' || type.category === 'embedded'
+                    const blocked = singleInstance && added > 0
+                    return (
                     <button
                       key={type.provider_type}
+                      disabled={blocked}
+                      title={blocked ? "Already added" : undefined}
                       onClick={() => {
                         setSelectedProviderType(type.provider_type)
                         setDialogPage("configure")
                       }}
                       className={cn(
-                        "flex flex-col items-center gap-2 p-4 rounded-lg border-2 border-muted",
+                        "relative flex flex-col items-center gap-2 p-4 rounded-lg border-2 border-muted",
                         "hover:border-primary hover:bg-accent transition-colors",
-                        "focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+                        "focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2",
+                        blocked && "cursor-not-allowed opacity-60 hover:border-muted hover:bg-transparent"
                       )}
                     >
+                      {added > 0 && (
+                        <span className="absolute right-2 top-2 rounded-full bg-secondary px-2 py-0.5 text-[10px] font-medium text-secondary-foreground">
+                          {singleInstance || added === 1 ? "Added" : `Added ×${added}`}
+                        </span>
+                      )}
                       <ProviderIcon providerId={type.provider_type.toLowerCase()} size={40} />
                       <div className="text-center">
                         <p className="font-medium text-sm">{type.display_name}</p>
@@ -1722,7 +1795,8 @@ export function ProvidersPanel({
                         )}
                       </div>
                     </button>
-                  )
+                    )
+                  }
 
                   const ProviderSection = ({ title, description, providers }: {
                     title: string
@@ -1747,6 +1821,11 @@ export function ProvidersPanel({
 
                   return (
                     <div className="space-y-6">
+                      <ProviderSection
+                        title="Local Embedded Providers"
+                        description="LocalRouter runs the engine on your machine and manages models directly in-app: browse and download from Hugging Face, load and unload on demand. Install the engine once with your package manager."
+                        providers={embeddedProviders}
+                      />
                       <ProviderSection
                         title="Local Providers"
                         description="Connect to models running on your machine"
@@ -1775,7 +1854,11 @@ export function ProvidersPanel({
               {/* Custom Tab - Generic/OpenAI-compatible only */}
               <TabsContent value="custom" className="mt-4">
                 {(() => {
-                  const genericType = providerTypes.find(t => t.category === 'generic')
+                  const genericTypes = providerTypes.filter(t => t.category === 'generic' && t.listed !== false)
+                  const genericType =
+                    genericTypes.find(t => t.provider_type === customTypeId) ??
+                    genericTypes.find(t => t.provider_type === 'openai_compatible') ??
+                    genericTypes[0]
                   if (!genericType) {
                     return (
                       <div className="text-center py-8 text-muted-foreground">
@@ -1785,15 +1868,37 @@ export function ProvidersPanel({
                   }
                   return (
                     <div className="space-y-4">
+                      {genericTypes.length > 1 && (
+                        <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label="Custom provider kind">
+                          {genericTypes.map(t => (
+                            <button
+                              key={t.provider_type}
+                              type="button"
+                              role="radio"
+                              aria-checked={t.provider_type === genericType.provider_type}
+                              onClick={() => setCustomTypeId(t.provider_type)}
+                              className={cn(
+                                "rounded border p-2 text-left text-sm transition-colors",
+                                t.provider_type === genericType.provider_type
+                                  ? "border-primary bg-accent"
+                                  : "border-muted hover:bg-accent"
+                              )}
+                            >
+                              {t.display_name}
+                            </button>
+                          ))}
+                        </div>
+                      )}
                       <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded p-3">
                         <p className="text-sm font-medium text-blue-900 dark:text-blue-100">
-                          OpenAI-Compatible Provider
+                          {genericType.display_name}
                         </p>
                         <p className="text-xs text-blue-700 dark:text-blue-300 mt-1">
-                          Connect to any API that follows the OpenAI API format
+                          {genericType.description}
                         </p>
                       </div>
                       <ProviderForm
+                        key={genericType.provider_type}
                         mode="create"
                         providerType={genericType}
                         initialInstanceName={generateDefaultName(genericType.display_name)}

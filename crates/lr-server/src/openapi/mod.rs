@@ -39,6 +39,13 @@ use utoipa::OpenApi;
         crate::routes::audio::audio_translations,
         crate::routes::audio::audio_speech,
 
+        // Image endpoints
+        crate::routes::images::image_generations,
+        crate::routes::images::image_edits,
+
+        // System One typed decisions
+        crate::routes::systemone::systemone,
+
         // Models endpoints
         crate::routes::models::list_models,
         crate::routes::models::get_model,
@@ -65,6 +72,10 @@ use utoipa::OpenApi;
             // Request types
             crate::types::ChatCompletionRequest,
             crate::types::CompletionRequest,
+            crate::types::ImageGenerationRequest,
+            crate::types::ImageGenerationResponse,
+            crate::types::ImageData,
+            crate::routes::images::ImageEditForm,
             crate::types::EmbeddingRequest,
 
             // Response types
@@ -131,6 +142,13 @@ use utoipa::OpenApi;
             lr_providers::TranscriptionWord,
             lr_providers::TranscriptionSegment,
 
+            // System One types
+            lr_providers::SystemOneRequest,
+            lr_providers::SystemOneQuestion,
+            lr_providers::SystemOneResponse,
+            lr_providers::SystemOneAnswer,
+            lr_providers::SystemOneUsage,
+
             // Provider types (for model capabilities and metrics)
             lr_providers::ModelCapabilities,
             lr_providers::PerformanceMetrics,
@@ -167,6 +185,7 @@ use utoipa::OpenApi;
         (name = "embeddings", description = "Embeddings endpoints"),
         (name = "moderations", description = "Content moderation endpoints"),
         (name = "audio", description = "Audio endpoints (STT + TTS)"),
+        (name = "systemone", description = "System One typed decisions (choice / score / yes-no with calibrated probabilities)"),
         (name = "models", description = "Model management and information"),
         (name = "monitoring", description = "Usage tracking and monitoring"),
         (name = "mcp", description = "MCP server proxy endpoints"),
@@ -235,6 +254,20 @@ pub fn get_openapi_yaml() -> Result<String, serde_yaml::Error> {
 
 #[cfg(test)]
 mod tests {
+
+    fn components_has_systemone(spec: &utoipa::openapi::OpenApi) -> bool {
+        spec.components.as_ref().is_some_and(|c| {
+            [
+                "SystemOneRequest",
+                "SystemOneQuestion",
+                "SystemOneResponse",
+                "SystemOneAnswer",
+            ]
+            .iter()
+            .all(|name| c.schemas.contains_key(*name))
+        })
+    }
+
     use super::*;
 
     #[test]
@@ -265,6 +298,8 @@ mod tests {
         assert!(spec.paths.paths.contains_key("/v1/audio/transcriptions"));
         assert!(spec.paths.paths.contains_key("/v1/audio/translations"));
         assert!(spec.paths.paths.contains_key("/v1/audio/speech"));
+        assert!(spec.paths.paths.contains_key("/v1/systemone"));
+        assert!(components_has_systemone(&spec));
         assert!(!spec.paths.paths.contains_key("/mcp/{server_id}"));
         assert!(!spec.paths.paths.contains_key("/mcp/{server_id}/stream"));
         assert!(spec.paths.paths.contains_key("/health"));

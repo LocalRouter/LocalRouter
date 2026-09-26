@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react"
 // DEPRECATED: Route unused - Strategy mode hidden
-import { RefreshCw, Users, /* Route, */ Zap, Settings2, ChevronDown, ChevronRight, MessageSquare, ImageIcon, Hash, Volume2, Mic, Loader2, ChevronsUpDown, Check, Search, AlertTriangle } from "lucide-react"
+import { RefreshCw, Users, /* Route, */ Zap, Settings2, ChevronDown, ChevronRight, MessageSquare, ImageIcon, Hash, Volume2, Mic, Scale, Loader2, ChevronsUpDown, Check, Search, AlertTriangle } from "lucide-react"
 import { invoke } from "@tauri-apps/api/core"
 import { useIncrementalModels } from "@/hooks/useIncrementalModels"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -33,6 +33,30 @@ import { ImagesPanel } from "./images-panel"
 import { EmbeddingsPanel } from "./embeddings-panel"
 import { SpeechPanel } from "./speech-panel"
 import { TranscribePanel } from "./transcribe-panel"
+import { SystemOnePanel } from "./systemone-panel"
+import type {
+  ApiPathSupport,
+  GetApiPathSupportParams,
+  GetProviderFeatureSupportParams,
+  ProviderFeatureSupport,
+  SupportLevel,
+} from "@/types/tauri-commands"
+
+/** Sections in display order; the first available one opens by default. */
+const SECTION_ORDER = ["chat", "systemone", "images", "embeddings", "speech", "transcribe"] as const
+type Section = (typeof SECTION_ORDER)[number]
+
+/** The endpoint each non-chat section calls. */
+const SECTION_ENDPOINTS: Record<Exclude<Section, "chat">, string> = {
+  systemone: "/v1/systemone",
+  images: "/v1/images/generations",
+  embeddings: "/v1/embeddings",
+  speech: "/v1/audio/speech",
+  transcribe: "/v1/audio/transcriptions",
+}
+
+const isAvailable = (level: SupportLevel | undefined) =>
+  level !== "not_supported" && level !== "not_implemented"
 
 interface ServerConfig {
   host: string
@@ -543,6 +567,68 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
     }
   }, [mode, refreshIncrementalModels, fetchModels])
 
+  // Which sections the provider behind the current selection can serve.
+  // Unknown (client mode without a resolved provider) means all.
+  const availabilityProvider =
+    mode === "direct"
+      ? selectedProvider || null
+      : providerModels.find(m => m.id === selectedModel)?.provider ?? null
+  const [sectionAvailable, setSectionAvailable] = useState<Record<Section, boolean> | null>(null)
+  // Image edits are a mode of the Images section, not a section of their own.
+  const [imageEditsAvailable, setImageEditsAvailable] = useState<boolean | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    if (!availabilityProvider) {
+      setSectionAvailable(null)
+      setImageEditsAvailable(null)
+      return
+    }
+    Promise.all([
+      invoke<ApiPathSupport>("get_api_path_support", {
+        instanceName: availabilityProvider,
+      } satisfies GetApiPathSupportParams),
+      invoke<ProviderFeatureSupport>("get_provider_feature_support", {
+        instanceName: availabilityProvider,
+      } satisfies GetProviderFeatureSupportParams),
+    ])
+      .then(([paths, features]) => {
+        if (cancelled) return
+        const endpointLevel = (path: string) =>
+          features.endpoints.find(e => e.endpoint === path)?.support
+        const available = {
+          chat:
+            isAvailable(paths.chat_completions) ||
+            isAvailable(paths.responses) ||
+            isAvailable(paths.completions),
+        } as Record<Section, boolean>
+        for (const [section, path] of Object.entries(SECTION_ENDPOINTS)) {
+          available[section as Section] = isAvailable(endpointLevel(path))
+        }
+        setSectionAvailable(available)
+        setImageEditsAvailable(isAvailable(endpointLevel("/v1/images/edits")))
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setSectionAvailable(null)
+          setImageEditsAvailable(null)
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [availabilityProvider])
+
+  // Open the first available section when the current one is not.
+  useEffect(() => {
+    if (!sectionAvailable || sectionAvailable[activeSubtab as Section] !== false) return
+    const first = SECTION_ORDER.find(s => sectionAvailable[s])
+    if (first) setActiveSubtab(first)
+  }, [sectionAvailable, activeSubtab])
+
+  const sectionDisabled = (section: Section) => sectionAvailable?.[section] === false
+  const unavailableTitle = "Not available for this provider"
+
   const getModeDescription = () => {
     switch (mode) {
       case "client":
@@ -884,23 +970,27 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
       {/* Subtabs for Chat, Images, Embeddings */}
       <Tabs value={activeSubtab} onValueChange={setActiveSubtab} className="flex flex-col flex-1 min-h-0">
         <TabsList className="w-fit">
-          <TabsTrigger value="chat" className="flex items-center gap-1">
+          <TabsTrigger value="chat" className="flex items-center gap-1" disabled={sectionDisabled("chat")} title={sectionDisabled("chat") ? unavailableTitle : undefined}>
             <MessageSquare className="h-3 w-3" />
             Chat
           </TabsTrigger>
-          <TabsTrigger value="images" className="flex items-center gap-1">
+          <TabsTrigger value="systemone" className="flex items-center gap-1" disabled={sectionDisabled("systemone")} title={sectionDisabled("systemone") ? unavailableTitle : undefined}>
+            <Scale className="h-3 w-3" />
+            System One
+          </TabsTrigger>
+          <TabsTrigger value="images" className="flex items-center gap-1" disabled={sectionDisabled("images")} title={sectionDisabled("images") ? unavailableTitle : undefined}>
             <ImageIcon className="h-3 w-3" />
             Images
           </TabsTrigger>
-          <TabsTrigger value="embeddings" className="flex items-center gap-1">
+          <TabsTrigger value="embeddings" className="flex items-center gap-1" disabled={sectionDisabled("embeddings")} title={sectionDisabled("embeddings") ? unavailableTitle : undefined}>
             <Hash className="h-3 w-3" />
             Embeddings
           </TabsTrigger>
-          <TabsTrigger value="speech" className="flex items-center gap-1">
+          <TabsTrigger value="speech" className="flex items-center gap-1" disabled={sectionDisabled("speech")} title={sectionDisabled("speech") ? unavailableTitle : undefined}>
             <Volume2 className="h-3 w-3" />
             Speech
           </TabsTrigger>
-          <TabsTrigger value="transcribe" className="flex items-center gap-1">
+          <TabsTrigger value="transcribe" className="flex items-center gap-1" disabled={sectionDisabled("transcribe")} title={sectionDisabled("transcribe") ? unavailableTitle : undefined}>
             <Mic className="h-3 w-3" />
             Transcribe
           </TabsTrigger>
@@ -928,6 +1018,7 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
             openaiClient={openaiClient}
             isReady={isReady()}
             selectedModel={getModelWithProvider()}
+            supportsEdits={imageEditsAvailable}
           />
         </TabsContent>
 
@@ -951,6 +1042,15 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
 
         <TabsContent value="transcribe" className="flex-1 min-h-0 mt-4">
           <TranscribePanel
+            key={`${mode}-${selectedClientId}-${selectedProvider}`}
+            openaiClient={openaiClient}
+            isReady={isReady()}
+            selectedModel={getModelWithProvider()}
+          />
+        </TabsContent>
+
+        <TabsContent value="systemone" className="flex-1 min-h-0 mt-4">
+          <SystemOnePanel
             key={`${mode}-${selectedClientId}-${selectedProvider}`}
             openaiClient={openaiClient}
             isReady={isReady()}

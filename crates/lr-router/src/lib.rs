@@ -20,6 +20,7 @@ use lr_types::{AppError, AppResult};
 pub mod endpoint_cache;
 pub mod free_tier;
 pub mod rate_limit;
+mod systemone;
 
 // Re-export commonly used types
 pub use endpoint_cache::EndpointCapabilityCache;
@@ -143,7 +144,9 @@ impl RouterError {
                     || msg.contains("does not support image generation")
                     || msg.contains("does not support audio transcription")
                     || msg.contains("does not support audio translation")
-                    || msg.contains("does not support text-to-speech") =>
+                    || msg.contains("does not support text-to-speech")
+                    || msg.contains("does not support system one decisions")
+                    || msg.contains("does not support chat completions") =>
             {
                 RouterError::EndpointNotSupported {
                     provider: provider.to_string(),

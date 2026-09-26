@@ -179,6 +179,7 @@ Dev ports: app/server `33625`, HTTPS inspection proxy `33626`.
 | `POST /v1/audio/transcriptions` | Speech-to-text (STT) |
 | `POST /v1/audio/translations` | Speech-to-English translation |
 | `POST /v1/audio/speech` | Text-to-speech (TTS) |
+| `POST /v1/systemone` | System One typed decisions (TypeSafe Jev wire format; native or translated onto chat) |
 | `POST /mcp/*` | MCP proxy |
 | `GET /openapi.json` | OpenAPI spec |
 | `GET /health` | Health check |
@@ -245,6 +246,16 @@ When modifying endpoints:
 Anthropic, Cerebras, Cohere, DeepInfra, Gemini, Groq, LMStudio, Mistral, Ollama, OpenAI, OpenRouter, Perplexity, TogetherAI, xAI, plus OpenAI-compatible generic
 
 **Feature adapters**: prompt_caching, json_mode, logprobs, structured_outputs
+
+**System One (decision) providers**: TypeSafe (hosted Jev), Laya, Kev, and a
+generic "System One compatible" provider, all in
+`crates/lr-providers/src/systemone/` (one `SystemOneProvider`, four factories).
+They answer only `/v1/systemone` (`supports_chat() == false`, models carry
+`Capability::Decision`). Chat providers answer `/v1/systemone` through the
+router's translation (`crates/lr-router/src/systemone.rs`): letter mode with
+token logprobs when `supports_feature("logprobs")` (OpenAI, TogetherAI,
+llama.cpp), JSON mode otherwise. `systemone.emulation: off` restricts the
+endpoint to native providers.
 
 ---
 

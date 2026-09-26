@@ -5127,8 +5127,10 @@ dependencies = [
  "lr-config",
  "lr-context",
  "lr-embeddings",
+ "lr-engines",
  "lr-guardrails",
  "lr-json-repair",
+ "lr-local-models",
  "lr-marketplace",
  "lr-mcp",
  "lr-mcp-via-llm",
@@ -5389,6 +5391,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "lr-engines"
+version = "0.0.143"
+dependencies = [
+ "axum 0.8.8",
+ "base64 0.22.1",
+ "chrono",
+ "hex",
+ "libc",
+ "lr-utils",
+ "parking_lot",
+ "rand 0.8.5",
+ "regex",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sysinfo",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+ "wiremock",
+ "zip 2.4.2",
+]
+
+[[package]]
 name = "lr-guardrails"
 version = "0.0.143"
 dependencies = [
@@ -5413,6 +5443,31 @@ dependencies = [
  "serde",
  "serde_json",
  "tracing",
+]
+
+[[package]]
+name = "lr-local-models"
+version = "0.0.143"
+dependencies = [
+ "chrono",
+ "futures",
+ "hex",
+ "lr-types",
+ "lr-utils",
+ "parking_lot",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sysinfo",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "urlencoding",
+ "uuid",
+ "wiremock",
 ]
 
 [[package]]
@@ -5609,11 +5664,14 @@ dependencies = [
  "futures-util",
  "http 1.4.0",
  "image",
+ "indexmap 2.13.0",
  "jsonschema",
  "keyring",
  "lr-api-keys",
  "lr-catalog",
  "lr-config",
+ "lr-engines",
+ "lr-local-models",
  "lr-oauth",
  "lr-types",
  "lr-utils",
@@ -5631,6 +5689,7 @@ dependencies = [
  "tracing",
  "utoipa",
  "uuid",
+ "wiremock",
 ]
 
 [[package]]
@@ -5721,6 +5780,7 @@ dependencies = [
  "dashmap",
  "futures",
  "lr-config",
+ "lr-json-repair",
  "lr-monitoring",
  "lr-providers",
  "lr-routellm",
@@ -5857,6 +5917,7 @@ dependencies = [
  "serde_json",
  "tracing",
  "which 7.0.3",
+ "winreg 0.55.0",
 ]
 
 [[package]]

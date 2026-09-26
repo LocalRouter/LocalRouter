@@ -4,6 +4,8 @@ When a client sends a request with the model set to `localrouter/auto`, the rout
 
 If RouteLLM is enabled, the classifier first determines whether a strong or weak model tier is appropriate; otherwise, the prioritized models list is used directly. The router tries each model in order until a request succeeds or all options are exhausted.
 
+`localrouter/auto` also works for System One decisions (`POST /systemone`). The router walks the same prioritized list. Native System One models answer directly, chat models answer through LocalRouter's translation layer, and models that can do neither are skipped. A decision-only model in the list is likewise skipped for chat requests.
+
 <!-- @entry routellm-classifier -->
 
 The RouteLLM classifier is a machine learning model that runs entirely on your machine — no external API calls required. It analyzes each prompt and predicts whether a strong (more capable, more expensive) or weak (faster, cheaper) model is needed.

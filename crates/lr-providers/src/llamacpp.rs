@@ -118,6 +118,10 @@ struct LlamaCppChatRequest {
     tools: Option<Vec<Tool>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<ToolChoice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    logprobs: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top_logprobs: Option<u32>,
     #[serde(default)]
     stream: bool,
 }
@@ -137,6 +141,8 @@ struct LlamaCppChoice {
     index: u32,
     message: ChatMessage,
     finish_reason: Option<String>,
+    #[serde(default)]
+    logprobs: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -175,6 +181,12 @@ struct LlamaCppDelta {
 #[async_trait]
 #[allow(dead_code)]
 impl ModelProvider for LlamaCppProvider {
+    /// llama-server returns OpenAI-format `logprobs` / `top_logprobs` on
+    /// `/v1/chat/completions`.
+    fn supports_feature(&self, feature: &str) -> bool {
+        feature == "logprobs"
+    }
+
     fn name(&self) -> &str {
         "llamacpp"
     }
@@ -294,6 +306,8 @@ impl ModelProvider for LlamaCppProvider {
             stop: request.stop.clone(),
             tools: request.tools.clone(),
             tool_choice: request.tool_choice.clone(),
+            logprobs: request.logprobs,
+            top_logprobs: request.top_logprobs,
             stream: false,
         };
 
@@ -338,7 +352,10 @@ impl ModelProvider for LlamaCppProvider {
                     index: choice.index,
                     message: choice.message,
                     finish_reason: choice.finish_reason,
-                    logprobs: None,
+                    logprobs: choice
+                        .logprobs
+                        .as_ref()
+                        .and_then(super::Logprobs::from_wire),
                 })
                 .collect(),
             usage: TokenUsage {
@@ -376,6 +393,8 @@ impl ModelProvider for LlamaCppProvider {
             stop: request.stop,
             tools: request.tools,
             tool_choice: request.tool_choice,
+            logprobs: None,
+            top_logprobs: None,
             stream: true,
         };
 

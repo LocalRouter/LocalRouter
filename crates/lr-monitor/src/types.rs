@@ -198,6 +198,8 @@ pub enum LlmProtocol {
     Openai,
     /// Anthropic Messages API (e.g. proxied Claude Code traffic).
     Anthropic,
+    /// System One decisions (`POST /v1/systemone`, TypeSafe wire format).
+    SystemOne,
 }
 
 /// Type-specific event payload. Uses serde tag for frontend dispatch.

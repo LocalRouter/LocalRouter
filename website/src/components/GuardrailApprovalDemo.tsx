@@ -22,7 +22,7 @@ const DEMO_VERDICTS: SafetyVerdict[] = [
 ]
 
 const DEMO_ACTIONS: CategoryActionRequired[] = [
-  { category: "prompt_injection", action: "ask", model_id: "llama-guard-3-8b", confidence: 0.95 },
+  { category: "prompt_injection", action: "ask", model_id: "llama-guard-3-8b", model_type: "llama_guard", confidence: 0.95 },
 ]
 
 export function GuardrailApprovalDemo() {

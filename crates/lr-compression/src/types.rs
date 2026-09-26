@@ -36,3 +36,17 @@ pub struct CompressionStatus {
     /// HuggingFace repo ID
     pub model_repo: String,
 }
+
+/// Result of compressing a batch of independent texts (for example the string
+/// values of a structured document).
+#[derive(Debug, Clone)]
+pub struct TextsCompression {
+    /// Compressed text per input, or `None` when the input was left unchanged
+    /// (shorter than the minimum word count).
+    pub outputs: Vec<Option<String>>,
+    /// Word count of all inputs.
+    pub original_tokens: usize,
+    /// Word count after compression (including any `[abridged]` notices).
+    pub compressed_tokens: usize,
+    pub duration_ms: u64,
+}

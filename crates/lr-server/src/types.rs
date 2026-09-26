@@ -890,6 +890,8 @@ impl From<&lr_providers::ModelInfo> for ModelData {
                     Capability::FunctionCalling => "function_calling",
                     Capability::Audio => "audio",
                     Capability::TextToSpeech => "text_to_speech",
+                    Capability::Decision => "decision",
+                    Capability::ImageGeneration => "image_generation",
                 }
                 .to_string()
             })

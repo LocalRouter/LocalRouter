@@ -278,6 +278,14 @@ pub struct ProviderTypeInfo {
     /// Page where the user creates or copies their API key
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key_url: Option<String>,
+    /// Whether the type is offered when adding a provider. Unlisted types
+    /// still load existing configured instances.
+    #[serde(default = "default_listed")]
+    pub listed: bool,
+}
+
+fn default_listed() -> bool {
+    true
 }
 
 /// Information about a provider instance (for listing)
@@ -345,11 +353,29 @@ impl ProviderRegistry {
             .unwrap_or(lr_config::FreeTierKind::None)
     }
 
+    /// Local and Local Embedded providers talk to the one engine on this
+    /// machine, so each type is added once. Returns the existing instance's
+    /// name when `provider_type` is such a type and already added.
+    pub fn existing_single_instance(&self, provider_type: &str) -> Option<String> {
+        let category = self.factories.read().get(provider_type)?.category();
+        if !matches!(
+            category,
+            crate::factory::ProviderCategory::Local | crate::factory::ProviderCategory::Embedded
+        ) {
+            return None;
+        }
+        self.list_providers()
+            .into_iter()
+            .find(|i| i.provider_type == provider_type)
+            .map(|i| i.instance_name)
+    }
+
     /// List all available provider types with setup parameters
     ///
     /// Used by: UI for showing available provider types
     pub fn list_provider_types(&self) -> Vec<ProviderTypeInfo> {
-        self.factories
+        let mut types: Vec<(u8, ProviderTypeInfo)> = self
+            .factories
             .read()
             .values()
             .map(|factory| {
@@ -361,7 +387,7 @@ impl ProviderRegistry {
                 } else {
                     long_text
                 };
-                ProviderTypeInfo {
+                let info = ProviderTypeInfo {
                     provider_type: factory.provider_type().to_string(),
                     display_name: factory.display_name().to_string(),
                     category: factory.category(),
@@ -373,9 +399,25 @@ impl ProviderRegistry {
                     free_tier_notes: notes,
                     docs_url: factory.docs_url().map(|s| s.to_string()),
                     api_key_url: factory.api_key_url().map(|s| s.to_string()),
-                }
+                    listed: factory.listed(),
+                };
+                (factory.list_priority(), info)
             })
-            .collect()
+            .collect();
+        // Stable order for the UI: category order, then the factory's
+        // priority, then display name.
+        types.sort_by(|(pa, a), (pb, b)| {
+            a.category
+                .sort_rank()
+                .cmp(&b.category.sort_rank())
+                .then_with(|| pa.cmp(pb))
+                .then_with(|| {
+                    a.display_name
+                        .to_lowercase()
+                        .cmp(&b.display_name.to_lowercase())
+                })
+        });
+        types.into_iter().map(|(_, info)| info).collect()
     }
 
     // ===== INSTANCE MANAGEMENT (Runtime) =====
@@ -419,7 +461,7 @@ impl ProviderRegistry {
 
         // Register with health check manager
         self.health_manager
-            .register_provider(provider.clone())
+            .register_provider(&instance_name, provider.clone())
             .await;
 
         // Store instance
@@ -536,7 +578,7 @@ impl ProviderRegistry {
 
         // Register with health check manager
         self.health_manager
-            .register_provider(provider.clone())
+            .register_provider(&instance_name, provider.clone())
             .await;
 
         // Store updated instance
@@ -577,8 +619,25 @@ impl ProviderRegistry {
     ///
     /// This operation is idempotent - removing a non-existent provider succeeds silently.
     pub fn remove_provider(&self, instance_name: &str) -> AppResult<()> {
-        if self.instances.write().remove(instance_name).is_some() {
-            info!("Removed provider instance: {}", instance_name);
+        let Some(removed) = self.instances.write().remove(instance_name) else {
+            return Ok(());
+        };
+        info!("Removed provider instance: {}", instance_name);
+        // Drop the health manager's reference too, so a provider that owns
+        // resources (child processes, loaded models) is actually released.
+        let health_manager = self.health_manager.clone();
+        let name = instance_name.to_string();
+        let provider = removed.provider;
+        let unregister = async move {
+            health_manager
+                .unregister_provider_if_same(&name, &provider)
+                .await
+        };
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn(unregister);
+            }
+            Err(_) => futures::executor::block_on(unregister),
         }
         Ok(())
     }
@@ -658,6 +717,7 @@ impl ProviderRegistry {
                     capabilities.push(crate::Capability::Embedding);
                 } else if m.modality == lr_catalog::Modality::Image || m.capabilities.image_output {
                     // Image generation model — don't add Chat
+                    capabilities.push(crate::Capability::ImageGeneration);
                 } else {
                     // Chat model (or unknown)
                     capabilities.push(crate::Capability::Chat);
@@ -944,6 +1004,7 @@ impl ProviderRegistry {
             || catalog_model.capabilities.image_output
         {
             // Image generation model — don't add Chat
+            caps.push(crate::Capability::ImageGeneration);
         } else {
             caps.push(crate::Capability::Chat);
             if catalog_model.modality == lr_catalog::Modality::Multimodal {
@@ -1148,6 +1209,119 @@ pub struct SimpleProviderConfig {
 
 #[cfg(test)]
 mod tests {
+
+    #[tokio::test]
+    async fn local_types_are_added_once() {
+        let registry = ProviderRegistry::new();
+        registry.register_factory(Arc::new(crate::factory::OllamaProviderFactory));
+        registry.register_factory(Arc::new(crate::factory::OpenAICompatibleProviderFactory));
+        assert_eq!(registry.existing_single_instance("ollama"), None);
+        registry
+            .create_provider("Ollama".into(), "ollama".into(), HashMap::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            registry.existing_single_instance("ollama").as_deref(),
+            Some("Ollama")
+        );
+        // Generic types may be added many times.
+        let mut cfg = HashMap::new();
+        cfg.insert(
+            "base_url".to_string(),
+            "http://localhost:1234/v1".to_string(),
+        );
+        registry
+            .create_provider("Custom".into(), "openai_compatible".into(), cfg)
+            .await
+            .unwrap();
+        assert_eq!(registry.existing_single_instance("openai_compatible"), None);
+        assert_eq!(registry.existing_single_instance("unknown"), None);
+    }
+
+    #[tokio::test]
+    async fn llama_cpp_leads_the_local_embedded_providers() {
+        let dir = tempfile::tempdir().unwrap();
+        let supervisor = lr_engines::Supervisor::new(dir.path());
+        let library = Arc::new(lr_local_models::Library::open(dir.path().join("models")));
+        let registry = ProviderRegistry::new();
+        registry.register_factory(Arc::new(
+            crate::embedded::DeciderEmbeddedProviderFactory::new(supervisor.clone()),
+        ));
+        registry.register_factory(Arc::new(crate::embedded::KevEmbeddedProviderFactory::new(
+            supervisor.clone(),
+        )));
+        registry.register_factory(Arc::new(
+            crate::embedded::LlamaCppEmbeddedProviderFactory::new(library, supervisor.clone()),
+        ));
+        let types: Vec<String> = registry
+            .list_provider_types()
+            .into_iter()
+            .map(|t| t.provider_type)
+            .collect();
+        assert_eq!(types, vec!["llamacpp_embedded", "decider", "kev"]);
+    }
+
+    #[tokio::test]
+    async fn provider_types_are_ordered_with_embedded_first_and_legacy_hidden() {
+        let registry = ProviderRegistry::new();
+        registry.register_factory(Arc::new(crate::factory::OpenAICompatibleProviderFactory));
+        registry.register_factory(Arc::new(crate::factory::LlamaCppProviderFactory));
+        registry.register_factory(Arc::new(crate::factory::OllamaProviderFactory));
+        for f in crate::factory::SystemOneProviderFactory::all() {
+            registry.register_factory(Arc::new(f));
+        }
+        let types = registry.list_provider_types();
+        let ranks: Vec<u8> = types.iter().map(|t| t.category.sort_rank()).collect();
+        let mut sorted = ranks.clone();
+        sorted.sort();
+        assert_eq!(ranks, sorted, "types must be grouped by category order");
+        let legacy = types
+            .iter()
+            .find(|t| t.provider_type == "llamacpp")
+            .unwrap();
+        assert!(!legacy.listed);
+        assert!(types
+            .iter()
+            .filter(|t| t.provider_type != "llamacpp")
+            .all(|t| t.listed));
+        // Deterministic across calls.
+        let again: Vec<String> = registry
+            .list_provider_types()
+            .into_iter()
+            .map(|t| t.provider_type)
+            .collect();
+        assert_eq!(
+            again,
+            types
+                .into_iter()
+                .map(|t| t.provider_type)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn removing_a_provider_releases_it() {
+        let registry = ProviderRegistry::new();
+        registry.register_factory(Arc::new(crate::factory::OllamaProviderFactory));
+        registry
+            .create_provider("o".into(), "ollama".into(), HashMap::new())
+            .await
+            .unwrap();
+        let weak = Arc::downgrade(&registry.get_provider_unchecked("o").unwrap());
+        registry.remove_provider("o").unwrap();
+        // The deferred unregister runs on the runtime.
+        for _ in 0..50 {
+            if weak.upgrade().is_none() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(
+            weak.upgrade().is_none(),
+            "removed provider is still referenced"
+        );
+    }
+
     use super::*;
     use crate::factory::OllamaProviderFactory;
 

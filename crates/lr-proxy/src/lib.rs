@@ -42,6 +42,7 @@ pub mod openai;
 pub mod passive;
 pub mod resolver;
 pub mod reverse;
+pub mod systemone;
 pub mod tap;
 pub mod tls;
 pub mod transport;
@@ -54,7 +55,13 @@ pub use manager::ProxyManager;
 /// Hosts the proxy will MITM (decrypt + inspect). Everything else is tunneled
 /// blindly. Kept deliberately narrow: only LLM API endpoints belong here, never
 /// auth/identity hosts such as `claude.ai`.
-pub const MITM_HOST_ALLOWLIST: &[&str] = &["api.anthropic.com", "api.openai.com", "chatgpt.com"];
+pub const MITM_HOST_ALLOWLIST: &[&str] = &[
+    "api.anthropic.com",
+    "api.openai.com",
+    "chatgpt.com",
+    // TypeSafe's hosted Jev (System One decisions).
+    "api.typesafe.ai",
+];
 
 /// Whether `host` (no port) should be intercepted rather than blind-tunneled.
 ///
@@ -103,6 +110,7 @@ mod tests {
         assert!(should_mitm_host("API.Anthropic.com")); // case-insensitive
         assert!(should_mitm_host("edge.api.anthropic.com")); // subdomain
                                                              // Auth / unrelated hosts must NOT be intercepted.
+        assert!(should_mitm_host("api.typesafe.ai"));
         assert!(!should_mitm_host("claude.ai"));
         assert!(!should_mitm_host("statsig.anthropic.com"));
         assert!(!should_mitm_host("example.com"));
