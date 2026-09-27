@@ -18,6 +18,7 @@ use uuid::Uuid;
 use super::helpers::{
     check_llm_access_with_state, get_enabled_client, get_enabled_client_from_manager,
 };
+use super::stream_usage::{finalize_stream, StreamTracker};
 use crate::middleware::client_auth::ClientAuthContext;
 use crate::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::state::{AppState, AuthContext};
@@ -491,6 +492,7 @@ fn legacy_to_chat_completion_request(
         n: req.n,
         stop: req.stop.clone(),
         stream: req.stream,
+        stream_options: None,
         logprobs: None,
         top_logprobs: None,
         frequency_penalty: req.frequency_penalty,
@@ -734,7 +736,7 @@ async fn build_non_streaming_response(
         generation_id: &generation_id,
         started_at,
         created_at,
-        incremental_prompt_tokens: response.usage.prompt_tokens,
+        prompt_tokens: response.usage.prompt_tokens,
         compression_tokens_saved,
         routing_metadata: routing_metadata.as_ref(),
         user: request.user.clone(),
@@ -808,6 +810,10 @@ async fn handle_streaming(
 
     // Clone model before moving provider_request
     let model = provider_request.model.clone();
+    let prompt_estimate = lr_providers::usage_estimate::prompt_tokens(
+        &provider_request.messages,
+        provider_request.tools.as_deref(),
+    );
 
     // Call router to get streaming completion. Routing metadata is
     // forwarded into the spawned stream task below so auto-routing
@@ -867,20 +873,16 @@ async fn handle_streaming(
     let created_timestamp = created_at.timestamp();
     let gen_id = generation_id.clone();
 
-    // Track token usage across stream
+    // Track what the stream produced; finalize once it ends
     use parking_lot::Mutex;
     use std::sync::Arc;
-    let content_accumulator = Arc::new(Mutex::new(String::new())); // Track completion content
-    let finish_reason = Arc::new(Mutex::new(String::from("stop")));
+    let tracker = Arc::new(Mutex::new(StreamTracker::default()));
 
-    // Use a oneshot channel to signal stream completion instead of fixed delay
+    // Resolves when the stream finishes, or when it is dropped because the
+    // client disconnected (the sender is dropped with it)
     let (completion_tx, completion_rx) = tokio::sync::oneshot::channel::<()>();
     let completion_tx = Arc::new(Mutex::new(Some(completion_tx)));
-
-    // Clone for the stream.map closure
-    let content_accumulator_map = content_accumulator.clone();
-    let finish_reason_map = finish_reason.clone();
-    let completion_tx_map = completion_tx.clone();
+    let tracker_map = tracker.clone();
 
     // Clone for tracking after stream completes
     let state_clone = state.clone();
@@ -889,77 +891,61 @@ async fn handle_streaming(
     let model_clone = model.clone();
     let created_at_clone = created_at;
     let request_user = request.user.clone();
-    let request_prompt = request.prompt.clone();
 
-    let sse_stream = stream.map(
-        move |chunk_result| -> Result<Event, std::convert::Infallible> {
-            match chunk_result {
-                Ok(provider_chunk) => {
-                    // Track content for token estimation
-                    let is_done = if let Some(choice) = provider_chunk.choices.first() {
-                        if let Some(content) = &choice.delta.content {
-                            content_accumulator_map.lock().push_str(content);
-                        }
-
-                        // Track finish reason and check if stream is done
-                        if let Some(reason) = &choice.finish_reason {
-                            *finish_reason_map.lock() = reason.clone();
-                            true
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
-                    };
-
-                    // Signal completion when stream is done
-                    if is_done {
-                        if let Some(tx) = completion_tx_map.lock().take() {
-                            let _ = tx.send(());
-                        }
-                    }
-
-                    // Convert chat completion chunk to legacy completion chunk
-                    let api_chunk = CompletionChunk {
-                        id: gen_id.clone(),
-                        object: "text_completion".to_string(),
-                        created: created_timestamp,
-                        choices: provider_chunk
-                            .choices
-                            .into_iter()
-                            .map(|choice| CompletionChunkChoice {
-                                text: choice.delta.content.unwrap_or_default(),
-                                index: choice.index,
-                                finish_reason: choice.finish_reason,
-                            })
-                            .collect(),
-                    };
-
-                    let json = serde_json::to_string(&api_chunk).unwrap_or_default();
-                    Ok(Event::default().data(json))
+    let sse_stream = stream.filter_map(move |chunk_result| {
+        std::future::ready(match chunk_result {
+            Ok(provider_chunk) => {
+                tracker_map.lock().observe(&provider_chunk);
+                if StreamTracker::is_usage_only(&provider_chunk) {
+                    return std::future::ready(None);
                 }
-                Err(e) => {
-                    tracing::error!("Error in streaming: {}", e);
-                    // Signal completion on error as well
-                    if let Some(tx) = completion_tx_map.lock().take() {
-                        let _ = tx.send(());
-                    }
-                    // Return error in SSE format with actual error message
-                    let error_response = serde_json::json!({
-                        "error": {
-                            "message": format!("Streaming error: {}", e),
-                            "type": "server_error",
-                            "code": "streaming_error"
-                        }
-                    });
-                    Ok(Event::default().data(
-                        serde_json::to_string(&error_response)
-                            .unwrap_or_else(|_| "[ERROR]".to_string()),
-                    ))
-                }
+
+                // Convert chat completion chunk to legacy completion chunk
+                let api_chunk = CompletionChunk {
+                    id: gen_id.clone(),
+                    object: "text_completion".to_string(),
+                    created: created_timestamp,
+                    choices: provider_chunk
+                        .choices
+                        .into_iter()
+                        .map(|choice| CompletionChunkChoice {
+                            text: choice.delta.content.unwrap_or_default(),
+                            index: choice.index,
+                            finish_reason: choice.finish_reason,
+                        })
+                        .collect(),
+                };
+
+                let json = serde_json::to_string(&api_chunk).unwrap_or_default();
+                Some(Ok::<Event, std::convert::Infallible>(
+                    Event::default().data(json),
+                ))
             }
+            Err(e) => {
+                tracing::error!("Error in streaming: {}", e);
+                // Return error in SSE format with actual error message
+                let error_response = serde_json::json!({
+                    "error": {
+                        "message": format!("Streaming error: {}", e),
+                        "type": "server_error",
+                        "code": "streaming_error"
+                    }
+                });
+                Some(Ok(Event::default().data(
+                    serde_json::to_string(&error_response)
+                        .unwrap_or_else(|_| "[ERROR]".to_string()),
+                )))
+            }
+        })
+    });
+    let sse_stream = sse_stream.chain(futures::stream::iter(std::iter::once(()).flat_map(
+        move |_| {
+            if let Some(tx) = completion_tx.lock().take() {
+                let _ = tx.send(());
+            }
+            None::<Result<Event, std::convert::Infallible>>
         },
-    );
+    )));
 
     // Record telemetry after the stream completes via the shared
     // finalize helper. Same output shape as chat.rs streaming and
@@ -967,63 +953,27 @@ async fn handle_streaming(
     // `complete_llm_call`, `update_llm_call_response_body`, and the
     // generation-tracker row.
     lr_types::spawn_traced(async move {
-        // Wait for stream completion signal with a timeout fallback
-        let _ = tokio::time::timeout(
-            tokio::time::Duration::from_secs(300), // 5 minute timeout for long completions
-            completion_rx,
-        )
-        .await;
-
-        let completion_content = content_accumulator.lock().clone();
-        let finish_reason_final = finish_reason.lock().clone();
-
-        // Estimate tokens (rough estimate: ~4 chars per token).
-        let prompt_tokens = estimate_prompt_tokens(&request_prompt) as u32;
-        let completion_tokens = (completion_content.len() / 4).max(1) as u32;
-
-        // Infer provider from model name (format: "provider/model" or just "model")
-        let provider = if let Some((p, _)) = model_clone.split_once('/') {
-            p.to_string()
-        } else {
-            "router".to_string()
-        };
-
-        let wire_body = super::monitor_helpers::build_streaming_response_body(
-            &gen_id_clone,
-            &model_clone,
-            &completion_content,
-            &finish_reason_final,
-            prompt_tokens as u64,
-            completion_tokens as u64,
-            created_at_clone.timestamp(),
-        );
-
-        let finalize_inputs = super::finalize::FinalizeInputs {
-            state: &state_clone,
-            auth: &auth_clone,
-            llm_event_id: &llm_event_id,
-            generation_id: &gen_id_clone,
-            started_at,
-            created_at: created_at_clone,
-            incremental_prompt_tokens: prompt_tokens,
-            compression_tokens_saved,
-            routing_metadata: routing_metadata.as_ref(),
-            user: request_user,
-            streamed: true,
-            skip_monitor_completion: false,
-        };
-        super::finalize::finalize_streaming_at_end(
-            &finalize_inputs,
-            super::finalize::StreamingFinalizeSummary {
-                provider,
-                model: model_clone,
-                prompt_tokens,
-                completion_tokens,
-                reasoning_tokens: None,
-                finish_reason: Some(finish_reason_final),
-                content_preview: completion_content,
+        // Ends normally or when the client disconnects
+        let _ = completion_rx.await;
+        let tracked = std::mem::take(&mut *tracker.lock());
+        finalize_stream(
+            super::finalize::FinalizeInputs {
+                state: &state_clone,
+                auth: &auth_clone,
+                llm_event_id: &llm_event_id,
+                generation_id: &gen_id_clone,
+                started_at,
+                created_at: created_at_clone,
+                prompt_tokens: 0, // from the stream
+                compression_tokens_saved,
+                routing_metadata: routing_metadata.as_ref(),
+                user: request_user,
+                streamed: true,
+                skip_monitor_completion: false,
             },
-            &wire_body,
+            &model_clone,
+            &tracked,
+            prompt_estimate,
         )
         .await;
     });
@@ -1053,6 +1003,10 @@ async fn handle_streaming_parallel(
     let created_at = Utc::now();
     let started_at = Instant::now();
     let model = provider_request.model.clone();
+    let prompt_estimate = lr_providers::usage_estimate::prompt_tokens(
+        &provider_request.messages,
+        provider_request.tools.as_deref(),
+    );
 
     // Start LLM streaming request immediately
     let (stream, routing_metadata) = match state
@@ -1158,7 +1112,6 @@ async fn handle_streaming_parallel(
         let state_clone = state.clone();
         let auth_clone = auth.clone();
         let request_user = request.user.clone();
-        let request_prompt = request.prompt.clone();
         let mut gate_rx = gate_rx;
         let mut stream = stream;
 
@@ -1166,30 +1119,12 @@ async fn handle_streaming_parallel(
             let mut buffer: Vec<Result<Event, std::convert::Infallible>> = Vec::new();
             let mut gate_resolved = false;
             let mut gate_state = GuardrailGate::Pending;
-            let mut content_accumulator = String::new();
-            let mut finish_reason_val = String::from("stop");
-            let mut stream_done = false;
+            let mut tracker = StreamTracker::default();
 
             let convert_chunk = |provider_chunk: lr_providers::CompletionChunk,
                                  gen_id: &str,
-                                 created_ts: i64,
-                                 content_acc: &mut String,
-                                 finish_reason: &mut String|
-             -> (Result<Event, std::convert::Infallible>, bool) {
-                let is_done = if let Some(choice) = provider_chunk.choices.first() {
-                    if let Some(content) = &choice.delta.content {
-                        content_acc.push_str(content);
-                    }
-                    if let Some(reason) = &choice.finish_reason {
-                        *finish_reason = reason.clone();
-                        true
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                };
-
+                                 created_ts: i64|
+             -> Result<Event, std::convert::Infallible> {
                 let api_chunk = CompletionChunk {
                     id: gen_id.to_string(),
                     object: "text_completion".to_string(),
@@ -1206,7 +1141,7 @@ async fn handle_streaming_parallel(
                 };
 
                 let json = serde_json::to_string(&api_chunk).unwrap_or_default();
-                (Ok(Event::default().data(json)), is_done)
+                Ok(Event::default().data(json))
             };
 
             loop {
@@ -1222,25 +1157,19 @@ async fn handle_streaming_parallel(
                     chunk = stream.next() => {
                         match chunk {
                             Some(Ok(provider_chunk)) => {
-                                let (event, is_done) = convert_chunk(
-                                    provider_chunk,
-                                    &gen_id,
-                                    created_timestamp,
-                                    &mut content_accumulator,
-                                    &mut finish_reason_val,
-                                );
-                                if is_done {
-                                    stream_done = true;
+                                // Keep reading past the finish reason: the
+                                // upstream's usage often follows it
+                                tracker.observe(&provider_chunk);
+                                if StreamTracker::is_usage_only(&provider_chunk) {
+                                    continue;
                                 }
+                                let event = convert_chunk(provider_chunk, &gen_id, created_timestamp);
                                 if gate_resolved && gate_state == GuardrailGate::Passed {
                                     if event_tx.send(event).await.is_err() {
                                         break;
                                     }
                                 } else if !gate_resolved {
                                     buffer.push(event);
-                                }
-                                if stream_done {
-                                    break;
                                 }
                             }
                             Some(Err(e)) => {
@@ -1343,51 +1272,24 @@ async fn handle_streaming_parallel(
 
             // Shared finalize at stream end — same path as
             // `handle_streaming` above.
-            let prompt_tokens = estimate_prompt_tokens(&request_prompt) as u32;
-            let completion_tokens = (content_accumulator.len() / 4).max(1) as u32;
-
-            let provider = if let Some((p, _)) = model_clone.split_once('/') {
-                p.to_string()
-            } else {
-                "router".to_string()
-            };
-
-            let wire_body = super::monitor_helpers::build_streaming_response_body(
-                &gen_id_clone,
-                &model_clone,
-                &content_accumulator,
-                &finish_reason_val,
-                prompt_tokens as u64,
-                completion_tokens as u64,
-                created_at.timestamp(),
-            );
-
-            let finalize_inputs = super::finalize::FinalizeInputs {
-                state: &state_clone,
-                auth: &auth_clone,
-                llm_event_id: &llm_event_id,
-                generation_id: &gen_id_clone,
-                started_at,
-                created_at,
-                incremental_prompt_tokens: prompt_tokens,
-                compression_tokens_saved,
-                routing_metadata: routing_metadata.as_ref(),
-                user: request_user,
-                streamed: true,
-                skip_monitor_completion: false,
-            };
-            super::finalize::finalize_streaming_at_end(
-                &finalize_inputs,
-                super::finalize::StreamingFinalizeSummary {
-                    provider,
-                    model: model_clone,
-                    prompt_tokens,
-                    completion_tokens,
-                    reasoning_tokens: None,
-                    finish_reason: Some(finish_reason_val),
-                    content_preview: content_accumulator,
+            finalize_stream(
+                super::finalize::FinalizeInputs {
+                    state: &state_clone,
+                    auth: &auth_clone,
+                    llm_event_id: &llm_event_id,
+                    generation_id: &gen_id_clone,
+                    started_at,
+                    created_at,
+                    prompt_tokens: 0, // from the stream
+                    compression_tokens_saved,
+                    routing_metadata: routing_metadata.as_ref(),
+                    user: request_user,
+                    streamed: true,
+                    skip_monitor_completion: false,
                 },
-                &wire_body,
+                &model_clone,
+                &tracker,
+                prompt_estimate,
             )
             .await;
         });
@@ -1396,19 +1298,6 @@ async fn handle_streaming_parallel(
     Ok(Sse::new(ReceiverStream::new(event_rx))
         .keep_alive(KeepAlive::default())
         .into_response())
-}
-
-/// Estimate token count from prompt (rough estimate)
-fn estimate_prompt_tokens(prompt: &PromptInput) -> u64 {
-    let text = match prompt {
-        PromptInput::Single(s) => s.as_str(),
-        PromptInput::Multiple(v) => {
-            // Rough estimate for multiple prompts: sum of all lengths
-            return v.iter().map(|s| (s.len() / 4).max(1) as u64).sum();
-        }
-    };
-
-    (text.len() / 4).max(1) as u64
 }
 
 #[cfg(test)]
@@ -1573,32 +1462,6 @@ mod tests {
         let mut request = make_request("gpt-4");
         request.presence_penalty = Some(f32::NAN);
         assert!(validate_request(&request).is_err());
-    }
-
-    // === estimate_prompt_tokens tests ===
-
-    #[test]
-    fn test_estimate_prompt_tokens_single() {
-        let prompt = PromptInput::Single("Hello, world!".to_string()); // 13 chars
-        let tokens = estimate_prompt_tokens(&prompt);
-        assert_eq!(tokens, 3); // 13/4 = 3
-    }
-
-    #[test]
-    fn test_estimate_prompt_tokens_single_short() {
-        let prompt = PromptInput::Single("Hi".to_string()); // 2 chars
-        let tokens = estimate_prompt_tokens(&prompt);
-        assert_eq!(tokens, 1); // max(2/4, 1) = 1
-    }
-
-    #[test]
-    fn test_estimate_prompt_tokens_multiple() {
-        let prompt = PromptInput::Multiple(vec![
-            "Hello, world!".to_string(), // 13 chars -> 3 tokens
-            "Test".to_string(),          // 4 chars -> 1 token
-        ]);
-        let tokens = estimate_prompt_tokens(&prompt);
-        assert_eq!(tokens, 4); // 3 + 1
     }
 
     // === convert_prompt_to_messages tests ===

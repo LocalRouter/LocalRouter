@@ -18,6 +18,8 @@ use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use std::time::Instant;
 
+pub(crate) mod stream_usage;
+
 /// Generic OpenAI-compatible provider with configurable endpoint
 pub struct OpenAICompatibleProvider {
     name: String,
@@ -27,6 +29,10 @@ pub struct OpenAICompatibleProvider {
     client: ClientWithMiddleware,
     /// System One support for gateways that also host decision models.
     systemone_gateway: Option<std::sync::Arc<crate::systemone::SystemOneGateway>>,
+    /// Provider type id of the upstream, when known. Decides whether
+    /// streaming requests ask for usage (`stream_options.include_usage`);
+    /// unknown upstreams are never asked.
+    provider_type: Option<String>,
 }
 
 /// Parse a `custom_headers` config value into a header map.
@@ -74,7 +80,15 @@ impl OpenAICompatibleProvider {
             extra_headers: HeaderMap::new(),
             client: crate::http_client::default_client(),
             systemone_gateway: None,
+            provider_type: None,
         }
+    }
+
+    /// Identify the upstream by provider type id, so streaming requests ask
+    /// for usage when that upstream is known to accept it.
+    pub fn with_provider_type(mut self, provider_type: impl Into<String>) -> Self {
+        self.provider_type = Some(provider_type.into());
+        self
     }
 
     /// Serve the gateway's decision models natively through `/v1/systemone`.
@@ -223,6 +237,13 @@ struct OpenAIStreamChunk {
     created: i64,
     model: String,
     choices: Vec<OpenAIStreamChoice>,
+    /// Upstream usage, when the server reports it (usually on the last
+    /// chunk or a usage-only chunk with empty `choices`).
+    #[serde(default)]
+    usage: Option<serde_json::Value>,
+    /// Groq-hosted endpoints report usage under `x_groq.usage`.
+    #[serde(default)]
+    x_groq: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -555,7 +576,10 @@ impl ModelProvider for OpenAICompatibleProvider {
             self.client
                 .post(format!("{}/chat/completions", self.base_url))
                 .header("Content-Type", "application/json")
-                .json(&openai_request),
+                .json(&stream_usage::streaming_body(
+                    &openai_request,
+                    self.provider_type.as_deref().unwrap_or_default(),
+                )?),
         );
 
         let response = req
@@ -635,6 +659,11 @@ impl ModelProvider for OpenAICompatibleProvider {
                                             })
                                             .collect(),
                                         extensions: None,
+                                        usage: stream_usage::chunk_usage(
+                                            openai_chunk.usage.as_ref(),
+                                            openai_chunk.x_groq.as_ref(),
+                                        ),
+                                        provider: None,
                                     }));
                                 }
                                 Err(e) => {
@@ -657,7 +686,7 @@ impl ModelProvider for OpenAICompatibleProvider {
             futures::stream::iter(chunks)
         });
 
-        Ok(Box::pin(stream))
+        Ok(stream_usage::usage_once_at_end(stream))
     }
 
     fn supports_embeddings(&self) -> bool {
@@ -987,5 +1016,37 @@ mod tests {
         );
         let headers = build_headers(&provider);
         assert!(headers.get("Authorization").is_none());
+    }
+
+    /// A generic endpoint is never asked (strict servers reject unknown fields), but usage it sends anyway is reported.
+    #[tokio::test]
+    async fn stream_reports_upstream_usage() {
+        use crate::openai_compatible::stream_usage::test_support::*;
+
+        let server = sse_server("/chat/completions", openai_stream(UsageAt::FinishChunk)).await;
+        let provider = OpenAICompatibleProvider::new("custom".to_string(), server.uri(), None);
+        let stream = provider
+            .stream_complete(stream_request("test-model"))
+            .await
+            .unwrap();
+        assert_openai_stream(&collect(stream).await);
+        assert!(!asked_for_usage(&received_body(&server).await));
+    }
+
+    /// An endpoint identified as a type known to accept
+    /// `stream_options.include_usage` is asked for usage.
+    #[tokio::test]
+    async fn stream_asks_for_usage_when_provider_type_accepts_it() {
+        use crate::openai_compatible::stream_usage::test_support::*;
+
+        let server = sse_server("/chat/completions", openai_stream(UsageAt::UsageOnlyChunk)).await;
+        let provider = OpenAICompatibleProvider::new("embedded".to_string(), server.uri(), None)
+            .with_provider_type("llamacpp_embedded");
+        let stream = provider
+            .stream_complete(stream_request("test-model"))
+            .await
+            .unwrap();
+        assert_openai_stream(&collect(stream).await);
+        assert!(asked_for_usage(&received_body(&server).await));
     }
 }

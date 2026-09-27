@@ -1742,6 +1742,78 @@ pub struct TokenUsage {
     pub completion_tokens_details: Option<CompletionTokensDetails>,
 }
 
+/// Rough token estimates (about 4 characters per token), used only when
+/// an upstream reports no usage.
+pub mod usage_estimate {
+    use super::{ChatMessage, ChatMessageContent, CompletionChunk, ContentPart, Tool};
+
+    /// Tokens charged for an image part (OpenAI's low-detail figure).
+    const IMAGE_TOKENS: u64 = 85;
+    /// Per-message framing overhead.
+    const PER_MESSAGE_TOKENS: u64 = 4;
+
+    pub fn chars_to_tokens(chars: u64) -> u64 {
+        chars.div_ceil(4)
+    }
+
+    /// The whole prompt: every message (text, image parts, tool calls and
+    /// results) plus tool definitions, as the upstream bills it.
+    pub fn prompt_tokens(messages: &[ChatMessage], tools: Option<&[Tool]>) -> u64 {
+        let mut chars: u64 = 0;
+        let mut tokens: u64 = 0;
+        for m in messages {
+            tokens += PER_MESSAGE_TOKENS;
+            match &m.content {
+                ChatMessageContent::Text(t) => chars += t.len() as u64,
+                ChatMessageContent::Parts(parts) => {
+                    for p in parts {
+                        match p {
+                            ContentPart::Text { text } => chars += text.len() as u64,
+                            ContentPart::ImageUrl { .. } => tokens += IMAGE_TOKENS,
+                        }
+                    }
+                }
+            }
+            for call in m.tool_calls.iter().flatten() {
+                chars += (call.function.name.len() + call.function.arguments.len()) as u64;
+            }
+            if let Some(r) = &m.reasoning_content {
+                chars += r.len() as u64;
+            }
+        }
+        for t in tools.unwrap_or_default() {
+            chars += t.function.name.len() as u64
+                + t.function.description.as_deref().map_or(0, str::len) as u64
+                + t.function.parameters.to_string().len() as u64;
+        }
+        tokens + chars_to_tokens(chars)
+    }
+
+    /// Generated characters in one stream chunk: text, reasoning, and tool
+    /// call names and arguments (a tool-call-only turn still has output).
+    pub fn chunk_output_chars(chunk: &CompletionChunk) -> u64 {
+        chunk
+            .choices
+            .iter()
+            .map(|c| {
+                let d = &c.delta;
+                d.content.as_deref().map_or(0, str::len) as u64
+                    + d.reasoning_content.as_deref().map_or(0, str::len) as u64
+                    + d.tool_calls
+                        .iter()
+                        .flatten()
+                        .map(|t| {
+                            t.function.as_ref().map_or(0, |f| {
+                                f.name.as_deref().map_or(0, str::len)
+                                    + f.arguments.as_deref().map_or(0, str::len)
+                            }) as u64
+                        })
+                        .sum::<u64>()
+            })
+            .sum()
+    }
+}
+
 /// Detailed breakdown of prompt token usage
 ///
 /// Used to track advanced token metrics like prompt caching.
@@ -1792,6 +1864,13 @@ pub struct CompletionChunk {
     /// Provider-specific extensions (Phase 3)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extensions: Option<std::collections::HashMap<String, serde_json::Value>>,
+    /// Token usage reported by the upstream, usually on the last chunk (or
+    /// on a usage-only chunk with no choices). Cumulative for the response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<TokenUsage>,
+    /// Provider instance that served the stream, stamped by the router.
+    #[serde(skip)]
+    pub provider: Option<String>,
 }
 
 /// Streaming chunk choice

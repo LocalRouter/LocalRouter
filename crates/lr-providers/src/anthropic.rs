@@ -12,6 +12,7 @@ use std::pin::Pin;
 use std::time::Instant;
 use tracing::{debug, info};
 
+use crate::openai_compatible::stream_usage;
 use lr_api_keys::{keychain_trait::KeychainStorage, CachedKeychain};
 use lr_types::{AppError, AppResult};
 
@@ -840,6 +841,7 @@ impl ModelProvider for AnthropicProvider {
         // Map from Anthropic content block index to OpenAI tool call index
         let block_to_tc: Arc<Mutex<std::collections::HashMap<u32, u32>>> =
             Arc::new(Mutex::new(std::collections::HashMap::new()));
+        let usage_totals = Arc::new(Mutex::new(AnthropicStreamUsage::default()));
 
         let converted_stream = stream.flat_map(move |result| {
             let model = model.clone();
@@ -847,6 +849,7 @@ impl ModelProvider for AnthropicProvider {
             let msg_id = msg_id.clone();
             let tool_call_idx = tool_call_idx.clone();
             let block_to_tc = block_to_tc.clone();
+            let usage_totals = usage_totals.clone();
 
             let chunks: Vec<AppResult<CompletionChunk>> = match result {
                 Ok(bytes) => {
@@ -880,6 +883,9 @@ impl ModelProvider for AnthropicProvider {
                                         if let Some(msg) = &event.message {
                                             if let Some(id) = &msg.id {
                                                 *msg_id.lock().unwrap() = id.clone();
+                                            }
+                                            if let Some(usage) = &msg.usage {
+                                                usage_totals.lock().unwrap().merge(usage);
                                             }
                                         }
                                     }
@@ -924,6 +930,8 @@ impl ModelProvider for AnthropicProvider {
                                                         finish_reason: None,
                                                     }],
                                                     extensions: None,
+                                                    usage: None,
+                                                    provider: None,
                                                 }));
                                             }
                                         }
@@ -947,6 +955,8 @@ impl ModelProvider for AnthropicProvider {
                                                         finish_reason: None,
                                                     }],
                                                     extensions: None,
+                                                    usage: None,
+                                                    provider: None,
                                                 }));
                                             } else if let Some(thinking) = &delta.thinking {
                                                 chunks.push(Ok(CompletionChunk {
@@ -967,6 +977,8 @@ impl ModelProvider for AnthropicProvider {
                                                         finish_reason: None,
                                                     }],
                                                     extensions: None,
+                                                    usage: None,
+                                                    provider: None,
                                                 }));
                                             } else if let Some(partial_json) = &delta.partial_json {
                                                 let tc_idx = event
@@ -1005,11 +1017,36 @@ impl ModelProvider for AnthropicProvider {
                                                         finish_reason: None,
                                                     }],
                                                     extensions: None,
+                                                    usage: None,
+                                                    provider: None,
                                                 }));
                                             }
                                         }
                                     }
                                     "message_delta" => {
+                                        let usage = event.usage.as_ref().and_then(|u| {
+                                            let mut total = usage_totals.lock().unwrap();
+                                            total.merge(u);
+                                            total.to_token_usage()
+                                        });
+                                        let stop_reason = event
+                                            .delta
+                                            .as_ref()
+                                            .and_then(|d| d.stop_reason.as_ref());
+                                        if stop_reason.is_none() {
+                                            if let Some(usage) = usage.clone() {
+                                                chunks.push(Ok(CompletionChunk {
+                                                    id: msg_id.lock().unwrap().clone(),
+                                                    object: "chat.completion.chunk".to_string(),
+                                                    created: Utc::now().timestamp(),
+                                                    model: model.clone(),
+                                                    choices: vec![],
+                                                    extensions: None,
+                                                    usage: Some(usage),
+                                                    provider: None,
+                                                }));
+                                            }
+                                        }
                                         if let Some(delta) = &event.delta {
                                             if let Some(stop_reason) = &delta.stop_reason {
                                                 let finish_reason = match stop_reason.as_str() {
@@ -1034,6 +1071,8 @@ impl ModelProvider for AnthropicProvider {
                                                         finish_reason: Some(finish_reason),
                                                     }],
                                                     extensions: None,
+                                                    usage: usage.clone(),
+                                                    provider: None,
                                                 }));
                                             }
                                         }
@@ -1061,7 +1100,7 @@ impl ModelProvider for AnthropicProvider {
             futures::stream::iter(chunks)
         });
 
-        Ok(Box::pin(converted_stream))
+        Ok(stream_usage::usage_once_at_end(converted_stream))
     }
 
     fn supports_feature(&self, feature: &str) -> bool {
@@ -1284,6 +1323,9 @@ struct AnthropicStreamEvent {
     delta: Option<AnthropicDelta>,
     #[serde(default)]
     message: Option<AnthropicStreamMessage>,
+    /// `message_delta` usage: cumulative counts for the message so far.
+    #[serde(default)]
+    usage: Option<AnthropicStreamUsage>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1300,6 +1342,63 @@ struct AnthropicStreamContentBlock {
 struct AnthropicStreamMessage {
     #[serde(default)]
     id: Option<String>,
+    /// `message_start` usage: the input side (output is a placeholder).
+    #[serde(default)]
+    usage: Option<AnthropicStreamUsage>,
+}
+
+/// Token counts from a streaming event. Every field is optional because
+/// `message_start` and `message_delta` each carry a subset (older API
+/// versions send only `output_tokens` on `message_delta`).
+#[derive(Debug, Default, Clone, Copy, Deserialize)]
+struct AnthropicStreamUsage {
+    #[serde(default)]
+    input_tokens: Option<u32>,
+    #[serde(default)]
+    output_tokens: Option<u32>,
+    #[serde(default)]
+    cache_creation_input_tokens: Option<u32>,
+    #[serde(default)]
+    cache_read_input_tokens: Option<u32>,
+}
+
+impl AnthropicStreamUsage {
+    /// Overlay the fields `newer` reports; counts are cumulative, so a
+    /// later value replaces an earlier one.
+    fn merge(&mut self, newer: &AnthropicStreamUsage) {
+        self.input_tokens = newer.input_tokens.or(self.input_tokens);
+        self.output_tokens = newer.output_tokens.or(self.output_tokens);
+        self.cache_creation_input_tokens = newer
+            .cache_creation_input_tokens
+            .or(self.cache_creation_input_tokens);
+        self.cache_read_input_tokens = newer
+            .cache_read_input_tokens
+            .or(self.cache_read_input_tokens);
+    }
+
+    /// `prompt_tokens` is the uncached input, as in non-streaming
+    /// responses; cache reads and writes are broken out in
+    /// `prompt_tokens_details`.
+    fn to_token_usage(self) -> Option<TokenUsage> {
+        if self.input_tokens.is_none() && self.output_tokens.is_none() {
+            return None;
+        }
+        let prompt_tokens = self.input_tokens.unwrap_or(0);
+        let completion_tokens = self.output_tokens.unwrap_or(0);
+        let has_cache =
+            self.cache_creation_input_tokens.is_some() || self.cache_read_input_tokens.is_some();
+        Some(TokenUsage {
+            prompt_tokens,
+            completion_tokens,
+            total_tokens: prompt_tokens.saturating_add(completion_tokens),
+            prompt_tokens_details: has_cache.then_some(super::PromptTokensDetails {
+                cached_tokens: None,
+                cache_creation_tokens: self.cache_creation_input_tokens,
+                cache_read_tokens: self.cache_read_input_tokens,
+            }),
+            completion_tokens_details: None,
+        })
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1800,5 +1899,125 @@ mod tests {
             json,
             serde_json::json!({ "type": "enabled", "budget_tokens": 2048 })
         );
+    }
+
+    /// Recorded-style Messages API stream: `message_start` carries the
+    /// input side (with cache reads/writes), `message_delta` the output.
+    const TEXT_TURN_SSE: &str = "event: message_start\n\
+data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_01\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-4-5\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":25,\"cache_creation_input_tokens\":100,\"cache_read_input_tokens\":2000,\"output_tokens\":1}}}\n\
+\n\
+event: content_block_start\n\
+data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\
+\n\
+event: ping\n\
+data: {\"type\": \"ping\"}\n\
+\n\
+event: content_block_delta\n\
+data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\
+\n\
+event: content_block_delta\n\
+data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" world\"}}\n\
+\n\
+event: content_block_stop\n\
+data: {\"type\":\"content_block_stop\",\"index\":0}\n\
+\n\
+event: message_delta\n\
+data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":15}}\n\
+\n\
+event: message_stop\n\
+data: {\"type\":\"message_stop\"}\n\
+\n";
+
+    async fn stream_chunks(body: &str) -> Vec<CompletionChunk> {
+        use crate::openai_compatible::stream_usage::test_support::*;
+
+        let server = stream_server("/messages", body.to_string(), "text/event-stream").await;
+        let provider = AnthropicProvider::with_base_url("k".to_string(), server.uri()).unwrap();
+        let stream = provider
+            .stream_complete(stream_request("claude-sonnet-4-5"))
+            .await
+            .unwrap();
+        collect(stream).await
+    }
+
+    #[tokio::test]
+    async fn stream_combines_message_start_and_message_delta_usage() {
+        use crate::openai_compatible::stream_usage::test_support::*;
+
+        let chunks = stream_chunks(TEXT_TURN_SSE).await;
+        assert_eq!(chunks.len(), 4, "2 text deltas, finish, usage");
+        assert_eq!(content(&chunks), "Hello world");
+        assert_eq!(finish_reasons(&chunks), vec!["stop"]);
+        assert!(chunks[..3].iter().all(|c| c.id == "msg_01"));
+        assert!(chunks[3].choices.is_empty());
+
+        let usage = single_trailing_usage(&chunks);
+        assert_eq!(
+            (
+                usage.prompt_tokens,
+                usage.completion_tokens,
+                usage.total_tokens
+            ),
+            (25, 15, 40)
+        );
+        let details = usage.prompt_tokens_details.unwrap();
+        assert_eq!(details.cache_read_tokens, Some(2000));
+        assert_eq!(details.cache_creation_tokens, Some(100));
+    }
+
+    /// Newer API versions repeat the full usage on `message_delta`; those
+    /// values replace `message_start`'s. A tool-call turn still reports.
+    #[tokio::test]
+    async fn stream_message_delta_usage_overrides_message_start() {
+        use crate::openai_compatible::stream_usage::test_support::*;
+
+        let sse = "event: message_start\n\
+data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_02\",\"usage\":{\"input_tokens\":30,\"output_tokens\":1}}}\n\
+\n\
+event: content_block_start\n\
+data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"get_weather\",\"input\":{}}}\n\
+\n\
+event: content_block_delta\n\
+data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"city\\\":\\\"sf\\\"}\"}}\n\
+\n\
+event: message_delta\n\
+data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":34,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"output_tokens\":42}}\n\
+\n\
+event: message_stop\n\
+data: {\"type\":\"message_stop\"}\n\
+\n";
+        let chunks = stream_chunks(sse).await;
+        assert_eq!(chunks.len(), 4, "tool start, args delta, finish, usage");
+        let start = chunks[0].choices[0].delta.tool_calls.as_ref().unwrap();
+        assert_eq!(start[0].id.as_deref(), Some("toolu_1"));
+        let args = chunks[1].choices[0].delta.tool_calls.as_ref().unwrap();
+        assert_eq!(
+            args[0].function.as_ref().unwrap().arguments.as_deref(),
+            Some("{\"city\":\"sf\"}")
+        );
+        assert_eq!(finish_reasons(&chunks), vec!["tool_calls"]);
+
+        let usage = single_trailing_usage(&chunks);
+        assert_eq!(
+            (
+                usage.prompt_tokens,
+                usage.completion_tokens,
+                usage.total_tokens
+            ),
+            (34, 42, 76)
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_without_usage_emits_no_usage_chunk() {
+        let sse = "event: content_block_delta\n\
+data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi\"}}\n\
+\n\
+event: message_delta\n\
+data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\
+\n";
+        let chunks = stream_chunks(sse).await;
+        assert_eq!(chunks.len(), 2);
+        assert!(chunks.iter().all(|c| c.usage.is_none()));
     }
 }

@@ -407,6 +407,8 @@ mod tests {
                 finish_reason: None,
             }],
             extensions: None,
+            usage: None,
+            provider: None,
         }
     }
 

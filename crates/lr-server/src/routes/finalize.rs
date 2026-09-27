@@ -115,10 +115,9 @@ pub(crate) struct FinalizeInputs<'a> {
     pub generation_id: &'a str,
     pub started_at: Instant,
     pub created_at: DateTime<Utc>,
-    /// Prompt tokens to charge for this turn (incremental for
-    /// chat-style history, full prompt tokens for single-shot
-    /// completions).
-    pub incremental_prompt_tokens: u32,
+    /// Prompt tokens the upstream processed for this turn (its reported
+    /// usage, or an estimate of the whole prompt when it reports none).
+    pub prompt_tokens: u32,
     /// Compression savings for the optional `feature_compression`
     /// metric event. `0` when compression didn't run or saved
     /// nothing.
@@ -175,7 +174,7 @@ pub(crate) async fn finalize_metrics_and_monitor(
         generation_id,
         started_at,
         created_at,
-        incremental_prompt_tokens,
+        prompt_tokens,
         compression_tokens_saved,
         routing_metadata,
         streamed,
@@ -197,7 +196,7 @@ pub(crate) async fn finalize_metrics_and_monitor(
             .record_feature_event("feature_compression", 0, cost_saved);
     }
 
-    let input_cost = (incremental_prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k;
+    let input_cost = (prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k;
     let output_cost =
         (response.usage.completion_tokens as f64 / 1000.0) * pricing.output_cost_per_1k;
     let cost = input_cost + output_cost;
@@ -216,7 +215,7 @@ pub(crate) async fn finalize_metrics_and_monitor(
             provider: &response.provider,
             model: &response.model,
             strategy_id: &strategy_id,
-            input_tokens: incremental_prompt_tokens as u64,
+            input_tokens: prompt_tokens as u64,
             output_tokens: response.usage.completion_tokens as u64,
             cost_usd: cost,
             latency_ms,
@@ -230,7 +229,7 @@ pub(crate) async fn finalize_metrics_and_monitor(
         &auth.api_key_id,
         &response.provider,
         &response.model,
-        incremental_prompt_tokens as u64,
+        prompt_tokens as u64,
         response.usage.completion_tokens as u64,
         cost,
         latency_ms,
@@ -290,7 +289,7 @@ pub(crate) async fn finalize_metrics_and_monitor(
         &response.provider,
         &response.model,
         200,
-        incremental_prompt_tokens as u64,
+        prompt_tokens as u64,
         response.usage.completion_tokens as u64,
         reasoning_tokens,
         Some(cost),
@@ -380,11 +379,11 @@ pub(crate) async fn finalize_streaming_at_end(
     let metrics = finalize_metrics_and_monitor(inputs, &synthetic).await;
 
     let tokens = crate::types::TokenUsage {
-        prompt_tokens: inputs.incremental_prompt_tokens,
+        prompt_tokens: inputs.prompt_tokens,
         completion_tokens: summary.completion_tokens,
-        total_tokens: inputs.incremental_prompt_tokens + summary.completion_tokens,
+        total_tokens: inputs.prompt_tokens + summary.completion_tokens,
         prompt_tokens_details: None,
-        completion_tokens_details: None,
+        completion_tokens_details: synthetic.usage.completion_tokens_details.clone(),
     };
     update_response_body_and_record_generation(
         inputs,
@@ -418,7 +417,7 @@ pub(crate) fn update_response_body_and_record_generation(
         generation_id,
         started_at,
         created_at,
-        incremental_prompt_tokens,
+        prompt_tokens,
         streamed,
         ..
     } = *inputs;
@@ -431,8 +430,7 @@ pub(crate) fn update_response_body_and_record_generation(
         super::monitor_helpers::update_llm_call_response_body(state, llm_event_id, wire_body);
     }
 
-    let prompt_cost =
-        (incremental_prompt_tokens as f64 / 1000.0) * metrics.pricing.input_cost_per_1k;
+    let prompt_cost = (prompt_tokens as f64 / 1000.0) * metrics.pricing.input_cost_per_1k;
     let completion_cost =
         (response.usage.completion_tokens as f64 / 1000.0) * metrics.pricing.output_cost_per_1k;
 

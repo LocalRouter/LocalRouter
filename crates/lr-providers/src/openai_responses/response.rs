@@ -61,17 +61,7 @@ pub fn response_to_completion(r: ResponseObject, provider_name: &str) -> Complet
     };
 
     let usage = match r.usage {
-        Some(u) => TokenUsage {
-            prompt_tokens: u.input_tokens,
-            completion_tokens: u.output_tokens,
-            total_tokens: if u.total_tokens > 0 {
-                u.total_tokens
-            } else {
-                u.input_tokens + u.output_tokens
-            },
-            prompt_tokens_details: None,
-            completion_tokens_details: None,
-        },
+        Some(u) => u.to_token_usage(),
         None => TokenUsage {
             prompt_tokens: 0,
             completion_tokens: 0,
@@ -132,6 +122,7 @@ mod tests {
                 output_tokens: 2,
                 total_tokens: 5,
                 output_tokens_details: None,
+                input_tokens_details: None,
             }),
         };
         let out = response_to_completion(r, "OpenAI");
@@ -208,6 +199,7 @@ mod tests {
                 output_tokens_details: Some(OutputTokensDetails {
                     reasoning_tokens: 1,
                 }),
+                input_tokens_details: None,
             }),
         };
         let out = response_to_completion(r, "OpenAI");

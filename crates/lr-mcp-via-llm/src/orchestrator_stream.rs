@@ -408,7 +408,17 @@ async fn streaming_loop(
                     }
 
                     if has_finish {
-                        // Don't forward the finish chunk yet — we need to classify tools first
+                        // Don't forward the finish chunk yet — we need to classify tools first.
+                        // Its usage still goes out, as a usage-only chunk.
+                        if chunk.usage.is_some() {
+                            let usage_only = lr_providers::CompletionChunk {
+                                choices: Vec::new(),
+                                ..chunk
+                            };
+                            if tx.send(Ok(usage_only)).await.is_err() {
+                                return Ok(()); // Client disconnected
+                            }
+                        }
                     } else {
                         // Forward non-finish chunks to the client
                         if tx.send(Ok(chunk)).await.is_err() {
@@ -1011,6 +1021,8 @@ async fn streaming_loop(
                 finish_reason,
             }],
             extensions: None,
+            usage: None,
+            provider: None,
         };
         let _ = tx.send(Ok(finish_chunk)).await;
 
@@ -1118,6 +1130,8 @@ fn build_finish_chunk_with_tools(tool_calls: &[&ToolCall], finish_reason: &str) 
             finish_reason: Some(finish_reason.to_string()),
         }],
         extensions: None,
+        usage: None,
+        provider: None,
     }
 }
 

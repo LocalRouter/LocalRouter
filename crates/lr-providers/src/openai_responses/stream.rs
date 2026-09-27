@@ -181,6 +181,8 @@ impl StreamState {
             model: self.model.clone(),
             choices: vec![],
             extensions: None,
+            usage: None,
+            provider: None,
         }
     }
 
@@ -426,25 +428,26 @@ impl StreamState {
             Err(_) => "stop".to_string(),
         };
 
-        let extensions = serde_json::from_str::<CompletedPayload>(raw)
+        let usage = serde_json::from_str::<CompletedPayload>(raw)
             .ok()
-            .and_then(|p| p.response.usage)
-            .map(|u| {
-                let mut map = std::collections::HashMap::new();
-                map.insert(
-                    "usage".to_string(),
-                    serde_json::json!({
-                        "prompt_tokens": u.input_tokens,
-                        "completion_tokens": u.output_tokens,
-                        "total_tokens": if u.total_tokens > 0 {
-                            u.total_tokens
-                        } else {
-                            u.input_tokens + u.output_tokens
-                        },
-                    }),
-                );
-                map
-            });
+            .and_then(|p| p.response.usage);
+
+        let extensions = usage.as_ref().map(|u| {
+            let mut map = std::collections::HashMap::new();
+            map.insert(
+                "usage".to_string(),
+                serde_json::json!({
+                    "prompt_tokens": u.input_tokens,
+                    "completion_tokens": u.output_tokens,
+                    "total_tokens": if u.total_tokens > 0 {
+                        u.total_tokens
+                    } else {
+                        u.input_tokens + u.output_tokens
+                    },
+                }),
+            );
+            map
+        });
 
         vec![Ok(CompletionChunk {
             choices: vec![ChunkChoice {
@@ -458,6 +461,7 @@ impl StreamState {
                 finish_reason: Some(finish_reason),
             }],
             extensions,
+            usage: usage.as_ref().map(ResponsesUsage::to_token_usage),
             ..self.base_chunk()
         })]
     }
@@ -648,5 +652,71 @@ data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\",\"response_id\":
         );
         assert_eq!(envelope["delta"].as_str(), Some("hi"));
         assert_eq!(envelope["response_id"].as_str(), Some("resp_1"));
+    }
+
+    /// `response.completed` carries the turn's usage; it is mapped onto the
+    /// finish chunk, including cached input and reasoning output.
+    #[test]
+    fn completed_usage_is_reported_on_the_finish_chunk() {
+        let sse = "event: response.created\n\
+data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_u\",\"model\":\"gpt-5.5\",\"created_at\":100}}\n\
+\n\
+event: response.output_item.added\n\
+data: {\"type\":\"response.output_item.added\",\"item_id\":\"fc_1\",\"item\":{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_1\",\"name\":\"record\"}}\n\
+\n\
+event: response.function_call_arguments.delta\n\
+data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_1\",\"delta\":\"{}\"}\n\
+\n\
+event: response.completed\n\
+data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_u\",\"output\":[{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_1\",\"name\":\"record\",\"arguments\":\"{}\"}],\"usage\":{\"input_tokens\":1200,\"input_tokens_details\":{\"cached_tokens\":1024},\"output_tokens\":87,\"output_tokens_details\":{\"reasoning_tokens\":64},\"total_tokens\":1287}}}\n\
+\n\
+";
+        let chunks: Vec<_> = collect_chunks(sse)
+            .into_iter()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(chunks.len(), 4, "role, tool call, args, finish");
+        assert!(chunks[..3].iter().all(|c| c.usage.is_none()));
+        let last = chunks.last().unwrap();
+        assert_eq!(last.choices[0].finish_reason.as_deref(), Some("tool_calls"));
+        let usage = last.usage.as_ref().expect("usage on the finish chunk");
+        assert_eq!(
+            (
+                usage.prompt_tokens,
+                usage.completion_tokens,
+                usage.total_tokens
+            ),
+            (1200, 87, 1287)
+        );
+        assert_eq!(
+            usage.prompt_tokens_details.as_ref().unwrap().cached_tokens,
+            Some(1024)
+        );
+        assert_eq!(
+            usage
+                .completion_tokens_details
+                .as_ref()
+                .unwrap()
+                .reasoning_tokens,
+            Some(64)
+        );
+        // The extension the native Responses route reads is unchanged.
+        let ext = last.extensions.as_ref().unwrap();
+        assert_eq!(ext["usage"]["prompt_tokens"], 1200);
+        assert_eq!(ext["usage"]["completion_tokens"], 87);
+    }
+
+    #[test]
+    fn completed_without_usage_reports_none() {
+        let sse = "event: response.completed\n\
+data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r\",\"output\":[]}}\n\
+\n\
+";
+        let chunks: Vec<_> = collect_chunks(sse)
+            .into_iter()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert!(chunks[0].usage.is_none());
     }
 }

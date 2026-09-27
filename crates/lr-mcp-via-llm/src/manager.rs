@@ -843,6 +843,8 @@ fn response_to_chunk(response: &lr_providers::CompletionResponse) -> lr_provider
             finish_reason: choice.and_then(|c| c.finish_reason.clone()),
         }],
         extensions: None,
+        usage: None,
+        provider: None,
     }
 }
 

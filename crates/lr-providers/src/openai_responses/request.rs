@@ -18,8 +18,9 @@
 //!   effort: Some(...) }`. When set we also request
 //!   `include: ["usage"]` so token counts come back on the stream.
 //! - `response_format: JsonSchema` → `text.format = JsonSchema`.
-//! - `tool_choice` hardcoded `"auto"` (Codex default; ChatGPT-backend
-//!   ignores other values).
+//! - `tool_choice`: the client's choice (`"auto"`, `"none"`,
+//!   `"required"`, or a specific function as `{"type": "function",
+//!   "name": ...}`), `"auto"` when unset.
 //! - Function tools always carry `strict`: the client's value, else
 //!   `false`. The Responses API treats a missing `strict` as `true`, which
 //!   would make every property required, while a Chat Completions tool
@@ -150,7 +151,7 @@ pub fn translate_completion_request(req: &CompletionRequest, store: bool) -> Res
         instructions,
         input,
         tools,
-        tool_choice: "auto".into(),
+        tool_choice: tool_choice_to_value(req.tool_choice.as_ref()),
         parallel_tool_calls: req.parallel_tool_calls.unwrap_or(true),
         reasoning,
         store,
@@ -202,6 +203,20 @@ fn chat_content_to_items(content: &ChatMessageContent, is_output: bool) -> Vec<C
                 }),
             })
             .collect(),
+    }
+}
+
+/// Map a Chat Completions `tool_choice` to the Responses API's form: mode
+/// strings pass through, a specific function becomes `{"type":
+/// "function", "name": ...}` (no nested `function` object).
+fn tool_choice_to_value(choice: Option<&crate::ToolChoice>) -> serde_json::Value {
+    match choice {
+        None => json!("auto"),
+        Some(crate::ToolChoice::Auto(mode)) => json!(mode),
+        Some(crate::ToolChoice::Specific {
+            tool_type,
+            function,
+        }) => json!({"type": tool_type, "name": function.name}),
     }
 }
 
@@ -282,7 +297,7 @@ mod tests {
         assert_eq!(out.instructions, "Be helpful.");
         assert_eq!(out.input.len(), 1);
         assert!(matches!(&out.input[0], ResponseItem::Message { role, .. } if role == "user"));
-        assert_eq!(out.tool_choice, "auto");
+        assert_eq!(out.tool_choice, serde_json::json!("auto"));
     }
 
     #[test]
@@ -428,6 +443,31 @@ mod tests {
         assert_eq!(
             out.tools[0]["parameters"]["required"],
             serde_json::json!(["a"])
+        );
+    }
+
+    #[test]
+    fn tool_choice_follows_the_client() {
+        let with = |choice: Option<crate::ToolChoice>| {
+            let mut req = base_request(vec![msg("user", "hi")]);
+            req.tool_choice = choice;
+            plain(req).tool_choice
+        };
+        assert_eq!(with(None), serde_json::json!("auto"));
+        for mode in ["auto", "none", "required"] {
+            assert_eq!(
+                with(Some(crate::ToolChoice::Auto(mode.into()))),
+                serde_json::json!(mode)
+            );
+        }
+        assert_eq!(
+            with(Some(crate::ToolChoice::Specific {
+                tool_type: "function".into(),
+                function: crate::FunctionName {
+                    name: "record".into()
+                },
+            })),
+            serde_json::json!({"type": "function", "name": "record"})
         );
     }
 

@@ -334,11 +334,14 @@ impl LlamaCppEmbeddedProvider {
                 return client.clone();
             }
         }
-        let client = Arc::new(OpenAICompatibleProvider::new(
-            PROVIDER_TYPE.to_string(),
-            format!("{}/v1", handle.base_url()),
-            Some(handle.api_key().to_string()),
-        ));
+        let client = Arc::new(
+            OpenAICompatibleProvider::new(
+                PROVIDER_TYPE.to_string(),
+                format!("{}/v1", handle.base_url()),
+                Some(handle.api_key().to_string()),
+            )
+            .with_provider_type(PROVIDER_TYPE),
+        );
         clients.insert(handle.key.clone(), (handle.port, client.clone()));
         client
     }

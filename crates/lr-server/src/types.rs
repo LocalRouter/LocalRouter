@@ -61,6 +61,10 @@ pub struct ChatCompletionRequest {
     #[schema(default = false)]
     pub stream: bool,
 
+    /// Streaming options (`include_usage` adds a final usage chunk)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_options: Option<StreamOptions>,
+
     // Log probabilities
     /// Whether to return log probabilities of the output tokens
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -152,6 +156,15 @@ pub struct ChatCompletionRequest {
     // User tracking
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
+}
+
+/// OpenAI `stream_options`
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+pub struct StreamOptions {
+    /// Send one more chunk before `[DONE]` with empty `choices` and the
+    /// request's `usage`
+    #[serde(default)]
+    pub include_usage: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
