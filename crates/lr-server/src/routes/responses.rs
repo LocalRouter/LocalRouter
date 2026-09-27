@@ -54,6 +54,7 @@ use lr_providers::{ChatMessage, Tool};
 use super::finalize::{
     finalize_metrics_and_monitor, update_response_body_and_record_generation, FinalizeInputs,
 };
+use super::stream_usage::{AbandonedStream, FinalizeOnDrop, StreamTracker};
 use lr_responses_sessions::{
     deserialize_history, serialize_history, ResponsesSession, ResponsesSessionStore,
     RetentionConfig,
@@ -286,11 +287,8 @@ pub async fn create_response(
             }
         };
 
-        let incremental_prompt_tokens = chat_req
-            .messages
-            .last()
-            .map(|msg| super::finalize::estimate_token_count(std::slice::from_ref(msg)) as u32)
-            .unwrap_or(0);
+        let prompt_estimate =
+            lr_providers::usage_estimate::prompt_tokens(&merged_messages, merged_tools.as_deref());
 
         // Consume the guard BEFORE handing off to the spawned stream:
         // we record completion ourselves at stream-end via
@@ -318,7 +316,7 @@ pub async fn create_response(
                 llm_event_id,
                 started_at,
                 created_at_dt,
-                incremental_prompt_tokens,
+                prompt_estimate,
                 compression_tokens_saved,
                 routing_metadata,
             },
@@ -373,14 +371,13 @@ pub async fn create_response(
         (completion, routing_meta)
     };
 
-    // Compute the incremental prompt-tokens the same way chat.rs does
-    // — only the last message, since history is accumulated across
-    // turns via `previous_response_id`.
-    let incremental_prompt_tokens = chat_req
-        .messages
-        .last()
-        .map(|msg| super::finalize::estimate_token_count(std::slice::from_ref(msg)) as u32)
-        .unwrap_or(completion.usage.prompt_tokens);
+    // The upstream's prompt tokens (the whole prompt, history included,
+    // which is what it bills); estimated only when it reports none
+    let prompt_tokens = if completion.usage.prompt_tokens > 0 {
+        completion.usage.prompt_tokens
+    } else {
+        super::finalize::estimate_token_count(&chat_req.messages) as u32
+    };
 
     let finalize_inputs = FinalizeInputs {
         state: &state,
@@ -389,7 +386,7 @@ pub async fn create_response(
         generation_id: &response_id,
         started_at,
         created_at: created_at_dt,
-        incremental_prompt_tokens,
+        prompt_tokens,
         compression_tokens_saved,
         routing_metadata: routing_metadata.as_ref(),
         user: None,
@@ -413,9 +410,9 @@ pub async fn create_response(
         .first()
         .and_then(|c| c.finish_reason.clone());
     let tokens = crate::types::TokenUsage {
-        prompt_tokens: incremental_prompt_tokens,
+        prompt_tokens,
         completion_tokens: completion.usage.completion_tokens,
-        total_tokens: incremental_prompt_tokens + completion.usage.completion_tokens,
+        total_tokens: prompt_tokens + completion.usage.completion_tokens,
         prompt_tokens_details: completion.usage.prompt_tokens_details.clone(),
         completion_tokens_details: completion.usage.completion_tokens_details.clone(),
     };
@@ -569,6 +566,7 @@ fn build_chat_completion_request(
         n: None,
         stop: None,
         stream: req.stream,
+        stream_options: None,
         logprobs: None,
         top_logprobs: None,
         frequency_penalty: None,
@@ -654,6 +652,7 @@ fn provider_tool_to_server(t: &lr_providers::Tool) -> ServerTool {
             name: t.function.name.clone(),
             description: t.function.description.clone(),
             parameters: t.function.parameters.clone(),
+            strict: t.function.strict,
         },
     }
 }
@@ -784,6 +783,7 @@ fn value_to_server_tool(v: &Value) -> Option<ServerTool> {
             name,
             description,
             parameters,
+            strict: obj.get("strict").and_then(Value::as_bool),
         },
     })
 }
@@ -850,7 +850,8 @@ struct StreamWrapperCtx {
     llm_event_id: String,
     started_at: Instant,
     created_at_dt: chrono::DateTime<Utc>,
-    incremental_prompt_tokens: u32,
+    /// Estimate of the whole prompt, used when the upstream reports no usage
+    prompt_estimate: u64,
     compression_tokens_saved: u64,
     routing_metadata: Option<serde_json::Value>,
 }
@@ -877,7 +878,7 @@ fn build_stream_response(
         llm_event_id,
         started_at,
         created_at_dt,
-        incremental_prompt_tokens,
+        prompt_estimate,
         compression_tokens_saved,
         routing_metadata,
     } = ctx;
@@ -887,11 +888,24 @@ fn build_stream_response(
     let mut finish_reason: Option<String> = None;
     let mut assistant_text = String::new();
     let mut tool_calls: Vec<lr_providers::ToolCall> = Vec::new();
-    let mut completion_tokens_observed: u32 = 0;
-    let mut prompt_tokens_observed: u32 = 0;
-    let mut reasoning_tokens_observed: Option<u64> = None;
-    let provider_name_observed: Option<String> = None;
     let mut model_name_observed: Option<String> = None;
+    // Usage, provider and generated characters; finalizes from what was
+    // produced so far if the client disconnects mid-stream
+    let tracker = std::sync::Arc::new(parking_lot::Mutex::new(StreamTracker::default()));
+    let mut abandoned = FinalizeOnDrop::new(
+        AbandonedStream {
+            state: state.clone(),
+            auth: auth.clone(),
+            llm_event_id: llm_event_id.clone(),
+            generation_id: response_id.clone(),
+            started_at,
+            created_at: created_at_dt,
+            compression_tokens_saved,
+            model: model.clone(),
+            prompt_estimate,
+        },
+        tracker.clone(),
+    );
     // True once we see any chunk carrying a raw Responses SSE
     // envelope — signals we're in native pass-through mode and should
     // not emit the emitter's synthesized finish frames (upstream
@@ -934,10 +948,8 @@ fn build_stream_response(
                         }),
                     };
                     yield sse_event(frame);
-                    let provider_for_err = model_name_observed
-                        .as_deref()
-                        .and_then(|m| m.split_once('/').map(|(p, _)| p.to_string()))
-                        .unwrap_or_else(|| "router".to_string());
+                    abandoned.disarm();
+                    let provider_for_err = tracker.lock().provider(&model);
                     let model_for_err = model_name_observed.clone().unwrap_or_else(|| model.clone());
                     super::monitor_helpers::complete_llm_call_error(
                         &state,
@@ -966,26 +978,7 @@ fn build_stream_response(
                     finish_reason = Some(fr.clone());
                 }
             }
-            // If the provider shipped usage inside `extensions.usage`
-            // (OpenAI / Gemini both do this on the final chunk), pick
-            // it up for accurate metrics rather than estimating.
-            if let Some(ext) = chunk.extensions.as_ref() {
-                if let Some(usage) = ext.get("usage").and_then(|v| v.as_object()) {
-                    if let Some(pt) = usage.get("prompt_tokens").and_then(|v| v.as_u64()) {
-                        prompt_tokens_observed = pt as u32;
-                    }
-                    if let Some(ct) = usage.get("completion_tokens").and_then(|v| v.as_u64()) {
-                        completion_tokens_observed = ct as u32;
-                    }
-                    if let Some(rt) = usage
-                        .get("completion_tokens_details")
-                        .and_then(|d| d.get("reasoning_tokens"))
-                        .and_then(|v| v.as_u64())
-                    {
-                        reasoning_tokens_observed = Some(rt);
-                    }
-                }
-            }
+            tracker.lock().observe(&chunk);
             // Native pass-through: if the upstream Responses API
             // emitted raw SSE envelopes (e.g. ChatGPT Plus, where the
             // translator stashes them via NATIVE_RESPONSES_SSE_EXT_KEY),
@@ -1045,24 +1038,19 @@ fn build_stream_response(
 
         // Finalize telemetry: cost, metrics, tray graph, access log,
         // `complete_llm_call`, `update_llm_call_response_body`, and
-        // the generation-tracker row. Falls back to text-length-based
-        // token estimation when the upstream stream didn't surface a
-        // `usage` object.
-        let completion_tokens = if completion_tokens_observed > 0 {
-            completion_tokens_observed
-        } else {
-            (assistant_text.len() / 4).max(1) as u32
-        };
-        let prompt_tokens = if prompt_tokens_observed > 0 {
-            prompt_tokens_observed
-        } else {
-            incremental_prompt_tokens
-        };
-        let provider_for_finalize = provider_name_observed
-            .clone()
-            .or_else(|| model.split_once('/').map(|(p, _)| p.to_string()))
-            .unwrap_or_else(|| "router".to_string());
+        // the generation-tracker row. Uses the upstream's usage, else an
+        // estimate from the whole prompt and everything generated.
+        abandoned.disarm();
+        let tracked = std::mem::take(&mut *tracker.lock());
+        let totals = tracked.totals(prompt_estimate);
+        let prompt_tokens = totals.prompt_tokens;
+        let provider_for_finalize = tracked.provider(&model);
+        // Chunks carry `provider/model`; pricing uses the bare model
         let model_for_finalize = model_name_observed.clone().unwrap_or_else(|| model.clone());
+        let model_for_finalize = model_for_finalize
+            .strip_prefix(&format!("{provider_for_finalize}/"))
+            .map(str::to_string)
+            .unwrap_or(model_for_finalize);
         // In native pass-through mode, prefer the upstream's canonical
         // `response.completed` envelope (preserves reasoning items,
         // built-in tool results) over the emitter's synthesized
@@ -1085,7 +1073,7 @@ fn build_stream_response(
             generation_id: &response_id,
             started_at,
             created_at: created_at_dt,
-            incremental_prompt_tokens: prompt_tokens,
+            prompt_tokens,
             compression_tokens_saved,
             routing_metadata: routing_metadata.as_ref(),
             user: None,
@@ -1098,8 +1086,8 @@ fn build_stream_response(
                 provider: provider_for_finalize,
                 model: model_for_finalize,
                 prompt_tokens,
-                completion_tokens,
-                reasoning_tokens: reasoning_tokens_observed,
+                completion_tokens: totals.completion_tokens,
+                reasoning_tokens: totals.reasoning_tokens.map(u64::from),
                 finish_reason: finish_reason.clone(),
                 content_preview: assistant_text.clone(),
             },

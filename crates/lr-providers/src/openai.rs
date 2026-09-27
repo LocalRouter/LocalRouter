@@ -6,6 +6,7 @@ use super::{
     ProviderHealth, SupportLevel, TokenUsage,
 };
 use crate::oauth::OAuthTokenSource;
+use crate::openai_compatible::stream_usage;
 use async_trait::async_trait;
 use chrono::Utc;
 use futures::stream::{Stream, StreamExt};
@@ -519,6 +520,10 @@ struct OpenAIStreamChunk {
     created: i64,
     model: String,
     choices: Vec<OpenAIStreamChoice>,
+    /// Present (non-null) only on the usage chunk requested through
+    /// `stream_options.include_usage`.
+    #[serde(default)]
+    usage: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1055,7 +1060,7 @@ impl ModelProvider for OpenAIProvider {
             .post(format!("{}/chat/completions", self.base_url))
             .header("Authorization", self.auth_header().await?)
             .header("Content-Type", "application/json")
-            .json(&openai_request)
+            .json(&stream_usage::streaming_body(&openai_request, "openai")?)
             .send()
             .await
             .map_err(|e| AppError::Provider(format!("Request failed: {}", e)))?;
@@ -1135,6 +1140,11 @@ impl ModelProvider for OpenAIProvider {
                                             })
                                             .collect(),
                                         extensions: None,
+                                        usage: openai_chunk
+                                            .usage
+                                            .as_ref()
+                                            .and_then(stream_usage::parse_openai_usage),
+                                        provider: None,
                                     };
                                     chunks.push(Ok(chunk));
                                 }
@@ -1159,7 +1169,7 @@ impl ModelProvider for OpenAIProvider {
             futures::stream::iter(chunks)
         });
 
-        Ok(Box::pin(converted_stream))
+        Ok(stream_usage::usage_once_at_end(converted_stream))
     }
 
     async fn embed(&self, request: super::EmbeddingRequest) -> AppResult<super::EmbeddingResponse> {
@@ -1971,5 +1981,20 @@ mod tests {
                 other
             ),
         }
+    }
+
+    /// OpenAI streams usage on a trailing usage-only chunk, and only when asked.
+    #[tokio::test]
+    async fn stream_reports_upstream_usage() {
+        use crate::openai_compatible::stream_usage::test_support::*;
+
+        let server = sse_server("/chat/completions", openai_stream(UsageAt::UsageOnlyChunk)).await;
+        let provider = OpenAIProvider::with_base_url("sk-test".to_string(), server.uri()).unwrap();
+        let stream = provider
+            .stream_complete(stream_request("test-model"))
+            .await
+            .unwrap();
+        assert_openai_stream(&collect(stream).await);
+        assert!(asked_for_usage(&received_body(&server).await));
     }
 }

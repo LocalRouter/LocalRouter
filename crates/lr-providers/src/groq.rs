@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use std::time::Instant;
 
+use crate::openai_compatible::stream_usage;
 use lr_types::{AppError, AppResult};
 
 use super::{
@@ -173,6 +174,13 @@ struct OpenAIStreamChunk {
     created: i64,
     model: String,
     choices: Vec<OpenAIStreamChoice>,
+    /// Upstream usage, reported on the final chunk (or on every chunk,
+    /// cumulatively, by some upstreams).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    usage: Option<serde_json::Value>,
+    /// Groq reports usage under `x_groq.usage` on the final chunk.
+    #[serde(default)]
+    x_groq: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -383,7 +391,7 @@ impl ModelProvider for GroqProvider {
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
-            .json(&request)
+            .json(&stream_usage::streaming_body(&request, "groq")?)
             .send()
             .await
             .map_err(|e| AppError::Provider(format!("Groq streaming request failed: {}", e)))?;
@@ -444,6 +452,11 @@ impl ModelProvider for GroqProvider {
                                         })
                                         .collect(),
                                     extensions: None,
+                                    usage: stream_usage::chunk_usage(
+                                        groq_chunk.usage.as_ref(),
+                                        groq_chunk.x_groq.as_ref(),
+                                    ),
+                                    provider: None,
                                 };
                                 chunks.push(Ok(chunk));
                             }
@@ -466,7 +479,7 @@ impl ModelProvider for GroqProvider {
             futures::stream::iter(chunks)
         });
 
-        Ok(Box::pin(converted_stream))
+        Ok(stream_usage::usage_once_at_end(converted_stream))
     }
 
     async fn transcribe(
@@ -716,5 +729,20 @@ mod tests {
             .await
             .unwrap();
         assert!(pricing.input_cost_per_1k > 0.0);
+    }
+
+    /// Groq reports usage under `x_groq.usage`.
+    #[tokio::test]
+    async fn stream_reports_upstream_usage() {
+        use crate::openai_compatible::stream_usage::test_support::*;
+
+        let server = sse_server("/chat/completions", openai_stream(UsageAt::XGroq)).await;
+        let provider = GroqProvider::with_base_url("k".to_string(), server.uri()).unwrap();
+        let stream = provider
+            .stream_complete(stream_request("test-model"))
+            .await
+            .unwrap();
+        assert_openai_stream(&collect(stream).await);
+        assert!(asked_for_usage(&received_body(&server).await));
     }
 }

@@ -234,6 +234,32 @@ struct OllamaStreamResponse {
     message: OllamaMessage,
     #[serde(default)]
     done: bool,
+    /// Prompt tokens evaluated; sent on the final (`done: true`) message.
+    #[serde(default)]
+    prompt_eval_count: Option<i64>,
+    /// Tokens generated; sent on the final (`done: true`) message.
+    #[serde(default)]
+    eval_count: Option<i64>,
+}
+
+impl OllamaStreamResponse {
+    /// Usage from the final message; `None` on other messages or when the
+    /// server reports neither count.
+    fn usage(&self) -> Option<TokenUsage> {
+        if !self.done || (self.prompt_eval_count.is_none() && self.eval_count.is_none()) {
+            return None;
+        }
+        let count = |n: Option<i64>| n.map_or(0, |n| u32::try_from(n.max(0)).unwrap_or(u32::MAX));
+        let prompt_tokens = count(self.prompt_eval_count);
+        let completion_tokens = count(self.eval_count);
+        Some(TokenUsage {
+            prompt_tokens,
+            completion_tokens,
+            total_tokens: prompt_tokens.saturating_add(completion_tokens),
+            prompt_tokens_details: None,
+            completion_tokens_details: None,
+        })
+    }
 }
 
 /// Ollama-specific message format.
@@ -758,6 +784,7 @@ impl ModelProvider for OllamaProvider {
 
                         match serde_json::from_str::<OllamaStreamResponse>(&line) {
                             Ok(ollama_chunk) => {
+                                let usage = ollama_chunk.usage();
                                 let message = ollama_chunk.message.into_chat_message();
                                 let delta_content = message.content.as_text();
                                 let mut first = is_first_chunk.lock().unwrap();
@@ -826,6 +853,8 @@ impl ModelProvider for OllamaProvider {
                                         finish_reason,
                                     }],
                                     extensions: None,
+                                    usage,
+                                    provider: None,
                                 };
                                 chunks.push(Ok(chunk));
                             }
@@ -1115,5 +1144,42 @@ mod tests {
     fn test_map_ollama_capabilities_empty() {
         let caps = OllamaProvider::map_ollama_capabilities(&[]);
         assert!(caps.is_empty());
+    }
+
+    /// `/api/chat` streams NDJSON; the final `done: true` message carries
+    /// `prompt_eval_count` / `eval_count`.
+    #[tokio::test]
+    async fn stream_reports_final_eval_counts() {
+        use crate::openai_compatible::stream_usage::test_support::*;
+
+        let body = [
+            r#"{"model":"llama3.2","created_at":"2026-09-27T10:00:00Z","message":{"role":"assistant","content":"Hello"},"done":false}"#,
+            r#"{"model":"llama3.2","created_at":"2026-09-27T10:00:00Z","message":{"role":"assistant","content":" world"},"done":false}"#,
+            r#"{"model":"llama3.2","created_at":"2026-09-27T10:00:01Z","message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","total_duration":4883583458,"load_duration":1334875,"prompt_eval_count":26,"prompt_eval_duration":342546000,"eval_count":282,"eval_duration":4535599000}"#,
+        ]
+        .iter()
+        .map(|l| format!("{l}\n"))
+        .collect::<String>();
+        let server = stream_server("/api/chat", body, "application/x-ndjson").await;
+        let provider = OllamaProvider::with_base_url(server.uri());
+        let stream = provider
+            .stream_complete(stream_request("llama3.2"))
+            .await
+            .unwrap();
+        let chunks = collect(stream).await;
+
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(content(&chunks), "Hello world");
+        assert_eq!(finish_reasons(&chunks), vec!["stop"]);
+        assert!(chunks[..2].iter().all(|c| c.usage.is_none()));
+        let usage = single_trailing_usage(&chunks);
+        assert_eq!(
+            (
+                usage.prompt_tokens,
+                usage.completion_tokens,
+                usage.total_tokens
+            ),
+            (26, 282, 308)
+        );
     }
 }

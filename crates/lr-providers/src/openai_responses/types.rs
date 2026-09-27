@@ -30,9 +30,9 @@ pub struct ResponsesApiRequest {
     #[serde(default)]
     pub tools: Vec<Value>,
 
-    /// `"auto"`, `"none"`, `"required"`, or a JSON object for a
-    /// specific function. We hardcode `"auto"` for ChatGPT-backend.
-    pub tool_choice: String,
+    /// `"auto"`, `"none"`, `"required"`, or `{"type": "function",
+    /// "name": ...}` for a specific function.
+    pub tool_choice: Value,
 
     pub parallel_tool_calls: bool,
 
@@ -213,12 +213,52 @@ pub struct ResponsesUsage {
     pub total_tokens: u32,
     #[serde(default)]
     pub output_tokens_details: Option<OutputTokensDetails>,
+    #[serde(default)]
+    pub input_tokens_details: Option<InputTokensDetails>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Default)]
 pub struct OutputTokensDetails {
     #[serde(default)]
     pub reasoning_tokens: u32,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Default)]
+pub struct InputTokensDetails {
+    #[serde(default)]
+    pub cached_tokens: u32,
+}
+
+impl ResponsesUsage {
+    /// Chat-completions view: `input_tokens` → `prompt_tokens` (cached
+    /// tokens included, broken out as `cached_tokens`), `output_tokens` →
+    /// `completion_tokens` (reasoning included, broken out as
+    /// `reasoning_tokens`). A zero `total_tokens` is computed.
+    pub fn to_token_usage(&self) -> crate::TokenUsage {
+        crate::TokenUsage {
+            prompt_tokens: self.input_tokens,
+            completion_tokens: self.output_tokens,
+            total_tokens: if self.total_tokens > 0 {
+                self.total_tokens
+            } else {
+                self.input_tokens.saturating_add(self.output_tokens)
+            },
+            prompt_tokens_details: self.input_tokens_details.as_ref().map(|d| {
+                crate::PromptTokensDetails {
+                    cached_tokens: Some(d.cached_tokens),
+                    cache_creation_tokens: None,
+                    cache_read_tokens: None,
+                }
+            }),
+            completion_tokens_details: self.output_tokens_details.as_ref().map(|d| {
+                crate::CompletionTokensDetails {
+                    reasoning_tokens: Some(d.reasoning_tokens),
+                    thinking_tokens: None,
+                    audio_tokens: None,
+                }
+            }),
+        }
+    }
 }
 
 // ============================================================================

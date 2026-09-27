@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 use super::finalize::{estimate_token_count, maybe_repair_json_content};
 use super::helpers::get_client_with_strategy;
+use super::stream_usage::{finalize_stream, StreamTracker};
 use crate::middleware::client_auth::ClientAuthContext;
 use crate::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::state::{AppState, AuthContext, GenerationDetails};
@@ -448,6 +449,14 @@ async fn handle_mcp_via_llm(
     // Streaming: use multi-segment streaming orchestrator
     if request.stream {
         let model = provider_request.model.clone();
+        let prompt_estimate = lr_providers::usage_estimate::prompt_tokens(
+            &provider_request.messages,
+            provider_request.tools.as_deref(),
+        );
+        let include_usage = request
+            .stream_options
+            .as_ref()
+            .is_some_and(|o| o.include_usage);
 
         let chunk_stream = state
             .mcp_via_llm_manager
@@ -470,11 +479,11 @@ async fn handle_mcp_via_llm(
         let created_timestamp = created_at.timestamp();
         let gen_id = generation_id.clone();
 
-        // Track content and completion for generation tracking
+        // Track what the stream produced; finalize once it ends (or the
+        // client disconnects and the sender is dropped with the stream)
         use parking_lot::Mutex;
         use std::sync::Arc;
-        let content_accumulator = Arc::new(Mutex::new(String::new()));
-        let finish_reason = Arc::new(Mutex::new(String::from("stop")));
+        let tracker = Arc::new(Mutex::new(StreamTracker::default()));
         let (completion_tx, completion_rx) = tokio::sync::oneshot::channel::<()>();
         let completion_tx = Arc::new(Mutex::new(Some(completion_tx)));
 
@@ -512,9 +521,10 @@ async fn handle_mcp_via_llm(
         };
         let streaming_repairer_map = streaming_repairer.clone();
 
-        let content_accumulator_map = content_accumulator.clone();
-        let finish_reason_map = finish_reason.clone();
-        let completion_tx_map = completion_tx.clone();
+        let tracker_map = tracker.clone();
+        let tracker_end = tracker.clone();
+        let gen_id_end = generation_id.clone();
+        let model_end = model.clone();
 
         // Clones for generation tracking after stream completes
         let state_clone = state.clone();
@@ -523,118 +533,99 @@ async fn handle_mcp_via_llm(
         let model_clone = model.clone();
         let created_at_clone = created_at;
         let request_user = request.user.clone();
-        let request_messages = request.messages.clone();
         let compression_tokens_saved = _compression_tokens_saved;
 
         // Map provider chunks to SSE events, then append [DONE] sentinel
-        let data_stream = chunk_stream.map(
-            move |chunk_result| -> Result<Event, std::convert::Infallible> {
-                match chunk_result {
-                    Ok(provider_chunk) => {
-                        // Track content for token estimation
-                        let is_done = if let Some(choice) = provider_chunk.choices.first() {
-                            if let Some(content) = &choice.delta.content {
-                                content_accumulator_map.lock().push_str(content);
-                            }
-                            if let Some(reason) = &choice.finish_reason {
-                                *finish_reason_map.lock() = reason.clone();
-                                true
-                            } else {
-                                false
-                            }
-                        } else {
-                            false
-                        };
+        let data_stream = chunk_stream.filter_map(move |chunk_result| {
+            std::future::ready(match chunk_result {
+                Ok(provider_chunk) => {
+                    tracker_map.lock().observe(&provider_chunk);
+                    if StreamTracker::is_usage_only(&provider_chunk) {
+                        return std::future::ready(None);
+                    }
 
-                        if is_done {
-                            if let Some(tx) = completion_tx_map.lock().take() {
-                                let _ = tx.send(());
-                            }
-                        }
+                    let api_chunk = ChatCompletionChunk {
+                        id: gen_id.clone(),
+                        object: "chat.completion.chunk".to_string(),
+                        created: created_timestamp,
+                        model: provider_chunk.model.clone(),
+                        choices: {
+                            let mut choices: Vec<ChatCompletionChunkChoice> = provider_chunk
+                                .choices
+                                .into_iter()
+                                .map(|c| ChatCompletionChunkChoice {
+                                    index: c.index,
+                                    delta: ChunkDelta {
+                                        role: c.delta.role,
+                                        content: c.delta.content,
+                                        tool_calls: c.delta.tool_calls.map(|tcs| {
+                                            tcs.into_iter()
+                                                .map(|tc| crate::types::ToolCallDelta {
+                                                    index: tc.index,
+                                                    id: tc.id,
+                                                    tool_type: tc.tool_type,
+                                                    function: tc.function.map(|f| {
+                                                        crate::types::FunctionCallDelta {
+                                                            name: f.name,
+                                                            arguments: f.arguments,
+                                                        }
+                                                    }),
+                                                })
+                                                .collect()
+                                        }),
+                                        reasoning_content: c.delta.reasoning_content,
+                                    },
+                                    finish_reason: c.finish_reason,
+                                })
+                                .collect();
 
-                        let api_chunk = ChatCompletionChunk {
-                            id: gen_id.clone(),
-                            object: "chat.completion.chunk".to_string(),
-                            created: created_timestamp,
-                            model: provider_chunk.model.clone(),
-                            choices: {
-                                let mut choices: Vec<ChatCompletionChunkChoice> = provider_chunk
-                                    .choices
-                                    .into_iter()
-                                    .map(|c| ChatCompletionChunkChoice {
-                                        index: c.index,
-                                        delta: ChunkDelta {
-                                            role: c.delta.role,
-                                            content: c.delta.content,
-                                            tool_calls: c.delta.tool_calls.map(|tcs| {
-                                                tcs.into_iter()
-                                                    .map(|tc| crate::types::ToolCallDelta {
-                                                        index: tc.index,
-                                                        id: tc.id,
-                                                        tool_type: tc.tool_type,
-                                                        function: tc.function.map(|f| {
-                                                            crate::types::FunctionCallDelta {
-                                                                name: f.name,
-                                                                arguments: f.arguments,
-                                                            }
-                                                        }),
-                                                    })
-                                                    .collect()
-                                            }),
-                                            reasoning_content: c.delta.reasoning_content,
-                                        },
-                                        finish_reason: c.finish_reason,
-                                    })
-                                    .collect();
-
-                                // Apply streaming JSON repair
-                                if let Some(ref repairer) = streaming_repairer_map {
-                                    for choice in &mut choices {
-                                        if let Some(text) = choice.delta.content.take() {
-                                            let repaired = repairer.lock().push_content(&text);
-                                            if !repaired.is_empty() {
-                                                choice.delta.content = Some(repaired);
-                                            }
+                            // Apply streaming JSON repair
+                            if let Some(ref repairer) = streaming_repairer_map {
+                                for choice in &mut choices {
+                                    if let Some(text) = choice.delta.content.take() {
+                                        let repaired = repairer.lock().push_content(&text);
+                                        if !repaired.is_empty() {
+                                            choice.delta.content = Some(repaired);
                                         }
-                                        if choice.finish_reason.is_some() {
-                                            let flushed = repairer.lock().finish();
-                                            if !flushed.is_empty() {
-                                                let existing =
-                                                    choice.delta.content.take().unwrap_or_default();
-                                                choice.delta.content =
-                                                    Some(format!("{}{}", existing, flushed));
-                                            }
+                                    }
+                                    if choice.finish_reason.is_some() {
+                                        let flushed = repairer.lock().finish();
+                                        if !flushed.is_empty() {
+                                            let existing =
+                                                choice.delta.content.take().unwrap_or_default();
+                                            choice.delta.content =
+                                                Some(format!("{}{}", existing, flushed));
                                         }
                                     }
                                 }
-
-                                choices
-                            },
-                            usage: None,
-                            system_fingerprint: None,
-                            service_tier: None,
-                            request_usage_entries: None,
-                        };
-                        let json = serde_json::to_string(&api_chunk).unwrap_or_default();
-                        Ok(Event::default().data(json))
-                    }
-                    Err(e) => {
-                        if let Some(tx) = completion_tx_map.lock().take() {
-                            let _ = tx.send(());
-                        }
-                        let error_response = serde_json::json!({
-                            "error": {
-                                "message": format!("MCP via LLM streaming error: {}", e),
-                                "type": "server_error",
-                                "code": "streaming_error"
                             }
-                        });
-                        Ok(Event::default()
-                            .data(serde_json::to_string(&error_response).unwrap_or_default()))
-                    }
+
+                            choices
+                        },
+                        usage: None,
+                        system_fingerprint: None,
+                        service_tier: None,
+                        request_usage_entries: None,
+                    };
+                    let json = serde_json::to_string(&api_chunk).unwrap_or_default();
+                    Some(Ok::<Event, std::convert::Infallible>(
+                        Event::default().data(json),
+                    ))
                 }
-            },
-        );
+                Err(e) => {
+                    let error_response = serde_json::json!({
+                        "error": {
+                            "message": format!("MCP via LLM streaming error: {}", e),
+                            "type": "server_error",
+                            "code": "streaming_error"
+                        }
+                    });
+                    Some(Ok(Event::default().data(
+                        serde_json::to_string(&error_response).unwrap_or_default(),
+                    )))
+                }
+            })
+        });
 
         // Record generation details after stream completes.
         //
@@ -648,69 +639,51 @@ async fn handle_mcp_via_llm(
         // access log / `metrics-updated` event / generation
         // tracker) still fires.
         lr_types::spawn_traced(async move {
-            let _ =
-                tokio::time::timeout(tokio::time::Duration::from_secs(300), completion_rx).await;
-
-            let completion_content = content_accumulator.lock().clone();
-            let finish_reason_final = finish_reason.lock().clone();
-
-            let prompt_tokens = request_messages
-                .last()
-                .map(|m| estimate_token_count(std::slice::from_ref(m)) as u32)
-                .unwrap_or(0);
-            let completion_tokens = (completion_content.len() / 4).max(1) as u32;
-
-            let provider = if let Some((p, _)) = model_clone.split_once('/') {
-                p.to_string()
-            } else {
-                "router".to_string()
-            };
-
-            let wire_body = super::monitor_helpers::build_streaming_response_body(
-                &gen_id_clone,
-                &model_clone,
-                &completion_content,
-                &finish_reason_final,
-                prompt_tokens as u64,
-                completion_tokens as u64,
-                created_at_clone.timestamp(),
-            );
-
-            let finalize_inputs = super::finalize::FinalizeInputs {
-                state: &state_clone,
-                auth: &auth_clone,
-                llm_event_id: &llm_event_id,
-                generation_id: &gen_id_clone,
-                started_at,
-                created_at: created_at_clone,
-                incremental_prompt_tokens: prompt_tokens,
-                compression_tokens_saved,
-                routing_metadata: None,
-                user: request_user,
-                streamed: true,
-                skip_monitor_completion: true,
-            };
-            super::finalize::finalize_streaming_at_end(
-                &finalize_inputs,
-                super::finalize::StreamingFinalizeSummary {
-                    provider,
-                    model: model_clone,
-                    prompt_tokens,
-                    completion_tokens,
-                    reasoning_tokens: None,
-                    finish_reason: Some(finish_reason_final),
-                    content_preview: completion_content,
+            let _ = completion_rx.await;
+            let tracked = std::mem::take(&mut *tracker.lock());
+            finalize_stream(
+                super::finalize::FinalizeInputs {
+                    state: &state_clone,
+                    auth: &auth_clone,
+                    llm_event_id: &llm_event_id,
+                    generation_id: &gen_id_clone,
+                    started_at,
+                    created_at: created_at_clone,
+                    prompt_tokens: 0, // from the stream
+                    compression_tokens_saved,
+                    routing_metadata: None,
+                    user: request_user,
+                    streamed: true,
+                    skip_monitor_completion: true,
                 },
-                &wire_body,
+                &model_clone,
+                &tracked,
+                prompt_estimate,
             )
             .await;
         });
 
-        // Append [DONE] sentinel after all data chunks (required by OpenAI streaming protocol)
-        let done_stream = futures::stream::once(async {
-            Ok::<Event, std::convert::Infallible>(Event::default().data("[DONE]"))
-        });
-        let sse_stream = data_stream.chain(done_stream);
+        // End of stream: optional usage chunk, then the [DONE] sentinel
+        // (required by the OpenAI streaming protocol)
+        let sse_stream = data_stream.chain(futures::stream::iter(std::iter::once(()).flat_map(
+            move |_| {
+                let mut tail = Vec::new();
+                if include_usage {
+                    tail.push(Ok(usage_chunk_event(
+                        &gen_id_end,
+                        created_timestamp,
+                        &model_end,
+                        &tracker_end.lock(),
+                        prompt_estimate,
+                    )));
+                }
+                tail.push(Ok(Event::default().data("[DONE]")));
+                if let Some(tx) = completion_tx.lock().take() {
+                    let _ = tx.send(());
+                }
+                tail
+            },
+        )));
 
         return Ok(Sse::new(sse_stream)
             .keep_alive(KeepAlive::default())
@@ -1184,10 +1157,12 @@ async fn build_non_streaming_response(
 ) -> ApiResult<Response> {
     // For chat messages, calculate incremental token count (last message only)
     // instead of cumulative (all conversation history).
-    let incremental_prompt_tokens = if let Some(last_msg) = request.messages.last() {
-        estimate_token_count(std::slice::from_ref(last_msg)) as u32
-    } else {
+    // The upstream's prompt tokens (the whole prompt, which is what it
+    // bills); estimated only when it reports none
+    let prompt_tokens = if response.usage.prompt_tokens > 0 {
         response.usage.prompt_tokens
+    } else {
+        estimate_token_count(&request.messages) as u32
     };
 
     // Shared finalize: cost, metrics, tray graph, access log,
@@ -1202,7 +1177,7 @@ async fn build_non_streaming_response(
         generation_id: &generation_id,
         started_at,
         created_at,
-        incremental_prompt_tokens,
+        prompt_tokens,
         compression_tokens_saved,
         routing_metadata: routing_metadata.as_ref(),
         user: request.user.clone(),
@@ -1317,9 +1292,9 @@ async fn build_non_streaming_response(
             })
             .collect(),
         usage: TokenUsage {
-            prompt_tokens: incremental_prompt_tokens,
+            prompt_tokens,
             completion_tokens: response.usage.completion_tokens,
-            total_tokens: incremental_prompt_tokens + response.usage.completion_tokens,
+            total_tokens: prompt_tokens + response.usage.completion_tokens,
             prompt_tokens_details: response.usage.prompt_tokens_details.clone(),
             completion_tokens_details: response.usage.completion_tokens_details.clone(),
         },
@@ -1360,6 +1335,29 @@ async fn build_non_streaming_response(
     Ok(Json(api_response).into_response())
 }
 
+/// The chunk OpenAI sends before `[DONE]` when the client set
+/// `stream_options.include_usage`: empty `choices`, the request's usage.
+fn usage_chunk_event(
+    id: &str,
+    created: i64,
+    model: &str,
+    tracked: &StreamTracker,
+    prompt_estimate: u64,
+) -> Event {
+    let chunk = ChatCompletionChunk {
+        id: id.to_string(),
+        object: "chat.completion.chunk".to_string(),
+        created,
+        model: tracked.model(model),
+        choices: Vec::new(),
+        usage: Some(tracked.client_usage(prompt_estimate)),
+        system_fingerprint: None,
+        service_tier: None,
+        request_usage_entries: None,
+    };
+    Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
+}
+
 /// Handle streaming chat completion
 async fn handle_streaming(
     state: AppState,
@@ -1376,6 +1374,10 @@ async fn handle_streaming(
 
     // Clone model before moving provider_request
     let model = provider_request.model.clone();
+    let prompt_estimate = lr_providers::usage_estimate::prompt_tokens(
+        &provider_request.messages,
+        provider_request.tools.as_deref(),
+    );
 
     // Call router to get streaming completion
     let (stream, routing_metadata) = match state
@@ -1457,13 +1459,17 @@ async fn handle_streaming(
     let created_timestamp = created_at.timestamp();
     let gen_id = generation_id.clone();
 
-    // Track token usage across stream
+    // Track what the stream produced; finalize once it ends
     use parking_lot::Mutex;
     use std::sync::Arc;
-    let content_accumulator = Arc::new(Mutex::new(String::new())); // Track completion content
-    let finish_reason = Arc::new(Mutex::new(String::from("stop")));
+    let tracker = Arc::new(Mutex::new(StreamTracker::default()));
+    let include_usage = request
+        .stream_options
+        .as_ref()
+        .is_some_and(|o| o.include_usage);
 
-    // Use a oneshot channel to signal stream completion instead of fixed delay
+    // Resolves when the stream finishes, or when it is dropped because the
+    // client disconnected (the sender is dropped with it)
     let (completion_tx, completion_rx) = tokio::sync::oneshot::channel::<()>();
     let completion_tx = Arc::new(Mutex::new(Some(completion_tx)));
 
@@ -1501,10 +1507,12 @@ async fn handle_streaming(
     };
     let streaming_repairer_map = streaming_repairer.clone();
 
-    // Clone for the stream.map closure
-    let content_accumulator_map = content_accumulator.clone();
-    let finish_reason_map = finish_reason.clone();
-    let completion_tx_map = completion_tx.clone();
+    // Clone for the stream closures
+    let tracker_map = tracker.clone();
+    let tracker_end = tracker.clone();
+    let completion_tx_map = completion_tx;
+    let gen_id_end = generation_id.clone();
+    let model_end = model.clone();
 
     // Clone for tracking after stream completes
     let state_clone = state.clone();
@@ -1513,197 +1521,152 @@ async fn handle_streaming(
     let model_clone = model.clone();
     let created_at_clone = created_at;
     let request_user = request.user.clone();
-    let request_messages = request.messages.clone();
 
-    let sse_stream = stream.map(
-        move |chunk_result| -> Result<Event, std::convert::Infallible> {
-            match chunk_result {
-                Ok(provider_chunk) => {
-                    // Track content for token estimation
-                    let is_done = if let Some(choice) = provider_chunk.choices.first() {
-                        if let Some(content) = &choice.delta.content {
-                            content_accumulator_map.lock().push_str(content);
-                        }
+    let sse_stream = stream.filter_map(move |chunk_result| {
+        std::future::ready(match chunk_result {
+            Ok(provider_chunk) => {
+                tracker_map.lock().observe(&provider_chunk);
+                // Usage-only chunks are bookkeeping; the client gets
+                // usage from our own final chunk when it asks for it
+                if StreamTracker::is_usage_only(&provider_chunk) {
+                    return std::future::ready(None);
+                }
 
-                        // Track finish reason and check if stream is done
-                        if let Some(reason) = &choice.finish_reason {
-                            *finish_reason_map.lock() = reason.clone();
-                            true
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
-                    };
+                let api_chunk = ChatCompletionChunk {
+                    id: gen_id.clone(),
+                    object: "chat.completion.chunk".to_string(),
+                    created: created_timestamp,
+                    model: provider_chunk.model.clone(),
+                    choices: {
+                        let mut choices: Vec<ChatCompletionChunkChoice> = provider_chunk
+                            .choices
+                            .into_iter()
+                            .map(|choice| {
+                                // Convert provider tool_calls delta to server tool_calls delta
+                                let tool_calls = choice.delta.tool_calls.map(|provider_deltas| {
+                                    provider_deltas
+                                        .into_iter()
+                                        .map(|delta| crate::types::ToolCallDelta {
+                                            index: delta.index,
+                                            id: delta.id,
+                                            tool_type: delta.tool_type,
+                                            function: delta.function.map(|f| {
+                                                crate::types::FunctionCallDelta {
+                                                    name: f.name,
+                                                    arguments: f.arguments,
+                                                }
+                                            }),
+                                        })
+                                        .collect()
+                                });
+                                ChatCompletionChunkChoice {
+                                    index: choice.index,
+                                    delta: ChunkDelta {
+                                        role: choice.delta.role,
+                                        content: choice.delta.content,
+                                        tool_calls,
+                                        reasoning_content: choice.delta.reasoning_content,
+                                    },
+                                    finish_reason: choice.finish_reason,
+                                }
+                            })
+                            .collect();
 
-                    // Signal completion when stream is done
-                    if is_done {
-                        if let Some(tx) = completion_tx_map.lock().take() {
-                            let _ = tx.send(());
-                        }
-                    }
-
-                    let api_chunk = ChatCompletionChunk {
-                        id: gen_id.clone(),
-                        object: "chat.completion.chunk".to_string(),
-                        created: created_timestamp,
-                        model: provider_chunk.model.clone(),
-                        choices: {
-                            let mut choices: Vec<ChatCompletionChunkChoice> = provider_chunk
-                                .choices
-                                .into_iter()
-                                .map(|choice| {
-                                    // Convert provider tool_calls delta to server tool_calls delta
-                                    let tool_calls =
-                                        choice.delta.tool_calls.map(|provider_deltas| {
-                                            provider_deltas
-                                                .into_iter()
-                                                .map(|delta| crate::types::ToolCallDelta {
-                                                    index: delta.index,
-                                                    id: delta.id,
-                                                    tool_type: delta.tool_type,
-                                                    function: delta.function.map(|f| {
-                                                        crate::types::FunctionCallDelta {
-                                                            name: f.name,
-                                                            arguments: f.arguments,
-                                                        }
-                                                    }),
-                                                })
-                                                .collect()
-                                        });
-                                    ChatCompletionChunkChoice {
-                                        index: choice.index,
-                                        delta: ChunkDelta {
-                                            role: choice.delta.role,
-                                            content: choice.delta.content,
-                                            tool_calls,
-                                            reasoning_content: choice.delta.reasoning_content,
-                                        },
-                                        finish_reason: choice.finish_reason,
+                        // Apply streaming JSON repair outside the map closure
+                        if let Some(ref repairer) = streaming_repairer_map {
+                            for choice in &mut choices {
+                                if let Some(text) = choice.delta.content.take() {
+                                    let repaired = repairer.lock().push_content(&text);
+                                    if !repaired.is_empty() {
+                                        choice.delta.content = Some(repaired);
                                     }
-                                })
-                                .collect();
-
-                            // Apply streaming JSON repair outside the map closure
-                            if let Some(ref repairer) = streaming_repairer_map {
-                                for choice in &mut choices {
-                                    if let Some(text) = choice.delta.content.take() {
-                                        let repaired = repairer.lock().push_content(&text);
-                                        if !repaired.is_empty() {
-                                            choice.delta.content = Some(repaired);
-                                        }
-                                    }
-                                    if choice.finish_reason.is_some() {
-                                        let flushed = repairer.lock().finish();
-                                        if !flushed.is_empty() {
-                                            let existing =
-                                                choice.delta.content.take().unwrap_or_default();
-                                            choice.delta.content =
-                                                Some(format!("{}{}", existing, flushed));
-                                        }
+                                }
+                                if choice.finish_reason.is_some() {
+                                    let flushed = repairer.lock().finish();
+                                    if !flushed.is_empty() {
+                                        let existing =
+                                            choice.delta.content.take().unwrap_or_default();
+                                        choice.delta.content =
+                                            Some(format!("{}{}", existing, flushed));
                                     }
                                 }
                             }
-
-                            choices
-                        },
-                        usage: None,
-                        system_fingerprint: None,
-                        service_tier: None,
-                        request_usage_entries: None,
-                    };
-
-                    let json = serde_json::to_string(&api_chunk).unwrap_or_default();
-                    Ok(Event::default().data(json))
-                }
-                Err(e) => {
-                    tracing::error!("Error in streaming: {}", e);
-                    // Signal completion on error as well
-                    if let Some(tx) = completion_tx_map.lock().take() {
-                        let _ = tx.send(());
-                    }
-                    // Return error in SSE format with actual error message
-                    let error_response = serde_json::json!({
-                        "error": {
-                            "message": format!("Streaming error: {}", e),
-                            "type": "server_error",
-                            "code": "streaming_error"
                         }
-                    });
-                    Ok(Event::default().data(
-                        serde_json::to_string(&error_response)
-                            .unwrap_or_else(|_| "[ERROR]".to_string()),
-                    ))
-                }
+
+                        choices
+                    },
+                    usage: None,
+                    system_fingerprint: None,
+                    service_tier: None,
+                    request_usage_entries: None,
+                };
+
+                let json = serde_json::to_string(&api_chunk).unwrap_or_default();
+                Some(Ok::<Event, std::convert::Infallible>(
+                    Event::default().data(json),
+                ))
             }
+            Err(e) => {
+                tracing::error!("Error in streaming: {}", e);
+                // Return error in SSE format with actual error message
+                let error_response = serde_json::json!({
+                    "error": {
+                        "message": format!("Streaming error: {}", e),
+                        "type": "server_error",
+                        "code": "streaming_error"
+                    }
+                });
+                Some(Ok(Event::default().data(
+                    serde_json::to_string(&error_response)
+                        .unwrap_or_else(|_| "[ERROR]".to_string()),
+                )))
+            }
+        })
+    });
+    // End of stream: optional usage chunk, then [DONE]
+    let sse_stream = sse_stream.chain(futures::stream::iter(std::iter::once(()).flat_map(
+        move |_| {
+            let mut tail = Vec::new();
+            if include_usage {
+                tail.push(Ok(usage_chunk_event(
+                    &gen_id_end,
+                    created_timestamp,
+                    &model_end,
+                    &tracker_end.lock(),
+                    prompt_estimate,
+                )));
+            }
+            tail.push(Ok(Event::default().data("[DONE]")));
+            if let Some(tx) = completion_tx_map.lock().take() {
+                let _ = tx.send(());
+            }
+            tail
         },
-    );
+    )));
 
     // Record generation details after stream completes
     lr_types::spawn_traced(async move {
-        // Wait for stream completion signal with a timeout fallback
-        let _ = tokio::time::timeout(
-            tokio::time::Duration::from_secs(300), // 5 minute timeout for long completions
-            completion_rx,
-        )
-        .await;
-
-        let completion_content = content_accumulator.lock().clone();
-        let finish_reason_final = finish_reason.lock().clone();
-
-        // Estimate tokens for this message only (not the entire
-        // conversation). Chat stream tokens are rough estimates —
-        // ~4 chars / token for the accumulated output, and only the
-        // last user message counts for prompt (no cumulative history
-        // billing).
-        let prompt_tokens = request_messages
-            .last()
-            .map(|m| estimate_token_count(std::slice::from_ref(m)) as u32)
-            .unwrap_or(0);
-        let completion_tokens = (completion_content.len() / 4).max(1) as u32;
-
-        let provider = if let Some((p, _)) = model_clone.split_once('/') {
-            p.to_string()
-        } else {
-            "router".to_string()
-        };
-
-        let wire_body = super::monitor_helpers::build_streaming_response_body(
-            &gen_id_clone,
-            &model_clone,
-            &completion_content,
-            &finish_reason_final,
-            prompt_tokens as u64,
-            completion_tokens as u64,
-            created_at_clone.timestamp(),
-        );
-
-        let finalize_inputs = super::finalize::FinalizeInputs {
-            state: &state_clone,
-            auth: &auth_clone,
-            llm_event_id: &llm_event_id,
-            generation_id: &gen_id_clone,
-            started_at,
-            created_at: created_at_clone,
-            incremental_prompt_tokens: prompt_tokens,
-            compression_tokens_saved,
-            routing_metadata: None,
-            user: request_user,
-            streamed: true,
-            skip_monitor_completion: false,
-        };
-        super::finalize::finalize_streaming_at_end(
-            &finalize_inputs,
-            super::finalize::StreamingFinalizeSummary {
-                provider,
-                model: model_clone,
-                prompt_tokens,
-                completion_tokens,
-                reasoning_tokens: None,
-                finish_reason: Some(finish_reason_final),
-                content_preview: completion_content,
+        // Ends normally or when the client disconnects
+        let _ = completion_rx.await;
+        let tracked = std::mem::take(&mut *tracker.lock());
+        finalize_stream(
+            super::finalize::FinalizeInputs {
+                state: &state_clone,
+                auth: &auth_clone,
+                llm_event_id: &llm_event_id,
+                generation_id: &gen_id_clone,
+                started_at,
+                created_at: created_at_clone,
+                prompt_tokens: 0, // from the stream
+                compression_tokens_saved,
+                routing_metadata: None,
+                user: request_user,
+                streamed: true,
+                skip_monitor_completion: false,
             },
-            &wire_body,
+            &model_clone,
+            &tracked,
+            prompt_estimate,
         )
         .await;
     });
@@ -1733,6 +1696,14 @@ async fn handle_streaming_parallel(
     let created_at = Utc::now();
     let started_at = Instant::now();
     let model = provider_request.model.clone();
+    let prompt_estimate = lr_providers::usage_estimate::prompt_tokens(
+        &provider_request.messages,
+        provider_request.tools.as_deref(),
+    );
+    let include_usage = request
+        .stream_options
+        .as_ref()
+        .is_some_and(|o| o.include_usage);
 
     // Start LLM streaming request immediately
     let (stream, routing_metadata) = match state
@@ -1867,7 +1838,6 @@ async fn handle_streaming_parallel(
         let state_clone = state.clone();
         let auth_clone = auth.clone();
         let request_user = request.user.clone();
-        let request_messages = request.messages.clone();
         let mut gate_rx = gate_rx;
         let mut stream = stream;
 
@@ -1908,33 +1878,15 @@ async fn handle_streaming_parallel(
             let mut buffer: Vec<Result<Event, std::convert::Infallible>> = Vec::new();
             let mut gate_resolved = false;
             let mut gate_state = GuardrailGate::Pending;
-            let mut content_accumulator = String::new();
-            let mut finish_reason_val = String::from("stop");
-            let mut stream_done = false;
+            let mut tracker = StreamTracker::default();
             let mut streaming_repairer = parallel_streaming_repairer;
 
             // Helper to convert a provider chunk to an SSE event
             let convert_chunk = |provider_chunk: lr_providers::CompletionChunk,
                                  gen_id: &str,
                                  created_ts: i64,
-                                 content_acc: &mut String,
-                                 finish_reason: &mut String,
                                  repairer: &mut Option<lr_json_repair::StreamingJsonRepairer>|
-             -> (Result<Event, std::convert::Infallible>, bool) {
-                let is_done = if let Some(choice) = provider_chunk.choices.first() {
-                    if let Some(content) = &choice.delta.content {
-                        content_acc.push_str(content);
-                    }
-                    if let Some(reason) = &choice.finish_reason {
-                        *finish_reason = reason.clone();
-                        true
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                };
-
+             -> Result<Event, std::convert::Infallible> {
                 let api_chunk = ChatCompletionChunk {
                     id: gen_id.to_string(),
                     object: "chat.completion.chunk".to_string(),
@@ -2004,7 +1956,7 @@ async fn handle_streaming_parallel(
                 };
 
                 let json = serde_json::to_string(&api_chunk).unwrap_or_default();
-                (Ok(Event::default().data(json)), is_done)
+                Ok(Event::default().data(json))
             };
 
             loop {
@@ -2025,17 +1977,18 @@ async fn handle_streaming_parallel(
                     chunk = stream.next() => {
                         match chunk {
                             Some(Ok(provider_chunk)) => {
-                                let (event, is_done) = convert_chunk(
+                                // Keep reading past the finish reason: the
+                                // upstream's usage often follows it
+                                tracker.observe(&provider_chunk);
+                                if StreamTracker::is_usage_only(&provider_chunk) {
+                                    continue;
+                                }
+                                let event = convert_chunk(
                                     provider_chunk,
                                     &gen_id,
                                     created_timestamp,
-                                    &mut content_accumulator,
-                                    &mut finish_reason_val,
                                     &mut streaming_repairer,
                                 );
-                                if is_done {
-                                    stream_done = true;
-                                }
                                 if gate_resolved && gate_state == GuardrailGate::Passed {
                                     if event_tx.send(event).await.is_err() {
                                         break;
@@ -2044,9 +1997,6 @@ async fn handle_streaming_parallel(
                                     buffer.push(event);
                                 }
                                 // If gate_state == Denied, silently drop chunks
-                                if stream_done {
-                                    break;
-                                }
                             }
                             Some(Err(e)) => {
                                 tracing::error!("Error in streaming: {}", e);
@@ -2149,55 +2099,42 @@ async fn handle_streaming_parallel(
                 }
             }
 
+            // End of stream for a client that is still there and allowed
+            // to see it: optional usage chunk, then [DONE]
+            if gate_state == GuardrailGate::Passed && !event_tx.is_closed() {
+                if include_usage {
+                    let _ = event_tx
+                        .send(Ok(usage_chunk_event(
+                            &gen_id,
+                            created_timestamp,
+                            &model_clone,
+                            &tracker,
+                            prompt_estimate,
+                        )))
+                        .await;
+                }
+                let _ = event_tx.send(Ok(Event::default().data("[DONE]"))).await;
+            }
+
             // Shared finalize — matches the `handle_streaming` path.
-            let prompt_tokens = request_messages
-                .last()
-                .map(|m| estimate_token_count(std::slice::from_ref(m)) as u32)
-                .unwrap_or(0);
-            let completion_tokens = (content_accumulator.len() / 4).max(1) as u32;
-
-            let provider = if let Some((p, _)) = model_clone.split_once('/') {
-                p.to_string()
-            } else {
-                "router".to_string()
-            };
-
-            let wire_body = super::monitor_helpers::build_streaming_response_body(
-                &gen_id_clone,
-                &model_clone,
-                &content_accumulator,
-                &finish_reason_val,
-                prompt_tokens as u64,
-                completion_tokens as u64,
-                created_at.timestamp(),
-            );
-
-            let finalize_inputs = super::finalize::FinalizeInputs {
-                state: &state_clone,
-                auth: &auth_clone,
-                llm_event_id: &llm_event_id,
-                generation_id: &gen_id_clone,
-                started_at,
-                created_at,
-                incremental_prompt_tokens: prompt_tokens,
-                compression_tokens_saved,
-                routing_metadata: None,
-                user: request_user,
-                streamed: true,
-                skip_monitor_completion: false,
-            };
-            super::finalize::finalize_streaming_at_end(
-                &finalize_inputs,
-                super::finalize::StreamingFinalizeSummary {
-                    provider,
-                    model: model_clone,
-                    prompt_tokens,
-                    completion_tokens,
-                    reasoning_tokens: None,
-                    finish_reason: Some(finish_reason_val),
-                    content_preview: content_accumulator,
+            finalize_stream(
+                super::finalize::FinalizeInputs {
+                    state: &state_clone,
+                    auth: &auth_clone,
+                    llm_event_id: &llm_event_id,
+                    generation_id: &gen_id_clone,
+                    started_at,
+                    created_at,
+                    prompt_tokens: 0, // from the stream
+                    compression_tokens_saved,
+                    routing_metadata: None,
+                    user: request_user,
+                    streamed: true,
+                    skip_monitor_completion: false,
                 },
-                &wire_body,
+                &model_clone,
+                &tracker,
+                prompt_estimate,
             )
             .await;
         });
@@ -2233,6 +2170,7 @@ mod tests {
             temperature: None,
             max_tokens: None,
             stream: false,
+            stream_options: None,
             top_p: None,
             frequency_penalty: None,
             presence_penalty: None,
@@ -2278,6 +2216,7 @@ mod tests {
             temperature: None,
             max_tokens: None,
             stream: false,
+            stream_options: None,
             top_p: None,
             frequency_penalty: None,
             presence_penalty: None,
@@ -2316,6 +2255,7 @@ mod tests {
             temperature: None,
             max_tokens: None,
             stream: false,
+            stream_options: None,
             top_p: None,
             frequency_penalty: None,
             presence_penalty: None,
@@ -2361,6 +2301,7 @@ mod tests {
             temperature: Some(0.7),
             max_tokens: None,
             stream: false,
+            stream_options: None,
             top_p: None,
             frequency_penalty: None,
             presence_penalty: None,
@@ -2406,6 +2347,7 @@ mod tests {
             temperature: Some(2.5),
             max_tokens: None,
             stream: false,
+            stream_options: None,
             top_p: None,
             frequency_penalty: None,
             presence_penalty: None,
@@ -2451,6 +2393,7 @@ mod tests {
             temperature: None,
             max_tokens: None,
             stream: false,
+            stream_options: None,
             top_p: None,
             frequency_penalty: None,
             presence_penalty: None,
@@ -2496,6 +2439,7 @@ mod tests {
             temperature: None,
             max_tokens: None,
             stream: false,
+            stream_options: None,
             top_p: None,
             frequency_penalty: None,
             presence_penalty: None,
@@ -2541,6 +2485,7 @@ mod tests {
             temperature: None,
             max_tokens: None,
             stream: false,
+            stream_options: None,
             top_p: None,
             frequency_penalty: None,
             presence_penalty: None,
@@ -2586,6 +2531,7 @@ mod tests {
             temperature: None,
             max_tokens: None,
             stream: false,
+            stream_options: None,
             top_p: None,
             frequency_penalty: None,
             presence_penalty: None,
@@ -2631,6 +2577,7 @@ mod tests {
             temperature: None,
             max_tokens: None,
             stream: false,
+            stream_options: None,
             top_p: None,
             frequency_penalty: None,
             presence_penalty: None,
@@ -2678,6 +2625,7 @@ mod tests {
             temperature: None,
             max_tokens: None,
             stream: false,
+            stream_options: None,
             top_p: None,
             frequency_penalty: None,
             presence_penalty: None,
@@ -2725,6 +2673,7 @@ mod tests {
             temperature: None,
             max_tokens: None,
             stream: false,
+            stream_options: None,
             top_p: None,
             frequency_penalty: None,
             presence_penalty: None,
@@ -2778,6 +2727,7 @@ mod tests {
             temperature: None,
             max_tokens: None,
             stream: false,
+            stream_options: None,
             top_p: None,
             frequency_penalty: None,
             presence_penalty: None,
@@ -2826,6 +2776,7 @@ mod tests {
             temperature: Some(0.7),
             max_tokens: Some(100),
             stream: false,
+            stream_options: None,
             top_p: Some(0.9),
             frequency_penalty: Some(0.5),
             presence_penalty: Some(0.3),

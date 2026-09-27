@@ -16,6 +16,7 @@ use super::{
     CompletionRequest, CompletionResponse, FunctionCall, HealthStatus, ModelInfo, ModelProvider,
     PricingInfo, ProviderHealth, TokenUsage, ToolCall,
 };
+use crate::openai_compatible::stream_usage;
 use lr_types::{AppError, AppResult};
 
 /// Google Gemini provider
@@ -514,13 +515,15 @@ impl ModelProvider for GeminiProvider {
                 finish_reason: Some(finish_reason.to_string()),
                 logprobs: None, // Gemini does not support logprobs
             }],
-            usage: TokenUsage {
-                prompt_tokens: usage.map(|u| u.prompt_token_count).unwrap_or(0),
-                completion_tokens: usage.map(|u| u.candidates_token_count).unwrap_or(0),
-                total_tokens: usage.map(|u| u.total_token_count).unwrap_or(0),
-                prompt_tokens_details: None,
-                completion_tokens_details: None,
-            },
+            usage: usage
+                .map(GeminiUsageMetadata::to_token_usage)
+                .unwrap_or(TokenUsage {
+                    prompt_tokens: 0,
+                    completion_tokens: 0,
+                    total_tokens: 0,
+                    prompt_tokens_details: None,
+                    completion_tokens_details: None,
+                }),
             system_fingerprint: None,
             service_tier: None,
             extensions: None,
@@ -654,7 +657,27 @@ impl ModelProvider for GeminiProvider {
 
                             match serde_json::from_str::<GeminiResponse>(json_str) {
                                 Ok(gemini_chunk) => {
+                                    // Every chunk repeats `usageMetadata` with
+                                    // running totals; `usage_once_at_end`
+                                    // keeps the last one.
+                                    let usage = gemini_chunk
+                                        .usage_metadata
+                                        .as_ref()
+                                        .map(GeminiUsageMetadata::to_token_usage);
+
                                     if gemini_chunk.candidates.is_empty() {
+                                        if usage.is_some() {
+                                            parsed_chunks.push(Ok(CompletionChunk {
+                                                id: format!("chatcmpl-{}", uuid::Uuid::new_v4()),
+                                                object: "chat.completion.chunk".to_string(),
+                                                created: Utc::now().timestamp(),
+                                                model: model.clone(),
+                                                choices: vec![],
+                                                extensions: None,
+                                                usage,
+                                                provider: None,
+                                            }));
+                                        }
                                         continue;
                                     }
 
@@ -727,6 +750,8 @@ impl ModelProvider for GeminiProvider {
                                             finish_reason,
                                         }],
                                         extensions: None,
+                                        usage,
+                                        provider: None,
                                     }));
                                 }
                                 Err(e) => {
@@ -746,7 +771,7 @@ impl ModelProvider for GeminiProvider {
             futures::stream::iter(chunks)
         });
 
-        Ok(Box::pin(converted_stream))
+        Ok(stream_usage::usage_once_at_end(converted_stream))
     }
 
     fn supports_feature(&self, feature: &str) -> bool {
@@ -1147,6 +1172,8 @@ struct GeminiGenerationConfig {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct GeminiResponse {
+    /// Absent on a trailing usage-only stream chunk.
+    #[serde(default)]
     candidates: Vec<GeminiCandidate>,
     #[serde(rename = "usageMetadata")]
     usage_metadata: Option<GeminiUsageMetadata>,
@@ -1161,12 +1188,61 @@ struct GeminiCandidate {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct GeminiUsageMetadata {
-    #[serde(rename = "promptTokenCount")]
+    /// Includes `cachedContentTokenCount`.
+    #[serde(rename = "promptTokenCount", default)]
     prompt_token_count: u32,
-    #[serde(rename = "candidatesTokenCount")]
+    /// Visible output only; thinking is counted in `thoughtsTokenCount`.
+    #[serde(rename = "candidatesTokenCount", default)]
     candidates_token_count: u32,
-    #[serde(rename = "totalTokenCount")]
+    #[serde(rename = "totalTokenCount", default)]
     total_token_count: u32,
+    #[serde(
+        rename = "thoughtsTokenCount",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    thoughts_token_count: Option<u32>,
+    #[serde(
+        rename = "cachedContentTokenCount",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    cached_content_token_count: Option<u32>,
+}
+
+impl GeminiUsageMetadata {
+    /// Thinking tokens are billed as output, so `completion_tokens` is
+    /// candidates + thoughts, with thoughts broken out as
+    /// `reasoning_tokens`. Cached prompt tokens are part of
+    /// `prompt_tokens`, broken out as `cached_tokens`.
+    fn to_token_usage(&self) -> TokenUsage {
+        let completion_tokens = self
+            .candidates_token_count
+            .saturating_add(self.thoughts_token_count.unwrap_or(0));
+        TokenUsage {
+            prompt_tokens: self.prompt_token_count,
+            completion_tokens,
+            total_tokens: if self.total_token_count > 0 {
+                self.total_token_count
+            } else {
+                self.prompt_token_count.saturating_add(completion_tokens)
+            },
+            prompt_tokens_details: self.cached_content_token_count.map(|cached| {
+                super::PromptTokensDetails {
+                    cached_tokens: Some(cached),
+                    cache_creation_tokens: None,
+                    cache_read_tokens: None,
+                }
+            }),
+            completion_tokens_details: self.thoughts_token_count.map(|thoughts| {
+                super::CompletionTokensDetails {
+                    reasoning_tokens: Some(thoughts),
+                    thinking_tokens: None,
+                    audio_tokens: None,
+                }
+            }),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1385,6 +1461,8 @@ mod tests {
                 prompt_token_count: 10,
                 candidates_token_count: 5,
                 total_token_count: 15,
+                thoughts_token_count: None,
+                cached_content_token_count: None,
             }),
         };
 
@@ -1562,5 +1640,84 @@ mod tests {
         let response = provider.complete(request).await.unwrap();
         assert_eq!(response.choices.len(), 1);
         assert!(!response.choices[0].message.content.as_text().is_empty());
+    }
+
+    /// `streamGenerateContent?alt=sse` repeats `usageMetadata` on every
+    /// chunk with running totals; only the final numbers are reported, and
+    /// thinking tokens count as output.
+    #[tokio::test]
+    async fn stream_reports_last_usage_metadata() {
+        use crate::openai_compatible::stream_usage::test_support::*;
+
+        let frames = [
+            r#"{"candidates":[{"content":{"parts":[{"text":"Hello"}],"role":"model"},"index":0}],"usageMetadata":{"promptTokenCount":20,"totalTokenCount":20,"cachedContentTokenCount":8},"modelVersion":"gemini-2.5-flash"}"#,
+            r#"{"candidates":[{"content":{"parts":[{"text":" world"}],"role":"model"},"index":0}],"usageMetadata":{"promptTokenCount":20,"candidatesTokenCount":2,"totalTokenCount":52,"thoughtsTokenCount":30,"cachedContentTokenCount":8},"modelVersion":"gemini-2.5-flash"}"#,
+            r#"{"candidates":[{"content":{"parts":[{"text":"!"}],"role":"model"},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":20,"candidatesTokenCount":3,"totalTokenCount":53,"thoughtsTokenCount":30,"cachedContentTokenCount":8,"promptTokensDetails":[{"modality":"TEXT","tokenCount":20}]},"modelVersion":"gemini-2.5-flash"}"#,
+        ];
+        let body = frames
+            .iter()
+            .map(|f| format!("data: {f}\r\n\r\n"))
+            .collect::<String>();
+        let server = sse_server("/models/gemini-2.5-flash:streamGenerateContent", body).await;
+        let provider = GeminiProvider::with_base_url("k".to_string(), server.uri());
+        let stream = provider
+            .stream_complete(stream_request("gemini-2.5-flash"))
+            .await
+            .unwrap();
+        let chunks = collect(stream).await;
+
+        assert_eq!(chunks.len(), 4, "3 content chunks + usage");
+        assert_eq!(content(&chunks), "Hello world!");
+        assert_eq!(finish_reasons(&chunks), vec!["stop"]);
+        let usage = single_trailing_usage(&chunks);
+        assert_eq!(
+            (
+                usage.prompt_tokens,
+                usage.completion_tokens,
+                usage.total_tokens
+            ),
+            (20, 33, 53)
+        );
+        assert_eq!(usage.prompt_tokens_details.unwrap().cached_tokens, Some(8));
+        assert_eq!(
+            usage.completion_tokens_details.unwrap().reasoning_tokens,
+            Some(30)
+        );
+    }
+
+    /// A trailing chunk with `usageMetadata` but no candidates still
+    /// reports usage instead of being dropped.
+    #[tokio::test]
+    async fn stream_reports_usage_only_chunk() {
+        use crate::openai_compatible::stream_usage::test_support::*;
+
+        let body = [
+            r#"{"candidates":[{"content":{"parts":[{"text":"Hi"}],"role":"model"},"finishReason":"STOP","index":0}]}"#,
+            r#"{"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":1,"totalTokenCount":8}}"#,
+        ]
+        .iter()
+        .map(|f| format!("data: {f}\n\n"))
+        .collect::<String>();
+        let server = sse_server("/models/gemini-2.0-flash:streamGenerateContent", body).await;
+        let provider = GeminiProvider::with_base_url("k".to_string(), server.uri());
+        let stream = provider
+            .stream_complete(stream_request("gemini-2.0-flash"))
+            .await
+            .unwrap();
+        let chunks = collect(stream).await;
+
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(content(&chunks), "Hi");
+        let usage = single_trailing_usage(&chunks);
+        assert_eq!(
+            (
+                usage.prompt_tokens,
+                usage.completion_tokens,
+                usage.total_tokens
+            ),
+            (7, 1, 8)
+        );
+        assert!(usage.prompt_tokens_details.is_none());
+        assert!(usage.completion_tokens_details.is_none());
     }
 }

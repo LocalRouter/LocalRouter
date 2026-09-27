@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use std::time::Instant;
 
+use crate::openai_compatible::stream_usage;
 use lr_types::{AppError, AppResult};
 
 use super::{
@@ -369,7 +370,10 @@ impl ModelProvider for OpenRouterProvider {
 
         let response = self
             .build_post_request(&url)
-            .json(&openrouter_request)
+            .json(&stream_usage::streaming_body(
+                &openrouter_request,
+                "openrouter",
+            )?)
             .send()
             .await
             .map_err(|e| {
@@ -435,6 +439,11 @@ impl ModelProvider for OpenRouterProvider {
                                             })
                                             .collect(),
                                         extensions: None,
+                                        usage: chunk
+                                            .usage
+                                            .as_ref()
+                                            .and_then(stream_usage::parse_openai_usage),
+                                        provider: None,
                                     }));
                                 }
                                 Err(e) => {
@@ -457,7 +466,7 @@ impl ModelProvider for OpenRouterProvider {
             futures::stream::iter(chunks)
         });
 
-        Ok(Box::pin(stream))
+        Ok(stream_usage::usage_once_at_end(stream))
     }
 
     fn supports_embeddings(&self) -> bool {
@@ -715,6 +724,10 @@ struct OpenRouterChunk {
     created: i64,
     model: String,
     choices: Vec<OpenRouterChunkChoice>,
+    /// Upstream usage, when the server reports it (on the final chunk or
+    /// a usage-only chunk with empty `choices`).
+    #[serde(default)]
+    usage: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -849,5 +862,20 @@ mod tests {
         let response = provider.complete(request).await.unwrap();
         assert!(!response.choices.is_empty());
         assert!(!response.choices[0].message.content.is_empty());
+    }
+
+    /// OpenRouter sends usage in its last SSE message (a usage-only chunk).
+    #[tokio::test]
+    async fn stream_reports_upstream_usage() {
+        use crate::openai_compatible::stream_usage::test_support::*;
+
+        let server = sse_server("/chat/completions", openai_stream(UsageAt::UsageOnlyChunk)).await;
+        let provider = OpenRouterProvider::with_base_url("k".to_string(), server.uri());
+        let stream = provider
+            .stream_complete(stream_request("test-model"))
+            .await
+            .unwrap();
+        assert_openai_stream(&collect(stream).await);
+        assert!(asked_for_usage(&received_body(&server).await));
     }
 }

@@ -28,6 +28,7 @@ fn test_tool_definition_serialization() {
                 },
                 "required": ["location"]
             }),
+            strict: None,
         },
     };
 
@@ -81,6 +82,7 @@ fn test_completion_request_with_tools() {
                         "location": {"type": "string"}
                     }
                 }),
+                strict: None,
             },
         }]),
         tool_choice: Some(ToolChoice::Auto("auto".to_string())),

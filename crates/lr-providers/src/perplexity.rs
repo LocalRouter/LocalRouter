@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use std::time::Instant;
 
+use crate::openai_compatible::stream_usage;
 use lr_types::{AppError, AppResult};
 
 use super::{
@@ -25,15 +26,25 @@ const PERPLEXITY_API_BASE: &str = "https://api.perplexity.ai";
 pub struct PerplexityProvider {
     client: ClientWithMiddleware,
     api_key: String,
+    base_url: String,
 }
 
 #[allow(dead_code)]
 impl PerplexityProvider {
     /// Create a new Perplexity provider with an API key
     pub fn new(api_key: String) -> AppResult<Self> {
+        Self::with_base_url(api_key, PERPLEXITY_API_BASE.to_string())
+    }
+
+    /// Create a new Perplexity provider with a custom base URL (for testing)
+    pub fn with_base_url(api_key: String, base_url: String) -> AppResult<Self> {
         let client = crate::http_client::extended_client()?;
 
-        Ok(Self { client, api_key })
+        Ok(Self {
+            client,
+            api_key,
+            base_url: base_url.trim_end_matches('/').to_string(),
+        })
     }
 
     /// Create a new Perplexity provider from stored API key
@@ -117,6 +128,10 @@ struct OpenAIStreamChunk {
     created: i64,
     model: String,
     choices: Vec<OpenAIStreamChoice>,
+    /// Upstream usage, reported on the final chunk (or on every chunk,
+    /// cumulatively, by some upstreams).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    usage: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -138,7 +153,7 @@ impl ModelProvider for PerplexityProvider {
 
         // Use the async chat completions list endpoint to validate API key
         // This is a read-only GET request that doesn't consume any tokens
-        let url = format!("{}/async/chat/completions?limit=1", PERPLEXITY_API_BASE);
+        let url = format!("{}/async/chat/completions?limit=1", self.base_url);
 
         match self
             .client
@@ -250,7 +265,7 @@ impl ModelProvider for PerplexityProvider {
     }
 
     async fn complete(&self, request: CompletionRequest) -> AppResult<CompletionResponse> {
-        let url = format!("{}/chat/completions", PERPLEXITY_API_BASE);
+        let url = format!("{}/chat/completions", self.base_url);
 
         let response = self
             .client
@@ -304,7 +319,7 @@ impl ModelProvider for PerplexityProvider {
         &self,
         request: CompletionRequest,
     ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>> {
-        let url = format!("{}/chat/completions", PERPLEXITY_API_BASE);
+        let url = format!("{}/chat/completions", self.base_url);
 
         let response = self
             .client
@@ -374,6 +389,11 @@ impl ModelProvider for PerplexityProvider {
                                         })
                                         .collect(),
                                     extensions: None,
+                                    usage: perplexity_chunk
+                                        .usage
+                                        .as_ref()
+                                        .and_then(stream_usage::parse_openai_usage),
+                                    provider: None,
                                 };
                                 chunks.push(Ok(chunk));
                             }
@@ -396,7 +416,7 @@ impl ModelProvider for PerplexityProvider {
             futures::stream::iter(chunks)
         });
 
-        Ok(Box::pin(converted_stream))
+        Ok(stream_usage::usage_once_at_end(converted_stream))
     }
 }
 
@@ -416,5 +436,20 @@ mod tests {
         let provider = PerplexityProvider::new("test_key".to_string()).unwrap();
         let pricing = provider.get_pricing("sonar").await.unwrap();
         assert!(pricing.input_cost_per_1k > 0.0);
+    }
+
+    /// Cumulative usage on every chunk is reported once, with the final numbers.
+    #[tokio::test]
+    async fn stream_reports_upstream_usage() {
+        use crate::openai_compatible::stream_usage::test_support::*;
+
+        let server = sse_server("/chat/completions", openai_stream(UsageAt::EveryChunk)).await;
+        let provider = PerplexityProvider::with_base_url("k".to_string(), server.uri()).unwrap();
+        let stream = provider
+            .stream_complete(stream_request("test-model"))
+            .await
+            .unwrap();
+        assert_openai_stream(&collect(stream).await);
+        assert!(!asked_for_usage(&received_body(&server).await));
     }
 }

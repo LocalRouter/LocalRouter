@@ -240,129 +240,180 @@ impl RouterError {
     }
 }
 
-/// Wraps a completion stream to count tokens, record usage, and set the correct model name
+/// Wraps a completion stream to set the resolved model and serving provider
+/// on every chunk and to record usage (rate limits, free tier) once the
+/// stream ends or is dropped.
 ///
-/// This is an approximation: we estimate tokens based on content length
-/// since streaming chunks don't include token counts.
+/// Usage is the upstream's own (`CompletionChunk::usage`, usually on the last
+/// chunk) when it reports one; otherwise an estimate from the whole prompt
+/// (`prompt_estimate`) and every generated character, including reasoning
+/// and tool-call arguments.
 ///
 /// The `resolved_model` parameter should be in `provider/model` format (e.g., "openai/gpt-4o")
 /// and will be set on each chunk to ensure clients know which model actually processed the request.
+#[allow(clippy::too_many_arguments)]
 async fn wrap_stream_with_usage_tracking(
     stream: Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>,
     client_id: String,
     resolved_model: String,
+    prompt_estimate: u64,
     rate_limiter: Arc<RateLimiterManager>,
     free_tier_manager: Arc<FreeTierManager>,
     free_tier: FreeTierKind,
     pricing: lr_providers::PricingInfo,
     free_tier_only: bool,
 ) -> Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>> {
-    use std::sync::atomic::{AtomicU64, Ordering};
-
     // Decide now, while the request's trace is still in scope (the stream is
     // polled later, outside it): a duplicate hop must not charge usage.
     let count_usage = !lr_types::is_duplicate_hop();
+    let provider = resolved_model
+        .split_once('/')
+        .map(|(p, _)| p.to_string())
+        .unwrap_or_default();
 
-    // Track token counts as stream progresses
-    let completion_chars = Arc::new(AtomicU64::new(0));
-
-    // Clone for map closure (model injection)
-    let resolved_model_for_map = resolved_model.clone();
-
-    // Clone for inspect closure
-    let completion_chars_for_inspect = completion_chars.clone();
-
-    // Clone for then closure
-    let completion_chars_for_then = completion_chars.clone();
-    let client_id_for_then = client_id.clone();
-    let rate_limiter_for_then = rate_limiter.clone();
-    let resolved_model_for_then = resolved_model.clone();
-
-    let wrapped = stream
-        .map(move |chunk_result| {
-            // Inject the resolved model name into each chunk
-            chunk_result.map(|mut chunk| {
-                chunk.model = resolved_model_for_map.clone();
-                chunk
-            })
-        })
-        .inspect(move |chunk_result| {
-            if let Ok(chunk) = chunk_result {
-                // Count content characters in this chunk
-                for choice in &chunk.choices {
-                    if let Some(content) = &choice.delta.content {
-                        let char_count = content.len() as u64;
-                        completion_chars_for_inspect.fetch_add(char_count, Ordering::Relaxed);
-                    }
-                }
-            }
-        })
-        .then(move |chunk_result| {
-        let client_id = client_id_for_then.clone();
-        let rate_limiter = rate_limiter_for_then.clone();
-        let completion_chars = completion_chars_for_then.clone();
-        let free_tier_manager = free_tier_manager.clone();
-        let free_tier = free_tier.clone();
-        let pricing = pricing.clone();
-        let resolved_model = resolved_model_for_then.clone();
-
-        async move {
-            // Check if this is an error or the last chunk
-            let is_last = chunk_result.as_ref().map_or(true, |chunk| {
-                chunk.choices.iter().any(|c| c.finish_reason.is_some())
-            });
-
-            // If stream is ending, record usage
-            if is_last && count_usage {
-                // Estimate tokens: rough approximation is 1 token ≈ 4 characters
-                // We'll use prompt_tokens=10 as baseline (can't know actual from stream)
-                // and estimate completion tokens from character count
-                let est_prompt = 10; // Baseline estimate since we don't know actual prompt tokens
-                let est_completion = (completion_chars.load(Ordering::Relaxed) / 4).max(1);
-
-                let est_cost = calculate_cost(est_prompt, est_completion, None, &pricing);
-
-                let usage = UsageInfo {
-                    input_tokens: est_prompt,
-                    output_tokens: est_completion,
-                    cost_usd: est_cost,
-                };
-
-                // Record usage (best effort, don't fail the stream)
-                if let Err(e) = rate_limiter.record_api_key_usage(&client_id, &usage).await {
-                    warn!(
-                        "Failed to record streaming usage for API key '{}': {}. \
-                         Estimated {} tokens (approximate).",
-                        client_id, e, est_prompt + est_completion
-                    );
-                } else {
-                    debug!(
-                        "Recorded estimated streaming usage for API key '{}': {} tokens (approximate)",
-                        client_id, est_prompt + est_completion
-                    );
-                }
-
-                // Record free tier usage
-                let provider = resolved_model.split('/').next().unwrap_or("");
-                if !provider.is_empty() {
-                    free_tier_manager.record_usage(provider, &free_tier, est_prompt + est_completion, est_cost);
-
-                    // Cost watchdog: track whether this stream cost money
-                    if free_tier_only {
-                        if est_cost > 0.0 {
-                            free_tier_manager.record_cost_trigger(provider);
-                        } else {
-                            free_tier_manager.record_cost_free(provider);
-                        }
-                    }
-                }
-            }
-
-            chunk_result
-        }
+    let recorder = Arc::new(StreamUsageRecorder {
+        state: parking_lot::Mutex::new(StreamUsageState::default()),
+        record: parking_lot::Mutex::new(count_usage.then(|| StreamUsageSink {
+            client_id,
+            provider: provider.clone(),
+            prompt_estimate,
+            rate_limiter,
+            free_tier_manager,
+            free_tier,
+            pricing,
+            free_tier_only,
+        })),
     });
 
-    Box::pin(wrapped)
+    let recorder_map = recorder.clone();
+    let chunks = stream.map(move |chunk_result| {
+        chunk_result.map(|mut chunk| {
+            chunk.model = resolved_model.clone();
+            chunk.provider = Some(provider.clone());
+            recorder_map.observe(&chunk);
+            chunk
+        })
+    });
+    // After the last chunk: record now (a dropped stream records on drop).
+    let end = futures::stream::once(async move {
+        recorder.finish();
+        None
+    });
+    Box::pin(
+        chunks
+            .map(Some)
+            .chain(end)
+            .filter_map(futures::future::ready),
+    )
+}
+
+#[derive(Default)]
+struct StreamUsageState {
+    output_chars: u64,
+    upstream: Option<lr_providers::TokenUsage>,
+}
+
+/// Where and how to record a stream's usage.
+struct StreamUsageSink {
+    client_id: String,
+    provider: String,
+    prompt_estimate: u64,
+    rate_limiter: Arc<RateLimiterManager>,
+    free_tier_manager: Arc<FreeTierManager>,
+    free_tier: FreeTierKind,
+    pricing: lr_providers::PricingInfo,
+    free_tier_only: bool,
+}
+
+/// Collects a stream's output and records its usage exactly once: at the
+/// end of the stream, or when the stream is dropped early (client gone).
+struct StreamUsageRecorder {
+    state: parking_lot::Mutex<StreamUsageState>,
+    record: parking_lot::Mutex<Option<StreamUsageSink>>,
+}
+
+impl StreamUsageRecorder {
+    fn observe(&self, chunk: &CompletionChunk) {
+        let mut st = self.state.lock();
+        st.output_chars += lr_providers::usage_estimate::chunk_output_chars(chunk);
+        if let Some(u) = &chunk.usage {
+            st.upstream = Some(u.clone());
+        }
+    }
+
+    fn finish(&self) {
+        let Some(sink) = self.record.lock().take() else {
+            return;
+        };
+        let st = std::mem::take(&mut *self.state.lock());
+        let (input, output, reasoning) = stream_usage_totals(&st, sink.prompt_estimate);
+        let cost = calculate_cost(input, output, reasoning, &sink.pricing);
+        let usage = UsageInfo {
+            input_tokens: input,
+            output_tokens: output,
+            cost_usd: cost,
+        };
+        let task = async move {
+            if let Err(e) = sink
+                .rate_limiter
+                .record_api_key_usage(&sink.client_id, &usage)
+                .await
+            {
+                warn!(
+                    "Failed to record streaming usage for API key '{}': {}",
+                    sink.client_id, e
+                );
+            }
+            if !sink.provider.is_empty() {
+                sink.free_tier_manager.record_usage(
+                    &sink.provider,
+                    &sink.free_tier,
+                    input + output,
+                    cost,
+                );
+                // Cost watchdog: track whether this stream cost money
+                if sink.free_tier_only {
+                    if cost > 0.0 {
+                        sink.free_tier_manager.record_cost_trigger(&sink.provider);
+                    } else {
+                        sink.free_tier_manager.record_cost_free(&sink.provider);
+                    }
+                }
+            }
+        };
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn(task);
+            }
+            Err(_) => warn!("No async runtime to record streaming usage"),
+        }
+    }
+}
+
+impl Drop for StreamUsageRecorder {
+    fn drop(&mut self) {
+        self.finish();
+    }
+}
+
+/// `(input, output, reasoning)` tokens for a finished stream: the upstream's
+/// usage when reported, else estimates.
+fn stream_usage_totals(st: &StreamUsageState, prompt_estimate: u64) -> (u64, u64, Option<u64>) {
+    match &st.upstream {
+        Some(u) => (
+            u.prompt_tokens as u64,
+            u.completion_tokens as u64,
+            u.completion_tokens_details
+                .as_ref()
+                .and_then(|d| d.reasoning_tokens)
+                .map(u64::from),
+        ),
+        None => (
+            prompt_estimate,
+            lr_providers::usage_estimate::chars_to_tokens(st.output_chars),
+            None,
+        ),
+    }
 }
 
 /// Calculate cost in USD from token usage and pricing info.
@@ -700,6 +751,10 @@ impl Router {
             let free_tier = self.get_effective_free_tier(&final_provider);
             let mut modified_request = request;
             modified_request.model = final_model.clone();
+            let prompt_estimate = lr_providers::usage_estimate::prompt_tokens(
+                &modified_request.messages,
+                modified_request.tools.as_deref(),
+            );
             let stream = match provider_instance.stream_complete(modified_request).await {
                 Ok(s) => s,
                 Err(e) => {
@@ -716,6 +771,7 @@ impl Router {
                     stream,
                     client_id.to_string(),
                     resolved_model,
+                    prompt_estimate,
                     self.rate_limiter.clone(),
                     self.free_tier_manager.clone(),
                     free_tier,
@@ -1650,6 +1706,10 @@ impl Router {
             let mut modified_request = request.clone();
             modified_request.model = model.clone();
 
+            let prompt_estimate = lr_providers::usage_estimate::prompt_tokens(
+                &modified_request.messages,
+                modified_request.tools.as_deref(),
+            );
             match provider_instance.stream_complete(modified_request).await {
                 Ok(stream) => {
                     info!(
@@ -1676,6 +1736,7 @@ impl Router {
                             stream,
                             client_id.to_string(),
                             resolved_model,
+                            prompt_estimate,
                             self.rate_limiter.clone(),
                             self.free_tier_manager.clone(),
                             free_tier,
@@ -2076,6 +2137,10 @@ impl Router {
             let free_tier = self.get_effective_free_tier(&provider);
             let mut modified_request = request.clone();
             modified_request.model = model.clone();
+            let prompt_estimate = lr_providers::usage_estimate::prompt_tokens(
+                &modified_request.messages,
+                modified_request.tools.as_deref(),
+            );
             let stream = match provider_instance.stream_complete(modified_request).await {
                 Ok(s) => s,
                 Err(e) => {
@@ -2092,6 +2157,7 @@ impl Router {
                     stream,
                     client_id.to_string(),
                     resolved_model,
+                    prompt_estimate,
                     self.rate_limiter.clone(),
                     self.free_tier_manager.clone(),
                     free_tier,
@@ -2179,6 +2245,10 @@ impl Router {
         let free_tier = self.get_effective_free_tier(&final_provider);
         let mut modified_request = request.clone();
         modified_request.model = final_model.clone();
+        let prompt_estimate = lr_providers::usage_estimate::prompt_tokens(
+            &modified_request.messages,
+            modified_request.tools.as_deref(),
+        );
         let stream = match provider_instance.stream_complete(modified_request).await {
             Ok(s) => s,
             Err(e) => {
@@ -2195,6 +2265,7 @@ impl Router {
                 stream,
                 client_id.to_string(),
                 resolved_model,
+                prompt_estimate,
                 self.rate_limiter.clone(),
                 self.free_tier_manager.clone(),
                 free_tier,
@@ -3030,6 +3101,85 @@ impl Router {
 mod tests {
     use super::*;
     use lr_config::AppConfig;
+
+    fn text_chunk(content: &str, usage: Option<lr_providers::TokenUsage>) -> CompletionChunk {
+        CompletionChunk {
+            id: "c".into(),
+            object: "chat.completion.chunk".into(),
+            created: 0,
+            model: "upstream-name".into(),
+            choices: vec![lr_providers::ChunkChoice {
+                index: 0,
+                delta: lr_providers::ChunkDelta {
+                    role: None,
+                    content: Some(content.into()),
+                    tool_calls: None,
+                    reasoning_content: None,
+                },
+                finish_reason: None,
+            }],
+            extensions: None,
+            usage,
+            provider: None,
+        }
+    }
+
+    #[test]
+    fn stream_usage_totals_prefer_the_upstream_usage() {
+        let st = StreamUsageState {
+            output_chars: 400,
+            upstream: Some(lr_providers::TokenUsage {
+                prompt_tokens: 900,
+                completion_tokens: 30,
+                total_tokens: 930,
+                prompt_tokens_details: None,
+                completion_tokens_details: Some(lr_providers::CompletionTokensDetails {
+                    reasoning_tokens: Some(12),
+                    thinking_tokens: None,
+                    audio_tokens: None,
+                }),
+            }),
+        };
+        assert_eq!(stream_usage_totals(&st, 5), (900, 30, Some(12)));
+    }
+
+    #[test]
+    fn stream_usage_totals_estimate_without_upstream_usage() {
+        let st = StreamUsageState {
+            output_chars: 401,
+            upstream: None,
+        };
+        // Whole-prompt estimate, output chars / 4 rounded up
+        assert_eq!(stream_usage_totals(&st, 777), (777, 101, None));
+    }
+
+    #[tokio::test]
+    async fn usage_wrapper_stamps_the_serving_provider_and_model() {
+        let upstream: Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>> =
+            Box::pin(futures::stream::iter(vec![
+                Ok(text_chunk("hello", None)),
+                Ok(text_chunk("", None)),
+            ]));
+        let wrapped = wrap_stream_with_usage_tracking(
+            upstream,
+            "client".into(),
+            "chatgpt/gpt-5.5".into(),
+            10,
+            Arc::new(RateLimiterManager::new(None)),
+            Arc::new(FreeTierManager::new(None)),
+            lr_config::FreeTierKind::None,
+            lr_providers::PricingInfo::free(),
+            false,
+        )
+        .await;
+        let chunks: Vec<_> = wrapped.collect().await;
+        assert_eq!(chunks.len(), 2);
+        for chunk in chunks {
+            let chunk = chunk.expect("chunk");
+            assert_eq!(chunk.model, "chatgpt/gpt-5.5");
+            assert_eq!(chunk.provider.as_deref(), Some("chatgpt"));
+        }
+    }
 
     #[test]
     fn test_summarize_attempt_outcomes_counts_and_sorts() {

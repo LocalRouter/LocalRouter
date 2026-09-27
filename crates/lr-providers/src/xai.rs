@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use std::time::Instant;
 
+use crate::openai_compatible::stream_usage;
 use lr_types::{AppError, AppResult};
 
 use super::{
@@ -25,15 +26,25 @@ const XAI_API_BASE: &str = "https://api.x.ai/v1";
 pub struct XAIProvider {
     client: ClientWithMiddleware,
     api_key: String,
+    base_url: String,
 }
 
 #[allow(dead_code)]
 impl XAIProvider {
     /// Create a new xAI provider with an API key
     pub fn new(api_key: String) -> AppResult<Self> {
+        Self::with_base_url(api_key, XAI_API_BASE.to_string())
+    }
+
+    /// Create a new xAI provider with a custom base URL (for testing)
+    pub fn with_base_url(api_key: String, base_url: String) -> AppResult<Self> {
         let client = crate::http_client::extended_client()?;
 
-        Ok(Self { client, api_key })
+        Ok(Self {
+            client,
+            api_key,
+            base_url: base_url.trim_end_matches('/').to_string(),
+        })
     }
 
     /// Create a new xAI provider from stored API key
@@ -107,6 +118,10 @@ struct OpenAIStreamChunk {
     created: i64,
     model: String,
     choices: Vec<OpenAIStreamChoice>,
+    /// Upstream usage, reported on the final chunk (or on every chunk,
+    /// cumulatively, by some upstreams).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    usage: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -168,7 +183,7 @@ impl ModelProvider for XAIProvider {
     }
 
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
-        let url = format!("{}/models", XAI_API_BASE);
+        let url = format!("{}/models", self.base_url);
 
         let response = self
             .client
@@ -251,7 +266,7 @@ impl ModelProvider for XAIProvider {
     }
 
     async fn complete(&self, request: CompletionRequest) -> AppResult<CompletionResponse> {
-        let url = format!("{}/chat/completions", XAI_API_BASE);
+        let url = format!("{}/chat/completions", self.base_url);
 
         let response = self
             .client
@@ -306,7 +321,7 @@ impl ModelProvider for XAIProvider {
         &self,
         request: CompletionRequest,
     ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>> {
-        let url = format!("{}/chat/completions", XAI_API_BASE);
+        let url = format!("{}/chat/completions", self.base_url);
 
         let response = self
             .client
@@ -374,6 +389,11 @@ impl ModelProvider for XAIProvider {
                                         })
                                         .collect(),
                                     extensions: None,
+                                    usage: xai_chunk
+                                        .usage
+                                        .as_ref()
+                                        .and_then(stream_usage::parse_openai_usage),
+                                    provider: None,
                                 };
                                 chunks.push(Ok(chunk));
                             }
@@ -396,7 +416,7 @@ impl ModelProvider for XAIProvider {
             futures::stream::iter(chunks)
         });
 
-        Ok(Box::pin(converted_stream))
+        Ok(stream_usage::usage_once_at_end(converted_stream))
     }
 
     fn get_feature_support(&self, instance_name: &str) -> super::ProviderFeatureSupport {
@@ -436,5 +456,20 @@ mod tests {
         let provider = XAIProvider::new("test_key".to_string()).unwrap();
         let pricing = provider.get_pricing("grok-2").await.unwrap();
         assert!(pricing.input_cost_per_1k > 0.0);
+    }
+
+    /// xAI sends cumulative usage on every chunk; only the final numbers are reported.
+    #[tokio::test]
+    async fn stream_reports_upstream_usage() {
+        use crate::openai_compatible::stream_usage::test_support::*;
+
+        let server = sse_server("/chat/completions", openai_stream(UsageAt::EveryChunk)).await;
+        let provider = XAIProvider::with_base_url("k".to_string(), server.uri()).unwrap();
+        let stream = provider
+            .stream_complete(stream_request("test-model"))
+            .await
+            .unwrap();
+        assert_openai_stream(&collect(stream).await);
+        assert!(!asked_for_usage(&received_body(&server).await));
     }
 }

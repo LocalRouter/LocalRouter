@@ -17,6 +17,7 @@ use super::{
     CompletionRequest, CompletionResponse, HealthStatus, ModelInfo, ModelProvider, PricingInfo,
     ProviderHealth, TokenUsage, Tool, ToolCallDelta, ToolChoice,
 };
+use crate::openai_compatible::stream_usage;
 use lr_types::{AppError, AppResult};
 
 /// llama.cpp provider for local model inference
@@ -159,6 +160,10 @@ struct LlamaCppStreamChunk {
     created: i64,
     model: String,
     choices: Vec<LlamaCppStreamChoice>,
+    /// Upstream usage, when the server reports it (on the final chunk or
+    /// a usage-only chunk with empty `choices`).
+    #[serde(default)]
+    usage: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -402,7 +407,10 @@ impl ModelProvider for LlamaCppProvider {
             .client
             .post(format!("{}/chat/completions", self.base_url))
             .header("Content-Type", "application/json")
-            .json(&llamacpp_request);
+            .json(&stream_usage::streaming_body(
+                &llamacpp_request,
+                "llamacpp",
+            )?);
 
         if let Some(auth) = self.auth_header() {
             req = req.header("Authorization", auth);
@@ -459,6 +467,11 @@ impl ModelProvider for LlamaCppProvider {
                                                 })
                                                 .collect(),
                                             extensions: None,
+                                            usage: chunk
+                                                .usage
+                                                .as_ref()
+                                                .and_then(stream_usage::parse_openai_usage),
+                                            provider: None,
                                         }));
                                     }
                                     Err(e) => {
@@ -482,7 +495,7 @@ impl ModelProvider for LlamaCppProvider {
             })
             .flat_map(futures::stream::iter);
 
-        Ok(Box::pin(stream))
+        Ok(stream_usage::usage_once_at_end(stream))
     }
 }
 
@@ -514,5 +527,20 @@ mod tests {
         let pricing = provider.get_pricing("any-model").await.unwrap();
         assert_eq!(pricing.input_cost_per_1k, 0.0);
         assert_eq!(pricing.output_cost_per_1k, 0.0);
+    }
+
+    /// llama-server only sends its usage chunk when asked through `stream_options.include_usage`.
+    #[tokio::test]
+    async fn stream_reports_upstream_usage() {
+        use crate::openai_compatible::stream_usage::test_support::*;
+
+        let server = sse_server("/chat/completions", openai_stream(UsageAt::UsageOnlyChunk)).await;
+        let provider = LlamaCppProvider::with_base_url(server.uri());
+        let stream = provider
+            .stream_complete(stream_request("test-model"))
+            .await
+            .unwrap();
+        assert_openai_stream(&collect(stream).await);
+        assert!(asked_for_usage(&received_body(&server).await));
     }
 }

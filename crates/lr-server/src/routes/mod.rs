@@ -16,6 +16,7 @@ pub mod monitor_helpers;
 pub mod oauth;
 pub mod pipeline;
 pub mod responses;
+pub(crate) mod stream_usage;
 pub mod systemone;
 
 pub use audio::{audio_speech, audio_transcriptions, audio_translations};

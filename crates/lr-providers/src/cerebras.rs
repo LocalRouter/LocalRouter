@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use std::time::Instant;
 
+use crate::openai_compatible::stream_usage;
 use lr_types::{AppError, AppResult};
 
 use super::{
@@ -25,15 +26,25 @@ const CEREBRAS_API_BASE: &str = "https://api.cerebras.ai/v1";
 pub struct CerebrasProvider {
     client: ClientWithMiddleware,
     api_key: String,
+    base_url: String,
 }
 
 #[allow(dead_code)]
 impl CerebrasProvider {
     /// Create a new Cerebras provider with an API key
     pub fn new(api_key: String) -> AppResult<Self> {
+        Self::with_base_url(api_key, CEREBRAS_API_BASE.to_string())
+    }
+
+    /// Create a new Cerebras provider with a custom base URL (for testing)
+    pub fn with_base_url(api_key: String, base_url: String) -> AppResult<Self> {
         let client = crate::http_client::extended_client()?;
 
-        Ok(Self { client, api_key })
+        Ok(Self {
+            client,
+            api_key,
+            base_url: base_url.trim_end_matches('/').to_string(),
+        })
     }
 
     /// Create a new Cerebras provider from stored API key
@@ -97,6 +108,10 @@ struct OpenAIStreamChunk {
     created: i64,
     model: String,
     choices: Vec<OpenAIStreamChoice>,
+    /// Upstream usage, reported on the final chunk (or on every chunk,
+    /// cumulatively, by some upstreams).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    usage: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -132,7 +147,7 @@ impl ModelProvider for CerebrasProvider {
         // A bad API key returns 401, correctly treated as unhealthy.
         let result = self
             .client
-            .get(format!("{}/models/llama3.1-8b", CEREBRAS_API_BASE))
+            .get(format!("{}/models/llama3.1-8b", self.base_url))
             .header("Authorization", format!("Bearer {}", self.api_key))
             .send()
             .await;
@@ -182,7 +197,7 @@ impl ModelProvider for CerebrasProvider {
     }
 
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
-        let url = format!("{}/models", CEREBRAS_API_BASE);
+        let url = format!("{}/models", self.base_url);
 
         let response = self
             .client
@@ -245,7 +260,7 @@ impl ModelProvider for CerebrasProvider {
     }
 
     async fn complete(&self, request: CompletionRequest) -> AppResult<CompletionResponse> {
-        let url = format!("{}/chat/completions", CEREBRAS_API_BASE);
+        let url = format!("{}/chat/completions", self.base_url);
 
         let response = self
             .client
@@ -300,7 +315,7 @@ impl ModelProvider for CerebrasProvider {
         &self,
         request: CompletionRequest,
     ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>> {
-        let url = format!("{}/chat/completions", CEREBRAS_API_BASE);
+        let url = format!("{}/chat/completions", self.base_url);
 
         let response = self
             .client
@@ -368,6 +383,11 @@ impl ModelProvider for CerebrasProvider {
                                         })
                                         .collect(),
                                     extensions: None,
+                                    usage: cerebras_chunk
+                                        .usage
+                                        .as_ref()
+                                        .and_then(stream_usage::parse_openai_usage),
+                                    provider: None,
                                 };
                                 chunks.push(Ok(chunk));
                             }
@@ -390,7 +410,7 @@ impl ModelProvider for CerebrasProvider {
             futures::stream::iter(chunks)
         });
 
-        Ok(Box::pin(converted_stream))
+        Ok(stream_usage::usage_once_at_end(converted_stream))
     }
 }
 
@@ -410,5 +430,20 @@ mod tests {
         let provider = CerebrasProvider::new("test_key".to_string()).unwrap();
         let pricing = provider.get_pricing("llama3.1-70b").await.unwrap();
         assert!(pricing.input_cost_per_1k > 0.0);
+    }
+
+    /// Cerebras sends usage on its final chunk without being asked.
+    #[tokio::test]
+    async fn stream_reports_upstream_usage() {
+        use crate::openai_compatible::stream_usage::test_support::*;
+
+        let server = sse_server("/chat/completions", openai_stream(UsageAt::FinishChunk)).await;
+        let provider = CerebrasProvider::with_base_url("k".to_string(), server.uri()).unwrap();
+        let stream = provider
+            .stream_complete(stream_request("test-model"))
+            .await
+            .unwrap();
+        assert_openai_stream(&collect(stream).await);
+        assert!(!asked_for_usage(&received_body(&server).await));
     }
 }

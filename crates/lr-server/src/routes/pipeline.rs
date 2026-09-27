@@ -1976,6 +1976,7 @@ pub(crate) fn convert_to_provider_request(
                     name: tool.function.name.clone(),
                     description: tool.function.description.clone(),
                     parameters: tool.function.parameters.clone(),
+                    strict: tool.function.strict,
                 },
             })
             .collect()
@@ -2456,6 +2457,24 @@ pub(crate) async fn run_turn_pipeline(
 
 #[cfg(test)]
 mod tests {
+
+    /// A client's tool `strict` reaches the provider request unchanged.
+    #[test]
+    fn tool_strict_survives_conversion() {
+        let req: crate::types::ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+            "model": "openai/gpt-5.5",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [
+                {"type": "function", "function": {"name": "a", "parameters": {"type": "object"}}},
+                {"type": "function", "function": {"name": "b", "parameters": {"type": "object"}, "strict": true}}
+            ]
+        }))
+        .unwrap();
+        let out = super::convert_to_provider_request(&req).unwrap();
+        let tools = out.tools.unwrap();
+        assert_eq!(tools[0].function.strict, None);
+        assert_eq!(tools[1].function.strict, Some(true));
+    }
 
     #[test]
     fn json_string_leaves_visits_only_strings() {

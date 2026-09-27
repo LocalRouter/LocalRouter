@@ -95,6 +95,7 @@ fn test_completion_request_with_tools() {
                     },
                     "required": ["location"]
                 }),
+                strict: None,
             },
         }]),
         tool_choice: Some(ToolChoice::Auto("auto".to_string())),
@@ -154,6 +155,7 @@ fn test_tool_definition_serialization() {
                     "expression": {"type": "string"}
                 }
             }),
+            strict: None,
         },
     };
 

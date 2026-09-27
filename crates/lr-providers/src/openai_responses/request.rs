@@ -18,8 +18,13 @@
 //!   effort: Some(...) }`. When set we also request
 //!   `include: ["usage"]` so token counts come back on the stream.
 //! - `response_format: JsonSchema` → `text.format = JsonSchema`.
-//! - `tool_choice` hardcoded `"auto"` (Codex default; ChatGPT-backend
-//!   ignores other values).
+//! - `tool_choice`: the client's choice (`"auto"`, `"none"`,
+//!   `"required"`, or a specific function as `{"type": "function",
+//!   "name": ...}`), `"auto"` when unset.
+//! - Function tools always carry `strict`: the client's value, else
+//!   `false`. The Responses API treats a missing `strict` as `true`, which
+//!   would make every property required, while a Chat Completions tool
+//!   without `strict` is non-strict (Codex also sends `strict: false`).
 
 use super::types::{
     ContentItem, Reasoning, ResponseItem, ResponsesApiRequest, TextControls, TextFormat,
@@ -146,7 +151,7 @@ pub fn translate_completion_request(req: &CompletionRequest, store: bool) -> Res
         instructions,
         input,
         tools,
-        tool_choice: "auto".into(),
+        tool_choice: tool_choice_to_value(req.tool_choice.as_ref()),
         parallel_tool_calls: req.parallel_tool_calls.unwrap_or(true),
         reasoning,
         store,
@@ -201,14 +206,30 @@ fn chat_content_to_items(content: &ChatMessageContent, is_output: bool) -> Vec<C
     }
 }
 
+/// Map a Chat Completions `tool_choice` to the Responses API's form: mode
+/// strings pass through, a specific function becomes `{"type":
+/// "function", "name": ...}` (no nested `function` object).
+fn tool_choice_to_value(choice: Option<&crate::ToolChoice>) -> serde_json::Value {
+    match choice {
+        None => json!("auto"),
+        Some(crate::ToolChoice::Auto(mode)) => json!(mode),
+        Some(crate::ToolChoice::Specific {
+            tool_type,
+            function,
+        }) => json!({"type": tool_type, "name": function.name}),
+    }
+}
+
 /// Convert our internal `Tool` into the Responses API's tool wire
-/// format (`{ "type": "function", "name": ..., "parameters": ... }`).
+/// format (`{ "type": "function", "name": ..., "parameters": ...,
+/// "strict": ... }`).
 fn tool_to_value(tool: &crate::Tool) -> serde_json::Value {
     json!({
         "type": tool.tool_type,
         "name": tool.function.name,
         "description": tool.function.description,
         "parameters": tool.function.parameters,
+        "strict": tool.function.strict.unwrap_or(false),
     })
 }
 
@@ -276,7 +297,7 @@ mod tests {
         assert_eq!(out.instructions, "Be helpful.");
         assert_eq!(out.input.len(), 1);
         assert!(matches!(&out.input[0], ResponseItem::Message { role, .. } if role == "user"));
-        assert_eq!(out.tool_choice, "auto");
+        assert_eq!(out.tool_choice, serde_json::json!("auto"));
     }
 
     #[test]
@@ -385,11 +406,87 @@ mod tests {
                 name: "search".into(),
                 description: Some("search the web".into()),
                 parameters: serde_json::json!({"type":"object"}),
+                strict: None,
             },
         }]);
         let out = plain(req);
         assert_eq!(out.tools.len(), 1);
         assert_eq!(out.tools[0]["type"], "function");
         assert_eq!(out.tools[0]["name"], "search");
+    }
+
+    /// The Responses API treats a missing `strict` as true (every property
+    /// required). A Chat Completions tool without `strict` is non-strict,
+    /// so the translation must say `false`, and keep an explicit value.
+    #[test]
+    fn tool_strict_is_always_explicit() {
+        let tool = |strict: Option<bool>| Tool {
+            tool_type: "function".into(),
+            function: crate::FunctionDefinition {
+                name: "record".into(),
+                description: None,
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {"a": {"type": "string"}, "b": {"type": "string"}},
+                    "required": ["a"]
+                }),
+                strict,
+            },
+        };
+        let mut req = base_request(vec![msg("user", "hi")]);
+        req.tools = Some(vec![tool(None), tool(Some(true)), tool(Some(false))]);
+        let out = plain(req);
+        assert_eq!(out.tools[0]["strict"], false);
+        assert_eq!(out.tools[1]["strict"], true);
+        assert_eq!(out.tools[2]["strict"], false);
+        // The schema is untouched: optional fields stay optional.
+        assert_eq!(
+            out.tools[0]["parameters"]["required"],
+            serde_json::json!(["a"])
+        );
+    }
+
+    #[test]
+    fn tool_choice_follows_the_client() {
+        let with = |choice: Option<crate::ToolChoice>| {
+            let mut req = base_request(vec![msg("user", "hi")]);
+            req.tool_choice = choice;
+            plain(req).tool_choice
+        };
+        assert_eq!(with(None), serde_json::json!("auto"));
+        for mode in ["auto", "none", "required"] {
+            assert_eq!(
+                with(Some(crate::ToolChoice::Auto(mode.into()))),
+                serde_json::json!(mode)
+            );
+        }
+        assert_eq!(
+            with(Some(crate::ToolChoice::Specific {
+                tool_type: "function".into(),
+                function: crate::FunctionName {
+                    name: "record".into()
+                },
+            })),
+            serde_json::json!({"type": "function", "name": "record"})
+        );
+    }
+
+    /// A client's `strict` survives parsing and is omitted when unset.
+    #[test]
+    fn function_definition_strict_round_trip() {
+        let with: crate::FunctionDefinition = serde_json::from_value(serde_json::json!({
+            "name": "f", "parameters": {"type": "object"}, "strict": true
+        }))
+        .unwrap();
+        assert_eq!(with.strict, Some(true));
+        let without: crate::FunctionDefinition = serde_json::from_value(serde_json::json!({
+            "name": "f", "parameters": {"type": "object"}
+        }))
+        .unwrap();
+        assert_eq!(without.strict, None);
+        assert!(serde_json::to_value(&without)
+            .unwrap()
+            .get("strict")
+            .is_none());
     }
 }
