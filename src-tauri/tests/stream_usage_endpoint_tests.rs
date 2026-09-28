@@ -152,8 +152,17 @@ async fn start_test_server(upstream_url: String) -> (String, String, Arc<Metrics
 
 /// The `data:` payloads of an SSE body.
 async fn stream_events(base_url: &str, secret: &str, body: serde_json::Value) -> Vec<String> {
+    stream_events_at(base_url, "/v1/chat/completions", secret, body).await
+}
+
+async fn stream_events_at(
+    base_url: &str,
+    path: &str,
+    secret: &str,
+    body: serde_json::Value,
+) -> Vec<String> {
     let text = reqwest::Client::new()
-        .post(format!("{}/v1/chat/completions", base_url))
+        .post(format!("{}{}", base_url, path))
         .bearer_auth(secret)
         .json(&body)
         .send()
@@ -242,4 +251,45 @@ async fn without_include_usage_no_usage_chunk_is_sent() {
             "{events:?}"
         );
     }
+}
+
+#[tokio::test]
+async fn legacy_completions_honour_include_usage() {
+    let upstream = spawn_mock_upstream().await;
+    let (base_url, secret, _metrics) = start_test_server(upstream).await;
+
+    let body = serde_json::json!({
+        "model": "mockai/test-model",
+        "prompt": "say hello",
+        "stream": true,
+        "stream_options": { "include_usage": true },
+    });
+    let events = stream_events_at(&base_url, "/v1/completions", &secret, body).await;
+    assert_eq!(
+        events.last().map(String::as_str),
+        Some("[DONE]"),
+        "{events:?}"
+    );
+    let usage_chunk: serde_json::Value =
+        serde_json::from_str(&events[events.len() - 2]).expect("usage chunk is JSON");
+    assert_eq!(usage_chunk["object"], "text_completion");
+    assert_eq!(usage_chunk["choices"], serde_json::json!([]));
+    assert_eq!(usage_chunk["usage"]["prompt_tokens"], PROMPT_TOKENS);
+    assert_eq!(usage_chunk["usage"]["completion_tokens"], COMPLETION_TOKENS);
+
+    let body = serde_json::json!({
+        "model": "mockai/test-model",
+        "prompt": "say hello",
+        "stream": true,
+    });
+    let events = stream_events_at(&base_url, "/v1/completions", &secret, body).await;
+    assert_eq!(
+        events.last().map(String::as_str),
+        Some("[DONE]"),
+        "{events:?}"
+    );
+    assert!(
+        events.iter().all(|e| !e.contains("\"usage\"")),
+        "{events:?}"
+    );
 }

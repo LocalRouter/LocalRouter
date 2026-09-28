@@ -757,6 +757,7 @@ impl ProviderFactory for OpenAICompatibleProviderFactory {
 
         Ok(Arc::new(
             OpenAICompatibleProvider::new(instance_name, base_url, api_key)
+                .with_provider_type(self.provider_type())
                 .with_extra_headers(extra_headers),
         ))
     }
@@ -1986,11 +1987,14 @@ impl ProviderFactory for GitHubModelsProviderFactory {
             .ok_or_else(|| AppError::Config("api_key is required".to_string()))?
             .clone();
 
-        Ok(Arc::new(OpenAICompatibleProvider::new(
-            "github_models".to_string(),
-            "https://models.inference.ai.azure.com".to_string(),
-            Some(api_key),
-        )))
+        Ok(Arc::new(
+            OpenAICompatibleProvider::new(
+                "github_models".to_string(),
+                "https://models.inference.ai.azure.com".to_string(),
+                Some(api_key),
+            )
+            .with_provider_type(self.provider_type()),
+        ))
     }
 
     fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
@@ -2069,11 +2073,14 @@ impl ProviderFactory for NvidiaNimProviderFactory {
             .ok_or_else(|| AppError::Config("api_key is required".to_string()))?
             .clone();
 
-        Ok(Arc::new(OpenAICompatibleProvider::new(
-            "nvidia_nim".to_string(),
-            "https://integrate.api.nvidia.com/v1".to_string(),
-            Some(api_key),
-        )))
+        Ok(Arc::new(
+            OpenAICompatibleProvider::new(
+                "nvidia_nim".to_string(),
+                "https://integrate.api.nvidia.com/v1".to_string(),
+                Some(api_key),
+            )
+            .with_provider_type(self.provider_type()),
+        ))
     }
 
     fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
@@ -2169,7 +2176,8 @@ impl ProviderFactory for CloudflareAIProviderFactory {
             "cloudflare_ai".to_string(),
             base_url.clone(),
             Some(api_key.clone()),
-        );
+        )
+        .with_provider_type(self.provider_type());
         // TypeSafe Jev is a partner model served through /ai/run on the account.
         if let Some(gateway) = crate::systemone::SystemOneGateway::cloudflare(&base_url, &api_key)?
         {
@@ -2288,6 +2296,7 @@ impl ProviderFactory for LlmGatewayProviderFactory {
         let gateway = crate::systemone::SystemOneGateway::llmgateway(&base_url, &api_key)?;
         Ok(Arc::new(
             OpenAICompatibleProvider::new("llmgateway".to_string(), base_url, Some(api_key))
+                .with_provider_type(self.provider_type())
                 .with_systemone_gateway(gateway),
         ))
     }
@@ -2361,6 +2370,7 @@ impl ProviderFactory for VercelAiGatewayProviderFactory {
         let gateway = crate::systemone::SystemOneGateway::vercel(&base_url, &api_key)?;
         Ok(Arc::new(
             OpenAICompatibleProvider::new("vercel_ai_gateway".to_string(), base_url, Some(api_key))
+                .with_provider_type(self.provider_type())
                 .with_systemone_gateway(gateway),
         ))
     }
@@ -2437,11 +2447,14 @@ impl ProviderFactory for Llm7ProviderFactory {
 
         let api_key = config.get("api_key").cloned();
 
-        Ok(Arc::new(OpenAICompatibleProvider::new(
-            "llm7".to_string(),
-            "https://api.llm7.io/v1".to_string(),
-            api_key,
-        )))
+        Ok(Arc::new(
+            OpenAICompatibleProvider::new(
+                "llm7".to_string(),
+                "https://api.llm7.io/v1".to_string(),
+                api_key,
+            )
+            .with_provider_type(self.provider_type()),
+        ))
     }
 
     fn validate_config(&self, _config: &HashMap<String, String>) -> AppResult<()> {
@@ -2517,11 +2530,14 @@ impl ProviderFactory for KlusterAIProviderFactory {
             .ok_or_else(|| AppError::Config("api_key is required".to_string()))?
             .clone();
 
-        Ok(Arc::new(OpenAICompatibleProvider::new(
-            "kluster_ai".to_string(),
-            "https://api.kluster.ai/v1".to_string(),
-            Some(api_key),
-        )))
+        Ok(Arc::new(
+            OpenAICompatibleProvider::new(
+                "kluster_ai".to_string(),
+                "https://api.kluster.ai/v1".to_string(),
+                Some(api_key),
+            )
+            .with_provider_type(self.provider_type()),
+        ))
     }
 
     fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
@@ -2597,11 +2613,14 @@ impl ProviderFactory for HuggingFaceProviderFactory {
             .ok_or_else(|| AppError::Config("api_key is required".to_string()))?
             .clone();
 
-        Ok(Arc::new(OpenAICompatibleProvider::new(
-            "huggingface".to_string(),
-            "https://router.huggingface.co/v1".to_string(),
-            Some(api_key),
-        )))
+        Ok(Arc::new(
+            OpenAICompatibleProvider::new(
+                "huggingface".to_string(),
+                "https://router.huggingface.co/v1".to_string(),
+                Some(api_key),
+            )
+            .with_provider_type(self.provider_type()),
+        ))
     }
 
     fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
@@ -2680,11 +2699,14 @@ impl ProviderFactory for ZhipuProviderFactory {
             .ok_or_else(|| AppError::Config("api_key is required".to_string()))?
             .clone();
 
-        Ok(Arc::new(OpenAICompatibleProvider::new(
-            "zhipu".to_string(),
-            "https://open.bigmodel.cn/api/paas/v4".to_string(),
-            Some(api_key),
-        )))
+        Ok(Arc::new(
+            OpenAICompatibleProvider::new(
+                "zhipu".to_string(),
+                "https://open.bigmodel.cn/api/paas/v4".to_string(),
+                Some(api_key),
+            )
+            .with_provider_type(self.provider_type()),
+        ))
     }
 
     fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
@@ -2766,11 +2788,14 @@ impl ProviderFactory for DigitalOceanProviderFactory {
             .ok_or_else(|| AppError::Config("api_key is required".to_string()))?
             .clone();
 
-        Ok(Arc::new(OpenAICompatibleProvider::new(
-            instance_name,
-            "https://inference.do-ai.run/v1".to_string(),
-            Some(api_key),
-        )))
+        Ok(Arc::new(
+            OpenAICompatibleProvider::new(
+                instance_name,
+                "https://inference.do-ai.run/v1".to_string(),
+                Some(api_key),
+            )
+            .with_provider_type(self.provider_type()),
+        ))
     }
 
     fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
@@ -2850,11 +2875,14 @@ impl ProviderFactory for GitHubCopilotProviderFactory {
             })?;
 
         // GitHub Copilot uses a custom endpoint
-        Ok(Arc::new(OpenAICompatibleProvider::new(
-            "github-copilot".to_string(),
-            "https://api.githubcopilot.com".to_string(),
-            Some(access_token),
-        )))
+        Ok(Arc::new(
+            OpenAICompatibleProvider::new(
+                "github-copilot".to_string(),
+                "https://api.githubcopilot.com".to_string(),
+                Some(access_token),
+            )
+            .with_provider_type(self.provider_type()),
+        ))
     }
 
     fn validate_config(&self, _config: &HashMap<String, String>) -> AppResult<()> {
@@ -2966,11 +2994,14 @@ impl ProviderFactory for OpenCodeZenProviderFactory {
             .ok_or_else(|| AppError::Config("api_key is required".to_string()))?
             .clone();
 
-        Ok(Arc::new(OpenAICompatibleProvider::new(
-            "opencode_zen".to_string(),
-            "https://opencode.ai/zen/v1".to_string(),
-            Some(api_key),
-        )))
+        Ok(Arc::new(
+            OpenAICompatibleProvider::new(
+                "opencode_zen".to_string(),
+                "https://opencode.ai/zen/v1".to_string(),
+                Some(api_key),
+            )
+            .with_provider_type(self.provider_type()),
+        ))
     }
 
     fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
@@ -3039,11 +3070,14 @@ impl ProviderFactory for OpenCodeGoProviderFactory {
             .ok_or_else(|| AppError::Config("api_key is required".to_string()))?
             .clone();
 
-        Ok(Arc::new(OpenAICompatibleProvider::new(
-            "opencode_go".to_string(),
-            "https://opencode.ai/zen/go/v1".to_string(),
-            Some(api_key),
-        )))
+        Ok(Arc::new(
+            OpenAICompatibleProvider::new(
+                "opencode_go".to_string(),
+                "https://opencode.ai/zen/go/v1".to_string(),
+                Some(api_key),
+            )
+            .with_provider_type(self.provider_type()),
+        ))
     }
 
     fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {

@@ -304,6 +304,8 @@ impl OpenAIProvider {
                 input_cost_per_1k: 0.01,
                 output_cost_per_1k: 0.03,
                 reasoning_cost_per_1k: None,
+                cache_read_cost_per_1k: None,
+                cache_write_cost_per_1k: None,
                 currency: "USD".to_string(),
             }),
             "gpt-4-turbo-preview" | "gpt-4-0125-preview" | "gpt-4-1106-preview" => {
@@ -311,6 +313,8 @@ impl OpenAIProvider {
                     input_cost_per_1k: 0.01,
                     output_cost_per_1k: 0.03,
                     reasoning_cost_per_1k: None,
+                    cache_read_cost_per_1k: None,
+                    cache_write_cost_per_1k: None,
                     currency: "USD".to_string(),
                 })
             }
@@ -319,12 +323,16 @@ impl OpenAIProvider {
                 input_cost_per_1k: 0.03,
                 output_cost_per_1k: 0.06,
                 reasoning_cost_per_1k: None,
+                cache_read_cost_per_1k: None,
+                cache_write_cost_per_1k: None,
                 currency: "USD".to_string(),
             }),
             "gpt-4-32k" | "gpt-4-32k-0613" => Some(PricingInfo {
                 input_cost_per_1k: 0.06,
                 output_cost_per_1k: 0.12,
                 reasoning_cost_per_1k: None,
+                cache_read_cost_per_1k: None,
+                cache_write_cost_per_1k: None,
                 currency: "USD".to_string(),
             }),
             // GPT-3.5 Turbo models
@@ -332,12 +340,16 @@ impl OpenAIProvider {
                 input_cost_per_1k: 0.0005,
                 output_cost_per_1k: 0.0015,
                 reasoning_cost_per_1k: None,
+                cache_read_cost_per_1k: None,
+                cache_write_cost_per_1k: None,
                 currency: "USD".to_string(),
             }),
             "gpt-3.5-turbo-instruct" => Some(PricingInfo {
                 input_cost_per_1k: 0.0015,
                 output_cost_per_1k: 0.002,
                 reasoning_cost_per_1k: None,
+                cache_read_cost_per_1k: None,
+                cache_write_cost_per_1k: None,
                 currency: "USD".to_string(),
             }),
             // GPT-4o models (newest)
@@ -346,6 +358,8 @@ impl OpenAIProvider {
                     input_cost_per_1k: 0.0025,
                     output_cost_per_1k: 0.01,
                     reasoning_cost_per_1k: None,
+                    cache_read_cost_per_1k: None,
+                    cache_write_cost_per_1k: None,
                     currency: "USD".to_string(),
                 })
             }
@@ -353,6 +367,8 @@ impl OpenAIProvider {
                 input_cost_per_1k: 0.00015,
                 output_cost_per_1k: 0.0006,
                 reasoning_cost_per_1k: None,
+                cache_read_cost_per_1k: None,
+                cache_write_cost_per_1k: None,
                 currency: "USD".to_string(),
             }),
             // o1 models (reasoning models)
@@ -360,12 +376,16 @@ impl OpenAIProvider {
                 input_cost_per_1k: 0.015,
                 output_cost_per_1k: 0.06,
                 reasoning_cost_per_1k: None,
+                cache_read_cost_per_1k: None,
+                cache_write_cost_per_1k: None,
                 currency: "USD".to_string(),
             }),
             "o1-mini" | "o1-mini-2024-09-12" => Some(PricingInfo {
                 input_cost_per_1k: 0.003,
                 output_cost_per_1k: 0.012,
                 reasoning_cost_per_1k: None,
+                cache_read_cost_per_1k: None,
+                cache_write_cost_per_1k: None,
                 currency: "USD".to_string(),
             }),
             _ => {
@@ -838,6 +858,8 @@ impl ModelProvider for OpenAIProvider {
                 input_cost_per_1k: catalog_model.pricing.prompt_cost_per_1k(),
                 output_cost_per_1k: catalog_model.pricing.completion_cost_per_1k(),
                 reasoning_cost_per_1k: catalog_model.pricing.reasoning_cost_per_1k(),
+                cache_read_cost_per_1k: catalog_model.pricing.cache_read_cost_per_1k(),
+                cache_write_cost_per_1k: catalog_model.pricing.cache_write_cost_per_1k(),
                 currency: catalog_model.pricing.currency.to_string(),
             });
         }

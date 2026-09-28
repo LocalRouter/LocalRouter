@@ -74,6 +74,8 @@ impl ListedModel {
                 input_cost_per_1k: input_per_1k,
                 output_cost_per_1k: 0.0,
                 reasoning_cost_per_1k: None,
+                cache_read_cost_per_1k: None,
+                cache_write_cost_per_1k: None,
                 currency: "USD".to_string(),
             }),
             decision: true,
@@ -473,6 +475,8 @@ pub fn parse_listing(body: &Value, is_decision: impl Fn(&Value) -> bool) -> Vec<
                     input_cost_per_1k: input,
                     output_cost_per_1k: output,
                     reasoning_cost_per_1k: None,
+                    cache_read_cost_per_1k: None,
+                    cache_write_cost_per_1k: None,
                     currency: "USD".to_string(),
                 })
             });

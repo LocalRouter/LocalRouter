@@ -114,6 +114,16 @@ impl CatalogPricing {
         self.cache_write_per_token.map(|c| c * 1_000_000.0)
     }
 
+    /// Get cache read cost per 1K tokens (if available)
+    pub fn cache_read_cost_per_1k(&self) -> Option<f64> {
+        self.cache_read_per_token.map(|c| c * 1000.0)
+    }
+
+    /// Get cache write cost per 1K tokens (if available)
+    pub fn cache_write_cost_per_1k(&self) -> Option<f64> {
+        self.cache_write_per_token.map(|c| c * 1000.0)
+    }
+
     /// Get reasoning cost per 1K tokens (if available)
     pub fn reasoning_cost_per_1k(&self) -> Option<f64> {
         self.reasoning_per_token.map(|c| c * 1000.0)

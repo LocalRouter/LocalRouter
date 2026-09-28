@@ -28,6 +28,12 @@ const OAUTH_KEYCHAIN_SERVICE: &str = "LocalRouter-ProviderTokens";
 const OAUTH_PROVIDER_ID: &str = "anthropic-claude";
 
 /// Anthropic provider for Claude models
+/// Prompt-cache read price as a multiple of the input price
+/// (docs.anthropic.com/en/docs/build-with-claude/prompt-caching#pricing)
+const CACHE_READ_MULTIPLIER: f64 = 0.1;
+/// Prompt-cache write price (5-minute cache) as a multiple of the input price
+const CACHE_WRITE_MULTIPLIER: f64 = 1.25;
+
 pub struct AnthropicProvider {
     client: ClientWithMiddleware,
     api_key: String,
@@ -401,55 +407,23 @@ impl AnthropicProvider {
 
     /// Get pricing for a model
     fn get_model_pricing(model_id: &str) -> PricingInfo {
-        match model_id {
-            "claude-opus-4-20250514" => PricingInfo {
-                input_cost_per_1k: 0.015,
-                output_cost_per_1k: 0.075,
-                reasoning_cost_per_1k: None,
-                currency: "USD".to_string(),
-            },
-            "claude-sonnet-4-20250514" => PricingInfo {
-                input_cost_per_1k: 0.003,
-                output_cost_per_1k: 0.015,
-                reasoning_cost_per_1k: None,
-                currency: "USD".to_string(),
-            },
-            "claude-3-5-sonnet-20241022" => PricingInfo {
-                input_cost_per_1k: 0.003,
-                output_cost_per_1k: 0.015,
-                reasoning_cost_per_1k: None,
-                currency: "USD".to_string(),
-            },
-            "claude-3-5-haiku-20241022" => PricingInfo {
-                input_cost_per_1k: 0.001,
-                output_cost_per_1k: 0.005,
-                reasoning_cost_per_1k: None,
-                currency: "USD".to_string(),
-            },
-            "claude-3-opus-20240229" => PricingInfo {
-                input_cost_per_1k: 0.015,
-                output_cost_per_1k: 0.075,
-                reasoning_cost_per_1k: None,
-                currency: "USD".to_string(),
-            },
-            "claude-3-sonnet-20240229" => PricingInfo {
-                input_cost_per_1k: 0.003,
-                output_cost_per_1k: 0.015,
-                reasoning_cost_per_1k: None,
-                currency: "USD".to_string(),
-            },
-            "claude-3-haiku-20240307" => PricingInfo {
-                input_cost_per_1k: 0.00025,
-                output_cost_per_1k: 0.00125,
-                reasoning_cost_per_1k: None,
-                currency: "USD".to_string(),
-            },
-            _ => PricingInfo {
-                input_cost_per_1k: 0.0,
-                output_cost_per_1k: 0.0,
-                reasoning_cost_per_1k: None,
-                currency: "USD".to_string(),
-            },
+        let (input, output) = match model_id {
+            "claude-opus-4-20250514" => (0.015, 0.075),
+            "claude-sonnet-4-20250514" => (0.003, 0.015),
+            "claude-3-5-sonnet-20241022" => (0.003, 0.015),
+            "claude-3-5-haiku-20241022" => (0.001, 0.005),
+            "claude-3-opus-20240229" => (0.015, 0.075),
+            "claude-3-sonnet-20240229" => (0.003, 0.015),
+            "claude-3-haiku-20240307" => (0.00025, 0.00125),
+            _ => (0.0, 0.0),
+        };
+        PricingInfo {
+            input_cost_per_1k: input,
+            output_cost_per_1k: output,
+            reasoning_cost_per_1k: None,
+            cache_read_cost_per_1k: Some(input * CACHE_READ_MULTIPLIER),
+            cache_write_cost_per_1k: Some(input * CACHE_WRITE_MULTIPLIER),
+            currency: "USD".to_string(),
         }
     }
 }
@@ -564,6 +538,12 @@ impl ModelProvider for AnthropicProvider {
                 input_cost_per_1k: catalog_model.pricing.prompt_cost_per_1k(),
                 output_cost_per_1k: catalog_model.pricing.completion_cost_per_1k(),
                 reasoning_cost_per_1k: catalog_model.pricing.reasoning_cost_per_1k(),
+                cache_read_cost_per_1k: catalog_model.pricing.cache_read_cost_per_1k().or(Some(
+                    catalog_model.pricing.prompt_cost_per_1k() * CACHE_READ_MULTIPLIER,
+                )),
+                cache_write_cost_per_1k: catalog_model.pricing.cache_write_cost_per_1k().or(Some(
+                    catalog_model.pricing.prompt_cost_per_1k() * CACHE_WRITE_MULTIPLIER,
+                )),
                 currency: catalog_model.pricing.currency.to_string(),
             });
         }
@@ -731,14 +711,12 @@ impl ModelProvider for AnthropicProvider {
                 finish_reason,
                 logprobs: None, // Anthropic does not support logprobs
             }],
-            usage: TokenUsage {
-                prompt_tokens: anthropic_response.usage.input_tokens,
-                completion_tokens: anthropic_response.usage.output_tokens,
-                total_tokens: anthropic_response.usage.input_tokens
-                    + anthropic_response.usage.output_tokens,
-                prompt_tokens_details: None,
-                completion_tokens_details: None,
-            },
+            usage: token_usage(
+                anthropic_response.usage.input_tokens,
+                anthropic_response.usage.output_tokens,
+                anthropic_response.usage.cache_creation_input_tokens,
+                anthropic_response.usage.cache_read_input_tokens,
+            ),
             system_fingerprint: None,
             service_tier: None,
             extensions: None,
@@ -1297,6 +1275,10 @@ enum AnthropicResponseContent {
 struct AnthropicUsage {
     input_tokens: u32,
     output_tokens: u32,
+    #[serde(default)]
+    cache_creation_input_tokens: Option<u32>,
+    #[serde(default)]
+    cache_read_input_tokens: Option<u32>,
 }
 
 // Anthropic Models API response types
@@ -1376,28 +1358,44 @@ impl AnthropicStreamUsage {
             .or(self.cache_read_input_tokens);
     }
 
-    /// `prompt_tokens` is the uncached input, as in non-streaming
-    /// responses; cache reads and writes are broken out in
-    /// `prompt_tokens_details`.
     fn to_token_usage(self) -> Option<TokenUsage> {
         if self.input_tokens.is_none() && self.output_tokens.is_none() {
             return None;
         }
-        let prompt_tokens = self.input_tokens.unwrap_or(0);
-        let completion_tokens = self.output_tokens.unwrap_or(0);
-        let has_cache =
-            self.cache_creation_input_tokens.is_some() || self.cache_read_input_tokens.is_some();
-        Some(TokenUsage {
-            prompt_tokens,
-            completion_tokens,
-            total_tokens: prompt_tokens.saturating_add(completion_tokens),
-            prompt_tokens_details: has_cache.then_some(super::PromptTokensDetails {
-                cached_tokens: None,
-                cache_creation_tokens: self.cache_creation_input_tokens,
-                cache_read_tokens: self.cache_read_input_tokens,
-            }),
-            completion_tokens_details: None,
-        })
+        Some(token_usage(
+            self.input_tokens.unwrap_or(0),
+            self.output_tokens.unwrap_or(0),
+            self.cache_creation_input_tokens,
+            self.cache_read_input_tokens,
+        ))
+    }
+}
+
+/// Anthropic reports `input_tokens` without the cached part; cache reads
+/// and writes come separately. `prompt_tokens` here is the whole prompt,
+/// with reads and writes broken out as parts of it (`cached_tokens` /
+/// `cache_read_tokens`, `cache_creation_tokens`), the same shape as every
+/// other provider, so cost charges each part at its own rate.
+fn token_usage(
+    input_tokens: u32,
+    output_tokens: u32,
+    cache_creation: Option<u32>,
+    cache_read: Option<u32>,
+) -> TokenUsage {
+    let prompt_tokens = input_tokens
+        .saturating_add(cache_creation.unwrap_or(0))
+        .saturating_add(cache_read.unwrap_or(0));
+    let has_cache = cache_creation.is_some_and(|t| t > 0) || cache_read.is_some_and(|t| t > 0);
+    TokenUsage {
+        prompt_tokens,
+        completion_tokens: output_tokens,
+        total_tokens: prompt_tokens.saturating_add(output_tokens),
+        prompt_tokens_details: has_cache.then_some(super::PromptTokensDetails {
+            cached_tokens: cache_read,
+            cache_creation_tokens: cache_creation,
+            cache_read_tokens: cache_read,
+        }),
+        completion_tokens_details: None,
     }
 }
 
@@ -1656,6 +1654,8 @@ mod tests {
             usage: AnthropicUsage {
                 input_tokens: 100,
                 output_tokens: 50,
+                cache_creation_input_tokens: None,
+                cache_read_input_tokens: None,
             },
         };
 
@@ -1715,6 +1715,8 @@ mod tests {
             usage: AnthropicUsage {
                 input_tokens: 100,
                 output_tokens: 50,
+                cache_creation_input_tokens: None,
+                cache_read_input_tokens: None,
             },
         };
 
@@ -1958,10 +1960,12 @@ data: {\"type\":\"message_stop\"}\n\
                 usage.completion_tokens,
                 usage.total_tokens
             ),
-            (25, 15, 40)
+            // The whole prompt: 25 uncached + 100 written + 2000 read
+            (2125, 15, 2140)
         );
         let details = usage.prompt_tokens_details.unwrap();
         assert_eq!(details.cache_read_tokens, Some(2000));
+        assert_eq!(details.cached_tokens, Some(2000));
         assert_eq!(details.cache_creation_tokens, Some(100));
     }
 
@@ -2006,6 +2010,38 @@ data: {\"type\":\"message_stop\"}\n\
             ),
             (34, 42, 76)
         );
+    }
+
+    #[test]
+    fn usage_counts_cached_prompt_parts() {
+        let usage = token_usage(25, 15, Some(100), Some(2000));
+        assert_eq!(usage.prompt_tokens, 2125);
+        assert_eq!(usage.total_tokens, 2140);
+        // At claude-sonnet-4 rates: 25 at $3/M, 100 at $3.75/M, 2000 at
+        // $0.30/M, 15 at $15/M
+        let pricing = AnthropicProvider::get_model_pricing("claude-sonnet-4-20250514");
+        let cost = pricing.cost(&usage);
+        let expected = 25.0 * 3e-6 + 100.0 * 3.75e-6 + 2000.0 * 0.3e-6 + 15.0 * 15e-6;
+        assert!((cost - expected).abs() < 1e-12, "{cost} vs {expected}");
+
+        let plain = token_usage(40, 2, Some(0), Some(0));
+        assert_eq!(plain.prompt_tokens, 40);
+        assert!(plain.prompt_tokens_details.is_none());
+    }
+
+    #[test]
+    fn non_streaming_usage_includes_cache_fields() {
+        let usage: AnthropicUsage = serde_json::from_str(
+            r#"{"input_tokens":10,"output_tokens":3,"cache_creation_input_tokens":20,"cache_read_input_tokens":300}"#,
+        )
+        .unwrap();
+        let usage = token_usage(
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.cache_creation_input_tokens,
+            usage.cache_read_input_tokens,
+        );
+        assert_eq!((usage.prompt_tokens, usage.total_tokens), (330, 333));
     }
 
     #[tokio::test]

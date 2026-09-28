@@ -336,6 +336,8 @@ impl ModelProvider for TogetherAIProvider {
                 input_cost_per_1k: 0.005,  // $5 per 1M tokens
                 output_cost_per_1k: 0.015, // $15 per 1M tokens
                 reasoning_cost_per_1k: None,
+                cache_read_cost_per_1k: None,
+                cache_write_cost_per_1k: None,
                 currency: "USD".to_string(),
             }
         } else if model.contains("70B") || model.contains("72B") {
@@ -343,6 +345,8 @@ impl ModelProvider for TogetherAIProvider {
                 input_cost_per_1k: 0.0009,  // $0.9 per 1M tokens
                 output_cost_per_1k: 0.0009, // $0.9 per 1M tokens
                 reasoning_cost_per_1k: None,
+                cache_read_cost_per_1k: None,
+                cache_write_cost_per_1k: None,
                 currency: "USD".to_string(),
             }
         } else {
@@ -350,6 +354,8 @@ impl ModelProvider for TogetherAIProvider {
                 input_cost_per_1k: 0.0002,  // $0.2 per 1M tokens
                 output_cost_per_1k: 0.0002, // $0.2 per 1M tokens
                 reasoning_cost_per_1k: None,
+                cache_read_cost_per_1k: None,
+                cache_write_cost_per_1k: None,
                 currency: "USD".to_string(),
             }
         };

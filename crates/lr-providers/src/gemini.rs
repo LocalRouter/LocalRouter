@@ -167,18 +167,24 @@ impl GeminiProvider {
                 input_cost_per_1k: 0.00125, // $1.25 per 1M tokens
                 output_cost_per_1k: 0.005,  // $5.00 per 1M tokens
                 reasoning_cost_per_1k: None,
+                cache_read_cost_per_1k: None,
+                cache_write_cost_per_1k: None,
                 currency: "USD".to_string(),
             },
             m if m.contains("gemini-1.5-flash") => PricingInfo {
                 input_cost_per_1k: 0.000075, // $0.075 per 1M tokens
                 output_cost_per_1k: 0.0003,  // $0.30 per 1M tokens
                 reasoning_cost_per_1k: None,
+                cache_read_cost_per_1k: None,
+                cache_write_cost_per_1k: None,
                 currency: "USD".to_string(),
             },
             m if m.contains("gemini-2.0-flash") => PricingInfo {
                 input_cost_per_1k: 0.0, // Free during preview
                 output_cost_per_1k: 0.0,
                 reasoning_cost_per_1k: None,
+                cache_read_cost_per_1k: None,
+                cache_write_cost_per_1k: None,
                 currency: "USD".to_string(),
             },
             _ => PricingInfo {
@@ -186,6 +192,8 @@ impl GeminiProvider {
                 input_cost_per_1k: 0.001,
                 output_cost_per_1k: 0.002,
                 reasoning_cost_per_1k: None,
+                cache_read_cost_per_1k: None,
+                cache_write_cost_per_1k: None,
                 currency: "USD".to_string(),
             },
         }
@@ -346,6 +354,8 @@ impl ModelProvider for GeminiProvider {
                 input_cost_per_1k: catalog_model.pricing.prompt_cost_per_1k(),
                 output_cost_per_1k: catalog_model.pricing.completion_cost_per_1k(),
                 reasoning_cost_per_1k: catalog_model.pricing.reasoning_cost_per_1k(),
+                cache_read_cost_per_1k: catalog_model.pricing.cache_read_cost_per_1k(),
+                cache_write_cost_per_1k: catalog_model.pricing.cache_write_cost_per_1k(),
                 currency: catalog_model.pricing.currency.to_string(),
             });
         }

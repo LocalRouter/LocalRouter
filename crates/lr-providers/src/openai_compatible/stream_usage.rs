@@ -38,6 +38,18 @@ const INCLUDE_USAGE_PROVIDER_TYPES: &[&str] = &[
     "llamacpp",
     // The bundled llama-server (same server as above).
     "llamacpp_embedded",
+    // huggingface.co/docs/inference-providers/tasks/chat-completion
+    // (stream_options.include_usage)
+    "huggingface",
+    // docs.digitalocean.com/reference/pydo/reference/inference/create_chat_completion
+    "digitalocean",
+    // theopenco/llmgateway apps/gateway/src/fallback.spec.ts sends it and
+    // expects 200; usage arrives in a final chunk before [DONE].
+    "llmgateway",
+    // opencode packages/console/app/src/routes/zen/util/provider/
+    // openai-compatible.ts forwards the body and sets include_usage itself.
+    "opencode_zen",
+    "opencode_go",
 ];
 
 /// Whether `provider_type` accepts `stream_options.include_usage`.
@@ -388,6 +400,36 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn include_usage_is_asked_only_where_documented() {
+        for accepted in [
+            "openai",
+            "groq",
+            "openrouter",
+            "llamacpp",
+            "llamacpp_embedded",
+            "huggingface",
+            "digitalocean",
+            "llmgateway",
+            "opencode_zen",
+            "opencode_go",
+        ] {
+            assert!(accepts_include_usage(accepted), "{accepted}");
+        }
+        // Mistral rejects unknown fields; the rest are undocumented
+        for not_asked in [
+            "mistral",
+            "openai_compatible",
+            "nvidia_nim",
+            "vercel_ai_gateway",
+            "cloudflare_ai",
+            "zhipu",
+            "lmstudio",
+        ] {
+            assert!(!accepts_include_usage(not_asked), "{not_asked}");
+        }
+    }
     use crate::{ChunkChoice, ChunkDelta};
     use serde_json::json;
 

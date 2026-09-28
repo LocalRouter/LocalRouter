@@ -1088,6 +1088,7 @@ fn build_stream_response(
                 prompt_tokens,
                 completion_tokens: totals.completion_tokens,
                 reasoning_tokens: totals.reasoning_tokens.map(u64::from),
+                prompt_tokens_details: tracked.prompt_tokens_details(),
                 finish_reason: finish_reason.clone(),
                 content_preview: assistant_text.clone(),
             },

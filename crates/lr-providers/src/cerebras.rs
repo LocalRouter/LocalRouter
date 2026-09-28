@@ -245,6 +245,8 @@ impl ModelProvider for CerebrasProvider {
                 input_cost_per_1k: 0.0006,  // $0.6 per 1M tokens
                 output_cost_per_1k: 0.0006, // $0.6 per 1M tokens
                 reasoning_cost_per_1k: None,
+                cache_read_cost_per_1k: None,
+                cache_write_cost_per_1k: None,
                 currency: "USD".to_string(),
             }
         } else {
@@ -252,6 +254,8 @@ impl ModelProvider for CerebrasProvider {
                 input_cost_per_1k: 0.0001,  // $0.1 per 1M tokens
                 output_cost_per_1k: 0.0001, // $0.1 per 1M tokens
                 reasoning_cost_per_1k: None,
+                cache_read_cost_per_1k: None,
+                cache_write_cost_per_1k: None,
                 currency: "USD".to_string(),
             }
         };

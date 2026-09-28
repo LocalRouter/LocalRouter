@@ -301,6 +301,8 @@ impl ModelProvider for GroqProvider {
                     input_cost_per_1k: 0.00059,  // $0.59 per 1M tokens
                     output_cost_per_1k: 0.00079, // $0.79 per 1M tokens
                     reasoning_cost_per_1k: None,
+                    cache_read_cost_per_1k: None,
+                    cache_write_cost_per_1k: None,
                     currency: "USD".to_string(),
                 }
             }
@@ -308,12 +310,16 @@ impl ModelProvider for GroqProvider {
                 input_cost_per_1k: 0.00005,  // $0.05 per 1M tokens
                 output_cost_per_1k: 0.00008, // $0.08 per 1M tokens
                 reasoning_cost_per_1k: None,
+                cache_read_cost_per_1k: None,
+                cache_write_cost_per_1k: None,
                 currency: "USD".to_string(),
             },
             "mixtral-8x7b-32768" => PricingInfo {
                 input_cost_per_1k: 0.00024,  // $0.24 per 1M tokens
                 output_cost_per_1k: 0.00024, // $0.24 per 1M tokens
                 reasoning_cost_per_1k: None,
+                cache_read_cost_per_1k: None,
+                cache_write_cost_per_1k: None,
                 currency: "USD".to_string(),
             },
             _ => PricingInfo {
@@ -321,6 +327,8 @@ impl ModelProvider for GroqProvider {
                 input_cost_per_1k: 0.0001,
                 output_cost_per_1k: 0.0001,
                 reasoning_cost_per_1k: None,
+                cache_read_cost_per_1k: None,
+                cache_write_cost_per_1k: None,
                 currency: "USD".to_string(),
             },
         };

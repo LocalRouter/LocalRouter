@@ -2101,7 +2101,7 @@ async fn handle_streaming_parallel(
 
             // End of stream for a client that is still there and allowed
             // to see it: optional usage chunk, then [DONE]
-            if gate_state == GuardrailGate::Passed && !event_tx.is_closed() {
+            if gate_state != GuardrailGate::Denied && !event_tx.is_closed() {
                 if include_usage {
                     let _ = event_tx
                         .send(Ok(usage_chunk_event(

@@ -572,78 +572,72 @@ impl ModelProvider for LMStudioProvider {
             )));
         }
 
-        use futures::StreamExt;
-
-        // Parse SSE (Server-Sent Events) stream
-        let stream = response
-            .bytes_stream()
-            .map(|result| -> Vec<AppResult<CompletionChunk>> {
-                match result {
-                    Ok(bytes) => {
-                        let text = String::from_utf8_lossy(&bytes);
-                        let mut chunks = Vec::new();
-
-                        // Parse SSE format: "data: {...}\n\n"
-                        for line in text.lines() {
-                            if let Some(json_str) = line.strip_prefix("data: ") {
-                                // Check for [DONE] marker
-                                if json_str.trim() == "[DONE]" {
-                                    continue;
-                                }
-
-                                // Parse JSON chunk
-                                match serde_json::from_str::<LMStudioStreamChunk>(json_str) {
-                                    Ok(lmstudio_chunk) => {
-                                        chunks.push(Ok(CompletionChunk {
-                                            id: lmstudio_chunk.id,
-                                            object: lmstudio_chunk.object,
-                                            created: lmstudio_chunk.created,
-                                            model: lmstudio_chunk.model,
-                                            choices: lmstudio_chunk
-                                                .choices
-                                                .into_iter()
-                                                .map(|choice| ChunkChoice {
-                                                    index: choice.index,
-                                                    delta: ChunkDelta {
-                                                        role: choice.delta.role,
-                                                        content: choice.delta.content,
-                                                        tool_calls: choice.delta.tool_calls,
-                                                        reasoning_content: None,
-                                                    },
-                                                    finish_reason: choice.finish_reason,
-                                                })
-                                                .collect(),
-                                            extensions: None,
-                                            usage: lmstudio_chunk
-                                                .usage
-                                                .as_ref()
-                                                .and_then(stream_usage::parse_openai_usage),
-                                            provider: None,
-                                        }));
-                                    }
-                                    Err(e) => {
-                                        chunks.push(Err(AppError::Provider(format!(
-                                            "Failed to parse LM Studio chunk: {}",
-                                            e
-                                        ))));
-                                    }
-                                }
-                            }
-                        }
-
-                        chunks
-                    }
-                    Err(e) => {
-                        vec![Err(AppError::Provider(
-                            crate::http_client::format_stream_error(&e),
-                        ))]
-                    }
-                }
-            })
-            .flat_map(futures::stream::iter);
-
-        Ok(stream_usage::usage_once_at_end(stream))
+        Ok(stream_usage::usage_once_at_end(parse_stream(
+            response.bytes_stream(),
+        )))
     }
+}
+
+/// Map a streamed SSE body to completion chunks. Lines are framed across
+/// reads by [`crate::sse_lines::lines`], so a frame split between network
+/// reads is parsed whole.
+fn parse_stream<S, B>(bytes: S) -> impl Stream<Item = AppResult<CompletionChunk>> + Send + 'static
+where
+    S: Stream<Item = Result<B, reqwest::Error>> + Send + 'static,
+    B: AsRef<[u8]>,
+{
+    use futures::StreamExt;
+
+    crate::sse_lines::lines(bytes).filter_map(|line| {
+        futures::future::ready(match line {
+            Ok(line) => parse_line(&line),
+            Err(e) => Some(Err(AppError::Provider(
+                crate::http_client::format_stream_error(&e),
+            ))),
+        })
+    })
+}
+
+/// Parse one SSE line (`data: {...}`). Other lines and `[DONE]` yield nothing.
+fn parse_line(line: &str) -> Option<AppResult<CompletionChunk>> {
+    let json_str = line.strip_prefix("data: ")?;
+    if json_str.trim() == "[DONE]" {
+        return None;
+    }
+    Some(
+        match serde_json::from_str::<LMStudioStreamChunk>(json_str) {
+            Ok(chunk) => Ok(CompletionChunk {
+                id: chunk.id,
+                object: chunk.object,
+                created: chunk.created,
+                model: chunk.model,
+                choices: chunk
+                    .choices
+                    .into_iter()
+                    .map(|choice| ChunkChoice {
+                        index: choice.index,
+                        delta: ChunkDelta {
+                            role: choice.delta.role,
+                            content: choice.delta.content,
+                            tool_calls: choice.delta.tool_calls,
+                            reasoning_content: None,
+                        },
+                        finish_reason: choice.finish_reason,
+                    })
+                    .collect(),
+                extensions: None,
+                usage: chunk
+                    .usage
+                    .as_ref()
+                    .and_then(stream_usage::parse_openai_usage),
+                provider: None,
+            }),
+            Err(e) => Err(AppError::Provider(format!(
+                "Failed to parse LM Studio chunk: {}",
+                e
+            ))),
+        },
+    )
 }
 
 #[cfg(test)]
@@ -707,5 +701,45 @@ mod tests {
             .unwrap();
         assert_openai_stream(&collect(stream).await);
         assert!(!asked_for_usage(&received_body(&server).await));
+    }
+
+    #[tokio::test]
+    async fn stream_survives_frames_split_across_reads() {
+        use crate::openai_compatible::stream_usage::test_support::*;
+        use crate::sse_lines::test_support::{reads_split_at, split_variants};
+
+        let body = openai_stream(UsageAt::FinishChunk);
+        for cuts in split_variants(&body) {
+            let stream =
+                stream_usage::usage_once_at_end(parse_stream(reads_split_at(&body, &cuts)));
+            assert_openai_stream(&collect(stream).await);
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_survives_utf8_char_and_usage_line_split_across_reads() {
+        use crate::openai_compatible::stream_usage::test_support::*;
+        use crate::sse_lines::test_support::reads_split_at;
+
+        let body = openai_stream(UsageAt::FinishChunk).replace("Hello", "H\u{e9}llo");
+        let mid_char = body.find('\u{e9}').unwrap() + 1;
+        let mid_usage = body.rfind("\"total_tokens\"").unwrap();
+        let stream = stream_usage::usage_once_at_end(parse_stream(reads_split_at(
+            &body,
+            &[mid_char, mid_usage],
+        )));
+        let chunks = collect(stream).await;
+        assert_eq!(chunks.len(), 5, "role, 2 content, finish, usage");
+        assert_eq!(content(&chunks), "H\u{e9}llo world");
+        assert_eq!(finish_reasons(&chunks), vec!["stop"]);
+        let usage = single_trailing_usage(&chunks);
+        assert_eq!(
+            (
+                usage.prompt_tokens,
+                usage.completion_tokens,
+                usage.total_tokens
+            ),
+            (12, 5, 17)
+        );
     }
 }
