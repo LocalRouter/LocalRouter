@@ -526,6 +526,10 @@ pub struct CompletionRequest {
     #[schema(default = false)]
     pub stream: bool,
 
+    /// Streaming options (`include_usage` adds a final usage chunk)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_options: Option<StreamOptions>,
+
     // Log probabilities
     /// Whether to return log probabilities of the output tokens
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -585,6 +589,11 @@ pub struct CompletionChunk {
     pub created: i64,
 
     pub choices: Vec<CompletionChunkChoice>,
+
+    /// Set only on the final chunk when the client asked for
+    /// `stream_options.include_usage`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<TokenUsage>,
 }
 
 #[allow(dead_code)]

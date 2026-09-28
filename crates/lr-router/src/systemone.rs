@@ -656,6 +656,8 @@ mod tests {
                 input_cost_per_1k: 0.001,
                 output_cost_per_1k: 0.002,
                 reasoning_cost_per_1k: None,
+                cache_read_cost_per_1k: None,
+                cache_write_cost_per_1k: None,
                 currency: "USD".into(),
             })
         }

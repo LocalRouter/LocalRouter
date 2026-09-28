@@ -220,6 +220,8 @@ impl ModelProvider for PerplexityProvider {
                 input_cost_per_1k: catalog_model.pricing.prompt_cost_per_1k(),
                 output_cost_per_1k: catalog_model.pricing.completion_cost_per_1k(),
                 reasoning_cost_per_1k: catalog_model.pricing.reasoning_cost_per_1k(),
+                cache_read_cost_per_1k: catalog_model.pricing.cache_read_cost_per_1k(),
+                cache_write_cost_per_1k: catalog_model.pricing.cache_write_cost_per_1k(),
                 currency: catalog_model.pricing.currency.to_string(),
             });
         }
@@ -233,30 +235,40 @@ impl ModelProvider for PerplexityProvider {
                 input_cost_per_1k: 0.001,  // $1 per 1M tokens
                 output_cost_per_1k: 0.001, // $1 per 1M tokens
                 reasoning_cost_per_1k: None,
+                cache_read_cost_per_1k: None,
+                cache_write_cost_per_1k: None,
                 currency: "USD".to_string(),
             },
             "sonar-pro" => PricingInfo {
                 input_cost_per_1k: 0.003,  // $3 per 1M tokens
                 output_cost_per_1k: 0.015, // $15 per 1M tokens
                 reasoning_cost_per_1k: None,
+                cache_read_cost_per_1k: None,
+                cache_write_cost_per_1k: None,
                 currency: "USD".to_string(),
             },
             "sonar-reasoning-pro" => PricingInfo {
                 input_cost_per_1k: 0.001,  // $1 per 1M tokens
                 output_cost_per_1k: 0.005, // $5 per 1M tokens
                 reasoning_cost_per_1k: None,
+                cache_read_cost_per_1k: None,
+                cache_write_cost_per_1k: None,
                 currency: "USD".to_string(),
             },
             "sonar-deep-research" => PricingInfo {
                 input_cost_per_1k: 0.005,  // $5 per 1M tokens
                 output_cost_per_1k: 0.005, // $5 per 1M tokens
                 reasoning_cost_per_1k: None,
+                cache_read_cost_per_1k: None,
+                cache_write_cost_per_1k: None,
                 currency: "USD".to_string(),
             },
             _ => PricingInfo {
                 input_cost_per_1k: 0.001, // Default pricing
                 output_cost_per_1k: 0.001,
                 reasoning_cost_per_1k: None,
+                cache_read_cost_per_1k: None,
+                cache_write_cost_per_1k: None,
                 currency: "USD".to_string(),
             },
         };

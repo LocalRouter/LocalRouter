@@ -346,8 +346,10 @@ impl StreamUsageRecorder {
             return;
         };
         let st = std::mem::take(&mut *self.state.lock());
-        let (input, output, reasoning) = stream_usage_totals(&st, sink.prompt_estimate);
-        let cost = calculate_cost(input, output, reasoning, &sink.pricing);
+        let totals = stream_usage_totals(&st, sink.prompt_estimate);
+        let cost = sink.pricing.cost(&totals);
+        let input = totals.prompt_tokens as u64;
+        let output = totals.completion_tokens as u64;
         let usage = UsageInfo {
             input_tokens: input,
             output_tokens: output,
@@ -396,23 +398,23 @@ impl Drop for StreamUsageRecorder {
     }
 }
 
-/// `(input, output, reasoning)` tokens for a finished stream: the upstream's
-/// usage when reported, else estimates.
-fn stream_usage_totals(st: &StreamUsageState, prompt_estimate: u64) -> (u64, u64, Option<u64>) {
+/// Token usage for a finished stream: the upstream's when reported, else
+/// estimates (whole prompt, generated characters / 4).
+fn stream_usage_totals(st: &StreamUsageState, prompt_estimate: u64) -> lr_providers::TokenUsage {
     match &st.upstream {
-        Some(u) => (
-            u.prompt_tokens as u64,
-            u.completion_tokens as u64,
-            u.completion_tokens_details
-                .as_ref()
-                .and_then(|d| d.reasoning_tokens)
-                .map(u64::from),
-        ),
-        None => (
-            prompt_estimate,
-            lr_providers::usage_estimate::chars_to_tokens(st.output_chars),
-            None,
-        ),
+        Some(u) => u.clone(),
+        None => {
+            let prompt = prompt_estimate.min(u32::MAX as u64) as u32;
+            let completion = lr_providers::usage_estimate::chars_to_tokens(st.output_chars)
+                .min(u32::MAX as u64) as u32;
+            lr_providers::TokenUsage {
+                prompt_tokens: prompt,
+                completion_tokens: completion,
+                total_tokens: prompt.saturating_add(completion),
+                prompt_tokens_details: None,
+                completion_tokens_details: None,
+            }
+        }
     }
 }
 
@@ -1159,18 +1161,7 @@ impl Router {
             .await
             .unwrap_or_else(|_| lr_providers::PricingInfo::free());
 
-        let reasoning_tokens = response
-            .usage
-            .completion_tokens_details
-            .as_ref()
-            .and_then(|d| d.reasoning_tokens.or(d.thinking_tokens))
-            .map(|t| t as u64);
-        let cost = calculate_cost(
-            response.usage.prompt_tokens as u64,
-            response.usage.completion_tokens as u64,
-            reasoning_tokens,
-            &pricing,
-        );
+        let cost = pricing.cost(&response.usage);
 
         let usage = UsageInfo {
             input_tokens: response.usage.prompt_tokens as u64,
@@ -1895,18 +1886,7 @@ impl Router {
                         .await
                         .unwrap_or_else(|_| lr_providers::PricingInfo::free());
 
-                    let reasoning_tokens = response
-                        .usage
-                        .completion_tokens_details
-                        .as_ref()
-                        .and_then(|d| d.reasoning_tokens.or(d.thinking_tokens))
-                        .map(|t| t as u64);
-                    let cost = calculate_cost(
-                        response.usage.prompt_tokens as u64,
-                        response.usage.completion_tokens as u64,
-                        reasoning_tokens,
-                        &pricing,
-                    );
+                    let cost = pricing.cost(&response.usage);
 
                     let usage = UsageInfo {
                         input_tokens: response.usage.prompt_tokens as u64,
@@ -3140,7 +3120,14 @@ mod tests {
                 }),
             }),
         };
-        assert_eq!(stream_usage_totals(&st, 5), (900, 30, Some(12)));
+        let totals = stream_usage_totals(&st, 5);
+        assert_eq!((totals.prompt_tokens, totals.completion_tokens), (900, 30));
+        assert_eq!(
+            totals
+                .completion_tokens_details
+                .and_then(|d| d.reasoning_tokens),
+            Some(12)
+        );
     }
 
     #[test]
@@ -3150,7 +3137,8 @@ mod tests {
             upstream: None,
         };
         // Whole-prompt estimate, output chars / 4 rounded up
-        assert_eq!(stream_usage_totals(&st, 777), (777, 101, None));
+        let totals = stream_usage_totals(&st, 777);
+        assert_eq!((totals.prompt_tokens, totals.completion_tokens), (777, 101));
     }
 
     #[tokio::test]

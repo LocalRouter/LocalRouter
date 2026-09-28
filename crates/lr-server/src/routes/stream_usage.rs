@@ -141,12 +141,7 @@ impl StreamTracker {
                 );
                 details.reasoning_tokens = Some(details.reasoning_tokens.unwrap_or(0) + r);
             }
-            let cached = |u: &TokenUsage| {
-                u.prompt_tokens_details
-                    .as_ref()
-                    .and_then(|d| d.cached_tokens)
-            };
-            if let Some(c) = cached(u) {
+            if let Some(d) = &u.prompt_tokens_details {
                 let details =
                     sum.prompt_tokens_details
                         .get_or_insert(lr_providers::PromptTokensDetails {
@@ -154,10 +149,22 @@ impl StreamTracker {
                             cache_creation_tokens: None,
                             cache_read_tokens: None,
                         });
-                details.cached_tokens = Some(details.cached_tokens.unwrap_or(0) + c);
+                let add = |a: Option<u32>, b: Option<u32>| match (a, b) {
+                    (None, None) => None,
+                    (a, b) => Some(a.unwrap_or(0).saturating_add(b.unwrap_or(0))),
+                };
+                details.cached_tokens = add(details.cached_tokens, d.cached_tokens);
+                details.cache_read_tokens = add(details.cache_read_tokens, d.cache_read_tokens);
+                details.cache_creation_tokens =
+                    add(details.cache_creation_tokens, d.cache_creation_tokens);
             }
             sum
         }))
+    }
+
+    /// Cached parts of the prompt, when the upstream reported them.
+    pub fn prompt_tokens_details(&self) -> Option<lr_providers::PromptTokensDetails> {
+        self.upstream_usage().and_then(|u| u.prompt_tokens_details)
     }
 
     pub fn totals(&self, prompt_estimate: u64) -> StreamTotals {
@@ -235,6 +242,7 @@ pub(crate) async fn finalize_stream(
             prompt_tokens: totals.prompt_tokens,
             completion_tokens: totals.completion_tokens,
             reasoning_tokens: totals.reasoning_tokens.map(u64::from),
+            prompt_tokens_details: tracked.prompt_tokens_details(),
             finish_reason: Some(finish_reason),
             content_preview: tracked.content.clone(),
         },

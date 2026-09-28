@@ -3,6 +3,7 @@
 //! Cohere uses a custom API v2 format
 
 use super::common::*;
+use futures::StreamExt;
 use localrouter::providers::{cohere::CohereProvider, ModelProvider};
 
 #[tokio::test]
@@ -42,13 +43,32 @@ async fn test_cohere_streaming() {
     let provider = CohereProvider::with_base_url("test-key".to_string(), _mock.base_url()).unwrap();
 
     let request = standard_streaming_request();
-    let result = provider.stream_complete(request).await;
+    let mut stream = provider
+        .stream_complete(request)
+        .await
+        .expect("Cohere streams");
 
-    // Cohere streaming is not yet implemented
-    assert!(
-        result.is_err(),
-        "Cohere streaming should return an error as it's not implemented"
-    );
+    let mut text = String::new();
+    let mut finish_reason = None;
+    let mut usage = None;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.expect("chunk");
+        for choice in &chunk.choices {
+            if let Some(content) = &choice.delta.content {
+                text.push_str(content);
+            }
+            if choice.finish_reason.is_some() {
+                finish_reason = choice.finish_reason.clone();
+            }
+        }
+        if chunk.usage.is_some() {
+            usage = chunk.usage;
+        }
+    }
+    assert_eq!(text, "1 2 3");
+    assert_eq!(finish_reason.as_deref(), Some("stop"));
+    let usage = usage.expect("usage from billed_units");
+    assert_eq!((usage.prompt_tokens, usage.completion_tokens), (5, 6));
 }
 
 #[tokio::test]

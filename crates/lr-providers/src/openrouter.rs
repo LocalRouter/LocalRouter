@@ -266,6 +266,8 @@ impl ModelProvider for OpenRouterProvider {
             output_cost_per_1k: model_data.pricing.completion.parse::<f64>().unwrap_or(0.0)
                 * 1000.0,
             reasoning_cost_per_1k: None,
+            cache_read_cost_per_1k: None,
+            cache_write_cost_per_1k: None,
             currency: "USD".to_string(),
         })
     }

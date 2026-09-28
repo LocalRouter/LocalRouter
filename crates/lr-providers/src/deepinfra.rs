@@ -303,6 +303,8 @@ impl ModelProvider for DeepInfraProvider {
                 input_cost_per_1k: 0.0027,  // $2.7 per 1M tokens
                 output_cost_per_1k: 0.0027, // $2.7 per 1M tokens
                 reasoning_cost_per_1k: None,
+                cache_read_cost_per_1k: None,
+                cache_write_cost_per_1k: None,
                 currency: "USD".to_string(),
             }
         } else if model.contains("70B") || model.contains("72B") {
@@ -310,6 +312,8 @@ impl ModelProvider for DeepInfraProvider {
                 input_cost_per_1k: 0.00059,  // $0.59 per 1M tokens
                 output_cost_per_1k: 0.00059, // $0.59 per 1M tokens
                 reasoning_cost_per_1k: None,
+                cache_read_cost_per_1k: None,
+                cache_write_cost_per_1k: None,
                 currency: "USD".to_string(),
             }
         } else {
@@ -317,6 +321,8 @@ impl ModelProvider for DeepInfraProvider {
                 input_cost_per_1k: 0.00009,  // $0.09 per 1M tokens
                 output_cost_per_1k: 0.00009, // $0.09 per 1M tokens
                 reasoning_cost_per_1k: None,
+                cache_read_cost_per_1k: None,
+                cache_write_cost_per_1k: None,
                 currency: "USD".to_string(),
             }
         };

@@ -793,6 +793,24 @@ async fn build_non_streaming_response(
     Ok(Json(api_response).into_response())
 }
 
+/// The chunk sent before `[DONE]` when the client set
+/// `stream_options.include_usage`: empty `choices`, the request's usage.
+fn usage_chunk_event(
+    id: &str,
+    created: i64,
+    tracked: &StreamTracker,
+    prompt_estimate: u64,
+) -> Event {
+    let chunk = CompletionChunk {
+        id: id.to_string(),
+        object: "text_completion".to_string(),
+        created,
+        choices: Vec::new(),
+        usage: Some(tracked.client_usage(prompt_estimate)),
+    };
+    Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
+}
+
 /// Handle streaming completion
 #[allow(clippy::too_many_arguments)]
 async fn handle_streaming(
@@ -883,6 +901,12 @@ async fn handle_streaming(
     let (completion_tx, completion_rx) = tokio::sync::oneshot::channel::<()>();
     let completion_tx = Arc::new(Mutex::new(Some(completion_tx)));
     let tracker_map = tracker.clone();
+    let tracker_end = tracker.clone();
+    let gen_id_end = generation_id.clone();
+    let include_usage = request
+        .stream_options
+        .as_ref()
+        .is_some_and(|o| o.include_usage);
 
     // Clone for tracking after stream completes
     let state_clone = state.clone();
@@ -914,6 +938,7 @@ async fn handle_streaming(
                             finish_reason: choice.finish_reason,
                         })
                         .collect(),
+                    usage: None,
                 };
 
                 let json = serde_json::to_string(&api_chunk).unwrap_or_default();
@@ -938,12 +963,25 @@ async fn handle_streaming(
             }
         })
     });
+    // End of stream: optional usage chunk, then [DONE]
     let sse_stream = sse_stream.chain(futures::stream::iter(std::iter::once(()).flat_map(
         move |_| {
+            let mut tail = Vec::new();
+            if include_usage {
+                tail.push(Ok(usage_chunk_event(
+                    &gen_id_end,
+                    created_timestamp,
+                    &tracker_end.lock(),
+                    prompt_estimate,
+                )));
+            }
+            tail.push(Ok::<Event, std::convert::Infallible>(
+                Event::default().data("[DONE]"),
+            ));
             if let Some(tx) = completion_tx.lock().take() {
                 let _ = tx.send(());
             }
-            None::<Result<Event, std::convert::Infallible>>
+            tail
         },
     )));
 
@@ -1007,6 +1045,10 @@ async fn handle_streaming_parallel(
         &provider_request.messages,
         provider_request.tools.as_deref(),
     );
+    let include_usage = request
+        .stream_options
+        .as_ref()
+        .is_some_and(|o| o.include_usage);
 
     // Start LLM streaming request immediately
     let (stream, routing_metadata) = match state
@@ -1138,6 +1180,7 @@ async fn handle_streaming_parallel(
                             finish_reason: choice.finish_reason,
                         })
                         .collect(),
+                    usage: None,
                 };
 
                 let json = serde_json::to_string(&api_chunk).unwrap_or_default();
@@ -1268,6 +1311,22 @@ async fn handle_streaming_parallel(
                         }
                     }
                 }
+            }
+
+            // End of stream for a client that is still there and allowed
+            // to see it: optional usage chunk, then [DONE]
+            if gate_state != GuardrailGate::Denied && !event_tx.is_closed() {
+                if include_usage {
+                    let _ = event_tx
+                        .send(Ok(usage_chunk_event(
+                            &gen_id,
+                            created_timestamp,
+                            &tracker,
+                            prompt_estimate,
+                        )))
+                        .await;
+                }
+                let _ = event_tx.send(Ok(Event::default().data("[DONE]"))).await;
             }
 
             // Shared finalize at stream end — same path as
@@ -1401,6 +1460,7 @@ mod tests {
             top_p: None,
             n: None,
             stream: false,
+            stream_options: None,
             stop: None,
             frequency_penalty: None,
             presence_penalty: None,
@@ -1503,6 +1563,7 @@ mod tests {
             max_tokens: Some(256),
             n: Some(2),
             stream: false,
+            stream_options: None,
             stop: Some(crate::types::StopSequence::Single("\n".to_string())),
             frequency_penalty: Some(0.5),
             presence_penalty: Some(-0.5),
@@ -1536,6 +1597,7 @@ mod tests {
             max_tokens: None,
             n: None,
             stream: false,
+            stream_options: None,
             stop: None,
             frequency_penalty: None,
             presence_penalty: None,
@@ -1567,6 +1629,7 @@ mod tests {
             max_tokens: None,
             n: None,
             stream: false,
+            stream_options: None,
             stop: None,
             frequency_penalty: None,
             presence_penalty: None,
@@ -1599,6 +1662,7 @@ mod tests {
             max_tokens: None,
             n: None,
             stream: false,
+            stream_options: None,
             stop: None,
             frequency_penalty: None,
             presence_penalty: None,

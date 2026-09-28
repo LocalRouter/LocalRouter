@@ -149,6 +149,7 @@ pub mod openai_responses;
 pub mod openrouter;
 pub mod perplexity;
 pub mod registry;
+pub(crate) mod sse_lines;
 pub mod systemone;
 pub mod togetherai;
 pub mod xai;
@@ -1201,6 +1202,14 @@ pub struct PricingInfo {
     /// Cost per 1K reasoning tokens (if different from output tokens)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_cost_per_1k: Option<f64>,
+    /// Cost per 1K prompt tokens read from the provider's cache (input rate
+    /// when unknown)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_cost_per_1k: Option<f64>,
+    /// Cost per 1K prompt tokens written to the provider's cache (input rate
+    /// when unknown)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_cost_per_1k: Option<f64>,
     /// Currency (e.g., "USD")
     pub currency: String,
 }
@@ -1212,8 +1221,62 @@ impl PricingInfo {
             input_cost_per_1k: 0.0,
             output_cost_per_1k: 0.0,
             reasoning_cost_per_1k: None,
+            cache_read_cost_per_1k: None,
+            cache_write_cost_per_1k: None,
             currency: "USD".to_string(),
         }
+    }
+
+    /// Cost of the prompt side of `usage`. `prompt_tokens` is the whole
+    /// prompt; cached reads (`cache_read_tokens`, else `cached_tokens`) and
+    /// cache writes (`cache_creation_tokens`) are parts of it charged at
+    /// their own rates.
+    pub fn input_cost(&self, usage: &TokenUsage) -> f64 {
+        let details = usage.prompt_tokens_details.as_ref();
+        let read = details
+            .and_then(|d| d.cache_read_tokens.or(d.cached_tokens))
+            .unwrap_or(0) as u64;
+        let write = details.and_then(|d| d.cache_creation_tokens).unwrap_or(0) as u64;
+        let prompt = usage.prompt_tokens as u64;
+        // Never charge more cache tokens than the prompt has
+        let read = read.min(prompt);
+        let write = write.min(prompt - read);
+        let uncached = prompt - read - write;
+        let per_token = |per_1k: f64| per_1k / 1000.0;
+        uncached as f64 * per_token(self.input_cost_per_1k)
+            + read as f64
+                * per_token(
+                    self.cache_read_cost_per_1k
+                        .unwrap_or(self.input_cost_per_1k),
+                )
+            + write as f64
+                * per_token(
+                    self.cache_write_cost_per_1k
+                        .unwrap_or(self.input_cost_per_1k),
+                )
+    }
+
+    /// Cost of the completion side of `usage`. Reasoning tokens are part
+    /// of `completion_tokens` and charged at the reasoning rate when one is
+    /// set.
+    pub fn output_cost(&self, usage: &TokenUsage) -> f64 {
+        let completion = usage.completion_tokens as u64;
+        let reasoning = usage
+            .completion_tokens_details
+            .as_ref()
+            .and_then(|d| d.reasoning_tokens.or(d.thinking_tokens))
+            .unwrap_or(0) as u64;
+        let reasoning = reasoning.min(completion);
+        let reasoning_rate = self
+            .reasoning_cost_per_1k
+            .unwrap_or(self.output_cost_per_1k);
+        (completion - reasoning) as f64 * self.output_cost_per_1k / 1000.0
+            + reasoning as f64 * reasoning_rate / 1000.0
+    }
+
+    /// Total cost of `usage`.
+    pub fn cost(&self, usage: &TokenUsage) -> f64 {
+        self.input_cost(usage) + self.output_cost(usage)
     }
 }
 
@@ -2978,5 +3041,109 @@ mod tests {
         let response: AudioTranslationResponse =
             serde_json::from_str(r#"{"text": "Hello in English", "language": "en"}"#).unwrap();
         assert_eq!(response.text, "Hello in English");
+    }
+}
+
+#[cfg(test)]
+mod pricing_cost_tests {
+    use super::*;
+
+    fn pricing(read: Option<f64>, write: Option<f64>, reasoning: Option<f64>) -> PricingInfo {
+        PricingInfo {
+            input_cost_per_1k: 1.0,
+            output_cost_per_1k: 2.0,
+            reasoning_cost_per_1k: reasoning,
+            cache_read_cost_per_1k: read,
+            cache_write_cost_per_1k: write,
+            currency: "USD".to_string(),
+        }
+    }
+
+    fn usage(prompt: u32, completion: u32, details: Option<PromptTokensDetails>) -> TokenUsage {
+        TokenUsage {
+            prompt_tokens: prompt,
+            completion_tokens: completion,
+            total_tokens: prompt + completion,
+            prompt_tokens_details: details,
+            completion_tokens_details: None,
+        }
+    }
+
+    fn cached(cached: Option<u32>, read: Option<u32>, write: Option<u32>) -> PromptTokensDetails {
+        PromptTokensDetails {
+            cached_tokens: cached,
+            cache_creation_tokens: write,
+            cache_read_tokens: read,
+        }
+    }
+
+    #[test]
+    fn plain_usage_is_input_plus_output() {
+        let cost = pricing(None, None, None).cost(&usage(1000, 500, None));
+        assert!((cost - 2.0).abs() < 1e-9, "{cost}");
+    }
+
+    #[test]
+    fn openai_cached_tokens_are_part_of_the_prompt() {
+        // 1000 prompt, 800 of them cached at 0.25
+        let cost = pricing(Some(0.25), None, None).input_cost(&usage(
+            1000,
+            0,
+            Some(cached(Some(800), None, None)),
+        ));
+        assert!((cost - (0.2 + 0.2)).abs() < 1e-9, "{cost}");
+    }
+
+    #[test]
+    fn cache_reads_and_writes_have_their_own_rates() {
+        let cost = pricing(Some(0.1), Some(1.25), None).input_cost(&usage(
+            2125,
+            0,
+            Some(cached(Some(2000), Some(2000), Some(100))),
+        ));
+        let expected = 0.025 + 2.0 * 0.1 + 0.1 * 1.25;
+        assert!((cost - expected).abs() < 1e-9, "{cost} vs {expected}");
+    }
+
+    #[test]
+    fn unknown_cache_rates_fall_back_to_the_input_rate() {
+        let cost = pricing(None, None, None).input_cost(&usage(
+            1000,
+            0,
+            Some(cached(None, Some(600), Some(300))),
+        ));
+        assert!((cost - 1.0).abs() < 1e-9, "{cost}");
+    }
+
+    #[test]
+    fn cache_counts_never_exceed_the_prompt() {
+        let cost = pricing(Some(0.0), Some(0.0), None).input_cost(&usage(
+            100,
+            0,
+            Some(cached(None, Some(80), Some(80))),
+        ));
+        assert!(cost.abs() < 1e-12, "{cost}");
+    }
+
+    #[test]
+    fn reasoning_tokens_use_the_reasoning_rate() {
+        let mut u = usage(0, 1000, None);
+        u.completion_tokens_details = Some(CompletionTokensDetails {
+            reasoning_tokens: Some(400),
+            thinking_tokens: None,
+            audio_tokens: None,
+        });
+        let cost = pricing(None, None, Some(3.0)).output_cost(&u);
+        assert!((cost - (0.6 * 2.0 + 0.4 * 3.0)).abs() < 1e-9, "{cost}");
+    }
+
+    #[test]
+    fn pricing_without_cache_fields_still_deserializes() {
+        let p: PricingInfo = serde_json::from_str(
+            r#"{"input_cost_per_1k":1.0,"output_cost_per_1k":2.0,"currency":"USD"}"#,
+        )
+        .unwrap();
+        assert_eq!(p.cache_read_cost_per_1k, None);
+        assert_eq!(p.cache_write_cost_per_1k, None);
     }
 }

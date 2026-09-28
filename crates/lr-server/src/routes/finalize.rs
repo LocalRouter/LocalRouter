@@ -102,6 +102,17 @@ pub(crate) fn maybe_repair_json_content(
     result.repaired
 }
 
+/// The usage a turn is charged for: the upstream's, with `prompt_tokens`
+/// the caller settled on (the upstream's own, or an estimate when it
+/// reported none).
+fn charged_usage(prompt_tokens: u32, usage: &lr_providers::TokenUsage) -> lr_providers::TokenUsage {
+    lr_providers::TokenUsage {
+        prompt_tokens,
+        total_tokens: prompt_tokens.saturating_add(usage.completion_tokens),
+        ..usage.clone()
+    }
+}
+
 // ---- finalize_non_streaming -----------------------------------------------
 
 /// Inputs that the caller computes once per turn and passes through
@@ -196,10 +207,9 @@ pub(crate) async fn finalize_metrics_and_monitor(
             .record_feature_event("feature_compression", 0, cost_saved);
     }
 
-    let input_cost = (prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k;
-    let output_cost =
-        (response.usage.completion_tokens as f64 / 1000.0) * pricing.output_cost_per_1k;
-    let cost = input_cost + output_cost;
+    // Cached prompt tokens and reasoning tokens are charged at their own
+    // rates
+    let cost = pricing.cost(&charged_usage(prompt_tokens, &response.usage));
 
     let strategy_id = state
         .client_manager
@@ -317,6 +327,8 @@ pub(crate) struct StreamingFinalizeSummary {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
     pub reasoning_tokens: Option<u64>,
+    /// Cached parts of the prompt, when the upstream reported them
+    pub prompt_tokens_details: Option<lr_providers::PromptTokensDetails>,
     pub finish_reason: Option<String>,
     pub content_preview: String,
 }
@@ -360,7 +372,7 @@ pub(crate) async fn finalize_streaming_at_end(
             prompt_tokens: summary.prompt_tokens,
             completion_tokens: summary.completion_tokens,
             total_tokens: summary.prompt_tokens + summary.completion_tokens,
-            prompt_tokens_details: None,
+            prompt_tokens_details: summary.prompt_tokens_details.clone(),
             completion_tokens_details: summary.reasoning_tokens.map(|rt| {
                 lr_providers::CompletionTokensDetails {
                     reasoning_tokens: Some(rt as u32),
@@ -382,7 +394,7 @@ pub(crate) async fn finalize_streaming_at_end(
         prompt_tokens: inputs.prompt_tokens,
         completion_tokens: summary.completion_tokens,
         total_tokens: inputs.prompt_tokens + summary.completion_tokens,
-        prompt_tokens_details: None,
+        prompt_tokens_details: summary.prompt_tokens_details,
         completion_tokens_details: synthetic.usage.completion_tokens_details.clone(),
     };
     update_response_body_and_record_generation(
@@ -430,9 +442,10 @@ pub(crate) fn update_response_body_and_record_generation(
         super::monitor_helpers::update_llm_call_response_body(state, llm_event_id, wire_body);
     }
 
-    let prompt_cost = (prompt_tokens as f64 / 1000.0) * metrics.pricing.input_cost_per_1k;
-    let completion_cost =
-        (response.usage.completion_tokens as f64 / 1000.0) * metrics.pricing.output_cost_per_1k;
+    let prompt_cost = metrics
+        .pricing
+        .input_cost(&charged_usage(prompt_tokens, &response.usage));
+    let completion_cost = metrics.pricing.output_cost(&response.usage);
 
     let details = GenerationDetails {
         id: generation_id.to_string(),

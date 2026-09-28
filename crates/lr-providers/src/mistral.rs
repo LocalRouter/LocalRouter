@@ -341,6 +341,8 @@ impl ModelProvider for MistralProvider {
                 input_cost_per_1k: catalog_model.pricing.prompt_cost_per_1k(),
                 output_cost_per_1k: catalog_model.pricing.completion_cost_per_1k(),
                 reasoning_cost_per_1k: catalog_model.pricing.reasoning_cost_per_1k(),
+                cache_read_cost_per_1k: catalog_model.pricing.cache_read_cost_per_1k(),
+                cache_write_cost_per_1k: catalog_model.pricing.cache_write_cost_per_1k(),
                 currency: catalog_model.pricing.currency.to_string(),
             });
         }
@@ -354,48 +356,64 @@ impl ModelProvider for MistralProvider {
                 input_cost_per_1k: 0.002,  // $2 per 1M tokens
                 output_cost_per_1k: 0.006, // $6 per 1M tokens
                 reasoning_cost_per_1k: None,
+                cache_read_cost_per_1k: None,
+                cache_write_cost_per_1k: None,
                 currency: "USD".to_string(),
             },
             "mistral-medium-latest" => PricingInfo {
                 input_cost_per_1k: 0.00275, // $2.75 per 1M tokens
                 output_cost_per_1k: 0.0081, // $8.1 per 1M tokens
                 reasoning_cost_per_1k: None,
+                cache_read_cost_per_1k: None,
+                cache_write_cost_per_1k: None,
                 currency: "USD".to_string(),
             },
             "mistral-small-latest" | "mistral-small-2409" => PricingInfo {
                 input_cost_per_1k: 0.0002,  // $0.2 per 1M tokens
                 output_cost_per_1k: 0.0006, // $0.6 per 1M tokens
                 reasoning_cost_per_1k: None,
+                cache_read_cost_per_1k: None,
+                cache_write_cost_per_1k: None,
                 currency: "USD".to_string(),
             },
             "codestral-latest" => PricingInfo {
                 input_cost_per_1k: 0.0002,  // $0.2 per 1M tokens
                 output_cost_per_1k: 0.0006, // $0.6 per 1M tokens
                 reasoning_cost_per_1k: None,
+                cache_read_cost_per_1k: None,
+                cache_write_cost_per_1k: None,
                 currency: "USD".to_string(),
             },
             "open-mistral-7b" => PricingInfo {
                 input_cost_per_1k: 0.00025,  // $0.25 per 1M tokens
                 output_cost_per_1k: 0.00025, // $0.25 per 1M tokens
                 reasoning_cost_per_1k: None,
+                cache_read_cost_per_1k: None,
+                cache_write_cost_per_1k: None,
                 currency: "USD".to_string(),
             },
             "open-mixtral-8x7b" => PricingInfo {
                 input_cost_per_1k: 0.0007,  // $0.7 per 1M tokens
                 output_cost_per_1k: 0.0007, // $0.7 per 1M tokens
                 reasoning_cost_per_1k: None,
+                cache_read_cost_per_1k: None,
+                cache_write_cost_per_1k: None,
                 currency: "USD".to_string(),
             },
             "open-mixtral-8x22b" => PricingInfo {
                 input_cost_per_1k: 0.002,  // $2 per 1M tokens
                 output_cost_per_1k: 0.006, // $6 per 1M tokens
                 reasoning_cost_per_1k: None,
+                cache_read_cost_per_1k: None,
+                cache_write_cost_per_1k: None,
                 currency: "USD".to_string(),
             },
             _ => PricingInfo {
                 input_cost_per_1k: 0.001,
                 output_cost_per_1k: 0.003,
                 reasoning_cost_per_1k: None,
+                cache_read_cost_per_1k: None,
+                cache_write_cost_per_1k: None,
                 currency: "USD".to_string(),
             },
         };
