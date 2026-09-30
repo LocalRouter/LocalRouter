@@ -81,6 +81,18 @@ const cat = (id: string, name: string, size: string, guidance: string, downloade
   progress: null, removable: false,
 })
 const mockEngineCatalogs: Record<string, EmbeddedCatalogModel[]> = {
+  ollaya: [
+    cat('laya:latest', 'Laya (routes by language)', '1.5 GB', 'Sends English to laya:en and other languages to laya:multilingual (downloads both). Small and fast; uses the Apple GPU on Apple Silicon.'),
+    { ...cat('laya:en', 'Laya English', '853 MB', '421M-parameter ModernBERT encoder, up to 512 tokens of state.', true), removable: true },
+    { ...cat('laya:multilingual', 'Laya Multilingual', '683 MB', '322M-parameter mmBERT encoder, up to 1,024 tokens of state.', true), removable: true },
+    cat('laya:typed-decisions', 'Laya Typed Decisions', '853 MB', 'Laya fine-tuned on typed decision workflows, up to 1,024 tokens of state.'),
+    cat('von:1.1', 'Von 1.1', '1.6 GB', '395M-parameter ModernBERT, up to 8K tokens of state. Runs on the CPU; the Von provider serves the newer Von 1.3 on the GPU.'),
+    cat('decider:0.8b', 'Decider 0.8B', '1.5 GB', 'Qwen3.5 decoder, up to 32K tokens of state. Runs on the CPU on Macs; the Decider provider runs it on the Apple GPU, much faster.'),
+    cat('kev:0.8b', 'Kev 0.8B', '1.8 GB', 'Qwen3.5 decoder, up to 8K tokens of state. Runs on the CPU on Macs; the Kev provider runs it on the Apple GPU, much faster.'),
+    cat('winnow:e4b', 'Winnow E4B', '8.0 GB', 'Multilingual Gemma fine-tune (GGUF, llama.cpp), up to 8K tokens of state.'),
+    cat('nli:modernbert-large', 'NLI ModernBERT-large', '799 MB', 'Natural-language inference (does the state support a statement?), up to 512 tokens.'),
+    cat('gliclass:large', 'GLiClass Large', '1.8 GB', 'Zero-shot classification, up to 1,024 tokens of state.'),
+  ],
   laya: [
     cat('english', 'Laya English', '843 MB', 'Up to 512 tokens of state; runs on CPU', true),
     cat('multilingual', 'Laya Multilingual', '678 MB', 'Up to 1024 tokens of state; runs on CPU'),
@@ -276,6 +288,32 @@ interface MockEngineRecipe {
 const DEMO_PROGRAMS_ON_PATH = new Set(['brew', 'curl', 'uv'])
 
 const mockEngineRecipes: Record<string, MockEngineRecipe> = {
+  ollaya: {
+    display_name: 'Ollaya',
+    requires: [],
+    install: [
+      {
+        id: 'metal',
+        label: 'Apple Silicon',
+        kind: 'download',
+        command: null,
+        description: 'Downloads Ollaya v0.7.5 (Apple Silicon build) from github.com/ollaya-dev/ollaya',
+        program: null,
+        needs_sudo: false,
+        notes: 'About 25 MB. Needs macOS 14 or newer.',
+      },
+    ],
+    docs_url: 'https://github.com/ollaya-dev/ollaya',
+    // The demo's ollaya-local provider runs the engine LocalRouter downloaded
+    path: '/Users/demo/.localrouter/engines/managed/ollaya/v0.7.5-metal/bin/ollaya',
+    binary: 'ollaya',
+    version: 'v0.7.5',
+    build: null,
+    installs_to: null,
+    source: 'managed',
+    managed_tag: 'v0.7.5',
+    managed_build: 'metal',
+  },
   llamacpp: {
     display_name: 'llama.cpp',
     requires: [],
@@ -420,7 +458,7 @@ function mockEngineStatus(recipeId: string): EngineStatus {
     build: recipe.path !== null ? recipe.build : null,
     supported: true,
     unsupported_reason: null,
-    allow_own_binary: recipeId === 'sdcpp',
+    allow_own_binary: recipeId === 'sdcpp' || recipeId === 'ollaya',
     requirements,
     install,
     docs_url: recipe.docs_url,
@@ -434,6 +472,18 @@ function mockInstallOutput(recipeId: string): string[] {
       return ['==> Fetching llama.cpp', '==> Pouring llama.cpp--0.5.0.arm64_sequoia.bottle.tar.gz', '/opt/homebrew/Cellar/llama.cpp/0.5.0: 118 files, 42.1MB']
     case 'uv':
       return ['==> Fetching uv', '==> Pouring uv--0.12.18.arm64_sequoia.bottle.tar.gz', '/opt/homebrew/Cellar/uv/0.12.18: 16 files, 41.3MB']
+    case 'ollaya': {
+      // Mirrors crates/lr-engines/src/download.rs progress lines
+      const asset = 'ollaya-darwin-arm64.tar.zst'
+      return [
+        'Looking up Ollaya release v0.7.5 on github.com/ollaya-dev/ollaya',
+        ...[0, 50, 100].map((pct) => `Downloading ${asset}: ${pct}% (${Math.round((14 * pct) / 100)}/14 MB)`),
+        `Verified ${asset} (sha256)`,
+        ...[0, 100].map((pct) => `Downloading ollaya-darwin-arm64-mlx.tar.zst: ${pct}% (${Math.round((9 * pct) / 100)}/9 MB)`),
+        `Extracting ${asset}`,
+        'Installed Ollaya v0.7.5 (Apple Silicon build) in /Users/demo/.localrouter/engines/managed/ollaya/v0.7.5-metal',
+      ]
+    }
     case 'kev':
     case 'decider':
       return ['Resolved 61 packages in 1.84s', 'Prepared 61 packages in 41.20s', 'Installed 61 packages in 312ms']
@@ -474,11 +524,11 @@ function finishMockInstall(runId: string, payload: Omit<EngineInstallFinishedEve
   emit('engine-install-finished', event)
 }
 
-// Engine processes started by the demo's Local Embedded providers (laya-local)
+// Engine processes started by the demo's Local Embedded providers (ollaya-local)
 const mockEngineProcesses: EngineProcessInfo[] = [
   {
-    key: 'laya:laya-local',
-    label: 'Laya',
+    key: 'ollaya:ollaya-local',
+    label: 'Ollaya',
     state: 'running',
     port: 52814,
     pid: 48213,
@@ -511,15 +561,12 @@ const mockEngineLogs: Record<string, string[]> = {
     'main: server is listening on http://127.0.0.1:53120 - starting the main loop',
     'srv  update_slots: all slots are idle',
   ],
-  'laya:laya-local': [
-    'INFO:     Started server process [48213]',
-    'INFO:     Waiting for application startup.',
-    'laya: loading checkpoint "english" on mps',
-    'laya: checkpoint "english" ready (843 MB)',
-    'INFO:     Application startup complete.',
-    'INFO:     Uvicorn running on http://127.0.0.1:52814 (Press CTRL+C to quit)',
-    'INFO:     127.0.0.1:52901 - "POST /v1/systemone HTTP/1.1" 200 OK',
-    'INFO:     127.0.0.1:52907 - "POST /v1/systemone HTTP/1.1" 200 OK',
+  'ollaya:ollaya-local': [
+    'INFO ollaya: Ollaya 0.7.5 listening address=127.0.0.1:52814',
+    'INFO ollaya::scheduler: loading model=laya:en engine=mlx device=metal',
+    'INFO ollaya::scheduler: loaded model=laya:en load_ms=670',
+    'INFO ollaya: POST /v1/systemone model=laya:en status=200 duration_ms=56',
+    'INFO ollaya: POST /v1/systemone model=laya:en status=200 duration_ms=54',
   ],
 }
 
@@ -1389,7 +1436,8 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     if (!provider) return {}
     // Local Embedded providers have engine settings, not an API key or URL
     const embeddedConfigs: Record<string, Record<string, string>> = {
-      laya: { checkpoints: 'english,multilingual', device: 'auto', idle_unload_minutes: '15' },
+      ollaya: { device: 'auto', idle_unload_minutes: '15' },
+      laya: { device: 'auto', idle_unload_minutes: '15' },
       von: { device: 'auto', idle_unload_minutes: '15' },
       llamacpp_embedded: { context: 'auto', gpu_layers: 'auto', flash_attention: 'auto', kv_cache: 'f16', max_loaded_models: '1', idle_unload_minutes: '15' },
     }
@@ -2696,7 +2744,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       'openai-primary': 'openai',
       'anthropic-main': 'anthropic',
       'ollama-local': 'ollama',
-      'laya-local': 'laya',
+      'ollaya-local': 'ollaya',
       'von-local': 'von',
       'llamacpp-local': 'llamacpp_embedded',
       'gemini-google': 'gemini',
@@ -2716,9 +2764,9 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       'gemini-1.5-flash': ['chat', 'completion', 'vision', 'functioncalling'],
       'text-embedding-3-small': ['embedding'],
       'text-embedding-3-large': ['embedding'],
-      // Laya: System One decision models (no chat)
-      'english': ['decision'],
-      'multilingual': ['decision'],
+      // Ollaya: System One decision models (no chat)
+      'laya:en': ['decision'],
+      'laya:multilingual': ['decision'],
       // Von: System One decision model (no chat)
       'von-latest': ['decision'],
       // llama.cpp Local Embedded (library models)
@@ -2752,7 +2800,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'get_provider_feature_support': (args): ProviderFeatureSupport => {
     const base = openaiFeatureSupport(args?.instanceName || 'openai')
     const instance = mockData.providers.find(p => p.instance_name === args?.instanceName)
-    const decisionOnlyTypes = ['typesafe', 'laya', 'kev', 'von', 'decider', 'systemone_compatible']
+    const decisionOnlyTypes = ['typesafe', 'ollaya', 'laya', 'kev', 'von', 'decider', 'systemone_compatible']
     return instance && decisionOnlyTypes.includes(instance.provider_type)
       ? systemOneFeatureSupport(base, instance.provider_type, instance.instance_name)
       : base
@@ -2815,7 +2863,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       }),
       model_features: openai.model_features.map(f => {
         if (f.name === 'Structured Outputs') return { ...f, support: 'not_supported' as const, notes: 'Ollama does not support strict JSON schema enforcement' }
-        if (f.name === 'Log Probabilities') return { ...f, support: 'not_supported' as const, notes: 'Ollama API does not expose token log probabilities' }
+        if (f.name === 'Log Probabilities') return { ...f, notes: 'Non-streaming chat returns token log probabilities' }
         if (f.name === 'Reasoning Tokens') return { ...f, support: 'not_supported' as const, notes: 'Ollama does not support reasoning token models' }
         if (f.name === 'Extended Thinking') return { ...f, support: 'not_supported' as const, notes: 'Ollama does not support extended thinking' }
         if (f.name === 'Thinking Level') return { ...f, support: 'not_supported' as const, notes: 'Ollama does not support thinking level control' }
@@ -2827,9 +2875,9 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       }),
     }
 
-    const laya = systemOneFeatureSupport(openai, 'laya', 'laya')
+    const ollaya = systemOneFeatureSupport(openai, 'ollaya', 'ollaya')
 
-    return [openai, anthropic, gemini, ollama, laya]
+    return [openai, anthropic, gemini, ollama, ollaya]
   },
   'get_api_path_support': () => ({
     chat_completions: 'supported' as const,

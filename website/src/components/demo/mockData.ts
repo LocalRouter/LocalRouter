@@ -134,10 +134,10 @@ export const mockData = {
       base_url: "http://localhost:11434",
     },
     {
-      instance_name: "laya-local",
-      provider_type: "laya",
+      instance_name: "ollaya-local",
+      provider_type: "ollaya",
       enabled: true,
-      display_name: "Laya (Local)",
+      display_name: "Ollaya (Local)",
       api_key_set: false,
     },
     {
@@ -685,12 +685,31 @@ export const mockData = {
       docs_url: "https://github.com/leejet/stable-diffusion.cpp",
     },
     {
+      provider_type: "ollaya",
+      display_name: "Ollaya",
+      category: "embedded",
+      description: "Open System One decision models (typed choice, score and yes/no answers): Laya, Kev, Decider, Von, Winnow and more. LocalRouter downloads and runs the Ollaya engine; download models in the Models tab",
+      setup_parameters: [
+        { key: "device", param_type: "string", required: false, description: "auto, cpu, cuda, cuda:<n> or metal", default_value: "auto", sensitive: false },
+        { key: "max_loaded_models", param_type: "number", required: false, description: "Models kept in memory at once (Ollaya's default: 3)", sensitive: false },
+        { key: "idle_unload_minutes", param_type: "number", required: false, description: "Stop the engine after this many idle minutes (0 = keep running)", default_value: "15", sensitive: false },
+        { key: "models_dir", param_type: "string", required: false, description: "Where models are stored (leave empty for Ollaya's own ~/.ollaya/models)", sensitive: false },
+        { key: "binary_path", param_type: "string", required: false, description: "Path to ollaya (leave empty to use the downloaded engine or find it on PATH)", sensitive: false },
+      ],
+      default_free_tier: { kind: "always_free_local" },
+      free_tier_short_text: "Free — runs locally",
+      free_tier_long_text: "Runs entirely on your machine. No API costs, no rate limits.",
+      free_tier_notes: null,
+      docs_url: "https://github.com/ollaya-dev/ollaya",
+    },
+    {
       provider_type: "laya",
       display_name: "Laya",
       category: "embedded",
+      // Superseded by Ollaya, which serves the same checkpoints faster; kept for configured providers
+      listed: false,
       description: "Laya System One decision models (typed choice, score and yes/no answers). LocalRouter runs laya-serve and downloads checkpoints from Hugging Face",
       setup_parameters: [
-        { key: "checkpoints", param_type: "string", required: false, description: "Checkpoints to serve, comma-separated: english, multilingual, typed-decisions", default_value: "english", sensitive: false },
         { key: "device", param_type: "string", required: false, description: "auto, cpu, cuda or mps", default_value: "auto", sensitive: false },
         { key: "threads", param_type: "number", required: false, description: "CPU threads (default: PyTorch's choice)", sensitive: false },
         { key: "idle_unload_minutes", param_type: "number", required: false, description: "Stop the engine after this many idle minutes (0 = keep running)", default_value: "15", sensitive: false },
@@ -976,9 +995,9 @@ export const mockData = {
     { id: "llama3.2:latest", provider: "ollama-local", display_name: "Llama 3.2 (Local)", context_length: 8192 },
     { id: "codellama:latest", provider: "ollama-local", display_name: "Code Llama (Local)", context_length: 16384 },
     { id: "mistral:latest", provider: "ollama-local", display_name: "Mistral (Local)", context_length: 8192 },
-    // Laya (System One decision models)
-    { id: "english", provider: "laya-local", display_name: "Laya English", context_length: 512 },
-    { id: "multilingual", provider: "laya-local", display_name: "Laya Multilingual", context_length: 1024 },
+    // Ollaya (System One decision models)
+    { id: "laya:en", provider: "ollaya-local", display_name: "Laya English", context_length: 512 },
+    { id: "laya:multilingual", provider: "ollaya-local", display_name: "Laya Multilingual", context_length: 1024 },
     // Von (System One decision model)
     { id: "von-latest", provider: "von-local", display_name: "Von", context_length: 8192 },
     // llama.cpp Local Embedded (models from the in-app library)
@@ -1028,7 +1047,7 @@ export const mockData = {
       "openai-primary": { status: "healthy" as const, name: "OpenAI (Primary)", latency_ms: 245, last_check: new Date().toISOString() },
       "anthropic-main": { status: "healthy" as const, name: "Anthropic", latency_ms: 312, last_check: new Date().toISOString() },
       "ollama-local": { status: "healthy" as const, name: "Ollama (Local)", latency_ms: 45, last_check: new Date().toISOString() },
-      "laya-local": { status: "healthy" as const, name: "Laya (Local)", latency_ms: 18, last_check: new Date().toISOString() },
+      "ollaya-local": { status: "healthy" as const, name: "Ollaya (Local)", latency_ms: 18, last_check: new Date().toISOString() },
       // Von's engine is not installed yet in the demo (see engine_status)
       "von-local": { status: "unknown" as const, name: "Von (Local)", latency_ms: null, last_check: null },
       "llamacpp-local": { status: "healthy" as const, name: "llama.cpp (Local)", latency_ms: 12, last_check: new Date().toISOString() },
@@ -1315,11 +1334,11 @@ export const mockData = {
       id: "mon-002b", sequence: 5, timestamp: new Date(Date.now() - 2500).toISOString(),
       event_type: "llm_call", session_id: null, client_id: "client-1", client_name: "Claude Code",
       status: "complete", duration_ms: 42,
-      summary: "laya/english — department=billing (0.86), urgency=1.62, refund_requested=0.95",
+      summary: "ollaya-local/laya:en — department=billing (0.86), urgency=1.62, refund_requested=0.95",
       data: {
-        type: "llm_call", endpoint: "/v1/systemone", protocol: "system_one", model: "laya/english", stream: false, message_count: 3, has_tools: false, tool_count: 0,
+        type: "llm_call", endpoint: "/v1/systemone", protocol: "system_one", model: "ollaya-local/laya:en", stream: false, message_count: 3, has_tools: false, tool_count: 0,
         request_body: {
-          model: "laya/english",
+          model: "ollaya-local/laya:en",
           state: {
             channel: "email",
             customer_tier: "pro",
@@ -1331,10 +1350,10 @@ export const mockData = {
             refund_requested: { type: "noul", instructions: "Does the customer ask for a refund?" },
           },
         },
-        provider: "laya-local", status_code: 200, input_tokens: 96, output_tokens: 3, total_tokens: 99, cost_usd: 0, latency_ms: 42,
+        provider: "ollaya-local", status_code: 200, input_tokens: 96, output_tokens: 3, total_tokens: 99, cost_usd: 0, latency_ms: 42,
         content_preview: "department=billing (0.86), urgency=1.62, refund_requested=0.95",
         response_body: {
-          model: "laya/english",
+          model: "laya:en",
           answers: {
             department: { type: "choice", choice: "billing", confidence: 0.81, probabilities: { billing: 0.86, technical: 0.09, sales: 0.05 } },
             urgency: { type: "score", score: 1.62, confidence: 0.47, legend: { "0": "Can wait", "1": "Normal", "2": "Needs attention today" }, probabilities: { "0": 0.04, "1": 0.3, "2": 0.66 } },

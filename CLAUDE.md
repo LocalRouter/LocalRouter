@@ -247,11 +247,21 @@ Anthropic, Cerebras, Cohere, DeepInfra, Gemini, Groq, LMStudio, Mistral, Ollama,
 
 **Feature adapters**: prompt_caching, json_mode, logprobs, structured_outputs
 
-**System One (decision) providers**: TypeSafe (hosted Jev), Laya, Kev, and a
-generic "System One compatible" provider, all in
-`crates/lr-providers/src/systemone/` (one `SystemOneProvider`, four factories).
-They answer only `/v1/systemone` (`supports_chat() == false`, models carry
-`Capability::Decision`). Chat providers answer `/v1/systemone` through the
+**System One (decision) providers**: TypeSafe (hosted Jev) and a generic
+"System One compatible" provider (`crates/lr-providers/src/systemone/`), plus
+the Local Embedded engines in `crates/lr-providers/src/embedded/`: **Ollaya**
+(`ollaya.rs`, one engine serving Ollaya's whole model library — Laya, Kev,
+Decider, Von, Winnow, NLI, … — downloaded by LocalRouter at a pinned release,
+`lr_engines::OLLAYA_VERSION`), and Kev, Von and Decider on their own engines.
+Those three stay offered because on Apple Silicon Ollaya runs them on the CPU
+(fp32 ONNX; its MLX engine does not run their layouts) and was measured
+70–160x (Kev, Decider) and ~18x (Von) slower; Laya is hidden
+(`listed() == false`) because Ollaya serves it on the GPU faster with
+identical answers. Hidden types still load configured instances. Decision
+providers answer only `/v1/systemone` (`supports_chat() == false`, models carry
+`Capability::Decision`). Ollama's decision models (0.35+, `decision` in its
+capabilities, e.g. `nimble`, `tev1`) answer natively too, per model; its chat
+models are translated. Chat providers answer `/v1/systemone` through the
 router's translation (`crates/lr-router/src/systemone.rs`): letter mode with
 token logprobs when `supports_feature("logprobs")` (OpenAI, TogetherAI,
 llama.cpp), JSON mode otherwise. `systemone.emulation: off` restricts the

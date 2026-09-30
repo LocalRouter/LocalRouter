@@ -33,9 +33,9 @@ Todo items per step.
 - `supports_systemone_model(m)` = decision model; `supports_systemone()` = any known; `systemone()` posts `/v1/systemone` (generic System One client). Chat models keep going through the router's translation.
 - Letter mode for Ollama chat models: send `logprobs`/`top_logprobs` on `/api/chat` and return them (Ollama supports both); `supports_feature("logprobs")`.
 
-## Step 4: hide Kev, Laya, Von, Decider
-- `listed() -> false` on the four factories (the legacy llama.cpp precedent). The command palette also honours `listed`.
-- Decision recorded in this plan after measuring native Kev/Decider against Ollaya on Apple Silicon (see Findings).
+## Step 4: hide the dedicated engines Ollaya makes redundant
+- `listed() -> false` (the legacy llama.cpp precedent) on each dedicated provider Ollaya serves at least as well; the command palette also honours `listed`.
+- Measured on Apple Silicon before deciding (see Findings): only Laya is hidden.
 
 ## Step 5: app wiring
 - `ProviderType::Ollaya`, string maps, factory registration, `is_local_provider`, engine tab recipe map, service icon.
@@ -52,4 +52,16 @@ Todo items per step.
 Plan review; test-coverage review; bug hunt (key always set, loopback only, pinned version, manifests path, `:` in ids and file names, pull cancel); clippy/fmt/tests; commit.
 
 ## Findings
-(filled in during implementation)
+- Ollama 0.35 lists decision models with `"decision"` in `capabilities` (`/api/tags` and `/api/show`), serves TypeSafe's wire format on `/v1/systemone` (404 `{"error"}` for an unknown model, 400 for bad questions), and returns per-token `logprobs`/`top_logprobs` on native `/api/chat`. tev1's Modelfile system prompt is exactly the router's `LETTER_SYSTEM_PROMPT`.
+- Ollaya v0.7.5 (Apache-2.0): single binary + `lib/ollaya` (llama.cpp dylibs, MLX metallib, optional CUDA packs laid out at the release root); `OLLAYA_HOST`, `OLLAYA_API_KEY`, `OLLAYA_MODELS`, `OLLAYA_DEVICE`, `OLLAYA_MAX_LOADED_MODELS`; `GET /` answers 200 without the key; `/api/pull` NDJSON; `/api/delete`; `/api/decide {model, keep_alive}` loads/unloads; no HF token, no pulling arbitrary HF repos; Nimble and Tev1 are not in its library.
+- Native vs Ollaya on an M2 Max (20 identical requests, warm p50; machine loaded by other work):
+
+  | Model | Native | Ollaya | Ollaya device | Answers |
+  |---|---|---|---|---|
+  | Kev 0.8B | 0.075 s (MLX bf16) | 6–12 s | CPU fp32 | top choice 20/20, noul Δ 0.003 |
+  | Decider 0.8B | 0.39 s (torch mps) | 27 s | CPU fp32 | top choice 20/20, noul Δ 0.001 |
+  | Von | 0.84 s (mps, Von 1.3) | 15 s | CPU fp32 | older checkpoint (1.1): noul Δ 0.25 |
+  | Laya English | 0.35 s (mps) | 0.056 s | Metal (MLX) | identical probabilities |
+
+  `OLLAYA_DEVICE=metal` fails to load Kev and Decider ("the MLX engine does not run layout kev-pointer-v1 / decider-slots-v1"). Score `confidence` is computed differently by Ollaya; Laya native and Decider native return extra fields Ollaya drops.
+- Decision: hide Laya; keep Kev, Von and Decider listed. Ollaya's catalog says on its Kev/Decider/Von entries that the dedicated providers are faster on Macs.
