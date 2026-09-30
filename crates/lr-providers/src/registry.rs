@@ -1262,6 +1262,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn laya_is_hidden_behind_ollaya_but_configured_instances_still_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let supervisor = lr_engines::Supervisor::new(dir.path());
+        let registry = ProviderRegistry::new();
+        registry.register_factory(Arc::new(
+            crate::embedded::OllayaEmbeddedProviderFactory::new(supervisor.clone()),
+        ));
+        registry.register_factory(Arc::new(crate::embedded::LayaEmbeddedProviderFactory::new(
+            supervisor.clone(),
+        )));
+        registry.register_factory(Arc::new(crate::embedded::KevEmbeddedProviderFactory::new(
+            supervisor.clone(),
+        )));
+        let listed: Vec<(String, bool)> = registry
+            .list_provider_types()
+            .into_iter()
+            .map(|t| (t.provider_type, t.listed))
+            .collect();
+        assert!(listed.contains(&("ollaya".to_string(), true)));
+        assert!(listed.contains(&("laya".to_string(), false)));
+        // Kev on its own engine is much faster than Ollaya on Apple Silicon.
+        assert!(listed.contains(&("kev".to_string(), true)));
+        registry
+            .create_provider("Laya".into(), "laya".into(), HashMap::new())
+            .await
+            .unwrap();
+        assert!(registry.get_provider("Laya").is_some());
+    }
+
+    #[tokio::test]
     async fn provider_types_are_ordered_with_embedded_first_and_legacy_hidden() {
         let registry = ProviderRegistry::new();
         registry.register_factory(Arc::new(crate::factory::OpenAICompatibleProviderFactory));

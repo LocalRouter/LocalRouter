@@ -484,6 +484,13 @@ impl ProviderFactory for LayaEmbeddedProviderFactory {
     fn docs_url(&self) -> Option<&str> {
         Some("https://github.com/NandhaKishorM/laya")
     }
+
+    /// Superseded by Ollaya, which serves the same checkpoints (plus a
+    /// language router) on the Apple GPU with identical answers, measured
+    /// several times faster. Kept for configured providers.
+    fn listed(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -578,11 +585,12 @@ mod tests {
     }
 
     #[test]
-    fn factory_is_embedded_and_asks_for_nothing_required() {
+    fn factory_is_embedded_unlisted_and_asks_for_nothing_required() {
         let dir = tempfile::tempdir().unwrap();
         let f = LayaEmbeddedProviderFactory::new(Supervisor::new(dir.path()));
         assert_eq!(f.category(), ProviderCategory::Embedded);
-        assert!(f.listed());
+        // Offered no more (Ollaya serves Laya); configured instances still load.
+        assert!(!f.listed());
         assert!(f.setup_parameters().iter().all(|p| !p.required));
     }
 
