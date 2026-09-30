@@ -277,10 +277,27 @@ async fn probe_version(id: RecipeId, path: &Path) -> Option<(String, Option<u64>
         // `sd-server --version` (checked as the first argument, before any
         // other parsing) prints the version and exits.
         RecipeId::SdCpp => parse_sd_version(&run_capture(path, &["--version"]).await?),
+        RecipeId::Ollaya => {
+            parse_ollaya_version(&run_capture(path, &["--version"]).await?).map(|v| (v, None))
+        }
         // laya-serve has no version flag and starts the server when run;
         // `von --version` is hard-coded upstream, so it says nothing.
         RecipeId::Laya | RecipeId::Von => None,
     }
+}
+
+/// Parse `ollaya --version`. It asks the server at `OLLAYA_HOST` for its
+/// version and says `ollaya version is X`; the binary's own version follows
+/// as `client version is Y` when the two differ or no server answers.
+pub fn parse_ollaya_version(text: &str) -> Option<String> {
+    let find = |marker: &str| {
+        text.lines().find_map(|l| {
+            let rest = l.split_once(marker)?.1.trim();
+            let v = rest.split_whitespace().next()?.trim_start_matches('v');
+            (!v.is_empty()).then(|| v.to_string())
+        })
+    };
+    find("client version is").or_else(|| find("ollaya version is"))
 }
 
 /// Parse `sd-server --version`:
@@ -417,6 +434,23 @@ mod tests {
             parse_uv_version("uv 0.12.18 (e3f1 2026-09-01)"),
             Some("0.12.18".to_string())
         );
+        // No server running: only the client's own version, on stderr.
+        assert_eq!(
+            parse_ollaya_version(
+                "\nWarning: could not connect to a running Ollaya instance\nWarning: client version is 0.7.5"
+            ),
+            Some("0.7.5".to_string())
+        );
+        assert_eq!(
+            parse_ollaya_version("ollaya version is 0.7.5\n"),
+            Some("0.7.5".to_string())
+        );
+        // A different server answered: the binary's own version wins.
+        assert_eq!(
+            parse_ollaya_version("ollaya version is 0.8.0\n\nWarning: client version is 0.7.5"),
+            Some("0.7.5".to_string())
+        );
+        assert_eq!(parse_ollaya_version("nothing here"), None);
     }
 
     #[test]

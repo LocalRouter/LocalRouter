@@ -117,15 +117,30 @@ pub(crate) async fn run_download(
         .read_timeout(Duration::from_secs(120))
         .build()?;
 
-    say(&format!(
-        "Looking up the latest {} release on github.com/{}",
-        job.display_name, job.spec.repo
-    ));
-    let url = format!(
-        "{}/repos/{}/releases/latest",
-        job.api_base.trim_end_matches('/'),
-        job.spec.repo
-    );
+    let url = match job.spec.tag {
+        Some(tag) => {
+            say(&format!(
+                "Looking up {} release {tag} on github.com/{}",
+                job.display_name, job.spec.repo
+            ));
+            format!(
+                "{}/repos/{}/releases/tags/{tag}",
+                job.api_base.trim_end_matches('/'),
+                job.spec.repo
+            )
+        }
+        None => {
+            say(&format!(
+                "Looking up the latest {} release on github.com/{}",
+                job.display_name, job.spec.repo
+            ));
+            format!(
+                "{}/repos/{}/releases/latest",
+                job.api_base.trim_end_matches('/'),
+                job.spec.repo
+            )
+        }
+    };
     let release: Release = cancellable(token, async {
         client
             .get(&url)
@@ -157,7 +172,9 @@ pub(crate) async fn run_download(
         })?;
         assets.push(asset.clone());
     }
-    say(&format!("Latest release: {tag}"));
+    if job.spec.tag.is_none() {
+        say(&format!("Latest release: {tag}"));
+    }
 
     std::fs::create_dir_all(&job.dir)?;
     let work = job.dir.join(format!(".tmp-{run_id}"));
@@ -175,7 +192,8 @@ pub(crate) async fn run_download(
     }
 
     // Extract the main archive, find the executable, then put the extras
-    // (runtime DLLs) next to it.
+    // (runtime DLLs) next to it, or at the root for releases whose extras
+    // share the main archive's layout.
     say(&format!("Extracting {}", primary.name));
     let exe_name = match job.os {
         Os::Windows => format!("{}.exe", job.spec.binary),
@@ -186,13 +204,18 @@ pub(crate) async fn run_download(
         let extract = extract.clone();
         let files = files.clone();
         let os = job.os;
+        let extras_at_root = job.spec.extras_at_root;
         tokio::task::spawn_blocking(move || -> Result<(PathBuf, usize), DownloadError> {
-            let mut count = extract_zip(&files[0], &extract, os, &token)?;
+            let mut count = extract_archive(&files[0], &extract, os, &token)?;
             let binary = find_file(&extract, &exe_name)
                 .ok_or_else(|| fail(format!("the release archive contains no {exe_name}")))?;
-            let bin_dir = binary.parent().unwrap_or(&extract).to_path_buf();
+            let extras_dir = if extras_at_root {
+                extract.clone()
+            } else {
+                binary.parent().unwrap_or(&extract).to_path_buf()
+            };
             for extra in &files[1..] {
-                count += extract_zip(extra, &bin_dir, os, &token)?;
+                count += extract_archive(extra, &extras_dir, os, &token)?;
             }
             #[cfg(unix)]
             if os != Os::Windows {
@@ -365,6 +388,96 @@ async fn download_file(
         say(&format!("Verified {} (sha256)", asset.name));
     }
     Ok(())
+}
+
+/// Extract a release archive (`.zip` or `.tar.zst`) into `dest`.
+pub(crate) fn extract_archive(
+    path: &Path,
+    dest: &Path,
+    os: Os,
+    token: &CancellationToken,
+) -> Result<usize, DownloadError> {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    if name.ends_with(".tar.zst") {
+        extract_tar_zst(path, dest, os, token)
+    } else {
+        extract_zip(path, dest, os, token)
+    }
+}
+
+/// Extract a zstd-compressed tar into `dest`, with the same rules as
+/// [`extract_zip`]: paths and link targets must stay inside `dest`; hard
+/// links and special files are refused.
+pub(crate) fn extract_tar_zst(
+    path: &Path,
+    dest: &Path,
+    os: Os,
+    token: &CancellationToken,
+) -> Result<usize, DownloadError> {
+    let file = std::io::BufReader::new(std::fs::File::open(path)?);
+    let decoder = ruzstd::decoding::StreamingDecoder::new(file)
+        .map_err(|e| fail(format!("{} is not a valid .tar.zst: {e}", path.display())))?;
+    let mut archive = tar::Archive::new(decoder);
+    let mut written = 0;
+    for entry in archive
+        .entries()
+        .map_err(|e| fail(format!("{} is not a valid tar: {e}", path.display())))?
+    {
+        if token.is_cancelled() {
+            return Err(DownloadError::Cancelled);
+        }
+        let mut entry = entry?;
+        let name = entry.path()?.to_string_lossy().to_string();
+        let kind = entry.header().entry_type();
+        // `./` alone is the archive root.
+        if kind.is_dir() && matches!(name.trim_end_matches('/'), "" | ".") {
+            continue;
+        }
+        let rel = managed::safe_relative(&name)
+            .ok_or_else(|| fail(format!("unsafe path in archive: {name}")))?;
+        let out = dest.join(&rel);
+        if kind.is_dir() {
+            std::fs::create_dir_all(&out)?;
+            continue;
+        }
+        if let Some(parent) = out.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        if kind.is_symlink() {
+            let target = entry
+                .link_name()?
+                .map(|t| t.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if !symlink_stays_inside(&rel, &target) {
+                return Err(fail(format!("unsafe link in archive: {name} -> {target}")));
+            }
+            #[cfg(unix)]
+            {
+                let _ = std::fs::remove_file(&out);
+                std::os::unix::fs::symlink(&target, &out)?;
+                written += 1;
+            }
+            continue;
+        }
+        if !kind.is_file() {
+            return Err(fail(format!("unsupported entry in archive: {name}")));
+        }
+        let mut f = std::fs::File::create(&out)?;
+        std::io::copy(&mut entry, &mut f)?;
+        written += 1;
+        #[cfg(unix)]
+        if os != Os::Windows {
+            use std::os::unix::fs::PermissionsExt;
+            let executable = entry.header().mode().is_ok_and(|m| m & 0o111 != 0);
+            let mode = if executable { 0o755 } else { 0o644 };
+            std::fs::set_permissions(&out, std::fs::Permissions::from_mode(mode))?;
+        }
+    }
+    let _ = os;
+    Ok(written)
 }
 
 /// Extract a zip into `dest`. Entries whose paths would leave `dest` (zip
@@ -671,6 +784,15 @@ mod tests {
         }
 
         async fn release(&self, tag: &str, assets: &[(&str, Vec<u8>)]) {
+            self.release_at(
+                "/repos/leejet/stable-diffusion.cpp/releases/latest",
+                tag,
+                assets,
+            )
+            .await
+        }
+
+        async fn release_at(&self, api_path: &str, tag: &str, assets: &[(&str, Vec<u8>)]) {
             let list: Vec<_> = assets
                 .iter()
                 .map(|(name, bytes)| {
@@ -686,7 +808,7 @@ mod tests {
                 })
                 .collect();
             Mock::given(method("GET"))
-                .and(path("/repos/leejet/stable-diffusion.cpp/releases/latest"))
+                .and(path(api_path))
                 .and(header_exists("user-agent"))
                 .respond_with(
                     ResponseTemplate::new(200)
@@ -836,6 +958,134 @@ mod tests {
             .binary
             .ends_with("master-920-2f88688-cuda12/sd-server.exe"));
         assert!(installed.dir.join("cudart64_12.dll").is_file());
+    }
+
+    /// Build a `.tar.zst` from `(name, contents, mode)`; `None` contents is a
+    /// folder, a name starting with `@` is a link to the contents.
+    fn make_tar_zst(entries: &[(&str, Option<&[u8]>, u32)]) -> Vec<u8> {
+        let mut b = tar::Builder::new(Vec::new());
+        for (name, contents, mode) in entries {
+            let mut h = tar::Header::new_gnu();
+            h.set_mode(*mode);
+            if let Some(link) = name.strip_prefix('@') {
+                h.set_entry_type(tar::EntryType::Symlink);
+                h.set_size(0);
+                let target = std::str::from_utf8(contents.unwrap()).unwrap();
+                b.append_link(&mut h, link, target).unwrap();
+            } else if let Some(data) = contents {
+                h.set_entry_type(tar::EntryType::Regular);
+                h.set_size(data.len() as u64);
+                b.append_data(&mut h, name, *data).unwrap();
+            } else {
+                h.set_entry_type(tar::EntryType::Directory);
+                h.set_size(0);
+                b.append_data(&mut h, name, std::io::empty()).unwrap();
+            }
+        }
+        let tar = b.into_inner().unwrap();
+        ruzstd::encoding::compress_to_vec(&tar[..], ruzstd::encoding::CompressionLevel::Fastest)
+    }
+
+    #[test]
+    fn tar_zst_extraction_keeps_modes_and_rejects_escapes() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("ok.tar.zst");
+        std::fs::write(
+            &archive,
+            make_tar_zst(&[
+                ("./", None, 0o755),
+                ("bin/", None, 0o755),
+                ("bin/ollaya", Some(b"exe"), 0o755),
+                ("lib/ollaya/llama/libllama.0.dylib", Some(b"lib"), 0o644),
+                ("@lib/ollaya/llama/libllama.dylib", Some(b"libllama.0.dylib"), 0o777),
+            ]),
+        )
+        .unwrap();
+        let out = dir.path().join("out");
+        let n = extract_archive(&archive, &out, Os::Linux, &CancellationToken::new()).unwrap();
+        assert_eq!(n, 3);
+        assert_eq!(std::fs::read(out.join("bin/ollaya")).unwrap(), b"exe");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |p: &str| std::fs::metadata(out.join(p)).unwrap().permissions().mode();
+            assert_eq!(mode("bin/ollaya") & 0o777, 0o755);
+            assert_eq!(mode("lib/ollaya/llama/libllama.0.dylib") & 0o777, 0o644);
+            assert_eq!(
+                std::fs::read(out.join("lib/ollaya/llama/libllama.dylib")).unwrap(),
+                b"lib"
+            );
+        }
+
+        for (name, entries) in [
+            ("slip", vec![("../evil", Some(&b"x"[..]), 0o644)]),
+            ("link", vec![("@bin/escape", Some(&b"../../etc/passwd"[..]), 0o777)]),
+        ] {
+            let bad = dir.path().join(format!("{name}.tar.zst"));
+            // tar::Builder refuses `..` itself, so write the header by hand.
+            let bytes = if name == "slip" {
+                let mut h = tar::Header::new_gnu();
+                h.as_gnu_mut().unwrap().name[..6].copy_from_slice(b"../evi");
+                h.set_size(1);
+                h.set_mode(0o644);
+                h.set_entry_type(tar::EntryType::Regular);
+                h.set_cksum();
+                let mut raw = h.as_bytes().to_vec();
+                raw.extend_from_slice(&[b'x'; 512]);
+                raw.extend_from_slice(&[0; 1024]);
+                ruzstd::encoding::compress_to_vec(
+                    &raw[..],
+                    ruzstd::encoding::CompressionLevel::Fastest,
+                )
+            } else {
+                make_tar_zst(&entries)
+            };
+            std::fs::write(&bad, bytes).unwrap();
+            let err = extract_archive(
+                &bad,
+                &dir.path().join(format!("out-{name}")),
+                Os::Linux,
+                &CancellationToken::new(),
+            )
+            .unwrap_err();
+            assert!(format!("{err:?}").contains("unsafe"), "{name}: {err:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn pinned_release_with_extras_at_the_root() {
+        use crate::recipes::{OLLAYA_MACOS, OLLAYA_VERSION};
+        let fx = Fixture::new().await;
+        let main = make_tar_zst(&[
+            ("bin/ollaya", Some(b"exe"), 0o755),
+            ("lib/ollaya/llama/libllama.0.dylib", Some(b"lib"), 0o644),
+        ]);
+        let mlx = make_tar_zst(&[("lib/ollaya/mlx_metal/mlx.metallib", Some(b"metal"), 0o644)]);
+        fx.release_at(
+            &format!("/repos/ollaya-dev/ollaya/releases/tags/{OLLAYA_VERSION}"),
+            OLLAYA_VERSION,
+            &[
+                ("ollaya-darwin-arm64-mlx.tar.zst", mlx),
+                ("ollaya-darwin-arm64.tar.zst", main),
+            ],
+        )
+        .await;
+        let sink: Arc<dyn InstallSink> = Arc::new(Lines::default());
+        let tag = run_download(
+            "run",
+            &fx.job(OLLAYA_MACOS, Os::MacOs),
+            &sink,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(tag, OLLAYA_VERSION);
+        let installed = managed::installed_in(&fx.dir()).unwrap();
+        let root = fx.dir().join(format!("{OLLAYA_VERSION}-metal"));
+        assert_eq!(installed.binary, root.join("bin/ollaya"));
+        // The MLX kernels land in lib/ next to bin/, not inside bin/.
+        assert!(root.join("lib/ollaya/mlx_metal/mlx.metallib").is_file());
+        assert!(root.join("lib/ollaya/llama/libllama.0.dylib").is_file());
     }
 
     #[tokio::test]

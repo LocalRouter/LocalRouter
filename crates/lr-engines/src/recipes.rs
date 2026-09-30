@@ -7,10 +7,10 @@
 //! these compiled-in commands: the frontend refers to an option by recipe id
 //! and option id, never by command text.
 //!
-//! stable-diffusion.cpp is in no package manager, so its options are
-//! downloads instead: when the user clicks Download, LocalRouter fetches the
-//! latest GitHub release asset for this platform ([`DownloadSpec`]) into its
-//! managed install folder ([`crate::managed`]).
+//! stable-diffusion.cpp and Ollaya are in no package manager, so their
+//! options are downloads instead: when the user clicks Download, LocalRouter
+//! fetches the GitHub release asset for this platform ([`DownloadSpec`]) into
+//! its managed install folder ([`crate::managed`]).
 
 use serde::Serialize;
 
@@ -32,6 +32,10 @@ pub const VON_PYTHON: &str = "3.12";
 /// Python version for Decider (requires >=3.11; its README uses 3.12).
 pub const DECIDER_PYTHON: &str = "3.12";
 
+/// Ollaya release LocalRouter downloads. Ollaya ships several releases a
+/// day, so the download is pinned (bump by PR after testing).
+pub const OLLAYA_VERSION: &str = "v0.7.5";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RecipeId {
@@ -52,6 +56,8 @@ pub enum RecipeId {
     /// stable-diffusion.cpp's `sd-server`
     #[serde(rename = "sdcpp")]
     SdCpp,
+    /// Ollaya's `ollaya` (serves many decision models)
+    Ollaya,
 }
 
 impl RecipeId {
@@ -64,6 +70,7 @@ impl RecipeId {
             RecipeId::Von => "von",
             RecipeId::Decider => "decider",
             RecipeId::SdCpp => "sdcpp",
+            RecipeId::Ollaya => "ollaya",
         }
     }
 
@@ -76,6 +83,7 @@ impl RecipeId {
             "von" => Some(RecipeId::Von),
             "decider" => Some(RecipeId::Decider),
             "sdcpp" => Some(RecipeId::SdCpp),
+            "ollaya" => Some(RecipeId::Ollaya),
             _ => None,
         }
     }
@@ -116,17 +124,23 @@ impl AssetPattern {
     }
 }
 
-/// What a download option fetches: the latest release of `repo`, its asset
-/// matching `asset` (a zip), plus `extras` zips extracted into the same
-/// folder (e.g. the CUDA runtime DLLs).
+/// What a download option fetches: the latest (or the pinned `tag`) release
+/// of `repo`, its asset matching `asset` (a `.zip` or `.tar.zst`), plus
+/// `extras` archives extracted next to the executable (e.g. the CUDA runtime
+/// DLLs) or, with `extras_at_root`, at the root of the release folder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DownloadSpec {
     /// `owner/name` on GitHub.
     pub repo: &'static str,
+    /// A release tag to install instead of the latest release.
+    pub tag: Option<&'static str>,
     /// Build name, used in the install folder name (e.g. `vulkan`).
     pub build: &'static str,
     pub asset: AssetPattern,
     pub extras: &'static [AssetPattern],
+    /// Extract `extras` at the release root (archives laid out like the
+    /// main one) instead of next to the executable.
+    pub extras_at_root: bool,
     /// Executable to find inside the archive (without `.exe`).
     pub binary: &'static str,
 }
@@ -278,6 +292,7 @@ pub fn recipe(id: RecipeId, platform: &Platform) -> EngineRecipe {
         RecipeId::Von => von(platform),
         RecipeId::Decider => decider(platform),
         RecipeId::SdCpp => sdcpp(platform),
+        RecipeId::Ollaya => ollaya(platform),
     }
 }
 
@@ -547,9 +562,11 @@ const fn sd_spec(
 ) -> DownloadSpec {
     DownloadSpec {
         repo: SDCPP_REPO,
+        tag: None,
         build,
         asset,
         extras,
+        extras_at_root: false,
         binary: "sd-server",
     }
 }
@@ -682,6 +699,134 @@ fn sdcpp(p: &Platform) -> EngineRecipe {
     }
 }
 
+/// GitHub repository of Ollaya.
+pub const OLLAYA_REPO: &str = "ollaya-dev/ollaya";
+
+const OLLAYA_INTEL_MAC: &str = "Ollaya has no build for Intel Macs.";
+const OLLAYA_NO_BUILD: &str = "No Ollaya release for this platform.";
+
+const fn ollaya_asset(suffix: &'static str) -> AssetPattern {
+    AssetPattern {
+        prefix: "ollaya-",
+        contains: &[],
+        suffix,
+    }
+}
+
+const fn ollaya_spec(
+    build: &'static str,
+    asset: AssetPattern,
+    extras: &'static [AssetPattern],
+) -> DownloadSpec {
+    DownloadSpec {
+        repo: OLLAYA_REPO,
+        tag: Some(OLLAYA_VERSION),
+        build,
+        asset,
+        extras,
+        extras_at_root: true,
+        binary: "ollaya",
+    }
+}
+
+/// `ollaya-darwin-arm64.tar.zst` plus the Apple GPU (MLX) kernels, which
+/// Ollaya looks for in `lib/ollaya/mlx_metal` next to its `bin/`.
+pub const OLLAYA_MACOS: DownloadSpec = ollaya_spec(
+    "metal",
+    ollaya_asset("darwin-arm64.tar.zst"),
+    &[ollaya_asset("darwin-arm64-mlx.tar.zst")],
+);
+pub const OLLAYA_LINUX_CPU: DownloadSpec =
+    ollaya_spec("cpu", ollaya_asset("linux-amd64.tar.zst"), &[]);
+/// The CPU release plus its CUDA 13 pack (`lib/ollaya/cuda_v13`).
+pub const OLLAYA_LINUX_CUDA: DownloadSpec = ollaya_spec(
+    "cuda",
+    ollaya_asset("linux-amd64.tar.zst"),
+    &[ollaya_asset("linux-amd64-cuda.tar.zst")],
+);
+pub const OLLAYA_LINUX_ARM64: DownloadSpec =
+    ollaya_spec("cpu", ollaya_asset("linux-arm64.tar.zst"), &[]);
+pub const OLLAYA_WINDOWS_CPU: DownloadSpec =
+    ollaya_spec("cpu", ollaya_asset("windows-amd64.zip"), &[]);
+pub const OLLAYA_WINDOWS_CUDA: DownloadSpec = ollaya_spec(
+    "cuda",
+    ollaya_asset("windows-amd64.zip"),
+    &[ollaya_asset("windows-amd64-cuda.zip")],
+);
+
+fn ollaya_download(
+    id: &'static str,
+    label: &'static str,
+    notes: Option<&'static str>,
+    spec: DownloadSpec,
+) -> InstallOption {
+    download(
+        id,
+        label,
+        format!("Downloads Ollaya {OLLAYA_VERSION} ({label} build) from github.com/{OLLAYA_REPO}"),
+        notes,
+        spec,
+    )
+}
+
+const OLLAYA_GLIBC: &str = "Needs glibc 2.38 or newer (Ubuntu 24.04, Debian 13, Fedora 39 or newer).";
+
+fn ollaya(p: &Platform) -> EngineRecipe {
+    let install = match (p.os, p.arch) {
+        (Os::MacOs, Arch::Aarch64) => vec![ollaya_download(
+            "metal",
+            "Apple Silicon",
+            Some("About 25 MB. Needs macOS 14 or newer."),
+            OLLAYA_MACOS,
+        )],
+        (Os::Linux, Arch::X86_64) => vec![
+            ollaya_download("cpu", "CPU", Some(OLLAYA_GLIBC), OLLAYA_LINUX_CPU),
+            ollaya_download(
+                "cuda",
+                "NVIDIA CUDA",
+                Some("Adds the CUDA runtime (about 1.5 GB); needs NVIDIA driver R580 or newer. Also needs glibc 2.38 or newer."),
+                OLLAYA_LINUX_CUDA,
+            ),
+        ],
+        (Os::Linux, Arch::Aarch64) => vec![ollaya_download(
+            "cpu",
+            "CPU",
+            Some(OLLAYA_GLIBC),
+            OLLAYA_LINUX_ARM64,
+        )],
+        (Os::Windows, Arch::X86_64) => vec![
+            ollaya_download(
+                "cpu",
+                "CPU",
+                Some("Needs the Microsoft Visual C++ runtime."),
+                OLLAYA_WINDOWS_CPU,
+            ),
+            ollaya_download(
+                "cuda",
+                "NVIDIA CUDA",
+                Some("Adds the CUDA runtime (about 1.5 GB); needs NVIDIA driver R580 or newer."),
+                OLLAYA_WINDOWS_CUDA,
+            ),
+        ],
+        _ => vec![],
+    };
+    let unsupported_reason = if p.is_intel_mac() {
+        Some(OLLAYA_INTEL_MAC)
+    } else {
+        install.is_empty().then_some(OLLAYA_NO_BUILD)
+    };
+    EngineRecipe {
+        id: RecipeId::Ollaya,
+        display_name: "Ollaya",
+        binaries: vec!["ollaya"],
+        requires: vec![],
+        install,
+        docs_url: "https://github.com/ollaya-dev/ollaya",
+        unsupported_reason,
+        allow_own_binary: true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -809,6 +954,7 @@ mod tests {
             RecipeId::Von,
             RecipeId::Decider,
             RecipeId::SdCpp,
+            RecipeId::Ollaya,
         ] {
             assert_eq!(RecipeId::parse(id.as_str()), Some(id));
             assert_eq!(
@@ -883,6 +1029,95 @@ mod tests {
             only_match(&SDCPP_WINDOWS_CUDA12.extras[0]),
             "cudart-sd-bin-win-cu12-x64.zip"
         );
+    }
+
+    /// Asset names of Ollaya release v0.7.5 (checksums and desktop apps
+    /// included, which must never match).
+    const OLLAYA_ASSETS: &[&str] = &[
+        "ollaya-darwin-arm64-mlx.sha256",
+        "ollaya-darwin-arm64-mlx.tar.zst",
+        "ollaya-darwin-arm64-mlx.tgz",
+        "ollaya-darwin-arm64.tar.zst",
+        "ollaya-darwin-arm64.tgz",
+        "ollaya-linux-amd64-cuda.sha256",
+        "ollaya-linux-amd64-cuda.tar.zst",
+        "ollaya-linux-amd64-cuda12.sha256",
+        "ollaya-linux-amd64-cuda12.tar.zst",
+        "Ollaya-linux-amd64.deb",
+        "ollaya-linux-amd64.tar.zst",
+        "ollaya-linux-arm64.tar.zst",
+        "Ollaya-linux-x86_64.AppImage",
+        "Ollaya-linux-x86_64.rpm",
+        "Ollaya-macos-arm64.dmg",
+        "ollaya-windows-amd64-cuda.sha256",
+        "ollaya-windows-amd64-cuda.zip",
+        "ollaya-windows-amd64-cuda12.sha256",
+        "ollaya-windows-amd64-cuda12.zip",
+        "ollaya-windows-amd64.zip",
+        "Ollaya-windows-x64-setup.exe",
+        "Ollaya-windows-x64.msi",
+        "sha256sum.txt",
+    ];
+
+    fn only_ollaya_match(pattern: &AssetPattern) -> &'static str {
+        let hits: Vec<_> = OLLAYA_ASSETS
+            .iter()
+            .copied()
+            .filter(|n| pattern.matches(n))
+            .collect();
+        assert_eq!(hits.len(), 1, "{pattern:?} matched {hits:?}");
+        hits[0]
+    }
+
+    #[test]
+    fn ollaya_downloads_are_pinned_and_pick_exactly_one_asset() {
+        let cases: [(DownloadSpec, &str, &[&str]); 6] = [
+            (
+                OLLAYA_MACOS,
+                "ollaya-darwin-arm64.tar.zst",
+                &["ollaya-darwin-arm64-mlx.tar.zst"],
+            ),
+            (OLLAYA_LINUX_CPU, "ollaya-linux-amd64.tar.zst", &[]),
+            (
+                OLLAYA_LINUX_CUDA,
+                "ollaya-linux-amd64.tar.zst",
+                &["ollaya-linux-amd64-cuda.tar.zst"],
+            ),
+            (OLLAYA_LINUX_ARM64, "ollaya-linux-arm64.tar.zst", &[]),
+            (OLLAYA_WINDOWS_CPU, "ollaya-windows-amd64.zip", &[]),
+            (
+                OLLAYA_WINDOWS_CUDA,
+                "ollaya-windows-amd64.zip",
+                &["ollaya-windows-amd64-cuda.zip"],
+            ),
+        ];
+        for (spec, main, extras) in cases {
+            assert_eq!(only_ollaya_match(&spec.asset), main);
+            let got: Vec<_> = spec.extras.iter().map(only_ollaya_match).collect();
+            assert_eq!(got, extras);
+            assert_eq!(spec.tag, Some(OLLAYA_VERSION));
+            assert!(spec.extras_at_root);
+            assert_eq!(spec.binary, "ollaya");
+        }
+    }
+
+    #[test]
+    fn ollaya_platforms() {
+        let mac = recipe(RecipeId::Ollaya, &plat(Os::MacOs, Arch::Aarch64, None));
+        assert!(mac.unsupported_reason.is_none());
+        assert!(mac.requires.is_empty());
+        assert_eq!(mac.install.len(), 1);
+        assert_eq!(mac.install[0].kind, InstallKind::Download);
+        let intel = recipe(RecipeId::Ollaya, &plat(Os::MacOs, Arch::X86_64, None));
+        assert!(intel.unsupported_reason.is_some() && intel.install.is_empty());
+        let linux = recipe(RecipeId::Ollaya, &plat(Os::Linux, Arch::X86_64, None));
+        assert_eq!(
+            linux.install.iter().map(|o| o.id).collect::<Vec<_>>(),
+            ["cpu", "cuda"]
+        );
+        let win = recipe(RecipeId::Ollaya, &plat(Os::Windows, Arch::X86_64, None));
+        assert_eq!(win.install.len(), 2);
+        assert!(win.install.iter().all(|o| o.runnable()));
     }
 
     #[test]

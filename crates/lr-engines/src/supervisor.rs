@@ -38,6 +38,9 @@ pub enum PortArg {
     Flag(String),
     /// An environment variable, e.g. `LAYA_PORT`.
     Env(String),
+    /// An environment variable holding `host:port`, e.g.
+    /// `OLLAYA_HOST=127.0.0.1:<port>`.
+    Addr { var: String, host: String },
 }
 
 /// Everything needed to launch one engine process.
@@ -342,6 +345,7 @@ impl Supervisor {
                 args.push(port.to_string());
             }
             PortArg::Env(var) => env.push((var.clone(), port.to_string())),
+            PortArg::Addr { var, host } => env.push((var.clone(), format!("{host}:{port}"))),
         }
 
         let mut cmd = host_command(&spec.program, args, env);
