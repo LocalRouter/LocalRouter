@@ -9,7 +9,9 @@ use futures::{Stream, StreamExt};
 use ollama_rs::Ollama as OllamaClient;
 use reqwest_middleware::ClientWithMiddleware;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::pin::Pin;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 use tracing::{debug, error};
 
@@ -26,6 +28,14 @@ pub struct OllamaProvider {
     sdk_client: OllamaClient,
     http_client: ClientWithMiddleware,
     base_url: String,
+    /// Whether each model is a decision model (Ollama 0.35+ lists
+    /// `decision` among its capabilities), from the model list or a
+    /// `/api/show` on first use.
+    decision_models: Arc<parking_lot::RwLock<HashMap<String, bool>>>,
+    /// Installed decision models from the last model list, sorted.
+    installed_decision_models: Arc<parking_lot::RwLock<Vec<String>>>,
+    /// Client for Ollama's native `/v1/systemone`, built on first use.
+    systemone_client: OnceLock<Arc<crate::systemone::SystemOneProvider>>,
 }
 
 #[allow(dead_code)]
@@ -39,6 +49,9 @@ impl OllamaProvider {
             sdk_client,
             http_client: crate::http_client::default_client(),
             base_url,
+            decision_models: Arc::default(),
+            installed_decision_models: Arc::default(),
+            systemone_client: OnceLock::new(),
         }
     }
 
@@ -56,6 +69,9 @@ impl OllamaProvider {
             sdk_client,
             http_client: crate::http_client::default_client(),
             base_url,
+            decision_models: Arc::default(),
+            installed_decision_models: Arc::default(),
+            systemone_client: OnceLock::new(),
         }
     }
 
@@ -86,6 +102,7 @@ impl OllamaProvider {
     /// router filter correctly when a request carries tools.
     ///
     /// Returns `None` on any failure so the caller can fall back to defaults.
+    /// Records whether the model is a decision model.
     async fn fetch_model_capabilities(&self, name: &str) -> Option<Vec<Capability>> {
         let url = format!("{}/api/show", self.base_url);
         let resp = self
@@ -99,7 +116,34 @@ impl OllamaProvider {
             return None;
         }
         let show: OllamaShowResponse = resp.json().await.ok()?;
-        Some(Self::map_ollama_capabilities(&show.capabilities))
+        let caps = Self::map_ollama_capabilities(&show.capabilities);
+        self.decision_models
+            .write()
+            .insert(name.to_string(), caps.contains(&Capability::Decision));
+        Some(caps)
+    }
+
+    /// Whether `model` is one of Ollama's decision models, asking Ollama
+    /// when it has not been seen yet.
+    async fn is_decision_model(&self, model: &str) -> bool {
+        if let Some(known) = self.decision_models.read().get(model) {
+            return *known;
+        }
+        self.fetch_model_capabilities(model)
+            .await
+            .is_some_and(|caps| caps.contains(&Capability::Decision))
+    }
+
+    fn systemone_client(&self) -> AppResult<Arc<crate::systemone::SystemOneProvider>> {
+        if let Some(client) = self.systemone_client.get() {
+            return Ok(client.clone());
+        }
+        let client = Arc::new(crate::systemone::SystemOneProvider::new(
+            crate::systemone::SystemOneFlavor::Generic,
+            Some(self.base_url.clone()),
+            None,
+        )?);
+        Ok(self.systemone_client.get_or_init(|| client).clone())
     }
 
     /// Map the Ollama `/api/show` `capabilities` strings onto our `Capability`
@@ -120,6 +164,10 @@ impl OllamaProvider {
         }
         if has("embedding") {
             caps.push(Capability::Embedding);
+        }
+        // Ollama 0.35+: answers `/v1/systemone` (e.g. nimble, tev1).
+        if has("decision") {
+            caps.push(Capability::Decision);
         }
         caps
     }
@@ -182,6 +230,10 @@ struct OllamaChatRequest {
     /// Some(true) = enable thinking
     #[serde(skip_serializing_if = "Option::is_none")]
     think: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    logprobs: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top_logprobs: Option<u32>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -219,6 +271,10 @@ struct OllamaChatResponse {
     /// Legacy nested field (kept for backward compat, unused in practice)
     #[serde(default)]
     final_data: Option<OllamaFinalData>,
+    /// Per-token log probabilities when requested: a list in the shape of
+    /// OpenAI's `logprobs.content`.
+    #[serde(default)]
+    logprobs: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -506,6 +562,29 @@ impl ModelProvider for OllamaProvider {
             .buffered(8)
             .collect::<Vec<_>>()
             .await;
+        // Forget decision models that are no longer installed.
+        {
+            let installed: std::collections::HashSet<&str> = tags_response
+                .models
+                .iter()
+                .map(|m| m.name.as_str())
+                .collect();
+            self.decision_models
+                .write()
+                .retain(|name, _| installed.contains(name.as_str()));
+            let mut decision: Vec<String> = tags_response
+                .models
+                .iter()
+                .zip(&cap_results)
+                .filter(|(_, caps)| {
+                    caps.as_ref()
+                        .is_some_and(|c| c.contains(&Capability::Decision))
+                })
+                .map(|(m, _)| m.name.clone())
+                .collect();
+            decision.sort();
+            *self.installed_decision_models.write() = decision;
+        }
 
         let models: Vec<ModelInfo> = tags_response
             .models
@@ -573,6 +652,8 @@ impl ModelProvider for OllamaProvider {
                 .reasoning_effort
                 .as_ref()
                 .map(|effort| !effort.eq_ignore_ascii_case("none")),
+            logprobs: request.logprobs,
+            top_logprobs: request.logprobs.filter(|l| *l).and(request.top_logprobs),
         };
 
         let response = self
@@ -627,6 +708,11 @@ impl ModelProvider for OllamaProvider {
             })
             .unwrap_or(0) as u32;
 
+        let logprobs = ollama_response
+            .logprobs
+            .as_ref()
+            .and_then(|l| super::Logprobs::from_wire(&serde_json::json!({ "content": l })));
+
         // Convert Ollama message to standard ChatMessage
         let message = ollama_response.message.into_chat_message();
 
@@ -647,7 +733,7 @@ impl ModelProvider for OllamaProvider {
                 index: 0,
                 message,
                 finish_reason,
-                logprobs: None, // Ollama does not support logprobs
+                logprobs,
             }],
             usage: TokenUsage {
                 prompt_tokens,
@@ -698,6 +784,9 @@ impl ModelProvider for OllamaProvider {
                 .reasoning_effort
                 .as_ref()
                 .map(|effort| !effort.eq_ignore_ascii_case("none")),
+            // Streamed chunks carry no log probabilities.
+            logprobs: None,
+            top_logprobs: None,
         };
 
         debug!("Ollama streaming request body: {:?}", ollama_request);
@@ -882,6 +971,37 @@ impl ModelProvider for OllamaProvider {
 
     fn supports_pull(&self) -> bool {
         true
+    }
+
+    fn supports_feature(&self, feature: &str) -> bool {
+        // Non-streaming chat returns per-token log probabilities.
+        feature == "logprobs"
+    }
+
+    /// Whether the last model list had a decision model.
+    fn supports_systemone(&self) -> bool {
+        !self.installed_decision_models.read().is_empty()
+    }
+
+    /// Decision models answer `/v1/systemone` natively; chat models go
+    /// through the router's translation.
+    async fn supports_systemone_model(&self, model: &str) -> bool {
+        self.is_decision_model(model).await
+    }
+
+    async fn systemone(
+        &self,
+        mut request: crate::SystemOneRequest,
+    ) -> AppResult<crate::SystemOneResponse> {
+        if request.model.is_none() {
+            let first = self.installed_decision_models.read().first().cloned();
+            request.model = Some(first.ok_or_else(|| {
+                AppError::InvalidParams(
+                    "Ollama has no decision model (pull one, e.g. `ollama pull tev1`)".to_string(),
+                )
+            })?);
+        }
+        self.systemone_client()?.systemone(request).await
     }
 
     async fn pull_model(
@@ -1181,5 +1301,161 @@ mod tests {
             ),
             (26, 282, 308)
         );
+    }
+
+    #[test]
+    fn decision_capability_maps_to_decision() {
+        // tev1 on Ollama 0.35 reports ["decision","tools","thinking","completion"].
+        let caps = OllamaProvider::map_ollama_capabilities(&[
+            "decision".to_string(),
+            "tools".to_string(),
+            "thinking".to_string(),
+            "completion".to_string(),
+        ]);
+        assert!(caps.contains(&Capability::Decision));
+        assert!(caps.contains(&Capability::Chat));
+    }
+
+    /// An Ollama 0.35 server with one decision model and one chat model.
+    async fn decision_server() -> wiremock::MockServer {
+        use wiremock::matchers::{body_partial_json, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/tags"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "models": [
+                    {"name": "tev1:0.8b", "modified_at": "", "size": 1, "digest": "a"},
+                    {"name": "llama3.2:latest", "modified_at": "", "size": 1, "digest": "b"}
+                ]
+            })))
+            .mount(&server)
+            .await;
+        for (name, caps) in [
+            (
+                "tev1:0.8b",
+                serde_json::json!(["decision", "tools", "thinking", "completion"]),
+            ),
+            ("tev1", serde_json::json!(["decision", "completion"])),
+            (
+                "llama3.2:latest",
+                serde_json::json!(["completion", "tools"]),
+            ),
+        ] {
+            Mock::given(method("POST"))
+                .and(path("/api/show"))
+                .and(body_partial_json(serde_json::json!({"name": name})))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({"capabilities": caps})),
+                )
+                .mount(&server)
+                .await;
+        }
+        Mock::given(method("POST"))
+            .and(path("/v1/systemone"))
+            .and(body_partial_json(serde_json::json!({"model": "tev1:0.8b"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "model": "tev1:0.8b",
+                "answers": {"urgent": {"type": "noul", "noul": 0.42}},
+                "usage": {"input_tokens": 101, "output_tokens": 1}
+            })))
+            .expect(2)
+            .mount(&server)
+            .await;
+        server
+    }
+
+    fn decision_request(model: Option<&str>) -> crate::SystemOneRequest {
+        let mut v = serde_json::json!({
+            "state": "card charged twice",
+            "questions": {"urgent": {"type": "noul", "instructions": "Is this urgent?"}}
+        });
+        if let Some(m) = model {
+            v["model"] = m.into();
+        }
+        serde_json::from_value(v).unwrap()
+    }
+
+    #[tokio::test]
+    async fn decision_models_answer_systemone_natively() {
+        let server = decision_server().await;
+        let provider = OllamaProvider::with_base_url(server.uri());
+        // Nothing known before the model list is read.
+        assert!(!provider.supports_systemone());
+
+        let models = provider.list_models().await.unwrap();
+        let tev1 = models.iter().find(|m| m.id == "tev1:0.8b").unwrap();
+        assert!(tev1.capabilities.contains(&Capability::Decision));
+        assert!(provider.supports_systemone());
+        assert!(provider.supports_systemone_model("tev1:0.8b").await);
+        assert!(!provider.supports_systemone_model("llama3.2:latest").await);
+        // A name not in the list yet is looked up with /api/show.
+        assert!(provider.supports_systemone_model("tev1").await);
+
+        let resp = provider
+            .systemone(decision_request(Some("tev1:0.8b")))
+            .await
+            .unwrap();
+        assert_eq!(resp.model, "tev1:0.8b");
+        assert_eq!(resp.usage.input_tokens, Some(101));
+        // No model: the (only) decision model the list reported.
+        let resp = provider.systemone(decision_request(None)).await.unwrap();
+        assert!(resp.answers.contains_key("urgent"));
+    }
+
+    #[tokio::test]
+    async fn chat_returns_logprobs_when_asked() {
+        use wiremock::matchers::{body_partial_json, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        // Shape observed from Ollama 0.35's /api/chat.
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .and(body_partial_json(
+                serde_json::json!({"logprobs": true, "top_logprobs": 3}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "model": "tev1:0.8b",
+                "message": {"role": "assistant", "content": "A"},
+                "done": true,
+                "logprobs": [{
+                    "token": "A", "logprob": -0.164, "bytes": [65],
+                    "top_logprobs": [
+                        {"token": "A", "logprob": -0.164, "bytes": [65]},
+                        {"token": "B", "logprob": -1.895, "bytes": [66]}
+                    ]
+                }],
+                "prompt_eval_count": 80,
+                "eval_count": 2
+            })))
+            .mount(&server)
+            .await;
+        let provider = OllamaProvider::with_base_url(server.uri());
+        assert!(provider.supports_feature("logprobs"));
+        let mut req = CompletionRequest::new(
+            "tev1:0.8b",
+            vec![ChatMessage {
+                role: "user".to_string(),
+                content: crate::ChatMessageContent::Text("pick".to_string()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+                reasoning_content: None,
+            }],
+        );
+        req.logprobs = Some(true);
+        req.top_logprobs = Some(3);
+        let resp = provider.complete(req).await.unwrap();
+        let content = resp.choices[0]
+            .logprobs
+            .as_ref()
+            .and_then(|l| l.content.as_ref())
+            .unwrap();
+        assert_eq!(content[0].token, "A");
+        assert_eq!(content[0].top_logprobs.len(), 2);
+        // The router's letter mode reads these as option probabilities.
+        let dist = crate::systemone::emulation::parse_letter_response(&resp, 2).unwrap();
+        assert!(dist[0] > dist[1]);
     }
 }

@@ -6,6 +6,8 @@
 //!   upstream error passthrough, prefix and unprefixed routes
 //! - chat translation: letter mode (logprobs, via llama.cpp) and JSON mode
 //!   (OpenAI-compatible without logprobs)
+//! - Ollama: decision models (`decision` capability) answered natively, chat
+//!   models by letter mode on `/api/chat` logprobs
 //! - validation and auth
 //! - provider-level behaviour of each System One flavor (auth header,
 //!   error mapping, request id, default model)
@@ -16,7 +18,8 @@ use localrouter::mcp::McpServerManager;
 use localrouter::monitoring::metrics::MetricsCollector;
 use localrouter::monitoring::storage::MetricsDatabase;
 use localrouter::providers::factory::{
-    LlamaCppProviderFactory, OpenAICompatibleProviderFactory, SystemOneProviderFactory,
+    LlamaCppProviderFactory, OllamaProviderFactory, OpenAICompatibleProviderFactory,
+    SystemOneProviderFactory,
 };
 use localrouter::providers::registry::ProviderRegistry;
 use localrouter::providers::systemone::{SystemOneFlavor, SystemOneProvider};
@@ -64,6 +67,7 @@ async fn start_server(upstreams: Vec<Upstream>) -> (String, String) {
     }
     provider_registry.register_factory(Arc::new(LlamaCppProviderFactory));
     provider_registry.register_factory(Arc::new(OpenAICompatibleProviderFactory));
+    provider_registry.register_factory(Arc::new(OllamaProviderFactory));
     for (name, provider_type, cfg) in upstreams {
         let cfg: HashMap<String, String> =
             cfg.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
@@ -435,6 +439,104 @@ async fn chat_model_letter_mode_via_logprobs() {
     let yes = out["answers"]["human"]["noul"].as_f64().unwrap();
     assert!((yes - 0.8).abs() < 1e-6);
     assert_eq!(out["usage"]["input_tokens"], 100);
+}
+
+/// An Ollama 0.35 server with a decision model (tev1) and a chat model.
+async fn ollama_mock() -> MockServer {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/tags"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"models": [
+            {"name": "tev1:0.8b", "modified_at": "", "size": 1, "digest": "a"},
+            {"name": "llama3.2:latest", "modified_at": "", "size": 1, "digest": "b"}
+        ]})))
+        .mount(&mock)
+        .await;
+    for (name, caps) in [
+        (
+            "tev1:0.8b",
+            json!(["decision", "tools", "thinking", "completion"]),
+        ),
+        ("llama3.2:latest", json!(["completion", "tools"])),
+    ] {
+        Mock::given(method("POST"))
+            .and(path("/api/show"))
+            .and(body_partial_json(json!({"name": name})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"capabilities": caps})))
+            .mount(&mock)
+            .await;
+    }
+    // Native System One, only for the decision model.
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .and(body_partial_json(json!({"model": "tev1:0.8b"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json({
+            let mut a = native_answer();
+            a["model"] = json!("tev1:0.8b");
+            a
+        }))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    // Letter mode for the chat model: Ollama's native /api/chat logprobs.
+    Mock::given(method("POST"))
+        .and(path("/api/chat"))
+        .and(body_partial_json(
+            json!({"model": "llama3.2:latest", "logprobs": true}),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "model": "llama3.2:latest",
+            "message": {"role": "assistant", "content": "A"},
+            "done": true,
+            "logprobs": [{"token": "A", "logprob": 0.8f64.ln(), "top_logprobs": [
+                {"token": "A", "logprob": 0.8f64.ln()},
+                {"token": "B", "logprob": 0.2f64.ln()}
+            ]}],
+            "prompt_eval_count": 50,
+            "eval_count": 1
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    mock
+}
+
+#[tokio::test]
+async fn ollama_decision_models_are_native_and_chat_models_use_letters() {
+    let mock = ollama_mock().await;
+    let (base_url, secret) =
+        start_server(vec![("ollama", "ollama", vec![("base_url", mock.uri())])]).await;
+
+    let resp = post(
+        &base_url,
+        "/v1/systemone",
+        &secret,
+        &decision_body("ollama/tev1:0.8b"),
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.headers()["x-localrouter-systemone-backend"], "native");
+    let out: Value = resp.json().await.unwrap();
+    assert_eq!(out["answers"]["dept"]["choice"], "billing");
+    assert_eq!(out["model"], "tev1:0.8b");
+
+    let body = json!({
+        "model": "ollama/llama3.2:latest",
+        "state": "Customer was charged twice.",
+        "questions": {"dept": {"type": "choice", "instructions": "Which team?",
+            "criteria": {"billing": "refunds", "tech": "bugs"}}}
+    });
+    let resp = post(&base_url, "/v1/systemone", &secret, &body).await;
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        resp.headers()["x-localrouter-systemone-backend"],
+        "letter_logprobs"
+    );
+    let out: Value = resp.json().await.unwrap();
+    let p = out["answers"]["dept"]["probabilities"]["billing"]
+        .as_f64()
+        .unwrap();
+    assert!((p - 0.8).abs() < 1e-6, "p = {p}");
 }
 
 #[tokio::test]
