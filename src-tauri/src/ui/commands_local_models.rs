@@ -464,6 +464,29 @@ fn validate_repo_file(path: &str) -> Result<(), String> {
     }
 }
 
+/// A model id an engine names itself: a library id, or an Ollaya name
+/// such as `laya:en` or `acme/triage:v1` (`/`-separated segments of
+/// `[a-z0-9._:-]`, none empty, `.` or `..`).
+fn validate_engine_model_id(id: &str) -> Result<(), String> {
+    let ok = !id.is_empty()
+        && id.len() <= 200
+        && id.split('/').all(|seg| {
+            !seg.is_empty()
+                && seg != "."
+                && seg != ".."
+                && seg.chars().all(|c| {
+                    c.is_ascii_lowercase()
+                        || c.is_ascii_digit()
+                        || matches!(c, '.' | '_' | '-' | ':')
+                })
+        });
+    if ok {
+        Ok(())
+    } else {
+        Err(format!("Invalid model id {id:?}"))
+    }
+}
+
 /// A library id (`[a-z0-9._-]`, as the library generates them).
 fn validate_model_id(id: &str) -> Result<(), String> {
     let ok = !id.is_empty()
@@ -897,7 +920,7 @@ pub async fn local_models_load(
     model: String,
     registry: State<'_, Arc<ProviderRegistry>>,
 ) -> Result<(), String> {
-    validate_model_id(&model)?;
+    validate_engine_model_id(&model)?;
     let provider = embedded_provider(&registry, &instance_name, true)?;
     let control = provider
         .embedded_control()
@@ -912,7 +935,7 @@ pub async fn local_models_unload(
     model: String,
     registry: State<'_, Arc<ProviderRegistry>>,
 ) -> Result<(), String> {
-    validate_model_id(&model)?;
+    validate_engine_model_id(&model)?;
     let provider = embedded_provider(&registry, &instance_name, false)?;
     let control = provider
         .embedded_control()
@@ -934,8 +957,9 @@ pub async fn local_models_states(
         .unwrap_or_default())
 }
 
-/// Models a Laya, Kev, Von or Decider provider can download, with their
-/// download state (empty for llama.cpp, whose models live in the library).
+/// Models an engine provider (Ollaya, Laya, Kev, Von, Decider,
+/// stable-diffusion.cpp) can download, with their download state (empty for
+/// llama.cpp, whose models live in the library).
 #[tauri::command]
 pub async fn local_models_engine_catalog(
     instance_name: String,
@@ -956,7 +980,7 @@ pub async fn local_models_engine_download(
     model: String,
     registry: State<'_, Arc<ProviderRegistry>>,
 ) -> Result<(), String> {
-    validate_model_id(&model)?;
+    validate_engine_model_id(&model)?;
     let provider = embedded_provider(&registry, &instance_name, true)?;
     let control = provider
         .embedded_control()
@@ -971,7 +995,7 @@ pub async fn local_models_engine_remove(
     model: String,
     registry: State<'_, Arc<ProviderRegistry>>,
 ) -> Result<(), String> {
-    validate_model_id(&model)?;
+    validate_engine_model_id(&model)?;
     let provider = embedded_provider(&registry, &instance_name, false)?;
     let control = provider
         .embedded_control()
@@ -989,7 +1013,7 @@ pub async fn local_models_engine_download_cancel(
     model: String,
     registry: State<'_, Arc<ProviderRegistry>>,
 ) -> Result<(), String> {
-    validate_model_id(&model)?;
+    validate_engine_model_id(&model)?;
     let provider = embedded_provider(&registry, &instance_name, false)?;
     if let Some(control) = provider.embedded_control() {
         control
@@ -1421,6 +1445,12 @@ mod tests {
         assert!(validate_model_id("model.v2").is_ok());
         for bad in ["", "..", "Qwen", "a/b", "a:b", "a b"] {
             assert!(validate_model_id(bad).is_err(), "{bad}");
+        }
+        for good in ["qwen3-8b-q4_k_m", "laya:en", "kev:0.8b", "acme/triage:v1"] {
+            assert!(validate_engine_model_id(good).is_ok(), "{good}");
+        }
+        for bad in ["", "..", "a/../b", "/abs", "a//b", "Laya:en", "a b", "a\\b"] {
+            assert!(validate_engine_model_id(bad).is_err(), "{bad}");
         }
         assert_eq!(validate_display_name("  My model ").unwrap(), "My model");
         assert!(validate_display_name("   ").is_err());

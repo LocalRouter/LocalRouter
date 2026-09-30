@@ -182,8 +182,10 @@ async fn ollaya_pull(
     if model.starts_with("missing") {
         return (
             StatusCode::NOT_FOUND,
-            Json(json!({"error": format!("model \"{model}\" not found in registry ollaya.dev"),
-                        "code": "MODEL_NOT_FOUND"})),
+            Json(
+                json!({"error": format!("model \"{model}\" not found in registry ollaya.dev"),
+                        "code": "MODEL_NOT_FOUND"}),
+            ),
         )
             .into_response();
     }
@@ -231,7 +233,9 @@ async fn ollaya_delete(
         }
         _ => (
             StatusCode::NOT_FOUND,
-            Json(json!({"error": format!("model \"{model}\" not found"), "code": "MODEL_NOT_FOUND"})),
+            Json(
+                json!({"error": format!("model \"{model}\" not found"), "code": "MODEL_NOT_FOUND"}),
+            ),
         )
             .into_response(),
     }

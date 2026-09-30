@@ -524,6 +524,7 @@ fn provider_type_str_to_enum(provider_type: &str) -> lr_config::ProviderType {
         "systemone_compatible" => lr_config::ProviderType::SystemOneCompatible,
         "von" => lr_config::ProviderType::Von,
         "decider" => lr_config::ProviderType::Decider,
+        "ollaya" => lr_config::ProviderType::Ollaya,
         "llamacpp_embedded" => lr_config::ProviderType::LlamaCppEmbedded,
         "sdcpp_embedded" => lr_config::ProviderType::SdCppEmbedded,
         "llmgateway" => lr_config::ProviderType::LlmGateway,
@@ -1397,6 +1398,7 @@ fn detailed_model(
             | "kev"
             | "von"
             | "decider"
+            | "ollaya"
             | "llamacpp_embedded"
             | "sdcpp_embedded"
     );

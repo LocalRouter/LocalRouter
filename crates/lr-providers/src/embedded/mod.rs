@@ -1,12 +1,13 @@
 //! Local Embedded providers: LocalRouter launches and supervises the inference engine
-//! itself (llama.cpp, Laya, Kev, Von, Decider), with models managed in-app. Engines are
-//! installed by the user through their package manager and found on PATH
-//! (`lr_engines`).
+//! itself (llama.cpp, stable-diffusion.cpp, Ollaya, and the older Laya, Kev, Von and
+//! Decider providers), with models managed in-app. Engines are installed by the user
+//! through their package manager or downloaded by LocalRouter (`lr_engines`).
 
 pub mod decider;
 pub mod kev;
 pub mod laya;
 pub mod llamacpp;
+pub mod ollaya;
 pub mod sdcpp;
 pub mod von;
 
@@ -22,6 +23,7 @@ pub use decider::{DeciderEmbeddedProvider, DeciderEmbeddedProviderFactory};
 pub use kev::{KevEmbeddedProvider, KevEmbeddedProviderFactory};
 pub use laya::{LayaEmbeddedProvider, LayaEmbeddedProviderFactory};
 pub use llamacpp::{LlamaCppEmbeddedProvider, LlamaCppEmbeddedProviderFactory};
+pub use ollaya::{OllayaEmbeddedProvider, OllayaEmbeddedProviderFactory};
 pub use sdcpp::{
     set_image_model_backend, ImageModelBackend, ImageModelStatus, SdCppEmbeddedProvider,
     SdCppEmbeddedProviderFactory,

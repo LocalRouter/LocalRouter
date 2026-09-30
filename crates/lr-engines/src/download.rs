@@ -997,7 +997,11 @@ mod tests {
                 ("bin/", None, 0o755),
                 ("bin/ollaya", Some(b"exe"), 0o755),
                 ("lib/ollaya/llama/libllama.0.dylib", Some(b"lib"), 0o644),
-                ("@lib/ollaya/llama/libllama.dylib", Some(b"libllama.0.dylib"), 0o777),
+                (
+                    "@lib/ollaya/llama/libllama.dylib",
+                    Some(b"libllama.0.dylib"),
+                    0o777,
+                ),
             ]),
         )
         .unwrap();
@@ -1019,7 +1023,10 @@ mod tests {
 
         for (name, entries) in [
             ("slip", vec![("../evil", Some(&b"x"[..]), 0o644)]),
-            ("link", vec![("@bin/escape", Some(&b"../../etc/passwd"[..]), 0o777)]),
+            (
+                "link",
+                vec![("@bin/escape", Some(&b"../../etc/passwd"[..]), 0o777)],
+            ),
         ] {
             let bad = dir.path().join(format!("{name}.tar.zst"));
             // tar::Builder refuses `..` itself, so write the header by hand.
@@ -1086,6 +1093,46 @@ mod tests {
         // The MLX kernels land in lib/ next to bin/, not inside bin/.
         assert!(root.join("lib/ollaya/mlx_metal/mlx.metallib").is_file());
         assert!(root.join("lib/ollaya/llama/libllama.0.dylib").is_file());
+    }
+
+    /// Installs the real pinned Ollaya release for this machine from GitHub
+    /// and runs it (network; `cargo test -p lr-engines -- --ignored real_ollaya`).
+    #[tokio::test]
+    #[ignore = "downloads the Ollaya release from GitHub"]
+    async fn real_ollaya_release_installs_and_runs() {
+        use crate::platform::Platform;
+        let platform = Platform::current();
+        let recipe = crate::recipes::recipe(crate::recipes::RecipeId::Ollaya, &platform);
+        let Some(option) = recipe.install.first() else {
+            eprintln!("skipping: no Ollaya build for this platform");
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let job = DownloadJob {
+            display_name: "Ollaya",
+            label: option.label,
+            spec: option.download.unwrap(),
+            os: platform.os,
+            api_base: GITHUB_API.to_string(),
+            dir: dir.path().join("ollaya"),
+        };
+        let sink: Arc<dyn InstallSink> = Arc::new(Lines::default());
+        run_download("real", &job, &sink, &CancellationToken::new())
+            .await
+            .unwrap();
+        let installed = managed::installed_in(&job.dir).unwrap();
+        let out = crate::detect::run_capture(&installed.binary, &["--version"])
+            .await
+            .unwrap();
+        assert!(crate::detect::parse_ollaya_version(&out).is_some(), "{out}");
+        if platform.is_apple_silicon() {
+            assert!(installed
+                .binary
+                .parent()
+                .unwrap()
+                .join("../lib/ollaya/mlx_metal/mlx.metallib")
+                .is_file());
+        }
     }
 
     #[tokio::test]

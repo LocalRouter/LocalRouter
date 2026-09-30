@@ -335,11 +335,17 @@ async fn run_gui_mode() -> anyhow::Result<()> {
     for factory in SystemOneProviderFactory::all() {
         provider_registry.register_factory(Arc::new(factory));
     }
-    // Local Embedded providers: LocalRouter launches the engine itself (found on PATH)
+    // Local Embedded providers: LocalRouter launches the engine itself (found on
+    // PATH or downloaded by LocalRouter)
     let engine_supervisor = lr_engines::Supervisor::new(
         &lr_utils::paths::config_dir().unwrap_or_else(|_| std::env::temp_dir()),
     );
     engine_supervisor.spawn_idle_reaper(std::time::Duration::from_secs(30));
+    provider_registry.register_factory(Arc::new(
+        lr_providers::embedded::OllayaEmbeddedProviderFactory::new(engine_supervisor.clone()),
+    ));
+    // Single-model decision engines, superseded by Ollaya: not offered for new
+    // providers, kept so configured ones keep working.
     provider_registry.register_factory(Arc::new(
         lr_providers::embedded::LayaEmbeddedProviderFactory::new(engine_supervisor.clone()),
     ));
@@ -455,6 +461,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             config::ProviderType::SystemOneCompatible => "systemone_compatible",
             config::ProviderType::Von => "von",
             config::ProviderType::Decider => "decider",
+            config::ProviderType::Ollaya => "ollaya",
             config::ProviderType::LlamaCppEmbedded => "llamacpp_embedded",
             config::ProviderType::SdCppEmbedded => "sdcpp_embedded",
             config::ProviderType::LlmGateway => "llmgateway",

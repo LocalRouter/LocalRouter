@@ -37,6 +37,7 @@ import type {
 /** Engine recipe for each Local Embedded provider type. */
 export const EMBEDDED_PROVIDER_RECIPES: Record<string, string> = {
   llamacpp_embedded: "llamacpp",
+  ollaya: "ollaya",
   laya: "laya",
   kev: "kev",
   von: "von",

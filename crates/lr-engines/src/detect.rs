@@ -277,9 +277,18 @@ async fn probe_version(id: RecipeId, path: &Path) -> Option<(String, Option<u64>
         // `sd-server --version` (checked as the first argument, before any
         // other parsing) prints the version and exits.
         RecipeId::SdCpp => parse_sd_version(&run_capture(path, &["--version"]).await?),
-        RecipeId::Ollaya => {
-            parse_ollaya_version(&run_capture(path, &["--version"]).await?).map(|v| (v, None))
-        }
+        // `ollaya --version` asks the server at OLLAYA_HOST too; point it at a
+        // closed port so only the binary's own version is printed and no
+        // other server on the machine is contacted.
+        RecipeId::Ollaya => parse_ollaya_version(
+            &run_capture_env(
+                path,
+                &["--version"],
+                vec![("OLLAYA_HOST".to_string(), "127.0.0.1:9".to_string())],
+            )
+            .await?,
+        )
+        .map(|v| (v, None)),
         // laya-serve has no version flag and starts the server when run;
         // `von --version` is hard-coded upstream, so it says nothing.
         RecipeId::Laya | RecipeId::Von => None,
@@ -319,7 +328,16 @@ pub fn parse_sd_version(text: &str) -> Option<(String, Option<u64>)> {
 /// Run a program with the user's shell environment and return combined
 /// stdout+stderr, or `None` on failure or timeout.
 pub(crate) async fn run_capture(path: &Path, args: &[&str]) -> Option<String> {
-    let mut cmd = host_command(path, args.iter().map(|s| s.to_string()), Vec::new());
+    run_capture_env(path, args, Vec::new()).await
+}
+
+/// [`run_capture`] with extra environment variables.
+pub(crate) async fn run_capture_env(
+    path: &Path,
+    args: &[&str],
+    env: Vec<(String, String)>,
+) -> Option<String> {
+    let mut cmd = host_command(path, args.iter().map(|s| s.to_string()), env);
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

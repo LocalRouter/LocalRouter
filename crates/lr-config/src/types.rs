@@ -4180,6 +4180,9 @@ pub enum ProviderType {
     /// Decider decision models, run by LocalRouter (Local Embedded provider)
     #[serde(rename = "decider")]
     Decider,
+    /// Ollaya decision-model server, run by LocalRouter (Local Embedded provider)
+    #[serde(rename = "ollaya")]
+    Ollaya,
     /// llama.cpp server run by LocalRouter with in-app models (Local Embedded provider)
     #[serde(rename = "llamacpp_embedded")]
     LlamaCppEmbedded,
@@ -5633,6 +5636,7 @@ sampling_permission: "off"
             (ProviderType::SystemOneCompatible, "systemone_compatible"),
             (ProviderType::Von, "von"),
             (ProviderType::Decider, "decider"),
+            (ProviderType::Ollaya, "ollaya"),
             (ProviderType::LlamaCppEmbedded, "llamacpp_embedded"),
             (ProviderType::SdCppEmbedded, "sdcpp_embedded"),
             (ProviderType::LlmGateway, "llmgateway"),
@@ -5687,6 +5691,7 @@ sampling_permission: "off"
             ProviderType::SystemOneCompatible,
             ProviderType::Von,
             ProviderType::Decider,
+            ProviderType::Ollaya,
             ProviderType::LlamaCppEmbedded,
             ProviderType::SdCppEmbedded,
             ProviderType::LlmGateway,

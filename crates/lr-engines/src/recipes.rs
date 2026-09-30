@@ -769,7 +769,8 @@ fn ollaya_download(
     )
 }
 
-const OLLAYA_GLIBC: &str = "Needs glibc 2.38 or newer (Ubuntu 24.04, Debian 13, Fedora 39 or newer).";
+const OLLAYA_GLIBC: &str =
+    "Needs glibc 2.38 or newer (Ubuntu 24.04, Debian 13, Fedora 39 or newer).";
 
 fn ollaya(p: &Platform) -> EngineRecipe {
     let install = match (p.os, p.arch) {
