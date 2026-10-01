@@ -130,7 +130,7 @@ An upstream `422` validation error from a System One provider is returned unchan
 
 **Native and translated backends**
 
-System One providers (TypeSafe Jev, the Local Embedded providers Ollaya, Kev, Von and Decider, System One compatible servers, the Jev models served by OpenRouter, LLM Gateway, Vercel AI Gateway and Cloudflare Workers AI, and Ollama's decision models such as `nimble` and `tev1`; see System One Providers) answer natively. Any chat model can also answer, because LocalRouter translates the questions into chat completions:
+System One providers (TypeSafe Jev, the Local Embedded providers Ollaya, Laya, Kev, Von and Decider, System One compatible servers, the Jev models served by OpenRouter, LLM Gateway, Vercel AI Gateway and Cloudflare Workers AI, and Ollama's decision models such as `nimble` and `tev1`; see System One Providers) answer natively. Any chat model can also answer, because LocalRouter translates the questions into chat completions:
 
 - **Letter mode** (`letter_logprobs`): used where the provider returns token log probabilities (OpenAI, Together AI, llama.cpp, Ollama). The model picks one option letter per question, and the probabilities come from the logprobs of those letters.
 - **JSON mode** (`json`): used for all other providers. The model returns a JSON object of probabilities, which LocalRouter normalizes.

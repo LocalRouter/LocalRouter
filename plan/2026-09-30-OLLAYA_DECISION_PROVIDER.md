@@ -33,9 +33,9 @@ Todo items per step.
 - `supports_systemone_model(m)` = decision model; `supports_systemone()` = any known; `systemone()` posts `/v1/systemone` (generic System One client). Chat models keep going through the router's translation.
 - Letter mode for Ollama chat models: send `logprobs`/`top_logprobs` on `/api/chat` and return them (Ollama supports both); `supports_feature("logprobs")`.
 
-## Step 4: hide the dedicated engines Ollaya makes redundant
-- `listed() -> false` (the legacy llama.cpp precedent) on each dedicated provider Ollaya serves at least as well; the command palette also honours `listed`.
-- Measured on Apple Silicon before deciding (see Findings): only Laya is hidden.
+## Step 4: the dedicated engines stay
+- Measured on Apple Silicon (see Findings): Kev, Decider and Von need their own engines for GPU support, so Laya, Kev, Von and Decider all stay offered next to Ollaya.
+- The command palette honours `listed` (it offered the legacy llama.cpp type).
 
 ## Step 5: app wiring
 - `ProviderType::Ollaya`, string maps, factory registration, `is_local_provider`, engine tab recipe map, service icon.
@@ -64,4 +64,4 @@ Plan review; test-coverage review; bug hunt (key always set, loopback only, pinn
   | Laya English | 0.35 s (mps) | 0.056 s | Metal (MLX) | identical probabilities |
 
   `OLLAYA_DEVICE=metal` fails to load Kev and Decider ("the MLX engine does not run layout kev-pointer-v1 / decider-slots-v1"). Score `confidence` is computed differently by Ollaya; Laya native and Decider native return extra fields Ollaya drops.
-- Decision: hide Laya; keep Kev, Von and Decider listed. Ollaya's catalog says on its Kev/Decider/Von entries that the dedicated providers are faster on Macs.
+- Decision: keep all four dedicated providers offered for their GPU support. Ollaya's catalog says on its Kev/Decider/Von entries that the dedicated providers are faster on Macs.

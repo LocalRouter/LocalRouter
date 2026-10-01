@@ -706,8 +706,6 @@ export const mockData = {
       provider_type: "laya",
       display_name: "Laya",
       category: "embedded",
-      // Superseded by Ollaya, which serves the same checkpoints faster; kept for configured providers
-      listed: false,
       description: "Laya System One decision models (typed choice, score and yes/no answers). LocalRouter runs laya-serve and downloads checkpoints from Hugging Face",
       setup_parameters: [
         { key: "device", param_type: "string", required: false, description: "auto, cpu, cuda or mps", default_value: "auto", sensitive: false },

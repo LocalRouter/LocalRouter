@@ -1262,7 +1262,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn laya_is_hidden_behind_ollaya_but_configured_instances_still_load() {
+    async fn ollaya_and_the_dedicated_decision_engines_are_all_offered() {
         let dir = tempfile::tempdir().unwrap();
         let supervisor = lr_engines::Supervisor::new(dir.path());
         let registry = ProviderRegistry::new();
@@ -1280,15 +1280,11 @@ mod tests {
             .into_iter()
             .map(|t| (t.provider_type, t.listed))
             .collect();
+        // The dedicated engines run their models on the GPU where Ollaya
+        // cannot, so they stay offered next to it.
         assert!(listed.contains(&("ollaya".to_string(), true)));
-        assert!(listed.contains(&("laya".to_string(), false)));
-        // Kev on its own engine is much faster than Ollaya on Apple Silicon.
+        assert!(listed.contains(&("laya".to_string(), true)));
         assert!(listed.contains(&("kev".to_string(), true)));
-        registry
-            .create_provider("Laya".into(), "laya".into(), HashMap::new())
-            .await
-            .unwrap();
-        assert!(registry.get_provider("Laya").is_some());
     }
 
     #[tokio::test]

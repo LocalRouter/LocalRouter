@@ -252,12 +252,11 @@ Anthropic, Cerebras, Cohere, DeepInfra, Gemini, Groq, LMStudio, Mistral, Ollama,
 the Local Embedded engines in `crates/lr-providers/src/embedded/`: **Ollaya**
 (`ollaya.rs`, one engine serving Ollaya's whole model library — Laya, Kev,
 Decider, Von, Winnow, NLI, … — downloaded by LocalRouter at a pinned release,
-`lr_engines::OLLAYA_VERSION`), and Kev, Von and Decider on their own engines.
-Those three stay offered because on Apple Silicon Ollaya runs them on the CPU
-(fp32 ONNX; its MLX engine does not run their layouts) and was measured
-70–160x (Kev, Decider) and ~18x (Von) slower; Laya is hidden
-(`listed() == false`) because Ollaya serves it on the GPU faster with
-identical answers. Hidden types still load configured instances. Decision
+`lr_engines::OLLAYA_VERSION`), and Laya, Kev, Von and Decider on their own
+engines. The dedicated engines stay offered for their GPU support: on Apple
+Silicon Ollaya runs Kev, Decider and Von on the CPU (fp32 ONNX; its MLX engine
+does not run their layouts), measured 70–160x (Kev, Decider) and ~18x (Von)
+slower than their own engines. Decision
 providers answer only `/v1/systemone` (`supports_chat() == false`, models carry
 `Capability::Decision`). Ollama's decision models (0.35+, `decision` in its
 capabilities, e.g. `nimble`, `tev1`) answer natively too, per model; its chat
