@@ -55,6 +55,10 @@ collapsible_if = "allow"
 # Pedantic (off by default); listed for clarity in case -W pedantic is ever
 # added.
 module_name_repetitions = "allow"
+# Clippy 1.99 reports this on the code #[async_trait] generates for default
+# method bodies returning a #[must_use] type (e.g. AppResult); nothing in our
+# own source triggers it.
+double_must_use = "allow"
 
 [workspace.dependencies]
 # Internal crates
