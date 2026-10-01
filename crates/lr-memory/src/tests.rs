@@ -38,6 +38,50 @@ fn session_manager_reuses_active_session() {
 }
 
 #[test]
+fn concurrent_requests_share_one_memory_session() {
+    use std::sync::Barrier;
+
+    let mgr = SessionManager::new(make_config(3600, 28800));
+    let dir = std::path::Path::new("/tmp/test-sessions");
+    for round in 0..16 {
+        let client_id = format!("concurrent-client-{round}");
+        let barrier = Barrier::new(16);
+        let results = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..16)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        mgr.get_or_create_session(&client_id, dir, "concurrent", "test-folder")
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(results.iter().filter(|(_, is_new)| *is_new).count(), 1);
+        assert!(results.iter().all(|(path, _)| path == &results[0].0));
+        assert_eq!(
+            mgr.active_session_path(&client_id),
+            Some(results[0].0.clone())
+        );
+    }
+}
+
+#[test]
+fn short_display_id_handles_unicode() {
+    assert_eq!(
+        crate::session_manager::short_display_id("世界世界世界世界世界"),
+        "世界世界世界世界"
+    );
+    assert_eq!(
+        crate::session_manager::short_display_id("2026-03-22T14-30-00-世界"),
+        "世界"
+    );
+}
+
+#[test]
 fn session_manager_isolates_clients() {
     let mgr = SessionManager::new(make_config(3600, 28800));
     let dir = std::path::PathBuf::from("/tmp/test-sessions");
@@ -257,6 +301,20 @@ fn detect_conversation_new_topic() {
 // ========================================================================
 // TranscriptWriter tests
 // ========================================================================
+
+#[tokio::test]
+async fn transcript_creation_preserves_an_earlier_exchange() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("shared-session.md");
+    let writer = TranscriptWriter::new();
+    writer
+        .append_exchange(&path, "hello", "world", "2026-10-01")
+        .await
+        .unwrap();
+    let original = std::fs::read_to_string(&path).unwrap();
+    writer.create_session_file(&path).await.unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+}
 
 #[tokio::test]
 async fn transcript_create_and_append() {

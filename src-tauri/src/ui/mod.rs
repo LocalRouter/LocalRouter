@@ -16,6 +16,8 @@ pub mod commands_monitor;
 pub mod commands_providers;
 pub mod commands_reverse_proxy;
 pub mod commands_routellm;
+mod input_validation;
+mod skill_paths;
 pub mod tray;
 pub mod tray_font;
 pub mod tray_format;

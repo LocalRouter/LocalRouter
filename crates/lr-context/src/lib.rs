@@ -469,15 +469,21 @@ impl ContentStore {
             let char_count = line.chars().count();
 
             if char_count > LONG_LINE_THRESHOLD {
-                let chars: Vec<char> = line.chars().collect();
+                // Compute byte boundaries once; summing every preceding
+                // character for each sub-line made very long lines quadratic.
+                let byte_offsets: Vec<usize> = line
+                    .char_indices()
+                    .map(|(offset, _)| offset)
+                    .chain(std::iter::once(line.len()))
+                    .collect();
                 let sub_count = char_count.div_ceil(LONG_LINE_THRESHOLD);
                 for sub_idx in 0..sub_count {
                     let start = sub_idx * LONG_LINE_THRESHOLD;
                     let end = ((sub_idx + 1) * LONG_LINE_THRESHOLD).min(char_count);
                     let label = format!("{}-{}", line_num, sub_idx + 1);
                     // We need to convert char range to byte range for the slice
-                    let byte_start: usize = chars[..start].iter().map(|c| c.len_utf8()).sum();
-                    let byte_end: usize = chars[..end].iter().map(|c| c.len_utf8()).sum();
+                    let byte_start = byte_offsets[start];
+                    let byte_end = byte_offsets[end];
                     let text = &line[byte_start..byte_end];
                     virtual_lines.push((label, text));
                 }
@@ -488,7 +494,7 @@ impl ContentStore {
 
         // Find starting position matching parsed offset
         let start_pos = find_virtual_start(&virtual_lines, &parsed_offset);
-        let end_pos = (start_pos + limit).min(virtual_lines.len());
+        let end_pos = start_pos.saturating_add(limit).min(virtual_lines.len());
         let showing = &virtual_lines[start_pos..end_pos];
 
         if showing.is_empty() {
@@ -931,6 +937,17 @@ mod tests {
          Required parameters:\n\
          - model: The model to use\n\
          - messages: Array of message objects\n"
+    }
+
+    #[test]
+    fn read_large_limit_does_not_overflow_after_offset() {
+        let store = ContentStore::new().unwrap();
+        store.index("limits", "first\nsecond\nthird").unwrap();
+        let result = store.read("limits", Some("2"), Some(usize::MAX)).unwrap();
+        assert_eq!(result.showing_start, "2");
+        assert_eq!(result.showing_end, "3");
+        assert!(result.content.contains("second"));
+        assert!(result.content.contains("third"));
     }
 
     #[test]

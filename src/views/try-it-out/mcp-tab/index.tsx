@@ -177,7 +177,9 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
   const [mode, setMode] = useState<McpTestMode>("client")
   const [clients, setClients] = useState<McpClient[]>([])
   const [selectedClientId, setSelectedClientId] = useState<string>("")
-  const [clientApiKey, setClientApiKey] = useState<string | null>(null)
+  const [clientCredential, setClientCredential] = useState<{ clientId: string; secret: string } | null>(null)
+  // Never reuse the previous client's credential while the next lookup is pending.
+  const clientApiKey = clientCredential?.clientId === selectedClientId ? clientCredential.secret : null
   const [selectedDirectTarget, setSelectedDirectTarget] = useState<string>("")
   const [serverPort, setServerPort] = useState<number | null>(null)
   const [internalTestToken, setInternalTestToken] = useState<string | null>(null)
@@ -298,18 +300,21 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
 
   // Fetch client API key when client selection changes
   useEffect(() => {
+    let cancelled = false
+    setClientCredential(null)
     const fetchClientKey = async () => {
       if (mode === "client" && selectedClientId) {
         try {
           const secret = await invoke<string>("get_client_value", { id: selectedClientId })
-          setClientApiKey(secret)
+          if (!cancelled) setClientCredential({ clientId: selectedClientId, secret })
         } catch (error) {
           console.error("Failed to get client API key:", error)
-          setClientApiKey(null)
+          if (!cancelled) setClientCredential(null)
         }
       }
     }
     fetchClientKey()
+    return () => { cancelled = true }
   }, [mode, selectedClientId])
 
   // Initialize data

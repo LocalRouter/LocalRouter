@@ -5,6 +5,7 @@
 
 use super::types::{AsyncScriptStatus, ScriptRunResult};
 use dashmap::DashMap;
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -21,6 +22,25 @@ const MAX_ASYNC_TIMEOUT: u64 = 3600;
 
 /// Default tail lines for output
 const DEFAULT_TAIL: usize = 30;
+
+/// Keep the most recent output while continuing to drain the process pipes.
+const MAX_CAPTURE_BYTES: usize = 1024 * 1024;
+
+async fn read_bounded_output(
+    mut reader: impl tokio::io::AsyncRead + Unpin,
+) -> std::io::Result<Vec<u8>> {
+    let mut captured = VecDeque::new();
+    let mut buffer = [0; 8192];
+    loop {
+        let count = reader.read(&mut buffer).await?;
+        if count == 0 {
+            return Ok(captured.into_iter().collect());
+        }
+        let overflow = (captured.len() + count).saturating_sub(MAX_CAPTURE_BYTES);
+        captured.drain(..overflow);
+        captured.extend(&buffer[..count]);
+    }
+}
 
 /// Tracked async process
 struct TrackedProcess {
@@ -134,7 +154,7 @@ impl ScriptExecutor {
             cmd, args, timeout
         );
 
-        let child = Command::new(&cmd)
+        let mut child = Command::new(&cmd)
             .args(&args)
             .current_dir(skill_dir)
             .stdout(Stdio::piped())
@@ -143,7 +163,21 @@ impl ScriptExecutor {
             .spawn()
             .map_err(|e| format!("Failed to spawn '{}': {}", cmd, e))?;
 
-        let result = tokio::time::timeout(timeout, child.wait_with_output()).await;
+        let stdout = child.stdout.take().ok_or("Script stdout not available")?;
+        let stderr = child.stderr.take().ok_or("Script stderr not available")?;
+        let result = tokio::time::timeout(timeout, async {
+            let (status, stdout, stderr) = tokio::try_join!(
+                child.wait(),
+                read_bounded_output(stdout),
+                read_bounded_output(stderr)
+            )?;
+            Ok::<_, std::io::Error>(std::process::Output {
+                status,
+                stdout,
+                stderr,
+            })
+        })
+        .await;
 
         match result {
             Ok(Ok(output)) => {
@@ -201,7 +235,7 @@ impl ScriptExecutor {
             .current_dir(skill_dir)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .kill_on_drop(false)
+            .kill_on_drop(true)
             .spawn()
             .map_err(|e| format!("Failed to spawn '{}': {}", cmd, e))?;
 
@@ -240,27 +274,23 @@ impl ScriptExecutor {
             let stderr_path_clone = stderr_path.clone();
 
             let stdout_task = tokio::spawn(async move {
-                if let Some(mut reader) = stdout {
-                    let mut buf = Vec::new();
-                    let _ = reader.read_to_end(&mut buf).await;
-                    let _ = std::fs::write(&stdout_path_clone, &buf);
+                if let Some(reader) = stdout {
+                    if let Ok(buf) = read_bounded_output(reader).await {
+                        let _ = std::fs::write(&stdout_path_clone, &buf);
+                    }
                 }
             });
 
             let stderr_task = tokio::spawn(async move {
-                if let Some(mut reader) = stderr {
-                    let mut buf = Vec::new();
-                    let _ = reader.read_to_end(&mut buf).await;
-                    let _ = std::fs::write(&stderr_path_clone, &buf);
+                if let Some(reader) = stderr {
+                    if let Ok(buf) = read_bounded_output(reader).await {
+                        let _ = std::fs::write(&stderr_path_clone, &buf);
+                    }
                 }
             });
 
             // Wait for process with timeout
             let wait_result = tokio::time::timeout(timeout, child.wait()).await;
-
-            // Wait for output capture to complete
-            let _ = stdout_task.await;
-            let _ = stderr_task.await;
 
             match wait_result {
                 Ok(Ok(status)) => {
@@ -275,6 +305,20 @@ impl ScriptExecutor {
                     *timed_out.write().await = true;
                     warn!("Async script {} timed out", pid);
                 }
+            }
+
+            // Kill timed-out processes before waiting for EOF. Descendants can
+            // keep inherited pipes open, so also bound the final drain itself.
+            let mut stdout_task = stdout_task;
+            let mut stderr_task = stderr_task;
+            if tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                let _ = tokio::join!(&mut stdout_task, &mut stderr_task);
+            })
+            .await
+            .is_err()
+            {
+                stdout_task.abort();
+                stderr_task.abort();
             }
 
             *running.write().await = false;
@@ -330,8 +374,54 @@ fn tail_string(s: &str, n: usize) -> String {
 
 /// Read the last N lines from a file
 fn read_tail_file(path: &Path, n: usize) -> String {
-    match std::fs::read_to_string(path) {
-        Ok(content) => tail_string(&content, n),
+    match std::fs::read(path) {
+        Ok(content) => tail_string(&String::from_utf8_lossy(&content), n),
         Err(_) => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn output_capture_is_bounded_and_keeps_the_tail() {
+        let mut output = vec![b'x'; MAX_CAPTURE_BYTES + 8192];
+        output.extend_from_slice(b"final output");
+        let captured = read_bounded_output(output.as_slice()).await.unwrap();
+        assert_eq!(captured.len(), MAX_CAPTURE_BYTES);
+        assert!(captured.ends_with(b"final output"));
+        assert_eq!(read_bounded_output(&b"small"[..]).await.unwrap(), b"small");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn async_timeout_kills_process_before_waiting_for_output() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("scripts")).unwrap();
+        std::fs::write(dir.path().join("scripts/wait.sh"), "exec sleep 10\n").unwrap();
+        let executor = ScriptExecutor::new();
+        let pid = executor
+            .run_async(dir.path(), "scripts/wait.sh", Some("/bin/sh"), Some(0))
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                let status = executor.get_async_status(pid, None).await.unwrap();
+                if !status.running {
+                    assert!(status.timed_out);
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("timed-out script must stop promptly");
+        std::fs::remove_dir_all(
+            std::env::temp_dir()
+                .join("localrouter-skills")
+                .join(pid.to_string()),
+        )
+        .unwrap();
     }
 }

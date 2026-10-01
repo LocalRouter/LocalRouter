@@ -126,31 +126,34 @@ export function ImagesPanel({ openaiClient, isReady, selectedModel, supportsEdit
     if (!files) return
     const picked = Array.from(files).filter((f) => ACCEPTED.split(",").includes(f.type))
     if (picked.length === 0) return
-    setInputs((prev) => [...prev, ...picked.map(toInput)].slice(0, MAX_INPUT_IMAGES))
+    // Allocate only retained previews and keep allocation outside the updater:
+    // React StrictMode may invoke state updaters twice.
+    const added = picked.slice(0, MAX_INPUT_IMAGES - inputsRef.current.length).map(toInput)
+    const next = [...inputsRef.current, ...added]
+    inputsRef.current = next
+    setInputs(next)
     setError(null)
   }
 
   const removeInput = (id: string) => {
-    setInputs((prev) => {
-      const gone = prev.find((i) => i.id === id)
-      if (gone) URL.revokeObjectURL(gone.preview)
-      return prev.filter((i) => i.id !== id)
-    })
+    const gone = inputsRef.current.find((i) => i.id === id)
+    if (gone) URL.revokeObjectURL(gone.preview)
+    const next = inputsRef.current.filter((i) => i.id !== id)
+    inputsRef.current = next
+    setInputs(next)
   }
 
   const setMaskFile = (file: File | null) => {
-    if (mask) URL.revokeObjectURL(mask.preview)
-    setMask(file ? toInput(file) : null)
+    if (maskStateRef.current) URL.revokeObjectURL(maskStateRef.current.preview)
+    const next = file ? toInput(file) : null
+    maskStateRef.current = next
+    setMask(next)
   }
 
   const editFromResult = (image: GeneratedImage) => {
     if (!image.b64Json) return
-    setInputs((prev) =>
-      [...prev, toInput(b64ToFile(image.b64Json!, `image-${image.id.slice(0, 8)}.png`))].slice(
-        0,
-        MAX_INPUT_IMAGES,
-      ),
-    )
+    if (inputsRef.current.length >= MAX_INPUT_IMAGES) return
+    addFiles([b64ToFile(image.b64Json, `image-${image.id.slice(0, 8)}.png`)])
     setMode("edit")
   }
 

@@ -171,42 +171,36 @@ impl FileKeychain {
         Ok(())
     }
 
-    /// Save secrets to file
-    fn save_to_file(&self) -> AppResult<()> {
-        let storage = self.storage.lock().unwrap();
+    /// Persist a complete snapshot before publishing it to readers.
+    fn save_to_file(&self, storage: &HashMap<String, String>) -> AppResult<()> {
+        use std::io::Write;
 
-        // Ensure parent directory exists
-        if let Some(parent) = self.file_path.parent() {
-            fs::create_dir_all(parent).map_err(|e| {
-                lr_types::AppError::Internal(format!("Failed to create secrets directory: {}", e))
-            })?;
-        }
+        let parent = self
+            .file_path
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| std::path::Path::new("."));
+        fs::create_dir_all(parent).map_err(|e| {
+            lr_types::AppError::Internal(format!("Failed to create secrets directory: {}", e))
+        })?;
 
-        let contents = serde_json::to_string_pretty(&*storage).map_err(|e| {
+        let contents = serde_json::to_string_pretty(storage).map_err(|e| {
             lr_types::AppError::Internal(format!("Failed to serialize secrets: {}", e))
         })?;
 
-        // Write atomically (unique temp file + rename): concurrent writers —
-        // multiple keychain instances or parallel test processes — must never
-        // interleave partial writes into an unparseable secrets file.
-        static SAVE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let tmp_path = self.file_path.with_extension(format!(
-            "tmp.{}.{}",
-            std::process::id(),
-            SAVE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-
-        fs::write(&tmp_path, contents).map_err(|e| {
+        // NamedTempFile creates the file exclusively with owner-only permissions
+        // on Unix. Persist replaces the destination atomically, including on
+        // Windows, without exposing a partially written or world-readable file.
+        let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(|e| {
+            lr_types::AppError::Internal(format!("Failed to create secrets file: {}", e))
+        })?;
+        temporary.write_all(contents.as_bytes()).map_err(|e| {
             lr_types::AppError::Internal(format!("Failed to write secrets file: {}", e))
         })?;
-
-        #[cfg(windows)]
-        {
-            // Windows rename does not replace an existing file
-            let _ = fs::remove_file(self.file_path.as_ref());
-        }
-        fs::rename(&tmp_path, self.file_path.as_ref()).map_err(|e| {
-            let _ = fs::remove_file(&tmp_path);
+        temporary.as_file().sync_all().map_err(|e| {
+            lr_types::AppError::Internal(format!("Failed to sync secrets file: {}", e))
+        })?;
+        temporary.persist(self.file_path.as_ref()).map_err(|e| {
             lr_types::AppError::Internal(format!("Failed to replace secrets file: {}", e))
         })?;
 
@@ -222,11 +216,11 @@ impl FileKeychain {
 impl KeychainStorage for FileKeychain {
     fn store(&self, service: &str, account: &str, secret: &str) -> AppResult<()> {
         let key = Self::make_key(service, account);
-        {
-            let mut storage = self.storage.lock().unwrap();
-            storage.insert(key.clone(), secret.to_string());
-        }
-        self.save_to_file()?;
+        let mut storage = self.storage.lock().unwrap();
+        let mut updated = storage.clone();
+        updated.insert(key, secret.to_string());
+        self.save_to_file(&updated)?;
+        *storage = updated;
         trace!("FileKeychain: stored {}:{}", service, account);
         Ok(())
     }
@@ -239,11 +233,11 @@ impl KeychainStorage for FileKeychain {
 
     fn delete(&self, service: &str, account: &str) -> AppResult<()> {
         let key = Self::make_key(service, account);
-        {
-            let mut storage = self.storage.lock().unwrap();
-            storage.remove(&key);
-        }
-        self.save_to_file()?;
+        let mut storage = self.storage.lock().unwrap();
+        let mut updated = storage.clone();
+        updated.remove(&key);
+        self.save_to_file(&updated)?;
+        *storage = updated;
         trace!("FileKeychain: deleted {}:{}", service, account);
         Ok(())
     }
@@ -260,6 +254,9 @@ impl KeychainStorage for FileKeychain {
 pub struct CachedKeychain {
     /// The underlying keychain implementation
     inner: Arc<dyn KeychainStorage>,
+    /// Serialize storage operations and cache publication. Otherwise a slow
+    /// cache miss can repopulate a deleted or replaced secret.
+    operation_lock: Arc<parking_lot::Mutex<()>>,
     /// In-memory cache of retrieved values
     /// Key: "service:account", Value: secret (zeroized on drop)
     cache: Arc<RwLock<HashMap<String, Zeroizing<String>>>>,
@@ -270,6 +267,7 @@ impl CachedKeychain {
     pub fn new(inner: Arc<dyn KeychainStorage>) -> Self {
         Self {
             inner,
+            operation_lock: Arc::new(parking_lot::Mutex::new(())),
             cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -336,6 +334,7 @@ impl CachedKeychain {
     /// Useful for testing or when you know the keychain has been modified externally
     #[allow(dead_code)]
     pub fn clear_cache(&self) {
+        let _operation = self.operation_lock.lock();
         let mut cache = self.cache.write();
         cache.clear();
         debug!("CachedKeychain: cleared entire cache");
@@ -344,6 +343,7 @@ impl CachedKeychain {
     /// Remove a specific entry from the cache
     #[allow(dead_code)]
     pub fn invalidate(&self, service: &str, account: &str) {
+        let _operation = self.operation_lock.lock();
         let cache_key = Self::make_cache_key(service, account);
         let mut cache = self.cache.write();
         cache.remove(&cache_key);
@@ -357,6 +357,7 @@ impl CachedKeychain {
 
 impl KeychainStorage for CachedKeychain {
     fn store(&self, service: &str, account: &str, secret: &str) -> AppResult<()> {
+        let _operation = self.operation_lock.lock();
         // Store in the underlying keychain
         self.inner.store(service, account, secret)?;
 
@@ -387,6 +388,12 @@ impl KeychainStorage for CachedKeychain {
             account
         );
 
+        let _operation = self.operation_lock.lock();
+        // A writer or another cache miss may have populated it while we waited.
+        if let Some(value) = self.cache.read().get(&cache_key) {
+            return Ok(Some(String::clone(value)));
+        }
+
         // Not in cache, fetch from underlying keychain
         let result = self.inner.get(service, account)?;
 
@@ -401,6 +408,7 @@ impl KeychainStorage for CachedKeychain {
     }
 
     fn delete(&self, service: &str, account: &str) -> AppResult<()> {
+        let _operation = self.operation_lock.lock();
         // Delete from underlying keychain
         self.inner.delete(service, account)?;
 
@@ -525,6 +533,42 @@ mod tests {
             keychain.get("service2", "account").unwrap().unwrap(),
             "value2"
         );
+    }
+
+    #[test]
+    fn concurrent_cache_misses_share_one_storage_read() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct SlowKeychain(AtomicUsize);
+        impl KeychainStorage for SlowKeychain {
+            fn store(&self, _: &str, _: &str, _: &str) -> AppResult<()> {
+                Ok(())
+            }
+            fn delete(&self, _: &str, _: &str) -> AppResult<()> {
+                Ok(())
+            }
+            fn get(&self, _: &str, _: &str) -> AppResult<Option<String>> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                std::thread::sleep(std::time::Duration::from_millis(25));
+                Ok(Some("secret".into()))
+            }
+        }
+        let inner = Arc::new(SlowKeychain(AtomicUsize::new(0)));
+        let cached = Arc::new(CachedKeychain::new(inner.clone()));
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let cached = cached.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    cached.get("service", "account").unwrap()
+                })
+            })
+            .collect();
+        for thread in threads {
+            assert_eq!(thread.join().unwrap().as_deref(), Some("secret"));
+        }
+        assert_eq!(inner.0.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -667,6 +711,62 @@ mod tests {
         // Verify it's gone
         let deleted = keychain2.get("service", "account").unwrap();
         assert!(deleted.is_none());
+    }
+
+    #[test]
+    fn failed_file_write_preserves_in_memory_secrets() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secrets.json");
+        let keychain = FileKeychain::new(path.clone()).unwrap();
+        keychain.store("service", "account", "original").unwrap();
+
+        // A directory at the destination makes atomic replacement fail on all
+        // platforms without depending on user permissions or a read-only disk.
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert!(keychain.store("service", "account", "replacement").is_err());
+        assert!(keychain.store("service", "new", "new secret").is_err());
+        assert!(keychain.delete("service", "account").is_err());
+        assert_eq!(
+            keychain.get("service", "account").unwrap().as_deref(),
+            Some("original")
+        );
+        assert_eq!(keychain.get("service", "new").unwrap(), None);
+        assert_eq!(
+            fs::read_dir(dir.path()).unwrap().count(),
+            1,
+            "failed writes leave no temporary secrets"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_keychain_persists_with_owner_only_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secrets.json");
+        let keychain = FileKeychain::new(path.clone()).unwrap();
+        keychain.store("service", "account", "secret").unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        // Replacing a legacy, permissive file also tightens its permissions.
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        keychain.store("service", "account", "updated").unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            FileKeychain::new(path)
+                .unwrap()
+                .get("service", "account")
+                .unwrap()
+                .as_deref(),
+            Some("updated")
+        );
     }
 
     #[test]

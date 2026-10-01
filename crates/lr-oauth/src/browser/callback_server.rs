@@ -177,50 +177,6 @@ impl CallbackServerManager {
                 let server_state = Arc::clone(&server_state);
 
                 async move {
-                    // Check for OAuth error response
-                    if let Some(error) = params.error {
-                        let description = params
-                            .error_description
-                            .unwrap_or_else(|| "Unknown error".to_string());
-                        error!("OAuth authorization failed: {} - {}", error, description);
-
-                        return (
-                            StatusCode::BAD_REQUEST,
-                            Html(format!(
-                                r#"
-                                <html>
-                                    <head><title>Authorization Failed</title></head>
-                                    <body style="font-family: sans-serif; text-align: center; padding: 50px;">
-                                        <h1>❌ Authorization Failed</h1>
-                                        <p>Error: {}</p>
-                                        <p>Description: {}</p>
-                                        <p>You can close this window and return to LocalRouter.</p>
-                                    </body>
-                                </html>
-                                "#,
-                                error, description
-                            )),
-                        )
-                            .into_response();
-                    }
-
-                    // Extract authorization code
-                    let code = match params.code {
-                        Some(c) => c,
-                        None => {
-                            return (
-                                StatusCode::BAD_REQUEST,
-                                Html(
-                                    r#"<html><body style="font-family: sans-serif; text-align: center; padding: 50px;">
-                                        <h1>❌ Error</h1>
-                                        <p>No authorization code received</p>
-                                    </body></html>"#,
-                                ),
-                            )
-                                .into_response();
-                        }
-                    };
-
                     // Extract and validate state
                     const MAX_STATE_LENGTH: usize = 256;
                     let state = match params.state {
@@ -302,6 +258,57 @@ impl CallbackServerManager {
                                 }
                                 _ => {}
                             }
+
+                            // Check for OAuth error response
+                            if let Some(error) = params.error {
+                                let description = params
+                                    .error_description
+                                    .unwrap_or_else(|| "Unknown error".to_string());
+                                error!("OAuth authorization failed: {} - {}", error, description);
+
+                                if let Some(sender) = listener.result_tx.take() {
+                                    let _ = sender.send(Err(AppError::OAuthBrowser(format!(
+                                        "Authorization failed: {} - {}",
+                                        error, description
+                                    ))));
+                                }
+
+                                return (
+                                    StatusCode::BAD_REQUEST,
+                                    Html(format!(
+                                        r#"
+                                        <html>
+                                            <head><title>Authorization Failed</title></head>
+                                            <body style="font-family: sans-serif; text-align: center; padding: 50px;">
+                                                <h1>❌ Authorization Failed</h1>
+                                                <p>Error: {}</p>
+                                                <p>Description: {}</p>
+                                                <p>You can close this window and return to LocalRouter.</p>
+                                            </body>
+                                        </html>
+                                        "#,
+                                        escape_html(&error), escape_html(&description)
+                                    )),
+                                )
+                                    .into_response();
+                            }
+
+                            // Extract authorization code
+                            let code = match params.code {
+                                Some(c) => c,
+                                None => {
+                                    return (
+                                        StatusCode::BAD_REQUEST,
+                                        Html(
+                                            r#"<html><body style="font-family: sans-serif; text-align: center; padding: 50px;">
+                                                <h1>❌ Error</h1>
+                                                <p>No authorization code received</p>
+                                            </body></html>"#,
+                                        ),
+                                    )
+                                        .into_response();
+                                }
+                            };
 
                             // Send result through channel
                             if let Some(sender) = listener.result_tx.take() {
@@ -420,7 +427,7 @@ impl CallbackServerManager {
     /// Cancel a specific flow
     ///
     /// Removes the listener for the specified flow. If this was the last listener
-    /// on the port, the server continues running (it's lightweight and stateless).
+    /// on the port, the server is shut down and removed.
     pub fn cancel_flow(&self, flow_id: FlowId, port: u16) {
         let mut servers = self.active_servers.lock();
 
@@ -460,6 +467,15 @@ impl CallbackServerManager {
             .map(|server| server.lock().listeners.len())
             .sum()
     }
+}
+
+/// Escape provider-controlled text before interpolating it into an HTML page.
+fn escape_html(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 impl Default for CallbackServerManager {
@@ -535,6 +551,56 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         panic!("callback server on port {port} never came up");
+    }
+
+    #[tokio::test]
+    async fn error_callback_requires_state_and_escapes_provider_text() {
+        let manager = CallbackServerManager::new();
+        let flow_id = FlowId::new();
+        let port = find_available_port();
+        let mut rx = manager
+            .register_listener(flow_id, port, "state123".into())
+            .await
+            .unwrap();
+        wait_for_server(port).await;
+        let client = reqwest::Client::new();
+        let url = format!("http://127.0.0.1:{port}/callback");
+
+        let response = client
+            .get(&url)
+            .query(&[("error", "access_denied"), ("state", "wrong")])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(matches!(
+            rx.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+
+        let response = client
+            .get(&url)
+            .query(&[
+                ("error", "<script>bad()</script>"),
+                ("error_description", "<img src=x onerror=bad()> & denied"),
+                ("state", "state123"),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let html = response.text().await.unwrap();
+        assert!(!html.contains("<script>bad()"));
+        assert!(!html.contains("<img"));
+        assert!(html.contains("&lt;script&gt;bad()&lt;/script&gt;"));
+        assert!(html.contains("&amp; denied"));
+        let error = tokio::time::timeout(std::time::Duration::from_secs(1), rx)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert!(error.to_string().contains("Authorization failed"));
+        manager.cancel_flow(flow_id, port);
     }
 
     #[tokio::test]

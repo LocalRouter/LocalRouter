@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listenSafe } from '@/hooks/useTauriListener'
 
@@ -38,34 +38,37 @@ export function useIncrementalModels(
   const { refreshOnMount = true } = options
   const [models, setModels] = useState<Model[]>([])
   const [loadingProviders, setLoadingProviders] = useState<Set<string>>(new Set())
-  const mountedRef = useRef(true)
 
   const refresh = useCallback((force?: boolean) => {
     invoke('refresh_models_incremental', { force: force ?? false }).catch(() => {})
   }, [])
 
   useEffect(() => {
-    mountedRef.current = true
+    let cancelled = false
+    const refreshedProviders = new Set<string>()
 
     // Show cached models instantly
     invoke<Model[]>('get_cached_models')
       .then(cached => {
-        if (mountedRef.current && cached.length > 0) setModels(cached)
+        if (cancelled || cached.length === 0) return
+        // A provider may finish refreshing before the cache IPC reply arrives.
+        // Keep those newer results, including a provider's newly empty list.
+        setModels(prev => [
+          ...cached.filter(model => !refreshedProviders.has(model.provider)),
+          ...prev.filter(model => refreshedProviders.has(model.provider)),
+        ])
       })
       .catch(() => {})
 
-    if (refreshOnMount) {
-      refresh()
-    }
-
     const listeners = [
       listenSafe<ModelsRefreshStartedPayload>('models-refresh-started', (event) => {
-        if (!mountedRef.current) return
+        if (cancelled) return
         setLoadingProviders(new Set(event.payload.providers))
       }),
       listenSafe<ProviderModelsPayload>('models-provider-loaded', (event) => {
-        if (!mountedRef.current) return
+        if (cancelled) return
         const { provider, models: providerModels } = event.payload
+        refreshedProviders.add(provider)
         setModels(prev => [
           ...prev.filter(m => m.provider !== provider),
           ...providerModels,
@@ -77,16 +80,22 @@ export function useIncrementalModels(
         })
       }),
       listenSafe('models-changed', () => {
-        if (!mountedRef.current) return
+        if (cancelled) return
         setLoadingProviders(new Set())
       }),
     ]
 
+    // Tauri listener registration is asynchronous. Starting the refresh first
+    // can lose every event when the provider answers from its local cache.
+    void Promise.all(listeners.map(listener => listener.promise)).then(() => {
+      if (!cancelled && refreshOnMount) refresh()
+    })
+
     return () => {
-      mountedRef.current = false
+      cancelled = true
       listeners.forEach(l => l.cleanup())
     }
-  }, [])
+  }, [refreshOnMount, refresh])
 
   return {
     models,

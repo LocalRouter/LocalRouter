@@ -58,9 +58,11 @@ impl EndpointCapabilityCache {
             if entry.elapsed() < self.ttl {
                 return true;
             }
-            // Expired — remove it
+            // Another task may refresh this entry after the read lock is
+            // released. Only remove it if it is still expired.
             drop(entry);
-            self.entries.remove(&key);
+            self.entries
+                .remove_if(&key, |_, inserted_at| inserted_at.elapsed() >= self.ttl);
         }
         false
     }

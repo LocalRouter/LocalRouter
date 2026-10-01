@@ -487,54 +487,15 @@ pub async fn marketplace_install_skill_direct(
 
     let listing = results
         .into_iter()
-        .find(|s| s.name == skill_name || s.skill_md_url == source_url)
+        .find(|s| s.name == skill_name && s.skill_md_url == source_url)
         .ok_or_else(|| format!("Skill '{}' not found", skill_name))?;
 
-    // Download skill to data directory
-    let skills_dir = service.skills_data_dir();
-    let skill_target_dir = skills_dir.join(&listing.source_label).join(&listing.name);
-
-    // Use the skill_sources_client to download
-    // Since skill_sources_client is internal, we'll do the download here
-    let http_client = reqwest::Client::new();
-
-    // Create target directory
-    std::fs::create_dir_all(&skill_target_dir)
-        .map_err(|e| format!("Failed to create directory: {}", e))?;
-
-    // Download SKILL.md
-    let skill_md = http_client
-        .get(&listing.skill_md_url)
-        .send()
+    // Reuse the same confinement, HTTP status checks, and download limits as
+    // AI-triggered installs instead of writing untrusted listing paths here.
+    let skill_target_dir = service
+        .download_skill(&listing)
         .await
-        .map_err(|e| format!("Failed to download SKILL.md: {}", e))?
-        .text()
-        .await
-        .map_err(|e| format!("Failed to read SKILL.md: {}", e))?;
-
-    std::fs::write(skill_target_dir.join("SKILL.md"), skill_md)
-        .map_err(|e| format!("Failed to write SKILL.md: {}", e))?;
-
-    // Download additional files
-    for file in &listing.files {
-        let file_path = skill_target_dir.join(&file.path);
-        if let Some(parent) = file_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create directory: {}", e))?;
-        }
-
-        let content = http_client
-            .get(&file.url)
-            .send()
-            .await
-            .map_err(|e| format!("Failed to download {}: {}", file.path, e))?
-            .bytes()
-            .await
-            .map_err(|e| format!("Failed to read {}: {}", file.path, e))?;
-
-        std::fs::write(&file_path, content)
-            .map_err(|e| format!("Failed to write {}: {}", file.path, e))?;
-    }
+        .map_err(|e| e.to_string())?;
 
     // Add path to config if not already present
     let skill_path = skill_target_dir.to_string_lossy().to_string();
@@ -584,14 +545,9 @@ pub async fn marketplace_delete_skill(
 
     // Verify the skill is from the marketplace directory
     let skills_dir = service.skills_data_dir();
-    let skill_path_buf = std::path::PathBuf::from(&skill_path);
-
-    if !skill_path_buf.starts_with(&skills_dir) {
-        return Err(format!(
-            "Skill '{}' is not a marketplace-installed skill and cannot be deleted this way",
-            skill_name
-        ));
-    }
+    let skill_path_buf =
+        super::skill_paths::managed_skill_directory(&skills_dir, std::path::Path::new(&skill_path))
+            .map_err(|e| format!("Cannot delete skill '{skill_name}': {e}"))?;
 
     // Delete the skill directory
     if skill_path_buf.exists() {
@@ -633,7 +589,7 @@ pub async fn marketplace_is_skill_from_marketplace(
     let skills_dir = service.skills_data_dir();
     let skill_path_buf = std::path::PathBuf::from(&skill_path);
 
-    Ok(skill_path_buf.starts_with(&skills_dir))
+    Ok(super::skill_paths::managed_skill_directory(&skills_dir, &skill_path_buf).is_ok())
 }
 
 // ============================================================================

@@ -112,6 +112,14 @@ impl MetricsDatabase {
             [],
         )?;
 
+        // Coverage checks must not scan all minute rows for every input row.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_rollup_coverage
+             ON metrics(metric_type, timestamp, granularity)
+             WHERE granularity IN ('day', 'hour')",
+            [],
+        )?;
+
         Ok(())
     }
 
@@ -303,48 +311,16 @@ impl MetricsDatabase {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
     ) -> Result<(u64, u64, f64)> {
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT
-                COALESCE(SUM(requests), 0) as total_requests,
-                COALESCE(SUM(input_tokens), 0) as total_input_tokens,
-                COALESCE(SUM(output_tokens), 0) as total_output_tokens,
-                COALESCE(SUM(cost_usd), 0.0) as total_cost
-             FROM metrics
-             WHERE metric_type = ?
-               AND timestamp >= ?
-               AND timestamp <= ?",
-        )?;
-
-        let result = stmt.query_row(
-            params![metric_type, start.timestamp(), end.timestamp()],
-            |row| {
-                let total_requests: i64 = row.get(0)?;
-                let total_input_tokens: i64 = row.get(1)?;
-                let total_output_tokens: i64 = row.get(2)?;
-                let total_cost: f64 = row.get(3)?;
-
-                Ok((
-                    total_requests as u64,
-                    (total_input_tokens + total_output_tokens) as u64,
-                    total_cost,
-                ))
-            },
-        )?;
-
-        Ok(result)
+        self.get_usage_for_type(metric_type, start, end)
     }
 
     /// Sum requests / tokens / cost for `metric_type` over `[start, end]`
     /// **without** double-counting across granularities.
     ///
-    /// The table holds minute rows plus hourly and daily rollups of the
-    /// same traffic, so a plain `SUM` over the window (as
-    /// [`get_aggregated_usage`](Self::get_aggregated_usage) does) counts
-    /// rolled-up periods two or three times. This query takes every daily
-    /// row in the window, then hourly rows only after the last daily row,
-    /// then minute rows only after the last hourly row — so each period
-    /// is counted at exactly one granularity.
+    /// Prefer a coarse row only for the interval it actually covers. Gaps in
+    /// aggregation must not hide earlier fine-grained rows, and a daily row
+    /// must suppress its minute rows even when no hourly rows remain.
+    /// Only coarse rows selected by the same window suppress finer rows.
     ///
     /// Returns `(requests, total_tokens, cost_usd)`.
     pub fn get_usage_for_type(
@@ -355,29 +331,26 @@ impl MetricsDatabase {
     ) -> Result<(u64, u64, f64)> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "WITH
-               last_day AS (
-                 SELECT COALESCE(MAX(timestamp) + 86400, ?2) AS ts FROM metrics
-                 WHERE metric_type = ?1 AND granularity = 'day'
-                   AND timestamp >= ?2 AND timestamp <= ?3
-               ),
-               last_hour AS (
-                 SELECT COALESCE(MAX(timestamp) + 3600, ?2) AS ts FROM metrics
-                 WHERE metric_type = ?1 AND granularity = 'hour'
-                   AND timestamp >= ?2 AND timestamp <= ?3
-               )
-             SELECT
-               COALESCE(SUM(requests), 0),
-               COALESCE(SUM(input_tokens), 0),
-               COALESCE(SUM(output_tokens), 0),
-               COALESCE(SUM(cost_usd), 0.0)
-             FROM metrics
-             WHERE metric_type = ?1
-               AND timestamp >= ?2 AND timestamp <= ?3
-               AND (
-                    granularity = 'day'
-                 OR (granularity = 'hour'   AND timestamp >= (SELECT ts FROM last_day))
-                 OR (granularity = 'minute' AND timestamp >= (SELECT ts FROM last_hour))
+            "SELECT
+               COALESCE(SUM(m.requests), 0),
+               COALESCE(SUM(m.input_tokens), 0),
+               COALESCE(SUM(m.output_tokens), 0),
+               COALESCE(SUM(m.cost_usd), 0.0)
+             FROM metrics AS m
+             WHERE m.metric_type = ?1
+               AND m.timestamp >= ?2 AND m.timestamp <= ?3
+               AND NOT EXISTS (
+                 SELECT 1 FROM metrics AS coarse
+                 WHERE coarse.metric_type = m.metric_type
+                   AND coarse.granularity IN ('day', 'hour')
+                   AND coarse.timestamp >= MAX(?2, m.timestamp - 86399)
+                   AND coarse.timestamp <= MIN(?3, m.timestamp)
+                   AND (
+                     (coarse.granularity = 'day' AND m.granularity IN ('hour', 'minute')
+                       AND m.timestamp < coarse.timestamp + 86400)
+                     OR (coarse.granularity = 'hour' AND m.granularity = 'minute'
+                       AND m.timestamp < coarse.timestamp + 3600)
+                   )
                )",
         )?;
 
@@ -586,7 +559,7 @@ mod tests {
 
     /// `get_usage_for_type` must count each period at exactly one
     /// granularity even when minute rows and their hourly/daily rollups
-    /// coexist (which `get_aggregated_usage` gets wrong).
+    /// coexist.
     #[test]
     fn usage_for_type_does_not_double_count_rollups() {
         let dir = tempdir().unwrap();
@@ -625,14 +598,58 @@ mod tests {
         assert_eq!(tokens, 600);
         assert!((cost - 0.04).abs() < 1e-9);
 
-        // The naive sum sees the rolled-up hour twice.
-        let (naive_requests, _, _) = db.get_aggregated_usage("llm_key:c1", start, now).unwrap();
-        assert_eq!(naive_requests, 7);
+        // All aggregate callers use the same non-overlapping totals.
+        let (aggregate_requests, _, _) = db.get_aggregated_usage("llm_key:c1", start, now).unwrap();
+        assert_eq!(aggregate_requests, 4);
 
         // Unknown types and empty windows are zero, not errors.
         assert_eq!(
             db.get_usage_for_type("llm_key:nope", start, now).unwrap(),
             (0, 0, 0.0)
+        );
+    }
+
+    #[test]
+    fn usage_preserves_aggregation_gaps_and_deduplicates_daily_rows() {
+        let dir = tempdir().unwrap();
+        let db = MetricsDatabase::new(dir.path().join("usage.db")).unwrap();
+        let day = DateTime::from_timestamp(1_728_000_000, 0).unwrap();
+        let type_name = "llm_strategy:gaps";
+        // An unaggregated old hour must remain visible even when a later hour
+        // has a rollup. A MAX(timestamp) cutoff silently lost this first row.
+        for hours in [0, 2, 24] {
+            db.atomic_record_success(
+                type_name,
+                day + chrono::Duration::hours(hours),
+                1,
+                10,
+                5,
+                0.1,
+            )
+            .unwrap();
+        }
+        db.aggregate_to_hourly(day + chrono::Duration::hours(2))
+            .unwrap();
+        let end = day + chrono::Duration::hours(25);
+        assert_eq!(db.get_usage_for_type(type_name, day, end).unwrap().0, 3);
+
+        // A daily rollup can outlive its hourly rows. Its covered minute rows
+        // must still be excluded, while the following day stays visible.
+        {
+            let conn = db.conn.lock();
+            conn.execute("INSERT INTO metrics (metric_type, timestamp, granularity, requests, successful_requests, failed_requests, avg_latency_ms, input_tokens, output_tokens, cost_usd) VALUES (?1, ?2, 'day', 2, 2, 0, 1.0, 20, 10, 0.2)", params![type_name, day.timestamp()]).unwrap();
+            conn.execute("DELETE FROM metrics WHERE granularity = 'hour'", [])
+                .unwrap();
+        }
+        let (requests, tokens, cost) = db.get_usage_for_type(type_name, day, end).unwrap();
+        assert_eq!((requests, tokens), (3, 45));
+        assert!((cost - 0.3).abs() < 1e-9);
+        // A daily row outside the requested window does not hide minute data.
+        assert_eq!(
+            db.get_usage_for_type(type_name, day + chrono::Duration::hours(1), end)
+                .unwrap()
+                .0,
+            2
         );
     }
 

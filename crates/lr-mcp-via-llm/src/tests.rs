@@ -671,6 +671,31 @@ mod manager_tests {
     }
 
     #[test]
+    fn pending_execution_can_only_be_resumed_once_concurrently() {
+        let mgr = McpViaLlmManager::new(cfg());
+        mgr.pending_executions
+            .insert("c1".to_string(), make_pending(&["tc-1"]));
+        let barrier = std::sync::Barrier::new(16);
+        let matches = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..16)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        mgr.take_pending_if_matching("c1", &make_request(&["tc-1"]))
+                            .is_some()
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap() as usize)
+                .sum::<usize>()
+        });
+        assert_eq!(matches, 1);
+        assert!(mgr.pending_executions.is_empty());
+    }
+
+    #[test]
     fn cleanup_expired_sessions() {
         let config = McpViaLlmConfig {
             session_ttl_seconds: 1,

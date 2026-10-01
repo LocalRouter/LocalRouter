@@ -1,6 +1,9 @@
 // Stub for @tauri-apps/plugin-shell in demo mode
+import { isValidHttpUrl } from '../../../src/utils/url'
+
 export const open = async (url: string) => {
-  window.open(url, '_blank')
+  if (!isValidHttpUrl(url)) throw new Error('Only HTTP and HTTPS links can be opened')
+  window.open(url, '_blank', 'noopener,noreferrer')
 }
 
 export class Command {

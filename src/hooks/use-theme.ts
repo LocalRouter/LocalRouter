@@ -21,22 +21,37 @@ function applyTheme(theme: Theme) {
 export function useTheme() {
   const [theme, setThemeState] = useState<Theme>(() => {
     if (typeof window === "undefined") return "system"
-    const stored = localStorage.getItem("theme") as Theme | null
-    return stored || "system"
+    try {
+      const stored = localStorage.getItem("theme")
+      return stored === "light" || stored === "dark" || stored === "system" ? stored : "system"
+    } catch {
+      // Storage may be disabled in private browsing or an embedded demo.
+      return "system"
+    }
   })
 
   // Apply theme on mount and when theme changes
   useEffect(() => {
     applyTheme(theme)
-    localStorage.setItem("theme", theme)
+    try {
+      localStorage.setItem("theme", theme)
+    } catch {
+      // Theme changes still work for this session when storage is unavailable.
+    }
   }, [theme])
+
+  const [systemTheme, setSystemTheme] = useState(getSystemTheme)
 
   // Listen for system theme changes when in "system" mode
   useEffect(() => {
     if (theme !== "system") return
 
     const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)")
-    const handleChange = () => applyTheme("system")
+    const handleChange = () => {
+      setSystemTheme(getSystemTheme())
+      applyTheme("system")
+    }
+    handleChange()
 
     mediaQuery.addEventListener("change", handleChange)
     return () => mediaQuery.removeEventListener("change", handleChange)
@@ -56,7 +71,7 @@ export function useTheme() {
     setTheme(next[theme])
   }
 
-  const effectiveTheme = theme === "system" ? getSystemTheme() : theme
+  const effectiveTheme = theme === "system" ? systemTheme : theme
 
   return {
     theme,

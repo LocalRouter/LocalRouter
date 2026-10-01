@@ -1,3 +1,7 @@
+// Historical /gateway/stream prototype; the imported client has been retired.
+// Current implementation: src/lib/mcp-client.ts. API: website/src/pages/docs/content/16-api-mcp-gateway.md.
+// This archival example is not a supported entry point.
+
 /**
  * MCP Streaming Client - Complete Usage Example
  *

@@ -161,7 +161,7 @@ impl AppIntegration for ClaudeCodeIntegration {
         let mut config: serde_json::Value = if path.exists() {
             let data = std::fs::read_to_string(&path)
                 .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
-            serde_json::from_str(&data).unwrap_or(serde_json::json!({}))
+            super::config_parse::json(&data, &path)?
         } else {
             serde_json::json!({})
         };
@@ -214,8 +214,7 @@ impl AppIntegration for ClaudeCodeIntegration {
             if path.exists() {
                 let data = std::fs::read_to_string(&path)
                     .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
-                let mut config: serde_json::Value =
-                    serde_json::from_str(&data).unwrap_or(serde_json::json!({}));
+                let mut config: serde_json::Value = super::config_parse::json(&data, &path)?;
 
                 let removed = config
                     .as_object_mut()

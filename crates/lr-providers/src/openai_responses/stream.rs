@@ -39,10 +39,15 @@ where
     let mut state = StreamState::new(provider_id, model_fallback);
     let mut buffer = String::new();
 
-    let stream = bytes_stream.flat_map(move |chunk_result: Result<B, reqwest::Error>| {
+    // Some compatible servers close immediately after their final data line.
+    // A final empty line flushes that frame without changing complete frames.
+    let lines = crate::sse_lines::lines(bytes_stream)
+        .chain(futures::stream::once(async { Ok(String::new()) }));
+    let stream = lines.flat_map(move |chunk_result| {
         let events: Vec<AppResult<CompletionChunk>> = match chunk_result {
-            Ok(bytes) => {
-                buffer.push_str(&String::from_utf8_lossy(bytes.as_ref()));
+            Ok(line) => {
+                buffer.push_str(&line);
+                buffer.push('\n');
                 drain_frames(&mut buffer, &mut state)
             }
             Err(e) => {
@@ -132,12 +137,12 @@ pub const NATIVE_RESPONSES_SSE_EXT_KEY: &str = "__native_responses_sse_envelope"
 /// Locate the byte offset of the next `\n\n` (or `\r\n\r\n`) frame
 /// boundary in `buf`, if present.
 fn find_frame_boundary(buf: &str) -> Option<usize> {
-    // Try `\r\n\r\n` first so we don't greedily split on a lone `\n`
-    // that's actually part of a CRLF pair.
-    if let Some(i) = buf.find("\r\n\r\n") {
-        return Some(i);
-    }
-    buf.find("\n\n")
+    // Either terminator may occur first in a mixed-ending stream. Choosing
+    // CRLF unconditionally would merge and discard earlier LF-only frames.
+    [buf.find("\r\n\r\n"), buf.find("\n\n")]
+        .into_iter()
+        .flatten()
+        .min()
 }
 
 // ============================================================================
@@ -530,6 +535,59 @@ use ContentItem as _;
 mod tests {
     use super::*;
     use futures::stream;
+
+    #[tokio::test]
+    async fn unicode_and_mixed_line_endings_survive_every_byte_boundary() {
+        let sse = concat!(
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"é\"}\n\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"🌍\"}\r\n\r\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"中\"}",
+        );
+        for cuts in crate::sse_lines::test_support::split_variants(sse) {
+            let chunks: Vec<_> = responses_to_completion_chunks(
+                crate::sse_lines::test_support::reads_split_at(sse, &cuts),
+                "fixture".into(),
+                "fixture".into(),
+            )
+            .collect()
+            .await;
+            let text: String = chunks
+                .into_iter()
+                .map(|chunk| {
+                    chunk
+                        .unwrap()
+                        .choices
+                        .into_iter()
+                        .filter_map(|choice| choice.delta.content)
+                        .collect::<String>()
+                })
+                .collect();
+            assert_eq!(text, "é🌍中", "cuts: {cuts:?}");
+        }
+    }
+
+    #[test]
+    fn mixed_frame_boundaries_are_processed_in_wire_order() {
+        let mut buffer = concat!(
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"first\"}\n\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"second\"}\r\n\r\n",
+        )
+        .to_owned();
+        let mut state = StreamState::new("fixture".into(), "fixture".into());
+        let text: String = drain_frames(&mut buffer, &mut state)
+            .into_iter()
+            .map(|chunk| {
+                chunk
+                    .unwrap()
+                    .choices
+                    .into_iter()
+                    .filter_map(|choice| choice.delta.content)
+                    .collect::<String>()
+            })
+            .collect();
+        assert_eq!(text, "firstsecond");
+        assert!(buffer.is_empty());
+    }
 
     fn collect_chunks(raw_sse: &'static str) -> Vec<AppResult<CompletionChunk>> {
         // Chunk the input into 8-byte pieces so the line buffer actually

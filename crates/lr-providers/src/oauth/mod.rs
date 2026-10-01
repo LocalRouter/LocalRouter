@@ -4,7 +4,8 @@
 //! - GitHub Copilot (Device Code Flow)
 //! - OpenAI Codex/ChatGPT Plus (PKCE OAuth Flow)
 //!
-//! OAuth credentials are stored separately from API keys in encrypted storage.
+//! OAuth credentials are stored separately from API keys in the keychain and
+//! an owner-private JSON credential store.
 
 #![allow(dead_code)]
 

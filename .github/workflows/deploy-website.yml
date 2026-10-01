@@ -22,28 +22,33 @@ jobs:
     timeout-minutes: 10
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
+      (github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.conclusion == 'success')
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 18
+          node-version-file: '.nvmrc'
           cache: 'npm'
-          cache-dependency-path: website/package-lock.json
+          cache-dependency-path: |
+            package-lock.json
+            website/package-lock.json
 
       - name: Install root dependencies
-        run: npm install
+        run: npm ci
 
       - name: Install website dependencies
         working-directory: ./website
-        run: npm install
+        run: npm ci
 
       - name: Build
         working-directory: ./website
-        run: npm run build
+        run: npm run build:check
 
       - name: Add CNAME file
         working-directory: ./website/dist

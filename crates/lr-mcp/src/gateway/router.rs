@@ -56,6 +56,15 @@ pub async fn broadcast_request(
                 match result {
                     // Success
                     Ok(Ok(resp)) => {
+                        if let Some(error) = resp.error {
+                            return (
+                                server_id,
+                                Err(AppError::Mcp(format!(
+                                    "JSON-RPC error {}: {}",
+                                    error.code, error.message
+                                ))),
+                            );
+                        }
                         tracing::debug!(
                             "broadcast: {} success from server {} in {:?}",
                             method,
@@ -75,7 +84,7 @@ pub async fn broadcast_request(
                             e
                         );
                         retries += 1;
-                        let backoff_ms = (100 * (1 << retries)).min(10_000);
+                        let backoff_ms = (100 * (1u64 << retries.min(7))).min(10_000);
                         let backoff = Duration::from_millis(backoff_ms);
                         tokio::time::sleep(backoff).await;
                         continue;
@@ -102,7 +111,7 @@ pub async fn broadcast_request(
                             attempt_start.elapsed()
                         );
                         retries += 1;
-                        let backoff_ms = (100 * (1 << retries)).min(10_000);
+                        let backoff_ms = (100 * (1u64 << retries.min(7))).min(10_000);
                         let backoff = Duration::from_millis(backoff_ms);
                         tokio::time::sleep(backoff).await;
                         continue;
@@ -192,6 +201,47 @@ pub fn separate_results<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn broadcast_reports_backend_json_rpc_errors_as_failures() {
+        struct ErrorTransport;
+        #[async_trait::async_trait]
+        impl crate::transport::Transport for ErrorTransport {
+            async fn send_request(
+                &self,
+                request: JsonRpcRequest,
+            ) -> AppResult<crate::protocol::JsonRpcResponse> {
+                Ok(crate::protocol::JsonRpcResponse::error(
+                    request.id.unwrap_or(Value::Null),
+                    crate::protocol::JsonRpcError {
+                        code: -32601,
+                        message: "Unsupported method".to_string(),
+                        data: None,
+                    },
+                ))
+            }
+            async fn is_healthy(&self) -> bool {
+                true
+            }
+            async fn close(&self) -> AppResult<()> {
+                Ok(())
+            }
+        }
+        let transports = Arc::new(SessionTransportSet::new());
+        transports.insert("server".to_string(), Arc::new(ErrorTransport));
+        let results = broadcast_request(
+            &["server".to_string()],
+            JsonRpcRequest::new(Some(Value::from(1)), "tools/list".to_string(), None),
+            &transports,
+            Duration::from_secs(1),
+            0,
+        )
+        .await;
+        let (successes, failures) = separate_results(results);
+        assert!(successes.is_empty());
+        assert_eq!(failures.len(), 1);
+        assert!(failures[0].error.contains("Unsupported method"));
+    }
 
     #[test]
     fn test_should_broadcast() {

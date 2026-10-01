@@ -220,6 +220,9 @@ impl Library {
         &self,
         done: &CompletedDownload,
     ) -> Result<Vec<LibraryEntry>, LibraryError> {
+        // File validation and index insertion must share the deletion lock.
+        // Otherwise remove() could delete a validated file before it is added.
+        let mut entries = self.entries.lock();
         let mut groups: BTreeMap<String, Vec<SplitPart<'_>>> = BTreeMap::new();
         for file in &done.files {
             let name = file.0.rsplit('/').next().unwrap_or(&file.0);
@@ -305,7 +308,6 @@ impl Library {
         let multiple = models.len() > 1;
         let now = Utc::now();
 
-        let mut entries = self.entries.lock();
         let mut result = Vec::with_capacity(models.len());
         let mut staged = entries.clone();
         for m in &models {
@@ -369,6 +371,8 @@ impl Library {
     /// parts must sit next to it. Importing the same file again returns the
     /// existing entry.
     pub fn import_file(&self, path: &Path) -> Result<LibraryEntry, LibraryError> {
+        // Keep validation and insertion atomic with respect to remove().
+        let mut entries = self.entries.lock();
         let path = path
             .canonicalize()
             .map_err(|e| LibraryError::InvalidInput(format!("{}: {e}", path.display())))?;
@@ -417,7 +421,6 @@ impl Library {
             size += std::fs::metadata(p)?.len();
         }
 
-        let mut entries = self.entries.lock();
         if let Some(existing) = entries.iter().find(|e| e.model_path == path) {
             return Ok(existing.clone());
         }
@@ -452,28 +455,31 @@ impl Library {
     /// are deleted (empty directories are pruned). Imported files are never
     /// deleted.
     pub fn remove(&self, id: &str, delete_files: bool) -> Result<(), LibraryError> {
-        let (removed, remaining) = {
-            let mut entries = self.entries.lock();
-            let idx = entries
-                .iter()
-                .position(|e| e.id == id)
-                .ok_or_else(|| LibraryError::NotFound(id.to_string()))?;
-            let mut staged = entries.clone();
-            let removed = staged.remove(idx);
-            self.persist(&staged)?;
-            *entries = staged.clone();
-            (removed, staged)
-        };
+        // Keep the index locked through deletion so a concurrent import/add
+        // cannot start referencing a file after the sharing check.
+        let mut entries = self.entries.lock();
+        let idx = entries
+            .iter()
+            .position(|entry| entry.id == id)
+            .ok_or_else(|| LibraryError::NotFound(id.to_string()))?;
+        let mut staged = entries.clone();
+        let removed = staged.remove(idx);
+        self.persist(&staged)?;
+        *entries = staged;
         if !delete_files || removed.source == EntrySource::Imported {
             return Ok(());
         }
-        let in_use: HashSet<PathBuf> = remaining.iter().flat_map(entry_paths).collect();
+        let in_use: HashSet<PathBuf> = entries
+            .iter()
+            .flat_map(entry_paths)
+            .map(|path| util::canonicalize_lenient(&path))
+            .collect();
         let root = util::canonicalize_lenient(&self.storage_dir);
         for path in entry_paths(&removed) {
-            if in_use.contains(&path) {
+            let canonical = util::canonicalize_lenient(&path);
+            if in_use.contains(&canonical) {
                 continue;
             }
-            let canonical = util::canonicalize_lenient(&path);
             if !canonical.starts_with(&root) || canonical == root {
                 tracing::warn!(
                     "not deleting {} (outside the model storage directory)",
@@ -910,6 +916,29 @@ mod tests {
         env.lib.remove(&e.id, true).unwrap();
         assert!(p.exists());
         assert!(env.lib.list().is_empty());
+    }
+
+    #[test]
+    fn remove_preserves_files_referenced_through_equivalent_paths() {
+        let env = env();
+        let done = env.download("org/Shared-GGUF", &[("shared-Q4_0.gguf", chat_model())]);
+        let entry = env.lib.add_downloaded(&done).unwrap().remove(0);
+        let mut alias = entry.clone();
+        alias.id = "imported-alias".into();
+        alias.source = EntrySource::Imported;
+        alias.model_path = entry
+            .model_path
+            .parent()
+            .unwrap()
+            .join(".")
+            .join(entry.model_path.file_name().unwrap());
+        env.lib.entries.lock().push(alias);
+        env.lib.remove(&entry.id, true).unwrap();
+        assert!(
+            entry.model_path.exists(),
+            "an imported entry still references this file"
+        );
+        assert_eq!(env.lib.list().len(), 1);
     }
 
     #[test]

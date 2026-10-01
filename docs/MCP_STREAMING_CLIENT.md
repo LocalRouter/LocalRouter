@@ -1,3 +1,5 @@
+> Historical prototype: this document describes the retired `/gateway/stream` API. For the current MCP transport and authentication contract, see [MCP gateway API](../website/src/pages/docs/content/16-api-mcp-gateway.md) and [the maintained client](../src/lib/mcp-client.ts). The examples below are archival.
+
 # MCP Streaming Client Documentation
 
 ## Overview

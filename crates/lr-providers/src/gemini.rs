@@ -634,28 +634,16 @@ impl ModelProvider for GeminiProvider {
         }
 
         let model = request.model.clone();
-        let stream = response.bytes_stream();
-
-        // Use line buffer for proper SSE parsing across chunk boundaries
-        use std::sync::{Arc, Mutex};
-        let line_buffer = Arc::new(Mutex::new(String::new()));
+        let stream = crate::sse_lines::line_batches(response.bytes_stream());
 
         let converted_stream = stream.flat_map(move |result| {
             let model = model.clone();
-            let line_buffer = line_buffer.clone();
 
             let chunks: Vec<AppResult<CompletionChunk>> = match result {
-                Ok(bytes) => {
-                    let text = String::from_utf8_lossy(&bytes);
-                    let mut buffer = line_buffer.lock().unwrap();
-                    buffer.push_str(&text);
-
+                Ok(lines) => {
                     let mut parsed_chunks = Vec::new();
 
-                    while let Some(newline_pos) = buffer.find('\n') {
-                        let line = buffer[..newline_pos].to_string();
-                        *buffer = buffer[newline_pos + 1..].to_string();
-
+                    for line in lines {
                         if line.trim().is_empty() {
                             continue;
                         }

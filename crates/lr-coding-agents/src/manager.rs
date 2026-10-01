@@ -350,8 +350,9 @@ impl CodingAgentManager {
                         tokio::time::sleep(Duration::from_millis(500)).await;
 
                         // If process hasn't exited yet, force kill as fallback
-                        if let Some(entry) = self.sessions.get(&sid) {
-                            let mut s = entry.value().1.lock().await;
+                        let current = self.sessions.get(&sid).map(|entry| entry.value().1.clone());
+                        if let Some(current) = current {
+                            let mut s = current.lock().await;
                             if let Some(ref mut process) = s.process {
                                 let _ = process.child.start_kill();
                             }
@@ -380,8 +381,9 @@ impl CodingAgentManager {
                     drop(session);
 
                     tokio::time::sleep(Duration::from_millis(500)).await;
-                    if let Some(entry) = self.sessions.get(&sid) {
-                        let mut s = entry.value().1.lock().await;
+                    let current = self.sessions.get(&sid).map(|entry| entry.value().1.clone());
+                    if let Some(current) = current {
+                        let mut s = current.lock().await;
                         if let Some(ref mut process) = s.process {
                             let _ = process.child.start_kill();
                         }
@@ -556,6 +558,9 @@ impl CodingAgentManager {
         timeout: Duration,
         output_lines: Option<usize>,
     ) -> Result<StatusResponse, CodingAgentError> {
+        // Subscribe before observing state so a completion between the initial
+        // check and the wait cannot be missed until the entire timeout elapses.
+        let mut rx = self.subscribe_changes();
         // Check current status — return immediately if already non-active
         {
             let session_arc = self.get_session(session_id, client_id)?;
@@ -574,7 +579,6 @@ impl CodingAgentManager {
         }
 
         // Subscribe to change notifications and wait
-        let mut rx = self.subscribe_changes();
         let deadline = tokio::time::Instant::now() + timeout;
 
         loop {
@@ -619,6 +623,9 @@ impl CodingAgentManager {
         limit: Option<usize>,
     ) -> Vec<SessionSummary> {
         let limit = limit.unwrap_or(50);
+        if limit == 0 {
+            return Vec::new();
+        }
         let mut summaries = Vec::new();
 
         let matching_sessions: Vec<_> = self
@@ -644,12 +651,10 @@ impl CodingAgentManager {
                 timestamp: session.created_at,
                 status: session.status.clone(),
             });
-            if summaries.len() >= limit {
-                break;
-            }
         }
 
         summaries.sort_by_key(|s| std::cmp::Reverse(s.timestamp));
+        summaries.truncate(limit);
         summaries
     }
 
@@ -1564,6 +1569,82 @@ impl CodingAgentError {
 #[cfg(test)]
 mod direct_cli_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn list_sessions_returns_newest_matching_sessions_before_limiting() {
+        let manager = CodingAgentManager::new(CodingAgentsConfig::default());
+        for index in 0..32 {
+            let id = format!("session-{index}");
+            let mut session = CodingSession::new(
+                id.clone(),
+                CodingAgentType::ClaudeCode,
+                "client".to_string(),
+                PathBuf::new(),
+                cfg(CodingPermissionMode::Supervised, None),
+                "test".to_string(),
+                10,
+            );
+            session.created_at = chrono::DateTime::from_timestamp(1000 + index, 0).unwrap();
+            manager
+                .sessions
+                .insert(id, ("client".to_string(), Arc::new(Mutex::new(session))));
+        }
+        assert!(manager
+            .list_sessions("client", None, Some(0))
+            .await
+            .is_empty());
+        let newest = manager
+            .list_sessions("client", Some(CodingAgentType::ClaudeCode), Some(2))
+            .await;
+        assert_eq!(
+            newest
+                .iter()
+                .map(|s| s.session_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["session-31", "session-30"]
+        );
+        assert!(manager
+            .list_sessions("another-client", None, Some(2))
+            .await
+            .is_empty());
+        assert!(manager
+            .list_sessions("client", Some(CodingAgentType::Codex), Some(2))
+            .await
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn wait_for_session_returns_after_local_completion() {
+        let manager = Arc::new(CodingAgentManager::new(CodingAgentsConfig::default()));
+        let session = Arc::new(Mutex::new(CodingSession::new(
+            "session".to_string(),
+            CodingAgentType::ClaudeCode,
+            "client".to_string(),
+            PathBuf::new(),
+            cfg(CodingPermissionMode::Supervised, None),
+            "test".to_string(),
+            10,
+        )));
+        manager.sessions.insert(
+            "session".to_string(),
+            ("client".to_string(), session.clone()),
+        );
+        let waiting_manager = manager.clone();
+        let waiter = tokio::spawn(async move {
+            waiting_manager
+                .wait_for_non_active("session", "client", Duration::from_secs(60), None)
+                .await
+        });
+        tokio::task::yield_now().await;
+        session.lock().await.status = SessionStatus::Done;
+        manager.notify_changed();
+        let response = tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(response.status, SessionStatus::Done);
+    }
 
     fn cfg(mode: CodingPermissionMode, model: Option<&str>) -> SessionConfig {
         SessionConfig {

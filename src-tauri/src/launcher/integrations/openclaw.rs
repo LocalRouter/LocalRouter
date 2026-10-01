@@ -137,7 +137,7 @@ impl OpenClawIntegration {
             let mut config: serde_json::Value = if llm_path.exists() {
                 let data = std::fs::read_to_string(&llm_path)
                     .map_err(|e| format!("Failed to read config: {}", e))?;
-                serde_json::from_str(&data).unwrap_or(serde_json::json!({}))
+                super::config_parse::json(&data, &llm_path)?
             } else {
                 serde_json::json!({})
             };
@@ -251,7 +251,7 @@ impl OpenClawIntegration {
                 let mut config: serde_json::Value = if mcp_path.exists() {
                     let data = std::fs::read_to_string(&mcp_path)
                         .map_err(|e| format!("Failed to read MCPorter config: {}", e))?;
-                    serde_json::from_str(&data).unwrap_or(serde_json::json!({}))
+                    super::config_parse::json(&data, &mcp_path)?
                 } else {
                     serde_json::json!({})
                 };

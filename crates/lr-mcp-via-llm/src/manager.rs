@@ -308,7 +308,12 @@ impl McpViaLlmManager {
         request: &CompletionRequest,
     ) -> Option<(PendingMixedExecution, Vec<ChatMessage>)> {
         // Check if there's a pending execution for this client
-        let pending_ref = self.pending_executions.get(client_id)?;
+        let dashmap::mapref::entry::Entry::Occupied(pending_entry) =
+            self.pending_executions.entry(client_id.to_string())
+        else {
+            return None;
+        };
+        let pending_ref = pending_entry.get();
         let pending_client_ids = &pending_ref.client_tool_call_ids;
 
         // Look for tool result messages in the request that match the pending client tool call IDs
@@ -327,8 +332,9 @@ impl McpViaLlmManager {
 
         // If we found at least one matching tool result, this is a resume
         if !client_tool_results.is_empty() {
-            drop(pending_ref); // Release read reference before removing
-            let (_, pending) = self.pending_executions.remove(client_id)?;
+            // Match and remove under the same shard lock. Otherwise a new
+            // execution installed after lookup could be resumed with old results.
+            let pending = pending_entry.remove();
             Some((pending, client_tool_results))
         } else {
             None

@@ -1,0 +1,5 @@
+{
+  "path": "crates/lr-catalog/catalog/modelsdev_raw.json",
+  "note": "Pre-existing user change. Review agents instructed not to edit. Builds use LOCALROUTER_SKIP_CATALOG_FETCH=1.",
+  "sha256": "db2c064f1f4489103eebe1ae62dcbf666de3b336720a8f5733daa186f99eee7d"
+}

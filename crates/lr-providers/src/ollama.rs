@@ -822,7 +822,7 @@ impl ModelProvider for OllamaProvider {
         }
 
         let model = request.model.clone();
-        let stream = response.bytes_stream();
+        let stream = crate::sse_lines::line_batches(response.bytes_stream());
 
         // Track state across chunks
         use std::sync::{Arc, Mutex};
@@ -830,30 +830,16 @@ impl ModelProvider for OllamaProvider {
         // Track if any chunk in this stream contained tool calls
         let seen_tool_calls = Arc::new(Mutex::new(false));
 
-        // Buffer for incomplete lines across byte chunks
-        let line_buffer = Arc::new(Mutex::new(String::new()));
-
         let converted_stream = stream.flat_map(move |result| {
             let model = model.clone();
             let is_first_chunk = is_first_chunk.clone();
             let seen_tool_calls = seen_tool_calls.clone();
-            let line_buffer = line_buffer.clone();
 
             let chunks: Vec<AppResult<CompletionChunk>> = match result {
-                Ok(bytes) => {
-                    let text = String::from_utf8_lossy(&bytes);
-                    let mut buffer = line_buffer.lock().unwrap();
-
-                    // Append new data to buffer
-                    buffer.push_str(&text);
-
+                Ok(lines) => {
                     let mut chunks = Vec::new();
 
-                    // Process complete lines (those ending with \n)
-                    while let Some(newline_pos) = buffer.find('\n') {
-                        let line = buffer[..newline_pos].to_string();
-                        *buffer = buffer[newline_pos + 1..].to_string();
-
+                    for line in lines {
                         if line.trim().is_empty() {
                             continue;
                         }
@@ -1032,32 +1018,7 @@ impl ModelProvider for OllamaProvider {
             )));
         }
 
-        let stream = response.bytes_stream().map(|result| {
-            result
-                .map_err(|e| AppError::Provider(crate::http_client::format_stream_error(&e)))
-                .and_then(|bytes| {
-                    // Ollama streams NDJSON — each line is a JSON object
-                    let text = String::from_utf8_lossy(&bytes);
-                    // May contain multiple lines in one chunk
-                    let mut last_progress = None;
-                    for line in text.lines() {
-                        let line = line.trim();
-                        if line.is_empty() {
-                            continue;
-                        }
-                        match serde_json::from_str::<PullProgress>(line) {
-                            Ok(progress) => last_progress = Some(progress),
-                            Err(e) => {
-                                debug!("Failed to parse pull progress line: {} — {}", line, e);
-                            }
-                        }
-                    }
-                    last_progress
-                        .ok_or_else(|| AppError::Provider("Empty pull progress chunk".to_string()))
-                })
-        });
-
-        Ok(Box::pin(stream))
+        Ok(pull_progress_stream(response.bytes_stream()))
     }
 
     fn supports_embeddings(&self) -> bool {
@@ -1193,9 +1154,61 @@ impl ModelProvider for OllamaProvider {
     }
 }
 
+/// Decode pull progress as NDJSON records, independent of network read sizes.
+fn pull_progress_stream<S, B>(
+    bytes: S,
+) -> Pin<Box<dyn Stream<Item = AppResult<PullProgress>> + Send>>
+where
+    S: Stream<Item = Result<B, reqwest::Error>> + Send + 'static,
+    B: AsRef<[u8]>,
+{
+    Box::pin(
+        crate::sse_lines::lines(bytes).filter_map(|line| async move {
+            match line {
+                Ok(line) if line.trim().is_empty() => None,
+                Ok(line) => Some(
+                    serde_json::from_str::<PullProgress>(&line).map_err(|error| {
+                        AppError::Provider(format!("Invalid Ollama pull progress: {error}"))
+                    }),
+                ),
+                Err(error) => Some(Err(AppError::Provider(
+                    crate::http_client::format_stream_error(&error),
+                ))),
+            }
+        }),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn pull_progress_preserves_all_records_across_byte_boundaries() {
+        let body = "{\"status\":\"pulling é🌍\"}\r\n\n{\"status\":\"success\"}";
+        for cuts in crate::sse_lines::test_support::split_variants(body) {
+            let progress: Vec<_> =
+                pull_progress_stream(crate::sse_lines::test_support::reads_split_at(body, &cuts))
+                    .collect()
+                    .await;
+            let statuses: Vec<_> = progress
+                .into_iter()
+                .map(|item| item.unwrap().status)
+                .collect();
+            assert_eq!(statuses, ["pulling é🌍", "success"], "cuts: {cuts:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn pull_progress_surfaces_provider_error_records() {
+        let body = "{\"error\":\"pull failed\"}\n";
+        let progress: Vec<_> =
+            pull_progress_stream(crate::sse_lines::test_support::reads_split_at(body, &[]))
+                .collect()
+                .await;
+        assert_eq!(progress.len(), 1);
+        assert!(progress[0].is_err());
+    }
 
     #[test]
     fn test_parse_parameter_count() {

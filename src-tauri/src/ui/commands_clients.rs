@@ -1471,10 +1471,21 @@ pub async fn submit_firewall_approval(
         edited_arguments.is_some()
     );
 
-    // Parse edited_arguments from JSON string to Value
-    let edited_args_value: Option<serde_json::Value> = edited_arguments
-        .as_ref()
-        .and_then(|s| serde_json::from_str(s).ok());
+    // Never silently approve the original payload when the user's edits are
+    // malformed. Denial does not use edits and must always remain possible.
+    let edited_args_value = if matches!(
+        action,
+        FirewallApprovalAction::AllowOnce
+            | FirewallApprovalAction::AllowSession
+            | FirewallApprovalAction::Allow1Minute
+            | FirewallApprovalAction::Allow1Hour
+            | FirewallApprovalAction::AllowPermanent
+            | FirewallApprovalAction::AllowCategories
+    ) {
+        super::input_validation::parse_approval_arguments(edited_arguments.as_deref())?
+    } else {
+        None
+    };
 
     // If a persistent action, get the pending session info before submitting
     // so we can update client permissions or add time-based approval/denial

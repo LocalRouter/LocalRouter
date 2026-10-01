@@ -10,12 +10,17 @@ use lr_config::MarketplaceSkillSource;
 use parking_lot::RwLock;
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
 /// Type alias for the in-memory skill listings cache
 type SkillMemoryCache = HashMap<String, (Instant, Vec<SkillListing>)>;
+
+// Bound downloads even when a server omits or understates Content-Length.
+const MAX_SKILL_FILE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_SKILL_DOWNLOAD_BYTES: usize = 64 * 1024 * 1024;
 
 /// Skill sources client
 pub struct SkillSourcesClient {
@@ -436,41 +441,39 @@ impl SkillSourcesClient {
         listing: &SkillListing,
         target_dir: &std::path::Path,
     ) -> Result<(), MarketplaceError> {
+        // Reject the entire manifest before any filesystem or network side effects.
+        for file in &listing.files {
+            validate_skill_file_path(&file.path)?;
+            let relative_path = Path::new(&file.path);
+            if relative_path.components().count() == 1
+                && relative_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.eq_ignore_ascii_case("SKILL.md"))
+            {
+                return Err(MarketplaceError::InstallError(
+                    "Additional skill files cannot replace SKILL.md".to_string(),
+                ));
+            }
+        }
         std::fs::create_dir_all(target_dir).map_err(|e| {
             MarketplaceError::InstallError(format!("Failed to create directory: {}", e))
         })?;
 
-        // Download SKILL.md
+        let mut remaining_bytes = MAX_SKILL_DOWNLOAD_BYTES;
+        let skill_md_path = prepare_skill_file_path(target_dir, "SKILL.md")?;
         let skill_md = self
-            .http_client
-            .get(&listing.skill_md_url)
-            .send()
-            .await?
-            .text()
+            .download_file(&listing.skill_md_url, &mut remaining_bytes)
             .await?;
 
-        std::fs::write(target_dir.join("SKILL.md"), skill_md).map_err(|e| {
+        std::fs::write(skill_md_path, skill_md).map_err(|e| {
             MarketplaceError::InstallError(format!("Failed to write SKILL.md: {}", e))
         })?;
 
         // Download additional files
         for file in &listing.files {
-            let file_path = target_dir.join(&file.path);
-
-            // Create parent directories
-            if let Some(parent) = file_path.parent() {
-                std::fs::create_dir_all(parent).map_err(|e| {
-                    MarketplaceError::InstallError(format!("Failed to create directory: {}", e))
-                })?;
-            }
-
-            let content = self
-                .http_client
-                .get(&file.url)
-                .send()
-                .await?
-                .bytes()
-                .await?;
+            let file_path = prepare_skill_file_path(target_dir, &file.path)?;
+            let content = self.download_file(&file.url, &mut remaining_bytes).await?;
 
             std::fs::write(&file_path, content).map_err(|e| {
                 MarketplaceError::InstallError(format!("Failed to write {}: {}", file.path, e))
@@ -481,6 +484,84 @@ impl SkillSourcesClient {
 
         Ok(())
     }
+
+    async fn download_file(
+        &self,
+        url: &str,
+        remaining_bytes: &mut usize,
+    ) -> Result<Vec<u8>, MarketplaceError> {
+        let mut response = self.http_client.get(url).send().await?.error_for_status()?;
+        let limit = MAX_SKILL_FILE_BYTES.min(*remaining_bytes);
+        if response
+            .content_length()
+            .is_some_and(|length| length > limit as u64)
+        {
+            return Err(MarketplaceError::InstallError(
+                "Skill download exceeds the size limit".to_string(),
+            ));
+        }
+        let mut content = Vec::new();
+        while let Some(chunk) = response.chunk().await? {
+            if chunk.len() > limit.saturating_sub(content.len()) {
+                return Err(MarketplaceError::InstallError(
+                    "Skill download exceeds the size limit".to_string(),
+                ));
+            }
+            content.extend_from_slice(&chunk);
+        }
+        *remaining_bytes -= content.len();
+        Ok(content)
+    }
+}
+
+pub(crate) fn validate_skill_file_path(relative: &str) -> Result<(), MarketplaceError> {
+    if relative.is_empty()
+        || relative.contains(['\\', ':', '\0'])
+        || Path::new(relative)
+            .components()
+            .any(|c| !matches!(c, Component::Normal(_)))
+    {
+        return Err(MarketplaceError::InstallError(format!(
+            "Invalid skill file path: {relative}"
+        )));
+    }
+    Ok(())
+}
+
+/// Reject existing symlinks before creating directories or overwriting a file.
+pub(crate) fn prepare_skill_file_path(
+    target_dir: &Path,
+    relative: &str,
+) -> Result<PathBuf, MarketplaceError> {
+    validate_skill_file_path(relative)?;
+    let mut destination = target_dir.to_path_buf();
+    let mut components = Path::new(relative).components().peekable();
+    while let Some(component) = components.next() {
+        destination.push(component);
+        match std::fs::symlink_metadata(&destination) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(MarketplaceError::InstallError(format!(
+                    "Skill file path contains a symlink: {relative}"
+                )));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if components.peek().is_some() {
+                    std::fs::create_dir(&destination).map_err(|e| {
+                        MarketplaceError::InstallError(format!(
+                            "Failed to create skill directory: {e}"
+                        ))
+                    })?;
+                }
+            }
+            Err(error) => {
+                return Err(MarketplaceError::InstallError(format!(
+                    "Failed to inspect skill file path: {error}"
+                )))
+            }
+        }
+    }
+    Ok(destination)
 }
 
 impl Clone for SkillSourcesClient {
@@ -596,6 +677,113 @@ fn parse_skill_frontmatter(content: &str) -> Result<SkillMetadata, MarketplaceEr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn invalid_manifest_is_rejected_before_io() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("not-created");
+        let client = SkillSourcesClient::default();
+        let mut listing: SkillListing = serde_json::from_value(serde_json::json!({
+            "name": "example", "source_id": "test", "source_label": "test",
+            "source_repo": "", "source_path": "", "source_branch": "main",
+            "skill_md_url": "not-a-valid-url", "is_multi_file": true,
+            "files": [{"path": "SKILL.md", "url": "not-a-valid-url"}]
+        }))
+        .unwrap();
+        for path in [
+            "SKILL.md",
+            "skill.md",
+            "SKILL.md/",
+            "SKILL.md/.",
+            "../outside",
+            "/outside",
+        ] {
+            listing.files[0].path = path.to_string();
+            let error = client.download_skill(&listing, &target).await.unwrap_err();
+            assert!(
+                matches!(error, MarketplaceError::InstallError(_)),
+                "unexpected error for {path}: {error}"
+            );
+            assert!(!target.exists(), "invalid manifest created a directory");
+        }
+    }
+
+    #[tokio::test]
+    async fn skill_download_checks_status_and_streamed_size() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}/file", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                for response in [
+                    "HTTP/1.1 404 Not Found\r\nContent-Length: 3\r\nConnection: close\r\n\r\nerr",
+                    "HTTP/1.1 200 OK\r\nContent-Length: 16777217\r\nConnection: close\r\n\r\n",
+                    "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
+                    "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                ] {
+                    let (mut socket, _) = listener.accept().await.unwrap();
+                    let mut request = [0; 4096];
+                    assert!(socket.read(&mut request).await.unwrap() > 0);
+                    socket.write_all(response.as_bytes()).await.unwrap();
+                }
+            });
+            let client = SkillSourcesClient {
+                http_client: reqwest::Client::builder().no_proxy().build().unwrap(),
+                ..Default::default()
+            };
+            let mut remaining = MAX_SKILL_DOWNLOAD_BYTES;
+            assert!(client.download_file(&url, &mut remaining).await.is_err());
+            assert!(client.download_file(&url, &mut remaining).await.is_err());
+            remaining = 4;
+            assert!(client.download_file(&url, &mut remaining).await.is_err());
+            assert_eq!(remaining, 4);
+            assert_eq!(client.download_file(&url, &mut remaining).await.unwrap(), b"ok");
+            assert_eq!(remaining, 2);
+            server.await.unwrap();
+        }).await.expect("local download test timed out");
+    }
+
+    #[test]
+    fn skill_file_paths_are_relative_and_portable() {
+        for path in [
+            "",
+            "../outside",
+            "references/../../outside",
+            "/tmp/outside",
+            "./SKILL.md",
+            "C:/outside",
+            r"references\..\outside",
+        ] {
+            assert!(validate_skill_file_path(path).is_err(), "accepted {path:?}");
+        }
+        for path in ["SKILL.md", "references/guide.md", "scripts/build.sh"] {
+            assert!(validate_skill_file_path(path).is_ok(), "rejected {path:?}");
+        }
+    }
+
+    #[test]
+    fn skill_file_path_creates_nested_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = prepare_skill_file_path(dir.path(), "references/nested/guide.md").unwrap();
+        assert_eq!(path, dir.path().join("references/nested/guide.md"));
+        assert!(path.parent().unwrap().is_dir());
+        assert!(!path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn skill_file_paths_reject_symlinked_directories_and_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("references")).unwrap();
+        assert!(prepare_skill_file_path(dir.path(), "references/nested/guide.md").is_err());
+        assert!(!outside.path().join("nested").exists());
+        let secret = outside.path().join("secret");
+        std::fs::write(&secret, "keep").unwrap();
+        std::os::unix::fs::symlink(&secret, dir.path().join("SKILL.md")).unwrap();
+        assert!(prepare_skill_file_path(dir.path(), "SKILL.md").is_err());
+        assert_eq!(std::fs::read_to_string(secret).unwrap(), "keep");
+    }
 
     #[test]
     fn test_parse_github_url() {

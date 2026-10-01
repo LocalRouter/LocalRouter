@@ -49,13 +49,15 @@ fn config_path() -> std::path::PathBuf {
 }
 
 /// Read the existing config.toml or create an empty table
-fn read_config(path: &std::path::Path) -> toml::Value {
-    if path.exists() {
-        let data = std::fs::read_to_string(path).unwrap_or_default();
-        data.parse::<toml::Value>()
-            .unwrap_or(toml::Value::Table(toml::map::Map::new()))
-    } else {
-        toml::Value::Table(toml::map::Map::new())
+fn read_config(path: &std::path::Path) -> Result<toml::Value, String> {
+    match std::fs::read_to_string(path) {
+        Ok(data) => data
+            .parse::<toml::Value>()
+            .map_err(|error| format!("Failed to parse {}: {error}", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(toml::Value::Table(toml::map::Map::new()))
+        }
+        Err(error) => Err(format!("Failed to read {}: {error}", path.display())),
     }
 }
 
@@ -160,7 +162,7 @@ impl AppIntegration for CodexIntegration {
         _client_id: &str,
     ) -> Result<LaunchResult, String> {
         let path = config_path();
-        let mut config = read_config(&path);
+        let mut config = read_config(&path)?;
 
         insert_mcp_entry(&mut config, base_url, client_secret);
 
@@ -173,7 +175,7 @@ impl AppIntegration for CodexIntegration {
         if !ctx.should_sync_mcp() {
             let path = config_path();
             if path.exists() {
-                let mut config = read_config(&path);
+                let mut config = read_config(&path)?;
                 let removed = if let toml::Value::Table(ref mut table) = config {
                     table
                         .get_mut("mcp_servers")

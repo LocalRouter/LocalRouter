@@ -12,7 +12,7 @@
 use chrono::{DateTime, Duration, Utc};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -65,6 +65,16 @@ impl RateLimiter {
     }
 }
 
+/// All windows of one metric share a single history and record each use once.
+fn retention_window(limiters: &[RateLimiter], limit_type: RateLimitType) -> Duration {
+    limiters
+        .iter()
+        .filter(|limiter| limiter.limit_type == limit_type)
+        .map(RateLimiter::time_window)
+        .max()
+        .unwrap_or_else(Duration::zero)
+}
+
 /// A single usage event in the sliding window
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct UsageEvent {
@@ -108,7 +118,12 @@ impl RateLimiterState {
 
     /// Record a new usage event
     fn record(&mut self, timestamp: DateTime<Utc>, value: f64) {
-        self.events.push_back(UsageEvent { timestamp, value });
+        // Concurrent requests can obtain their timestamps in a different
+        // order than they acquire the state lock. Keep expiry order stable.
+        let index = self
+            .events
+            .partition_point(|event| event.timestamp <= timestamp);
+        self.events.insert(index, UsageEvent { timestamp, value });
     }
 }
 
@@ -184,7 +199,7 @@ pub struct UsageInfo {
 
 impl UsageInfo {
     pub fn total_tokens(&self) -> u64 {
-        self.input_tokens + self.output_tokens
+        self.input_tokens.saturating_add(self.output_tokens)
     }
 }
 
@@ -232,7 +247,13 @@ impl RateLimiterManager {
                     Ok(contents) => {
                         match serde_json::from_str::<Vec<(String, RateLimiterState)>>(&contents) {
                             Ok(states) => {
-                                for (key_str, state) in states {
+                                for (key_str, mut state) in states {
+                                    // Older versions could persist concurrent
+                                    // completions out of timestamp order.
+                                    state
+                                        .events
+                                        .make_contiguous()
+                                        .sort_by_key(|event| event.timestamp);
                                     self.states.insert(key_str, Arc::new(RwLock::new(state)));
                                 }
                                 debug!("Loaded rate limiter state from disk");
@@ -257,9 +278,14 @@ impl RateLimiterManager {
             // Collect all states
             let mut states_vec: Vec<(String, RateLimiterState)> = Vec::new();
 
-            for entry in self.states.iter() {
-                let key = entry.key().clone();
-                let state = entry.value().read().await.clone();
+            // Release DashMap shard guards before awaiting a state lock.
+            let states: Vec<_> = self
+                .states
+                .iter()
+                .map(|entry| (entry.key().clone(), entry.value().clone()))
+                .collect();
+            for (key, state) in states {
+                let state = state.read().await.clone();
                 states_vec.push((key, state));
             }
 
@@ -316,6 +342,7 @@ impl RateLimiterManager {
         &self,
         key: &RateLimiterKey,
         limiter: &RateLimiter,
+        retention_window: Duration,
     ) -> RateLimitCheckResult {
         let now = Utc::now();
         let window_start = now - limiter.time_window();
@@ -332,7 +359,9 @@ impl RateLimiterManager {
         let mut state = state_lock.write().await;
 
         // Clean up old events
-        state.cleanup(window_start);
+        // Several windows for one metric share the same event history. A
+        // short-window check must not erase events needed by a longer one.
+        state.cleanup(now - retention_window);
 
         // Calculate current usage
         let current_usage = state.current_usage(window_start);
@@ -343,10 +372,14 @@ impl RateLimiterManager {
         // Calculate retry_after if not allowed
         let retry_after_secs = if !allowed {
             // Find the oldest event in the window
-            if let Some(oldest_event) = state.events.front() {
+            if let Some(oldest_event) = state
+                .events
+                .iter()
+                .find(|event| event.timestamp >= window_start)
+            {
                 let time_until_oldest_expires =
                     oldest_event.timestamp + limiter.time_window() - now;
-                Some(time_until_oldest_expires.num_seconds().max(0))
+                Some((time_until_oldest_expires.num_milliseconds().max(0) + 999) / 1000)
             } else {
                 Some(0)
             }
@@ -388,18 +421,17 @@ impl RateLimiterManager {
                 limit_type: limiter.limit_type,
             };
 
-            // We can't check token/cost limits before the request
-            // So we skip those here - they'll be checked after recording
-            match limiter.limit_type {
-                RateLimitType::Requests => {
-                    let result = self.check_limiter(&key, limiter).await;
-                    if !result.allowed {
-                        return Ok(result);
-                    }
-                }
-                _ => {
-                    // Token and cost limits are checked after the request
-                }
+            // Final usage is unknown, but an already exhausted token/cost
+            // budget must block the next request just like a request limit.
+            let result = self
+                .check_limiter(
+                    &key,
+                    limiter,
+                    retention_window(&limiters, limiter.limit_type),
+                )
+                .await;
+            if !result.allowed {
+                return Ok(result);
             }
         }
 
@@ -437,17 +469,15 @@ impl RateLimiterManager {
                 limit_type: limiter.limit_type,
             };
 
-            // We can only check request limits before the request
-            match limiter.limit_type {
-                RateLimitType::Requests => {
-                    let result = self.check_limiter(&key, limiter).await;
-                    if !result.allowed {
-                        return Ok(result);
-                    }
-                }
-                _ => {
-                    // Token and cost limits are checked after the request
-                }
+            let result = self
+                .check_limiter(
+                    &key,
+                    limiter,
+                    retention_window(&limiters, limiter.limit_type),
+                )
+                .await;
+            if !result.allowed {
+                return Ok(result);
             }
         }
 
@@ -472,8 +502,12 @@ impl RateLimiterManager {
         };
 
         let now = Utc::now();
+        let mut recorded = HashSet::new();
 
         for limiter in &limiters {
+            if !recorded.insert(limiter.limit_type) {
+                continue;
+            }
             let key = RateLimiterKey::ApiKey {
                 key_id: key_id.to_string(),
                 limit_type: limiter.limit_type,
@@ -497,6 +531,7 @@ impl RateLimiterManager {
                 .clone();
 
             let mut state = state_lock.write().await;
+            state.cleanup(now - retention_window(&limiters, limiter.limit_type));
             state.record(now, value);
         }
 
@@ -511,8 +546,12 @@ impl RateLimiterManager {
         };
 
         let now = Utc::now();
+        let mut recorded = HashSet::new();
 
         for limiter in &limiters {
+            if !recorded.insert(limiter.limit_type) {
+                continue;
+            }
             let key = RateLimiterKey::Router {
                 router_name: router_name.to_string(),
                 limit_type: limiter.limit_type,
@@ -536,6 +575,7 @@ impl RateLimiterManager {
                 .clone();
 
             let mut state = state_lock.write().await;
+            state.cleanup(now - retention_window(&limiters, limiter.limit_type));
             state.record(now, value);
         }
 
@@ -548,7 +588,7 @@ impl RateLimiterManager {
         key_id: &str,
         limit_type: RateLimitType,
     ) -> Option<(f64, f64, DateTime<Utc>)> {
-        let limiters = self.api_key_limiters.get(key_id)?;
+        let limiters = self.api_key_limiters.get(key_id)?.clone();
         let limiter = limiters.iter().find(|l| l.limit_type == limit_type)?;
 
         let key = RateLimiterKey::ApiKey {
@@ -560,10 +600,10 @@ impl RateLimiterManager {
         let window_start = now - limiter.time_window();
         let key_str = key.to_string();
 
-        let state_lock = self.states.get(&key_str)?;
+        let state_lock = self.states.get(&key_str)?.value().clone();
         let mut state = state_lock.write().await;
 
-        state.cleanup(window_start);
+        state.cleanup(now - retention_window(&limiters, limit_type));
         let current_usage = state.current_usage(window_start);
 
         Some((current_usage, limiter.value, window_start))
@@ -575,7 +615,7 @@ impl RateLimiterManager {
         router_name: &str,
         limit_type: RateLimitType,
     ) -> Option<(f64, f64, DateTime<Utc>)> {
-        let limiters = self.router_limiters.get(router_name)?;
+        let limiters = self.router_limiters.get(router_name)?.clone();
         let limiter = limiters.iter().find(|l| l.limit_type == limit_type)?;
 
         let key = RateLimiterKey::Router {
@@ -587,10 +627,10 @@ impl RateLimiterManager {
         let window_start = now - limiter.time_window();
         let key_str = key.to_string();
 
-        let state_lock = self.states.get(&key_str)?;
+        let state_lock = self.states.get(&key_str)?.value().clone();
         let mut state = state_lock.write().await;
 
-        state.cleanup(window_start);
+        state.cleanup(now - retention_window(&limiters, limit_type));
         let current_usage = state.current_usage(window_start);
 
         Some((current_usage, limiter.value, window_start))
@@ -601,6 +641,124 @@ impl RateLimiterManager {
 mod tests {
     use super::*;
     use tokio::time::sleep;
+
+    #[tokio::test]
+    async fn exhausted_token_and_cost_budgets_block_subsequent_requests() {
+        for (limit_type, value) in [
+            (RateLimitType::InputTokens, 100.0),
+            (RateLimitType::OutputTokens, 50.0),
+            (RateLimitType::TotalTokens, 150.0),
+            (RateLimitType::Cost, 0.25),
+        ] {
+            let manager = RateLimiterManager::new(None);
+            let limits = vec![RateLimiter::new(limit_type, value, 60)];
+            manager.add_api_key_limiters("client".into(), limits.clone());
+            manager.add_router_limiters("router".into(), limits);
+            let usage = UsageInfo {
+                input_tokens: 100,
+                output_tokens: 50,
+                cost_usd: 0.25,
+            };
+            assert!(
+                manager
+                    .check_api_key("client", &usage)
+                    .await
+                    .unwrap()
+                    .allowed
+            );
+            assert!(
+                manager
+                    .check_router("router", &usage)
+                    .await
+                    .unwrap()
+                    .allowed
+            );
+            manager
+                .record_api_key_usage("client", &usage)
+                .await
+                .unwrap();
+            manager.record_router_usage("router", &usage).await.unwrap();
+            assert!(
+                !manager
+                    .check_api_key("client", &usage)
+                    .await
+                    .unwrap()
+                    .allowed
+            );
+            assert!(
+                !manager
+                    .check_router("router", &usage)
+                    .await
+                    .unwrap()
+                    .allowed
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn multiple_windows_charge_once_and_preserve_long_window_history() {
+        let manager = RateLimiterManager::new(None);
+        manager.add_api_key_limiters(
+            "client".into(),
+            vec![
+                RateLimiter::new(RateLimitType::Requests, 10.0, 60),
+                RateLimiter::new(RateLimitType::Requests, 2.0, 3600),
+            ],
+        );
+        let usage = UsageInfo {
+            input_tokens: 0,
+            output_tokens: 0,
+            cost_usd: 0.0,
+        };
+        manager
+            .record_api_key_usage("client", &usage)
+            .await
+            .unwrap();
+        let key = RateLimiterKey::ApiKey {
+            key_id: "client".into(),
+            limit_type: RateLimitType::Requests,
+        }
+        .to_string();
+        let state = manager.states.get(&key).unwrap().value().clone();
+        {
+            let mut state = state.write().await;
+            assert_eq!(state.events.len(), 1, "one request must be counted once");
+            state.record(Utc::now() - Duration::minutes(30), 1.0);
+        }
+        // Inspecting the short window must retain the older event too.
+        assert_eq!(
+            manager
+                .get_api_key_usage("client", RateLimitType::Requests)
+                .await
+                .unwrap()
+                .0,
+            1.0
+        );
+        let result = manager.check_api_key("client", &usage).await.unwrap();
+        assert!(!result.allowed, "the hourly budget is exhausted");
+        assert_eq!(result.current_usage, 2.0);
+        assert_eq!(state.read().await.events.len(), 2);
+    }
+
+    #[test]
+    fn out_of_order_events_expire_and_token_totals_do_not_overflow() {
+        let now = Utc::now();
+        let mut state = RateLimiterState::new();
+        state.record(now, 1.0);
+        state.record(now - Duration::minutes(2), 2.0);
+        state.cleanup(now - Duration::minutes(1));
+        assert_eq!(state.events.len(), 1);
+        assert_eq!(state.current_usage(now - Duration::minutes(1)), 1.0);
+        assert_eq!(
+            UsageInfo {
+                input_tokens: u64::MAX,
+                output_tokens: 1,
+                cost_usd: 0.0
+            }
+            .total_tokens(),
+            u64::MAX
+        );
+    }
 
     /// Usage recorded while a duplicate-hop trace is in scope is ignored —
     /// the first LocalRouter hop already charged it.

@@ -334,7 +334,9 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
   // Client mode state
   const [clients, setClients] = useState<Client[]>([])
   const [selectedClientId, setSelectedClientId] = useState<string>("")
-  const [clientApiKey, setClientApiKey] = useState<string | null>(null)
+  const [clientCredential, setClientCredential] = useState<{ clientId: string; secret: string } | null>(null)
+  // Never reuse the previous client's credential while the next lookup is pending.
+  const clientApiKey = clientCredential?.clientId === selectedClientId ? clientCredential.secret : null
 
   // DEPRECATED: Strategy mode hidden - 1:1 client-to-strategy relationship
   // const [strategies, setStrategies] = useState<Strategy[]>([])
@@ -389,8 +391,9 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
         setProviders(providersList.filter(p => p.enabled))
 
         // Set default selections only if not provided via props
-        if (!initialClientId && clientsList.length > 0) {
-          setSelectedClientId(clientsList[0].id)
+        const enabledClients = clientsList.filter(client => client.enabled)
+        if (!initialClientId && enabledClients.length > 0) {
+          setSelectedClientId(enabledClients[0].id)
         }
         // DEPRECATED: Strategy default selection removed
         // if (strategiesList.length > 0) {
@@ -420,19 +423,22 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
 
   // Fetch client API key when client changes
   useEffect(() => {
+    let cancelled = false
+    setClientCredential(null)
     const fetchClientKey = async () => {
       if (mode === "client" && selectedClientId) {
         try {
           const secret = await invoke<string>("get_client_value", { id: selectedClientId })
-          setClientApiKey(secret)
+          if (!cancelled) setClientCredential({ clientId: selectedClientId, secret })
         } catch (error) {
           console.error("Failed to get client API key:", error)
-          setClientApiKey(null)
+          if (!cancelled) setClientCredential(null)
           setLoadingModels(false)
         }
       }
     }
     fetchClientKey()
+    return () => { cancelled = true }
   }, [mode, selectedClientId])
 
   // DEPRECATED: Strategy test client creation hidden - 1:1 client-to-strategy relationship

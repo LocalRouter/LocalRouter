@@ -74,7 +74,7 @@ impl SafetyEngine {
         provider_lookup: &HashMap<String, ProviderInfo>,
     ) -> Self {
         let mut model_instances: Vec<Arc<dyn SafetyModel>> = Vec::new();
-        let load_errors: Vec<(String, String)> = Vec::new();
+        let mut load_errors: Vec<(String, String)> = Vec::new();
 
         for model_cfg in safety_models {
             // Build provider-based executor, choosing between legacy completions
@@ -108,17 +108,15 @@ impl SafetyEngine {
                         ))),
                     }
                 } else {
-                    warn!(
-                        "Provider '{}' not found for safety model '{}', skipping",
-                        provider_id, model_cfg.id
-                    );
+                    let error = format!("Provider '{provider_id}' not found");
+                    warn!("Safety model '{}': {error}, skipping", model_cfg.id);
+                    load_errors.push((model_cfg.id.clone(), error));
                     continue;
                 }
             } else {
-                warn!(
-                    "Safety model '{}' has no provider_id or model_name, skipping",
-                    model_cfg.id
-                );
+                let error = "Safety model requires provider_id and model_name".to_string();
+                warn!("Safety model '{}': {error}, skipping", model_cfg.id);
+                load_errors.push((model_cfg.id.clone(), error));
                 continue;
             };
 
@@ -212,7 +210,9 @@ impl SafetyEngine {
                     }
                 }
                 other => {
-                    warn!("Unknown safety model type '{}', skipping", other);
+                    let error = format!("Unknown safety model type '{other}'");
+                    warn!("Safety model '{}': {error}, skipping", model_cfg.id);
+                    load_errors.push((model_cfg.id.clone(), error));
                     continue;
                 }
             };
@@ -481,6 +481,52 @@ impl SafetyEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invalid_models_report_load_errors_instead_of_disappearing() {
+        let providers = HashMap::from([(
+            "local".to_string(),
+            ProviderInfo {
+                name: "local".into(),
+                base_url: "http://127.0.0.1:1".into(),
+                api_key: None,
+                provider_type: "ollama".into(),
+            },
+        )]);
+        let config = vec![
+            SafetyModelConfigInput {
+                id: "missing-provider".into(),
+                model_type: "llama_guard".into(),
+                provider_id: Some("absent".into()),
+                model_name: Some("guard".into()),
+                enabled_categories: None,
+            },
+            SafetyModelConfigInput {
+                id: "missing-model".into(),
+                model_type: "llama_guard".into(),
+                provider_id: Some("local".into()),
+                model_name: None,
+                enabled_categories: None,
+            },
+            SafetyModelConfigInput {
+                id: "unknown-type".into(),
+                model_type: "unsupported".into(),
+                provider_id: Some("local".into()),
+                model_name: Some("guard".into()),
+                enabled_categories: None,
+            },
+        ];
+        // Building executors performs no requests or model inference.
+        let engine = SafetyEngine::from_config(&config, 0.5, &providers);
+        assert_eq!(engine.model_count(), 0);
+        assert_eq!(engine.load_errors().len(), 3);
+        for model in config {
+            assert!(engine
+                .load_errors()
+                .iter()
+                .any(|(id, error)| id == &model.id && !error.is_empty()));
+        }
+    }
 
     #[test]
     fn test_empty_engine() {

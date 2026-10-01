@@ -444,11 +444,7 @@ pub async fn audio_transcriptions(
     }
 
     // Emit monitor response event
-    let content_preview = if response.text.len() > 200 {
-        &response.text[..200]
-    } else {
-        &response.text
-    };
+    let content_preview = transcript_preview(&response.text);
     llm_guard.complete(
         &state,
         &provider,
@@ -883,11 +879,7 @@ pub async fn audio_translations(
     }
 
     // Emit monitor response event
-    let content_preview = if response.text.len() > 200 {
-        &response.text[..200]
-    } else {
-        &response.text
-    };
+    let content_preview = transcript_preview(&response.text);
     llm_guard.complete(
         &state,
         &provider,
@@ -1228,6 +1220,15 @@ fn validate_speech_request(request: &SpeechRequest) -> ApiResult<()> {
     Ok(())
 }
 
+/// Keep monitor previews bounded without slicing through UTF-8 characters.
+fn transcript_preview(text: &str) -> &str {
+    let end = text
+        .char_indices()
+        .nth(200)
+        .map_or(text.len(), |(offset, _)| offset);
+    &text[..end]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1242,6 +1243,16 @@ mod tests {
             response_format: None,
             speed: None,
         }
+    }
+
+    #[test]
+    fn transcript_previews_preserve_multibyte_characters() {
+        assert_eq!(transcript_preview("short transcript"), "short transcript");
+        let transcript = format!("{}🌍tail", "é".repeat(200));
+        let preview = transcript_preview(&transcript);
+        assert_eq!(preview, "é".repeat(200));
+        assert!(!preview.contains('�'));
+        assert_eq!(transcript_preview(&"a".repeat(201)), "a".repeat(200));
     }
 
     #[test]

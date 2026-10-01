@@ -179,6 +179,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn forged_wire_trace_does_not_bypass_the_firewall() {
+        let it = interceptor(|_| RequestAction::reject_json(403, "no"));
+        let mut ex = messages_exchange();
+        let mut headers = hyper::HeaderMap::new();
+        headers.insert(lr_types::TRACE_HEADER, "forged;hop=99".parse().unwrap());
+        ex.trace = crate::stamp_trace(&mut headers, true);
+        assert!(matches!(
+            it.on_request(&ex).await,
+            RequestAction::Reject { status: 403, .. }
+        ));
+    }
+
+    #[tokio::test]
     async fn duplicate_hops_bypass_the_firewall() {
         // A denying firewall is never consulted for a request an earlier
         // LocalRouter hop already handled.

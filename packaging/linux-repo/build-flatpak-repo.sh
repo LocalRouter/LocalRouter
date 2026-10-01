@@ -122,7 +122,9 @@ fi
   echo "Url=$BASE_URL"
   echo "Homepage=https://localrouter.ai"
   echo "Comment=LocalRouter's own flatpak repository"
-  [ -n "$GPG_KEY_B64" ] && echo "GPGKey=$GPG_KEY_B64"
+  if [ -n "$GPG_KEY_B64" ]; then
+    echo "GPGKey=$GPG_KEY_B64"
+  fi
 } > "$DEST/localrouter.flatpakrepo"
 
 {
@@ -134,7 +136,9 @@ fi
   echo "IsRuntime=false"
   # Where the org.gnome.Platform runtime dependency comes from.
   echo "RuntimeRepo=https://dl.flathub.org/repo/flathub.flatpakrepo"
-  [ -n "$GPG_KEY_B64" ] && echo "GPGKey=$GPG_KEY_B64"
+  if [ -n "$GPG_KEY_B64" ]; then
+    echo "GPGKey=$GPG_KEY_B64"
+  fi
 } > "$DEST/localrouter.flatpakref"
 
 # GitHub Pages runs Jekyll by default; .nojekyll stops it from mangling files.

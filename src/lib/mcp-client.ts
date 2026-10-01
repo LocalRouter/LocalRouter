@@ -8,6 +8,7 @@ import {
   PromptListChangedNotificationSchema,
   CreateMessageRequestSchema,
   ElicitRequestSchema,
+  ListRootsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js"
 import type {
   Tool,
@@ -130,6 +131,7 @@ export class McpClientWrapper {
     error: null,
   }
   private resourceSubscriptions = new Map<string, ResourceUpdateCallback>()
+  private connectionGeneration = 0
   private callbacks: McpClientCallbacks
 
   constructor(config: McpClientConfig, callbacks: McpClientCallbacks = {}) {
@@ -160,6 +162,9 @@ export class McpClientWrapper {
       return
     }
 
+    const generation = ++this.connectionGeneration
+    let client: Client | null = null
+    let transport: SSEClientTransport | WebSocketClientTransport | null = null
     this.updateState({ isConnecting: true, error: null })
 
     try {
@@ -169,7 +174,7 @@ export class McpClientWrapper {
       // Create transport based on type
       if (transportType === "websocket") {
         const wsUrl = endpoint.replace(/^http/, "ws")
-        this.transport = new WebSocketClientTransport(new URL(wsUrl))
+        transport = new WebSocketClientTransport(new URL(wsUrl))
       } else {
         // SSE transport
         // Build headers - include access control headers for internal test client
@@ -185,7 +190,7 @@ export class McpClientWrapper {
         if (this.config.codingAgentAccess) {
           headers["X-Coding-Agent-Access"] = this.config.codingAgentAccess
         }
-        this.transport = new SSEClientTransport(new URL(endpoint), {
+        transport = new SSEClientTransport(new URL(endpoint), {
           requestInit: {
             headers,
           },
@@ -204,7 +209,7 @@ export class McpClientWrapper {
 
       // Create MCP client with proper capabilities declared
       // These tell the server what this client can handle
-      this.client = new Client(
+      client = new Client(
         {
           name: "localrouter-try-it-out",
           version: "1.0.0",
@@ -216,9 +221,7 @@ export class McpClientWrapper {
 
       // Register request handler for sampling/createMessage requests from servers
       // This allows MCP servers to request LLM completions through the client
-      this.client.setRequestHandler(CreateMessageRequestSchema, async (request) => {
-        console.log("[MCP Client] Received sampling/createMessage request:", request.params)
-
+      client.setRequestHandler(CreateMessageRequestSchema, async (request) => {
         if (this.callbacks.onSamplingRequest) {
           const result = await this.callbacks.onSamplingRequest(request.params)
           return result
@@ -230,9 +233,7 @@ export class McpClientWrapper {
 
       // Register request handler for elicitation requests from servers
       // This allows MCP servers to request user input through the client
-      this.client.setRequestHandler(ElicitRequestSchema, async (request) => {
-        console.log("[MCP Client] Received elicitation request:", request.params)
-
+      client.setRequestHandler(ElicitRequestSchema, async (request) => {
         if (this.callbacks.onElicitationRequest) {
           const result = await this.callbacks.onElicitationRequest(request.params)
           return result
@@ -242,11 +243,29 @@ export class McpClientWrapper {
         return { action: "decline" as const }
       })
 
-      // Connect
-      await this.client.connect(this.transport)
+      // This client exposes no local filesystem roots.
+      client.setRequestHandler(ListRootsRequestSchema, async () => ({ roots: [] }))
+
+      // Capture the connection before awaiting so disconnect can cancel startup.
+      this.client = client
+      this.transport = transport
+      await client.connect(transport)
+      if (generation !== this.connectionGeneration) {
+        await client.close().catch(() => {})
+        await transport.close().catch(() => {})
+        return
+      }
+      client.onclose = () => {
+        if (generation !== this.connectionGeneration) return
+        ++this.connectionGeneration
+        this.client = null
+        this.transport = null
+        this.resourceSubscriptions.clear()
+        this.resetConnectionState()
+      }
 
       // Register notification handler for resource updates
-      this.client.setNotificationHandler(ResourceUpdatedNotificationSchema, (notification) => {
+      client.setNotificationHandler(ResourceUpdatedNotificationSchema, (notification) => {
         const uri = notification.params.uri
         console.log("[MCP Client] Received resource update notification for:", uri)
 
@@ -256,7 +275,9 @@ export class McpClientWrapper {
           // Read the updated resource content
           this.readResource(uri)
             .then((content) => {
-              callback(uri, content)
+              if (generation === this.connectionGeneration && this.resourceSubscriptions.get(uri) === callback) {
+                callback(uri, content)
+              }
             })
             .catch((err) => {
               console.error("[MCP Client] Failed to read updated resource:", err)
@@ -267,25 +288,25 @@ export class McpClientWrapper {
       })
 
       // Register notification handlers for list changes
-      this.client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+      client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
         console.log("[MCP Client] Received tools/list_changed notification")
         this.callbacks.onToolsListChanged?.()
       })
 
-      this.client.setNotificationHandler(ResourceListChangedNotificationSchema, () => {
+      client.setNotificationHandler(ResourceListChangedNotificationSchema, () => {
         console.log("[MCP Client] Received resources/list_changed notification")
         this.callbacks.onResourcesListChanged?.()
       })
 
-      this.client.setNotificationHandler(PromptListChangedNotificationSchema, () => {
+      client.setNotificationHandler(PromptListChangedNotificationSchema, () => {
         console.log("[MCP Client] Received prompts/list_changed notification")
         this.callbacks.onPromptsListChanged?.()
       })
 
       // Get server info
-      const serverInfo = this.client.getServerVersion()
-      const serverCapabilities = this.client.getServerCapabilities()
-      const instructions = this.client.getInstructions()
+      const serverInfo = client.getServerVersion()
+      const serverCapabilities = client.getServerCapabilities()
+      const instructions = client.getInstructions()
 
       // Build detailed capability info
       const serverCapsInfo: ServerCapabilitiesInfo = {
@@ -312,7 +333,7 @@ export class McpClientWrapper {
 
       // Read the negotiated protocol version from the transport
       const negotiatedProtocolVersion =
-        (this.transport as unknown as { _protocolVersion?: string })?._protocolVersion || "unknown"
+        (transport as unknown as { _protocolVersion?: string })?._protocolVersion || "unknown"
 
       this.updateState({
         isConnected: true,
@@ -338,37 +359,26 @@ export class McpClientWrapper {
         },
       })
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : "Connection failed"
-      this.updateState({
-        isConnecting: false,
-        error: errorMessage,
-      })
-      throw error
+      // Close only this attempt; an older attempt must never tear down a retry.
+      const isCurrent = generation === this.connectionGeneration
+      if (isCurrent) {
+        ++this.connectionGeneration
+        this.client = null
+        this.transport = null
+        this.resourceSubscriptions.clear()
+        this.resetConnectionState(error instanceof Error ? error.message : "Connection failed")
+      }
+      await client?.close().catch(() => {})
+      await transport?.close().catch(() => {})
+      if (isCurrent) throw error
     }
   }
 
-  async disconnect(): Promise<void> {
-    if (this.client) {
-      try {
-        await this.client.close()
-      } catch {
-        // Ignore close errors
-      }
-      this.client = null
-    }
-    if (this.transport) {
-      try {
-        await this.transport.close()
-      } catch {
-        // Ignore close errors
-      }
-      this.transport = null
-    }
-    this.resourceSubscriptions.clear()
+  private resetConnectionState(error: string | null = null) {
     this.updateState({
       isConnected: false,
       isConnecting: false,
-      error: null,
+      error,
       serverInfo: undefined,
       clientInfo: undefined,
       serverCapabilities: undefined,
@@ -377,13 +387,46 @@ export class McpClientWrapper {
     })
   }
 
+  async disconnect(): Promise<void> {
+    ++this.connectionGeneration
+    const client = this.client
+    const transport = this.transport
+    this.client = null
+    this.transport = null
+    this.resourceSubscriptions.clear()
+    this.resetConnectionState()
+    await client?.close().catch(() => {})
+    await transport?.close().catch(() => {})
+  }
+
+  private async listAllPages<T>(
+    load: (cursor?: string) => Promise<{ items: T[]; nextCursor?: string }>,
+  ): Promise<T[]> {
+    const items: T[] = []
+    const seenCursors = new Set<string>()
+    let cursor: string | undefined
+    do {
+      const page = await load(cursor)
+      items.push(...page.items)
+      cursor = page.nextCursor
+      if (cursor !== undefined) {
+        if (seenCursors.has(cursor)) throw new Error("Server returned a repeated pagination cursor")
+        seenCursors.add(cursor)
+      }
+    } while (cursor !== undefined)
+    return items
+  }
+
   // Tools
   async listTools(): Promise<Tool[]> {
     if (!this.client || !this.state.isConnected) {
       throw new Error("Not connected")
     }
-    const result = await this.client.listTools()
-    return result.tools
+    const client = this.client
+    return this.listAllPages(async cursor => {
+      const result = await client.listTools(cursor === undefined ? undefined : { cursor })
+      return { items: result.tools, nextCursor: result.nextCursor }
+    })
   }
 
   async callTool(
@@ -410,8 +453,11 @@ export class McpClientWrapper {
     if (!this.client || !this.state.isConnected) {
       throw new Error("Not connected")
     }
-    const result = await this.client.listResources()
-    return result.resources
+    const client = this.client
+    return this.listAllPages(async cursor => {
+      const result = await client.listResources(cursor === undefined ? undefined : { cursor })
+      return { items: result.resources, nextCursor: result.nextCursor }
+    })
   }
 
   async readResource(uri: string): Promise<ReadResourceResult> {
@@ -434,11 +480,21 @@ export class McpClientWrapper {
       throw new Error("Not connected")
     }
 
+    const generation = this.connectionGeneration
+    const previous = this.resourceSubscriptions.get(uri)
     // Store callback
     this.resourceSubscriptions.set(uri, callback)
 
-    // Send subscription request
-    await this.client.subscribeResource({ uri })
+    // Roll back the local subscription when the server rejects it.
+    try {
+      await this.client.subscribeResource({ uri })
+    } catch (error) {
+      if (generation === this.connectionGeneration && this.resourceSubscriptions.get(uri) === callback) {
+        if (previous) this.resourceSubscriptions.set(uri, previous)
+        else this.resourceSubscriptions.delete(uri)
+      }
+      throw error
+    }
   }
 
   async unsubscribeFromResource(uri: string): Promise<void> {
@@ -446,8 +502,10 @@ export class McpClientWrapper {
       throw new Error("Not connected")
     }
 
-    this.resourceSubscriptions.delete(uri)
+    const generation = this.connectionGeneration
+    const callback = this.resourceSubscriptions.get(uri)
     await this.client.unsubscribeResource({ uri })
+    if (generation === this.connectionGeneration && this.resourceSubscriptions.get(uri) === callback) this.resourceSubscriptions.delete(uri)
   }
 
   // Prompts
@@ -455,8 +513,11 @@ export class McpClientWrapper {
     if (!this.client || !this.state.isConnected) {
       throw new Error("Not connected")
     }
-    const result = await this.client.listPrompts()
-    return result.prompts
+    const client = this.client
+    return this.listAllPages(async cursor => {
+      const result = await client.listPrompts(cursor === undefined ? undefined : { cursor })
+      return { items: result.prompts, nextCursor: result.nextCursor }
+    })
   }
 
   async getPrompt(name: string, args: Record<string, string>): Promise<GetPromptResult> {

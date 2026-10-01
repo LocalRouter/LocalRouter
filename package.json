@@ -11,6 +11,7 @@
     "debugging": "RUST_LOG=lr_providers=debug,info npm run tauri dev",
     "dist": "npm run tauri build",
     "test:e2e": "playwright test --config=tests/e2e/playwright.config.ts",
+    "test:unit": "playwright test --config=tests/e2e/unit.config.ts",
     "test:e2e:headed": "playwright test --config=tests/e2e/playwright.config.ts --headed",
     "test:e2e:debug": "playwright test --config=tests/e2e/playwright.config.ts --debug"
   },

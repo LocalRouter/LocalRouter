@@ -83,15 +83,16 @@ published.
 
 ### Prerequisites
 
-- Rust 1.75+
-- Node.js 18+
+- Rust stable (use the same toolchain as CI)
+- Node.js 20 (see `.nvmrc`)
 
 ### Run
 
 ```bash
 git clone https://github.com/LocalRouter/LocalRouter.git
 cd LocalRouter
-cargo tauri dev
+npm ci
+cargo tauri dev --no-watch
 ```
 
 ### Test & Lint

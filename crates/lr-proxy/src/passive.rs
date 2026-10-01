@@ -1093,5 +1093,17 @@ mod tests {
                 ..
             }
         ));
+
+        // A caller-provided wire header must still count after ingress stamps it.
+        let mut headers = hyper::HeaderMap::new();
+        headers.insert(lr_types::TRACE_HEADER, "external;hop=99".parse().unwrap());
+        let mut forged = exchange();
+        forged.trace = crate::stamp_trace(&mut headers, true);
+        it.on_response(&forged).await;
+        assert_eq!(
+            total_requests(&metrics),
+            2,
+            "forged wire hop must be counted"
+        );
     }
 }

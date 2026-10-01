@@ -96,6 +96,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires access to the real operating-system credential store"]
     #[serial]
     fn test_store_and_retrieve_key() {
         cleanup_test_key();
@@ -112,6 +113,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires access to the real operating-system credential store"]
     #[serial]
     fn test_get_nonexistent_key() {
         cleanup_test_key();
@@ -121,6 +123,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires access to the real operating-system credential store"]
     #[serial]
     fn test_delete_key() {
         cleanup_test_key();

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import Button from './Button'
 import Input from './Input'
 
@@ -26,22 +26,28 @@ export default function KeyValueInput({
   const [localPairs, setLocalPairs] = useState<KeyValuePair[]>(
     pairs.length > 0 ? pairs : [{ key: '', value: '' }]
   )
+  const lastValue = useRef(value)
+
+  useEffect(() => {
+    const previous = lastValue.current
+    lastValue.current = value
+    const entries = Object.entries(value)
+    // Preserve unfinished rows while the parent echoes our own edits, but
+    // refresh the fields when another resource or saved config is loaded.
+    if (entries.length === Object.keys(previous).length && entries.every(([key, val]) => Object.prototype.hasOwnProperty.call(previous, key) && previous[key] === val)) return
+    setLocalPairs(entries.length ? entries.map(([key, val]) => ({ key, value: val })) : [{ key: '', value: '' }])
+  }, [value])
 
   const updatePairs = (newPairs: KeyValuePair[]) => {
     setLocalPairs(newPairs)
     // Filter out empty pairs and convert to object
-    const obj: Record<string, string> = {}
-    newPairs.forEach(pair => {
-      if (pair.key.trim()) {
-        obj[pair.key.trim()] = pair.value
-      }
-    })
+    const obj = Object.fromEntries(newPairs.filter(pair => pair.key.trim()).map(pair => [pair.key.trim(), pair.value]))
+    lastValue.current = obj
     onChange(obj)
   }
 
   const handlePairChange = (index: number, field: 'key' | 'value', newValue: string) => {
-    const newPairs = [...localPairs]
-    newPairs[index][field] = newValue
+    const newPairs = localPairs.map((pair, i) => i === index ? { ...pair, [field]: newValue } : pair)
     updatePairs(newPairs)
   }
 
@@ -67,6 +73,7 @@ export default function KeyValueInput({
               value={pair.key}
               onChange={(e) => handlePairChange(index, 'key', e.target.value)}
               placeholder={keyPlaceholder}
+              aria-label={keyPlaceholder}
             />
           </div>
           <div className="flex-1">
@@ -75,6 +82,7 @@ export default function KeyValueInput({
               value={pair.value}
               onChange={(e) => handlePairChange(index, 'value', e.target.value)}
               placeholder={valuePlaceholder}
+              aria-label={valuePlaceholder}
             />
           </div>
           <Button

@@ -163,12 +163,23 @@ fn generate_root_ca() -> Result<(String, String, KeyPair), ProxyError> {
 
 /// Write a secret file with owner-only permissions where the OS supports it.
 fn write_secret(path: &Path, bytes: &[u8]) -> Result<(), ProxyError> {
-    std::fs::write(path, bytes)?;
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // Set the creation mode before any key bytes reach the filesystem.
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        // Creation mode does not change an existing file's permissions.
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     }
+    file.write_all(bytes)?;
     Ok(())
 }
 
@@ -218,6 +229,22 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writing_secret_restricts_an_existing_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir();
+        let path = dir.join("test-secret");
+        std::fs::write(&path, "old synthetic value").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_secret(&path, b"new synthetic value").unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"new synthetic value");
     }
 
     /// Minimal unique temp dir without pulling in a dev-dependency.

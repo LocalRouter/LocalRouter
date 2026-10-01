@@ -60,24 +60,29 @@ export function SpeechPanel({ openaiClient, isReady, selectedModel }: SpeechPane
   const [results, setResults] = useState<GeneratedSpeech[]>([])
   const [error, setError] = useState<string | null>(null)
   const blobUrlsRef = useRef<string[]>([])
+  const requestRef = useRef<AbortController | null>(null)
 
   // Revoke all blob URLs on unmount
   useEffect(() => {
     return () => {
+      requestRef.current?.abort()
       for (const url of blobUrlsRef.current) {
         URL.revokeObjectURL(url)
       }
+      blobUrlsRef.current = []
     }
   }, [])
 
   const handleGenerate = useCallback(async () => {
-    if (!openaiClient || !text.trim() || !selectedModel) return
+    if (!openaiClient || !text.trim() || !selectedModel || requestRef.current) return
     if (text.length > MAX_CHARS) return
 
     setIsGenerating(true)
     setError(null)
 
     const startTime = performance.now()
+    const request = new AbortController()
+    requestRef.current = request
 
     try {
       const response = await openaiClient.audio.speech.create({
@@ -86,7 +91,7 @@ export function SpeechPanel({ openaiClient, isReady, selectedModel }: SpeechPane
         voice,
         response_format: format,
         speed,
-      })
+      }, { signal: request.signal })
 
       const latencyMs = Math.round(performance.now() - startTime)
 
@@ -95,6 +100,7 @@ export function SpeechPanel({ openaiClient, isReady, selectedModel }: SpeechPane
         [await response.arrayBuffer()],
         { type: FORMAT_MIME[format] || "audio/mpeg" }
       )
+      if (request.signal.aborted) return
       const blobUrl = URL.createObjectURL(blob)
       blobUrlsRef.current.push(blobUrl)
 
@@ -113,9 +119,10 @@ export function SpeechPanel({ openaiClient, isReady, selectedModel }: SpeechPane
 
       setResults((prev) => [result, ...prev])
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to generate speech")
+      if (!request.signal.aborted) setError(err instanceof Error ? err.message : "Failed to generate speech")
     } finally {
-      setIsGenerating(false)
+      if (requestRef.current === request) requestRef.current = null
+      if (!request.signal.aborted) setIsGenerating(false)
     }
   }, [openaiClient, text, selectedModel, voice, format, speed])
 

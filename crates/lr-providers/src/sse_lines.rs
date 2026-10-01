@@ -23,6 +23,25 @@ where
     B: AsRef<[u8]>,
     E: Send + 'static,
 {
+    line_batches(bytes).flat_map(|batch| {
+        futures::stream::iter(match batch {
+            Ok(lines) => lines.into_iter().map(Ok).collect(),
+            Err(error) => vec![Err(error)],
+        })
+    })
+}
+
+/// Frame complete lines in batches, preserving the grouping of each HTTP read.
+/// Adapters that can emit multiple completion chunks per read can consume this
+/// directly, with the same byte-boundary and EOF guarantees as [`lines`].
+pub(crate) fn line_batches<S, B, E>(
+    bytes: S,
+) -> impl Stream<Item = Result<Vec<String>, E>> + Send + 'static
+where
+    S: Stream<Item = Result<B, E>> + Send + 'static,
+    B: AsRef<[u8]>,
+    E: Send + 'static,
+{
     let state = LineState {
         inner: Box::pin(bytes),
         partial: Vec::new(),
@@ -44,7 +63,7 @@ where
                     state.ended = true;
                     if !state.partial.is_empty() {
                         let rest = std::mem::take(&mut state.partial);
-                        state.ready.push_back(Ok(decode(&rest)));
+                        state.ready.push_back(Ok(vec![decode(&rest)]));
                     }
                 }
             }
@@ -56,7 +75,7 @@ struct LineState<S, E> {
     inner: Pin<Box<S>>,
     /// Bytes after the last `\n` seen so far.
     partial: Vec<u8>,
-    ready: VecDeque<Result<String, E>>,
+    ready: VecDeque<Result<Vec<String>, E>>,
     ended: bool,
 }
 
@@ -68,9 +87,10 @@ impl<S, E> LineState<S, E> {
         };
         let rest = self.partial.split_off(last_newline + 1);
         let complete = std::mem::replace(&mut self.partial, rest);
-        for line in complete[..last_newline].split(|&b| b == b'\n') {
-            self.ready.push_back(Ok(decode(line)));
-        }
+        self.ready.push_back(Ok(complete[..last_newline]
+            .split(|&b| b == b'\n')
+            .map(decode)
+            .collect()));
     }
 }
 
@@ -113,6 +133,23 @@ pub(crate) mod test_support {
 mod tests {
     use super::test_support::reads_split_at;
     use super::*;
+
+    #[tokio::test]
+    async fn batches_preserve_unicode_crlf_sentinels_and_unterminated_tail() {
+        let body = "data: é🌍\r\n\r\ndata: [DONE]\r\nlast 中";
+        for cuts in test_support::split_variants(body) {
+            let batches: Vec<_> = line_batches(reads_split_at(body, &cuts)).collect().await;
+            let decoded: Vec<_> = batches
+                .into_iter()
+                .flat_map(|batch| batch.unwrap())
+                .collect();
+            assert_eq!(
+                decoded,
+                ["data: é🌍", "", "data: [DONE]", "last 中"],
+                "cuts: {cuts:?}"
+            );
+        }
+    }
 
     async fn collect<S>(stream: S) -> Vec<Result<String, &'static str>>
     where

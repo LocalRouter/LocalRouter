@@ -78,6 +78,7 @@ toml = { workspace = true }
 keyring = { workspace = true }
 tokio-util = { workspace = true }
 futures = { workspace = true }
+tempfile = "3.8"
 
 # Talking to the NSStatusItem directly (see ui::tray_graph_manager) so the
 # menu bar icon can be sized before it is installed.
@@ -101,7 +102,6 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
 ] }
 
 [dev-dependencies]
-tempfile = "3.8"
 serial_test = { workspace = true }
 wiremock = "0.6"
 regex = "1.10"

@@ -74,8 +74,7 @@ impl AppIntegration for GooseIntegration {
         let mut config: serde_yaml::Value = if path.exists() {
             let data = std::fs::read_to_string(&path)
                 .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
-            serde_yaml::from_str(&data)
-                .unwrap_or(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()))
+            super::config_parse::yaml(&data, &path)?
         } else {
             serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
         };
@@ -146,8 +145,7 @@ impl AppIntegration for GooseIntegration {
             if path.exists() {
                 let data = std::fs::read_to_string(&path)
                     .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
-                let mut config: serde_yaml::Value = serde_yaml::from_str(&data)
-                    .unwrap_or(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
+                let mut config: serde_yaml::Value = super::config_parse::yaml(&data, &path)?;
 
                 let removed = if let serde_yaml::Value::Mapping(ref mut map) = config {
                     map.get_mut(serde_yaml::Value::String("extensions".to_string()))

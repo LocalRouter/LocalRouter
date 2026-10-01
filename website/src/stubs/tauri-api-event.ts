@@ -33,6 +33,7 @@ export const listen = async <T = unknown>(
     const listeners = eventListeners.get(eventName)
     if (listeners) {
       listeners.delete(entry)
+      if (listeners.size === 0) eventListeners.delete(eventName)
     }
   }
 }
@@ -43,11 +44,13 @@ export const listen = async <T = unknown>(
 export const emit = async <T = unknown>(eventName: string, payload?: T): Promise<void> => {
   const listeners = eventListeners.get(eventName)
   if (listeners) {
-    listeners.forEach(({ callback }) => {
+    listeners.forEach((entry) => {
       // Use setTimeout to simulate async event delivery like real Tauri
       setTimeout(() => {
+        // A queued notification must respect cleanup and once listeners.
+        if (!listeners.has(entry)) return
         try {
-          callback({ payload })
+          entry.callback({ payload })
         } catch (error) {
           console.error(`[Mock Event] Error in listener for "${eventName}":`, error)
         }

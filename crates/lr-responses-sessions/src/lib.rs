@@ -171,14 +171,35 @@ impl ResponsesSessionStore {
         id: &str,
         retention: &RetentionConfig,
     ) -> rusqlite::Result<Option<ResponsesSession>> {
+        self.get_active_inner(id, None, retention)
+    }
+
+    /// Fetch an active response only when it belongs to the authenticated
+    /// client. Foreign IDs are indistinguishable from missing IDs.
+    pub fn get_active_for_client(
+        &self,
+        id: &str,
+        client_id: &str,
+        retention: &RetentionConfig,
+    ) -> rusqlite::Result<Option<ResponsesSession>> {
+        self.get_active_inner(id, Some(client_id), retention)
+    }
+
+    fn get_active_inner(
+        &self,
+        id: &str,
+        client_id: Option<&str>,
+        retention: &RetentionConfig,
+    ) -> rusqlite::Result<Option<ResponsesSession>> {
         let conn = self.conn.lock();
         let row: Option<ResponsesSession> = conn
             .query_row(
                 "SELECT id, client_id, previous_response_id, model,
                         created_at, last_activity, store, metadata_json,
                         messages_json, tools_json, final_response_json
-                   FROM responses_sessions WHERE id = ?1",
-                params![id],
+                   FROM responses_sessions WHERE id = ?1
+                     AND (?2 IS NULL OR client_id = ?2)",
+                params![id, client_id],
                 |r| {
                     Ok(ResponsesSession {
                         id: r.get(0)?,
@@ -333,6 +354,30 @@ mod tests {
             .get_active("resp_cold", &RetentionConfig::default())
             .unwrap();
         assert!(out.is_none(), "cold row must be treated as expired");
+    }
+
+    #[test]
+    fn client_lookup_hides_foreign_sessions_without_updating_activity() {
+        let store = ResponsesSessionStore::in_memory().unwrap();
+        let mut session = sample("resp_private", "private history");
+        session.last_activity -= 60;
+        store.insert(&session).unwrap();
+        let retention = RetentionConfig::default();
+        assert!(store
+            .get_active_for_client(&session.id, "another-client", &retention)
+            .unwrap()
+            .is_none());
+        assert!(store
+            .get_active_for_client("missing", &session.client_id, &retention)
+            .unwrap()
+            .is_none());
+        let own = store
+            .get_active_for_client(&session.id, &session.client_id, &retention)
+            .unwrap()
+            .unwrap();
+        assert_eq!(own.messages_json, session.messages_json);
+        assert_eq!(own.last_activity, session.last_activity);
+        assert_eq!(store.len().unwrap(), 1);
     }
 
     #[test]

@@ -59,11 +59,16 @@ export function useModelDownload(config: UseModelDownloadConfig): UseModelDownlo
 
   // Use a ref to prevent double-transitions from both invoke resolution and complete event
   const hasCompletedRef = useRef(false)
+  const hasFailedRef = useRef(false)
   // Track latest callbacks to avoid stale closures
   const onCompleteRef = useRef(onComplete)
   const onFailedRef = useRef(onFailed)
   onCompleteRef.current = onComplete
   onFailedRef.current = onFailed
+  const eventFilterRef = useRef(eventFilter)
+  const normalizeProgressRef = useRef(normalizeProgress)
+  eventFilterRef.current = eventFilter
+  normalizeProgressRef.current = normalizeProgress
 
   // Sync status with parent's isDownloaded (e.g. after model deletion)
   useEffect(() => {
@@ -80,9 +85,10 @@ export function useModelDownload(config: UseModelDownloadConfig): UseModelDownlo
 
     if (progressEvent) {
       const l = listenSafe(progressEvent, (event: any) => {
-        if (eventFilter && !eventFilter(event.payload)) return
-        const normalized = normalizeProgress(event.payload)
-        setProgress(normalized * 100)
+        if (eventFilterRef.current && !eventFilterRef.current(event.payload)) return
+        const normalized = normalizeProgressRef.current(event.payload)
+        if (!Number.isFinite(normalized)) return
+        setProgress(Math.min(100, Math.max(0, normalized * 100)))
         // If we receive progress while idle, an in-flight download exists (remount case)
         setStatus(prev => prev === 'idle' ? 'downloading' : prev)
       })
@@ -91,11 +97,12 @@ export function useModelDownload(config: UseModelDownloadConfig): UseModelDownlo
 
     if (completeEvent) {
       const l = listenSafe(completeEvent, (event: any) => {
-        if (eventFilter && !eventFilter(event.payload)) return
+        if (eventFilterRef.current && !eventFilterRef.current(event.payload)) return
         if (hasCompletedRef.current) return
         hasCompletedRef.current = true
         setStatus('downloaded')
         setProgress(100)
+        setError(null)
         onCompleteRef.current?.()
       })
       cleanups.push(l.cleanup)
@@ -103,7 +110,9 @@ export function useModelDownload(config: UseModelDownloadConfig): UseModelDownlo
 
     if (failedEvent) {
       const l = listenSafe(failedEvent, (event: any) => {
-        if (eventFilter && !eventFilter(event.payload)) return
+        if (eventFilterRef.current && !eventFilterRef.current(event.payload)) return
+        if (hasCompletedRef.current || hasFailedRef.current) return
+        hasFailedRef.current = true
         const errMsg = event.payload?.error || 'Download failed'
         setStatus('failed')
         setError(errMsg)
@@ -121,21 +130,24 @@ export function useModelDownload(config: UseModelDownloadConfig): UseModelDownlo
 
   const startDownload = useCallback(() => {
     hasCompletedRef.current = false
+    hasFailedRef.current = false
     setStatus('downloading')
     setProgress(0)
     setError(null)
 
     invoke(downloadCommand, downloadArgs).then(() => {
       // For sync commands without a completeEvent, invoke resolution = success
-      if (!completeEvent && !hasCompletedRef.current) {
+      if (!completeEvent && !hasCompletedRef.current && !hasFailedRef.current) {
         hasCompletedRef.current = true
         setStatus('downloaded')
         setProgress(100)
         onCompleteRef.current?.()
       }
     }).catch((err: any) => {
-      // For commands without a failedEvent, invoke rejection = failure
-      if (!failedEvent) {
+      // Startup errors may reject before any failure event can be emitted.
+      // Deduplicate errors that arrive through both IPC and an event.
+      if (!hasCompletedRef.current && !hasFailedRef.current) {
+        hasFailedRef.current = true
         const errMsg = err?.message || String(err)
         setStatus('failed')
         setError(errMsg)

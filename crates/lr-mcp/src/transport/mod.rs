@@ -25,6 +25,32 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+/// Remove request bookkeeping on every exit path, including cancellation of
+/// the caller's future while it is writing or waiting for a response.
+struct PendingRequestGuard<'a> {
+    pending: &'a parking_lot::RwLock<
+        std::collections::HashMap<String, tokio::sync::oneshot::Sender<JsonRpcResponse>>,
+    >,
+    id: String,
+}
+
+impl<'a> PendingRequestGuard<'a> {
+    fn new(
+        pending: &'a parking_lot::RwLock<
+            std::collections::HashMap<String, tokio::sync::oneshot::Sender<JsonRpcResponse>>,
+        >,
+        id: String,
+    ) -> Self {
+        Self { pending, id }
+    }
+}
+
+impl Drop for PendingRequestGuard<'_> {
+    fn drop(&mut self) {
+        self.pending.write().remove(&self.id);
+    }
+}
+
 /// Notification callback type shared across all transport types.
 pub type NotificationCallback = Arc<dyn Fn(JsonRpcNotification) + Send + Sync>;
 

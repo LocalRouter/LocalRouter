@@ -769,6 +769,7 @@ impl Transport for SseTransport {
 
         // Register pending request
         self.pending.write().insert(request_id.clone(), tx);
+        let _pending_guard = super::PendingRequestGuard::new(&self.pending, request_id.clone());
 
         // Determine POST URL: use message_endpoint if available, otherwise fall back to base url
         let post_url = self
@@ -794,10 +795,10 @@ impl Transport for SseTransport {
         }
 
         tracing::debug!(
-            "SSE POST request: url={}, method={}, headers={:?}",
+            "SSE POST request: url={}, method={}, header_names={:?}",
             post_url,
             request.method,
-            self.headers
+            self.headers.keys().collect::<Vec<_>>()
         );
 
         // Send POST request
@@ -814,11 +815,11 @@ impl Transport for SseTransport {
             let headers = post_response.headers().clone();
             let body = post_response.text().await.unwrap_or_default();
             tracing::error!(
-                "SSE POST request failed: status={}, url={}, method={}, headers={:?}, body={}",
+                "SSE POST request failed: status={}, url={}, method={}, header_names={:?}, body={}",
                 status,
                 post_url,
                 request.method,
-                headers,
+                headers.keys().collect::<Vec<_>>(),
                 body
             );
             return Err(AppError::Mcp(format!(

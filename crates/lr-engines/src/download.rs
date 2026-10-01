@@ -438,6 +438,7 @@ pub(crate) fn extract_tar_zst(
         }
         let rel = managed::safe_relative(&name)
             .ok_or_else(|| fail(format!("unsafe path in archive: {name}")))?;
+        reject_symlink_components(dest, &rel)?;
         let out = dest.join(&rel);
         if kind.is_dir() {
             std::fs::create_dir_all(&out)?;
@@ -500,6 +501,7 @@ pub(crate) fn extract_zip(
         let name = entry.name().to_string();
         let rel = managed::safe_relative(&name)
             .ok_or_else(|| fail(format!("unsafe path in archive: {name}")))?;
+        reject_symlink_components(dest, &rel)?;
         let out = dest.join(&rel);
         if entry.is_dir() {
             std::fs::create_dir_all(&out)?;
@@ -536,6 +538,29 @@ pub(crate) fn extract_zip(
     }
     let _ = os;
     Ok(written)
+}
+
+/// Archive members must never be written through an existing symlink. A
+/// lexically confined link can still escape through another link plus `..`.
+/// Keep ordinary library symlink entries, but refuse to traverse them during
+/// extraction (including entries from previously extracted extra archives).
+fn reject_symlink_components(dest: &Path, relative: &Path) -> Result<(), DownloadError> {
+    let mut path = dest.to_path_buf();
+    for component in relative.components() {
+        path.push(component);
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(fail(format!(
+                    "unsafe symlink path in archive: {}",
+                    relative.display()
+                )));
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
 }
 
 /// A relative link target that, resolved from the link's folder, stays
@@ -629,6 +654,46 @@ mod tests {
         let p = dir.join(format!("{}.zip", uuid::Uuid::new_v4()));
         std::fs::write(&p, make_zip(entries)).unwrap();
         p
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn extraction_rejects_chained_symlink_traversal() {
+        for tar in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let dest = dir.path().join("out");
+            // Both targets pass lexical validation individually. Resolving b
+            // through a would nevertheless reach the parent of out.
+            let entries: Vec<(&str, Option<&[u8]>, u32)> = vec![
+                ("@a", Some(b"."), 0o777),
+                ("@b", Some(b"a/.."), 0o777),
+                ("b/escaped", Some(b"bad"), 0o644),
+            ];
+            let archive = if tar {
+                let path = dir.path().join("bad.tar.zst");
+                std::fs::write(&path, make_tar_zst(&entries)).unwrap();
+                path
+            } else {
+                write_zip(dir.path(), &entries)
+            };
+            let result = extract_archive(&archive, &dest, Os::Linux, &CancellationToken::new());
+            assert!(result.is_err(), "symlink traversal accepted for tar={tar}");
+            assert!(!dir.path().join("escaped").exists());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn extraction_does_not_overwrite_through_existing_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("out");
+        std::fs::create_dir(&dest).unwrap();
+        let outside = dir.path().join("keep");
+        std::fs::write(&outside, b"original").unwrap();
+        std::os::unix::fs::symlink(&outside, dest.join("file")).unwrap();
+        let archive = write_zip(dir.path(), &[("file", Some(b"replacement"), 0o644)]);
+        assert!(extract_archive(&archive, &dest, Os::Linux, &CancellationToken::new()).is_err());
+        assert_eq!(std::fs::read(outside).unwrap(), b"original");
     }
 
     #[test]

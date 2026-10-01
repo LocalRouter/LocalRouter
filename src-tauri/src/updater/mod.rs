@@ -85,7 +85,9 @@ pub fn should_check_for_updates(
         None => UpdateCheckDecision::FirstRun,
         Some(last) => {
             let days_since = (now - last).num_days();
-            if days_since >= check_interval_days as i64 {
+            if last <= now
+                && u64::try_from(days_since).is_ok_and(|days| days >= check_interval_days)
+            {
                 UpdateCheckDecision::ShouldCheck
             } else {
                 UpdateCheckDecision::NotYet
@@ -174,6 +176,27 @@ pub async fn start_update_timer(app: AppHandle, config_manager: Arc<ConfigManage
 mod tests {
     use super::*;
     use chrono::Duration;
+
+    #[test]
+    fn large_intervals_and_future_timestamps_do_not_trigger_updates() {
+        let now = Utc::now();
+        for (last, interval) in [
+            (now, u64::MAX),
+            (now + Duration::days(1), 0),
+            (now + Duration::seconds(1), 0),
+        ] {
+            assert_eq!(
+                should_check_for_updates(
+                    &UpdateMode::Automatic,
+                    Some(last),
+                    interval,
+                    now,
+                    InstallSource::Direct
+                ),
+                UpdateCheckDecision::NotYet,
+            );
+        }
+    }
 
     #[test]
     fn package_managed_installs_never_self_update() {

@@ -12,9 +12,11 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::net::TcpStream;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, Mutex};
 use tokio_tungstenite::{
-    connect_async, tungstenite::protocol::Message, MaybeTlsStream, WebSocketStream,
+    connect_async,
+    tungstenite::{client::IntoClientRequest, protocol::Message},
+    MaybeTlsStream, WebSocketStream,
 };
 
 /// Normalize response ID for pending map lookup
@@ -35,7 +37,7 @@ pub type WebSocketNotificationCallback = Arc<dyn Fn(JsonRpcNotification) + Send 
 
 /// Type alias for the WebSocket write handle
 type WsSink = Arc<
-    RwLock<
+    Mutex<
         Option<
             futures_util::stream::SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
         >,
@@ -86,7 +88,20 @@ impl WebSocketTransport {
         tracing::info!("Connecting to MCP WebSocket server: {}", url);
 
         // Connect to WebSocket
-        let (ws_stream, _) = connect_async(&url)
+        let mut handshake = url
+            .as_str()
+            .into_client_request()
+            .map_err(|e| AppError::Mcp(format!("Invalid WebSocket URL: {}", e)))?;
+        for (name, value) in &headers {
+            let name = name
+                .parse::<tokio_tungstenite::tungstenite::http::HeaderName>()
+                .map_err(|e| AppError::Mcp(format!("Invalid WebSocket header name: {}", e)))?;
+            let value = value
+                .parse::<tokio_tungstenite::tungstenite::http::HeaderValue>()
+                .map_err(|e| AppError::Mcp(format!("Invalid WebSocket header value: {}", e)))?;
+            handshake.headers_mut().insert(name, value);
+        }
+        let (ws_stream, _) = connect_async(handshake)
             .await
             .map_err(|e| AppError::Mcp(format!("Failed to connect to WebSocket server: {}", e)))?;
 
@@ -95,7 +110,7 @@ impl WebSocketTransport {
 
         let transport = Self {
             url: url.clone(),
-            write: Arc::new(RwLock::new(Some(write))),
+            write: Arc::new(Mutex::new(Some(write))),
             headers,
             pending: Arc::new(RwLock::new(HashMap::new())),
             next_id: Arc::new(RwLock::new(1)),
@@ -208,7 +223,7 @@ impl WebSocketTransport {
 
     /// Check if the transport is healthy
     pub fn is_healthy(&self) -> bool {
-        !*self.closed.read() && self.write.read().is_some()
+        !*self.closed.read()
     }
 
     /// Close the WebSocket connection
@@ -219,7 +234,7 @@ impl WebSocketTransport {
 
         // Take write handle and close it
         let write_handle = {
-            let mut write = self.write.write();
+            let mut write = self.write.lock().await;
             write.take()
         };
 
@@ -255,26 +270,14 @@ impl Transport for WebSocketTransport {
 
             // Send message via WebSocket
             {
-                let write_handle_opt = {
-                    let mut write_guard = self.write.write();
-                    write_guard.take()
-                };
-
-                let mut write_handle = match write_handle_opt {
-                    Some(handle) => handle,
-                    None => {
-                        return Err(AppError::Mcp(
-                            "WebSocket write handle not available".to_string(),
-                        ));
-                    }
-                };
-
-                let send_result = write_handle.send(Message::Text(json)).await;
-                *self.write.write() = Some(write_handle);
-
-                if let Err(e) = send_result {
-                    return Err(AppError::Mcp(format!("Failed to send notification: {}", e)));
-                }
+                let mut write_guard = self.write.lock().await;
+                let write = write_guard.as_mut().ok_or_else(|| {
+                    AppError::Mcp("WebSocket write handle not available".to_string())
+                })?;
+                write
+                    .send(Message::Text(json))
+                    .await
+                    .map_err(|e| AppError::Mcp(format!("Failed to send notification: {}", e)))?;
             }
 
             // Return empty success response for notifications
@@ -304,6 +307,7 @@ impl Transport for WebSocketTransport {
 
         // Register pending request
         self.pending.write().insert(request_id.clone(), tx);
+        let _pending_guard = super::PendingRequestGuard::new(&self.pending, request_id.clone());
 
         // Serialize request to JSON
         let json = serde_json::to_string(&request).map_err(|e| {
@@ -312,37 +316,17 @@ impl Transport for WebSocketTransport {
         })?;
 
         // Send message via WebSocket
-        // Note: We avoid nested locks by separating lock acquisition from error handling
+        // Serialize writes without taking the sink out of shared state. A
+        // concurrent request waits its turn and cancellation leaves it available.
         {
-            // Take write handle temporarily (single lock acquisition)
-            let write_handle_opt = {
-                let mut write_guard = self.write.write();
-                write_guard.take()
-            };
-            // Lock is released here
-
-            let mut write_handle = match write_handle_opt {
-                Some(handle) => handle,
-                None => {
-                    // Clean up pending request (no locks currently held)
-                    self.pending.write().remove(&request_id);
-                    return Err(AppError::Mcp(
-                        "WebSocket write handle not available".to_string(),
-                    ));
-                }
-            };
-
-            // Send the message (no locks held during async operation)
-            let send_result = write_handle.send(Message::Text(json)).await;
-
-            // Put write handle back first (before handling potential error)
-            *self.write.write() = Some(write_handle);
-
-            // Now handle any error (write lock is released)
-            if let Err(e) = send_result {
-                self.pending.write().remove(&request_id);
-                return Err(AppError::Mcp(format!("Failed to send message: {}", e)));
-            }
+            let mut write_guard = self.write.lock().await;
+            let write = write_guard
+                .as_mut()
+                .ok_or_else(|| AppError::Mcp("WebSocket write handle not available".to_string()))?;
+            write
+                .send(Message::Text(json))
+                .await
+                .map_err(|e| AppError::Mcp(format!("Failed to send message: {}", e)))?;
         }
 
         // Wait for response (with timeout)
@@ -381,10 +365,70 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    // Tungstenite fixes the handshake callback's error type to an HTTP response.
+    #[allow(clippy::result_large_err)]
+    async fn websocket_headers_concurrent_requests_and_cancellation() {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_hdr_async(stream, |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+                    assert_eq!(request.headers().get("x-test-auth").unwrap(), "local-test-only");
+                    Ok(response)
+                }).await.unwrap();
+                while let Some(message) = socket.next().await {
+                    match message.unwrap() {
+                        Message::Text(text) => {
+                            let request: JsonRpcRequest = serde_json::from_str(&text).unwrap();
+                            let response = serde_json::json!({"jsonrpc": "2.0", "id": request.id, "result": {}});
+                            socket.send(Message::Text(response.to_string())).await.unwrap();
+                        }
+                        Message::Close(_) => break,
+                        _ => {}
+                    }
+                }
+            });
+            let transport = Arc::new(WebSocketTransport::connect(
+                format!("ws://{address}"),
+                HashMap::from([("x-test-auth".to_string(), "local-test-only".to_string())]),
+            ).await.unwrap());
+
+            // Cancel a request queued behind another write. Its registration
+            // must disappear without consuming the shared connection.
+            let write_guard = transport.write.lock().await;
+            let cancelled_transport = transport.clone();
+            let cancelled = tokio::spawn(async move {
+                cancelled_transport.send_request(JsonRpcRequest::new(Some(Value::from(99)), "test".to_string(), None)).await
+            });
+            while transport.pending.read().is_empty() {
+                tokio::task::yield_now().await;
+            }
+            cancelled.abort();
+            assert!(cancelled.await.unwrap_err().is_cancelled());
+            assert!(transport.pending.read().is_empty());
+            drop(write_guard);
+
+            let requests = (0..16).map(|id| {
+                let transport = transport.clone();
+                async move {
+                    let request = JsonRpcRequest::new(Some(Value::from(id)), "test".to_string(), Some(serde_json::json!({"payload": "x".repeat(256 * 1024)})));
+                    let response = transport.send_request(request).await.unwrap();
+                    assert_eq!(response.id, Value::from(id));
+                }
+            });
+            futures_util::future::join_all(requests).await;
+            assert!(transport.pending.read().is_empty());
+            transport.disconnect().await.unwrap();
+            server.await.unwrap();
+        }).await.expect("local WebSocket test timed out");
+    }
+
+    #[tokio::test]
     async fn test_request_id_generation() {
         let transport = WebSocketTransport {
             url: "ws://localhost:3000".to_string(),
-            write: Arc::new(RwLock::new(None)),
+            write: Arc::new(Mutex::new(None)),
             headers: HashMap::new(),
             pending: Arc::new(RwLock::new(HashMap::new())),
             next_id: Arc::new(RwLock::new(1)),

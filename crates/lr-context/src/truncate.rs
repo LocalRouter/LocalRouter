@@ -47,7 +47,7 @@ pub(crate) fn smart_truncate(text: &str, max_bytes: usize) -> String {
     let mut head_bytes = 0;
     for line in &lines {
         let needed = line.len() + 1;
-        if head_bytes + needed > head_budget && head_count > 0 {
+        if head_bytes + needed > head_budget {
             break;
         }
         head_count += 1;
@@ -59,7 +59,7 @@ pub(crate) fn smart_truncate(text: &str, max_bytes: usize) -> String {
     let mut tail_bytes = 0;
     for line in lines.iter().rev() {
         let needed = line.len() + 1;
-        if tail_bytes + needed > tail_budget && tail_count > 0 {
+        if tail_bytes + needed > tail_budget {
             break;
         }
         tail_count += 1;
@@ -68,7 +68,7 @@ pub(crate) fn smart_truncate(text: &str, max_bytes: usize) -> String {
 
     // Ensure no overlap
     let tail_start_idx = total_lines.saturating_sub(tail_count);
-    if head_count >= tail_start_idx {
+    if head_count == 0 || tail_count == 0 || head_count >= tail_start_idx {
         // Lines are individually too large for the budget.
         // Fall back to char-level truncation on the joined text.
         let head_end = char_floor(text, head_budget);
@@ -179,8 +179,28 @@ mod tests {
         let text = format!("{}\n{}", line, line);
         let result = smart_truncate(&text, 500);
         // Should not panic and result should be valid UTF-8
-        // Result may be larger than 500 due to separator + multi-byte chars at boundaries
-        assert!(result.len() < text.len());
+        assert!(result.len() <= 500);
+    }
+
+    #[test]
+    fn truncate_enforces_budget_with_oversized_edge_lines() {
+        let huge = "世界".repeat(2000);
+        let inputs = [
+            format!("{huge}\nmiddle\n{huge}"),
+            format!("{huge}\nmiddle\nlast"),
+            format!("first\nmiddle\n{huge}"),
+            "first\nsecond\nthird".to_string(),
+        ];
+        for text in inputs {
+            for budget in [0, 1, 2, 10, 50, 100, 500, 1000] {
+                let result = smart_truncate(&text, budget);
+                assert!(
+                    result.len() <= budget,
+                    "{} bytes exceeded budget {budget}",
+                    result.len()
+                );
+            }
+        }
     }
 
     #[test]

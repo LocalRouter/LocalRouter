@@ -1,3 +1,4 @@
+<!-- Historical /gateway/stream prototype. See website/src/pages/docs/content/16-api-mcp-gateway.md for the current API. -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -470,12 +471,8 @@
 
                     document.getElementById('sessionInfo').style.display = 'block';
                     document.getElementById('sessionId').textContent = sessionInfo.session_id;
-                    document.getElementById('initializedServers').innerHTML = sessionInfo.initialized_servers
-                        .map((s) => `<div class="server-tag">${s}</div>`)
-                        .join('');
-                    document.getElementById('failedServers').innerHTML = sessionInfo.failed_servers
-                        .map((s) => `<div class="server-tag" style="background:#e74c3c">${s}</div>`)
-                        .join('');
+                    this.renderServers('initializedServers', sessionInfo.initialized_servers);
+                    this.renderServers('failedServers', sessionInfo.failed_servers, true);
 
                     document.getElementById('initBtn').disabled = true;
                     document.getElementById('closeBtn').disabled = false;
@@ -550,6 +547,17 @@
                 this.session.addEventListener('heartbeat', () => {
                     this.log('♥ Heartbeat', 'info');
                 });
+            }
+
+            renderServers(elementId, servers, failed = false) {
+                const container = document.getElementById(elementId);
+                container.replaceChildren(...servers.map((server) => {
+                    const tag = document.createElement('div');
+                    tag.className = 'server-tag';
+                    tag.textContent = server;
+                    if (failed) tag.style.background = '#e74c3c';
+                    return tag;
+                }));
             }
 
             setStatus(className, text) {

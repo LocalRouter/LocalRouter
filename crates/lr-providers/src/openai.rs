@@ -1101,30 +1101,14 @@ impl ModelProvider for OpenAIProvider {
         }
 
         // Parse SSE (Server-Sent Events) stream with proper line buffering
-        let stream = response.bytes_stream();
-
-        // Buffer for incomplete lines across byte chunks
-        use std::sync::{Arc, Mutex};
-        let line_buffer = Arc::new(Mutex::new(String::new()));
+        let stream = crate::sse_lines::line_batches(response.bytes_stream());
 
         let converted_stream = stream.flat_map(move |result| {
-            let line_buffer = line_buffer.clone();
-
             let chunks: Vec<AppResult<CompletionChunk>> = match result {
-                Ok(bytes) => {
-                    let text = String::from_utf8_lossy(&bytes);
-                    let mut buffer = line_buffer.lock().unwrap();
-
-                    // Append new data to buffer
-                    buffer.push_str(&text);
-
+                Ok(lines) => {
                     let mut chunks = Vec::new();
 
-                    // Process complete lines (those ending with \n)
-                    while let Some(newline_pos) = buffer.find('\n') {
-                        let line = buffer[..newline_pos].to_string();
-                        *buffer = buffer[newline_pos + 1..].to_string();
-
+                    for line in lines {
                         if line.trim().is_empty() {
                             continue;
                         }

@@ -923,12 +923,11 @@ pub async fn resume_after_mixed(
     allowed_servers: Vec<String>,
     context_management_config: &lr_config::ContextManagementConfig,
 ) -> Result<OrchestratorResult, McpViaLlmError> {
-    // Take handles out before awaiting (pending has Drop impl that aborts them)
-    let mcp_handles = std::mem::take(&mut pending.mcp_handles);
-
     // Await all MCP background tasks
+    // Keep their handles owned by pending so cancellation of this resume
+    // request still aborts unfinished tools via PendingMixedExecution::drop.
     let mut mcp_results: Vec<(String, Result<String, String>)> = Vec::new();
-    for handle in mcp_handles {
+    for handle in &mut pending.mcp_handles {
         match handle.await {
             Ok(result) => mcp_results.push(result),
             Err(e) => {

@@ -148,8 +148,11 @@ pub fn detect_protected_words(words: &[&str]) -> Vec<bool> {
 
     for (i, word) in words.iter().enumerate() {
         // 1. Fenced code block check (highest priority)
-        if word.contains("```") {
-            in_fenced = !in_fenced;
+        let fence_count = word.matches("```").count();
+        if fence_count > 0 {
+            if fence_count % 2 == 1 {
+                in_fenced = !in_fenced;
+            }
             protected[i] = true;
             continue;
         }
@@ -279,6 +282,12 @@ mod tests {
             .filter(|(_, &p)| !p)
             .map(|(&w, _)| w)
             .collect()
+    }
+
+    #[test]
+    fn self_contained_fence_does_not_protect_following_prose() {
+        let words = ["before", "```code```", "after"];
+        assert_eq!(detect_protected_words(&words), vec![false, true, false]);
     }
 
     #[test]

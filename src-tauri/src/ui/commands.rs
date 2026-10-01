@@ -2815,16 +2815,8 @@ pub async fn create_skill(
         return Err("Invalid skill name".to_string());
     }
 
-    // Build SKILL.md content with YAML frontmatter
-    let mut skill_md = String::from("---\n");
-    skill_md.push_str(&format!("name: \"{}\"\n", name.trim()));
-    if let Some(ref desc) = description {
-        if !desc.trim().is_empty() {
-            skill_md.push_str(&format!("description: \"{}\"\n", desc.trim()));
-        }
-    }
-    skill_md.push_str("---\n\n");
-    skill_md.push_str(&content);
+    let skill_md =
+        super::input_validation::skill_document(&name, description.as_deref(), &content)?;
 
     // Determine config dir and create skills subdirectory
     let config_dir =
@@ -2881,7 +2873,7 @@ pub async fn is_user_created_skill(skill_path: String) -> Result<bool, String> {
         lr_utils::paths::config_dir().map_err(|e| format!("Failed to get config dir: {}", e))?;
     let user_skills_dir = config_dir.join("skills");
     let skill_path_buf = std::path::PathBuf::from(&skill_path);
-    Ok(skill_path_buf.starts_with(&user_skills_dir))
+    Ok(super::skill_paths::managed_skill_directory(&user_skills_dir, &skill_path_buf).is_ok())
 }
 
 /// Delete a user-created skill from disk
@@ -2898,14 +2890,11 @@ pub async fn delete_user_skill(
     let config_dir =
         lr_utils::paths::config_dir().map_err(|e| format!("Failed to get config dir: {}", e))?;
     let user_skills_dir = config_dir.join("skills");
-    let skill_path_buf = std::path::PathBuf::from(&skill_path);
-
-    if !skill_path_buf.starts_with(&user_skills_dir) {
-        return Err(format!(
-            "Skill '{}' is not a user-created skill and cannot be deleted this way",
-            skill_name
-        ));
-    }
+    let skill_path_buf = super::skill_paths::managed_skill_directory(
+        &user_skills_dir,
+        std::path::Path::new(&skill_path),
+    )
+    .map_err(|e| format!("Cannot delete skill '{skill_name}': {e}"))?;
 
     // Delete the skill directory
     if skill_path_buf.exists() {

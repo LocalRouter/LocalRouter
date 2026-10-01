@@ -1,3 +1,4 @@
+import { readSseData } from "@/lib/sse"
 import * as React from "react"
 import { useState, useRef, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
@@ -190,7 +191,7 @@ export function ChatPanel({
 
   const handleSend = async () => {
     if (!input.trim() && attachedImages.length === 0) return
-    if (isLoading || !openaiClient || !selectedModel?.trim()) return
+    if (isLoading || abortControllerRef.current || !openaiClient || !selectedModel?.trim()) return
 
     // Build message content
     const userMessageContent: OpenAI.ChatCompletionContentPart[] = []
@@ -223,7 +224,8 @@ export function ChatPanel({
     setIsLoading(true)
 
     // Create abort controller for this request
-    abortControllerRef.current = new AbortController()
+    const abortController = new AbortController()
+    abortControllerRef.current = abortController
 
     // Create assistant message placeholder for streaming
     const assistantId = crypto.randomUUID()
@@ -290,7 +292,7 @@ export function ChatPanel({
             ...optionalParams,
           },
           {
-            signal: abortControllerRef.current.signal,
+            signal: abortController.signal,
           }
         )
 
@@ -374,7 +376,7 @@ export function ChatPanel({
             Accept: "text/event-stream",
           },
           body,
-          signal: abortControllerRef.current.signal,
+          signal: abortController.signal,
         })
         if (!resp.ok) {
           const errText = await resp.text()
@@ -384,71 +386,54 @@ export function ChatPanel({
           throw new Error("Responses API returned empty body")
         }
 
-        // Parse SSE frames. Each frame is `event: <name>\ndata: <json>\n\n`.
-        const reader = resp.body.getReader()
-        const decoder = new TextDecoder()
-        let buf = ""
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
-          buf += decoder.decode(value, { stream: true })
-          let boundary = buf.indexOf("\n\n")
-          while (boundary !== -1) {
-            const frame = buf.slice(0, boundary)
-            buf = buf.slice(boundary + 2)
-            boundary = buf.indexOf("\n\n")
-            const dataLines: string[] = []
-            for (const line of frame.split("\n")) {
-              if (line.startsWith("data:")) dataLines.push(line.slice(5).trim())
-            }
-            if (dataLines.length === 0) continue
-            let payload: Record<string, unknown>
-            try {
-              payload = JSON.parse(dataLines.join("\n"))
-            } catch {
-              continue
-            }
-            switch (payload.type) {
-              case "response.created": {
-                const r = payload.response as Record<string, unknown> | undefined
-                if (r && typeof r.id === "string") {
-                  lastResponseIdRef.current = r.id
-                }
-                if (r && typeof r.model === "string") {
-                  modelUsed = r.model
-                }
-                break
+        for await (const data of readSseData(resp.body)) {
+          if (abortController.signal.aborted) break
+          let payload: Record<string, unknown>
+          try {
+            payload = JSON.parse(data)
+          } catch {
+            continue
+          }
+          switch (payload.type) {
+            case "response.created": {
+              const r = payload.response as Record<string, unknown> | undefined
+              if (r && typeof r.id === "string") {
+                lastResponseIdRef.current = r.id
               }
-              case "response.output_text.delta": {
-                const delta = (payload.delta as string | undefined) ?? ""
-                if (delta) {
-                  setMessages((prev) =>
-                    prev.map((m) =>
-                      m.id === assistantId
-                        ? { ...m, content: m.content + delta }
-                        : m
-                    )
+              if (r && typeof r.model === "string") {
+                modelUsed = r.model
+              }
+              break
+            }
+            case "response.output_text.delta": {
+              const delta = (payload.delta as string | undefined) ?? ""
+              if (delta) {
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === assistantId
+                      ? { ...m, content: m.content + delta }
+                      : m
                   )
-                }
-                break
-              }
-              case "response.completed": {
-                const r = payload.response as Record<string, unknown> | undefined
-                const usage = r?.usage as Record<string, number> | undefined
-                if (usage) {
-                  promptTokens = usage.input_tokens ?? 0
-                  completionTokens = usage.output_tokens ?? 0
-                }
-                break
-              }
-              case "response.failed":
-              case "response.incomplete": {
-                const err = payload.response as Record<string, unknown> | undefined
-                const msg = (err?.error as Record<string, unknown> | undefined)?.message
-                throw new Error(
-                  typeof msg === "string" ? msg : "Responses API stream failed"
                 )
               }
+              break
+            }
+            case "response.completed": {
+              const r = payload.response as Record<string, unknown> | undefined
+              const usage = r?.usage as Record<string, number> | undefined
+              if (usage) {
+                promptTokens = usage.input_tokens ?? 0
+                completionTokens = usage.output_tokens ?? 0
+              }
+              break
+            }
+            case "response.failed":
+            case "response.incomplete": {
+              const err = payload.response as Record<string, unknown> | undefined
+              const msg = (err?.error as Record<string, unknown> | undefined)?.message
+              throw new Error(
+                typeof msg === "string" ? msg : "Responses API stream failed"
+              )
             }
           }
         }
@@ -474,7 +459,7 @@ export function ChatPanel({
             ...optionalParams,
           },
           {
-            signal: abortControllerRef.current.signal,
+            signal: abortController.signal,
           }
         )
         for await (const chunk of stream) {
@@ -533,8 +518,10 @@ export function ChatPanel({
         )
       }
     } finally {
-      abortControllerRef.current = null
-      setIsLoading(false)
+      if (abortControllerRef.current === abortController) {
+        abortControllerRef.current = null
+        setIsLoading(false)
+      }
     }
   }
 

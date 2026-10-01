@@ -55,6 +55,12 @@ done
 [ -d "$ASSETS_DIR" ] || die "assets dir does not exist: $ASSETS_DIR"
 [ -d "$REPO_DIR" ]   || die "repo dir does not exist: $REPO_DIR"
 
+# Validate before staging or pruning: --keep 0 would otherwise delete every
+# release, including the version just staged.
+[[ "$KEEP_VERSIONS" =~ ^[1-9][0-9]*$ ]] || die "--keep must be a positive integer"
+[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]] \
+  || die "--version must be semver without a leading v"
+
 APT_DIR="$REPO_DIR/apt"
 YUM_DIR="$REPO_DIR/yum"
 POOL_DIR="$APT_DIR/pool/$COMPONENT/l/localrouter"

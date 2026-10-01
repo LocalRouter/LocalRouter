@@ -809,11 +809,10 @@ impl ModelProvider for AnthropicProvider {
         }
 
         let model = request.model.clone();
-        let stream = response.bytes_stream();
+        let stream = crate::sse_lines::line_batches(response.bytes_stream());
 
         // Shared state for streaming
         use std::sync::{Arc, Mutex};
-        let line_buffer = Arc::new(Mutex::new(String::new()));
         let msg_id = Arc::new(Mutex::new(String::new()));
         let tool_call_idx = Arc::new(Mutex::new(0u32));
         // Map from Anthropic content block index to OpenAI tool call index
@@ -823,24 +822,16 @@ impl ModelProvider for AnthropicProvider {
 
         let converted_stream = stream.flat_map(move |result| {
             let model = model.clone();
-            let line_buffer = line_buffer.clone();
             let msg_id = msg_id.clone();
             let tool_call_idx = tool_call_idx.clone();
             let block_to_tc = block_to_tc.clone();
             let usage_totals = usage_totals.clone();
 
             let chunks: Vec<AppResult<CompletionChunk>> = match result {
-                Ok(bytes) => {
-                    let text = String::from_utf8_lossy(&bytes);
-                    let mut buffer = line_buffer.lock().unwrap();
-                    buffer.push_str(&text);
-
+                Ok(lines) => {
                     let mut chunks = Vec::new();
 
-                    while let Some(newline_pos) = buffer.find('\n') {
-                        let line = buffer[..newline_pos].to_string();
-                        *buffer = buffer[newline_pos + 1..].to_string();
-
+                    for line in lines {
                         if line.trim().is_empty() {
                             continue;
                         }

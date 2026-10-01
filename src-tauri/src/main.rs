@@ -1075,45 +1075,10 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                         let app_handle = app_handle.clone();
                         Box::pin(async move {
                             let skill_name = listing.name.clone();
-                            let skills_dir = service_clone.skills_data_dir();
-                            let skill_target_dir = skills_dir.join(&listing.source_label).join(&listing.name);
-
-                            // Download skill files
-                            let http_client = reqwest::Client::new();
-                            std::fs::create_dir_all(&skill_target_dir)
-                                .map_err(|e| format!("Failed to create directory: {}", e))?;
-
-                            // Download SKILL.md
-                            let skill_md = http_client
-                                .get(&listing.skill_md_url)
-                                .send()
+                            let skill_target_dir = service_clone
+                                .download_skill(&listing)
                                 .await
-                                .map_err(|e| format!("Failed to download SKILL.md: {}", e))?
-                                .text()
-                                .await
-                                .map_err(|e| format!("Failed to read SKILL.md: {}", e))?;
-
-                            std::fs::write(skill_target_dir.join("SKILL.md"), &skill_md)
-                                .map_err(|e| format!("Failed to write SKILL.md: {}", e))?;
-
-                            // Download additional files
-                            for file in &listing.files {
-                                let file_path = skill_target_dir.join(&file.path);
-                                if let Some(parent) = file_path.parent() {
-                                    std::fs::create_dir_all(parent)
-                                        .map_err(|e| format!("Failed to create directory: {}", e))?;
-                                }
-                                let content = http_client
-                                    .get(&file.url)
-                                    .send()
-                                    .await
-                                    .map_err(|e| format!("Failed to download {}: {}", file.path, e))?
-                                    .bytes()
-                                    .await
-                                    .map_err(|e| format!("Failed to read {}: {}", file.path, e))?;
-                                std::fs::write(&file_path, content)
-                                    .map_err(|e| format!("Failed to write {}: {}", file.path, e))?;
-                            }
+                                .map_err(|e| e.to_string())?;
 
                             // Add path to config
                             let skill_path = skill_target_dir.to_string_lossy().to_string();

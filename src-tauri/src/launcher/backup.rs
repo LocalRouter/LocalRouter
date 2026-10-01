@@ -8,65 +8,83 @@ use std::path::{Path, PathBuf};
 /// Write data to path via temp file + rename, backing up any existing file first.
 /// Returns the backup path if one was created.
 pub fn write_with_backup(path: &Path, data: &[u8]) -> Result<Option<PathBuf>, String> {
-    // Ensure parent directory exists
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create directory {:?}: {}", parent, e))?;
+    let backup_dir = dirs::data_local_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("localrouter-backups");
+    write_with_backup_in(path, data, &backup_dir)
+}
+
+fn write_with_backup_in(
+    path: &Path,
+    data: &[u8],
+    backup_dir: &Path,
+) -> Result<Option<PathBuf>, String> {
+    use std::io::Write;
+
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    fs::create_dir_all(parent)
+        .map_err(|e| format!("Failed to create directory {:?}: {}", parent, e))?;
+
+    // Do not overwrite a file that could not be read: the backup is required
+    // for a recoverable edit, not an optional best effort on permission errors.
+    let existing = match fs::read(path) {
+        Ok(existing) => Some(existing),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(format!(
+                "Failed to read existing file {:?}: {}",
+                path, error
+            ))
+        }
+    };
+    if existing.as_deref() == Some(data) {
+        return Ok(None);
     }
 
-    // Read existing file content to check if backup is needed
-    let existing = fs::read(path).ok();
-    let backup_path = if let Some(ref existing_data) = existing {
-        if existing_data != data {
-            // Content differs - create backup
-            let backup_dir = dirs::data_local_dir()
-                .unwrap_or_else(std::env::temp_dir)
-                .join("localrouter-backups");
-            fs::create_dir_all(&backup_dir)
-                .map_err(|e| format!("Failed to create backup dir: {}", e))?;
-
-            let filename = path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
-            let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-            let backup_name = format!("{}.{}.bak", filename, timestamp);
-            let backup_path = backup_dir.join(backup_name);
-
-            fs::write(&backup_path, existing_data)
-                .map_err(|e| format!("Failed to write backup to {:?}: {}", backup_path, e))?;
-
-            tracing::info!("Backed up {:?} to {:?}", path, backup_path);
-
-            // Self-cleanup: keep only the last 10 backups
-            cleanup_old_backups(&backup_dir, 10);
-
-            Some(backup_path)
-        } else {
-            // Content is the same, no backup needed
-            None
-        }
+    let backup_path = if let Some(existing) = existing {
+        fs::create_dir_all(backup_dir)
+            .map_err(|e| format!("Failed to create backup dir: {}", e))?;
+        let filename = path.file_name().unwrap_or_default().to_string_lossy();
+        let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+        // Random suffixes prevent same-second writes (including settings files
+        // with the same basename) from overwriting an earlier backup.
+        let mut backup = tempfile::Builder::new()
+            .prefix(&format!("{filename}.{timestamp}."))
+            .suffix(".bak")
+            .tempfile_in(backup_dir)
+            .map_err(|e| format!("Failed to create private backup: {}", e))?;
+        backup
+            .write_all(&existing)
+            .and_then(|()| backup.as_file().sync_all())
+            .map_err(|e| format!("Failed to write backup: {}", e))?;
+        let (_, backup_path) = backup
+            .keep()
+            .map_err(|e| format!("Failed to preserve backup: {}", e))?;
+        tracing::info!("Backed up {:?} to {:?}", path, backup_path);
+        Some(backup_path)
     } else {
         None
     };
 
-    // Write to temp file in same directory, then atomic rename
-    let parent = path.parent().unwrap_or(Path::new("."));
-    let temp_path = parent.join(format!(
-        ".localrouter-tmp-{}",
-        uuid::Uuid::new_v4().as_simple()
-    ));
+    // Configs and backups can contain API keys. NamedTempFile creates them
+    // owner-private on Unix before the first byte is written, and cleans up
+    // failed writes automatically. Same-directory persistence is atomic.
+    let mut temp = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|e| format!("Failed to create private temp file: {}", e))?;
+    temp.write_all(data)
+        .and_then(|()| temp.as_file().sync_all())
+        .map_err(|e| format!("Failed to write temp file: {}", e))?;
+    temp.persist(path)
+        .map_err(|e| format!("Failed to replace {:?}: {}", path, e.error))?;
 
-    fs::write(&temp_path, data)
-        .map_err(|e| format!("Failed to write temp file {:?}: {}", temp_path, e))?;
-
-    fs::rename(&temp_path, path).map_err(|e| {
-        // Clean up temp file on rename failure
-        let _ = fs::remove_file(&temp_path);
-        format!("Failed to rename {:?} to {:?}: {}", temp_path, path, e)
-    })?;
-
+    // Prune only after the replacement succeeds so a failed edit cannot
+    // destroy recovery points while leaving the original config unchanged.
+    if backup_path.is_some() {
+        cleanup_old_backups(backup_dir, 10);
+    }
     Ok(backup_path)
 }
 
@@ -107,11 +125,60 @@ mod tests {
     use std::fs;
 
     #[test]
+    fn rapid_backups_preserve_each_previous_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let backup_dir = dir.path().join("backups");
+        fs::write(&path, "first").unwrap();
+        let first = write_with_backup_in(&path, b"second", &backup_dir)
+            .unwrap()
+            .unwrap();
+        let second = write_with_backup_in(&path, b"third", &backup_dir)
+            .unwrap()
+            .unwrap();
+        assert_ne!(first, second);
+        assert_eq!(fs::read_to_string(first).unwrap(), "first");
+        assert_eq!(fs::read_to_string(second).unwrap(), "second");
+        assert_eq!(fs::read_to_string(path).unwrap(), "third");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn configs_and_backups_are_owner_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secrets.env");
+        let backup_dir = dir.path().join("backups");
+        write_with_backup_in(&path, b"SECRET=old", &backup_dir).unwrap();
+        let backup = write_with_backup_in(&path, b"SECRET=new", &backup_dir)
+            .unwrap()
+            .unwrap();
+        for file in [&path, &backup] {
+            assert_eq!(
+                fs::metadata(file).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[test]
+    fn unreadable_destination_is_not_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("directory");
+        fs::create_dir(&path).unwrap();
+        let result = write_with_backup_in(&path, b"replacement", &dir.path().join("backups"));
+        assert!(result.is_err());
+        assert!(path.is_dir());
+        assert!(!dir.path().join("backups").exists());
+    }
+
+    #[test]
     fn test_write_new_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("new.json");
 
-        let result = write_with_backup(&path, b"hello").unwrap();
+        let result = write_with_backup_in(&path, b"hello", &dir.path().join("backups")).unwrap();
         assert!(result.is_none(), "no backup for new file");
         assert_eq!(fs::read_to_string(&path).unwrap(), "hello");
     }
@@ -122,7 +189,7 @@ mod tests {
         let path = dir.path().join("same.json");
         fs::write(&path, b"hello").unwrap();
 
-        let result = write_with_backup(&path, b"hello").unwrap();
+        let result = write_with_backup_in(&path, b"hello", &dir.path().join("backups")).unwrap();
         assert!(result.is_none(), "no backup when content unchanged");
         assert_eq!(fs::read_to_string(&path).unwrap(), "hello");
     }
@@ -133,7 +200,8 @@ mod tests {
         let path = dir.path().join("changed.json");
         fs::write(&path, b"old content").unwrap();
 
-        let result = write_with_backup(&path, b"new content").unwrap();
+        let result =
+            write_with_backup_in(&path, b"new content", &dir.path().join("backups")).unwrap();
         assert!(result.is_some(), "backup should be created");
 
         let backup_path = result.unwrap();
@@ -147,7 +215,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("a").join("b").join("c").join("file.json");
 
-        let result = write_with_backup(&path, b"nested");
+        let result = write_with_backup_in(&path, b"nested", &dir.path().join("backups"));
         assert!(result.is_ok());
         assert_eq!(fs::read_to_string(&path).unwrap(), "nested");
     }

@@ -1,0 +1,692 @@
+{
+  "excluded_pre_existing_user_changes": [
+    "crates/lr-catalog/catalog/modelsdev_raw.json"
+  ],
+  "files": [
+    {
+      "path": ".github/workflows/ci.yml",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": ".github/workflows/deploy-website.yml",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "CODEBASE_REVIEW_2026-10-01.md",
+      "status": "new",
+      "category": "report/inventory"
+    },
+    {
+      "path": "README.md",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-api-keys/src/keychain.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-api-keys/src/keychain_trait.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-coding-agents/src/manager.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-compression/src/protection.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-config/src/storage.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-context/src/lib.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-context/src/truncate.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-engines/src/download.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-guardrails/src/engine.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-local-models/src/download.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-local-models/src/library.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-marketplace/src/lib.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-marketplace/src/skill_sources.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-mcp-via-llm/src/manager.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-mcp-via-llm/src/orchestrator.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-mcp-via-llm/src/tests.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-mcp/src/gateway/router.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-mcp/src/transport/mod.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-mcp/src/transport/sse.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-mcp/src/transport/stdio.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-mcp/src/transport/websocket.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-memory/src/session_manager.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-memory/src/tests.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-memory/src/transcript.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-monitor/src/store.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-monitoring/src/storage.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-oauth/src/browser/callback_server.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-providers/src/anthropic.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-providers/src/cerebras.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-providers/src/deepinfra.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-providers/src/features/anthropic_thinking.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-providers/src/features/logprobs.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-providers/src/gemini.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-providers/src/groq.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-providers/src/mistral.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-providers/src/oauth/mod.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-providers/src/oauth/storage.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-providers/src/ollama.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-providers/src/openai.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-providers/src/openai_compatible.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-providers/src/openai_responses/stream.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-providers/src/openrouter.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-providers/src/perplexity.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-providers/src/sse_lines.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-providers/src/systemone/types.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-providers/src/togetherai.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-providers/src/xai.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-proxy/src/active.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-proxy/src/cert.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-proxy/src/lib.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-proxy/src/passive.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-proxy/tests/reverse_e2e.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-responses-sessions/src/lib.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-router/src/endpoint_cache.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-router/src/rate_limit.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-secret-scanner/src/regex_engine.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-server/src/lib.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-server/src/middleware/auth_layer.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-server/src/routes/audio.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-server/src/routes/responses.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-skills/src/executor.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-skills/src/mcp_tools.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "crates/lr-types/src/trace.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "docs/MCP_STREAMING_CLIENT.md",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "examples/streaming-client-browser.html",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "examples/streaming-client-example.ts",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "package.json",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "packaging/linux-repo/build-flatpak-repo.sh",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "packaging/linux-repo/build-linux-repo.sh",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "plan/2026-10-01-CODEBASE_REVIEW.md",
+      "status": "new",
+      "category": "report/inventory"
+    },
+    {
+      "path": "plan/review-2026-10-01/api-routing-providers.md",
+      "status": "new",
+      "category": "report/inventory"
+    },
+    {
+      "path": "plan/review-2026-10-01/catalog-preservation.json",
+      "status": "new",
+      "category": "report/inventory"
+    },
+    {
+      "path": "plan/review-2026-10-01/change-manifest.json",
+      "status": "new",
+      "category": "report/inventory"
+    },
+    {
+      "path": "plan/review-2026-10-01/coverage-inventory.json",
+      "status": "new",
+      "category": "report/inventory"
+    },
+    {
+      "path": "plan/review-2026-10-01/foundations.md",
+      "status": "new",
+      "category": "report/inventory"
+    },
+    {
+      "path": "plan/review-2026-10-01/frontend-inventory.json",
+      "status": "new",
+      "category": "report/inventory"
+    },
+    {
+      "path": "plan/review-2026-10-01/frontend-website.md",
+      "status": "new",
+      "category": "report/inventory"
+    },
+    {
+      "path": "plan/review-2026-10-01/mcp-tools-context.md",
+      "status": "new",
+      "category": "report/inventory"
+    },
+    {
+      "path": "plan/review-2026-10-01/repository-inventory.json",
+      "status": "new",
+      "category": "report/inventory"
+    },
+    {
+      "path": "plan/review-2026-10-01/security-storage-models-build.md",
+      "status": "new",
+      "category": "report/inventory"
+    },
+    {
+      "path": "plan/review-2026-10-01/tauri-runtime.md",
+      "status": "new",
+      "category": "report/inventory"
+    },
+    {
+      "path": "plan/review-2026-10-01/tauri-ui.md",
+      "status": "new",
+      "category": "report/inventory"
+    },
+    {
+      "path": "plan/review-2026-10-01/validation-results.json",
+      "status": "new",
+      "category": "report/inventory"
+    },
+    {
+      "path": "src-tauri/Cargo.toml",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "src-tauri/src/launcher/backup.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "src-tauri/src/launcher/integrations/aider.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "src-tauri/src/launcher/integrations/claude_code.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "src-tauri/src/launcher/integrations/codex.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "src-tauri/src/launcher/integrations/config_parse.rs",
+      "status": "new",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "src-tauri/src/launcher/integrations/cursor.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "src-tauri/src/launcher/integrations/droid.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "src-tauri/src/launcher/integrations/goose.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "src-tauri/src/launcher/integrations/jsonc.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "src-tauri/src/launcher/integrations/mod.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "src-tauri/src/launcher/integrations/openclaw.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "src-tauri/src/launcher/integrations/opencode.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "src-tauri/src/main.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "src-tauri/src/ui/commands.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "src-tauri/src/ui/commands_clients.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "src-tauri/src/ui/commands_marketplace.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "src-tauri/src/ui/commands_reverse_proxy.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "src-tauri/src/ui/input_validation.rs",
+      "status": "new",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "src-tauri/src/ui/mod.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "src-tauri/src/ui/skill_paths.rs",
+      "status": "new",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "src-tauri/src/updater/mod.rs",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "src-tauri/tauri.conf.json",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "src/components/shared/FirewallApprovalCard.tsx",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "src/components/ui/KeyValueInput.tsx",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "src/hooks/use-theme.ts",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "src/hooks/useIncrementalModels.ts",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "src/hooks/useModelDownload.ts",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "src/hooks/useTauriListener.ts",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "src/lib/mcp-client.ts",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "src/lib/sse.ts",
+      "status": "new",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "src/views/firewall-approval.tsx",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "src/views/monitor/hooks/useMonitorEvents.ts",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "src/views/monitor/monitor-events.ts",
+      "status": "new",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "src/views/try-it-out/llm-tab/chat-panel.tsx",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "src/views/try-it-out/llm-tab/images-panel.tsx",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "src/views/try-it-out/llm-tab/index.tsx",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "src/views/try-it-out/llm-tab/speech-panel.tsx",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "src/views/try-it-out/mcp-tab/index.tsx",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "tests/e2e/unit.config.ts",
+      "status": "new",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "tests/e2e/unit/frontend-regressions.spec.ts",
+      "status": "new",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "tests/e2e/unit/mcp-client.spec.ts",
+      "status": "new",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "tests/e2e/unit/sse.spec.ts",
+      "status": "new",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "tests/scripts/test_packaging.py",
+      "status": "new",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "vite.config.ts",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "website/shared-icons.ts",
+      "status": "new",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "website/src/hooks/use-theme.ts",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "website/src/stubs/tauri-api-event.ts",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "website/src/stubs/tauri-plugin-shell.ts",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    },
+    {
+      "path": "website/vite.config.ts",
+      "status": "modified",
+      "category": "source/test/config/documentation"
+    }
+  ]
+}

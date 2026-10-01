@@ -221,6 +221,38 @@ impl MarketplaceService {
         self.data_dir.join("marketplace-skills")
     }
 
+    /// Install under the managed skills directory with path confinement and
+    /// bounded downloads. Listing labels must each be a single directory name.
+    pub async fn download_skill(
+        &self,
+        listing: &SkillListing,
+    ) -> Result<PathBuf, MarketplaceError> {
+        for component in [&listing.source_label, &listing.name] {
+            skill_sources::validate_skill_file_path(component)?;
+            if std::path::Path::new(component).components().count() != 1 {
+                return Err(MarketplaceError::InstallError(format!(
+                    "Invalid skill directory name: {component}"
+                )));
+            }
+        }
+        let root = self.skills_data_dir();
+        std::fs::create_dir_all(&root).map_err(|e| {
+            MarketplaceError::InstallError(format!("Failed to create skills directory: {e}"))
+        })?;
+        let manifest_path = skill_sources::prepare_skill_file_path(
+            &root,
+            &format!("{}/{}/SKILL.md", listing.source_label, listing.name),
+        )?;
+        let target = manifest_path
+            .parent()
+            .ok_or_else(|| MarketplaceError::InstallError("Missing skill directory".to_string()))?
+            .to_path_buf();
+        self.skill_sources_client
+            .download_skill(listing, &target)
+            .await?;
+        Ok(target)
+    }
+
     /// Get the configured search tool name
     pub fn search_tool_name(&self) -> String {
         self.config.read().search_tool_name.clone()

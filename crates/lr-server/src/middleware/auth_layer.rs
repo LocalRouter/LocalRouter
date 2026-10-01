@@ -58,7 +58,10 @@ where
     #[allow(deprecated)]
     fn call(&mut self, mut req: Request<Body>) -> Self::Future {
         let state = self.state.clone();
-        let mut inner = self.inner.clone();
+        // Call the instance whose readiness was polled. A clone may have its
+        // own readiness state (for example a concurrency-limit permit).
+        let replacement = self.inner.clone();
+        let mut inner = std::mem::replace(&mut self.inner, replacement);
 
         Box::pin(async move {
             // Skip authentication for OPTIONS requests (CORS preflight)

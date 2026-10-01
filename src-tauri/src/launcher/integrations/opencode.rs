@@ -94,12 +94,11 @@ export default async () => ({{}});
 }
 
 /// Read the existing opencode.json or create an empty object
-fn read_config(path: &std::path::Path) -> serde_json::Value {
-    if path.exists() {
-        let data = std::fs::read_to_string(path).unwrap_or_default();
-        serde_json::from_str(&data).unwrap_or(serde_json::json!({}))
-    } else {
-        serde_json::json!({})
+fn read_config(path: &std::path::Path) -> Result<serde_json::Value, String> {
+    match std::fs::read_to_string(path) {
+        Ok(data) => super::config_parse::json(&data, path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(serde_json::json!({})),
+        Err(error) => Err(format!("Failed to read {}: {error}", path.display())),
     }
 }
 
@@ -207,7 +206,7 @@ impl OpenCodeIntegration {
             });
         }
 
-        let mut config = read_config(&path);
+        let mut config = read_config(&path)?;
 
         if let Some(obj) = config.as_object_mut() {
             // LLM provider entry

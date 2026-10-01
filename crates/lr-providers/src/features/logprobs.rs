@@ -69,13 +69,15 @@ impl LogprobsAdapter {
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
 
-        let top_logprobs = params
-            .get("top_logprobs")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32;
+        let top_logprobs = match params.get("top_logprobs") {
+            None => 0,
+            Some(value) => value.as_u64().ok_or_else(|| {
+                AppError::Config("top_logprobs must be a non-negative integer".to_string())
+            })?,
+        };
 
         // Validate top_logprobs range
-        if top_logprobs > MAX_TOP_LOGPROBS {
+        if top_logprobs > u64::from(MAX_TOP_LOGPROBS) {
             return Err(AppError::Config(format!(
                 "top_logprobs must be between {} and {} (got {})",
                 MIN_TOP_LOGPROBS, MAX_TOP_LOGPROBS, top_logprobs
@@ -84,7 +86,7 @@ impl LogprobsAdapter {
 
         Ok(LogprobsConfig {
             enabled,
-            top_logprobs,
+            top_logprobs: top_logprobs as u32,
         })
     }
 
@@ -243,6 +245,19 @@ impl FeatureAdapter for LogprobsAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invalid_counts_do_not_wrap_or_silently_use_defaults() {
+        for value in [
+            serde_json::json!((1_u64 << 32) + 5),
+            serde_json::json!(-1),
+            serde_json::json!(1.5),
+            serde_json::json!("5"),
+        ] {
+            let params = HashMap::from([("top_logprobs".to_string(), value)]);
+            assert!(LogprobsAdapter.validate_params(&params).is_err());
+        }
+    }
 
     #[test]
     fn test_feature_name() {

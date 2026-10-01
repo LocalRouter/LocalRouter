@@ -350,18 +350,24 @@ impl DownloadManager {
         }
         let target_dir = self.target_dir(repo, &commit);
 
-        // Reuse an identical unfinished job; refuse overlapping ones.
-        let existing = {
-            let jobs = self.jobs.lock();
-            let mut found = None;
-            for j in jobs.iter().filter(|j| !j.rec.state.is_finished()) {
-                if j.rec.target_dir != target_dir {
+        // Check and insert under the same lock: concurrent start requests
+        // must not create jobs that write the same partial/final files.
+        let (id, view) = {
+            let mut jobs = self.jobs.lock();
+            let ours: HashSet<&str> = unique.iter().map(String::as_str).collect();
+            let mut existing = None;
+            for job in jobs.iter().filter(|job| !job.rec.state.is_finished()) {
+                if job.rec.target_dir != target_dir {
                     continue;
                 }
-                let theirs: HashSet<&str> = j.rec.files.iter().map(|f| f.path.as_str()).collect();
-                let ours: HashSet<&str> = unique.iter().map(String::as_str).collect();
+                let theirs: HashSet<&str> = job
+                    .rec
+                    .files
+                    .iter()
+                    .map(|file| file.path.as_str())
+                    .collect();
                 if theirs == ours {
-                    found = Some(j.rec.id.clone());
+                    existing = Some(job.rec.id.clone());
                     break;
                 }
                 if !theirs.is_disjoint(&ours) {
@@ -370,40 +376,37 @@ impl DownloadManager {
                     ));
                 }
             }
-            found
+            if let Some(id) = existing {
+                (id, None)
+            } else {
+                let remaining = remaining_bytes(&target_dir, &records);
+                check_disk_space(&self.storage_dir, remaining)?;
+                let bytes_total = records.iter().filter_map(|file| file.size).sum();
+                let id = uuid::Uuid::new_v4().to_string();
+                let job = Job {
+                    rec: JobRecord {
+                        id: id.clone(),
+                        repo: repo.to_string(),
+                        requested_revision: requested.to_string(),
+                        commit,
+                        files: records,
+                        state: DownloadState::Queued,
+                        bytes_done: 0,
+                        bytes_total,
+                        error: None,
+                        target_dir,
+                        purpose: purpose.map(str::to_string),
+                    },
+                    rt: Runtime::default(),
+                };
+                let view = job.view();
+                jobs.push(job);
+                (id, Some(view))
+            }
         };
-        if let Some(id) = existing {
+        let Some(view) = view else {
             self.resume(&id).await;
             return Ok(id);
-        }
-
-        let remaining = remaining_bytes(&target_dir, &records);
-        check_disk_space(&self.storage_dir, remaining)?;
-
-        let bytes_total = records.iter().filter_map(|f| f.size).sum();
-        let id = uuid::Uuid::new_v4().to_string();
-        let rec = JobRecord {
-            id: id.clone(),
-            repo: repo.to_string(),
-            requested_revision: requested.to_string(),
-            commit,
-            files: records,
-            state: DownloadState::Queued,
-            bytes_done: 0,
-            bytes_total,
-            error: None,
-            target_dir,
-            purpose: purpose.map(str::to_string),
-        };
-        let view = {
-            let mut jobs = self.jobs.lock();
-            let job = Job {
-                rec,
-                rt: Runtime::default(),
-            };
-            let view = job.view();
-            jobs.push(job);
-            view
         };
         self.persist();
         self.events.on_update(&view);
@@ -2002,6 +2005,38 @@ mod tests {
         assert!(matches!(overlap, Err(HubError::InvalidRequest(_))));
         fx.mgr.cancel(&id);
         fx.wait_idle(&id).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_identical_starts_share_one_job() {
+        let model = data(1000, 12);
+        let fx = fixture(&[("a.gguf", Some(model.len() as u64), Some(sha(&model)))]).await;
+        fx.lfs_file("a.gguf", &model).await;
+        Mock::given(path("/blobs/a.gguf"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(30)))
+            .with_priority(1)
+            .mount(&fx.cdn)
+            .await;
+        let barrier = Arc::new(tokio::sync::Barrier::new(16));
+        let mut tasks = Vec::new();
+        for _ in 0..16 {
+            let mgr = fx.mgr.clone();
+            let barrier = barrier.clone();
+            tasks.push(tokio::spawn(async move {
+                barrier.wait().await;
+                mgr.start(REPO, None, vec!["a.gguf".into()]).await.unwrap()
+            }));
+        }
+        let mut ids = HashSet::new();
+        for task in tasks {
+            ids.insert(task.await.unwrap());
+        }
+        assert_eq!(ids.len(), 1);
+        assert_eq!(fx.mgr.jobs().len(), 1);
+        for id in ids {
+            fx.mgr.cancel(&id);
+            fx.wait_idle(&id).await;
+        }
     }
 
     #[test]

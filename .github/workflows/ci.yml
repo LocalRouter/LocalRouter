@@ -6,7 +6,44 @@ on:
   pull_request:
     branches: ['master']
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  frontend:
+    name: Frontend and website
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+          cache-dependency-path: |
+            package-lock.json
+            website/package-lock.json
+      - name: Install desktop dependencies
+        run: npm ci
+      - name: Run packaging script regressions
+        run: python3 -B -m unittest discover -s tests/scripts -v
+      - name: Run CPU-only frontend regressions
+        run: npm run test:unit
+      - name: Build desktop frontend
+        run: npm run build
+      - name: Install website dependencies
+        working-directory: website
+        run: npm ci
+      - name: Check and build website
+        working-directory: website
+        run: npm run build:check
+
   test:
     name: Test
     runs-on: ubuntu-latest

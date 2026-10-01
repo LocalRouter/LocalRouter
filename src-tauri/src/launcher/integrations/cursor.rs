@@ -110,7 +110,7 @@ impl CursorIntegration {
                 let mut config: serde_json::Value = if settings.exists() {
                     let data = std::fs::read_to_string(&settings)
                         .map_err(|e| format!("Failed to read config: {}", e))?;
-                    serde_json::from_str(&data).unwrap_or(serde_json::json!({}))
+                    super::config_parse::json(&data, &settings)?
                 } else {
                     serde_json::json!({})
                 };
@@ -155,7 +155,7 @@ impl CursorIntegration {
                 let mut mcp_config: serde_json::Value = if mcp.exists() {
                     let data = std::fs::read_to_string(&mcp)
                         .map_err(|e| format!("Failed to read MCP config: {}", e))?;
-                    serde_json::from_str(&data).unwrap_or(serde_json::json!({}))
+                    super::config_parse::json(&data, &mcp)?
                 } else {
                     serde_json::json!({})
                 };

@@ -21,9 +21,13 @@ impl TranscriptWriter {
         Self
     }
 
-    /// Create an empty session file at the given path.
+    /// Create a session file without truncating exchanges already appended by
+    /// another request sharing the session.
     pub async fn create_session_file(&self, file_path: &Path) -> Result<(), String> {
-        fs::write(file_path, "")
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(file_path)
             .await
             .map_err(|e| format!("Failed to create session file: {}", e))?;
 

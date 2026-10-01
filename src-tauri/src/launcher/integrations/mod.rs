@@ -6,6 +6,7 @@
 pub mod aider;
 pub mod claude_code;
 pub mod codex;
+mod config_parse;
 pub mod continue_dev;
 mod cursor;
 pub mod dotenv;

@@ -130,8 +130,9 @@ impl MonitorEventStore {
             self.evict(&mut events);
         }
 
-        // Emit lightweight notification
-        if let Some(emitter) = self.emitter.read().as_ref() {
+        // Callbacks may reconfigure the store; release the emitter lock first.
+        let emitter = self.emitter.read().clone();
+        if let Some(emitter) = emitter {
             if let Ok(payload) = serde_json::to_string(&summary) {
                 emitter("monitor-event-created", payload);
             }
@@ -160,7 +161,8 @@ impl MonitorEventStore {
             self.evict(&mut events);
             drop(events);
 
-            if let Some(emitter) = self.emitter.read().as_ref() {
+            let emitter = self.emitter.read().clone();
+            if let Some(emitter) = emitter {
                 if let Ok(payload) = serde_json::to_string(&updated_summary) {
                     emitter("monitor-event-updated", payload);
                 }
@@ -358,6 +360,29 @@ mod tests {
         let event = store.get(&id).unwrap();
         assert_eq!(event.id, id);
         assert_eq!(event.event_type, MonitorEventType::LlmCall);
+    }
+
+    #[test]
+    fn event_emitter_can_replace_itself_on_create_and_update() {
+        let store = Arc::new(make_store(100));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let install_callback = || {
+            let weak_store = Arc::downgrade(&store);
+            let calls = calls.clone();
+            store.set_emitter(move |_, _| {
+                let store = weak_store.upgrade().unwrap();
+                // Fail without hanging if callbacks regress to running under the lock.
+                assert!(store.emitter.try_write().is_some());
+                store.set_emitter(|_, _| {});
+                calls.fetch_add(1, Ordering::Relaxed);
+            });
+        };
+
+        install_callback();
+        let id = push_llm_call(&store, "synthetic-model");
+        install_callback();
+        assert!(store.update(&id, |event| event.status = EventStatus::Complete));
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
     }
 
     #[test]

@@ -171,10 +171,11 @@ pub async fn create_response(
 
     // If continuing a prior turn, reload its messages + tools.
     let (prior_messages, prior_tools) = if let Some(prev_id) = req.previous_response_id.as_deref() {
-        match session_store
-            .as_ref()
-            .and_then(|s| s.get_active(prev_id, &retention).ok().flatten())
-        {
+        match session_store.as_ref().and_then(|s| {
+            s.get_active_for_client(prev_id, &auth.api_key_id, &retention)
+                .ok()
+                .flatten()
+        }) {
             Some(sess) => deserialize_history(&sess.messages_json, sess.tools_json.as_deref()),
             None => {
                 // Clients legitimately hit stale ids; we treat them as

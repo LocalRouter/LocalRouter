@@ -14,9 +14,9 @@
 /// Remove `//` line comments and `/* */` block comments, leaving string
 /// literals (which may legitimately contain `//`, e.g. a URL) untouched.
 ///
-/// Comment bodies are replaced by nothing, but newlines inside block comments
-/// are preserved so byte offsets in error messages stay roughly meaningful.
-pub fn strip_comments(input: &str) -> String {
+/// Comments become whitespace so adjacent JSON tokens cannot merge. Newlines
+/// inside block comments are preserved for useful parse error locations.
+pub fn strip_comments(input: &str) -> Result<String, String> {
     let mut out = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
     let mut in_string = false;
@@ -42,6 +42,7 @@ pub fn strip_comments(input: &str) -> String {
             }
             '/' => match chars.peek() {
                 Some('/') => {
+                    out.push(' ');
                     // Line comment: consume to end of line, keep the newline.
                     for c in chars.by_ref() {
                         if c == '\n' {
@@ -52,15 +53,23 @@ pub fn strip_comments(input: &str) -> String {
                 }
                 Some('*') => {
                     chars.next(); // consume '*'
+                    out.push(' ');
                     let mut prev = '\0';
+                    let mut terminated = false;
                     for c in chars.by_ref() {
                         if prev == '*' && c == '/' {
+                            terminated = true;
                             break;
                         }
                         if c == '\n' {
                             out.push('\n');
                         }
                         prev = c;
+                    }
+                    if !terminated {
+                        return Err(
+                            "Failed to parse settings JSON: unterminated block comment".into()
+                        );
                     }
                 }
                 _ => out.push(c),
@@ -69,7 +78,7 @@ pub fn strip_comments(input: &str) -> String {
         }
     }
 
-    out
+    Ok(out)
 }
 
 /// Parse a JSONC document into a `serde_json::Value`.
@@ -77,7 +86,7 @@ pub fn strip_comments(input: &str) -> String {
 /// An empty (or whitespace/comment-only) document parses as an empty object,
 /// which is what an editor with no settings yet effectively has.
 pub fn parse(input: &str) -> Result<serde_json::Value, String> {
-    let stripped = strip_comments(input);
+    let stripped = strip_comments(input)?;
     if stripped.trim().is_empty() {
         return Ok(serde_json::json!({}));
     }
@@ -129,7 +138,7 @@ fn strip_trailing_commas(input: &str) -> String {
 /// Whether the document contains any comment that a rewrite would discard.
 /// Used to decide whether to warn the user.
 pub fn has_comments(input: &str) -> bool {
-    strip_comments(input).trim() != input.trim()
+    strip_comments(input).map_or(true, |stripped| stripped.trim() != input.trim())
 }
 
 #[cfg(test)]
@@ -209,7 +218,16 @@ mod tests {
     fn unterminated_block_comment_does_not_panic() {
         // Truncated file: must be a clean error, never a panic or a
         // half-parsed document we'd then write back.
-        let _ = parse("{\n/* never closed\n\"a\": 1}");
+        assert!(parse("{\n/* never closed\n\"a\": 1}").is_err());
+        assert!(parse("/* never closed").is_err());
+        assert!(parse("{\"a\": 1} /* never closed").is_err());
+    }
+
+    #[test]
+    fn comments_do_not_merge_separate_json_tokens() {
+        assert!(parse("{\"value\": 1/* comment */2}").is_err());
+        assert!(parse("{\"value\": tr/* comment */ue}").is_err());
+        assert_eq!(parse("{\"value\": /* comment */ 12}").unwrap()["value"], 12);
     }
 
     #[test]

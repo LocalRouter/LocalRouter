@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react'
 import path from 'path'
 import fs from 'fs'
 import type { Plugin } from 'vite'
+import { resolveSharedIcon } from './shared-icons'
 
 // Custom plugin to resolve @/ imports based on the importing file's location
 function resolveAppAlias(): Plugin {
@@ -81,17 +82,21 @@ function sharedIcons(): Plugin {
     name: 'shared-icons',
     configureServer(server) {
       server.middlewares.use('/icons', (req, res, next) => {
-        const filePath = path.join(iconsDir, req.url?.split('?')[0] || '')
-        if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+        const filePath = resolveSharedIcon(iconsDir, req.url || '')
+        if (!filePath) {
           return next()
         }
         const ext = path.extname(filePath).toLowerCase()
         const mime: Record<string, string> = {
           '.png': 'image/png', '.svg': 'image/svg+xml',
-          '.gif': 'image/gif', '.jpg': 'image/jpeg', '.ico': 'image/x-icon',
+          '.gif': 'image/gif', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+          '.ico': 'image/x-icon', '.webp': 'image/webp',
         }
         res.setHeader('Content-Type', mime[ext] || 'application/octet-stream')
-        fs.createReadStream(filePath).pipe(res)
+        fs.createReadStream(filePath).on('error', () => {
+          if (!res.headersSent) res.statusCode = 404
+          res.end()
+        }).pipe(res)
       })
     },
     writeBundle(options) {

@@ -147,7 +147,9 @@ impl RegexEngine {
             // Determine which rules are candidates via keyword pre-filter
             let candidate_rules: Vec<usize> = if let Some(ref ac) = self.keyword_automaton {
                 let mut candidates = std::collections::HashSet::new();
-                for mat in ac.find_iter(&text_lower) {
+                // Prefixes overlap (e.g. sk-, sk-proj-, sk-ant-api03-).
+                // Non-overlapping matching would suppress the more specific rule.
+                for mat in ac.find_overlapping_iter(&text_lower) {
                     if let Some(rule_indices) = self.keyword_to_rules.get(mat.pattern().as_usize())
                     {
                         for &idx in rule_indices {
@@ -229,19 +231,17 @@ impl RegexEngine {
 
 /// Truncate matched text for safe display, masking the middle
 fn truncate_matched_text(text: &str, max_len: usize) -> String {
-    // Need at least 10 chars (6 prefix + 4 suffix) to mask the middle
-    if text.len() < 10 {
+    let count = text.chars().count();
+    // Slice at character boundaries: generic password rules can match Unicode.
+    if count < 10 {
         return text.to_string();
     }
-    let prefix = &text[..6];
-    let suffix = &text[text.len() - 4..];
-    if text.len() <= max_len {
-        // Show first 6 chars, mask middle, show last 4 chars
-        let masked_len = text.len() - 10;
-        format!("{}{}{}", prefix, "*".repeat(masked_len.min(20)), suffix)
+    let prefix: String = text.chars().take(6).collect();
+    let suffix: String = text.chars().skip(count - 4).collect();
+    if count <= max_len {
+        format!("{}{}{}", prefix, "*".repeat((count - 10).min(20)), suffix)
     } else {
-        // Longer than max_len: show prefix, char count, suffix
-        format!("{}...({} chars)...{}", prefix, text.len(), suffix)
+        format!("{}...({} chars)...{}", prefix, count, suffix)
     }
 }
 
@@ -318,6 +318,40 @@ mod tests {
         assert!(
             !json.contains("AKIAIOSFODNN7EXAMPLE"),
             "serialized finding leaked the plaintext secret: {json}"
+        );
+    }
+
+    #[test]
+    fn overlapping_ai_key_prefixes_do_not_suppress_detection() {
+        let engine = RegexEngine::new(3.0, &[]).unwrap();
+        for (prefix, rule) in [
+            ("sk-proj-", "openai-api-key-v2"),
+            ("sk-ant-", "anthropic-api-key-v2"),
+            ("sk-ant-api03-", "anthropic-api-key"),
+        ] {
+            let text = format!(
+                "{prefix}{}",
+                "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".repeat(2)
+            );
+            let findings = engine.scan(&make_text(&text), None);
+            assert!(
+                findings.iter().any(|finding| finding.rule_id == rule),
+                "missed {rule}"
+            );
+        }
+    }
+
+    #[test]
+    fn unicode_secret_previews_are_masked_at_character_boundaries() {
+        assert_eq!(truncate_matched_text("🔑密码测试", 40), "🔑密码测试");
+        assert_eq!(
+            truncate_matched_text("🔑abcdefghi🔑j", 40),
+            "🔑abcde**hi🔑j"
+        );
+        let text = "🔑".repeat(50);
+        assert_eq!(
+            truncate_matched_text(&text, 40),
+            format!("{}...(50 chars)...{}", "🔑".repeat(6), "🔑".repeat(4))
         );
     }
 

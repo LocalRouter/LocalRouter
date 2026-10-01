@@ -68,10 +68,10 @@ fn heal_stale_chatgpt_plus(config: &mut AppConfig) {
 
 fn heal_orphan_client_strategies(config: &mut AppConfig) {
     use std::collections::HashSet;
-    let known: HashSet<String> = config.strategies.iter().map(|s| s.id.clone()).collect();
+    let mut known: HashSet<String> = config.strategies.iter().map(|s| s.id.clone()).collect();
     let mut to_create: Vec<(String, String)> = Vec::new();
     for client in &config.clients {
-        if !known.contains(&client.strategy_id) {
+        if known.insert(client.strategy_id.clone()) {
             warn!(
                 "Client '{}' references missing strategy '{}'; auto-creating it (self-heal on load).",
                 client.name, client.strategy_id
@@ -288,7 +288,11 @@ pub async fn save_config(config: &AppConfig, path: &Path) -> AppResult<()> {
     // Use explicit file operations with sync to ensure data is written before rename
     {
         use tokio::io::AsyncWriteExt;
-        let mut file = fs::File::create(&temp_path).await.map_err(|e| {
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let mut file = options.open(&temp_path).await.map_err(|e| {
             AppError::Config(format!(
                 "Failed to create temp file '{}': {}",
                 temp_path.display(),
@@ -613,6 +617,36 @@ mod tests {
     use super::*;
     use crate::{LogLevel, LoggingConfig, ServerConfig};
     use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn shared_orphan_strategy_is_healed_once() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("settings.yaml");
+        let config = AppConfig {
+            clients: vec![
+                crate::Client::new_with_strategy("First".into(), "missing".into()),
+                crate::Client::new_with_strategy("Second".into(), "missing".into()),
+            ],
+            ..Default::default()
+        };
+        fs::write(&path, serde_yaml::to_string(&config).unwrap())
+            .await
+            .unwrap();
+        let loaded = load_config(&path).await.unwrap();
+        assert_eq!(
+            loaded
+                .strategies
+                .iter()
+                .filter(|strategy| strategy.id == "missing")
+                .count(),
+            1
+        );
+        assert!(loaded
+            .clients
+            .iter()
+            .all(|client| client.strategy_id == "missing"));
+        validation::validate_config(&loaded).unwrap();
+    }
 
     #[tokio::test]
     async fn test_save_and_load_config() {

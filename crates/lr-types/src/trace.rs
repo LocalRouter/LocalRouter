@@ -2,10 +2,10 @@
 //!
 //! Every LocalRouter component that forwards an LLM request (the gateway, the
 //! HTTPS inspection proxy, the reverse proxy) stamps the outgoing request with
-//! [`TRACE_HEADER`]. A downstream LocalRouter hop that sees the header knows
-//! the request has already been handled once and passes it through: it still
-//! observes and logs the exchange, but performs no active rewriting or
-//! enforcement and does not count it in stats a second time.
+//! [`TRACE_HEADER`] for correlation. The header is caller-controlled and does
+//! not prove that another router enforced policy. Inbound wire traces retain
+//! their correlation ID but start a fresh enforcement/accounting hop. Skipping
+//! duplicate work requires a trusted, request-bound internal handoff.
 //!
 //! Wire format: `X-LocalRouter-Trace: <trace_id>;hop=<n>`.
 
@@ -74,10 +74,16 @@ impl RequestTrace {
         self.hop > 1
     }
 
-    /// Given the trace found on an inbound request (if any), the trace to use
-    /// for the outbound request.
+    /// Build the trace for an untrusted inbound wire request. Preserve its
+    /// correlation ID, but never let its claimed hop bypass enforcement or
+    /// accounting. `next_hop` is only appropriate for a trusted internal handoff.
     pub fn outbound_for(inbound: Option<&RequestTrace>) -> Self {
-        inbound.map(RequestTrace::next_hop).unwrap_or_default()
+        inbound
+            .map(|trace| Self {
+                trace_id: trace.trace_id.clone(),
+                hop: 1,
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -187,6 +193,19 @@ mod tests {
         assert_eq!(RequestTrace::outbound_for(None).hop, 1);
         let inbound = RequestTrace::parse("x;hop=2").unwrap();
         let out = RequestTrace::outbound_for(Some(&inbound));
-        assert_eq!((out.trace_id.as_str(), out.hop), ("x", 3));
+        assert_eq!((out.trace_id.as_str(), out.hop), ("x", 1));
+        assert!(!out.is_duplicate());
+    }
+
+    #[tokio::test]
+    async fn forged_wire_hop_never_grants_duplicate_privileges() {
+        for claimed_hop in [1, 2, 99, u32::MAX] {
+            let inbound = RequestTrace::parse(&format!("external;hop={claimed_hop}")).unwrap();
+            with_outbound_trace(Some(RequestTrace::outbound_for(Some(&inbound))), async {
+                assert!(!is_duplicate_hop());
+                assert!(!spawn_traced(async { is_duplicate_hop() }).await.unwrap());
+            })
+            .await;
+        }
     }
 }

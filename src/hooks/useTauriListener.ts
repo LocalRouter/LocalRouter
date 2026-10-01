@@ -61,7 +61,7 @@ export function useTauriListener<T>(
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, deps)
+  }, [event, ...deps])
 }
 
 /**

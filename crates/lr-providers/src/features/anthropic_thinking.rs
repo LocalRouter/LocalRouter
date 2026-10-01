@@ -46,14 +46,18 @@ impl AnthropicThinkingAdapter {
 
         // Try to parse as number
         let budget = if let Some(num) = budget_value.as_u64() {
-            num as u32
+            u32::try_from(num).map_err(|_| {
+                AppError::Config("thinking_budget exceeds the supported integer range".to_string())
+            })?
         } else if let Some(num) = budget_value.as_i64() {
             if num < 0 {
                 return Err(AppError::Config(
                     "thinking_budget must be non-negative".to_string(),
                 ));
             }
-            num as u32
+            u32::try_from(num).map_err(|_| {
+                AppError::Config("thinking_budget exceeds the supported integer range".to_string())
+            })?
         } else {
             return Err(AppError::Config(
                 "thinking_budget must be a number".to_string(),
@@ -211,6 +215,12 @@ mod tests {
         params.insert("thinking_budget".to_string(), json!(200_000));
 
         assert!(adapter.validate_params(&params).is_err());
+    }
+
+    #[test]
+    fn oversized_integer_does_not_wrap_into_a_valid_budget() {
+        let params = HashMap::from([("thinking_budget".to_string(), json!((1_u64 << 32) + 5000))]);
+        assert!(AnthropicThinkingAdapter.validate_params(&params).is_err());
     }
 
     #[test]

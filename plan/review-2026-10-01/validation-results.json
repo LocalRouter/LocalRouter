@@ -1,0 +1,197 @@
+{
+  "date": "2026-10-01",
+  "no_gpu_execution": true,
+  "full_workspace_tests_executed": false,
+  "counts_may_overlap_between_reruns": true,
+  "checks": [
+    {
+      "name": "Core initial library run",
+      "status": "passed",
+      "passed_tests": 183,
+      "details": "types 28, utils 51, json-repair 44, secret-scanner 28, monitor 32; later changed suites rerun below",
+      "command": "env RUSTC_WRAPPER= LOCALROUTER_SKIP_CATALOG_FETCH=1 CARGO_TARGET_DIR=/private/tmp/localrouter-review-target rustup run stable cargo test --offline -p lr-types -p lr-utils -p lr-json-repair -p lr-secret-scanner -p lr-monitor --lib",
+      "evidence": "/private/tmp/localrouter-review-core-tests.log"
+    },
+    {
+      "name": "OAuth callbacks and library",
+      "status": "passed",
+      "passed_tests": 38,
+      "details": "Synthetic loopback; successful rerun after sandbox bind restrictions",
+      "command": "env RUSTC_WRAPPER= LOCALROUTER_SKIP_CATALOG_FETCH=1 CARGO_TARGET_DIR=/private/tmp/localrouter-review-target rustup run stable cargo test --offline -p lr-oauth --lib",
+      "evidence": "/private/tmp/localrouter-review-auth-loopback-tests.log"
+    },
+    {
+      "name": "Foundation libraries",
+      "status": "passed",
+      "passed_tests": 372,
+      "details": "api-keys 17, config 127, engines 52, guardrails 58, local-models 88, secret-scanner 30; 4 intentionally ignored",
+      "command": "env RUSTC_WRAPPER= LOCALROUTER_SKIP_CATALOG_FETCH=1 CARGO_TARGET_DIR=/private/tmp/localrouter-review-target rustup run stable cargo test --offline -p lr-api-keys -p lr-config -p lr-guardrails -p lr-secret-scanner -p lr-engines -p lr-local-models --lib",
+      "evidence": "/private/tmp/localrouter-review-foundation-tests.log"
+    },
+    {
+      "name": "Initial MCP/context/tools libraries",
+      "status": "passed",
+      "passed_tests": 800,
+      "details": "Nine crates, zero failures, 3 intentionally ignored; initial Rust 1.98.1 build; see appendix filters",
+      "command": "Inspected library test binaries, --test-threads=4; exact crate ledger in MCP appendix",
+      "evidence": "/private/tmp/localrouter-review-mcp-tests/*.log"
+    },
+    {
+      "name": "API/router/providers test compilation",
+      "status": "passed",
+      "passed_tests": null,
+      "details": "Three library targets compiled on stable 1.99.0; no tests automatically executed by this build",
+      "command": "env RUSTC_WRAPPER= LOCALROUTER_SKIP_CATALOG_FETCH=1 CARGO_TARGET_DIR=/private/tmp/localrouter-review-target rustup run stable cargo test --offline -p lr-providers -p lr-router -p lr-server --lib --no-run",
+      "evidence": "/private/tmp/localrouter-review-api-build.log"
+    },
+    {
+      "name": "API/router/providers selected tests",
+      "status": "passed",
+      "passed_tests": 97,
+      "details": "55 provider pure/temp, 13 router, 12 server, 17 synthetic streaming fixtures; exact filters in appendix",
+      "command": "Direct execution of compiled test binaries with inspected filters and --test-threads=4",
+      "evidence": "See API appendix"
+    },
+    {
+      "name": "Final shared libraries",
+      "status": "passed",
+      "passed_tests": 297,
+      "details": "local-models 88, marketplace 29, monitor 33, monitoring 45, proxy 73, types 29; includes final lock/index/trace changes",
+      "command": "env RUSTC_WRAPPER= LOCALROUTER_SKIP_CATALOG_FETCH=1 CARGO_TARGET_DIR=/private/tmp/localrouter-review-target rustup run stable cargo test --offline -p lr-types -p lr-monitoring -p lr-proxy -p lr-monitor -p lr-marketplace -p lr-local-models --lib",
+      "evidence": "/private/tmp/localrouter-review-final-shared-tests.log"
+    },
+    {
+      "name": "Marketplace fixture lint correction rerun",
+      "status": "passed",
+      "passed_tests": 29,
+      "details": "Same behavior after nonempty request-read assertion and initializer cleanup",
+      "command": "env RUSTC_WRAPPER= LOCALROUTER_SKIP_CATALOG_FETCH=1 CARGO_TARGET_DIR=/private/tmp/localrouter-review-target rustup run stable cargo test --offline -p lr-marketplace --lib",
+      "evidence": "/private/tmp/localrouter-review-marketplace-final-tests.log"
+    },
+    {
+      "name": "Compression protection",
+      "status": "passed",
+      "passed_tests": 26,
+      "details": "Standalone pure module, no model/GPU linkage or loading",
+      "command": "rustup run stable rustc --edition 2021 --test crates/lr-compression/src/protection.rs -o /private/tmp/localrouter-review-protection-tests; execute produced binary",
+      "evidence": "/private/tmp/localrouter-review-protection-tests.log"
+    },
+    {
+      "name": "Launcher/config helpers",
+      "status": "passed",
+      "passed_tests": 37,
+      "details": "Exact production source included in isolated harness; temporary files and pure parsing",
+      "command": "Stable cargo test --offline --manifest-path /private/tmp/localrouter-review-runtime-harness/Cargo.toml --lib",
+      "evidence": "/private/tmp/localrouter-review-runtime-tests.log"
+    },
+    {
+      "name": "Updater pure policy",
+      "status": "passed",
+      "passed_tests": 11,
+      "details": "Production enums/function and unchanged tests extracted without app/timers",
+      "command": "Same isolated harness, updater_decision::tests filter",
+      "evidence": "/private/tmp/localrouter-review-updater-tests.log"
+    },
+    {
+      "name": "Tauri UI pure helpers",
+      "status": "passed",
+      "passed_tests": 8,
+      "details": "Six path/approval/frontmatter cases plus two retarget cases; earlier 3 path cases are included in the six",
+      "command": "Source-backed isolated Rust helper harnesses; exact commands in UI appendix",
+      "evidence": "See UI appendix"
+    },
+    {
+      "name": "Frontend Node regressions",
+      "status": "passed",
+      "passed_tests": 17,
+      "details": "Final run 15.8s, two workers, no browser/app; pure functions, temporary files and mocked SDK boundaries",
+      "command": "npm run test:unit",
+      "evidence": "See frontend appendix"
+    },
+    {
+      "name": "Packaging regressions",
+      "status": "passed",
+      "passed_tests": 2,
+      "details": "Two methods; retention test also covers four invalid values with repository preservation",
+      "command": "python3 -B -m unittest discover -s tests/scripts -v",
+      "evidence": "Recorded in coordinator report"
+    },
+    {
+      "name": "Desktop frontend production build",
+      "status": "passed",
+      "passed_tests": null,
+      "details": "TypeScript and Vite; 4,071 modules",
+      "command": "npm run build",
+      "evidence": "See frontend appendix"
+    },
+    {
+      "name": "Website production build",
+      "status": "passed",
+      "passed_tests": null,
+      "details": "TypeScript and Vite; 6,662 modules",
+      "command": "npm run build:check (working directory website)",
+      "evidence": "See frontend appendix"
+    },
+    {
+      "name": "Final desktop/website TypeScript",
+      "status": "passed",
+      "passed_tests": null,
+      "details": "Both final checks exit 0, including inline approval errors",
+      "command": "npx --no-install tsc --noEmit; npx --no-install tsc --noEmit -p website/tsconfig.json",
+      "evidence": "See frontend appendix"
+    },
+    {
+      "name": "Workspace Clippy all targets",
+      "status": "passed",
+      "passed_tests": null,
+      "details": "Exit 0 after correcting new test-fixture lints; compiles native application and test targets without executing them",
+      "command": "env RUSTC_WRAPPER= LOCALROUTER_SKIP_CATALOG_FETCH=1 CARGO_TARGET_DIR=/private/tmp/localrouter-review-target rustup run stable cargo clippy --offline --workspace --all-targets -- -D warnings",
+      "evidence": "/private/tmp/localrouter-review-clippy-final.log"
+    },
+    {
+      "name": "Rust formatting",
+      "status": "passed",
+      "passed_tests": null,
+      "details": "Whole workspace stable formatting check",
+      "command": "rustup run stable cargo fmt --all -- --check",
+      "evidence": "/private/tmp/localrouter-review-fmt-final.log"
+    },
+    {
+      "name": "Syntax/structure checks",
+      "status": "passed",
+      "passed_tests": null,
+      "details": "4 workflow YAML files, 10 shell scripts, 3 parsed Python ML diagnostics, browser-example JS, Tauri JSON; diagnostic models not executed",
+      "command": "YAML parser, bash -n, Python ast.parse, Node vm.Script/JSON.parse and installed TypeScript parser",
+      "evidence": "Recorded in section reports"
+    },
+    {
+      "name": "Metrics query correctness/performance",
+      "status": "passed",
+      "passed_tests": null,
+      "details": "Exact production SQL: 3 correctness fixtures; 10k minute rows ~0.0022s, with 174 overlapping rollups ~0.0262s; illustrative local timing",
+      "command": "In-memory Python SQLite extraction of production SQL and index",
+      "evidence": "See foundations appendix"
+    },
+    {
+      "name": "Reverse-proxy TCP integration",
+      "status": "passed",
+      "passed_tests": 6,
+      "details": "Six localhost dummy-upstream tests, including forged-hop reset and correlation",
+      "command": "env RUSTC_WRAPPER= LOCALROUTER_SKIP_CATALOG_FETCH=1 CARGO_TARGET_DIR=/private/tmp/localrouter-review-target rustup run stable cargo test --offline -p lr-proxy --test reverse_e2e",
+      "evidence": "/private/tmp/localrouter-review-reverse-proxy-tests.log"
+    },
+    {
+      "name": "Catalog preservation",
+      "status": "passed",
+      "passed_tests": null,
+      "details": "Pre-existing user file matches recorded SHA-256 and is excluded from staging",
+      "command": "SHA-256 comparison against catalog-preservation.json",
+      "evidence": "plan/review-2026-10-01/catalog-preservation.json"
+    }
+  ],
+  "limitations": [
+    "No inference, real model/engine downloads, provider calls, OS-keychain tests, app/browser launches, deployments or pushes.",
+    "Structural source coverage is distinguished from deep review; generated/historical/vendor material was inventoried.",
+    "block 0.1.6 future-incompatibility, existing Vite chunk-size and Browserslist warnings remain."
+  ]
+}

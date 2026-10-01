@@ -314,15 +314,18 @@ pub fn normalize(weights: &[f64]) -> Vec<f64> {
         .iter()
         .map(|w| if w.is_finite() && *w > 0.0 { *w } else { 0.0 })
         .collect();
-    let sum: f64 = cleaned.iter().sum();
-    if sum <= 0.0 {
+    let max = cleaned.iter().copied().fold(0.0_f64, f64::max);
+    if max <= 0.0 {
         if cleaned.is_empty() {
             return cleaned;
         }
         let u = 1.0 / cleaned.len() as f64;
         return vec![u; cleaned.len()];
     }
-    cleaned.iter().map(|w| w / sum).collect()
+    // Scale first: summing finite large weights can overflow to infinity,
+    // which would otherwise turn every normalized probability into zero.
+    let sum: f64 = cleaned.iter().map(|w| w / max).sum();
+    cleaned.iter().map(|w| (w / max) / sum).collect()
 }
 
 /// Build a typed answer for `question` from a probability distribution over
@@ -574,6 +577,11 @@ mod tests {
         assert_eq!(normalize(&[0.0, 0.0]), vec![0.5, 0.5]);
         assert_eq!(normalize(&[-1.0, f64::NAN, 2.0]), vec![0.0, 0.0, 1.0]);
         assert!(normalize(&[]).is_empty());
+        assert_eq!(normalize(&[f64::MAX, f64::MAX]), vec![0.5, 0.5]);
+        assert_eq!(
+            normalize(&[f64::MIN_POSITIVE, f64::MIN_POSITIVE]),
+            vec![0.5, 0.5]
+        );
     }
 
     #[test]

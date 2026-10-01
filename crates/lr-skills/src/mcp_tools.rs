@@ -443,10 +443,9 @@ pub fn read_skill_file(
 
     let (resolved_path, path_correction) = resolve_skill_file_path(subpath, &all_files)?;
 
-    // Read from disk
-    let file_path = skill.skill_dir.join(resolved_path);
-    let content = std::fs::read_to_string(&file_path)
-        .map_err(|e| format!("Failed to read '{}': {}", file_path.display(), e))?;
+    // Discovery follows file symlinks, so membership in the known file list
+    // alone does not prove that the resolved file stays inside the skill.
+    let content = skill_manager.get_resource(&skill.metadata.name, resolved_path)?;
 
     // Combine skill-name and path correction notes
     let mut prefix = String::new();
@@ -686,6 +685,55 @@ fn build_skill_read_response(skill: &SkillDefinition, tool_name: &str) -> serde_
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn read_skill_file_rejects_symlinks_outside_the_skill() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join("example");
+        std::fs::create_dir_all(skill_dir.join("references")).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: example\n---\nExample",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("private.txt"), "outside data").unwrap();
+        std::os::unix::fs::symlink(
+            dir.path().join("private.txt"),
+            skill_dir.join("references/private.txt"),
+        )
+        .unwrap();
+        std::fs::write(skill_dir.join("references/public.txt"), "skill data").unwrap();
+
+        let manager = SkillManager::new();
+        manager.initial_scan(&[skill_dir.display().to_string()], &[]);
+        let permissions = SkillsPermissions {
+            global: lr_config::PermissionState::Allow,
+            ..Default::default()
+        };
+        let error = read_skill_file(
+            "example",
+            "references/private.txt",
+            &manager,
+            &permissions,
+            "SkillRead",
+            "ReadFile",
+        )
+        .unwrap_err();
+        assert!(error.contains("outside the skill directory"));
+        assert_eq!(
+            read_skill_file(
+                "example",
+                "references/public.txt",
+                &manager,
+                &permissions,
+                "SkillRead",
+                "ReadFile"
+            )
+            .unwrap(),
+            "skill data"
+        );
+    }
 
     #[test]
     fn test_resolve_exact_match() {

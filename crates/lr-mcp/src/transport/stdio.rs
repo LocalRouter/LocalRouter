@@ -545,6 +545,7 @@ impl Transport for StdioTransport {
 
         // Register pending request
         self.pending.write().insert(request_id.clone(), tx);
+        let _pending_guard = super::PendingRequestGuard::new(&self.pending, request_id.clone());
 
         // Serialize request to JSON
         let mut json = serde_json::to_string(&request).map_err(|e| {

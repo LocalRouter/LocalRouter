@@ -168,15 +168,27 @@ pub(crate) fn retarget_base_url(base_url: &str, new_port: u16) -> String {
         Some((s, r)) => (s, r),
         None => ("http", base_url),
     };
-    let (authority, path) = match rest.find('/') {
+    let (authority, path) = match rest.find(['/', '?', '#']) {
         Some(i) => (&rest[..i], &rest[i..]),
         None => (rest, ""),
     };
-    let host = authority.rsplit_once(':').map_or(authority, |(h, _)| h);
+    // Colons in credentials and bracketed IPv6 addresses are not port separators.
+    let host_start = authority.rfind('@').map_or(0, |index| index + 1);
+    let credentials = &authority[..host_start];
+    let host_and_port = &authority[host_start..];
+    let host = if host_and_port.starts_with('[') {
+        host_and_port
+            .find(']')
+            .map_or(host_and_port, |end| &host_and_port[..=end])
+    } else {
+        host_and_port
+            .rsplit_once(':')
+            .map_or(host_and_port, |(host, _)| host)
+    };
     // A provider entry with no base_url at all would otherwise produce
     // `http://:11435`, which nothing can connect to.
     let host = if host.is_empty() { "127.0.0.1" } else { host };
-    format!("{scheme}://{host}:{new_port}{path}")
+    format!("{scheme}://{credentials}{host}:{new_port}{path}")
 }
 
 /// Move the wrapped provider instance onto the relocated port, in both the
@@ -592,6 +604,25 @@ mod tests {
         // Empty input still yields something connectable rather than
         // `http://:11435`, which no client could use.
         assert_eq!(retarget_base_url("", 11435), "http://127.0.0.1:11435");
+    }
+
+    #[test]
+    fn retarget_preserves_ipv6_credentials_and_query_suffixes() {
+        for (input, expected) in [
+            ("http://[::1]/v1", "http://[::1]:8081/v1"),
+            ("http://[::1]:1234/v1", "http://[::1]:8081/v1"),
+            (
+                "http://user:pass@localhost/v1",
+                "http://user:pass@localhost:8081/v1",
+            ),
+            (
+                "http://localhost?key=value#anchor",
+                "http://localhost:8081?key=value#anchor",
+            ),
+            ("http://[::1]?key=value", "http://[::1]:8081?key=value"),
+        ] {
+            assert_eq!(retarget_base_url(input, 8081), expected);
+        }
     }
 
     #[test]

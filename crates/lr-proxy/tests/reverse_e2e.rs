@@ -312,25 +312,25 @@ async fn stamps_trace_header_for_the_next_hop() {
     let t = lr_types::RequestTrace::parse(header).expect("valid trace header");
     assert_eq!(t.hop, 1);
 
-    // Already-traced request: upstream sees hop 2 of the same trace.
+    // Untrusted hop claims preserve correlation but do not confer privileges.
     let (_, _, body) = request_with_headers(
         port,
         "POST",
         "/v1/chat/completions",
         "{}",
-        &[("x-localrouter-trace", "abc;hop=1")],
+        &[("x-localrouter-trace", "abc;hop=99")],
     )
     .await;
     let trace: serde_json::Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(trace["trace"].as_str().unwrap(), "abc;hop=2");
+    assert_eq!(trace["trace"].as_str().unwrap(), "abc;hop=1");
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     let seen = recorder.seen.lock().await;
     assert_eq!(seen.len(), 2);
     assert_eq!(seen[0].trace.as_ref().unwrap().hop, 1);
     let dup = seen[1].trace.as_ref().unwrap();
-    assert_eq!((dup.trace_id.as_str(), dup.hop), ("abc", 2));
-    assert!(dup.is_duplicate());
+    assert_eq!((dup.trace_id.as_str(), dup.hop), ("abc", 1));
+    assert!(!dup.is_duplicate());
 }
 
 #[tokio::test]

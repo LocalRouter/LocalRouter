@@ -18,6 +18,7 @@ import {
 import { ProvidersIcon, McpIcon, SkillsIcon, StoreIcon } from "@/components/icons/category-icons"
 import { Coins, Bot } from "lucide-react"
 import { FEATURES } from "@/constants/features"
+import { isValidHttpUrl } from "@/utils/url"
 import { categoryActionLabel } from "@/components/permissions/CategoryActionButton"
 import type { SafetyVerdict, CategoryActionRequired, SecretFindingSummary } from "@/types/tauri-commands"
 
@@ -444,13 +445,13 @@ export function FirewallApprovalCard({
           )}
 
           {/* Marketplace source link */}
-          {requestType === "marketplace" && marketplaceListing && (marketplaceListing.homepage || marketplaceListing.source_repo) && (
+          {requestType === "marketplace" && marketplaceListing && isValidHttpUrl(marketplaceListing.homepage || marketplaceListing.source_repo || "") && (
             <>
               <span className="text-muted-foreground">Source:</span>
               <button
                 className="text-blue-500 hover:text-blue-400 hover:underline text-left truncate font-mono text-[11px]"
                 title={marketplaceListing.homepage || marketplaceListing.source_repo || ""}
-                onClick={() => window.open(marketplaceListing.homepage || marketplaceListing.source_repo || "", "_blank")}
+                onClick={() => window.open(marketplaceListing.homepage || marketplaceListing.source_repo || "", "_blank", "noopener,noreferrer")}
               >
                 {(marketplaceListing.homepage || marketplaceListing.source_repo || "").replace(/^https?:\/\//, "")}
               </button>

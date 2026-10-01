@@ -134,8 +134,7 @@ impl SessionManager {
     }
 
     /// Get or create an active session for a client.
-    /// If the existing session has expired, returns None for the old session
-    /// (caller should close it) and a new session will be created on next call.
+    /// An expired session is replaced by a fresh session.
     ///
     /// `content_hint` is used to generate a human-readable filename for new sessions
     /// (e.g., the first user message). Ignored for existing sessions.
@@ -153,8 +152,11 @@ impl SessionManager {
     ) -> (PathBuf, bool) {
         let config = self.config.read().clone();
 
-        // Check if existing session is still valid
-        if let Some(mut session) = self.active_sessions.get_mut(client_id) {
+        // Keep the entry locked through lookup and replacement. Separate
+        // get/remove/insert operations can overwrite a concurrently created session.
+        let mut entry = self.active_sessions.entry(client_id.to_string());
+        if let dashmap::mapref::entry::Entry::Occupied(ref mut occupied) = entry {
+            let session = occupied.get_mut();
             let expired_inactivity = session.last_activity.elapsed() > config.inactivity_timeout;
             let expired_duration = session.started_at.elapsed() > config.max_duration;
 
@@ -162,11 +164,6 @@ impl SessionManager {
                 session.last_activity = Instant::now();
                 return (session.file_path.clone(), false);
             }
-
-            // Drop the mutable ref before removing
-            drop(session);
-            // Remove expired session to prevent duplicates
-            self.active_sessions.remove(client_id);
         }
 
         // Create new session with human-readable filename
@@ -184,7 +181,14 @@ impl SessionManager {
             conversation_count: 0,
         };
 
-        self.active_sessions.insert(client_id.to_string(), session);
+        match entry {
+            dashmap::mapref::entry::Entry::Occupied(mut occupied) => {
+                occupied.insert(session);
+            }
+            dashmap::mapref::entry::Entry::Vacant(vacant) => {
+                vacant.insert(session);
+            }
+        }
         (file_path, true)
     }
 
@@ -319,30 +323,29 @@ impl SessionManager {
         // Second pass: remove and collect the expired sessions
         let mut expired = Vec::with_capacity(expired_keys.len());
         for key in expired_keys {
-            if let Some((client_id, session)) = self.active_sessions.remove(&key) {
-                // Double-check it's still expired (could have been touched between passes)
-                let still_expired = session.last_activity.elapsed() > config.inactivity_timeout
-                    || session.started_at.elapsed() > config.max_duration;
-                if still_expired {
-                    let display_name = short_display_id(
-                        &session
-                            .file_path
-                            .file_stem()
-                            .unwrap_or_default()
-                            .to_string_lossy(),
-                    );
-                    tracing::info!(
-                        "Memory session expired for client {} (session={}, age={:.0}s, idle={:.0}s)",
-                        &client_id[..8.min(client_id.len())],
-                        display_name,
-                        session.started_at.elapsed().as_secs_f64(),
-                        session.last_activity.elapsed().as_secs_f64(),
-                    );
-                    expired.push((client_id, session));
-                } else {
-                    // Was touched between passes — put it back
-                    self.active_sessions.insert(key, session);
-                }
+            // Re-check expiry while holding the removal lock. Removing and then
+            // reinserting a refreshed session could clobber a new session.
+            if let Some((client_id, session)) =
+                self.active_sessions.remove_if(&key, |_, session| {
+                    session.last_activity.elapsed() > config.inactivity_timeout
+                        || session.started_at.elapsed() > config.max_duration
+                })
+            {
+                let display_name = short_display_id(
+                    &session
+                        .file_path
+                        .file_stem()
+                        .unwrap_or_default()
+                        .to_string_lossy(),
+                );
+                tracing::info!(
+                    "Memory session expired for client {} (session={}, age={:.0}s, idle={:.0}s)",
+                    client_id.chars().take(8).collect::<String>(),
+                    display_name,
+                    session.started_at.elapsed().as_secs_f64(),
+                    session.last_activity.elapsed().as_secs_f64(),
+                );
+                expired.push((client_id, session));
             }
         }
 
@@ -358,7 +361,7 @@ pub fn short_display_id(file_stem: &str) -> String {
     if file_stem.len() > 20 && file_stem.as_bytes()[19] == b'-' {
         file_stem[20..].to_string()
     } else {
-        file_stem[..8.min(file_stem.len())].to_string()
+        file_stem.chars().take(8).collect()
     }
 }
 

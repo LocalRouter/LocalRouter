@@ -135,7 +135,7 @@ pub async fn start_server(
                 break listener;
             }
             Err(e) => {
-                if port - config.port >= max_attempts {
+                if port - config.port >= max_attempts || port == u16::MAX {
                     return Err(anyhow::anyhow!(
                         "Could not bind to any port between {} and {} (last error: {})",
                         config.port,
@@ -149,6 +149,10 @@ pub async fn start_server(
         }
     };
 
+    // Port zero asks the OS for an ephemeral port. Publish the actual bound
+    // port so callers can connect to it and health status stays accurate.
+    let port = listener.local_addr()?.port();
+
     info!("Web server listening on http://{}:{}", config.host, port);
     info!("OpenAI-compatible endpoints available at:");
 
@@ -158,21 +162,32 @@ pub async fn start_server(
     // Spawn session cleanup tasks (runs every 10 minutes)
     let gateway_for_cleanup = state.mcp_gateway.clone();
     let mcp_via_llm_for_cleanup = state.mcp_via_llm_manager.clone();
+    let session_cleanup_shutdown = shutdown.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(SESSION_CLEANUP_INTERVAL);
         loop {
-            interval.tick().await;
-            gateway_for_cleanup.cleanup_expired_sessions().await;
-            mcp_via_llm_for_cleanup.cleanup_expired_sessions();
+            tokio::select! {
+                biased;
+                _ = session_cleanup_shutdown.cancelled() => break,
+                _ = interval.tick() => {
+                    gateway_for_cleanup.cleanup_expired_sessions().await;
+                    mcp_via_llm_for_cleanup.cleanup_expired_sessions();
+                }
+            }
         }
     });
 
     // Spawn token cleanup task (runs every 5 minutes)
     let token_store_for_cleanup = state.token_store.clone();
+    let token_cleanup_shutdown = shutdown.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(300)); // 5 minutes
         loop {
-            interval.tick().await;
+            tokio::select! {
+                biased;
+                _ = token_cleanup_shutdown.cancelled() => break,
+                _ = interval.tick() => {}
+            }
             let removed = token_store_for_cleanup.cleanup_expired();
             if removed > 0 {
                 info!("Cleaned up {} expired OAuth tokens", removed);
@@ -500,17 +515,31 @@ async fn serve_openapi_yaml() -> impl IntoResponse {
 async fn host_validation_middleware(req: Request, next: Next) -> Response {
     use middleware::error::ApiErrorResponse;
 
-    if let Some(host) = req
-        .headers()
-        .get(header::HOST)
-        .and_then(|h| h.to_str().ok())
-    {
-        let host_without_port = host.split(':').next().unwrap_or(host);
-        match host_without_port {
-            "localhost" | "127.0.0.1" | "[::1]" => {} // OK
-            _ => {
-                return ApiErrorResponse::forbidden("Invalid Host header").into_response();
-            }
+    if let Some(host) = req.headers().get(header::HOST) {
+        // Parse the authority rather than splitting on ':': IPv6 loopback
+        // contains colons, and malformed header bytes must not bypass the check.
+        let allowed = host
+            .to_str()
+            .ok()
+            .and_then(|host| host.parse::<axum::http::uri::Authority>().ok())
+            .is_some_and(|authority| {
+                let host = authority.host();
+                let valid_host = host.eq_ignore_ascii_case("localhost")
+                    || host == "127.0.0.1"
+                    || host == "[::1]";
+                let valid_authority = authority.as_str() == host
+                    || authority
+                        .as_str()
+                        .strip_prefix(host)
+                        .and_then(|suffix| suffix.strip_prefix(':'))
+                        .is_some_and(|port| {
+                            port.bytes().all(|byte| byte.is_ascii_digit())
+                                && port.parse::<u16>().is_ok()
+                        });
+                valid_host && valid_authority
+            });
+        if !allowed {
+            return ApiErrorResponse::forbidden("Invalid Host header").into_response();
         }
     }
     // If no Host header, allow (some clients don't send it)
@@ -542,12 +571,10 @@ async fn security_headers_middleware(req: Request, next: Next) -> Response {
 
 /// Cross-hop request trace middleware.
 ///
-/// Reads `X-LocalRouter-Trace` from the inbound request (present when an
-/// earlier LocalRouter hop — a gateway, the HTTPS proxy or a reverse proxy —
-/// already handled this request) and runs the handler with the outbound
-/// trace in scope: hop 1 for a fresh request, hop N+1 for a duplicate. The
-/// upstream HTTP client stamps it on the forwarded request; the pipeline and
-/// accounting layers consult it to pass duplicates through uncounted.
+/// Reads `X-LocalRouter-Trace` for correlation and runs the handler with the
+/// outbound trace in scope. Wire headers do not prove prior authorization:
+/// every inbound request starts at enforcement hop 1, including traced ones.
+/// The upstream HTTP client preserves the correlation ID when forwarding.
 /// Disabled entirely by `request_dedupe.enabled = false`.
 async fn trace_middleware(
     axum::extract::State(state): axum::extract::State<AppState>,
@@ -560,7 +587,7 @@ async fn trace_middleware(
         info!(
             "{} {} - duplicate hop of trace {} (hop {}): passthrough, not counted",
             req.method(),
-            req.uri(),
+            req.uri().path(),
             t.trace_id,
             t.hop
         );
@@ -569,8 +596,8 @@ async fn trace_middleware(
 }
 
 /// The trace to run a request under: `None` when detection is disabled,
-/// hop 1 for a request no LocalRouter hop has seen, or the next hop of the
-/// trace found in `headers`. A malformed header counts as absent.
+/// enforcement hop 1 with a fresh ID or the correlation ID in `headers`.
+/// A malformed header counts as absent.
 fn resolve_outbound_trace(
     enabled: bool,
     headers: &axum::http::HeaderMap,
@@ -590,7 +617,9 @@ async fn logging_middleware(req: Request, next: Next) -> Response {
     use crate::middleware::client_auth::LoggedClientId;
 
     let method = req.method().clone();
-    let uri = req.uri().clone();
+    // MCP supports ?token= authentication. Never put query credentials (or
+    // other query data) into persistent request logs.
+    let path = req.uri().path().to_owned();
     let peer = req
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
@@ -614,12 +643,12 @@ async fn logging_middleware(req: Request, next: Next) -> Response {
     if status.is_success() {
         info!(
             "{} {} - {} ({:?}) [{}] client={}",
-            method, uri, status, elapsed, peer_str, client
+            method, path, status, elapsed, peer_str, client
         );
     } else {
         error!(
             "{} {} - {} ({:?}) [{}] client={}",
-            method, uri, status, elapsed, peer_str, client
+            method, path, status, elapsed, peer_str, client
         );
     }
 
@@ -636,6 +665,66 @@ mod tests {
         assert_eq!(config.host, "127.0.0.1");
         assert_eq!(config.port, 8080);
         assert!(config.enable_cors);
+    }
+}
+
+#[cfg(test)]
+mod host_validation_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::HeaderValue;
+    use tower::ServiceExt;
+
+    async fn request(host: Option<HeaderValue>) -> StatusCode {
+        let app = Router::new()
+            .route("/", get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn(host_validation_middleware));
+        let mut request = Request::builder().uri("/").body(Body::empty()).unwrap();
+        if let Some(host) = host {
+            request.headers_mut().insert(header::HOST, host);
+        }
+        app.oneshot(request).await.unwrap().status()
+    }
+
+    #[tokio::test]
+    async fn accepts_ipv4_ipv6_and_case_insensitive_localhost() {
+        for host in [
+            "localhost",
+            "LOCALHOST:3625",
+            "127.0.0.1:3625",
+            "[::1]",
+            "[::1]:3625",
+        ] {
+            assert_eq!(
+                request(Some(host.parse().unwrap())).await,
+                StatusCode::OK,
+                "{host}"
+            );
+        }
+        assert_eq!(request(None).await, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn rejects_external_malformed_and_non_ascii_hosts() {
+        for host in [
+            "attacker.example:3625",
+            "localhost.attacker.example",
+            "127.0.0.2",
+            "localhost:3625:99",
+            "attacker@localhost",
+            "localhost@localhost:3625",
+            "localhost:invalid",
+            "localhost:+3625",
+            "localhost:65536",
+        ] {
+            assert_eq!(
+                request(Some(host.parse().unwrap())).await,
+                StatusCode::FORBIDDEN,
+                "{host}"
+            );
+        }
+        let invalid = HeaderValue::from_bytes(b"\xff").unwrap();
+        assert_eq!(request(Some(invalid)).await, StatusCode::FORBIDDEN);
     }
 }
 
@@ -664,12 +753,13 @@ mod trace_middleware_tests {
     }
 
     #[test]
-    fn traced_request_is_next_hop_of_same_trace() {
+    fn supplied_trace_preserves_correlation_without_trusting_prior_enforcement() {
         let t = resolve_outbound_trace(true, &headers(Some("abc;hop=1"))).unwrap();
-        assert_eq!((t.trace_id.as_str(), t.hop), ("abc", 2));
-        assert!(t.is_duplicate());
+        assert_eq!((t.trace_id.as_str(), t.hop), ("abc", 1));
+        assert!(!t.is_duplicate());
         let t = resolve_outbound_trace(true, &headers(Some("abc;hop=2"))).unwrap();
-        assert_eq!(t.hop, 3);
+        assert_eq!(t.hop, 1);
+        assert!(!t.is_duplicate());
     }
 
     #[test]
@@ -689,7 +779,7 @@ mod trace_middleware_tests {
     /// therefore to the router / accounting code it calls) and must end with
     /// the request.
     #[tokio::test]
-    async fn handler_sees_duplicate_hop_inside_scope() {
+    async fn forged_header_cannot_mark_the_handler_as_a_duplicate() {
         async fn mw(req: Request, next: Next) -> Response {
             let outbound = resolve_outbound_trace(true, req.headers());
             lr_types::with_outbound_trace(outbound, next.run(req)).await
@@ -724,12 +814,46 @@ mod trace_middleware_tests {
             .header(lr_types::TRACE_HEADER, "abc;hop=1")
             .body(Body::empty())
             .unwrap();
-        assert_eq!(body(dup).await, "2:true");
+        assert_eq!(body(dup).await, "1:false");
 
         assert!(
             lr_types::current_outbound_trace().is_none(),
             "scope ends with the request"
         );
+    }
+
+    #[tokio::test]
+    async fn forged_trace_does_not_skip_rate_limit_accounting() {
+        use lr_router::rate_limit::{RateLimitType, RateLimiter, UsageInfo};
+        let manager = RateLimiterManager::new(None);
+        manager.add_api_key_limiters(
+            "client".into(),
+            vec![RateLimiter::new(RateLimitType::Requests, 1.0, 60)],
+        );
+        let usage = UsageInfo {
+            input_tokens: 0,
+            output_tokens: 0,
+            cost_usd: 0.0,
+        };
+        let outbound = resolve_outbound_trace(true, &headers(Some("forged;hop=999")));
+        lr_types::with_outbound_trace(outbound, async {
+            assert!(
+                !lr_types::is_duplicate_hop(),
+                "security stages must remain enabled"
+            );
+            manager
+                .record_api_key_usage("client", &usage)
+                .await
+                .unwrap();
+            assert!(
+                !manager
+                    .check_api_key("client", &usage)
+                    .await
+                    .unwrap()
+                    .allowed
+            );
+        })
+        .await;
     }
 }
 

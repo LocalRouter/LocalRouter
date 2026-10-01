@@ -467,6 +467,7 @@ export function FirewallApproval() {
     if (!details || submittingRef.current) return
     submittingRef.current = true
     setSubmitting(true)
+    setError(null)
     try {
       await invoke("dismiss_firewall_notification", { requestId: details.request_id })
     } catch (err) {
@@ -510,6 +511,7 @@ export function FirewallApproval() {
     if (!details || submittingRef.current) return
     submittingRef.current = true
     setSubmitting(true)
+    setError(null)
     try {
       const params: Record<string, unknown> = {
         requestId: details.request_id,
@@ -517,7 +519,7 @@ export function FirewallApproval() {
       }
 
       // In edit mode, send edited data
-      if (editMode) {
+      if (editMode && action.startsWith("allow")) {
         const isModelLike = details.is_model_request || details.is_auto_router_request
         let editedData: string
 
@@ -566,7 +568,7 @@ export function FirewallApproval() {
     )
   }
 
-  if (error || !details) {
+  if (!details) {
     return (
       <div className="flex flex-col h-screen bg-background p-4">
         <p className="text-sm text-destructive text-center">{error || "Request not found"}</p>
@@ -883,9 +885,13 @@ export function FirewallApproval() {
   )
 
   // Normal mode: use the shared card component
+  const submissionError = error && (
+    <p role="alert" className="text-xs text-destructive px-4 pt-3 flex-shrink-0">{error}</p>
+  )
   if (!editMode) {
     return (
       <div className="flex flex-col h-screen bg-background overflow-hidden">
+        {submissionError}
         <FirewallApprovalCard
           className="flex flex-col flex-1 p-4 overflow-hidden"
           clientName={details.client_name}
@@ -921,6 +927,7 @@ export function FirewallApproval() {
   // Edit mode: custom layout with editors
   return (
     <div className="flex flex-col h-screen bg-background overflow-hidden">
+      {submissionError}
       <div className="flex flex-col flex-1 p-4 overflow-hidden">
         {/* Header */}
         <FirewallApprovalHeader requestType={requestType} />

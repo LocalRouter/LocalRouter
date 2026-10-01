@@ -603,26 +603,14 @@ impl ModelProvider for OpenAICompatibleProvider {
         // Parse SSE (Server-Sent Events) stream
         // Use flat_map to handle multiple SSE events in a single byte chunk
         // Buffer incomplete lines across HTTP chunks
-        use std::sync::{Arc, Mutex};
-        let line_buffer = Arc::new(Mutex::new(String::new()));
 
-        let stream = response.bytes_stream().flat_map(move |result| {
-            let line_buffer = line_buffer.clone();
-
+        let lines = crate::sse_lines::line_batches(response.bytes_stream());
+        let stream = lines.flat_map(move |result| {
             let chunks: Vec<AppResult<CompletionChunk>> = match result {
-                Ok(bytes) => {
-                    let text = String::from_utf8_lossy(&bytes);
-                    let mut buffer = line_buffer.lock().unwrap();
+                Ok(lines) => {
                     let mut parsed_chunks = Vec::new();
 
-                    // Append new data to buffer
-                    buffer.push_str(&text);
-
-                    // Process complete lines (those ending with \n)
-                    while let Some(newline_pos) = buffer.find('\n') {
-                        let line = buffer[..newline_pos].to_string();
-                        *buffer = buffer[newline_pos + 1..].to_string();
-
+                    for line in lines {
                         if line.trim().is_empty() {
                             continue;
                         }

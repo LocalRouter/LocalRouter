@@ -67,8 +67,8 @@ pub const MITM_HOST_ALLOWLIST: &[&str] = &[
 ///
 /// Matches the allow-list exactly or as a dotted suffix (so
 /// `foo.api.anthropic.com` also matches `api.anthropic.com`).
-/// Read the cross-hop trace an earlier LocalRouter hop may have stamped on
-/// `headers`, and replace it with the trace for the next hop (or a fresh one).
+/// Preserve an inbound trace's correlation ID while resetting its untrusted
+/// hop claim so caller-controlled headers cannot bypass policy or accounting.
 /// Returns the outbound trace. With `enabled == false` the headers are left
 /// untouched and `None` is returned, so the request is neither recognized as
 /// a duplicate nor marked for downstream hops.
@@ -132,10 +132,10 @@ mod tests {
         let mut h = hyper::HeaderMap::new();
         h.insert(TRACE_HEADER, "abc;hop=1".parse().unwrap());
         let t = stamp_trace(&mut h, true).unwrap();
-        assert_eq!((t.trace_id.as_str(), t.hop), ("abc", 2));
-        assert!(t.is_duplicate());
-        assert_eq!(h.get(TRACE_HEADER).unwrap(), "abc;hop=2");
-        assert_eq!(RequestTrace::parse("abc;hop=2").unwrap(), t);
+        assert_eq!((t.trace_id.as_str(), t.hop), ("abc", 1));
+        assert!(!t.is_duplicate());
+        assert_eq!(h.get(TRACE_HEADER).unwrap(), "abc;hop=1");
+        assert_eq!(RequestTrace::parse("abc;hop=1").unwrap(), t);
 
         // Disabled: header untouched, nothing recognized.
         let mut h = hyper::HeaderMap::new();
