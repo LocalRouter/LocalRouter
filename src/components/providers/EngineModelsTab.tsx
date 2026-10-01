@@ -33,8 +33,8 @@ interface EngineModelsTabProps {
 }
 
 /**
- * Models of an engine that downloads its own checkpoints (Laya, Kev, Von,
- * Decider). Downloads happen only here; requests for a model that is not
+ * Models of an engine that downloads its own checkpoints (Ollaya, Laya, Kev,
+ * Von, Decider). Downloads happen only here; requests for a model that is not
  * downloaded fail instead of downloading.
  */
 export function EngineModelsTab({ providerType, instanceName, enabled }: EngineModelsTabProps) {
@@ -289,7 +289,10 @@ export function EngineModelsTab({ providerType, instanceName, enabled }: EngineM
         </CardContent>
       </Card>
 
-      <HuggingFaceAccountCard description="Optional. Downloads use this account (for gated or private checkpoints and higher rate limits). Shared by all Local Embedded providers." />
+      {/* Ollaya downloads from its own registry and public Hugging Face files; it takes no token. */}
+      {providerType !== "ollaya" && (
+        <HuggingFaceAccountCard description="Optional. Downloads use this account (for gated or private checkpoints and higher rate limits). Shared by all Local Embedded providers." />
+      )}
 
       <AlertDialog open={removing !== null} onOpenChange={(o) => !o && setRemoving(null)}>
         <AlertDialogContent>

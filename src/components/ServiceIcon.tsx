@@ -161,6 +161,7 @@ const EMOJI_MAP: Record<string, string> = {
   opencode_go: '📝',
   // System One (decision) providers
   typesafe: '🎲',
+  ollaya: '🧮',
   laya: '⚖️',
   kev: '🧭',
   von: '🎯',

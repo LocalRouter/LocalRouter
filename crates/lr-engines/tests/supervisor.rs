@@ -85,6 +85,19 @@ async fn late_binding_and_env_port() {
 }
 
 #[tokio::test]
+async fn host_and_port_in_one_variable() {
+    let (sup, _dir) = supervisor();
+    let mut s = spec("addr", &[("FAKE_ADDR_VAR", "MY_HOST")]);
+    s.port = PortArg::Addr {
+        var: "MY_HOST".into(),
+        host: "127.0.0.1".into(),
+    };
+    let handle = sup.ensure(s).await.unwrap();
+    assert_eq!(chat(&handle, Some(handle.api_key())).await, 200);
+    sup.stop_all().await;
+}
+
+#[tokio::test]
 async fn concurrent_starts_share_one_process() {
     let (sup, _dir) = supervisor();
     let s = spec("shared", &[("FAKE_LOADING_MS", "300")]);

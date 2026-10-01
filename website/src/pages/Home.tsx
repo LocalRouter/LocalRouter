@@ -437,7 +437,7 @@ export default function Home() {
                   {/* System One model */}
                   <rect x="238" y="98" width="82" height="64" rx="12" fill="#2e1065" stroke="#8b5cf6" strokeWidth="1.5" />
                   <text x="279" y="120" textAnchor="middle" fill="#ede9fe" fontSize="11" fontWeight="600">System One</text>
-                  <text x="279" y="136" textAnchor="middle" fill="#a78bfa" fontSize="9">Jev · Laya · Kev</text>
+                  <text x="279" y="136" textAnchor="middle" fill="#a78bfa" fontSize="9">Jev · Ollaya · Kev</text>
                   <text x="279" y="150" textAnchor="middle" fill="#64748b" fontSize="8">or any chat model</text>
 
                   {/* model → answers */}
@@ -505,7 +505,7 @@ export default function Home() {
                   <Scale className="h-5 w-5 shrink-0 text-violet-500 mt-0.5" />
                   <div>
                     <span className="font-medium">Native decision models</span>
-                    <p className="text-sm text-muted-foreground">TypeSafe&apos;s hosted Jev, or Laya and Kev running on your own machine</p>
+                    <p className="text-sm text-muted-foreground">TypeSafe&apos;s hosted Jev, or Ollaya, Kev and Ollama decision models on your own machine</p>
                   </div>
                 </li>
                 <li className="flex gap-3">

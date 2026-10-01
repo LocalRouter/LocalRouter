@@ -1262,6 +1262,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ollaya_and_the_dedicated_decision_engines_are_all_offered() {
+        let dir = tempfile::tempdir().unwrap();
+        let supervisor = lr_engines::Supervisor::new(dir.path());
+        let registry = ProviderRegistry::new();
+        registry.register_factory(Arc::new(
+            crate::embedded::OllayaEmbeddedProviderFactory::new(supervisor.clone()),
+        ));
+        registry.register_factory(Arc::new(crate::embedded::LayaEmbeddedProviderFactory::new(
+            supervisor.clone(),
+        )));
+        registry.register_factory(Arc::new(crate::embedded::KevEmbeddedProviderFactory::new(
+            supervisor.clone(),
+        )));
+        let listed: Vec<(String, bool)> = registry
+            .list_provider_types()
+            .into_iter()
+            .map(|t| (t.provider_type, t.listed))
+            .collect();
+        // The dedicated engines run their models on the GPU where Ollaya
+        // cannot, so they stay offered next to it.
+        assert!(listed.contains(&("ollaya".to_string(), true)));
+        assert!(listed.contains(&("laya".to_string(), true)));
+        assert!(listed.contains(&("kev".to_string(), true)));
+    }
+
+    #[tokio::test]
     async fn provider_types_are_ordered_with_embedded_first_and_legacy_hidden() {
         let registry = ProviderRegistry::new();
         registry.register_factory(Arc::new(crate::factory::OpenAICompatibleProviderFactory));

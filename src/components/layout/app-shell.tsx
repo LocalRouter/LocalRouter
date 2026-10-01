@@ -27,6 +27,8 @@ interface ProviderType {
   display_name: string
   category: string
   description: string
+  /** False for legacy types kept only for configured instances. */
+  listed?: boolean
 }
 
 interface McpServer {
@@ -114,7 +116,8 @@ export function AppShell({
   const loadProviderTypes = async () => {
     try {
       const typeList = await invoke<ProviderType[]>('list_provider_types')
-      setProviderTypes(typeList)
+      // Legacy types are not offered for new providers.
+      setProviderTypes(typeList.filter((t) => t.listed !== false))
     } catch (err) {
       console.error('Failed to load provider types:', err)
     }

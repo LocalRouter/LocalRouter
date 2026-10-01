@@ -4083,6 +4083,9 @@ mod tests {
             Box::new(OpenAICodexProviderFactory),
             Box::new(SystemOneProviderFactory::TYPESAFE),
             Box::new(SystemOneProviderFactory::GENERIC),
+            Box::new(crate::embedded::OllayaEmbeddedProviderFactory::new(
+                test_supervisor(),
+            )),
             Box::new(crate::embedded::LayaEmbeddedProviderFactory::new(
                 test_supervisor(),
             )),

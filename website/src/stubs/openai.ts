@@ -88,7 +88,7 @@ class DemoApiError extends Error {
 
 // Model ids served natively by the demo's System One (decision) providers.
 const NATIVE_DECISION_MODELS = new Set([
-  'english', 'multilingual', 'typed-decisions', 'kev-latest', 'jev-latest', 'jev-preview', 'jev-1.13.0',
+  'laya:en', 'laya:multilingual', 'english', 'multilingual', 'typed-decisions', 'kev-latest', 'jev-latest', 'jev-preview', 'jev-1.13.0',
 ])
 
 function normalize(weights: number[]): number[] {
@@ -147,7 +147,7 @@ function systemOneResponse(body: any): { data: any; response: Response } {
   if (!questions || typeof questions !== 'object' || Object.keys(questions).length === 0) {
     throw new DemoApiError(400, 'questions must contain at least one question')
   }
-  const model: string = typeof body.model === 'string' && body.model ? body.model : 'laya-local/english'
+  const model: string = typeof body.model === 'string' && body.model ? body.model : 'ollaya-local/laya:en'
   const bareModel = model.includes('/') ? model.slice(model.indexOf('/') + 1) : model
   const backend = NATIVE_DECISION_MODELS.has(bareModel) ? 'native' : 'letter_logprobs'
   const data = {

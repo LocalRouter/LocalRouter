@@ -67,7 +67,7 @@ The response is a binary audio stream. The `Content-Type` header varies based on
 
 ```json
 {
-  "model": "laya/english",
+  "model": "Ollaya/laya:en",
   "state": "I was charged twice this month and need a refund before Friday.",
   "questions": {
     "department": {
@@ -123,16 +123,16 @@ An upstream `422` validation error from a System One provider is returned unchan
 
 **Model resolution**
 
-- `provider/model` (e.g. `laya/english`, `typesafe/jev-latest`): that provider and model.
+- `provider/model` (e.g. `Ollaya/laya:en`, `typesafe/jev-latest`): that provider and model.
 - A bare model id (e.g. `jev-latest`): the provider serving that model among the client's allowed models.
 - `localrouter/auto`: auto-routing over the strategy's prioritized models, skipping models that cannot answer.
 - Omitted: if exactly one System One provider is allowed for the client, LocalRouter uses its default model. Otherwise the request is routed as `localrouter/auto`.
 
 **Native and translated backends**
 
-System One providers (TypeSafe Jev, the Local Embedded providers Laya, Kev, Von and Decider, System One compatible servers, and the Jev models served by OpenRouter, LLM Gateway, Vercel AI Gateway and Cloudflare Workers AI; see System One Providers) answer natively. Any chat model can also answer, because LocalRouter translates the questions into chat completions:
+System One providers (TypeSafe Jev, the Local Embedded providers Ollaya, Laya, Kev, Von and Decider, System One compatible servers, the Jev models served by OpenRouter, LLM Gateway, Vercel AI Gateway and Cloudflare Workers AI, and Ollama's decision models such as `nimble` and `tev1`; see System One Providers) answer natively. Any chat model can also answer, because LocalRouter translates the questions into chat completions:
 
-- **Letter mode** (`letter_logprobs`): used where the provider returns token log probabilities (OpenAI, Together AI, llama.cpp). The model picks one option letter per question, and the probabilities come from the logprobs of those letters.
+- **Letter mode** (`letter_logprobs`): used where the provider returns token log probabilities (OpenAI, Together AI, llama.cpp, Ollama). The model picks one option letter per question, and the probabilities come from the logprobs of those letters.
 - **JSON mode** (`json`): used for all other providers. The model returns a JSON object of probabilities, which LocalRouter normalizes.
 
 Translated answers are billed like the chat calls they make. Set `systemone.emulation: off` in the config to allow only native providers.
@@ -143,7 +143,7 @@ Translated answers are billed like the chat calls they make. Set `systemone.emul
 curl http://localhost:3625/v1/systemone \
   -H "Authorization: Bearer lr-your_secret_key_here" \
   -H "Content-Type: application/json" \
-  -d '{"model": "laya/english", "state": "My invoice is wrong", "questions": {"team": {"type": "choice", "instructions": "Which team should handle this?", "criteria": {"billing": null, "technical": null}}}}'
+  -d '{"model": "Ollaya/laya:en", "state": "My invoice is wrong", "questions": {"team": {"type": "choice", "instructions": "Which team should handle this?", "criteria": {"billing": null, "technical": null}}}}'
 ```
 
 **TypeSafe SDK**
