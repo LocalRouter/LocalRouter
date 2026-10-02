@@ -205,7 +205,7 @@ do not use it for feature tracking.
 3. Implement with tests
 4. Run `cargo test && cargo clippy && cargo fmt`
 5. Commit with Conventional Commits: `<type>(<scope>): <description>`
-6. **Always commit your own changes at the end of a task** — only stage files you modified, never unrelated changes (do not push unless the user explicitly asks)
+6. **Always commit and push your own completed, validated changes at the end of a task** — only stage files you modified, never unrelated changes. The user has given standing authorization to push; see `AGENTS.md`. Honor an explicit instruction not to push.
 
 **Types**: feat, fix, docs, test, refactor, chore
 
@@ -230,7 +230,7 @@ Every plan **must** include these mandatory final steps after all implementation
 1. **Plan Review**: Review the plan against the implementation — identify any missed changes, behaviors, or edge cases that were specified in the plan but not yet implemented, and implement them
 2. **Test Coverage Review**: Review code coverage for all new/modified code — add tests for any uncovered paths, edge cases, or error handling
 3. **Bug Hunt**: Re-read the implementation code with fresh eyes specifically looking for bugs — off-by-one errors, race conditions, missing error handling, incorrect state transitions, etc.
-4. **Commit**: Commit all changes — only stage files you modified, never unrelated changes (do not push unless the user explicitly asks)
+4. **Commit and push**: Commit and push your completed, validated changes — only stage files you modified, never unrelated changes. Follow the standing push authorization in `AGENTS.md` unless the user explicitly instructs otherwise.
 
 ### OpenAPI Requirements
 When modifying endpoints:
