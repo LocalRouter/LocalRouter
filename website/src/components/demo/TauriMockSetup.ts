@@ -13,7 +13,7 @@
  * 4. Update mockData.ts if the mock needs persistent state
  *
  * Return types must match: src/types/tauri-commands.ts
- * See CLAUDE.md "Adding/Modifying Tauri Commands" for full checklist.
+ * See AGENTS.md "Adding/Modifying Tauri Commands" for full checklist.
  */
 
 import { mockIPC, mockWindows, clearMocks } from '@tauri-apps/api/mocks'

@@ -186,7 +186,7 @@ impl OpenAIProvider {
         // Mirrors codex-rs `models-manager/models.json` — the entries it
         // marks `visibility: "list"` — newest-first so the picker defaults
         // to the latest frontier model. Keep in sync with that upstream
-        // file; see CLAUDE.md "Updating the Model Catalog". Each tuple is
+        // file; see AGENTS.md "Updating the Model Catalog". Each tuple is
         // (id, display name, context window) copied verbatim from that
         // source; the 5.6 models ship a larger 372k window than the 272k
         // older ones.

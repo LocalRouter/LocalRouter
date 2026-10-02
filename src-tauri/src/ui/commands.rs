@@ -16,7 +16,7 @@
 //!
 //! 3. Run `npx tsc --noEmit` to verify TypeScript types compile
 //!
-//! See CLAUDE.md "Adding/Modifying Tauri Commands" for the full checklist.
+//! See AGENTS.md "Adding/Modifying Tauri Commands" for the full checklist.
 //!
 //! Note: Unimplemented commands show a toast warning in demo mode.
 

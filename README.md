@@ -126,7 +126,7 @@ src/
 └── views/          # Main application views
 ```
 
-See [CLAUDE.md](CLAUDE.md) for detailed architecture documentation.
+See [AGENTS.md](AGENTS.md) for detailed architecture documentation.
 
 ---
 

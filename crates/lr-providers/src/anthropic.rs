@@ -520,7 +520,7 @@ impl ModelProvider for AnthropicProvider {
         // `/models` API returns (new Claude releases) falls through to a
         // catalog-backed generic mapping instead of being silently
         // dropped, so fresh models surface without a code change. See
-        // CLAUDE.md "Updating the Model Catalog".
+        // AGENTS.md "Updating the Model Catalog".
         let models = models_response
             .data
             .into_iter()

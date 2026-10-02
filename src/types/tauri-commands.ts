@@ -19,7 +19,7 @@
  *   import type { RouteLLMTestResult, RouteLLMTestPredictionParams } from '@/types/tauri-commands'
  *   const result = await invoke<RouteLLMTestResult>('routellm_test_prediction', params satisfies RouteLLMTestPredictionParams)
  *
- * See CLAUDE.md "Adding/Modifying Tauri Commands" for full checklist.
+ * See AGENTS.md "Adding/Modifying Tauri Commands" for full checklist.
  */
 
 // =============================================================================
