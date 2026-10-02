@@ -29,6 +29,11 @@ const ICON_MAP: Record<string, string> = {
   gpt4all: 'gpt4all.png',
   localai: 'localai.png',
   llamacpp: 'llamacpp.png',
+  // Local Embedded providers (official upstream assets; see public/icons/SOURCES.md)
+  llamacpp_embedded: 'llamacpp.png',
+  ollaya: 'ollaya.svg',
+  laya: 'laya.svg',
+  sdcpp_embedded: 'sdcpp.png',
   openai: 'openai.png',
   anthropic: 'anthropic.png',
   gemini: 'gemini.png',
@@ -161,12 +166,6 @@ const EMOJI_MAP: Record<string, string> = {
   opencode_go: '📝',
   // System One (decision) providers
   typesafe: '🎲',
-  ollaya: '🧮',
-  laya: '⚖️',
-  kev: '🧭',
-  von: '🎯',
-  sdcpp_embedded: '🎨',
-  decider: '🔱',
   systemone_compatible: '🔀',
   // Gateways
   llmgateway: '🛣️',
@@ -296,7 +295,7 @@ export default function ServiceIcon({
           alt={`${service} logo`}
           width={size}
           height={size}
-          className={className}
+          className={`object-contain ${className}`}
           onError={(e) => {
             const target = e.target as HTMLImageElement
             target.style.display = 'none'

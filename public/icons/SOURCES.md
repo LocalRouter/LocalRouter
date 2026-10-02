@@ -1,0 +1,21 @@
+# Embedded provider logo sources
+
+These original upstream assets are bundled locally for the app and website demo.
+They are not fetched at runtime. Brand names and marks belong to their respective
+owners. Ollaya and Laya publish under Apache-2.0; stable-diffusion.cpp publishes
+under MIT. Their original license files are included alongside the assets.
+
+| Local asset | Official upstream source (pinned revision) |
+| --- | --- |
+| `ollaya.svg` | [Ollaya website logo](https://github.com/ollaya-dev/ollaya/blob/37fcfa9f8a35b6b389447ffca49e4b4242970f81/site/public/static/logo.svg) |
+| `laya.svg` | [Laya logo mark](https://github.com/NandhaKishorM/laya/blob/fa9a2a7070b1789912a49ae24603bbfb1a78b001/assets/logo-mark.svg) |
+| `sdcpp.png` | [stable-diffusion.cpp logo](https://github.com/leejet/stable-diffusion.cpp/blob/3f8527a46c54ecf4cb4ed6003da8e8982283c73c/assets/logo.png) |
+
+Assets are copied without modification. `llamacpp_embedded` shares the existing
+`llamacpp.png` asset with the llama.cpp server provider.
+
+As of 2026-10-02, no project logo was found in the official repositories or
+READMEs for [Kev](https://github.com/jaredpalmer/kev),
+[Von](https://github.com/wfzyx/von), or [Decider](https://github.com/Mapika/decider).
+They use the standard provider category icon. Kev's playground favicon is the
+Vercel starter mark, so it is not used as Kev branding.
