@@ -263,7 +263,7 @@ fn match_filter(event: &MonitorEvent, filter: Option<&MonitorEventFilter>) -> bo
     };
 
     if let Some(types) = &filter.event_types {
-        if !types.is_empty() && !types.contains(&event.event_type) {
+        if !types.contains(&event.event_type) {
             return false;
         }
     }
@@ -288,13 +288,17 @@ fn match_filter(event: &MonitorEvent, filter: Option<&MonitorEventFilter>) -> bo
 
     if let Some(search) = &filter.search {
         if !search.is_empty() {
-            let summary = crate::summary::generate_summary(event);
+            let summary = crate::summary::to_summary(event);
             let search_lower = search.to_lowercase();
             let trace_match = matches!(
                 &event.data,
                 MonitorEventData::LlmCall { trace_id: Some(t), .. } if t.to_lowercase().contains(&search_lower)
             );
-            if !summary.to_lowercase().contains(&search_lower) && !trace_match {
+            if ![&summary.summary, &summary.question, &summary.answer]
+                .iter()
+                .any(|text| text.to_lowercase().contains(&search_lower))
+                && !trace_match
+            {
                 return false;
             }
         }

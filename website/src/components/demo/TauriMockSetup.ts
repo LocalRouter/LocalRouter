@@ -4575,7 +4575,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // Monitor
   // ============================================================================
   'get_monitor_events': (args) => ({
-    events: mockData.monitorEvents.slice(args?.offset ?? 0, (args?.offset ?? 0) + (args?.limit ?? 100)),
+    events: mockData.monitorEvents.slice(args?.offset ?? 0, (args?.offset ?? 0) + (args?.limit ?? 100)).map(({ data: _data, ...summary }) => summary),
     total: mockData.monitorEvents.length,
   }),
   'get_monitor_event_detail': (args) =>

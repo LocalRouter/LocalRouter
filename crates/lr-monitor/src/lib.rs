@@ -1,4 +1,5 @@
 mod guard;
+mod preview;
 mod size;
 mod store;
 mod summary;

@@ -10,7 +10,7 @@ import { isValidHttpUrl } from '../../../src/utils/url'
 
 const event = (id: string, sequence: number, status: MonitorEventSummary['status'] = 'pending'): MonitorEventSummary => ({
   id, sequence, status, timestamp: '2026-10-01T12:00:00Z', event_type: 'llm_call',
-  session_id: null, client_id: null, client_name: null, duration_ms: null, summary: 'Example request',
+  session_id: null, client_id: null, client_name: null, duration_ms: null, summary: 'Example request', question: 'Question', answer: 'Answer',
 })
 const filter = (fields: Partial<MonitorEventFilter>): MonitorEventFilter => ({
   event_types: null, session_id: null, client_id: null, status: null, search: null, ...fields,
@@ -31,7 +31,7 @@ test('monitor merge uses sequence order and bounds the visible list', () => {
 })
 
 test('monitor filter dimensions and case-insensitive search are preserved', () => {
-  expect(matchesFilter(event('a', 1), filter({ event_types: [], search: 'EXAMPLE' }))).toBe(true)
+  expect(matchesFilter(event('a', 1), filter({ search: 'EXAMPLE' }))).toBe(true)
   expect(matchesFilter(event('a', 1), filter({ event_types: ['auth_error'] }))).toBe(false)
   expect(matchesFilter(event('a', 1), filter({ client_id: 'another' }))).toBe(false)
   expect(matchesFilter(event('a', 1), filter({ session_id: 'another' }))).toBe(false)

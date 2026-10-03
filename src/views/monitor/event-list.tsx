@@ -1,3 +1,4 @@
+import { singleLinePreview } from './monitor-events'
 import { cn } from '@/lib/utils'
 import { Wrench, Shield, GitBranch, Link, AlertTriangle, Loader2, CheckCircle2, XCircle, KeyRound, Gauge, AlertCircle, Server, Ban, Minimize2, Database, Forward } from 'lucide-react'
 import { ProvidersIcon } from '@/components/icons/category-icons'
@@ -5,6 +6,7 @@ import type { MonitorEventSummary, MonitorEventType, EventStatus } from '@/types
 
 interface EventListProps {
   events: MonitorEventSummary[]
+  showType: boolean
   selectedId: string | null
   onSelect: (id: string) => void
 }
@@ -83,7 +85,7 @@ function formatTime(timestamp: string): { short: string; full: string } {
   }
 }
 
-export function EventList({ events, selectedId, onSelect }: EventListProps) {
+export function EventList({ events, showType, selectedId, onSelect }: EventListProps) {
   if (events.length === 0) {
     return (
       <div className="flex h-full items-center justify-center text-muted-foreground text-sm">
@@ -98,15 +100,16 @@ export function EventList({ events, selectedId, onSelect }: EventListProps) {
 
   return (
     <div className="overflow-auto h-full">
-      <table className="w-full text-xs">
+      <table className="w-full table-fixed text-xs">
         <thead className="sticky top-0 bg-background border-b z-10">
           <tr className="text-left text-muted-foreground">
             <th className="px-2 py-1.5 w-[24px]"></th>
             <th className="px-2 py-1.5 w-[105px]">Time</th>
-            <th className="px-2 py-1.5 w-[140px]">Type</th>
+            {showType && <th className="px-2 py-1.5 w-[140px]">Type</th>}
             <th className="px-2 py-1.5 w-[100px]">Client</th>
-            <th className="px-2 py-1.5">Summary</th>
-            <th className="px-2 py-1.5 w-[60px] text-right">Duration</th>
+            <th className="px-2 py-1.5">Question</th>
+            <th className="px-2 py-1.5">Answer</th>
+            <th className="px-2 py-1.5 w-[76px] text-right">Duration</th>
           </tr>
         </thead>
         <tbody>
@@ -120,38 +123,41 @@ export function EventList({ events, selectedId, onSelect }: EventListProps) {
               <tr
                 key={event.id}
                 onClick={() => onSelect(event.id)}
+                tabIndex={0}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    onSelect(event.id)
+                  }
+                }}
                 aria-selected={isSelected}
                 className={cn(
-                  'cursor-pointer transition-colors border-b border-border/50',
+                  'cursor-pointer transition-colors border-b border-border/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary',
                   isSelected ? 'bg-primary/10 hover:bg-primary/15' : 'hover:bg-accent/50'
                 )}
               >
                 <td className={cn('px-2 py-1 border-l-2', isSelected ? 'border-l-primary' : 'border-l-transparent')}>
-                  <StatusBadge status={event.status} />
+                  <span title={event.duplicate_hop != null ? `Duplicate hop ${event.duplicate_hop} — not counted in stats` : event.status} aria-label={event.status}>
+                    {event.duplicate_hop != null ? <AlertTriangle className="h-3 w-3 text-amber-500" /> : <StatusBadge status={event.status} />}
+                  </span>
                 </td>
                 <td className="px-2 py-1 font-mono text-muted-foreground whitespace-nowrap" title={formatTime(event.timestamp).full}>
                   {formatTime(event.timestamp).short}
                 </td>
-                <td className="px-2 py-1">
+                {showType && <td className="px-2 py-1">
                   <div className="flex items-center gap-1">
                     <Icon className={cn('h-3 w-3 shrink-0', config.color)} />
                     <span className="truncate">{getTypeLabel(event.event_type)}</span>
                   </div>
-                </td>
+                </td>}
                 <td className="px-2 py-1 truncate text-muted-foreground">
                   {event.client_name || event.client_id?.slice(0, 8) || '—'}
                 </td>
-                <td className="px-2 py-1 truncate" title={event.summary}>
-                  {event.duplicate_hop != null && (
-                    <span
-                      className="inline-flex items-center gap-0.5 mr-1.5 rounded border border-amber-500/40 bg-amber-500/10 px-1 text-[10px] font-medium text-amber-600 dark:text-amber-400 align-middle"
-                      title={`Duplicate hop ${event.duplicate_hop}: this request already passed through LocalRouter — passed through unmodified and not counted in stats`}
-                    >
-                      <AlertTriangle className="h-2.5 w-2.5" />
-                      dup ×{event.duplicate_hop}
-                    </span>
-                  )}
-                  {event.summary}
+                <td className="px-2 py-1 truncate" title={singleLinePreview(event.question)}>
+                  {singleLinePreview(event.question)}
+                </td>
+                <td className={cn('px-2 py-1 truncate', event.status === 'error' ? 'text-red-600 dark:text-red-400' : 'text-muted-foreground')} title={singleLinePreview(event.answer)}>
+                  {singleLinePreview(event.answer)}
                 </td>
                 <td className="px-2 py-1 text-right font-mono text-muted-foreground">
                   {event.duration_ms != null ? `${event.duration_ms}ms` : '—'}

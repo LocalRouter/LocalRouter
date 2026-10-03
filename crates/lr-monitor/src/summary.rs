@@ -401,6 +401,7 @@ pub fn generate_summary(event: &MonitorEvent) -> String {
 
 /// Create a summary from a full event.
 pub fn to_summary(event: &MonitorEvent) -> MonitorEventSummary {
+    let (question, answer) = crate::preview::question_and_answer(&event.data);
     MonitorEventSummary {
         id: event.id.clone(),
         sequence: event.sequence,
@@ -411,6 +412,8 @@ pub fn to_summary(event: &MonitorEvent) -> MonitorEventSummary {
         status: event.status,
         duration_ms: event.duration_ms,
         summary: generate_summary(event),
+        question,
+        answer,
         session_id: event.session_id.clone(),
         source: match &event.data {
             MonitorEventData::LlmCall { source, .. } => Some(*source),
@@ -494,6 +497,54 @@ mod source_tests {
         );
         let listed = store.list(0, 10, None);
         assert_eq!(listed.events[0].source, Some(LlmCallSource::Proxy));
+    }
+
+    #[test]
+    fn list_and_updates_expose_searchable_question_and_answer() {
+        use crate::types::MonitorEventFilter;
+        let store = MonitorEventStore::new(8);
+        let mut data = llm_call(LlmCallSource::Api);
+        if let MonitorEventData::LlmCall { request_body, .. } = &mut data {
+            *request_body =
+                serde_json::json!({"messages":[{"role":"user","content":"How\nshould I retry?"}]});
+        }
+        let id = store.push(
+            MonitorEventType::LlmCall,
+            None,
+            None,
+            None,
+            data,
+            EventStatus::Pending,
+            None,
+        );
+        let filter = MonitorEventFilter {
+            search: Some("RETRY".into()),
+            ..Default::default()
+        };
+        let pending = store.list(0, 10, Some(&filter));
+        assert_eq!(pending.events[0].question, "How should I retry?");
+        assert_eq!(pending.events[0].answer, "");
+        store.update(&id, |event| {
+            event.status = EventStatus::Complete;
+            if let MonitorEventData::LlmCall {
+                content_preview, ..
+            } = &mut event.data
+            {
+                *content_preview = Some("Use\nbackoff.".into());
+            }
+        });
+        let filter = MonitorEventFilter {
+            search: Some("BACKOFF".into()),
+            ..Default::default()
+        };
+        let complete = store.list(0, 10, Some(&filter));
+        assert_eq!(complete.events[0].question, "How should I retry?");
+        assert_eq!(complete.events[0].answer, "Use backoff.");
+        let filter = MonitorEventFilter {
+            event_types: Some(vec![]),
+            ..Default::default()
+        };
+        assert!(store.list(0, 10, Some(&filter)).events.is_empty());
     }
 
     #[test]

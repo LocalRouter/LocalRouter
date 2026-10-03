@@ -55,6 +55,12 @@ pub struct MonitorEventSummary {
     pub duration_ms: Option<u64>,
     /// One-line summary for display in the list
     pub summary: String,
+    /// Bounded single-line input content, without model or usage metadata.
+    #[serde(default)]
+    pub question: String,
+    /// Bounded single-line output content (or response error).
+    #[serde(default)]
+    pub answer: String,
     /// Session ID grouping all events from one API request
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,

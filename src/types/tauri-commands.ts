@@ -4266,6 +4266,9 @@ export interface MonitorEventSummary {
   status: EventStatus
   duration_ms: number | null
   summary: string
+  /** Bounded, single-line input and output content for the Monitor list. */
+  question: string
+  answer: string
   /** For LLM calls: 'api' (native), 'proxy' (inspection proxy), or 'reverse_proxy' (wrapped local provider). */
   source?: 'api' | 'proxy' | 'reverse_proxy' | null
   /** For LLM calls: hop number (≥ 2) when an earlier LocalRouter hop already handled this request (passthrough, not counted). */

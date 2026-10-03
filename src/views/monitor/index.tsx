@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/Button'
 import { PanelRight } from 'lucide-react'
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable'
 import { useMonitorEvents } from './hooks/useMonitorEvents'
+import { showEventTypeColumn } from './monitor-events'
 import { EventList } from './event-list'
 import { EventDetail } from './event-detail'
 import { EventFilters } from './event-filters'
@@ -116,22 +117,24 @@ export function MonitorView() {
 
   const eventSplit = selectedEvent ? (
     <ResizablePanelGroup direction="vertical" className="flex-1">
-      <ResizablePanel defaultSize={55} minSize={20}>
+      <ResizablePanel defaultSize="35%" minSize="20%">
         <EventList
           events={events}
+          showType={showEventTypeColumn(filter.event_types)}
           selectedId={selectedId}
           onSelect={selectEvent}
         />
       </ResizablePanel>
       <ResizableHandle withHandle orientation="vertical" />
-      <ResizablePanel defaultSize={45} minSize={15}>
-        <EventDetail event={selectedEvent} />
+      <ResizablePanel defaultSize="65%" minSize="20%">
+        <EventDetail key={selectedEvent.id} event={selectedEvent} />
       </ResizablePanel>
     </ResizablePanelGroup>
   ) : (
-    <div className="flex-1">
+    <div className="flex-1 min-h-0">
       <EventList
         events={events}
+        showType={showEventTypeColumn(filter.event_types)}
         selectedId={selectedId}
         onSelect={selectEvent}
       />

@@ -1319,13 +1319,15 @@ export const mockData = {
       event_type: "llm_call", session_id: "sess-001", client_id: "client-1", client_name: "Claude Code",
       status: "complete", duration_ms: 1250,
       summary: "openai/gpt-4o — 1,523 tokens",
-      data: { type: "llm_call", endpoint: "/v1/chat/completions", model: "gpt-4o", stream: true, message_count: 12, has_tools: true, tool_count: 5, request_body: { model: "gpt-4o", messages: [{ role: "system", content: "You are a helpful assistant." }, { role: "user", content: "Help me refactor this function." }] }, provider: "openai", status_code: 200, input_tokens: 1200, output_tokens: 323, total_tokens: 1523, cost_usd: 0.0089, latency_ms: 1250, finish_reason: "stop", content_preview: "Here's the implementation you requested...", streamed: true },
+      question: "How should I retry failed API requests? Please handle rate limits and temporary server failures, but avoid retrying invalid requests.", answer: "Retry only transient failures: **429 rate limits, 5xx responses, and connection errors**. - Honor the `Retry-After` header when the server provides it. - Otherwise use exponential backoff with jitter, capped at 30 seconds. - Limit the request to 3 attempts and keep the same idempotency key. - Return validation and authentication errors immediately. This gives temporary failures time to recover without repeating requests that need to be corrected.",
+      data: { type: "llm_call", endpoint: "/v1/chat/completions", model: "gpt-4o", stream: true, message_count: 2, has_tools: false, tool_count: 0, request_body: { model: "gpt-4o", messages: [{ role: "system", content: "You are a helpful assistant." }, { role: "user", content: "How should I retry failed API requests?\nPlease handle rate limits and temporary server failures, but avoid retrying invalid requests." }] }, provider: "openai", status_code: 200, input_tokens: 1200, output_tokens: 323, total_tokens: 1523, cost_usd: 0.0089, latency_ms: 1250, finish_reason: "stop", content_preview: "Retry only transient failures: **429 rate limits, 5xx responses, and connection errors**.\n\n- Honor the `Retry-After` header when the server provides it.\n- Otherwise use exponential backoff with jitter, capped at 30 seconds.\n- Limit the request to 3 attempts and keep the same idempotency key.\n- Return validation and authentication errors immediately.\n\nThis gives temporary failures time to recover without repeating requests that need to be corrected.", streamed: true, response_body: {"choices": [{"message": {"role": "assistant", "content": "Retry only transient failures: **429 rate limits, 5xx responses, and connection errors**.\n\n- Honor the `Retry-After` header when the server provides it.\n- Otherwise use exponential backoff with jitter, capped at 30 seconds.\n- Limit the request to 3 attempts and keep the same idempotency key.\n- Return validation and authentication errors immediately.\n\nThis gives temporary failures time to recover without repeating requests that need to be corrected."}, "finish_reason": "stop"}]} },
     },
     {
       id: "mon-002", sequence: 5, timestamp: new Date(Date.now() - 1100).toISOString(),
       event_type: "llm_call", session_id: null, client_id: "client-4", client_name: "Ollama (reverse proxy)",
       status: "complete", duration_ms: 1180, source: "reverse_proxy", trace_id: "7c1f3a2e-demo-trace", duplicate_hop: 2,
       summary: "ollama/llama3.2 — 1,523 tokens",
+      question: "Help me refactor this function.", answer: "Here's the implementation you requested...",
       data: { type: "llm_call", endpoint: "/v1/chat/completions", model: "llama3.2", stream: true, message_count: 12, has_tools: true, tool_count: 5, request_body: { model: "llama3.2", messages: [{ role: "system", content: "You are a helpful assistant." }, { role: "user", content: "Help me refactor this function." }] }, source: "reverse_proxy", transformations_applied: ["duplicate hop (passthrough, not counted)"], provider: "ollama", status_code: 200, input_tokens: 1200, output_tokens: 323, total_tokens: 1523, cost_usd: 0, latency_ms: 1180, finish_reason: "stop", content_preview: "Here's the implementation you requested...", streamed: true, trace_id: "7c1f3a2e-demo-trace", duplicate_hop: 2 },
     },
     {
@@ -1333,6 +1335,7 @@ export const mockData = {
       event_type: "llm_call", session_id: null, client_id: "client-1", client_name: "Claude Code",
       status: "complete", duration_ms: 42,
       summary: "ollaya-local/laya:en — department=billing (0.86), urgency=1.62, refund_requested=0.95",
+      question: "Which team should handle this ticket? How urgent is this ticket? Does the customer ask for a refund?", answer: "department: billing; urgency: 1.62; refund_requested: 0.95",
       data: {
         type: "llm_call", endpoint: "/v1/systemone", protocol: "system_one", model: "ollaya-local/laya:en", stream: false, message_count: 3, has_tools: false, tool_count: 0,
         request_body: {
@@ -1366,6 +1369,7 @@ export const mockData = {
       event_type: "mcp_tool_call", session_id: "sess-002", client_id: "client-2", client_name: "Cursor",
       status: "complete", duration_ms: 340,
       summary: "tools/call → filesystem__read_file (OK)",
+      question: "filesystem__read_file({\"path\":\"/Users/demo/project/src/main.rs\"})", answer: "file contents here...",
       data: { type: "mcp_tool_call", tool_name: "filesystem__read_file", server_id: "srv-1", server_name: "Filesystem", arguments: { path: "/Users/demo/project/src/main.rs" }, firewall_action: null, success: true, latency_ms: 340, response_preview: '{"content": [{"type": "text", "text": "file contents here..."}]}', error: null },
     },
     {
@@ -1373,6 +1377,7 @@ export const mockData = {
       event_type: "llm_call", session_id: null, client_id: "client-3", client_name: "GPT4All",
       status: "error", duration_ms: null,
       summary: "unknown/llama-3.3 — HTTP 502",
+      question: "Hello", answer: "Connection refused: could not connect to Ollama at localhost:11434",
       data: { type: "llm_call", endpoint: "/v1/chat/completions", model: "llama-3.3", stream: false, message_count: 1, has_tools: false, tool_count: 0, request_body: { model: "llama-3.3", messages: [{ role: "user", content: "Hello" }] }, provider: "ollama", status_code: 502, error: "Connection refused: could not connect to Ollama at localhost:11434" },
     },
     {
@@ -1380,6 +1385,7 @@ export const mockData = {
       event_type: "llm_call", session_id: null, client_id: "client-2", client_name: "Cursor",
       status: "complete", duration_ms: null,
       summary: "/v1/embeddings → text-embedding-3-small (1 msgs)",
+      question: "search query", answer: "",
       data: { type: "llm_call", endpoint: "/v1/embeddings", model: "text-embedding-3-small", stream: false, message_count: 1, has_tools: false, tool_count: 0, request_body: { model: "text-embedding-3-small", input: "search query" } },
     },
     {
@@ -1387,6 +1393,7 @@ export const mockData = {
       event_type: "auth_error", session_id: null, client_id: null, client_name: null,
       status: "error", duration_ms: null,
       summary: "HTTP 401 /v1/chat/completions — invalid_key",
+      question: "", answer: "Invalid API key",
       data: { type: "auth_error", error_type: "invalid_key", endpoint: "/v1/chat/completions", message: "Invalid API key", status_code: 401 },
     },
     {
@@ -1394,6 +1401,7 @@ export const mockData = {
       event_type: "access_denied", session_id: null, client_id: "client-3", client_name: "GPT4All",
       status: "error", duration_ms: null,
       summary: "HTTP 403 /mcp — mcp_via_llm_direct_mcp",
+      question: "", answer: "Client is in MCP-via-LLM mode. MCP tools are available through LLM chat completions, not direct MCP access",
       data: { type: "access_denied", reason: "mcp_via_llm_direct_mcp", endpoint: "/mcp", message: "Client is in MCP-via-LLM mode. MCP tools are available through LLM chat completions, not direct MCP access", status_code: 403 },
     },
     {
@@ -1401,6 +1409,7 @@ export const mockData = {
       event_type: "rate_limit_event", session_id: null, client_id: "client-1", client_name: "Claude Code",
       status: "error", duration_ms: null,
       summary: "HTTP 429 — rate_limit_exceeded",
+      question: "", answer: "Rate limit exceeded: 100/100 used",
       data: { type: "rate_limit_event", reason: "rate_limit_exceeded", endpoint: "/v1/chat/completions", message: "Rate limit exceeded: 100/100 used", status_code: 429, retry_after_secs: 60 },
     },
     {
@@ -1408,6 +1417,7 @@ export const mockData = {
       event_type: "validation_error", session_id: null, client_id: "client-2", client_name: "Cursor",
       status: "error", duration_ms: null,
       summary: "/v1/embeddings — model is required (model)",
+      question: "", answer: "model is required",
       data: { type: "validation_error", endpoint: "/v1/embeddings", field: "model", message: "model is required", status_code: 400 },
     },
     {
@@ -1415,6 +1425,7 @@ export const mockData = {
       event_type: "mcp_server_event", session_id: null, client_id: null, client_name: null,
       status: "error", duration_ms: null,
       summary: "filesystem: connection_failed — Failed to spawn process",
+      question: "", answer: "Failed to spawn process: No such file or directory (os error 2)",
       data: { type: "mcp_server_event", server_id: "filesystem", server_name: "Filesystem MCP", action: "connection_failed", message: "Failed to spawn process: No such file or directory (os error 2)" },
     },
   ] as Array<Record<string, unknown>>,
