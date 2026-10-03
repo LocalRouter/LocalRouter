@@ -161,33 +161,32 @@ function emitMcpHealthEvents() {
 
 // Helper to generate mock graph data for metrics
 // Returns: GraphData (src/types/tauri-commands.ts)
-function generateMockGraphData(datasetLabel = "Requests", baseValue = 200, variance = 150): GraphData {
-  const now = new Date()
+function generateMockGraphData(datasetLabel = "Requests", baseValue = 200, variance = 150, args?: { timeRange?: string; metricType?: string }): GraphData {
+  const intervals: Record<string, number> = { hour: 5, day: 60, week: 360, month: 720 }
+  const counts: Record<string, number> = { hour: 12, day: 24, week: 28, month: 60 }
+  const intervalMinutes = intervals[args?.timeRange ?? 'day'] ?? 60
+  const buckets = counts[args?.timeRange ?? 'day'] ?? 24
+  const interval = intervalMinutes * 60_000
+  const end = Math.floor(Date.now() / interval) * interval
   const labels: string[] = []
   const data: number[] = []
 
-  // Generate 24 hourly data points with realistic daily patterns
-  for (let i = 23; i >= 0; i--) {
-    const time = new Date(now.getTime() - i * 60 * 60 * 1000)
-    const hour = time.getHours()
+  // Align independent LLM/MCP calls, respect the selected range, and keep
+  // refreshes stable. Values represent bucket counts, not requests per second.
+  for (let i = buckets; i >= 0; i--) {
+    const time = new Date(end - i * interval)
     labels.push(time.toISOString())
-
-    // Simulate realistic usage pattern (lower at night, higher during day)
-    const timeMultiplier = hour >= 9 && hour <= 18 ? 1.5 : (hour >= 6 && hour <= 21 ? 1.0 : 0.3)
-    const noise = (Math.random() - 0.5) * variance
-    const trendComponent = Math.sin(i / 4) * 30 // Add some wave pattern
-    const value = Math.max(10, Math.floor(baseValue * timeMultiplier + noise + trendComponent))
-    data.push(value)
+    const hour = time.getHours()
+    const multiplier = hour >= 9 && hour <= 18 ? 1.5 : (hour >= 6 && hour <= 21 ? 1.0 : 0.15)
+    const wave = Math.sin(time.getTime() / interval * 1.7) * variance * 0.45
+    const requests = Math.max(0, Math.round((baseValue * multiplier + wave) * intervalMinutes / 60))
+    const metric = args?.metricType ?? 'requests'
+    data.push(metric === 'cost' ? requests * 0.0018 : metric === 'tokens' ? requests * 1250 : metric === 'latency' ? 420 + Math.abs(wave) * 3 : metric === 'successrate' ? 99.2 : requests)
   }
 
   return {
     labels,
-    datasets: [{
-      label: datasetLabel,
-      data,
-      border_color: "#3b82f6",
-      background_color: "#3b82f6",
-    }],
+    datasets: [{ label: datasetLabel, data, border_color: "#3b82f6", background_color: "#3b82f6" }],
   }
 }
 
@@ -2955,15 +2954,15 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     compression_cost_saved_micros: 385200,
     context_mgmt_tokens_saved: 256800,
   }),
-  'get_global_metrics': () => generateMockGraphData("Total Requests", 300, 200),
-  'get_api_key_metrics': () => generateMockGraphData("API Requests", 150, 100),
-  'get_provider_metrics': () => generateMockGraphData("Provider Requests", 200, 150),
-  'get_model_metrics': () => generateMockGraphData("Model Requests", 180, 120),
-  'get_strategy_metrics': () => generateMockGraphData("Strategy Requests", 100, 80),
-  'get_global_mcp_metrics': () => generateMockGraphData("MCP Requests", 80, 60),
-  'get_client_mcp_metrics': () => generateMockGraphData("Client MCP", 50, 40),
-  'get_mcp_server_metrics': () => generateMockGraphData("Server Requests", 60, 50),
-  'get_mcp_method_breakdown': () => generateMockGraphData("Method Calls", 40, 30),
+  'get_global_metrics': (args) => generateMockGraphData("Total Requests", 300, 200, args),
+  'get_api_key_metrics': (args) => generateMockGraphData("API Requests", 150, 100, args),
+  'get_provider_metrics': (args) => generateMockGraphData("Provider Requests", 200, 150, args),
+  'get_model_metrics': (args) => generateMockGraphData("Model Requests", 180, 120, args),
+  'get_strategy_metrics': (args) => generateMockGraphData("Strategy Requests", 100, 80, args),
+  'get_global_mcp_metrics': (args) => generateMockGraphData("MCP Requests", 80, 60, args),
+  'get_client_mcp_metrics': (args) => generateMockGraphData("Client MCP", 50, 40, args),
+  'get_mcp_server_metrics': (args) => generateMockGraphData("Server Requests", 60, 50, args),
+  'get_mcp_method_breakdown': (args) => generateMockGraphData("Method Calls", 40, 30, args),
   'get_health_cache': () => mockData.healthCache,
   'get_periodic_health_enabled': () => true,
   'set_periodic_health_enabled': (_args?: { enabled?: boolean }) => {},

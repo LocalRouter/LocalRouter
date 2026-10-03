@@ -1,617 +1,189 @@
-import { useState, useEffect, useMemo } from "react"
-import { invoke } from "@tauri-apps/api/core"
-import { Activity, DollarSign, Zap, CheckCircle, RefreshCw, LayoutDashboard, GitBranch, Wrench, FileDown, Database } from "lucide-react"
-import { useIncrementalModels } from "@/hooks/useIncrementalModels"
-import { StatsCard, StatsRow } from "@/components/shared/stats-card"
-import { MetricsChart } from "@/components/shared/metrics-chart"
-import { useMetricsSubscription } from "@/hooks/useMetricsSubscription"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
-import { Card, CardContent } from "@/components/ui/Card"
-import { Label } from "@/components/ui/label"
-import { Button } from "@/components/ui/Button"
+import { useEffect, useState } from 'react'
+import { invoke } from '@tauri-apps/api/core'
+import { ArrowRight, Clock3 } from 'lucide-react'
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/Select"
-import { ClientCreationWizard } from "@/components/wizard/ClientCreationWizard"
-import { ConnectionGraph } from "@/components/connection-graph"
-
-interface AggregateStats {
-  total_requests: number
-  total_tokens: number
-  total_cost: number
-  successful_requests: number
-}
-
-interface FeatureStats {
-  routellm_strong: number
-  routellm_weak: number
-  json_repairs: number
-  compression_tokens_saved: number
-  compression_cost_saved_micros: number
-  context_mgmt_tokens_saved: number
-}
-
-interface Client {
-  client_id: string
-  name: string
-}
-
-interface Provider {
-  instance_name: string
-  provider_type: string
-}
-
-interface Model {
-  model_id: string
-  provider_instance: string
-}
-
-interface McpServer {
-  id: string
-  name: string
-}
-
-type TimeRange = "hour" | "day" | "week" | "month"
-type LlmScope = "global" | "client" | "provider" | "model"
-type McpScope = "global" | "client" | "server"
-
-// Special value for "All" selection
-const ALL_ENTITIES = "__all__"
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import { EventDetail } from '@/views/monitor/event-detail'
+import { EventList } from '@/views/monitor/event-list'
+import { cn } from '@/lib/utils'
+import type {
+  MonitorEvent,
+  MonitorEventSummary,
+  TimeRange,
+} from '@/types/tauri-commands'
+import { isRequest } from './activity-data'
+import { RequestTraffic } from './request-traffic'
+import { useHomeActivity } from './use-home-activity'
 
 interface DashboardViewProps {
   onViewChange?: (view: string, subTab?: string | null) => void
 }
 
 export function DashboardView({ onViewChange }: DashboardViewProps) {
-  const metricsRefreshKey = useMetricsSubscription()
-  const [manualRefreshKey, setManualRefreshKey] = useState(0)
-  const refreshKey = metricsRefreshKey + manualRefreshKey
-  const [stats, setStats] = useState<AggregateStats | null>(null)
-  const [featureStats, setFeatureStats] = useState<FeatureStats | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [wizardOpen, setWizardOpen] = useState(false)
-
-  // Active tab
-  const [activeTab, setActiveTab] = useState<"llm" | "mcp">("llm")
-
-  // Unified controls
-  const [timeRange, setTimeRange] = useState<TimeRange>("day")
-
-  // LLM controls
-  const [llmScope, setLlmScope] = useState<LlmScope>("global")
-  const [llmScopeId, setLlmScopeId] = useState<string>("")
-
-  // MCP controls
-  const [mcpScope, setMcpScope] = useState<McpScope>("global")
-  const [mcpScopeId, setMcpScopeId] = useState<string>("")
-
-  // Entity lists for selectors
-  const [clients, setClients] = useState<Client[]>([])
-  const [providers, setProviders] = useState<Provider[]>([])
-  const { models: rawModels } = useIncrementalModels({ refreshOnMount: false })
-  const models = useMemo<Model[]>(() => rawModels.map(m => ({ model_id: m.id, provider_instance: m.provider })), [rawModels])
-  const [mcpServers, setMcpServers] = useState<McpServer[]>([])
+  const [range, setRange] = useState<TimeRange>('day')
+  const [selected, setSelected] = useState<MonitorEventSummary | null>(null)
+  const [detail, setDetail] = useState<MonitorEvent | null>(null)
+  const [detailState, setDetailState] = useState<
+    'loading' | 'ready' | 'missing' | 'error'
+  >('loading')
+  const home = useHomeActivity(range)
+  const pending = home.events.filter(
+    (event) => isRequest(event) && event.status === 'pending',
+  ).length
+  const snapshot = home.events.slice(0, 8)
+  const snapshotProps = {
+    events: snapshot,
+    showType: true,
+    selectedId: selected?.id ?? null,
+    onSelect: (id: string) =>
+      setSelected(home.events.find((event) => event.id === id) ?? null),
+  }
+  const selectedLive =
+    home.events.find((event) => event.id === selected?.id) ?? selected
 
   useEffect(() => {
-    loadStats()
-    loadEntities()
-  }, [refreshKey])
-
-  const loadStats = async () => {
-    try {
-      const [aggregateStats, fStats] = await Promise.all([
-        invoke<AggregateStats>("get_aggregate_stats"),
-        invoke<FeatureStats>("get_feature_stats").catch(() => null),
-      ])
-      setStats(aggregateStats)
-      setFeatureStats(fStats)
-    } catch (error) {
-      console.error("Failed to load aggregate stats:", error)
-      setStats({
-        total_requests: 0,
-        total_tokens: 0,
-        total_cost: 0,
-        successful_requests: 0,
+    if (!selectedLive) return
+    let cancelled = false
+    setDetail(null)
+    setDetailState('loading')
+    invoke<MonitorEvent | null>('get_monitor_event_detail', {
+      eventId: selectedLive.id,
+    })
+      .then((value) => {
+        if (!cancelled) {
+          setDetail(value)
+          setDetailState(value ? 'ready' : 'missing')
+        }
       })
-    } finally {
-      setLoading(false)
+      .catch(() => {
+        if (!cancelled) setDetailState('error')
+      })
+    return () => {
+      cancelled = true
     }
-  }
-
-  const loadEntities = async () => {
-    try {
-      const [clientList, providerList, mcpServerList] = await Promise.all([
-        invoke<Client[]>("list_clients").catch(() => []),
-        invoke<Provider[]>("list_provider_instances").catch(() => []),
-        invoke<McpServer[]>("list_mcp_servers").catch(() => []),
-      ])
-
-      setClients(clientList)
-      setProviders(providerList)
-      setMcpServers(mcpServerList)
-    } catch (error) {
-      console.error("Failed to load entities:", error)
-    }
-  }
-
-  const successRate =
-    stats && stats.total_requests > 0
-      ? ((stats.successful_requests / stats.total_requests) * 100).toFixed(1)
-      : "0.0"
-
-  // RouteLLM strong/weak ratio display
-  const routellmTotal = (featureStats?.routellm_strong ?? 0) + (featureStats?.routellm_weak ?? 0)
-  const routellmRatio = routellmTotal > 0
-    ? `${featureStats!.routellm_strong} / ${featureStats!.routellm_weak}`
-    : "—"
-
-  const formatTokens = (n: number) => {
-    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
-    if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
-    return n.toLocaleString()
-  }
-
-  const formatCostSaved = (micros: number) => {
-    const dollars = micros / 1_000_000
-    if (dollars >= 1) return `$${dollars.toFixed(2)}`
-    if (dollars >= 0.01) return `$${dollars.toFixed(2)}`
-    if (dollars >= 0.001) return `$${dollars.toFixed(3)}`
-    return `$${dollars.toFixed(4)}`
-  }
-
-  // Set to "All" by default when scope changes
-  useEffect(() => {
-    if (llmScope !== "global") {
-      setLlmScopeId(ALL_ENTITIES)
-    } else {
-      setLlmScopeId("")
-    }
-  }, [llmScope])
-
-  useEffect(() => {
-    if (mcpScope !== "global") {
-      setMcpScopeId(ALL_ENTITIES)
-    } else {
-      setMcpScopeId("")
-    }
-  }, [mcpScope])
-
-  // Check if "All" is selected
-  const llmShowAll = llmScopeId === ALL_ENTITIES
-  const mcpShowAll = mcpScopeId === ALL_ENTITIES
-
-  // Check if we have a valid selection for non-global scopes
-  const llmHasValidSelection = llmScope === "global" || (llmScopeId && llmScopeId !== "")
-  const mcpHasValidSelection = mcpScope === "global" || (mcpScopeId && mcpScopeId !== "")
-
-  const handleWizardComplete = (clientId: string) => {
-    setWizardOpen(false)
-    if (onViewChange) {
-      // Use | separator to match parseSubTab in ClientsView
-      onViewChange("clients", `${clientId}|info`)
-    }
-  }
-
-  // Get entities for multiScope when "All" is selected
-  const getLlmMultiScope = () => {
-    if (llmScope === "client") return clients.map(c => ({ id: c.client_id, label: c.name, scope: "api_key" as const }))
-    if (llmScope === "provider") return providers.map(p => ({ id: p.instance_name, label: p.instance_name, scope: "provider" as const }))
-    if (llmScope === "model") return models.map(m => ({ id: `${m.provider_instance}/${m.model_id}`, label: m.model_id, scope: "model" as const }))
-    return []
-  }
-
-  const getMcpMultiScope = () => {
-    if (mcpScope === "client") return clients.map(c => ({ id: c.client_id, label: c.name, scope: "client" as const }))
-    if (mcpScope === "server") return mcpServers.map(s => ({ id: s.id, label: s.name, scope: "server" as const }))
-    return []
-  }
-
-  // Get scope string for single entity view
-  const getLlmChartScope = () => {
-    if (llmScope === "global") return "global" as const
-    if (llmScope === "client") return "api_key" as const
-    if (llmScope === "provider") return "provider" as const
-    if (llmScope === "model") return "model" as const
-    return "global" as const
-  }
-
-  const getMcpChartScope = () => {
-    if (mcpScope === "global") return "global" as const
-    if (mcpScope === "client") return "client" as const
-    if (mcpScope === "server") return "server" as const
-    return "global" as const
-  }
+  }, [selectedLive?.id, selectedLive?.status, selectedLive?.duration_ms])
 
   return (
-    <div className="space-y-6 max-w-5xl">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2"><LayoutDashboard className="h-6 w-6" />Dashboard</h1>
-        <p className="text-sm text-muted-foreground">
-          Monitor your LLM and MCP usage across all clients.
-        </p>
+    <div className="mx-auto max-w-[1440px] space-y-5 p-1 pb-5 sm:p-3">
+      <div className="flex flex-wrap items-center justify-between gap-4 pb-1">
+        <h1 className="text-[28px] font-semibold leading-tight tracking-tight">
+          Dashboard
+        </h1>
       </div>
 
-      {/* Stats Row */}
-      <StatsRow>
-        <StatsCard
-          title="Total Requests"
-          value={loading ? "-" : stats?.total_requests.toLocaleString() ?? "0"}
-          icon={<Activity className="h-5 w-5" />}
-          loading={loading}
+      <div className="min-w-0 space-y-5">
+        <RequestTraffic
+          range={range}
+          onRangeChange={setRange}
+          metrics={home.metrics}
+          loading={home.metricsLoading}
+          onRefresh={home.refresh}
         />
-        <StatsCard
-          title="Total Tokens"
-          value={loading ? "-" : stats?.total_tokens.toLocaleString() ?? "0"}
-          icon={<Zap className="h-5 w-5" />}
-          loading={loading}
-        />
-        <StatsCard
-          title="Total Cost"
-          value={loading ? "-" : `$${stats?.total_cost.toFixed(2) ?? "0.00"}`}
-          icon={<DollarSign className="h-5 w-5" />}
-          loading={loading}
-        />
-        <StatsCard
-          title="Success Rate"
-          value={loading ? "-" : `${successRate}%`}
-          icon={<CheckCircle className="h-5 w-5" />}
-          loading={loading}
-        />
-      </StatsRow>
 
-      {/* Feature Stats Row */}
-      <StatsRow>
-        <StatsCard
-          title="Strong / Weak"
-          value={loading ? "-" : routellmRatio}
-          description={routellmTotal > 0 ? `${routellmTotal} classified` : undefined}
-          icon={<GitBranch className="h-5 w-5" />}
-          loading={loading}
-        />
-        <StatsCard
-          title="JSON Repairs"
-          value={loading ? "-" : (featureStats?.json_repairs ?? 0).toLocaleString()}
-          icon={<Wrench className="h-5 w-5" />}
-          loading={loading}
-        />
-        <StatsCard
-          title="Compression Saved"
-          value={loading ? "-" : formatTokens(featureStats?.compression_tokens_saved ?? 0)}
-          description={!loading && (featureStats?.compression_cost_saved_micros ?? 0) > 0
-            ? `${formatCostSaved(featureStats!.compression_cost_saved_micros)} saved`
-            : undefined}
-          icon={<FileDown className="h-5 w-5" />}
-          loading={loading}
-        />
-        <StatsCard
-          title="Context Saved"
-          value={loading ? "-" : formatTokens(featureStats?.context_mgmt_tokens_saved ?? 0)}
-          icon={<Database className="h-5 w-5" />}
-          loading={loading}
-        />
-      </StatsRow>
-
-      {/* Connection Graph */}
-      <ConnectionGraph onViewChange={onViewChange} />
-
-      {/* Metrics Tabs */}
-      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "llm" | "mcp")}>
-        <TabsList>
-          <TabsTrigger value="llm"><TAB_ICONS.llm className={TAB_ICON_CLASS} />LLM Metrics</TabsTrigger>
-          <TabsTrigger value="mcp"><TAB_ICONS.mcp className={TAB_ICON_CLASS} />MCP Metrics</TabsTrigger>
-        </TabsList>
-
-        {/* LLM Metrics Tab */}
-        <TabsContent value="llm" className="space-y-4">
-          {/* Controls */}
-          <Card>
-            <CardContent className="pt-4">
-              <div className="flex flex-wrap items-end gap-4">
-                <div className="space-y-1.5">
-                  <Label>Scope</Label>
-                  <Select value={llmScope} onValueChange={(v) => setLlmScope(v as LlmScope)}>
-                    <SelectTrigger className="w-[140px]">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="global">Global</SelectItem>
-                      <SelectItem value="client">Client</SelectItem>
-                      <SelectItem value="provider">Provider</SelectItem>
-                      <SelectItem value="model">Model</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                {llmScope !== "global" && (
-                  <div className="space-y-1.5">
-                    <Label>
-                      {llmScope === "client" ? "Client" : llmScope === "provider" ? "Provider" : "Model"}
-                    </Label>
-                    <Select value={llmScopeId} onValueChange={setLlmScopeId}>
-                      <SelectTrigger className="w-[200px]">
-                        <SelectValue placeholder={`Select ${llmScope}...`} />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value={ALL_ENTITIES}>All {llmScope}s</SelectItem>
-                        {llmScope === "client" && clients.map((c) => (
-                          <SelectItem key={c.client_id} value={c.client_id}>
-                            {c.name}
-                          </SelectItem>
-                        ))}
-                        {llmScope === "provider" && providers.map((p) => (
-                          <SelectItem key={p.instance_name} value={p.instance_name}>
-                            {p.instance_name}
-                          </SelectItem>
-                        ))}
-                        {llmScope === "model" && models.map((m) => (
-                          <SelectItem
-                            key={`${m.provider_instance}/${m.model_id}`}
-                            value={`${m.provider_instance}/${m.model_id}`}
-                          >
-                            {m.model_id}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                )}
-
-                <div className="space-y-1.5">
-                  <Label>Time Range</Label>
-                  <Select value={timeRange} onValueChange={(v) => setTimeRange(v as TimeRange)}>
-                    <SelectTrigger className="w-[120px]">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="hour">Hour</SelectItem>
-                      <SelectItem value="day">Day</SelectItem>
-                      <SelectItem value="week">Week</SelectItem>
-                      <SelectItem value="month">Month</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <Button
-                  variant="outline"
-                  size="icon"
-                  onClick={() => {
-                    loadStats()
-                    setManualRefreshKey(k => k + 1)
-                  }}
-                  title="Refresh"
-                >
-                  <RefreshCw className="h-4 w-4" />
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* LLM Charts Grid */}
-          {llmHasValidSelection ? (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              <MetricsChart
-                title="Requests"
-                scope={getLlmChartScope()}
-                scopeId={llmScope === "global" || llmShowAll ? undefined : llmScopeId}
-                multiScope={llmShowAll ? getLlmMultiScope() : undefined}
-                chartType="bar"
-                defaultMetricType="requests"
-                defaultTimeRange={timeRange}
-                showControls={false}
-                refreshTrigger={refreshKey}
-                height={250}
-              />
-              <MetricsChart
-                title="Tokens"
-                scope={getLlmChartScope()}
-                scopeId={llmScope === "global" || llmShowAll ? undefined : llmScopeId}
-                multiScope={llmShowAll ? getLlmMultiScope() : undefined}
-                chartType="bar"
-                defaultMetricType="tokens"
-                defaultTimeRange={timeRange}
-                showControls={false}
-                refreshTrigger={refreshKey}
-                height={250}
-              />
-              <MetricsChart
-                title="Cost"
-                scope={getLlmChartScope()}
-                scopeId={llmScope === "global" || llmShowAll ? undefined : llmScopeId}
-                multiScope={llmShowAll ? getLlmMultiScope() : undefined}
-                chartType="bar"
-                defaultMetricType="cost"
-                defaultTimeRange={timeRange}
-                showControls={false}
-                refreshTrigger={refreshKey}
-                height={250}
-              />
-              <MetricsChart
-                title="Latency"
-                scope={getLlmChartScope()}
-                scopeId={llmScope === "global" || llmShowAll ? undefined : llmScopeId}
-                multiScope={llmShowAll ? getLlmMultiScope() : undefined}
-                chartType="bar"
-                defaultMetricType="latency"
-                defaultTimeRange={timeRange}
-                showControls={false}
-                refreshTrigger={refreshKey}
-                height={250}
-              />
-              <MetricsChart
-                title="Success Rate"
-                scope={getLlmChartScope()}
-                scopeId={llmScope === "global" || llmShowAll ? undefined : llmScopeId}
-                multiScope={llmShowAll ? getLlmMultiScope() : undefined}
-                chartType="bar"
-                defaultMetricType="successrate"
-                defaultTimeRange={timeRange}
-                showControls={false}
-                refreshTrigger={refreshKey}
-                height={250}
-                className="lg:col-span-2"
-              />
+        <section
+          className="overflow-hidden rounded-2xl border bg-card"
+          aria-label="Monitor snapshot"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-3 px-5 pb-4 pt-5">
+            <div className="flex items-center gap-2.5">
+              <h2 className="text-sm font-semibold">Recent activity</h2>
+              {pending > 0 && (
+                <span className="flex items-center gap-1.5 rounded-full bg-teal-500/10 px-2 py-0.5 text-[10px] font-medium text-teal-700 dark:text-teal-300">
+                  <span className="h-1.5 w-1.5 rounded-full bg-teal-500" />
+                  {pending} in progress
+                </span>
+              )}
             </div>
-          ) : (
-            <Card>
-              <CardContent className="py-12 text-center text-muted-foreground">
-                Select a {llmScope} to view metrics
-              </CardContent>
-            </Card>
-          )}
-        </TabsContent>
-
-        {/* MCP Metrics Tab */}
-        <TabsContent value="mcp" className="space-y-4">
-          {/* Controls */}
-          <Card>
-            <CardContent className="pt-4">
-              <div className="flex flex-wrap items-end gap-4">
-                <div className="space-y-1.5">
-                  <Label>Scope</Label>
-                  <Select value={mcpScope} onValueChange={(v) => setMcpScope(v as McpScope)}>
-                    <SelectTrigger className="w-[140px]">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="global">Global</SelectItem>
-                      <SelectItem value="client">Client</SelectItem>
-                      <SelectItem value="server">Server</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                {mcpScope !== "global" && (
-                  <div className="space-y-1.5">
-                    <Label>
-                      {mcpScope === "client" ? "Client" : "Server"}
-                    </Label>
-                    <Select value={mcpScopeId} onValueChange={setMcpScopeId}>
-                      <SelectTrigger className="w-[200px]">
-                        <SelectValue placeholder={`Select ${mcpScope}...`} />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value={ALL_ENTITIES}>All {mcpScope}s</SelectItem>
-                        {mcpScope === "client" && clients.map((c) => (
-                          <SelectItem key={c.client_id} value={c.client_id}>
-                            {c.name}
-                          </SelectItem>
-                        ))}
-                        {mcpScope === "server" && mcpServers.map((s) => (
-                          <SelectItem key={s.id} value={s.id}>
-                            {s.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                )}
-
-                <div className="space-y-1.5">
-                  <Label>Time Range</Label>
-                  <Select value={timeRange} onValueChange={(v) => setTimeRange(v as TimeRange)}>
-                    <SelectTrigger className="w-[120px]">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="hour">Hour</SelectItem>
-                      <SelectItem value="day">Day</SelectItem>
-                      <SelectItem value="week">Week</SelectItem>
-                      <SelectItem value="month">Month</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <Button
-                  variant="outline"
-                  size="icon"
-                  onClick={() => {
-                    loadStats()
-                    setManualRefreshKey(k => k + 1)
-                  }}
-                  title="Refresh"
-                >
-                  <RefreshCw className="h-4 w-4" />
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* MCP Charts Grid */}
-          {mcpHasValidSelection ? (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              <MetricsChart
-                title="Requests"
-                scope={getMcpChartScope()}
-                scopeId={mcpScope === "global" || mcpShowAll ? undefined : mcpScopeId}
-                multiScope={mcpShowAll ? getMcpMultiScope() : undefined}
-                chartType="bar"
-                defaultMetricType="requests"
-                defaultTimeRange={timeRange}
-                showControls={false}
-                refreshTrigger={refreshKey}
-                height={250}
-                dataSource="mcp"
-              />
-              <MetricsChart
-                title="Latency"
-                scope={getMcpChartScope()}
-                scopeId={mcpScope === "global" || mcpShowAll ? undefined : mcpScopeId}
-                multiScope={mcpShowAll ? getMcpMultiScope() : undefined}
-                chartType="bar"
-                defaultMetricType="latency"
-                defaultTimeRange={timeRange}
-                showControls={false}
-                refreshTrigger={refreshKey}
-                height={250}
-                dataSource="mcp"
-              />
-              <MetricsChart
-                title="Success Rate"
-                scope={getMcpChartScope()}
-                scopeId={mcpScope === "global" || mcpShowAll ? undefined : mcpScopeId}
-                multiScope={mcpShowAll ? getMcpMultiScope() : undefined}
-                chartType="bar"
-                defaultMetricType="successrate"
-                defaultTimeRange={timeRange}
-                showControls={false}
-                refreshTrigger={refreshKey}
-                height={250}
-                dataSource="mcp"
-              />
-              <MetricsChart
-                title="Method Breakdown"
-                scope={mcpShowAll ? "global" : getMcpChartScope()}
-                scopeId={mcpScope === "global" || mcpShowAll ? undefined : mcpScopeId}
-                chartType="bar"
-                defaultMetricType="requests"
-                defaultTimeRange={timeRange}
-                showControls={false}
-                refreshTrigger={refreshKey}
-                height={250}
-                dataSource="mcp"
-                showMethodBreakdown={true}
-              />
+            <span className="text-xs text-muted-foreground">
+              Monitor snapshot
+            </span>
+          </div>
+          {home.eventsError && (
+            <div
+              role="status"
+              className="border-t bg-amber-500/5 px-5 py-3 text-xs text-amber-700 dark:text-amber-300"
+            >
+              Activity could not be refreshed.{' '}
+              {home.events.length > 0
+                ? 'Showing the last loaded events.'
+                : 'Try refreshing the page data.'}
+              <button onClick={home.refresh} className="ml-2 underline">
+                Retry
+              </button>
             </div>
-          ) : (
-            <Card>
-              <CardContent className="py-12 text-center text-muted-foreground">
-                Select a {mcpScope} to view metrics
-              </CardContent>
-            </Card>
           )}
-        </TabsContent>
-      </Tabs>
+          <div className="border-t">
+            {home.eventsLoading ? (
+              <p className="py-16 text-center text-sm text-muted-foreground">
+                Loading recent activity…
+              </p>
+            ) : !snapshot.length && home.eventsError ? (
+              <p className="py-16 text-center text-sm text-muted-foreground">
+                Activity is unavailable
+              </p>
+            ) : (
+              <div className="h-[260px] overflow-x-auto">
+                <div
+                  className={cn(
+                    'h-full',
+                    snapshot.length > 0 && 'min-w-[640px]',
+                  )}
+                >
+                  <EventList {...snapshotProps} />
+                </div>
+              </div>
+            )}
+          </div>
+          <div className="flex items-center justify-between border-t bg-muted/20 px-5 py-3 text-[10px] text-muted-foreground">
+            <span>Latest {snapshot.length} events · updates live</span>
+            <button
+              className="flex items-center gap-1 text-xs hover:text-foreground"
+              onClick={() => onViewChange?.('monitor')}
+            >
+              View all
+              <ArrowRight className="h-3 w-3" />
+            </button>
+          </div>
+        </section>
+      </div>
+      <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+        <Clock3 className="h-3 w-3" />
+        Traffic refreshes every 15 seconds. Activity stays on this device.
+      </div>
 
-      <ClientCreationWizard
-        open={wizardOpen}
-        onOpenChange={setWizardOpen}
-        onComplete={handleWizardComplete}
-      />
+      <Dialog
+        open={selected !== null}
+        onOpenChange={(open) => {
+          if (!open) setSelected(null)
+        }}
+      >
+        <DialogContent className="flex max-h-[85vh] w-[calc(100%-2rem)] max-w-4xl flex-col overflow-hidden p-0">
+          <DialogHeader className="shrink-0 border-b px-6 pb-4 pt-6">
+            <DialogTitle>Activity detail</DialogTitle>
+            <DialogDescription className="break-words pr-4">
+              {selected?.summary}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="min-h-0 overflow-auto p-4">
+            {detailState === 'ready' && detail && detail.id === selected?.id ? (
+              <EventDetail key={detail.id} event={detail} />
+            ) : (
+              <p className="py-12 text-center text-sm text-muted-foreground">
+                {detailState === 'loading'
+                  ? 'Loading event details…'
+                  : detailState === 'missing'
+                    ? 'This event is no longer available in the local history.'
+                    : 'Could not load this event. Close and reopen to retry.'}
+              </p>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

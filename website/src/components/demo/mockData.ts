@@ -1315,6 +1315,14 @@ export const mockData = {
 
   monitorEvents: [
     {
+      id: "mon-live", sequence: 7, timestamp: new Date().toISOString(),
+      event_type: "llm_call", session_id: "sess-001", client_id: "client-1", client_name: "Claude Code",
+      status: "pending", duration_ms: null,
+      summary: "anthropic/claude-sonnet-4-6 — streaming response",
+      question: "Review the changes in my working tree.", answer: "",
+      data: { type: "llm_call", endpoint: "/v1/chat/completions", model: "claude-sonnet-4-6", provider: "anthropic", stream: true, message_count: 8, has_tools: true, tool_count: 5, request_body: { model: "claude-sonnet-4-6", messages: [{ role: "user", content: "Review the changes in my working tree." }] } },
+    },
+    {
       id: "mon-001", sequence: 6, timestamp: new Date(Date.now() - 1000).toISOString(),
       event_type: "llm_call", session_id: "sess-001", client_id: "client-1", client_name: "Claude Code",
       status: "complete", duration_ms: 1250,
