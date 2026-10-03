@@ -18,6 +18,11 @@ Local OpenAI-compatible API gateway with intelligent routing, multi-provider sup
 - Frontend: **camelCase** in `invoke()` (`{ clientId: "..." }`)
 - No native dialogs (`window.confirm`) - use Radix UI `AlertDialog`
 
+### Logos and Icons
+- **Never use placeholder emojis, random symbols, or invented logos** for providers, services, or UI icons, including fallbacks and demos.
+- Find official logos in the project's upstream repository or official website. Bundle assets locally and record their sources and licenses; never load remote logos at runtime.
+- When no official logo is available, use an established icon from the project's UI icon system (such as the generic provider icon). Do not substitute unrelated branding or starter-template assets.
+
 ### Adding/Modifying Tauri Commands
 
 When creating or modifying a Tauri command, update **all locations**:
