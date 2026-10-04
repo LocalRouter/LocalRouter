@@ -947,6 +947,14 @@ pub async fn relocate(
 mod tests {
     use super::*;
 
+    /// Reserve a unique TCP port while keeping connection probes offline.
+    /// Dropping a listener to obtain a free port races with other tests.
+    fn offline_socket() -> tokio::net::TcpSocket {
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        socket
+    }
+
     #[tokio::test]
     async fn startup_leaves_a_healthy_provider_running() {
         let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -969,9 +977,8 @@ mod tests {
 
     #[tokio::test]
     async fn startup_does_not_run_manual_or_elevated_plans() {
-        let reserved = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let reserved = offline_socket();
         let port = reserved.local_addr().unwrap().port();
-        drop(reserved);
         for configure_restarts in [false, true] {
             let plan = ReversePlan {
                 configure: vec![Cmd::new("nonexistent-relocation-command", &[])],
@@ -984,9 +991,8 @@ mod tests {
 
     #[tokio::test]
     async fn startup_reports_automatic_relocation_failures() {
-        let reserved = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let reserved = offline_socket();
         let port = reserved.local_addr().unwrap().port();
-        drop(reserved);
         let plan = ReversePlan {
             configure: vec![Cmd::new("nonexistent-relocation-command", &[])],
             start: vec![Cmd::new("nonexistent-relocation-command", &[])],
@@ -1002,12 +1008,10 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let configured = temp.path().join("configured");
         let started = temp.path().join("started");
-        let reserved = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let reserved = offline_socket();
         let port = reserved.local_addr().unwrap().port();
-        drop(reserved);
-        let original = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let original = offline_socket();
         let original_port = original.local_addr().unwrap().port();
-        drop(original);
         let plan = ReversePlan {
             configure: vec![Cmd::new("touch", &[configured.to_str().unwrap()])],
             start: vec![Cmd::new("touch", &[started.to_str().unwrap()])],
@@ -1018,9 +1022,7 @@ mod tests {
             while !started_signal.exists() {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            tokio::net::TcpListener::bind(("127.0.0.1", port))
-                .await
-                .unwrap()
+            reserved.listen(16).unwrap()
         });
         // Keep the returned listener alive through verification.
         let server_holder = tokio::spawn(async move {
