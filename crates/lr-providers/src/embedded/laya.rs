@@ -272,6 +272,7 @@ impl super::EmbeddedControl for LayaEmbeddedProvider {
                 download_error: self.downloads.error(id),
                 progress: None,
                 removable: false,
+                unavailable: None,
             })
             .collect()
     }

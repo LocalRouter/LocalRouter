@@ -8,6 +8,11 @@
 //! the Ollaya CLI and app. What is downloaded is read from the store's
 //! manifests on disk, so listing models never starts the engine. Downloads
 //! run through Ollaya's `/api/pull` and happen only from the Models tab.
+//!
+//! The Models tab lists the built-in [`LIBRARY`] plus whatever Ollaya has
+//! published since, read from its repository ([`super::ollaya_registry`])
+//! at most once a day. A model that needs a newer Ollaya than the installed
+//! engine is listed with the reason and cannot be downloaded.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -24,6 +29,7 @@ use lr_config::FreeTierKind;
 use lr_engines::{EngineHandle, EngineState, LaunchSpec, PortArg, RecipeId, Supervisor};
 use lr_types::{AppError, AppResult};
 
+use super::ollaya_registry::{self, RegistrySource, RegistryView};
 use super::{
     engine_error, engine_missing, not_downloaded, parse_minutes, resolve_engine,
     EmbeddedCatalogModel, SystemOneClientCache,
@@ -65,9 +71,11 @@ const fn m(
     }
 }
 
-/// Ollaya's library (registry `ollaya.dev`, release v0.7.5), smallest and
-/// most general first. The first downloaded one answers requests that name
-/// no model.
+/// Ollaya's library at the pinned release (registry `ollaya.dev`, v0.9.0),
+/// smallest and most general first. The first downloaded one answers
+/// requests that name no model. Models Ollaya adds later come from its
+/// repository ([`super::ollaya_registry`]); this list is what is shown
+/// offline and describes the models it covers.
 pub const LIBRARY: &[LibraryModel] = &[
     m(
         "laya:latest",
@@ -126,6 +134,13 @@ pub const LIBRARY: &[LibraryModel] = &[
         "Qwen3.5 decoder, up to 32K tokens of state. Needs about 9 GB of memory. On Macs Ollaya runs it on the CPU; the Decider provider runs it on the Apple GPU, much faster.",
     ),
     m(
+        "decider:2b-vision",
+        "Decider 2B Vision",
+        "4.5 GB",
+        32_768,
+        "Decider that can also read one image per request. LocalRouter's System One requests are text only, so it answers like Decider 2B here.",
+    ),
+    m(
         "kev:0.8b",
         "Kev 0.8B",
         "1.8 GB",
@@ -161,6 +176,27 @@ pub const LIBRARY: &[LibraryModel] = &[
         "4B GGUF model (llama.cpp), up to 16 options per question and 16K tokens of state.",
     ),
     m(
+        "jeb:4b",
+        "Jeb 4B",
+        "4.6 GB",
+        4_096,
+        "Jebadiah 4B (Qwen3.5, AINode), GGUF on llama.cpp with the authors' temperatures, up to 4K tokens of state.",
+    ),
+    m(
+        "jeb:9b",
+        "Jeb 9B",
+        "9.8 GB",
+        4_096,
+        "Jebadiah 9B (Qwen3.5, AINode), GGUF on llama.cpp: the authors' recommended local model. Up to 4K tokens of state.",
+    ),
+    m(
+        "jeb:27b",
+        "Jeb 27B",
+        "16.8 GB",
+        4_096,
+        "Jebadiah 27B (Qwen3.8, AINode), Q4_K_M GGUF that fits a 24 GB GPU: the most accurate Jebadiah. Up to 4K tokens of state.",
+    ),
+    m(
         "winnow:e4b",
         "Winnow E4B",
         "8.0 GB",
@@ -173,6 +209,34 @@ pub const LIBRARY: &[LibraryModel] = &[
         "12.7 GB",
         8_192,
         "Multilingual Gemma fine-tune (GGUF, llama.cpp), up to 8K tokens of state.",
+    ),
+    m(
+        "cygnet:12b",
+        "Cygnet 12B",
+        "12.7 GB",
+        16_384,
+        "Gemma 4 12B IT (GGUF, llama.cpp) with Cygnet's prompt and calibration (blockbrain-ai). Multilingual, up to 20 options and 16K tokens of state.",
+    ),
+    m(
+        "nimble:9b",
+        "Nimble 9B",
+        "19.5 GB",
+        8_192,
+        "Bespoke Labs' Nimble v2 (Qwen3.5-9B LoRA), calibrated, up to 255 options and 8K tokens of state. Needs about 18 GB of memory; best on a 24 GB GPU.",
+    ),
+    m(
+        "jeeves:9b",
+        "Jeeves 9B",
+        "17.9 GB",
+        8_192,
+        "PostHog's Jeeves-9B (Qwen3.5-9B with a pointer head), calibrated, up to 8K tokens of state. Needs about 18 GB of memory.",
+    ),
+    m(
+        "clef:flash",
+        "Clef Flash",
+        "19.1 GB",
+        4_096,
+        "Cloudflare's Clef-Flash (Qwen3.5-9B with a joint schema head): every option of every question in one pass, up to 4K tokens of state. Needs about 19 GB of memory.",
     ),
     m(
         "nli:modernbert-large",
@@ -218,6 +282,11 @@ const REGISTRY: &str = "ollaya.dev";
 const START_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long the cached list of loaded models is trusted.
 const LOADED_TTL: Duration = Duration::from_millis(1500);
+/// How long the library read from Ollaya's repository is trusted.
+const REGISTRY_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+/// How often the installed engine's release is checked (a different one
+/// refreshes the library at once), and how soon a failed read is retried.
+const REGISTRY_CHECK: Duration = Duration::from_secs(5 * 60);
 
 pub const DEVICES: &[&str] = &["auto", "cpu", "cuda", "metal"];
 
@@ -418,6 +487,22 @@ struct Pull {
     task: Option<tokio::task::AbortHandle>,
 }
 
+/// The library read from Ollaya's repository, refreshed in the background.
+#[derive(Default)]
+struct RegistryCache {
+    view: Option<RegistryView>,
+    fetched: Option<Instant>,
+    checked: Option<Instant>,
+    refreshing: bool,
+}
+
+/// Name and context window of a model the catalog knows (built in or read
+/// from the repository).
+struct Known {
+    name: String,
+    context: u32,
+}
+
 /// Models Ollaya has loaded, from `/api/ps`, refreshed in the background.
 #[derive(Default)]
 struct LoadedCache {
@@ -435,6 +520,12 @@ pub struct OllayaEmbeddedProvider {
     pulls: Arc<Mutex<HashMap<String, Pull>>>,
     loaded: Arc<Mutex<LoadedCache>>,
     last_handle: Mutex<Option<EngineHandle>>,
+    /// Where Ollaya's library is read from; `None` keeps to the built-in
+    /// list.
+    registry_source: Option<RegistrySource>,
+    registry: Arc<Mutex<RegistryCache>>,
+    /// The engine release to assume instead of detecting it (tests).
+    fixed_engine_tag: Option<String>,
     /// Extra launch environment (tests point the fake engine at our
     /// variables).
     extra_env: Vec<(String, String)>,
@@ -448,7 +539,9 @@ impl OllayaEmbeddedProvider {
             supervisor,
             clients: SystemOneClientCache::default(),
             // No overall timeout: pulls run for as long as the download takes.
+            // GitHub's API refuses requests without a User-Agent.
             http: reqwest::Client::builder()
+                .user_agent(concat!("LocalRouter/", env!("CARGO_PKG_VERSION")))
                 .connect_timeout(Duration::from_secs(10))
                 .read_timeout(Duration::from_secs(300))
                 .build()
@@ -456,8 +549,108 @@ impl OllayaEmbeddedProvider {
             pulls: Arc::default(),
             loaded: Arc::default(),
             last_handle: Mutex::new(None),
+            registry_source: Some(RegistrySource::default()),
+            registry: Arc::default(),
+            fixed_engine_tag: None,
             extra_env: Vec::new(),
         }
+    }
+
+    /// The library read from Ollaya's repository, if it has been read.
+    fn registry_view(&self) -> Option<RegistryView> {
+        self.registry.lock().view.clone()
+    }
+
+    /// Name and context of a model the catalog lists.
+    fn known(&self, id: &str) -> Option<Known> {
+        if let Some(m) = library(id) {
+            return Some(Known {
+                name: m.name.to_string(),
+                context: m.context,
+            });
+        }
+        self.registry_view()?
+            .added
+            .into_iter()
+            .find(|m| m.id == id)
+            .map(|m| Known {
+                name: m.name,
+                context: m.context.unwrap_or(4_096),
+            })
+    }
+
+    /// Why `id` cannot be downloaded with the installed engine, if it needs
+    /// a newer Ollaya.
+    fn needs_newer(&self, id: &str) -> Option<String> {
+        let view = self.registry_view()?;
+        let tag = view.needs_newer.get(id)?;
+        Some(format!(
+            "Needs Ollaya {tag} or newer; the engine here is {}. Update LocalRouter, or install a newer Ollaya and choose it in the Engine tab.",
+            view.engine_tag
+        ))
+    }
+
+    /// Read Ollaya's library in the background when it is stale: once a
+    /// day, or as soon as the installed engine's release changes (checked
+    /// every few minutes). Never blocks; the catalog uses what is cached.
+    fn refresh_registry(&self) {
+        let Some(source) = self.registry_source.clone() else {
+            return;
+        };
+        {
+            let mut cache = self.registry.lock();
+            if cache.refreshing || cache.checked.is_some_and(|t| t.elapsed() < REGISTRY_CHECK) {
+                return;
+            }
+            cache.refreshing = true;
+        }
+        let Ok(rt) = tokio::runtime::Handle::try_current() else {
+            self.registry.lock().refreshing = false;
+            return;
+        };
+        let http = self.http.clone();
+        let cache = self.registry.clone();
+        let binary_path = self.settings.binary_path.clone();
+        let fixed_tag = self.fixed_engine_tag.clone();
+        rt.spawn(async move {
+            let engine_tag = match fixed_tag {
+                Some(tag) => tag,
+                None => engine_release(binary_path).await,
+            };
+            let stale = {
+                let c = cache.lock();
+                match &c.view {
+                    Some(view) => {
+                        view.engine_tag != engine_tag
+                            || c.fetched.is_none_or(|t| t.elapsed() >= REGISTRY_TTL)
+                    }
+                    None => true,
+                }
+            };
+            let result = if stale {
+                Some(
+                    ollaya_registry::fetch(&http, &source, &engine_tag, &|id| {
+                        library(id).is_some()
+                    })
+                    .await,
+                )
+            } else {
+                None
+            };
+            let mut c = cache.lock();
+            match result {
+                Some(Ok(view)) => {
+                    c.view = Some(view);
+                    c.fetched = Some(Instant::now());
+                }
+                Some(Err(e)) => {
+                    tracing::debug!("Ollaya: could not read the model library: {e}");
+                }
+                None => {}
+            }
+            c.checked = Some(Instant::now());
+            c.refreshing = false;
+        });
     }
 
     fn spec_key(&self) -> String {
@@ -495,7 +688,7 @@ impl OllayaEmbeddedProvider {
                 let id = canonical(m);
                 if self.is_downloaded(&id) {
                     Ok(id)
-                } else if library(&id).is_some() {
+                } else if self.known(&id).is_some() {
                     Err(not_downloaded(PROVIDER_TYPE, &id))
                 } else {
                     Err(AppError::ModelNotFound {
@@ -629,6 +822,22 @@ impl OllayaEmbeddedProvider {
     }
 }
 
+/// The release of the Ollaya LocalRouter would run, e.g. `v0.9.0`: the
+/// downloaded engine's tag, else the version the binary reports, else the
+/// pinned release (what a download would install).
+async fn engine_release(binary_path: Option<PathBuf>) -> String {
+    let status = lr_engines::detect(RecipeId::Ollaya, binary_path, false).await;
+    let version = status
+        .found
+        .then(|| status.managed_tag.or(status.version))
+        .flatten();
+    match version {
+        Some(v) if v.starts_with('v') => v,
+        Some(v) => format!("v{v}"),
+        None => lr_engines::OLLAYA_VERSION.to_string(),
+    }
+}
+
 /// Run one `/api/pull` to completion, reporting progress into `pulls`.
 async fn pull(
     http: reqwest::Client,
@@ -735,6 +944,8 @@ impl super::EmbeddedControl for OllayaEmbeddedProvider {
     }
 
     fn catalog(&self) -> Vec<EmbeddedCatalogModel> {
+        self.refresh_registry();
+        let view = self.registry_view();
         let stored = self.stored();
         let pulls = self.pulls.lock();
         let entry = |id: &str, name: String, size: String, guidance: Option<String>| {
@@ -750,6 +961,8 @@ impl super::EmbeddedControl for OllayaEmbeddedProvider {
                 download_error: pull.and_then(|p| p.error.clone()),
                 progress: pull.filter(|p| p.running).and_then(|p| p.progress),
                 removable: downloaded,
+                // A model already in the store can still be removed.
+                unavailable: (!downloaded).then(|| self.needs_newer(id)).flatten(),
             }
         };
         let mut out: Vec<EmbeddedCatalogModel> = LIBRARY
@@ -763,10 +976,22 @@ impl super::EmbeddedControl for OllayaEmbeddedProvider {
                 )
             })
             .collect();
+        // Models Ollaya published after the built-in list.
+        let added = view.map(|v| v.added).unwrap_or_default();
+        for m in &added {
+            if library(&m.id).is_none() {
+                out.push(entry(
+                    &m.id,
+                    m.name.clone(),
+                    human_size(m.size_bytes),
+                    m.description.clone(),
+                ));
+            }
+        }
         // Models pulled another way (the Ollaya CLI, `ollaya create`, a
         // router's targets) are listed too.
         for (name, bytes) in &stored {
-            if library(name).is_none() {
+            if library(name).is_none() && !added.iter().any(|m| &m.id == name) {
                 out.push(entry(name, name.clone(), human_size(*bytes), None));
             }
         }
@@ -775,6 +1000,9 @@ impl super::EmbeddedControl for OllayaEmbeddedProvider {
 
     async fn download(&self, model: &str) -> AppResult<()> {
         let id = canonical(model);
+        if let Some(reason) = self.needs_newer(&id) {
+            return Err(AppError::InvalidParams(format!("{id}: {reason}")));
+        }
         if self.pulls.lock().get(&id).is_some_and(|p| p.running) {
             return Ok(());
         }
@@ -906,12 +1134,13 @@ impl ModelProvider for OllayaEmbeddedProvider {
         Ok(ids
             .into_iter()
             .map(|id| {
-                let lib = library(&id);
+                let known = self.known(&id);
                 ModelInfo {
-                    name: lib
-                        .map(|m| m.name.to_string())
+                    name: known
+                        .as_ref()
+                        .map(|k| k.name.clone())
                         .unwrap_or_else(|| id.clone()),
-                    context_window: lib.map(|m| m.context).unwrap_or(4_096),
+                    context_window: known.map(|k| k.context).unwrap_or(4_096),
                     id,
                     provider: PROVIDER_TYPE.to_string(),
                     parameter_count: None,
@@ -1180,7 +1409,9 @@ mod tests {
         let store = dir.path().join("models");
         let settings =
             OllayaSettings::from_config(&cfg(&[("models_dir", store.to_str().unwrap())])).unwrap();
-        let p = OllayaEmbeddedProvider::new("Ollaya".into(), settings, Supervisor::new(dir.path()));
+        let mut p =
+            OllayaEmbeddedProvider::new("Ollaya".into(), settings, Supervisor::new(dir.path()));
+        p.registry_source = None;
         assert!(p.list_models().await.unwrap().is_empty());
         assert!(matches!(
             p.systemone(req(None)).await,
@@ -1226,6 +1457,65 @@ mod tests {
         assert!(p.supports_systemone());
     }
 
+    #[tokio::test]
+    async fn the_catalog_adds_published_models_and_says_which_need_a_newer_engine() {
+        let server = crate::embedded::ollaya_registry::tests::mock_registry().await;
+        let dir = tempfile::tempdir().unwrap();
+        let settings = OllayaSettings::from_config(&cfg(&[(
+            "models_dir",
+            dir.path().join("models").to_str().unwrap(),
+        )]))
+        .unwrap();
+        let mut p =
+            OllayaEmbeddedProvider::new("Ollaya".into(), settings, Supervisor::new(dir.path()));
+        p.registry_source = Some(crate::embedded::ollaya_registry::tests::source(&server));
+        p.fixed_engine_tag = Some("v0.9.0".into());
+
+        // The first look shows the built-in list and starts the read.
+        assert_eq!(p.catalog().len(), LIBRARY.len());
+        wait_for(|| p.registry_view().is_some()).await;
+        let catalog = p.catalog();
+        assert_eq!(catalog.len(), LIBRARY.len() + 2);
+        let acme = catalog.iter().find(|m| m.id == "acme:2b").unwrap();
+        assert_eq!(acme.name, "Acme 2B");
+        assert_eq!(acme.download_size, "2.0 GB");
+        assert_eq!(acme.guidance.as_deref(), Some("The acme model."));
+        assert!(acme.unavailable.is_none());
+        let zeta = catalog.iter().find(|m| m.id == "zeta:1b").unwrap();
+        assert!(zeta
+            .unavailable
+            .as_deref()
+            .unwrap()
+            .contains("Needs Ollaya v0.10.0 or newer; the engine here is v0.9.0"));
+        assert!(catalog
+            .iter()
+            .filter(|m| library(&m.id).is_some())
+            .all(|m| m.unavailable.is_none()));
+
+        // A published model is known: asking for it says to download it.
+        assert!(matches!(
+            p.servable(Some("acme:2b")),
+            Err(AppError::InvalidParams(m)) if m.contains("not downloaded")
+        ));
+        // One that needs a newer engine is refused before anything starts.
+        assert!(matches!(
+            p.download("zeta:1b").await,
+            Err(AppError::InvalidParams(m)) if m.contains("v0.10.0")
+        ));
+        // Downloaded, it is listed with the registry's name and context.
+        write_manifest(
+            &dir.path().join("models"),
+            "ollaya.dev",
+            "library",
+            "acme",
+            "2b",
+        );
+        let models = p.list_models().await.unwrap();
+        assert_eq!(models[0].id, "acme:2b");
+        assert_eq!(models[0].name, "Acme 2B");
+        assert_eq!(models[0].context_window, 2048);
+    }
+
     #[test]
     fn factory_is_embedded_listed_and_asks_for_nothing_required() {
         let dir = tempfile::tempdir().unwrap();
@@ -1261,6 +1551,7 @@ mod tests {
         ]))
         .unwrap();
         let mut p = OllayaEmbeddedProvider::new("Ollaya".into(), settings, supervisor.clone());
+        p.registry_source = None;
         p.extra_env = vec![
             ("FAKE_ADDR_VAR".into(), "OLLAYA_HOST".into()),
             ("FAKE_KEY_VAR".into(), "OLLAYA_API_KEY".into()),

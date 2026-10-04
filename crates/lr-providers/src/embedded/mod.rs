@@ -8,6 +8,7 @@ pub mod kev;
 pub mod laya;
 pub mod llamacpp;
 pub mod ollaya;
+pub mod ollaya_registry;
 pub mod sdcpp;
 pub mod von;
 
@@ -93,6 +94,9 @@ pub struct EmbeddedCatalogModel {
     pub progress: Option<f64>,
     /// A downloaded model can be deleted from the Models tab.
     pub removable: bool,
+    /// Why the model cannot be downloaded here (e.g. it needs a newer
+    /// engine); the Models tab shows this instead of a Download button.
+    pub unavailable: Option<String>,
 }
 
 /// Health of a Local Embedded provider without starting anything: the

@@ -21,7 +21,7 @@ pub use detect::{detect, resolve, EngineCommand, EngineSource, EngineStatus, Lla
 pub use install::{InstallError, InstallRunner, InstallSink, OutputStream};
 pub use managed::ManagedInstall;
 pub use platform::{Os, Platform};
-pub use recipes::{InstallKind, RecipeId, KEV_GIT_REV};
+pub use recipes::{InstallKind, RecipeId, KEV_GIT_REV, OLLAYA_REPO, OLLAYA_VERSION};
 pub use supervisor::{
     EngineError, EngineHandle, EngineProcessInfo, EngineState, LaunchSpec, Lease, PortArg,
     Supervisor,

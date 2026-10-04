@@ -78,7 +78,7 @@ import type {
  *  CHECKPOINTS tables in crates/lr-providers/src/embedded/). */
 const cat = (id: string, name: string, size: string, guidance: string, downloaded = false): EmbeddedCatalogModel => ({
   id, name, download_size: size, guidance, downloaded, downloading: false, download_error: null,
-  progress: null, removable: false,
+  progress: null, removable: false, unavailable: null,
 })
 const mockEngineCatalogs: Record<string, EmbeddedCatalogModel[]> = {
   ollaya: [
@@ -90,6 +90,8 @@ const mockEngineCatalogs: Record<string, EmbeddedCatalogModel[]> = {
     cat('decider:0.8b', 'Decider 0.8B', '1.5 GB', 'Qwen3.5 decoder, up to 32K tokens of state. Runs on the CPU on Macs; the Decider provider runs it on the Apple GPU, much faster.'),
     cat('kev:0.8b', 'Kev 0.8B', '1.8 GB', 'Qwen3.5 decoder, up to 8K tokens of state. Runs on the CPU on Macs; the Kev provider runs it on the Apple GPU, much faster.'),
     cat('winnow:e4b', 'Winnow E4B', '8.0 GB', 'Multilingual Gemma fine-tune (GGUF, llama.cpp), up to 8K tokens of state.'),
+    cat('nimble:9b', 'Nimble 9B', '19.5 GB', "Bespoke Labs' Nimble v2 (Qwen3.5-9B LoRA), calibrated, up to 255 options and 8K tokens of state. Needs about 18 GB of memory; best on a 24 GB GPU."),
+    cat('clef:flash', 'Clef Flash', '19.1 GB', "Cloudflare's Clef-Flash (Qwen3.5-9B with a joint schema head): every option of every question in one pass, up to 4K tokens of state. Needs about 19 GB of memory."),
     cat('nli:modernbert-large', 'NLI ModernBERT-large', '799 MB', 'Natural-language inference (does the state support a statement?), up to 512 tokens.'),
     cat('gliclass:large', 'GLiClass Large', '1.8 GB', 'Zero-shot classification, up to 1,024 tokens of state.'),
   ],
@@ -296,7 +298,7 @@ const mockEngineRecipes: Record<string, MockEngineRecipe> = {
         label: 'Apple Silicon',
         kind: 'download',
         command: null,
-        description: 'Downloads Ollaya v0.7.5 (Apple Silicon build) from github.com/ollaya-dev/ollaya',
+        description: 'Downloads Ollaya v0.9.0 (Apple Silicon build) from github.com/ollaya-dev/ollaya',
         program: null,
         needs_sudo: false,
         notes: 'About 25 MB. Needs macOS 14 or newer.',
@@ -304,13 +306,13 @@ const mockEngineRecipes: Record<string, MockEngineRecipe> = {
     ],
     docs_url: 'https://github.com/ollaya-dev/ollaya',
     // The demo's ollaya-local provider runs the engine LocalRouter downloaded
-    path: '/Users/demo/.localrouter/engines/managed/ollaya/v0.7.5-metal/bin/ollaya',
+    path: '/Users/demo/.localrouter/engines/managed/ollaya/v0.9.0-metal/bin/ollaya',
     binary: 'ollaya',
-    version: 'v0.7.5',
+    version: 'v0.9.0',
     build: null,
     installs_to: null,
     source: 'managed',
-    managed_tag: 'v0.7.5',
+    managed_tag: 'v0.9.0',
     managed_build: 'metal',
   },
   llamacpp: {
@@ -475,12 +477,12 @@ function mockInstallOutput(recipeId: string): string[] {
       // Mirrors crates/lr-engines/src/download.rs progress lines
       const asset = 'ollaya-darwin-arm64.tar.zst'
       return [
-        'Looking up Ollaya release v0.7.5 on github.com/ollaya-dev/ollaya',
+        'Looking up Ollaya release v0.9.0 on github.com/ollaya-dev/ollaya',
         ...[0, 50, 100].map((pct) => `Downloading ${asset}: ${pct}% (${Math.round((14 * pct) / 100)}/14 MB)`),
         `Verified ${asset} (sha256)`,
         ...[0, 100].map((pct) => `Downloading ollaya-darwin-arm64-mlx.tar.zst: ${pct}% (${Math.round((9 * pct) / 100)}/9 MB)`),
         `Extracting ${asset}`,
-        'Installed Ollaya v0.7.5 (Apple Silicon build) in /Users/demo/.localrouter/engines/managed/ollaya/v0.7.5-metal',
+        'Installed Ollaya v0.9.0 (Apple Silicon build) in /Users/demo/.localrouter/engines/managed/ollaya/v0.9.0-metal',
       ]
     }
     case 'kev':
@@ -561,7 +563,7 @@ const mockEngineLogs: Record<string, string[]> = {
     'srv  update_slots: all slots are idle',
   ],
   'ollaya:ollaya-local': [
-    'INFO ollaya: Ollaya 0.7.5 listening address=127.0.0.1:52814',
+    'INFO ollaya: Ollaya 0.9.0 listening address=127.0.0.1:52814',
     'INFO ollaya::scheduler: loading model=laya:en engine=mlx device=metal',
     'INFO ollaya::scheduler: loaded model=laya:en load_ms=670',
     'INFO ollaya: POST /v1/systemone model=laya:en status=200 duration_ms=56',

@@ -264,7 +264,9 @@ Anthropic, Cerebras, Cohere, DeepInfra, Gemini, Groq, LMStudio, Mistral, Ollama,
 the Local Embedded engines in `crates/lr-providers/src/embedded/`: **Ollaya**
 (`ollaya.rs`, one engine serving Ollaya's whole model library — Laya, Kev,
 Decider, Von, Winnow, NLI, … — downloaded by LocalRouter at a pinned release,
-`lr_engines::OLLAYA_VERSION`), and Laya, Kev, Von and Decider on their own
+`lr_engines::OLLAYA_VERSION`; its Models tab is the built-in `LIBRARY` plus
+models Ollaya published since, read daily from its repository by
+`embedded/ollaya_registry.rs`), and Laya, Kev, Von and Decider on their own
 engines. The dedicated engines stay offered for their GPU support: on Apple
 Silicon Ollaya runs Kev, Decider and Von on the CPU (fp32 ONNX; its MLX engine
 does not run their layouts), measured 70–160x (Kev, Decider) and ~18x (Von)
