@@ -36,6 +36,6 @@ The dashboard displays time-series graphs for requests, tokens, cost, latency pe
 
 <!-- @entry monitor-systemone -->
 
-System One decision calls (`POST /systemone`) appear in the Monitor as LLM calls. The detail view shows the state, each question with its options or levels, each answer with its probability bars, and the tokens, latency and cost. The request's Full Body and Raw tabs show the exact JSON.
+System One decision calls (`POST /systemone`) appear in the Dashboard's request monitor as LLM calls. The detail view shows the state, each question with its options or levels, each answer with its probability bars, and the tokens, latency and cost. The request's Full Body and Raw tabs show the exact JSON.
 
 Decision traffic that bypasses the gateway is captured too. The HTTPS inspection proxy recognizes System One requests to `api.typesafe.ai`, and a reverse-proxy client wrapping a local Laya or Kev server records their `/v1/systemone` calls.

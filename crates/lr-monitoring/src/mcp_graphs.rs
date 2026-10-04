@@ -250,18 +250,12 @@ impl McpGraphGenerator {
         time_range: TimeRange,
     ) -> Vec<McpMetricDataPoint> {
         let (start, end) = time_range.get_range();
-        let interval_minutes = time_range.bucket_interval_minutes();
-        let interval_seconds = interval_minutes * 60;
-
-        let start_ts = start.timestamp();
-        let end_ts = end.timestamp();
-        let bucket_start = (start_ts / interval_seconds) * interval_seconds;
+        let interval_seconds = time_range.bucket_interval_minutes() * 60;
 
         // Create bucket boundaries with zero-initialized data
         let mut buckets: BTreeMap<i64, McpMetricDataPoint> = BTreeMap::new();
 
-        let mut current = bucket_start;
-        while current <= end_ts {
+        for current in time_range.bucket_timestamps(start, end) {
             buckets.insert(
                 current,
                 McpMetricDataPoint {
@@ -274,7 +268,6 @@ impl McpGraphGenerator {
                     method_counts: HashMap::new(),
                 },
             );
-            current += interval_seconds;
         }
 
         // Aggregate data points into buckets
@@ -334,20 +327,8 @@ impl McpGraphGenerator {
         }
 
         let (start, end) = time_range.get_range();
-        let interval_minutes = time_range.bucket_interval_minutes();
-        let interval_seconds = interval_minutes * 60;
-
-        let start_ts = start.timestamp();
-        let end_ts = end.timestamp();
-        let bucket_start = (start_ts / interval_seconds) * interval_seconds;
-
-        // Generate all bucket timestamps
-        let mut bucket_timestamps: Vec<i64> = Vec::new();
-        let mut current = bucket_start;
-        while current <= end_ts {
-            bucket_timestamps.push(current);
-            current += interval_seconds;
-        }
+        let interval_seconds = time_range.bucket_interval_minutes() * 60;
+        let bucket_timestamps = time_range.bucket_timestamps(start, end);
 
         // Generate labels from bucket timestamps
         let labels: Vec<String> = bucket_timestamps

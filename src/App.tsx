@@ -22,7 +22,6 @@ import { JsonRepairView } from './views/json-repair'
 import { SecretScanningView } from './views/secret-scanning'
 import { MarketplaceView } from './views/marketplace'
 import { OptimizeOverviewView } from './views/optimize-overview'
-import { MonitorView } from './views/monitor'
 import { ClientCreationWizard } from './components/wizard/ClientCreationWizard'
 
 const DebugView = import.meta.env.DEV
@@ -243,9 +242,7 @@ function App() {
   const renderView = () => {
     switch (activeView) {
       case 'dashboard':
-        return <DashboardView onViewChange={handleChildViewChange} />
-      case 'monitor':
-        return <MonitorView />
+        return <DashboardView />
       case 'clients':
         return (
           <ClientsView
@@ -368,7 +365,7 @@ function App() {
           </Suspense>
         ) : null
       default:
-        return <DashboardView onViewChange={handleChildViewChange} />
+        return <DashboardView />
     }
   }
 

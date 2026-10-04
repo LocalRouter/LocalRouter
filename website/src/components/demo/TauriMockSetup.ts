@@ -165,8 +165,8 @@ function emitMcpHealthEvents() {
 // Helper to generate mock graph data for metrics
 // Returns: GraphData (src/types/tauri-commands.ts)
 function generateMockGraphData(datasetLabel = "Requests", baseValue = 200, variance = 150, args?: { timeRange?: string; metricType?: string }): GraphData {
-  const intervals: Record<string, number> = { hour: 5, day: 60, week: 360, month: 720 }
-  const counts: Record<string, number> = { hour: 12, day: 24, week: 28, month: 60 }
+  const intervals: Record<string, number> = { ten_minutes: 1, hour: 5, day: 60, week: 360, month: 1440 }
+  const counts: Record<string, number> = { ten_minutes: 10, hour: 12, day: 24, week: 28, month: 30 }
   const intervalMinutes = intervals[args?.timeRange ?? 'day'] ?? 60
   const buckets = counts[args?.timeRange ?? 'day'] ?? 24
   const interval = intervalMinutes * 60_000

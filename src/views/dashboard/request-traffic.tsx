@@ -35,6 +35,7 @@ interface RequestTrafficProps {
   } | null
   loading: boolean
   onRefresh: () => void
+  className?: string
 }
 
 export function RequestTraffic({
@@ -43,6 +44,7 @@ export function RequestTraffic({
   metrics,
   loading,
   onRefresh,
+  className,
 }: RequestTrafficProps) {
   const id = useId().replace(/:/g, '')
   const points = requestTimeline(metrics?.llm ?? null, metrics?.mcp ?? null)
@@ -55,7 +57,7 @@ export function RequestTraffic({
   const formatTime = (value: number) =>
     new Date(value).toLocaleString(
       undefined,
-      range === 'hour' || range === 'day'
+      range === 'ten_minutes' || range === 'hour' || range === 'day'
         ? { hour: '2-digit', minute: '2-digit' }
         : {
             month: 'short',
@@ -66,7 +68,7 @@ export function RequestTraffic({
 
   return (
     <section
-      className="overflow-hidden rounded-2xl border bg-card"
+      className={cn('overflow-hidden rounded-2xl border bg-card', className)}
       aria-label="Request traffic"
     >
       <div className="flex flex-wrap items-center justify-between gap-3 px-6 pt-5">

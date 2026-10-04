@@ -1426,7 +1426,7 @@ export interface RateLimitInfo {
 /**
  * Time range for metrics queries.
  */
-export type TimeRange = 'hour' | 'day' | 'week' | 'month'
+export type TimeRange = 'ten_minutes' | 'hour' | 'day' | 'week' | 'month'
 
 /**
  * Metric type for LLM metrics.

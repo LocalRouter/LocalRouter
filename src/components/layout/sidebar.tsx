@@ -11,7 +11,6 @@ import {
   ChevronDown,
   ChevronRight,
   Zap,
-  Activity,
   Play,
   Square,
 } from "lucide-react"
@@ -54,7 +53,7 @@ interface HealthCacheState {
   aggregate_status: AggregateHealthStatus
 }
 
-export type View = 'dashboard' | 'monitor' | 'clients' | 'resources' | 'mcp-servers' | 'catalog-compression' | 'response-rag' | 'skills'
+export type View = 'dashboard' | 'clients' | 'resources' | 'mcp-servers' | 'catalog-compression' | 'response-rag' | 'skills'
   | 'coding-agents' | 'marketplace' | 'guardrails' | 'strong-weak' | 'compression' | 'json-repair'
   | 'secret-scanning' | 'memory' | 'optimize-overview' | 'settings' | 'debug'
 
@@ -729,9 +728,6 @@ export function Sidebar({ activeView, activeSubTab, onViewChange, dynamicGroups 
 
         {/* Main Navigation */}
         <nav className="flex flex-1 flex-col gap-1 overflow-y-auto min-h-0 p-2">
-          {/* Monitor */}
-          {renderNavItem({ id: 'monitor' as View, icon: Activity, label: 'Monitor' })}
-
           {/* Dynamic collapsible sections */}
           {renderNavDynamicCollapsible('clients', Users, 'Clients', '⌘2', dynamicGroups?.clients ?? [])}
           {renderNavDynamicCollapsible('resources', ProvidersIcon, 'LLMs', '⌘3', dynamicGroups?.providers ?? [])}

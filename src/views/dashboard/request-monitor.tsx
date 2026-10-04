@@ -3,13 +3,15 @@ import { invoke } from '@tauri-apps/api/core'
 import { Button } from '@/components/ui/Button'
 import { PanelRight } from 'lucide-react'
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable'
-import { useMonitorEvents } from './hooks/useMonitorEvents'
-import { showEventTypeColumn } from './monitor-events'
-import { EventList } from './event-list'
-import { EventDetail } from './event-detail'
-import { EventFilters } from './event-filters'
-import { TryItOutPanel } from './try-it-out-panel'
+import { cn } from '@/lib/utils'
+import { useMonitorEvents } from '@/views/monitor/hooks/useMonitorEvents'
+import { showEventTypeColumn } from '@/views/monitor/monitor-events'
+import { EventList } from '@/views/monitor/event-list'
+import { EventDetail } from '@/views/monitor/event-detail'
+import { EventFilters } from '@/views/monitor/event-filters'
+import { TryItOutPanel } from '@/views/monitor/try-it-out-panel'
 import type { MonitorEventFilter, InterceptRule } from '@/types/tauri-commands'
+import { isRequest } from './activity-data'
 
 // Persists the deliberate filter dimensions across app restarts. We do NOT
 // persist `session_id`/`client_id` — those are transient drill-downs (set by
@@ -42,13 +44,19 @@ function loadPersistedFilter(): MonitorEventFilter {
   }
 }
 
-export function MonitorView() {
+interface RequestMonitorProps {
+  /** Bumped by the dashboard's refresh control to reload the event snapshot. */
+  reloadSignal: number
+  className?: string
+}
+
+export function RequestMonitor({ reloadSignal, className }: RequestMonitorProps) {
   const [filter, setFilter] = useState<MonitorEventFilter>(loadPersistedFilter)
   const [tryItOutOpen, setTryItOutOpen] = useState(false)
   const [interceptRule, setInterceptRule] = useState<InterceptRule | null>(null)
 
-  // Persist the deliberate filter dimensions whenever they change so the tab
-  // restores the user's last filter on the next launch.
+  // Persist the deliberate filter dimensions whenever they change so the
+  // dashboard restores the user's last filter on the next launch.
   useEffect(() => {
     try {
       localStorage.setItem(
@@ -69,7 +77,7 @@ export function MonitorView() {
     invoke('set_monitor_intercept_rule', { rule: interceptRule }).catch(console.error)
   }, [interceptRule])
 
-  // Clear intercept rule on unmount (navigating away from monitor page)
+  // Clear intercept rule on unmount (navigating away from the dashboard)
   useEffect(() => {
     return () => {
       invoke('set_monitor_intercept_rule', { rule: null }).catch(console.error)
@@ -86,25 +94,38 @@ export function MonitorView() {
     events,
     selectedEvent,
     selectedId,
+    isLoading,
+    loadError,
+    reload,
     isDetailLoading,
     detailError,
     retryDetail,
     selectEvent,
-    clearEvents,
   } = useMonitorEvents(activeFilter)
+
+  useEffect(() => {
+    if (reloadSignal > 0) reload()
+  }, [reloadSignal, reload])
+
+  const pending = events.filter(event => isRequest(event) && event.status === 'pending').length
 
   const filterBar = (
     <div className="flex items-center border-b">
-      <div className="flex-1">
+      <div className="flex-1 min-w-0">
         <EventFilters
           filter={filter}
           onFilterChange={setFilter}
-          onClear={clearEvents}
           interceptRule={interceptRule}
           onInterceptRuleChange={setInterceptRule}
         />
       </div>
-      <div className="pr-2 flex items-center">
+      <div className="pr-2 flex items-center gap-2">
+        {pending > 0 && (
+          <span className="flex items-center gap-1.5 whitespace-nowrap rounded-full bg-teal-500/10 px-2 py-0.5 text-[10px] font-medium text-teal-700 dark:text-teal-300">
+            <span className="h-1.5 w-1.5 rounded-full bg-teal-500" />
+            {pending} in progress
+          </span>
+        )}
         <Button
           variant={tryItOutOpen ? 'secondary' : 'ghost'}
           size="sm"
@@ -118,15 +139,34 @@ export function MonitorView() {
     </div>
   )
 
+  const errorBanner = loadError && (
+    <div
+      role="status"
+      className="border-b bg-amber-500/5 px-4 py-2 text-xs text-amber-700 dark:text-amber-300"
+    >
+      Activity could not be refreshed.{' '}
+      {events.length > 0 ? 'Showing the last loaded events.' : 'Activity is unavailable.'}
+      <button onClick={reload} className="ml-2 underline">
+        Retry
+      </button>
+    </div>
+  )
+
+  const list = isLoading && events.length === 0 ? (
+    <p className="py-16 text-center text-sm text-muted-foreground">Loading activity…</p>
+  ) : (
+    <EventList
+      events={events}
+      showType={showEventTypeColumn(filter.event_types)}
+      selectedId={selectedId}
+      onSelect={selectEvent}
+    />
+  )
+
   const eventSplit = selectedId ? (
-    <ResizablePanelGroup direction="vertical" className="flex-1">
+    <ResizablePanelGroup direction="vertical" className="flex-1 min-h-0">
       <ResizablePanel defaultSize="35%" minSize="20%">
-        <EventList
-          events={events}
-          showType={showEventTypeColumn(filter.event_types)}
-          selectedId={selectedId}
-          onSelect={selectEvent}
-        />
+        {list}
       </ResizablePanel>
       <ResizableHandle withHandle orientation="vertical" />
       <ResizablePanel defaultSize="65%" minSize="20%">
@@ -134,37 +174,35 @@ export function MonitorView() {
       </ResizablePanel>
     </ResizablePanelGroup>
   ) : (
-    <div className="flex-1 min-h-0">
-      <EventList
-        events={events}
-        showType={showEventTypeColumn(filter.event_types)}
-        selectedId={selectedId}
-        onSelect={selectEvent}
-      />
+    <div className="flex-1 min-h-0">{list}</div>
+  )
+
+  const monitor = (
+    <div className="flex flex-col h-full">
+      {filterBar}
+      {errorBanner}
+      {eventSplit}
     </div>
   )
 
-  if (!tryItOutOpen) {
-    return (
-      <div className="flex flex-col h-full">
-        {filterBar}
-        {eventSplit}
-      </div>
-    )
-  }
-
   return (
-    <ResizablePanelGroup direction="horizontal" className="h-full">
-      <ResizablePanel defaultSize={60} minSize={30}>
-        <div className="flex flex-col h-full">
-          {filterBar}
-          {eventSplit}
-        </div>
-      </ResizablePanel>
-      <ResizableHandle withHandle />
-      <ResizablePanel defaultSize={40} minSize={15}>
-        <TryItOutPanel onClose={() => setTryItOutOpen(false)} />
-      </ResizablePanel>
-    </ResizablePanelGroup>
+    <section
+      aria-label="Request monitor"
+      className={cn('overflow-hidden rounded-2xl border bg-card', className)}
+    >
+      {tryItOutOpen ? (
+        <ResizablePanelGroup direction="horizontal" className="h-full">
+          <ResizablePanel defaultSize={60} minSize={30}>
+            {monitor}
+          </ResizablePanel>
+          <ResizableHandle withHandle />
+          <ResizablePanel defaultSize={40} minSize={15}>
+            <TryItOutPanel onClose={() => setTryItOutOpen(false)} />
+          </ResizablePanel>
+        </ResizablePanelGroup>
+      ) : (
+        monitor
+      )}
+    </section>
   )
 }

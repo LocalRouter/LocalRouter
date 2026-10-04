@@ -5,14 +5,13 @@ import { Input } from '@/components/ui/Input'
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Separator } from '@/components/ui/separator'
-import { Trash2, Search, Crosshair, Filter } from 'lucide-react'
+import { Search, Crosshair, Filter } from 'lucide-react'
 import { InfoTooltip } from '@/components/ui/info-tooltip'
 import type { MonitorEventFilter, MonitorEventType, InterceptCategory, InterceptRule, ClientInfo } from '@/types/tauri-commands'
 
 interface EventFiltersProps {
   filter: MonitorEventFilter
   onFilterChange: (filter: MonitorEventFilter) => void
-  onClear: () => void
   interceptRule: InterceptRule | null
   onInterceptRuleChange: (rule: InterceptRule | null) => void
 }
@@ -62,7 +61,7 @@ const ALL_INTERCEPT_CATEGORIES: { label: string; value: InterceptCategory }[] = 
 
 const ALL_CATEGORY_VALUES = ALL_INTERCEPT_CATEGORIES.map(c => c.value)
 
-export function EventFilters({ filter, onFilterChange, onClear, interceptRule, onInterceptRuleChange }: EventFiltersProps) {
+export function EventFilters({ filter, onFilterChange, interceptRule, onInterceptRuleChange }: EventFiltersProps) {
   // Type filter state — seeded from the incoming filter so a persisted/restored
   // selection survives mount instead of being reset to "all events".
   const [selectedGroups, setSelectedGroups] = useState<string[]>(() => groupsFromEventTypes(filter.event_types))
@@ -319,11 +318,6 @@ export function EventFilters({ filter, onFilterChange, onClear, interceptRule, o
           </div>
         </PopoverContent>
       </Popover>
-
-      <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={onClear}>
-        <Trash2 className="h-3 w-3 mr-1" />
-        Clear
-      </Button>
     </div>
   )
 }

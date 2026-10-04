@@ -8,10 +8,15 @@ export const RANGES: Record<
   TimeRange,
   { label: string; description: string; bucket: string }
 > = {
+  ten_minutes: {
+    label: '10m',
+    description: 'last 10 minutes',
+    bucket: 'minute',
+  },
   hour: { label: '1h', description: 'last hour', bucket: '5 minutes' },
   day: { label: '24h', description: 'last 24 hours', bucket: 'hour' },
   week: { label: '7d', description: 'last 7 days', bucket: '6 hours' },
-  month: { label: '30d', description: 'last 30 days', bucket: '12 hours' },
+  month: { label: '30d', description: 'last 30 days', bucket: 'day' },
 }
 
 // Backend graph labels are UTC, without an explicit timezone. ISO labels are

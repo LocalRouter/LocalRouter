@@ -16,6 +16,8 @@ export function useMonitorEvents(filter?: MonitorEventFilter | null) {
   const [selectedEvent, setSelectedEvent] = useState<MonitorEvent | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const [loadError, setLoadError] = useState(false)
+  const [reloadToken, setReloadToken] = useState(0)
   const [isDetailLoading, setIsDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState<string | null>(null)
   const selectedIdRef = useRef<string | null>(null)
@@ -41,15 +43,19 @@ export function useMonitorEvents(filter?: MonitorEventFilter | null) {
       .then(res => {
         if (request !== listRequestRef.current) return
         setEvents(mergeMonitorEvents(res.events, pendingUpdatesRef.current?.values() ?? [], filter, MAX_DISPLAY))
+        setLoadError(false)
       })
-      .catch(() => {})
+      .catch(() => {
+        // Keep the last loaded events; live updates continue to merge in.
+        if (request === listRequestRef.current) setLoadError(true)
+      })
       .finally(() => {
         if (request !== listRequestRef.current) return
         pendingUpdatesRef.current = null
         setIsLoading(false)
       })
     return () => { ++listRequestRef.current }
-  }, [filter])
+  }, [filter, reloadToken])
 
   useEffect(() => () => { ++detailRequestRef.current }, [])
 
@@ -114,20 +120,7 @@ export function useMonitorEvents(filter?: MonitorEventFilter | null) {
     loadDetail(id)
   }, [loadDetail])
 
-  const clearEvents = useCallback(() => {
-    invoke('clear_monitor_events').then(() => {
-      ++listRequestRef.current
-      ++detailRequestRef.current
-      pendingUpdatesRef.current = null
-      selectedIdRef.current = null
-      setIsLoading(false)
-      setEvents([])
-      setSelectedEvent(null)
-      setSelectedId(null)
-      setIsDetailLoading(false)
-      setDetailError(null)
-    }).catch(() => {})
-  }, [])
+  const reload = useCallback(() => setReloadToken(token => token + 1), [])
 
   const retryDetail = useCallback(() => {
     if (selectedIdRef.current) loadDetail(selectedIdRef.current)
@@ -141,7 +134,8 @@ export function useMonitorEvents(filter?: MonitorEventFilter | null) {
     selectedEvent,
     selectedId,
     isLoading,
+    loadError,
+    reload,
     selectEvent,
-    clearEvents,
   }
 }

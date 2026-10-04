@@ -8,11 +8,18 @@ test.beforeEach(async ({ page }) => {
   ).toBeEnabled()
 })
 
-test('time ranges use area charts and the shared Monitor snapshot opens request details', async ({
+test('time ranges use area charts and the merged Monitor opens request details in a pane', async ({
   page,
 }) => {
   const traffic = page.getByRole('region', { name: 'Request traffic' })
-  const dailyLabel = await traffic.getByRole('img').getAttribute('aria-label')
+  await expect(
+    page.getByRole('button', { name: 'last 10 minutes', exact: true }),
+  ).toHaveAttribute('aria-pressed', 'true')
+  await expect(traffic.getByRole('img')).toHaveAttribute(
+    'aria-label',
+    /per minute/,
+  )
+  const defaultLabel = await traffic.getByRole('img').getAttribute('aria-label')
   await page.getByRole('button', { name: 'last hour', exact: true }).click()
   await expect(traffic.getByRole('img')).toHaveAttribute(
     'aria-label',
@@ -22,29 +29,80 @@ test('time ranges use area charts and the shared Monitor snapshot opens request 
     page.getByRole('button', { name: 'Refresh activity' }),
   ).toBeEnabled()
   expect(await traffic.getByRole('img').getAttribute('aria-label')).not.toBe(
-    dailyLabel,
+    defaultLabel,
   )
   await expect(traffic.locator('.recharts-area-curve')).toHaveCount(2)
   await expect(traffic.locator('.recharts-bar')).toHaveCount(0)
-  const snapshot = page.getByRole('region', { name: 'Monitor snapshot' })
-  await expect(snapshot.getByRole('table')).toBeVisible()
+  const monitor = page.getByRole('region', { name: 'Request monitor' })
+  await expect(monitor.getByRole('table')).toBeVisible()
   await expect(
-    snapshot.getByRole('columnheader', { name: 'Question', exact: true }),
+    monitor.getByRole('columnheader', { name: 'Question', exact: true }),
   ).toBeVisible()
   await expect(
-    snapshot.getByRole('columnheader', { name: 'Answer', exact: true }),
+    monitor.getByRole('columnheader', { name: 'Answer', exact: true }),
   ).toBeVisible()
-  await expect(snapshot.getByRole('row')).toHaveCount(9)
   await expect(
-    snapshot.getByRole('columnheader', { name: 'Client', exact: true }),
+    monitor.getByRole('columnheader', { name: 'Client', exact: true }),
   ).toBeVisible()
-  await snapshot.getByRole('row').filter({ hasText: 'Cursor' }).first().click()
-  await expect(page.getByRole('dialog')).toContainText('filesystem__read_file')
-  await expect(page.getByRole('dialog')).not.toContainText(
-    'Loading event details',
-  )
-  await page.keyboard.press('Escape')
+  await expect(monitor.getByRole('button', { name: 'Clear' })).toHaveCount(0)
+  await expect(
+    monitor.getByRole('button', { name: 'Intercept' }),
+  ).toBeVisible()
+  await expect(monitor.getByPlaceholder('Search...')).toBeVisible()
+  await monitor.getByRole('row').filter({ hasText: 'Cursor' }).first().click()
   await expect(page.getByRole('dialog')).toHaveCount(0)
+  await expect(monitor).toContainText('filesystem__read_file')
+})
+
+test('30-day traffic has one point per day', async ({ page }) => {
+  const traffic = page.getByRole('region', { name: 'Request traffic' })
+  await page.getByRole('button', { name: 'last 30 days', exact: true }).click()
+  await expect(traffic.getByRole('img')).toHaveAttribute(
+    'aria-label',
+    /per day/,
+  )
+})
+
+test('the monitor fills the dashboard viewport and Try It Out opens beside it', async ({
+  page,
+}) => {
+  const monitor = page.getByRole('region', { name: 'Request monitor' })
+  const sizes = await monitor.evaluate((el) => ({
+    monitor: el.getBoundingClientRect().height,
+    viewport: el.parentElement!.clientHeight,
+  }))
+  expect(Math.abs(sizes.monitor - sizes.viewport)).toBeLessThanOrEqual(1)
+  await monitor.getByRole('button', { name: 'Try It Out' }).click()
+  await expect(monitor.getByText('Select a client to get started')).toBeVisible()
+})
+
+test('the monitor filter selection is remembered across reloads', async ({
+  page,
+}) => {
+  const monitor = page.getByRole('region', { name: 'Request monitor' })
+  await monitor.getByPlaceholder('Search...').fill('cursor')
+  await monitor.getByRole('button', { name: 'All Events' }).click()
+  await page.getByLabel('Proxy Passthrough', { exact: true }).click()
+  await page.keyboard.press('Escape')
+  await expect(
+    monitor.getByRole('button', { name: '8 types' }),
+  ).toBeVisible()
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          JSON.parse(localStorage.getItem('monitor.filter') ?? '{}')
+            .event_types?.length,
+      ),
+    )
+    .toBe(24)
+  await page.reload()
+  await expect(
+    page.getByRole('region', { name: 'Request monitor' }).getByPlaceholder('Search...'),
+  ).toHaveValue('cursor')
+  await expect(
+    page.getByRole('region', { name: 'Request monitor' }).getByRole('button', { name: '8 types' }),
+  ).toBeVisible()
 })
 
 test('live completion wins over an older in-flight snapshot', async ({
@@ -140,7 +198,7 @@ test('empty traffic and failed loads are distinct and retry recovers', async ({
   await page.getByRole('button', { name: 'Refresh activity' }).click()
   await expect(page.getByText('Request traffic is unavailable')).toBeVisible()
   await expect(
-    page.getByText('Activity is unavailable', { exact: true }),
+    page.getByText('Activity is unavailable.', { exact: false }),
   ).toBeVisible()
   await page.evaluate(() => {
     ;(window as any).homeFailure = false
@@ -159,8 +217,9 @@ test('missing event details have an explicit state and compact windows do not ov
       command === 'get_monitor_event_detail' ? null : original(command, args)
   })
   await page.getByRole('row').filter({ hasText: 'Claude Code' }).first().click()
-  await expect(page.getByRole('dialog')).toContainText('no longer available')
-  await page.keyboard.press('Escape')
+  await expect(
+    page.getByRole('region', { name: 'Request monitor' }),
+  ).toContainText('no longer available')
   for (const width of [1100, 900, 700]) {
     await page.setViewportSize({ width, height: 900 })
     const dimensions = await page

@@ -13,6 +13,9 @@ use super::metrics::MetricDataPoint;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TimeRange {
+    /// Last 10 minutes
+    #[serde(rename = "ten_minutes")]
+    TenMinutes,
     /// Last hour
     Hour,
     /// Last 24 hours
@@ -27,6 +30,7 @@ impl TimeRange {
     /// Get the duration for this time range
     pub fn duration(&self) -> Duration {
         match self {
+            TimeRange::TenMinutes => Duration::minutes(10),
             TimeRange::Hour => Duration::hours(1),
             TimeRange::Day => Duration::days(1),
             TimeRange::Week => Duration::weeks(1),
@@ -45,11 +49,36 @@ impl TimeRange {
     /// This determines how data points are aggregated for display
     pub fn bucket_interval_minutes(&self) -> i64 {
         match self {
-            TimeRange::Hour => 5,    // 12 buckets per hour
-            TimeRange::Day => 60,    // 24 buckets per day
-            TimeRange::Week => 360,  // 28 buckets (6-hour intervals)
-            TimeRange::Month => 720, // 60 buckets (12-hour intervals)
+            TimeRange::TenMinutes => 1, // 10 buckets (1-minute intervals)
+            TimeRange::Hour => 5,       // 12 buckets per hour
+            TimeRange::Day => 60,       // 24 buckets per day
+            TimeRange::Week => 360,     // 28 buckets (6-hour intervals)
+            // 30 buckets. Ranges over a week read the per-day rows, so any
+            // bucket finer than a day would alternate between data and zero.
+            TimeRange::Month => 1440,
         }
+    }
+
+    /// Start timestamps (Unix seconds) of the buckets covering `start..=end`.
+    ///
+    /// Buckets are aligned to multiples of the interval. A bucket that begins
+    /// before `start` is kept only when it can hold rows inside the range:
+    /// per-day rows are stamped at midnight, so the day containing `start` has
+    /// its row before the range and would always plot as zero.
+    pub fn bucket_timestamps(&self, start: DateTime<Utc>, end: DateTime<Utc>) -> Vec<i64> {
+        let interval_seconds = self.bucket_interval_minutes() * 60;
+        let start_ts = start.timestamp();
+        let end_ts = end.timestamp();
+        let mut current = start_ts.div_euclid(interval_seconds) * interval_seconds;
+        if current < start_ts && interval_seconds >= 24 * 60 * 60 {
+            current += interval_seconds;
+        }
+        let mut timestamps = Vec::new();
+        while current <= end_ts {
+            timestamps.push(current);
+            current += interval_seconds;
+        }
+        timestamps
     }
 }
 
@@ -395,23 +424,14 @@ impl GraphGenerator {
         time_range: TimeRange,
     ) -> Vec<MetricDataPoint> {
         let (start, end) = time_range.get_range();
-        let interval_minutes = time_range.bucket_interval_minutes();
-        let interval_seconds = interval_minutes * 60;
-
-        // Create bucket boundaries
-        let start_ts = start.timestamp();
-        let end_ts = end.timestamp();
-
-        // Round start to bucket boundary
-        let bucket_start = (start_ts / interval_seconds) * interval_seconds;
+        let interval_seconds = time_range.bucket_interval_minutes() * 60;
 
         // Create a map of bucket start time -> aggregated data
         let mut buckets: std::collections::BTreeMap<i64, MetricDataPoint> =
             std::collections::BTreeMap::new();
 
         // Initialize all buckets with zero values
-        let mut current = bucket_start;
-        while current <= end_ts {
+        for current in time_range.bucket_timestamps(start, end) {
             buckets.insert(
                 current,
                 MetricDataPoint {
@@ -430,7 +450,6 @@ impl GraphGenerator {
                     p99_latency_ms: None,
                 },
             );
-            current += interval_seconds;
         }
 
         // Aggregate data points into buckets
@@ -478,21 +497,8 @@ impl GraphGenerator {
         }
 
         let (start, end) = time_range.get_range();
-        let interval_minutes = time_range.bucket_interval_minutes();
-        let interval_seconds = interval_minutes * 60;
-
-        // Create bucket boundaries
-        let start_ts = start.timestamp();
-        let end_ts = end.timestamp();
-        let bucket_start = (start_ts / interval_seconds) * interval_seconds;
-
-        // Generate all bucket timestamps
-        let mut bucket_timestamps: Vec<i64> = Vec::new();
-        let mut current = bucket_start;
-        while current <= end_ts {
-            bucket_timestamps.push(current);
-            current += interval_seconds;
-        }
+        let interval_seconds = time_range.bucket_interval_minutes() * 60;
+        let bucket_timestamps = time_range.bucket_timestamps(start, end);
 
         // Generate labels from bucket timestamps
         let labels: Vec<String> = bucket_timestamps
@@ -632,6 +638,75 @@ mod tests {
         assert_eq!(TimeRange::Day.duration(), Duration::days(1));
         assert_eq!(TimeRange::Week.duration(), Duration::weeks(1));
         assert_eq!(TimeRange::Month.duration(), Duration::days(30));
+        assert_eq!(TimeRange::Month.bucket_interval_minutes(), 1440);
+    }
+
+    #[test]
+    fn test_ten_minute_range() {
+        assert_eq!(TimeRange::TenMinutes.duration(), Duration::minutes(10));
+        assert_eq!(
+            serde_json::to_string(&TimeRange::TenMinutes).unwrap(),
+            "\"ten_minutes\""
+        );
+        assert_eq!(
+            serde_json::from_str::<TimeRange>("\"month\"").unwrap(),
+            TimeRange::Month
+        );
+
+        let end = DateTime::parse_from_rfc3339("2026-10-03T12:34:56Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let buckets = TimeRange::TenMinutes.bucket_timestamps(end - Duration::minutes(10), end);
+        assert_eq!(buckets.len(), 11);
+        assert!(buckets.windows(2).all(|pair| pair[1] - pair[0] == 60));
+    }
+
+    #[test]
+    fn test_month_buckets_are_daily_and_start_inside_range() {
+        let end = DateTime::parse_from_rfc3339("2026-10-03T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let start = end - TimeRange::Month.duration();
+        let buckets = TimeRange::Month.bucket_timestamps(start, end);
+
+        assert_eq!(buckets.len(), 30);
+        assert!(buckets[0] >= start.timestamp());
+        assert!(buckets.windows(2).all(|pair| pair[1] - pair[0] == 86_400));
+        assert!(buckets.iter().all(|ts| ts % 86_400 == 0));
+
+        // Shorter ranges keep their partial leading bucket.
+        let hour_start = end - Duration::minutes(62);
+        assert!(TimeRange::Hour.bucket_timestamps(hour_start, end)[0] < hour_start.timestamp());
+    }
+
+    #[test]
+    fn test_month_aggregation_fills_every_day_from_daily_rows() {
+        let (start, end) = TimeRange::Month.get_range();
+        let first_midnight = TimeRange::Month.bucket_timestamps(start, end)[0];
+        // The per-day storage tier stamps each row at UTC midnight.
+        let daily_rows: Vec<MetricDataPoint> = (0..30)
+            .map(|day| first_midnight + day * 86_400)
+            .filter(|&ts| ts <= end.timestamp())
+            .map(|ts| MetricDataPoint {
+                timestamp: DateTime::from_timestamp(ts, 0).unwrap(),
+                requests: 5,
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+                cost_usd: 0.0,
+                total_latency_ms: 0,
+                successful_requests: 5,
+                failed_requests: 0,
+                latency_samples: Vec::new(),
+                p50_latency_ms: None,
+                p95_latency_ms: None,
+                p99_latency_ms: None,
+            })
+            .collect();
+
+        let buckets = GraphGenerator::aggregate_into_buckets(&daily_rows, TimeRange::Month);
+        assert_eq!(buckets.len(), daily_rows.len());
+        assert!(buckets.iter().all(|bucket| bucket.requests == 5));
     }
 
     #[test]

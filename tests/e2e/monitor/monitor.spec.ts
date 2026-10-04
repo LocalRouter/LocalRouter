@@ -7,7 +7,7 @@ test.beforeEach(async ({ page }) => {
     localStorage.setItem('theme', 'light')
   })
   await page.goto('/demo')
-  await page.getByRole('button', { name: 'Monitor', exact: true }).click()
+  await expect(page.getByRole('region', { name: 'Request monitor' })).toBeVisible()
 })
 
 test('content previews truncate, single-type filter hides Type, and both payloads are visible', async ({ page }) => {
