@@ -263,6 +263,7 @@ impl super::EmbeddedControl for DeciderEmbeddedProvider {
                 download_error: self.downloads.error(id),
                 progress: None,
                 removable: false,
+                unavailable: None,
             })
             .collect()
     }

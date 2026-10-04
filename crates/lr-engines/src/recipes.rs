@@ -34,7 +34,7 @@ pub const DECIDER_PYTHON: &str = "3.12";
 
 /// Ollaya release LocalRouter downloads. Ollaya ships several releases a
 /// day, so the download is pinned (bump by PR after testing).
-pub const OLLAYA_VERSION: &str = "v0.7.5";
+pub const OLLAYA_VERSION: &str = "v0.9.0";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1032,7 +1032,7 @@ mod tests {
         );
     }
 
-    /// Asset names of Ollaya release v0.7.5 (checksums and desktop apps
+    /// Asset names of Ollaya release v0.9.0 (checksums and desktop apps
     /// included, which must never match).
     const OLLAYA_ASSETS: &[&str] = &[
         "ollaya-darwin-arm64-mlx.sha256",

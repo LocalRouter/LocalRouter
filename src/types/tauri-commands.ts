@@ -770,6 +770,8 @@ export interface EmbeddedCatalogModel {
   progress: number | null
   /** A downloaded model can be deleted from the Models tab */
   removable: boolean
+  /** Why the model cannot be downloaded here (e.g. it needs a newer engine) */
+  unavailable: string | null
 }
 
 /** Rust: crates/lr-local-models/src/auth.rs - HfAccount struct */

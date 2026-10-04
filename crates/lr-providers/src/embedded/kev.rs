@@ -262,6 +262,7 @@ impl super::EmbeddedControl for KevEmbeddedProvider {
                 download_error: self.downloads.error(id),
                 progress: None,
                 removable: false,
+                unavailable: None,
             })
             .collect()
     }

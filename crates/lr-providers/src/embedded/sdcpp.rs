@@ -328,6 +328,7 @@ impl super::EmbeddedControl for SdCppEmbeddedProvider {
                 download_size: format_gb(m.total_bytes),
                 guidance: Some(m.description),
                 removable: m.downloaded,
+                unavailable: None,
                 id: m.id,
                 name: m.name,
                 downloaded: m.downloaded,

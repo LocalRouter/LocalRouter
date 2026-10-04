@@ -65,3 +65,10 @@ Plan review; test-coverage review; bug hunt (key always set, loopback only, pinn
 
   `OLLAYA_DEVICE=metal` fails to load Kev and Decider ("the MLX engine does not run layout kev-pointer-v1 / decider-slots-v1"). Score `confidence` is computed differently by Ollaya; Laya native and Decider native return extra fields Ollaya drops.
 - Decision: keep all four dedicated providers offered for their GPU support. Ollaya's catalog says on its Kev/Decider/Von entries that the dedicated providers are faster on Macs.
+
+## Follow-up (2026-10-03): models Ollaya publishes after the pin
+Ollaya v0.8.0 and v0.9.0 added `nimble:9b`, `jeb:4b/9b/27b`, `cygnet:12b`, `jeeves:9b` and `clef:flash`, each needing that release or newer. Ollaya has no endpoint that lists its library, but its repository carries `registry/v2/library/<model>/manifests/<tag>` at every release tag, and each manifest's config blob has a description and context length (no minimum version).
+- The pin moves to v0.9.0 and the built-in `LIBRARY` lists everything in it (works offline).
+- `embedded/ollaya_registry.rs` reads the library at the installed engine's release tag and at Ollaya's latest release (three GitHub API calls; manifests from raw.githubusercontent.com, configs from ollaya.dev). Models the built-in list lacks are added to the Models tab; models only in a newer release are listed with `unavailable` ("Needs Ollaya vX or newer") and cannot be downloaded. Refreshed at most daily, or when the installed engine's release changes (checked every five minutes); offline, the built-in list stands alone.
+- `EmbeddedCatalogModel.unavailable` is new; the Models tab disables Download and shows the reason.
+- Tests: tree parsing, the merge against a mocked GitHub (`needs_newer`, a non-release engine, an unreachable registry), the provider's catalog, and an opt-in check against the real repository that the built-in list covers the pinned release.

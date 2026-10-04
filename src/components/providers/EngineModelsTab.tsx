@@ -180,6 +180,8 @@ export function EngineModelsTab({ providerType, instanceName, enabled }: EngineM
                         <CheckCircle className="mr-1 h-3 w-3" />
                         Downloaded
                       </Badge>
+                    ) : m.unavailable ? (
+                      <Badge variant="outline">Needs a newer engine</Badge>
                     ) : (
                       <Badge variant="outline">Not downloaded</Badge>
                     )}
@@ -249,8 +251,10 @@ export function EngineModelsTab({ providerType, instanceName, enabled }: EngineM
                         <Button
                           size="sm"
                           onClick={() => download(m.id)}
-                          disabled={busy === m.id || !enabled}
-                          title={enabled ? undefined : "Enable the provider to download models"}
+                          disabled={busy === m.id || !enabled || !!m.unavailable}
+                          title={
+                            m.unavailable ?? (enabled ? undefined : "Enable the provider to download models")
+                          }
                         >
                           <Download className="mr-1 h-4 w-4" />
                           Download
@@ -259,6 +263,12 @@ export function EngineModelsTab({ providerType, instanceName, enabled }: EngineM
                     </div>
                   </div>
                   {m.guidance && <p className="text-xs text-muted-foreground">{m.guidance}</p>}
+                  {m.unavailable && !m.downloaded && (
+                    <p className="flex items-start gap-1 text-xs text-amber-600 dark:text-amber-400">
+                      <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
+                      {m.unavailable}
+                    </p>
+                  )}
                   {m.downloading && m.progress != null && (
                     <Progress
                       value={m.progress * 100}
