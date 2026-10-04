@@ -10,8 +10,8 @@
 - [x] Plan review: every requested change is implemented (merge, retained features, Clear removed, 10m default, 30d fix, full height, pane detail, filter persistence).
 - [x] Test coverage review: Rust tests for 10m serde/buckets and daily month aggregation; e2e for default range, per-day 30d, full-height monitor, Try It Out, no Clear, filter persistence, detail pane; Monitor e2e suite retargeted to the Dashboard.
 - [x] Bug hunt: reload/refresh races in `useMonitorEvents`, partial leading buckets for all range/generator paths, intercept cleanup on unmount, removed `monitor` view references.
-- [ ] Commit and push to master; wait for CI.
-- [ ] Dispatch Release workflow for 0.0.149 (v0.0.149 was never published) and monitor it to completion.
+- [x] Commit and push to master; CI run 37172705696 passed.
+- [x] Release 0.0.149 published (run 37173413605: all platform builds, GitHub release with 28 assets incl. latest.json, Flatpak and Snap succeeded).
 
 ## Design notes
 - The Dashboard root is its own scroll container (`h-full overflow-y-auto`) and the monitor card is `h-full shrink-0`, so it is exactly one viewport tall once scrolled to.
