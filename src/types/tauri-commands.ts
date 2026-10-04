@@ -932,11 +932,11 @@ export type McpTransportConfig =
  */
 export type McpAuthConfig =
   | { type: 'none' }
-  | { type: 'bearer_token'; token: string }
-  | { type: 'custom_headers'; headers: Record<string, string> }
-  | { type: 'oauth'; client_id: string; client_secret: string; token_url: string; scopes?: string[] }
-  | { type: 'oauth_browser'; authorization_url: string; token_url: string; client_id: string; scopes?: string[] }
-  | { type: 'env_vars'; vars: Record<string, string> }
+  | { type: 'bearer_token'; token_ref: string }
+  | { type: 'custom_headers'; header_refs: Record<string, string> }
+  | { type: 'oauth'; client_id: string; client_secret_ref: string; auth_url: string; token_url: string; scopes: string[] }
+  | { type: 'oauth_browser'; auth_url: string; token_url: string; client_id: string; client_secret_ref: string; scopes: string[]; redirect_uri: string; issuer?: string | null }
+  | { type: 'env_vars'; env_refs: Record<string, string> }
 
 /**
  * MCP server information.
@@ -1729,18 +1729,20 @@ export interface OAuthFlowResult {
  * Rust: src-tauri/src/ui/commands_mcp.rs - OAuthBrowserFlowResult struct
  */
 export interface OAuthBrowserFlowResult {
-  flow_id: string
   auth_url: string
+  redirect_uri: string
+  state: string
 }
 
 /**
  * MCP OAuth browser flow status.
  * Rust: src-tauri/src/ui/commands_mcp.rs - OAuthBrowserFlowStatus struct
  */
-export interface OAuthBrowserFlowStatus {
-  status: 'pending' | 'success' | 'error' | 'cancelled'
-  error?: string | null
-}
+export type OAuthBrowserFlowStatus =
+  | { type: 'Pending' }
+  | { type: 'Success'; expires_in: number }
+  | { type: 'Error'; message: string }
+  | { type: 'Timeout' }
 
 // =============================================================================
 // Marketplace Types
@@ -2017,13 +2019,13 @@ export interface OAuthTokens {
 
 /**
  * MCP OAuth endpoint discovery result.
- * Rust: crates/lr-mcp/src/oauth/discovery.rs - McpOAuthDiscovery struct
+ * Rust: crates/lr-config/src/types.rs - McpOAuthDiscovery struct
  */
 export interface McpOAuthDiscovery {
-  authorization_endpoint: string
-  token_endpoint: string
-  registration_endpoint?: string | null
-  scopes_supported?: string[] | null
+  auth_url: string
+  token_url: string
+  scopes_supported: string[]
+  discovered_at: string
 }
 
 // =============================================================================

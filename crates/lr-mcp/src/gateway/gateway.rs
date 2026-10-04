@@ -783,6 +783,14 @@ impl McpGateway {
             if let Ok(response) = &mut result {
                 if let Some(result_value) = &mut response.result {
                     crate::protocol::tag_result_complete(result_value);
+                    if let Some(obj) = result_value.as_object_mut() {
+                        let meta = obj.entry("_meta").or_insert_with(|| json!({}));
+                        if let Some(meta) = meta.as_object_mut() {
+                            meta.insert(crate::protocol::meta_keys::SERVER_INFO.to_string(), json!({
+                                "name": "LocalRouter MCP Gateway", "version": env!("CARGO_PKG_VERSION"),
+                            }));
+                        }
+                    }
                     if matches!(
                         method.as_str(),
                         "tools/list"
@@ -896,6 +904,7 @@ impl McpGateway {
                 "_meta": {
                     crate::protocol::meta_keys::PROTOCOL_VERSION:
                         crate::protocol::MCP_PROTOCOL_VERSION_STATELESS,
+                    crate::protocol::meta_keys::CLIENT_CAPABILITIES: {},
                     crate::protocol::meta_keys::CLIENT_INFO: {
                         "name": "LocalRouter MCP Gateway",
                         "version": env!("CARGO_PKG_VERSION"),
@@ -931,7 +940,9 @@ impl McpGateway {
             .and_then(|c| serde_json::from_value(c).ok())
             .unwrap_or_default();
         let server_info = value
-            .get("serverInfo")
+            .get("_meta")
+            .and_then(|meta| meta.get(crate::protocol::meta_keys::SERVER_INFO))
+            .or_else(|| value.get("serverInfo"))
             .cloned()
             .and_then(|s| serde_json::from_value(s).ok())
             .unwrap_or(ServerInfo {

@@ -234,6 +234,7 @@ pub mod meta_keys {
     /// Protocol version the client speaks (every request).
     pub const PROTOCOL_VERSION: &str = "io.modelcontextprotocol/protocolVersion";
     /// Client identity (every request).
+    pub const SERVER_INFO: &str = "io.modelcontextprotocol/serverInfo";
     pub const CLIENT_INFO: &str = "io.modelcontextprotocol/clientInfo";
     /// Client capabilities (every request).
     pub const CLIENT_CAPABILITIES: &str = "io.modelcontextprotocol/clientCapabilities";

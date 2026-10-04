@@ -1429,11 +1429,13 @@ const ALL_SUBSCRIPTION_TYPES: &[&str] = &[
 fn build_subscription_notification(
     server_id: &str,
     notification: &lr_mcp::protocol::JsonRpcNotification,
-    requested_types: &std::collections::HashSet<String>,
-    subscription_id: &str,
+    notifications: &serde_json::Map<String, serde_json::Value>,
+    subscription_id: &serde_json::Value,
 ) -> Option<lr_mcp::protocol::JsonRpcNotification> {
     let sub_type = subscription_type_for_method(&notification.method)?;
-    if !requested_types.contains(sub_type) {
+    if sub_type != "resourceSubscriptions"
+        && notifications.get(sub_type).and_then(|v| v.as_bool()) != Some(true)
+    {
         return None;
     }
 
@@ -1446,6 +1448,13 @@ fn build_subscription_notification(
     if notification.method == "notifications/resources/updated" {
         if let Some(uri) = params.get("uri").and_then(|v| v.as_str()) {
             let namespaced = format!("{}::{}", server_id, uri);
+            if !notifications
+                .get("resourceSubscriptions")
+                .and_then(|v| v.as_array())
+                .is_some_and(|uris| uris.iter().any(|value| value.as_str() == Some(&namespaced)))
+            {
+                return None;
+            }
             params["uri"] = serde_json::Value::String(namespaced);
         }
     }
@@ -1476,46 +1485,45 @@ fn subscriptions_listen_response(
     allowed_servers: Vec<String>,
     request: JsonRpcRequest,
 ) -> Response {
-    // Opt-in types; an omitted list subscribes to everything.
-    let requested_types: std::collections::HashSet<String> = request
+    let notifications = request
         .params
         .as_ref()
-        .and_then(|p| p.get("types"))
-        .and_then(|t| t.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
+        .and_then(|p| p.get("notifications"))
+        .and_then(|value| value.as_object())
+        .cloned()
+        .unwrap_or_default();
+    let notifications: serde_json::Map<String, serde_json::Value> = notifications
+        .into_iter()
+        .filter(|(key, value)| {
+            ALL_SUBSCRIPTION_TYPES.contains(&key.as_str())
+                && if key == "resourceSubscriptions" {
+                    value.is_array()
+                } else {
+                    value == &serde_json::Value::Bool(true)
+                }
         })
-        .unwrap_or_else(|| {
-            ALL_SUBSCRIPTION_TYPES
-                .iter()
-                .map(|s| s.to_string())
-                .collect()
-        });
-
-    let subscription_id = Uuid::new_v4().to_string();
+        .collect();
+    let subscription_id = request.id.clone().unwrap_or(serde_json::Value::Null);
     let mut notification_rx = state.mcp_notification_broadcast.subscribe();
-    let request_id = request.id.clone().unwrap_or(serde_json::Value::Null);
     let client_id = client_id.to_string();
 
     tracing::info!(
-        "subscriptions/listen opened: client={}, subscription={}, types={:?}",
+        "subscriptions/listen opened: client={}, subscription={}, notifications={:?}",
         &client_id[..8.min(client_id.len())],
-        &subscription_id[..8],
-        requested_types
+        subscription_id,
+        notifications
     );
 
     let sse_stream = async_stream::stream! {
         // Acknowledge the subscription first
-        let ack = JsonRpcResponse::success(
-            request_id,
-            serde_json::json!({
-                "resultType": "complete",
-                "subscriptionId": subscription_id,
-                "types": requested_types.iter().collect::<Vec<_>>(),
-            }),
-        );
+        let ack = lr_mcp::protocol::JsonRpcNotification {
+            jsonrpc: "2.0".into(),
+            method: "notifications/subscriptions/acknowledged".into(),
+            params: Some(serde_json::json!({
+                "_meta": { lr_mcp::protocol::meta_keys::SUBSCRIPTION_ID: subscription_id },
+                "notifications": notifications,
+            })),
+        };
         if let Ok(json) = serde_json::to_string(&ack) {
             yield Ok::<_, Infallible>(Event::default().event("message").data(json));
         }
@@ -1529,7 +1537,7 @@ fn subscriptions_listen_response(
                     if let Some(tagged) = build_subscription_notification(
                         &server_id,
                         &notification,
-                        &requested_types,
+                        &notifications,
                         &subscription_id,
                     ) {
                         if let Ok(json) = serde_json::to_string(&tagged) {
@@ -1743,31 +1751,43 @@ mod tests {
         }
     }
 
-    fn all_types() -> std::collections::HashSet<String> {
-        ALL_SUBSCRIPTION_TYPES
-            .iter()
-            .map(|s| s.to_string())
-            .collect()
+    fn all_types() -> serde_json::Map<String, serde_json::Value> {
+        serde_json::json!({
+            "toolsListChanged": true, "resourcesListChanged": true, "promptsListChanged": true,
+            "resourceSubscriptions": ["srv1::file:///a.txt"]
+        })
+        .as_object()
+        .unwrap()
+        .clone()
     }
 
     #[test]
     fn test_subscription_notification_tagged_and_delivered() {
         let n = notification("notifications/tools/list_changed", serde_json::json!({}));
-        let tagged = build_subscription_notification("srv1", &n, &all_types(), "sub-123")
-            .expect("subscribed type is delivered");
+        let tagged =
+            build_subscription_notification("srv1", &n, &all_types(), &serde_json::json!(123))
+                .expect("subscribed type is delivered");
 
         assert_eq!(tagged.method, "notifications/tools/list_changed");
         let meta = &tagged.params.unwrap()["_meta"];
-        assert_eq!(meta["io.modelcontextprotocol/subscriptionId"], "sub-123");
+        assert_eq!(meta["io.modelcontextprotocol/subscriptionId"], 123);
     }
 
     #[test]
     fn test_subscription_notification_filters_unrequested_types() {
         let n = notification("notifications/tools/list_changed", serde_json::json!({}));
-        let only_resources: std::collections::HashSet<String> =
-            ["resourcesListChanged".to_string()].into_iter().collect();
+        let only_resources = serde_json::json!({"resourcesListChanged": true})
+            .as_object()
+            .unwrap()
+            .clone();
 
-        assert!(build_subscription_notification("srv1", &n, &only_resources, "sub").is_none());
+        assert!(build_subscription_notification(
+            "srv1",
+            &n,
+            &only_resources,
+            &serde_json::json!("sub")
+        )
+        .is_none());
     }
 
     #[test]
@@ -1776,8 +1796,41 @@ mod tests {
         // stream, never the subscriptions/listen stream.
         for method in ["notifications/progress", "notifications/message"] {
             let n = notification(method, serde_json::json!({}));
-            assert!(build_subscription_notification("srv1", &n, &all_types(), "sub").is_none());
+            assert!(build_subscription_notification(
+                "srv1",
+                &n,
+                &all_types(),
+                &serde_json::json!("sub")
+            )
+            .is_none());
         }
+    }
+
+    #[test]
+    fn subscriptions_require_explicit_opt_in_and_match_resource_uri() {
+        let n = notification(
+            "notifications/resources/updated",
+            serde_json::json!({"uri":"file:///other.txt"}),
+        );
+        assert!(
+            build_subscription_notification("srv1", &n, &all_types(), &serde_json::json!(1))
+                .is_none()
+        );
+        let n = notification("notifications/tools/list_changed", serde_json::json!({}));
+        assert!(build_subscription_notification(
+            "srv1",
+            &n,
+            &serde_json::Map::new(),
+            &serde_json::json!(1)
+        )
+        .is_none());
+        let disabled = serde_json::json!({"toolsListChanged":false})
+            .as_object()
+            .unwrap()
+            .clone();
+        assert!(
+            build_subscription_notification("srv1", &n, &disabled, &serde_json::json!(1)).is_none()
+        );
     }
 
     #[test]
@@ -1786,7 +1839,9 @@ mod tests {
             "notifications/resources/updated",
             serde_json::json!({ "uri": "file:///a.txt" }),
         );
-        let tagged = build_subscription_notification("srv1", &n, &all_types(), "sub").unwrap();
+        let tagged =
+            build_subscription_notification("srv1", &n, &all_types(), &serde_json::json!("sub"))
+                .unwrap();
         let params = tagged.params.unwrap();
         assert_eq!(params["uri"], "srv1::file:///a.txt");
         assert_eq!(

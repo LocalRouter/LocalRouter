@@ -131,6 +131,10 @@ async fn test_server_discover_over_http_with_version_echo() {
         .iter()
         .any(|v| v == "2026-07-28"));
     assert_eq!(result["serverInfo"]["name"], "LocalRouter MCP Gateway");
+    assert_eq!(
+        result["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
+        "LocalRouter MCP Gateway"
+    );
     assert_eq!(result["resultType"], "complete");
 }
 
@@ -255,4 +259,37 @@ async fn test_legacy_mcp_post_unchanged() {
     let result = &body["result"];
     assert!(result["protocolVersion"].is_string());
     assert!(result.get("resultType").is_none());
+}
+
+#[tokio::test]
+async fn test_subscription_acknowledges_explicit_filter_and_request_id() {
+    let (base_url, secret) = start_test_server().await;
+    let mut response = reqwest::Client::new().post(&base_url).bearer_auth(&secret)
+        .header("MCP-Protocol-Version", "2026-07-28")
+        .header("Mcp-Method", "subscriptions/listen")
+        .json(&json!({"jsonrpc":"2.0", "id":42, "method":"subscriptions/listen", "params":{
+            "_meta":stateless_meta(), "notifications":{"toolsListChanged":true,"promptsListChanged":false}
+        }})).send().await.unwrap();
+    assert_eq!(response.status(), 200);
+    let chunk = tokio::time::timeout(std::time::Duration::from_secs(2), response.chunk())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let text = String::from_utf8(chunk.to_vec()).unwrap();
+    let data = text
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .unwrap();
+    let ack: serde_json::Value = serde_json::from_str(data).unwrap();
+    assert_eq!(ack["method"], "notifications/subscriptions/acknowledged");
+    assert_eq!(
+        ack["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"],
+        42
+    );
+    assert_eq!(
+        ack["params"]["notifications"],
+        json!({"toolsListChanged":true})
+    );
+    assert!(ack.get("result").is_none());
 }

@@ -36,6 +36,7 @@ export function McpServersView({ activeSubTab, onTabChange }: McpServersViewProp
   // Lifted health status state - persists across interactions
   const [healthStatus, setHealthStatus] = useState<Record<string, McpHealthStatus>>({})
   const [healthInitialized, setHealthInitialized] = useState(false)
+  const [pendingOAuthServerId, setPendingOAuthServerId] = useState<string | null>(null)
 
   // Start health checks for all servers (called once on mount)
   const startHealthChecks = useCallback(async (serverIds: string[]) => {
@@ -110,7 +111,8 @@ export function McpServersView({ activeSubTab, onTabChange }: McpServersViewProp
     }
   }, [])
 
-  const handleSelect = (id: string | null) => {
+  const handleSelect = (id: string | null, authenticate = false) => {
+    if (authenticate) setPendingOAuthServerId(id)
     onTabChange("mcp-servers", id)
   }
 
@@ -145,6 +147,8 @@ export function McpServersView({ activeSubTab, onTabChange }: McpServersViewProp
           }}
           onRefreshHealth={refreshHealth}
           initialAddTemplateId={addTemplateId}
+          initialAuthenticate={pendingOAuthServerId !== null && pendingOAuthServerId === selectedId}
+          onInitialAuthenticateHandled={() => setPendingOAuthServerId(null)}
           onViewChange={onTabChange}
         />
       ) : (

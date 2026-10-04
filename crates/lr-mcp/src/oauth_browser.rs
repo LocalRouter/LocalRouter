@@ -9,7 +9,7 @@
 
 use crate::oauth::McpOAuthManager;
 use chrono::{DateTime, Duration, Utc};
-use lr_api_keys::CachedKeychain;
+use lr_api_keys::{CachedKeychain, KeychainStorage};
 use lr_config::McpAuthConfig;
 use lr_oauth::browser::{FlowId, OAuthFlowConfig, OAuthFlowManager, OAuthFlowResult};
 use lr_types::{AppError, AppResult};
@@ -94,6 +94,7 @@ impl McpOAuthBrowserManager {
         &self,
         server_id: &str,
         auth_config: &McpAuthConfig,
+        resource_url: Option<&str>,
     ) -> AppResult<OAuthBrowserFlowResult> {
         // Extract OAuth browser config
         let (client_id, auth_url, token_url, scopes, redirect_uri, issuer) = match auth_config {
@@ -143,10 +144,29 @@ impl McpOAuthBrowserManager {
             server_id, redirect_uri
         );
 
+        let mut resource_params = HashMap::new();
+        if let Some(resource) = resource_url {
+            let mut resource = Url::parse(resource)
+                .map_err(|e| AppError::Mcp(format!("Invalid MCP resource URL: {e}")))?;
+            resource.set_query(None);
+            resource.set_fragment(None);
+            resource_params.insert("resource".to_string(), resource.to_string());
+        }
+        let client_secret = if let McpAuthConfig::OAuthBrowser {
+            client_secret_ref, ..
+        } = auth_config
+        {
+            CachedKeychain::auto()?
+                .get(lr_config::MCP_KEYRING_SERVICE, client_secret_ref)?
+                .filter(|secret| !secret.is_empty())
+        } else {
+            None
+        };
+
         // Create unified OAuth flow config
         let config = OAuthFlowConfig {
             client_id,
-            client_secret: None, // Will be loaded from keychain if needed
+            client_secret,
             auth_url,
             token_url,
             scopes,
@@ -154,8 +174,8 @@ impl McpOAuthBrowserManager {
             callback_port,
             keychain_service: "LocalRouter-McpServerTokens".to_string(),
             account_id: server_id.to_string(),
-            extra_auth_params: HashMap::new(),
-            extra_token_params: HashMap::new(),
+            extra_auth_params: resource_params.clone(),
+            extra_token_params: resource_params,
             expected_issuer: issuer,
         };
 

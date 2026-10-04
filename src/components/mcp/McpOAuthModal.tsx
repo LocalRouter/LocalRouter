@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-shell';
+import type { OAuthBrowserFlowResult, OAuthBrowserFlowStatus, StartMcpOAuthBrowserFlowParams, PollMcpOAuthBrowserStatusParams, CancelMcpOAuthBrowserFlowParams } from '@/types/tauri-commands';
 
 interface McpOAuthModalProps {
   isOpen: boolean;
@@ -10,18 +11,6 @@ interface McpOAuthModalProps {
   onSuccess: () => void;
 }
 
-interface OAuthBrowserFlowResult {
-  auth_url: string;
-  redirect_uri: string;
-  state: string;
-}
-
-type OAuthBrowserFlowStatus =
-  | { type: 'Pending' }
-  | { type: 'Success'; expires_in: number }
-  | { type: 'Error'; message: string }
-  | { type: 'Timeout' };
-
 export const McpOAuthModal: React.FC<McpOAuthModalProps> = ({
   isOpen,
   onClose,
@@ -29,11 +18,19 @@ export const McpOAuthModal: React.FC<McpOAuthModalProps> = ({
   serverName,
   onSuccess,
 }) => {
+  const flowGeneration = useRef(0);
+  const successTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [flowResult, setFlowResult] = useState<OAuthBrowserFlowResult | null>(null);
   const [flowStatus, setFlowStatus] = useState<OAuthBrowserFlowStatus | null>(null);
   const [isPolling, setIsPolling] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [browserOpened, setBrowserOpened] = useState(false);
+
+  useEffect(() => () => {
+    flowGeneration.current += 1;
+    if (successTimer.current) clearTimeout(successTimer.current);
+    invoke('cancel_mcp_oauth_browser_flow', { serverId } satisfies CancelMcpOAuthBrowserFlowParams).catch(() => {});
+  }, [serverId]);
 
   // Start OAuth flow when modal opens
   useEffect(() => {
@@ -59,13 +56,13 @@ export const McpOAuthModal: React.FC<McpOAuthModalProps> = ({
       try {
         const status = await invoke<OAuthBrowserFlowStatus>('poll_mcp_oauth_browser_status', {
           serverId,
-        });
+        } satisfies PollMcpOAuthBrowserStatusParams);
 
         setFlowStatus(status);
 
         if (status.type === 'Success') {
           setIsPolling(false);
-          setTimeout(() => {
+          successTimer.current = setTimeout(() => {
             onSuccess();
             handleClose();
           }, 1500);
@@ -87,16 +84,22 @@ export const McpOAuthModal: React.FC<McpOAuthModalProps> = ({
   }, [isPolling, serverId]);
 
   const startOAuthFlow = async () => {
+    const generation = ++flowGeneration.current;
     setError(null);
     setBrowserOpened(false);
     try {
       const result = await invoke<OAuthBrowserFlowResult>('start_mcp_oauth_browser_flow', {
         serverId,
-      });
+      } satisfies StartMcpOAuthBrowserFlowParams);
+      if (generation !== flowGeneration.current) {
+        await invoke('cancel_mcp_oauth_browser_flow', { serverId } satisfies CancelMcpOAuthBrowserFlowParams).catch(() => {});
+        return;
+      }
       setFlowResult(result);
       setFlowStatus({ type: 'Pending' });
       setIsPolling(true);
     } catch (err) {
+      if (generation !== flowGeneration.current) return;
       console.error('Failed to start OAuth flow:', err);
       setError(String(err));
     }
@@ -115,9 +118,11 @@ export const McpOAuthModal: React.FC<McpOAuthModalProps> = ({
   };
 
   const handleClose = async () => {
+    flowGeneration.current += 1;
+    if (successTimer.current) clearTimeout(successTimer.current);
     if (isPolling) {
       try {
-        await invoke('cancel_mcp_oauth_browser_flow', { serverId });
+        await invoke('cancel_mcp_oauth_browser_flow', { serverId } satisfies CancelMcpOAuthBrowserFlowParams);
       } catch (err) {
         console.error('Failed to cancel OAuth flow:', err);
       }

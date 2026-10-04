@@ -642,74 +642,12 @@ impl McpServerManager {
 
                     tracing::info!("Applied OAuth token for SSE server: {}", server_id);
                 }
-                lr_config::McpAuthConfig::OAuthBrowser {
-                    token_url, issuer, ..
-                } => {
-                    // OAuth browser flow - token should already be stored in keychain
-                    // by the McpOAuthBrowserManager after successful authentication
-
-                    // Never replay credentials issued by a different
-                    // authorization server (SEP-2352).
-                    let issuer_identity = issuer.clone().unwrap_or_else(|| token_url.clone());
-                    self.oauth_manager
-                        .check_issuer_binding(&config.id, &issuer_identity);
-
-                    let keychain = lr_api_keys::CachedKeychain::auto()
-                        .unwrap_or_else(|_| lr_api_keys::CachedKeychain::system());
-
-                    // Try to get access token from keychain
-                    let account_name = format!("{}_access_token", config.id);
-                    match keychain.get("LocalRouter-McpServerTokens", &account_name) {
-                        Ok(Some(token)) => {
-                            headers
-                                .insert("Authorization".to_string(), format!("Bearer {}", token));
-                            tracing::debug!(
-                                "Applied OAuth browser token for SSE server: {}",
-                                server_id
-                            );
-                        }
-                        Ok(None) => {
-                            let msg = format!(
-                                "OAuth browser authentication required for server: {}. Please complete browser authentication first.",
-                                server_id
-                            );
-                            tracing::warn!("OAuth browser token not found in keychain for MCP server. User must authenticate via browser first.");
-                            self.emit_monitor_event(
-                                lr_monitor::MonitorEventType::OAuthEvent,
-                                None,
-                                None,
-                                None,
-                                lr_monitor::MonitorEventData::OAuthEvent {
-                                    action: "browser_token_failed".to_string(),
-                                    client_id_hint: Some(server_id.to_string()),
-                                    message: msg.clone(),
-                                    status_code: 401,
-                                },
-                                lr_monitor::EventStatus::Error,
-                                None,
-                            );
-                            return Err(AppError::Mcp(msg));
-                        }
-                        Err(e) => {
-                            let msg = format!("Failed to retrieve OAuth browser token: {}", e);
-                            tracing::error!("{}", msg);
-                            self.emit_monitor_event(
-                                lr_monitor::MonitorEventType::OAuthEvent,
-                                None,
-                                None,
-                                None,
-                                lr_monitor::MonitorEventData::OAuthEvent {
-                                    action: "browser_token_failed".to_string(),
-                                    client_id_hint: Some(server_id.to_string()),
-                                    message: msg,
-                                    status_code: 500,
-                                },
-                                lr_monitor::EventStatus::Error,
-                                None,
-                            );
-                            return Err(e);
-                        }
-                    }
+                auth @ lr_config::McpAuthConfig::OAuthBrowser { .. } => {
+                    let token = self
+                        .oauth_manager
+                        .get_browser_token(&config.id, auth, &url)
+                        .await?;
+                    headers.insert("Authorization".to_string(), format!("Bearer {token}"));
                 }
                 _ => {
                     // None or EnvVars (not applicable for SSE)
@@ -1251,38 +1189,21 @@ impl McpServerManager {
                 );
                 tracing::info!("Applied OAuth token for server: {}", server_id);
             }
-            lr_config::McpAuthConfig::OAuthBrowser {
-                token_url, issuer, ..
-            } => {
-                // Never replay credentials issued by a different
-                // authorization server (SEP-2352).
-                let issuer_identity = issuer.clone().unwrap_or_else(|| token_url.clone());
-                self.oauth_manager
-                    .check_issuer_binding(&config.id, &issuer_identity);
-
-                let keychain = lr_api_keys::CachedKeychain::auto()
-                    .unwrap_or_else(|_| lr_api_keys::CachedKeychain::system());
-
-                let account_name = format!("{}_access_token", config.id);
-                match keychain.get("LocalRouter-McpServerTokens", &account_name) {
-                    Ok(Some(token)) => {
-                        headers.insert("Authorization".to_string(), format!("Bearer {}", token));
-                        tracing::debug!("Applied OAuth browser token for server: {}", server_id);
+            auth @ lr_config::McpAuthConfig::OAuthBrowser { .. } => {
+                let resource_url = match &config.transport_config {
+                    McpTransportConfig::Sse { url, .. }
+                    | McpTransportConfig::HttpSse { url, .. } => url,
+                    _ => {
+                        return Err(AppError::Mcp(
+                            "Browser OAuth requires HTTP transport".into(),
+                        ))
                     }
-                    Ok(None) => {
-                        let msg = format!(
-                            "OAuth browser authentication required for server: {}. Please complete browser authentication first.",
-                            server_id
-                        );
-                        tracing::warn!("OAuth browser token not found in keychain for MCP server");
-                        return Err(AppError::Mcp(msg));
-                    }
-                    Err(e) => {
-                        let msg = format!("Failed to retrieve OAuth browser token: {}", e);
-                        tracing::error!("{}", msg);
-                        return Err(e);
-                    }
-                }
+                };
+                let token = self
+                    .oauth_manager
+                    .get_browser_token(&config.id, auth, resource_url)
+                    .await?;
+                headers.insert("Authorization".to_string(), format!("Bearer {token}"));
             }
             _ => {
                 tracing::debug!("No applicable auth config for server: {}", server_id);

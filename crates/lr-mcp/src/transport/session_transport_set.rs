@@ -49,6 +49,9 @@ impl SessionTransportSet {
     /// Record the protocol revision negotiated with a backend.
     pub fn set_revision(&self, server_id: &str, revision: crate::protocol::ProtocolRevision) {
         self.revisions.insert(server_id.to_string(), revision);
+        if let Some(transport) = self.get(server_id) {
+            transport.set_protocol_revision(revision);
+        }
     }
 
     /// The protocol revision negotiated with a backend (legacy when unset).

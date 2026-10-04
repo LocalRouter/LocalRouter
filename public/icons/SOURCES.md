@@ -19,3 +19,8 @@ READMEs for [Kev](https://github.com/jaredpalmer/kev),
 [Von](https://github.com/wfzyx/von), or [Decider](https://github.com/Mapika/decider).
 They use the standard provider category icon. Kev's playground favicon is the
 Vercel starter mark, so it is not used as Kev branding.
+
+## Atlassian and Datadog MCP templates
+
+- `atlassian.svg`: official Atlassian logo, https://atlassian.github.io/atlassian-mcp-server/images/atlassian_logo_brand_RGB.svg (upstream https://github.com/atlassian/atlassian-mcp-server). Atlassian trademark; used solely to identify the service, subject to https://www.atlassian.com/legal/trademark .
+- `datadog.png`: official logo from Datadog documentation, https://docs.dd-static.net/img/dd-logo-n-200.png (linked by https://docs.datadoghq.com/mcp_server/setup/). Datadog trademark; used solely to identify the service, subject to https://www.datadoghq.com/legal/terms/ .

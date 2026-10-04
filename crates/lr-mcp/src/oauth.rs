@@ -39,6 +39,8 @@ pub struct McpOAuthManager {
     /// Keychain for storing tokens
     keychain: CachedKeychain,
 
+    browser_refresh_locks: dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>,
+
     /// Cached tokens (server_id -> token info)
     token_cache: Arc<RwLock<HashMap<String, CachedTokenInfo>>>,
 }
@@ -98,6 +100,10 @@ pub struct AuthorizationServerMetadata {
     /// Token endpoint URL
     pub token_endpoint: String,
 
+    /// Dynamic public-client registration endpoint (RFC 7591).
+    #[serde(default)]
+    pub registration_endpoint: Option<String>,
+
     /// Supported scopes
     #[serde(default)]
     pub scopes_supported: Vec<String>,
@@ -125,6 +131,10 @@ pub struct OAuthDiscoveryResponse {
 
     /// Token endpoint URL
     pub token_endpoint: String,
+
+    /// Dynamic client registration endpoint.
+    #[serde(default)]
+    pub registration_endpoint: Option<String>,
 
     /// Supported scopes
     #[serde(default)]
@@ -251,7 +261,11 @@ pub fn generate_state() -> Result<String, &'static str> {
 /// - `https://api.example.com/mcp` → `https://api.example.com/.well-known/oauth-protected-resource/mcp`
 /// - `https://api.example.com/api/v4/mcp` → `https://api.example.com/.well-known/oauth-protected-resource/api/v4/mcp`
 pub fn build_well_known_url(resource_url: &str) -> String {
-    let url = resource_url.trim_end_matches('/');
+    let url = resource_url
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(resource_url)
+        .trim_end_matches('/');
 
     // Find the start of the path (after the scheme and host)
     // URL format: scheme://host[:port][/path]
@@ -475,9 +489,13 @@ impl McpOAuthManager {
         let keychain = CachedKeychain::auto().expect("Failed to initialize MCP OAuth keychain");
 
         Self {
-            client: Client::new(),
+            client: Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .expect("OAuth HTTP client"),
             keychain,
             token_cache: Arc::new(RwLock::new(HashMap::new())),
+            browser_refresh_locks: dashmap::DashMap::new(),
         }
     }
 
@@ -486,9 +504,13 @@ impl McpOAuthManager {
     /// Useful for testing with MockKeychain or custom keychain implementations.
     pub fn new_with_keychain(keychain: CachedKeychain) -> Self {
         Self {
-            client: Client::new(),
+            client: Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .expect("OAuth HTTP client"),
             keychain,
             token_cache: Arc::new(RwLock::new(HashMap::new())),
+            browser_refresh_locks: dashmap::DashMap::new(),
         }
     }
 
@@ -517,24 +539,47 @@ impl McpOAuthManager {
             discovery_url
         );
 
-        let response = match self.client.get(&discovery_url).send().await {
-            Ok(resp) => resp,
-            Err(e) => {
-                tracing::debug!(
-                    "OAuth discovery failed (server may not require OAuth): {}",
-                    e
-                );
-                return Ok(None);
+        let origin = reqwest::Url::parse(base_url)
+            .map_err(|e| AppError::Mcp(format!("Invalid MCP URL: {e}")))?
+            .origin()
+            .ascii_serialization();
+        let root_url = format!("{origin}/.well-known/oauth-protected-resource");
+        let mut response = None;
+        let mut candidates = vec![discovery_url, root_url];
+        // RFC 9728 permits servers to advertise a custom metadata location.
+        if let Ok(probe) = self
+            .client
+            .get(base_url)
+            .header("Accept", "application/json, text/event-stream")
+            .send()
+            .await
+        {
+            for challenge in probe.headers().get_all(reqwest::header::WWW_AUTHENTICATE) {
+                if let Ok(challenge) = challenge.to_str() {
+                    if let Some(metadata_url) = challenge
+                        .split("resource_metadata=\"")
+                        .nth(1)
+                        .and_then(|v| v.split('"').next())
+                    {
+                        if reqwest::Url::parse(metadata_url).is_ok() {
+                            candidates.insert(0, metadata_url.to_string());
+                        }
+                    }
+                }
             }
-        };
-
-        if !response.status().is_success() {
-            tracing::debug!(
-                "OAuth discovery returned status {} (server may not require OAuth)",
-                response.status()
-            );
-            return Ok(None);
         }
+        for candidate in candidates {
+            if let Ok(resp) = self.client.get(&candidate).send().await {
+                if resp.status().is_success() {
+                    response = Some(resp);
+                    break;
+                }
+            }
+        }
+        let Some(response) = response else {
+            // Older MCP OAuth deployments publish AS metadata at the origin.
+            return self.discover_authorization_server(&origin, &[]).await;
+        };
 
         // Parse protected resource metadata
         let resource_metadata: ProtectedResourceMetadata = response.json().await.map_err(|e| {
@@ -594,10 +639,10 @@ impl McpOAuthManager {
                     );
 
                     // Use scopes from auth server if available, otherwise from resource
-                    let scopes = if metadata.scopes_supported.is_empty() {
-                        resource_scopes.to_vec()
-                    } else {
+                    let scopes = if resource_scopes.is_empty() {
                         metadata.scopes_supported
+                    } else {
+                        resource_scopes.to_vec()
                     };
 
                     return Ok(Some(OAuthDiscoveryResponse {
@@ -607,6 +652,7 @@ impl McpOAuthManager {
                         issuer: metadata
                             .issuer
                             .or_else(|| Some(auth_server_url.trim_end_matches('/').to_string())),
+                        registration_endpoint: metadata.registration_endpoint,
                         auth_url: metadata.authorization_endpoint,
                         token_endpoint: metadata.token_endpoint,
                         scopes_supported: scopes,
@@ -639,6 +685,7 @@ impl McpOAuthManager {
         // GitHub OAuth
         if url_lower.contains("github.com") {
             return Some(OAuthDiscoveryResponse {
+                registration_endpoint: None,
                 issuer: Some("https://github.com".to_string()),
                 auth_url: "https://github.com/login/oauth/authorize".to_string(),
                 token_endpoint: "https://github.com/login/oauth/access_token".to_string(),
@@ -650,6 +697,7 @@ impl McpOAuthManager {
         // Google OAuth
         if url_lower.contains("google.com") || url_lower.contains("googleapis.com") {
             return Some(OAuthDiscoveryResponse {
+                registration_endpoint: None,
                 issuer: Some("https://accounts.google.com".to_string()),
                 auth_url: "https://accounts.google.com/o/oauth2/v2/auth".to_string(),
                 token_endpoint: "https://oauth2.googleapis.com/token".to_string(),
@@ -667,6 +715,7 @@ impl McpOAuthManager {
             || url_lower.contains("live.com")
         {
             return Some(OAuthDiscoveryResponse {
+                registration_endpoint: None,
                 issuer: Some("https://login.microsoftonline.com/common/v2.0".to_string()),
                 auth_url: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
                     .to_string(),
@@ -681,6 +730,172 @@ impl McpOAuthManager {
         }
 
         None
+    }
+
+    /// Discover browser login settings and register a native public client when needed.
+    pub async fn prepare_browser_config(
+        &self,
+        server_id: &str,
+        mcp_url: &str,
+        config: &lr_config::McpAuthConfig,
+    ) -> AppResult<lr_config::McpAuthConfig> {
+        let lr_config::McpAuthConfig::OAuthBrowser {
+            client_id,
+            client_secret_ref,
+            auth_url,
+            token_url,
+            scopes,
+            redirect_uri,
+            issuer,
+        } = config
+        else {
+            return Err(AppError::Mcp("Browser OAuth is not configured".into()));
+        };
+        let discovery = self.discover_oauth(mcp_url).await?.ok_or_else(|| {
+            AppError::Mcp("This MCP server does not publish OAuth metadata".into())
+        })?;
+        let issuer_changed = issuer
+            .as_ref()
+            .is_some_and(|old| discovery.issuer.as_ref() != Some(old));
+        let mut registered_id = client_id.clone();
+        if registered_id.is_empty() || issuer_changed {
+            let endpoint = discovery.registration_endpoint.as_ref().ok_or_else(||
+                AppError::Mcp("This server requires a registered OAuth client ID. Use OAuth client settings to provide one.".into()))?;
+            let response = self
+                .client
+                .post(endpoint)
+                .json(&serde_json::json!({
+                    "client_name": "LocalRouter",
+                    "redirect_uris": [redirect_uri],
+                    "grant_types": ["authorization_code", "refresh_token"],
+                    "response_types": ["code"],
+                    "token_endpoint_auth_method": "none",
+                    "application_type": "native"
+                }))
+                .send()
+                .await
+                .map_err(|e| AppError::Mcp(format!("OAuth client registration failed: {e}")))?;
+            if !response.status().is_success() {
+                return Err(AppError::Mcp(format!(
+                    "OAuth client registration rejected ({})",
+                    response.status()
+                )));
+            }
+            let registration: serde_json::Value = response
+                .json()
+                .await
+                .map_err(|e| AppError::Mcp(format!("Invalid registration response: {e}")))?;
+            registered_id = registration
+                .get("client_id")
+                .and_then(|v| v.as_str())
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| AppError::Mcp("Registration response missing client_id".into()))?
+                .to_string();
+        }
+        if issuer_changed {
+            self.keychain
+                .delete(lr_config::MCP_KEYRING_SERVICE, client_secret_ref)?;
+        }
+        self.enforce_issuer_binding(
+            server_id,
+            discovery
+                .issuer
+                .as_deref()
+                .unwrap_or(&discovery.token_endpoint),
+        );
+        Ok(lr_config::McpAuthConfig::OAuthBrowser {
+            client_id: registered_id,
+            client_secret_ref: client_secret_ref.clone(),
+            auth_url: if auth_url.is_empty() || issuer_changed {
+                discovery.auth_url
+            } else {
+                auth_url.clone()
+            },
+            token_url: if token_url.is_empty() || issuer_changed {
+                discovery.token_endpoint
+            } else {
+                token_url.clone()
+            },
+            scopes: if scopes.is_empty() || issuer_changed {
+                discovery.scopes_supported
+            } else {
+                scopes.clone()
+            },
+            redirect_uri: redirect_uri.clone(),
+            issuer: discovery.issuer,
+        })
+    }
+
+    /// Return a browser token, refreshing expired credentials for public clients.
+    pub async fn get_browser_token(
+        &self,
+        server_id: &str,
+        auth: &lr_config::McpAuthConfig,
+        resource_url: &str,
+    ) -> AppResult<String> {
+        let refresh_lock = self
+            .browser_refresh_locks
+            .entry(server_id.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone();
+        let _refresh_guard = refresh_lock.lock().await;
+        let lr_config::McpAuthConfig::OAuthBrowser {
+            client_id,
+            client_secret_ref,
+            auth_url,
+            token_url,
+            scopes,
+            redirect_uri,
+            issuer,
+        } = auth
+        else {
+            return Err(AppError::Mcp("Expected browser OAuth configuration".into()));
+        };
+        self.check_issuer_binding(server_id, issuer.as_deref().unwrap_or(token_url));
+        let expiry = self
+            .keychain
+            .get(MCP_OAUTH_SERVICE, &format!("{server_id}_expires_at"))?
+            .and_then(|value| value.parse::<i64>().ok());
+        if expiry.is_none_or(|timestamp| timestamp > Utc::now().timestamp()) {
+            if let Some(token) = self
+                .keychain
+                .get(MCP_OAUTH_SERVICE, &format!("{server_id}_access_token"))?
+            {
+                return Ok(token);
+            }
+        }
+        let refresh = self
+            .keychain
+            .get(MCP_OAUTH_SERVICE, &format!("{server_id}_refresh_token"))?
+            .ok_or_else(|| {
+                AppError::Mcp("Browser login required. Authenticate this MCP server first.".into())
+            })?;
+        let mut resource = reqwest::Url::parse(resource_url)
+            .map_err(|e| AppError::Mcp(format!("Invalid resource URL: {e}")))?;
+        resource.set_query(None);
+        resource.set_fragment(None);
+        let flow = lr_oauth::browser::OAuthFlowConfig {
+            client_id: client_id.clone(),
+            client_secret: self
+                .keychain
+                .get(lr_config::MCP_KEYRING_SERVICE, client_secret_ref)?
+                .filter(|s| !s.is_empty()),
+            auth_url: auth_url.clone(),
+            token_url: token_url.clone(),
+            scopes: scopes.clone(),
+            redirect_uri: redirect_uri.clone(),
+            callback_port: 8080,
+            keychain_service: MCP_OAUTH_SERVICE.into(),
+            account_id: server_id.into(),
+            extra_auth_params: HashMap::new(),
+            extra_token_params: HashMap::from([("resource".into(), resource.to_string())]),
+            expected_issuer: issuer.clone(),
+        };
+        let tokens = lr_oauth::browser::TokenExchanger::new()
+            .refresh_tokens(&flow, &refresh, &self.keychain)
+            .await?;
+        self.update_token_cache(server_id, &tokens.access_token, tokens.expires_at)?;
+        Ok(tokens.access_token)
     }
 
     /// Acquire an OAuth token for an MCP server
@@ -818,6 +1033,17 @@ impl McpOAuthManager {
                 tracing::debug!("Using cached OAuth token for: {}", server_id);
                 return Some(token_info.access_token.clone());
             }
+        }
+
+        if self
+            .keychain
+            .get(MCP_OAUTH_SERVICE, &format!("{server_id}_expires_at"))
+            .ok()
+            .flatten()
+            .and_then(|value| value.parse::<i64>().ok())
+            .is_some_and(|expiry| expiry <= Utc::now().timestamp())
+        {
+            return None;
         }
 
         // Try to load from keychain
@@ -972,6 +1198,9 @@ impl McpOAuthManager {
             .ok();
         self.keychain
             .delete(MCP_OAUTH_SERVICE, &format!("{}_refresh_token", server_id))
+            .ok();
+        self.keychain
+            .delete(MCP_OAUTH_SERVICE, &format!("{server_id}_expires_at"))
             .ok();
     }
 
@@ -1214,6 +1443,238 @@ impl Default for McpOAuthManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn discovery_urls_strip_query_and_fragment() {
+        assert_eq!(build_well_known_url("https://mcp.datadoghq.com/api/unstable/mcp-server/mcp?toolsets=ddsql#tools"),
+            "https://mcp.datadoghq.com/.well-known/oauth-protected-resource/api/unstable/mcp-server/mcp");
+        assert_eq!(
+            build_well_known_url("https://mcp.atlassian.com/v2/mcp"),
+            "https://mcp.atlassian.com/.well-known/oauth-protected-resource/v2/mcp"
+        );
+    }
+
+    fn browser_config() -> lr_config::McpAuthConfig {
+        lr_config::McpAuthConfig::OAuthBrowser {
+            client_id: String::new(),
+            client_secret_ref: "secret".into(),
+            auth_url: String::new(),
+            token_url: String::new(),
+            scopes: vec![],
+            redirect_uri: "http://localhost:8080/callback".into(),
+            issuer: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn browser_discovery_registration_and_issuer_change() {
+        use axum::{
+            routing::{get, post},
+            Json,
+        };
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let resource_origin = origin.clone();
+        let auth_origin = origin.clone();
+        let count = Arc::new(AtomicUsize::new(0));
+        let registrations = count.clone();
+        let app = Router::new()
+            // Only origin metadata: exercises fallback from nested MCP paths.
+            .route("/.well-known/oauth-protected-resource", get(move || {
+                let origin = resource_origin.clone();
+                async move { Json(serde_json::json!({"authorization_servers": [origin], "scopes_supported": ["resource_scope"]})) }
+            }))
+            .route("/.well-known/oauth-authorization-server", get(move || {
+                let origin = auth_origin.clone();
+                async move { Json(serde_json::json!({
+                    "issuer": origin, "authorization_endpoint": format!("{origin}/authorize"),
+                    "token_endpoint": format!("{origin}/token"), "registration_endpoint": format!("{origin}/register"),
+                    "scopes_supported": ["unrelated_scope"]
+                })) }
+            }))
+            .route("/register", post(move |Json(body): Json<serde_json::Value>| {
+                registrations.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    assert_eq!(body["application_type"], "native");
+                    assert_eq!(body["token_endpoint_auth_method"], "none");
+                    assert_eq!(body["redirect_uris"][0], "http://localhost:8080/callback");
+                    Json(serde_json::json!({"client_id":"registered-client"}))
+                }
+            }));
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let manager = mock_manager();
+        let url = format!("{origin}/v2/mcp?toolsets=ddsql");
+        let prepared = manager
+            .prepare_browser_config("srv", &url, &browser_config())
+            .await
+            .unwrap();
+        if let lr_config::McpAuthConfig::OAuthBrowser {
+            client_id,
+            issuer,
+            scopes,
+            ..
+        } = &prepared
+        {
+            assert_eq!(client_id, "registered-client");
+            assert_eq!(issuer.as_deref(), Some(origin.as_str()));
+            assert_eq!(scopes, &vec!["resource_scope".to_string()]);
+        } else {
+            panic!("wrong configuration");
+        }
+        manager
+            .prepare_browser_config("srv", &url, &prepared)
+            .await
+            .unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), 1, "reuse registered client");
+        let mut changed = prepared;
+        if let lr_config::McpAuthConfig::OAuthBrowser { issuer, .. } = &mut changed {
+            *issuer = Some("https://old.example.com".into());
+        }
+        manager
+            .prepare_browser_config("srv", &url, &changed)
+            .await
+            .unwrap();
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            2,
+            "issuer change requires registration"
+        );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn public_client_refresh_is_resource_bound_and_serialized() {
+        use axum::{routing::post, Form, Json};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let resource = format!("{origin}/mcp");
+        let expected_resource = resource.clone();
+        let count = Arc::new(AtomicUsize::new(0));
+        let requests = count.clone();
+        let app = Router::new().route("/token", post(move |Form(body): Form<HashMap<String, String>>| {
+            let resource = expected_resource.clone();
+            requests.fetch_add(1, Ordering::SeqCst);
+            async move {
+                assert_eq!(body.get("resource"), Some(&resource));
+                assert_eq!(body.get("grant_type").map(String::as_str), Some("refresh_token"));
+                assert!(!body.contains_key("client_secret"), "native public client uses PKCE, no secret");
+                Json(serde_json::json!({"access_token":"fresh", "token_type":"Bearer", "expires_in":3600, "refresh_token":"rotated"}))
+            }
+        }));
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let manager = mock_manager();
+        manager
+            .keychain
+            .store(MCP_OAUTH_SERVICE, "srv_access_token", "expired")
+            .unwrap();
+        manager
+            .keychain
+            .store(MCP_OAUTH_SERVICE, "srv_expires_at", "1")
+            .unwrap();
+        manager
+            .keychain
+            .store(MCP_OAUTH_SERVICE, "srv_refresh_token", "refresh")
+            .unwrap();
+        let mut auth = browser_config();
+        if let lr_config::McpAuthConfig::OAuthBrowser {
+            client_id,
+            token_url,
+            ..
+        } = &mut auth
+        {
+            *client_id = "registered-client".into();
+            *token_url = format!("{origin}/token");
+        }
+        let url = format!("{resource}?toolsets=ddsql");
+        let (first, second) = tokio::join!(
+            manager.get_browser_token("srv", &auth, &url),
+            manager.get_browser_token("srv", &auth, &url)
+        );
+        assert_eq!(first.unwrap(), "fresh");
+        assert_eq!(second.unwrap(), "fresh");
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            manager
+                .keychain
+                .get(MCP_OAUTH_SERVICE, "srv_refresh_token")
+                .unwrap()
+                .as_deref(),
+            Some("rotated")
+        );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn browser_registration_errors_are_actionable() {
+        use axum::{
+            routing::{get, post},
+            Json,
+        };
+        for mode in ["unavailable", "rejected", "invalid"] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let origin = format!("http://{}", listener.local_addr().unwrap());
+            let auth_origin = origin.clone();
+            let app = Router::new()
+                .route("/.well-known/oauth-authorization-server", get(move || {
+                    let origin = auth_origin.clone();
+                    async move { Json(serde_json::json!({
+                        "issuer":origin, "authorization_endpoint": format!("{origin}/authorize"),
+                        "token_endpoint":format!("{origin}/token"),
+                        "registration_endpoint": if mode == "unavailable" { None } else { Some(format!("{origin}/register")) }
+                    })) }
+                }))
+                .route("/register", post(move || async move {
+                    (if mode == "rejected" { StatusCode::BAD_REQUEST } else { StatusCode::OK }, Json(serde_json::json!({})))
+                }));
+            let task = tokio::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            });
+            let error = mock_manager()
+                .prepare_browser_config("srv", &format!("{origin}/mcp"), &browser_config())
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains(match mode {
+                    "unavailable" => "registered OAuth client ID",
+                    "rejected" => "registration rejected",
+                    _ => "missing client_id",
+                }),
+                "{error}"
+            );
+            task.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn expired_browser_token_is_not_reported_as_authenticated() {
+        let manager = mock_manager();
+        manager
+            .keychain
+            .store(MCP_OAUTH_SERVICE, "srv_access_token", "expired")
+            .unwrap();
+        manager
+            .keychain
+            .store(MCP_OAUTH_SERVICE, "srv_expires_at", "1")
+            .unwrap();
+        assert!(manager.get_cached_token("srv").await.is_none());
+        assert!(manager
+            .get_browser_token("srv", &browser_config(), "https://example.com/mcp")
+            .await
+            .is_err());
+        manager.clear_token("srv");
+        assert!(manager
+            .keychain
+            .get(MCP_OAUTH_SERVICE, "srv_expires_at")
+            .unwrap()
+            .is_none());
+    }
 
     #[test]
     fn test_token_cache() {

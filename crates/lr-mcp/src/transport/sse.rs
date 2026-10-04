@@ -40,6 +40,14 @@ static HTTP_CLIENT: Lazy<Client> = Lazy::new(|| {
         .expect("Failed to create global HTTP client")
 });
 
+/// Long-lived GET/subscription streams must not inherit the request deadline.
+static STREAM_CLIENT: Lazy<Client> = Lazy::new(|| {
+    Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .build()
+        .expect("MCP stream HTTP client")
+});
+
 /// Notification callback type for SSE transport
 pub type SseNotificationCallback = Arc<dyn Fn(JsonRpcNotification) + Send + Sync>;
 
@@ -58,6 +66,9 @@ pub struct SseTransport {
     /// Message endpoint URL for POST requests (received from "endpoint" SSE event)
     /// If None, falls back to using `url` for POST requests
     message_endpoint: Arc<RwLock<Option<String>>>,
+
+    /// Legacy Streamable HTTP session assigned by initialize (absent for modern MCP).
+    session_id: Arc<RwLock<Option<String>>>,
 
     /// HTTP client for sending requests
     client: Client,
@@ -161,6 +172,106 @@ impl SseTransport {
         ))
     }
 
+    /// Read a POST response incrementally; SSE may remain open after the result.
+    async fn read_inline_response(
+        &self,
+        response: reqwest::Response,
+    ) -> AppResult<Option<JsonRpcResponse>> {
+        let is_sse = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.starts_with("text/event-stream"));
+        if !is_sse {
+            let text = response
+                .text()
+                .await
+                .map_err(|e| AppError::Mcp(format!("Failed to read MCP response: {e}")))?;
+            if text.trim().is_empty() {
+                return Ok(None);
+            }
+            // Legacy servers sometimes send SSE framing without an SSE content type.
+            let json = Self::parse_sse_response(&text)?;
+            return serde_json::from_str(&json)
+                .map(Some)
+                .map_err(|e| AppError::Mcp(format!("Invalid MCP JSON response: {e}")));
+        }
+        let mut stream = response.bytes_stream();
+        let mut buffer = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            buffer.extend_from_slice(
+                &chunk.map_err(|e| AppError::Mcp(format!("MCP response stream failed: {e}")))?,
+            );
+            if buffer.len() > 16 * 1024 * 1024 {
+                return Err(AppError::Mcp("MCP SSE event exceeds 16 MiB".into()));
+            }
+            loop {
+                let boundary = buffer
+                    .windows(2)
+                    .position(|w| w == b"\n\n")
+                    .map(|i| (i, 2))
+                    .or_else(|| {
+                        buffer
+                            .windows(4)
+                            .position(|w| w == b"\r\n\r\n")
+                            .map(|i| (i, 4))
+                    });
+                let Some((end, delimiter_len)) = boundary else {
+                    break;
+                };
+                let event = String::from_utf8(buffer.drain(..end + delimiter_len).collect())
+                    .map_err(|e| AppError::Mcp(format!("Invalid SSE UTF-8: {e}")))?;
+                let data = event
+                    .lines()
+                    .filter_map(|line| line.strip_prefix("data:").map(str::trim_start))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if data.is_empty() {
+                    continue;
+                }
+                match serde_json::from_str::<crate::protocol::JsonRpcMessage>(&data)
+                    .map_err(|e| AppError::Mcp(format!("Invalid MCP SSE message: {e}")))?
+                {
+                    crate::protocol::JsonRpcMessage::Response(response) => {
+                        return Ok(Some(response))
+                    }
+                    crate::protocol::JsonRpcMessage::Notification(notification) => {
+                        if let Some(callback) = self.notification_callback.read().clone() {
+                            callback(notification);
+                        }
+                    }
+                    crate::protocol::JsonRpcMessage::Request(request) => {
+                        let callback = self.request_callback.read().clone();
+                        if let Some(callback) = callback {
+                            let response = callback(request).await;
+                            let mut post = self
+                                .client
+                                .post(&self.url)
+                                .json(&response)
+                                .header("Accept", "application/json, text/event-stream");
+                            for (key, value) in &self.headers {
+                                post = post.header(key, value);
+                            }
+                            if let Some(id) = self.session_id.read().clone() {
+                                post = post.header("Mcp-Session-Id", id);
+                            }
+                            post.send()
+                                .await
+                                .map_err(|e| {
+                                    AppError::Mcp(format!("Failed to respond to MCP request: {e}"))
+                                })?
+                                .error_for_status()
+                                .map_err(|e| {
+                                    AppError::Mcp(format!("MCP response rejected: {e}"))
+                                })?;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+
     /// Parse SSE event and extract event type and data
     ///
     /// SSE events have the format:
@@ -216,6 +327,8 @@ impl SseTransport {
         let request_callback: Arc<RwLock<Option<crate::transport::RequestCallback>>> =
             Arc::new(RwLock::new(None));
         let message_endpoint = Arc::new(RwLock::new(None));
+        let session_id = Arc::new(RwLock::new(None));
+        let stream_session_id = session_id.clone();
 
         // Start persistent SSE stream in background
         let stream_url = url.clone();
@@ -225,7 +338,7 @@ impl SseTransport {
         let stream_ready_clone = stream_ready.clone();
         let stream_callback = notification_callback.clone();
         let stream_request_callback = request_callback.clone();
-        let stream_client = client.clone();
+        let stream_client = STREAM_CLIENT.clone();
         let stream_message_endpoint = message_endpoint.clone();
 
         let stream_task = tokio::spawn(async move {
@@ -239,6 +352,7 @@ impl SseTransport {
                 stream_callback,
                 stream_request_callback,
                 stream_message_endpoint,
+                stream_session_id,
             )
             .await;
         });
@@ -282,6 +396,7 @@ impl SseTransport {
         let transport = Self {
             url,
             message_endpoint,
+            session_id,
             client,
             headers,
             pending,
@@ -316,6 +431,7 @@ impl SseTransport {
         notification_callback: Arc<RwLock<Option<SseNotificationCallback>>>,
         request_callback: Arc<RwLock<Option<crate::transport::RequestCallback>>>,
         message_endpoint: Arc<RwLock<Option<String>>>,
+        session_id: Arc<RwLock<Option<String>>>,
     ) {
         tracing::info!("Starting persistent SSE stream task for: {}", url);
 
@@ -350,6 +466,9 @@ impl SseTransport {
                 request = request.header(key, value);
             }
             request = request.header("Accept", "text/event-stream");
+            if let Some(id) = session_id.read().clone() {
+                request = request.header("Mcp-Session-Id", id);
+            }
 
             // Send request and get streaming response
             let response = match request.send().await {
@@ -379,7 +498,9 @@ impl SseTransport {
                 // 405 Method Not Allowed means the server doesn't support GET SSE streams
                 // This is a permanent failure - the server only supports POST (inline responses)
                 // Mark as ready anyway so POST requests work, then exit the SSE stream task
-                if status == reqwest::StatusCode::METHOD_NOT_ALLOWED {
+                if status == reqwest::StatusCode::METHOD_NOT_ALLOWED
+                    || status == reqwest::StatusCode::BAD_REQUEST
+                {
                     tracing::info!(
                         "Server at {} doesn't support GET SSE stream (405). Transport will use inline responses only. Server-initiated notifications won't be received.",
                         url
@@ -550,6 +671,7 @@ impl SseTransport {
                                                     .unwrap_or_else(|| url.clone());
                                                 let response_client = client.clone();
                                                 let response_headers = headers.clone();
+                                                let response_session = session_id.read().clone();
 
                                                 tokio::spawn(async move {
                                                     let request_id = request.id.clone();
@@ -568,6 +690,10 @@ impl SseTransport {
                                                             req_builder.header(key, value);
                                                     }
 
+                                                    if let Some(id) = response_session {
+                                                        req_builder = req_builder
+                                                            .header("Mcp-Session-Id", id);
+                                                    }
                                                     match req_builder.send().await {
                                                         Ok(resp) => {
                                                             if !resp.status().is_success() {
@@ -714,6 +840,9 @@ impl Transport for SseTransport {
 
             // Build POST request for notification (no ID added)
             let mut req_builder = self.client.post(&post_url).json(&request);
+            if let Some(id) = self.session_id.read().clone() {
+                req_builder = req_builder.header("Mcp-Session-Id", id);
+            }
             req_builder = req_builder.header("Accept", "application/json, text/event-stream");
             for (key, value) in mcp_request_headers(&request) {
                 req_builder = req_builder.header(key, value);
@@ -780,6 +909,9 @@ impl Transport for SseTransport {
 
         // Build POST request
         let mut req_builder = self.client.post(&post_url).json(&request);
+        if let Some(id) = self.session_id.read().clone() {
+            req_builder = req_builder.header("Mcp-Session-Id", id);
+        }
 
         // Add Accept header for content negotiation
         req_builder = req_builder.header("Accept", "application/json, text/event-stream");
@@ -822,6 +954,12 @@ impl Transport for SseTransport {
                 headers.keys().collect::<Vec<_>>(),
                 body
             );
+            if let Ok(mut response) = serde_json::from_str::<JsonRpcResponse>(&body) {
+                if response.error.is_some() {
+                    response.id = original_request_id.clone().unwrap_or(Value::Null);
+                    return Ok(response);
+                }
+            }
             return Err(AppError::Mcp(format!(
                 "Server returned error status: {} - {}",
                 status,
@@ -833,52 +971,19 @@ impl Transport for SseTransport {
             )));
         }
 
-        // Check if the response contains an inline response
-        // Some servers return the response directly in the POST body (as SSE-formatted text
-        // or plain JSON) rather than sending it via the persistent SSE stream
-        //
-        // Try to read and parse the response body - if it contains valid JSON-RPC, use it
-        if let Ok(body_text) = post_response.text().await {
-            if !body_text.trim().is_empty() {
-                tracing::debug!(
-                    "SSE transport POST response body (request_id={}): {} bytes",
-                    request_id,
-                    body_text.len()
-                );
-                // Try SSE format first (data: {...}\n\n)
-                if let Ok(json_str) = Self::parse_sse_response(&body_text) {
-                    if let Ok(mut response) = serde_json::from_str::<JsonRpcResponse>(&json_str) {
-                        // Got inline response - remove from pending and return
-                        self.pending.write().remove(&request_id);
-                        // Restore original request ID in response
-                        response.id = original_request_id.clone().unwrap_or(Value::Null);
-                        tracing::info!(
-                            "SSE transport returning inline SSE response (internal_id={}, restored_id={:?})",
-                            request_id,
-                            response.id
-                        );
-                        return Ok(response);
-                    }
-                }
-                // Try plain JSON format
-                if let Ok(mut response) = serde_json::from_str::<JsonRpcResponse>(&body_text) {
-                    // Got inline JSON response - remove from pending and return
-                    self.pending.write().remove(&request_id);
-                    // Restore original request ID in response
-                    response.id = original_request_id.clone().unwrap_or(Value::Null);
-                    tracing::info!(
-                        "SSE transport returning inline JSON response (internal_id={}, restored_id={:?})",
-                        request_id,
-                        response.id
-                    );
-                    return Ok(response);
-                }
-            } else {
-                tracing::debug!(
-                    "SSE transport POST response body empty (request_id={}), waiting for SSE stream",
-                    request_id
+        if request.method == "initialize" {
+            if let Some(id) = post_response.headers().get("Mcp-Session-Id") {
+                *self.session_id.write() = Some(
+                    id.to_str()
+                        .map_err(|e| AppError::Mcp(format!("Invalid MCP session ID: {e}")))?
+                        .to_string(),
                 );
             }
+        }
+
+        if let Some(mut response) = self.read_inline_response(post_response).await? {
+            response.id = original_request_id.clone().unwrap_or(Value::Null);
+            return Ok(response);
         }
 
         // No inline response - wait for response from SSE stream (with timeout)
@@ -942,6 +1047,9 @@ impl Transport for SseTransport {
 
         // Build POST request
         let mut req_builder = self.client.post(&self.url).json(&request);
+        if let Some(id) = self.session_id.read().clone() {
+            req_builder = req_builder.header("Mcp-Session-Id", id);
+        }
 
         // Add standard MCP request headers (SEP-2243)
         for (key, value) in mcp_request_headers(&request) {
@@ -1047,6 +1155,114 @@ impl Transport for SseTransport {
         Ok(Box::pin(stream))
     }
 
+    fn set_protocol_revision(&self, revision: crate::protocol::ProtocolRevision) {
+        if !revision.is_stateless() {
+            return;
+        }
+        // Modern MCP uses an explicitly filtered POST stream instead of GET.
+        if let Some(task) = self.stream_task.write().take() {
+            task.abort();
+        }
+        *self.session_id.write() = None;
+        let url = self.url.clone();
+        let headers = self.headers.clone();
+        let callback = self.notification_callback.clone();
+        let closed = self.closed.clone();
+        let next_id = self.next_id.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                if *closed.read() {
+                    return;
+                }
+                let id = {
+                    let mut id = next_id.write();
+                    let result = *id;
+                    *id += 1;
+                    result
+                };
+                let request = JsonRpcRequest::with_id(
+                    id,
+                    "subscriptions/listen".into(),
+                    Some(serde_json::json!({
+                        "notifications": { "toolsListChanged": true, "promptsListChanged": true, "resourcesListChanged": true },
+                        "_meta": {
+                            crate::protocol::meta_keys::PROTOCOL_VERSION: crate::protocol::MCP_PROTOCOL_VERSION_STATELESS,
+                            crate::protocol::meta_keys::CLIENT_CAPABILITIES: {},
+                            crate::protocol::meta_keys::CLIENT_INFO: { "name": "LocalRouter MCP Gateway", "version": env!("CARGO_PKG_VERSION") }
+                        }
+                    })),
+                );
+                let mut post = STREAM_CLIENT
+                    .post(&url)
+                    .json(&request)
+                    .header("Accept", "application/json, text/event-stream");
+                for (key, value) in &headers {
+                    post = post.header(key, value);
+                }
+                for (key, value) in mcp_request_headers(&request) {
+                    post = post.header(key, value);
+                }
+                let response = match post.send().await {
+                    Ok(response) if response.status().is_success() => response,
+                    Ok(response) if response.status().is_client_error() => return, // unsupported or auth rejected
+                    _ => {
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        continue;
+                    }
+                };
+                if !response
+                    .headers()
+                    .get(reqwest::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok())
+                    .is_some_and(|v| v.starts_with("text/event-stream"))
+                {
+                    return;
+                }
+                let mut stream = response.bytes_stream();
+                let mut buffer = Vec::new();
+                while let Some(Ok(chunk)) = stream.next().await {
+                    buffer.extend_from_slice(&chunk);
+                    if buffer.len() > 16 * 1024 * 1024 {
+                        return;
+                    }
+                    loop {
+                        let boundary = buffer
+                            .windows(2)
+                            .position(|w| w == b"\n\n")
+                            .map(|i| (i, 2))
+                            .or_else(|| {
+                                buffer
+                                    .windows(4)
+                                    .position(|w| w == b"\r\n\r\n")
+                                    .map(|i| (i, 4))
+                            });
+                        let Some((end, size)) = boundary else {
+                            break;
+                        };
+                        let event = String::from_utf8_lossy(
+                            &buffer.drain(..end + size).collect::<Vec<_>>(),
+                        )
+                        .to_string();
+                        let data = event
+                            .lines()
+                            .filter_map(|line| line.strip_prefix("data:").map(str::trim_start))
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        if let Ok(crate::protocol::JsonRpcMessage::Notification(notification)) =
+                            serde_json::from_str(&data)
+                        {
+                            if let Some(callback) = callback.read().clone() {
+                                callback(notification);
+                            }
+                        }
+                    }
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        });
+        *self.stream_task.write() = Some(task);
+    }
+
     fn supports_streaming(&self) -> bool {
         true
     }
@@ -1074,10 +1290,139 @@ mod tests {
     use serde_json::json;
 
     #[tokio::test]
+    async fn legacy_http_preserves_session_and_query_and_reads_open_sse() {
+        use axum::{
+            extract::Query, http::HeaderMap, response::IntoResponse, routing::post, Json, Router,
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!(
+            "http://{}/v2/mcp?toolsets=ddsql",
+            listener.local_addr().unwrap()
+        );
+        let app = Router::new().route("/v2/mcp", post(
+            |Query(query): Query<HashMap<String, String>>, headers: HeaderMap, Json(request): Json<JsonRpcRequest>| async move {
+                assert_eq!(query.get("toolsets").map(String::as_str), Some("ddsql"));
+                if request.method == "initialize" {
+                    return ([("Mcp-Session-Id", "session-123")], Json(serde_json::json!({
+                        "jsonrpc":"2.0", "id":request.id, "result": {"protocolVersion":"2025-11-25"}
+                    }))).into_response();
+                }
+                assert_eq!(headers.get("Mcp-Session-Id").unwrap(), "session-123");
+                if request.method == "notifications/initialized" {
+                    return axum::http::StatusCode::ACCEPTED.into_response();
+                }
+                let stream = async_stream::stream! {
+                    yield Ok::<_, std::convert::Infallible>("event: message\r\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{}}\r\n\r\n".to_string());
+                    yield Ok(format!("event: message\r\ndata: {{\"jsonrpc\":\"2.0\",\"id\":{},\"result\":{{\"content\":[]}}}}\r\n\r\n", request.id.unwrap()));
+                    std::future::pending::<()>().await;
+                };
+                ([("Content-Type", "text/event-stream")], axum::body::Body::from_stream(stream)).into_response()
+            }
+        ));
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let transport = SseTransport::connect(url, HashMap::new()).await.unwrap();
+        let notifications = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let received = notifications.clone();
+        transport.set_notification_callback(Arc::new(move |_| {
+            received.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }));
+        transport
+            .send_request(JsonRpcRequest::with_id(
+                10,
+                "initialize".into(),
+                Some(json!({})),
+            ))
+            .await
+            .unwrap();
+        transport
+            .send_request(JsonRpcRequest {
+                jsonrpc: "2.0".into(),
+                id: None,
+                method: "notifications/initialized".into(),
+                params: None,
+            })
+            .await
+            .unwrap();
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            transport.send_request(JsonRpcRequest::with_id(
+                42,
+                "tools/call".into(),
+                Some(json!({"name":"test"})),
+            )),
+        )
+        .await
+        .expect("return final result without waiting for stream closure")
+        .unwrap();
+        assert_eq!(result.id, json!(42));
+        assert_eq!(notifications.load(std::sync::atomic::Ordering::SeqCst), 1);
+        transport.disconnect().await.unwrap();
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn modern_http_preserves_errors_and_receives_post_subscriptions() {
+        use axum::{
+            response::IntoResponse,
+            routing::{get, post},
+            Json, Router,
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let app = Router::new().route("/mcp", get(|| async { axum::http::StatusCode::BAD_REQUEST }).merge(post(
+            |Json(request): Json<JsonRpcRequest>| async move {
+                if request.method == "subscriptions/listen" {
+                    assert_eq!(request.params.as_ref().unwrap()["notifications"]["toolsListChanged"], true);
+                    let stream = async_stream::stream! {
+                        yield Ok::<_, std::convert::Infallible>("data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/subscriptions/acknowledged\",\"params\":{}}\n\n");
+                        yield Ok("data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\",\"params\":{}}\n\n");
+                        std::future::pending::<()>().await;
+                    };
+                    return ([("Content-Type", "text/event-stream")], axum::body::Body::from_stream(stream)).into_response();
+                }
+                (axum::http::StatusCode::BAD_REQUEST, Json(json!({
+                    "jsonrpc":"2.0", "id":request.id,
+                    "error":{"code":-32022,"message":"Unsupported protocol version","data":{"supported":["2026-07-28"]}}
+                }))).into_response()
+            }
+        )));
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let transport = SseTransport::connect(url, HashMap::new()).await.unwrap();
+        let response = transport
+            .send_request(JsonRpcRequest::with_id(
+                42,
+                "server/discover".into(),
+                Some(json!({})),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.id, json!(42));
+        assert_eq!(response.error.unwrap().code, -32022);
+        let received = Arc::new(tokio::sync::Notify::new());
+        let signal = received.clone();
+        transport.set_notification_callback(Arc::new(move |notification| {
+            if notification.method == "notifications/tools/list_changed" {
+                signal.notify_one();
+            }
+        }));
+        transport.set_protocol_revision(crate::protocol::ProtocolRevision::V2026_07_28);
+        tokio::time::timeout(Duration::from_secs(2), received.notified())
+            .await
+            .unwrap();
+        transport.disconnect().await.unwrap();
+        task.abort();
+    }
+
+    #[tokio::test]
     async fn test_request_id_generation() {
         let transport = SseTransport {
             url: "http://localhost:3000".to_string(),
             message_endpoint: Arc::new(RwLock::new(None)),
+            session_id: Arc::new(RwLock::new(None)),
             client: Client::new(),
             headers: HashMap::new(),
             pending: Arc::new(RwLock::new(HashMap::new())),

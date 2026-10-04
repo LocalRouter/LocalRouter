@@ -1822,6 +1822,8 @@ pub async fn get_mcp_token_stats(
 pub async fn start_mcp_oauth_browser_flow(
     server_id: String,
     oauth_browser_manager: State<'_, Arc<lr_mcp::oauth_browser::McpOAuthBrowserManager>>,
+    mcp_manager: State<'_, Arc<McpServerManager>>,
+    oauth_manager: State<'_, Arc<lr_mcp::oauth::McpOAuthManager>>,
     config_manager: State<'_, ConfigManager>,
 ) -> Result<lr_mcp::oauth_browser::OAuthBrowserFlowResult, String> {
     // Get server config
@@ -1838,9 +1840,31 @@ pub async fn start_mcp_oauth_browser_flow(
         .as_ref()
         .ok_or_else(|| format!("No auth config for server: {}", server_id))?;
 
-    // Start browser flow
+    let resource_url = match &server.transport_config {
+        McpTransportConfig::Sse { url, .. } | McpTransportConfig::HttpSse { url, .. } => {
+            url.clone()
+        }
+        _ => return Err("Browser OAuth requires an HTTP MCP server".into()),
+    };
+    let prepared = oauth_manager
+        .prepare_browser_config(&server_id, &resource_url, auth_config)
+        .await
+        .map_err(|e| e.to_string())?;
+    config_manager
+        .update(|cfg| {
+            if let Some(server) = cfg.mcp_servers.iter_mut().find(|s| s.id == server_id) {
+                server.auth_config = Some(prepared.clone());
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    config_manager.save().await.map_err(|e| e.to_string())?;
+    mcp_manager.add_config({
+        let mut server = server.clone();
+        server.auth_config = Some(prepared.clone());
+        server
+    });
     oauth_browser_manager
-        .start_browser_flow(&server_id, auth_config)
+        .start_browser_flow(&server_id, &prepared, Some(&resource_url))
         .await
         .map_err(|e| e.to_string())
 }

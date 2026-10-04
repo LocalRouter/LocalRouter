@@ -12,7 +12,7 @@ When a `tools/call` request arrives, the gateway strips the prefix to identify t
 
 <!-- @entry transport-types -->
 
-The MCP gateway supports three transport types for connecting to upstream MCP servers, matching the MCP specification. Each transport is configured per-server and handles connection establishment, message framing, and reconnection differently.
+The MCP gateway supports STDIO, Streamable HTTP (including legacy HTTP+SSE), and a WebSocket extension for connecting to upstream MCP servers. Each transport is configured per-server and handles connection establishment, message framing, and reconnection differently.
 
 <!-- @entry transport-stdio -->
 
@@ -30,7 +30,11 @@ This transport is suitable for remote MCP servers that use the older SSE-based M
 
 Streamable HTTP is the modern MCP transport that uses standard HTTP POST requests with optional SSE streaming for responses. Each request is a standalone HTTP call, and the server can respond with a direct JSON response or upgrade to SSE for streaming.
 
-This is the recommended transport for new remote MCP server implementations.
+This is the recommended transport for new remote MCP server implementations. Select **HTTP (Streamable HTTP / SSE)** and enter the complete endpoint URL. Paths such as Atlassian’s `/v2/mcp` are service-specific; MCP protocol revisions are declared in requests.
+
+Choose **OAuth (Browser login)** to sign in through the provider’s login page. LocalRouter discovers the authorization server, registers a native public client where supported, uses PKCE, and stores tokens in the system keychain. Servers that require a registered client ID can be configured through **OAuth client settings**. Expired browser credentials are refreshed when reconnecting.
+
+The **Atlassian** template uses `https://mcp.atlassian.com/v2/mcp`. The **Datadog** template uses `https://mcp.datadoghq.com/api/unstable/mcp-server/mcp` and provides toolset selection, including DDSQL (`?toolsets=ddsql`). Both templates use browser login.
 
 <!-- @entry deferred-tool-loading -->
 
@@ -48,7 +52,7 @@ The virtual search tool addresses this by exposing a single `localrouter__search
 
 The MCP gateway maintains per-client sessions to track state across multiple requests. Each client connection gets a unique session ID (returned via the `Mcp-Session-Id` header) that maps to its upstream server connections and cached data.
 
-Sessions handle the MCP protocol handshake, capability negotiation, and per-session state like resource subscriptions. Sessions expire after inactivity and are cleaned up automatically.
+Legacy MCP clients use initialization and HTTP session IDs. MCP `2026-07-28` clients use stateless per-request metadata and `server/discover`; change notifications use an explicitly filtered `subscriptions/listen` POST stream. LocalRouter adapts between these revisions and cleans up internal routing state after inactivity.
 
 <!-- @entry response-caching -->
 

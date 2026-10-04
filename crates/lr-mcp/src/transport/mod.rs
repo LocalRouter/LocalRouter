@@ -107,6 +107,9 @@ pub trait Transport: Send + Sync {
         false
     }
 
+    /// Switch protocol-era transport behavior after backend discovery.
+    fn set_protocol_revision(&self, _revision: crate::protocol::ProtocolRevision) {}
+
     /// Check if the transport is healthy/connected
     async fn is_healthy(&self) -> bool;
 

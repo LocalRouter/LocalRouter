@@ -12,7 +12,9 @@ export interface TemplateField {
   id: string
   label: string
   placeholder: string
-  type: 'env_var' | 'arg'
+  type: 'env_var' | 'arg' | 'query'
+  /** Comma-separated choices for query fields. */
+  options?: { value: string; label: string }[]
   secret?: boolean
   /** Default: true */
   required?: boolean
@@ -93,6 +95,18 @@ export const MCP_SERVER_TEMPLATES: McpServerTemplate[] = [
   },
 
   // === Productivity & Collaboration ===
+  {
+    id: 'atlassian',
+    name: 'Atlassian',
+    description: 'Official remote MCP server for Jira, Confluence, and the Atlassian platform.',
+    category: 'productivity',
+    icon: 'atlassian',
+    transport: 'Sse',
+    url: 'https://mcp.atlassian.com/v2/mcp',
+    authMethod: 'oauth_browser',
+    setupInstructions: 'Sign in to Atlassian in your browser and choose the sites to authorize.',
+    docsUrl: 'https://atlassian.github.io/atlassian-mcp-server/',
+  },
   {
     id: 'notion',
     name: 'Notion',
@@ -221,6 +235,59 @@ export const MCP_SERVER_TEMPLATES: McpServerTemplate[] = [
   },
 
   // === Cloud & Infrastructure ===
+  {
+    id: 'datadog',
+    name: 'Datadog',
+    description: 'Official remote MCP server for observability, infrastructure, and Datadog data.',
+    category: 'cloud_infra',
+    icon: 'datadog',
+    transport: 'Sse',
+    url: 'https://mcp.datadoghq.com/api/unstable/mcp-server/mcp',
+    authMethod: 'oauth_browser',
+    fields: [{
+      id: 'toolsets', label: 'Toolsets', type: 'query', placeholder: 'core,ddsql',
+      required: false, defaultValue: 'core',
+      helpText: 'Choose the tools to expose. An empty selection uses Datadog’s default core tools. Preview toolsets may require access from Datadog.',
+      options: [
+        { value: 'all', label: 'All generally available toolsets' },
+        { value: 'core', label: 'Core' },
+        { value: 'ddsql', label: 'DDSQL' },
+        { value: 'alerting', label: 'Alerting' },
+        { value: 'assistant', label: 'Bits Chat' },
+        { value: 'audit-trail', label: 'Audit Trail' },
+        { value: 'code-exec', label: 'Code Execution' },
+        { value: 'cost', label: 'Cloud Cost' },
+        { value: 'dashboards', label: 'Dashboards' },
+        { value: 'data-observability', label: 'Data Observability' },
+        { value: 'dbm', label: 'Database Monitoring' },
+        { value: 'error-tracking', label: 'Error Tracking' },
+        { value: 'feature-flags', label: 'Feature Flags' },
+        { value: 'kubernetes', label: 'Kubernetes' },
+        { value: 'llmobs', label: 'Agent Observability' },
+        { value: 'networks', label: 'Networks' },
+        { value: 'notebooks', label: 'Notebooks' },
+        { value: 'onboarding', label: 'Onboarding' },
+        { value: 'product-analytics', label: 'Product Analytics' },
+        { value: 'profiling', label: 'Profiling' },
+        { value: 'reference-tables', label: 'Reference Tables' },
+        { value: 'rum', label: 'Real User Monitoring' },
+        { value: 'security', label: 'Security' },
+        { value: 'sheets', label: 'Spreadsheets' },
+        { value: 'software-delivery', label: 'Software Delivery' },
+        { value: 'synthetics', label: 'Synthetic Testing' },
+        { value: 'widgets', label: 'Widgets' },
+        { value: 'workflows', label: 'Workflows' },
+        { value: 'apm', label: 'APM (preview)' },
+        { value: 'cases', label: 'Case Management (preview)' },
+        { value: 'governance', label: 'Governance (preview)' },
+        { value: 'investigator', label: 'Bits Investigation (preview)' },
+        { value: 'live-debugger', label: 'Live Debugger (preview)' },
+        { value: 'remote-actions', label: 'Remote Actions (preview)' },
+      ],
+    }],
+    setupInstructions: 'Select toolsets, then sign in to Datadog in your browser. For other Datadog sites, change the server URL in Settings after creation.',
+    docsUrl: 'https://docs.datadoghq.com/mcp_server/setup/',
+  },
   {
     id: 'aws-core',
     name: 'AWS',

@@ -1821,18 +1821,19 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       id: `mcp-${generateId()}`,
       name: args?.name || 'New MCP Server',
       enabled: true,
-      transport_type: args?.transportType || 'stdio',
-      description: args?.description || '',
+      transport: args?.transport || 'Stdio',
+      transport_config: args?.transportConfig || { type: 'stdio', command: '', env: {}, cwd: null },
+      auth_config: args?.authConfig || null,
+      proxy_url: '',
+      gateway_url: 'http://localhost:3625/mcp',
       tools_count: 0,
-      auth_type: 'none',
-      ...args,
     }
     mockData.mcpServers.push(newServer)
     toast.success(`MCP Server "${args?.name}" created (demo)`)
     return newServer
   },
   'update_mcp_server': (args) => {
-    const server = mockData.mcpServers.find(s => s.id === args?.id)
+    const server = mockData.mcpServers.find(s => s.id === (args?.serverId || args?.id))
     if (server && args?.updates) {
       Object.assign(server, args.updates)
     }
@@ -2642,10 +2643,11 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   },
 
   // MCP OAuth
-  'start_mcp_oauth_browser_flow': () => ({ flow_id: generateId() }),
-  'poll_mcp_oauth_browser_status': () => ({ status: 'pending' }),
+  'start_mcp_oauth_browser_flow': () => ({ auth_url: 'https://example.com/authorize', redirect_uri: 'http://localhost:8080/callback', state: generateId() }),
+  'poll_mcp_oauth_browser_status': () => ({ type: 'Success', expires_in: 3600 }),
   'cancel_mcp_oauth_browser_flow': () => null,
-  'test_mcp_oauth_connection': () => ({ success: true, message: 'Connection successful (demo)' }),
+  'test_mcp_oauth_connection': () => true,
+  'discover_mcp_oauth_endpoints': () => ({ auth_url: 'https://example.com/authorize', token_url: 'https://example.com/token', scopes_supported: [], discovered_at: new Date().toISOString() }),
   'revoke_mcp_oauth_tokens': () => {
     toast.success('OAuth tokens revoked (demo)')
     return null

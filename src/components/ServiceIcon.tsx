@@ -75,6 +75,8 @@ const ICON_MAP: Record<string, string> = {
   // Productivity Services
   slack: 'slack.png',
   jira: 'jira.png',
+  atlassian: 'atlassian.svg',
+  datadog: 'datadog.png',
   notion: 'notion.png',
   confluence: 'confluence.png',
   'google-drive': 'google-drive.png',

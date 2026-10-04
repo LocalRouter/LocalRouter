@@ -14,6 +14,9 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
+import { resolveMcpTemplateUrl } from "@/utils/mcp-template-url"
+import { Checkbox } from "@/components/ui/checkbox"
+import type { McpOAuthDiscovery, DiscoverMcpOAuthEndpointsParams } from "@/types/tauri-commands"
 import { Input } from "@/components/ui/Input"
 import {
   Dialog,
@@ -73,10 +76,12 @@ export interface McpHealthCheckEvent {
 
 interface McpServersPanelProps {
   selectedId: string | null
-  onSelect: (id: string | null) => void
+  onSelect: (id: string | null, authenticate?: boolean) => void
   healthStatus: Record<string, McpHealthStatus>
   onHealthInit: (serverIds: string[]) => void
   onRefreshHealth: (serverId: string) => Promise<void>
+  initialAuthenticate?: boolean
+  onInitialAuthenticateHandled?: () => void
   initialAddTemplateId?: string | null
   onViewChange?: (view: string, subTab?: string | null) => void
 }
@@ -88,6 +93,8 @@ export function McpServersPanel({
   onHealthInit,
   onRefreshHealth,
   initialAddTemplateId,
+  initialAuthenticate,
+  onInitialAuthenticateHandled,
   onViewChange,
 }: McpServersPanelProps) {
   const [servers, setServers] = useState<McpServer[]>([])
@@ -97,12 +104,18 @@ export function McpServersPanel({
   // OAuth status state
   const [oauthStatus, setOauthStatus] = useState<Record<string, boolean>>({})
   const [showOAuthModal, setShowOAuthModal] = useState(false)
+  useEffect(() => {
+    if (initialAuthenticate) {
+      setShowOAuthModal(true)
+      onInitialAuthenticateHandled?.()
+    }
+  }, [initialAuthenticate, onInitialAuthenticateHandled])
 
   // OAuth setup state
   const [showOAuthSetup, setShowOAuthSetup] = useState(false)
   const [oauthSetupClientId, setOauthSetupClientId] = useState("")
   const [oauthSetupClientSecret, setOauthSetupClientSecret] = useState("")
-  const [oauthDiscovery, setOauthDiscovery] = useState<{ auth_url: string; token_url: string; scopes: string[] } | null>(null)
+  const [oauthDiscovery, setOauthDiscovery] = useState<McpOAuthDiscovery | null>(null)
   const [isDiscovering, setIsDiscovering] = useState(false)
   const [isSavingOAuth, setIsSavingOAuth] = useState(false)
 
@@ -232,6 +245,8 @@ export function McpServersPanel({
       }
 
       if (authMethod === "bearer" && bearerToken) {
+        updates.auth_config = authConfig
+      } else if (authMethod === "oauth_browser" && server.auth_config?.type !== "oauth_browser") {
         updates.auth_config = authConfig
       } else if (authMethod === "none" && server.auth_config?.type !== "none" && server.auth_config !== null) {
         updates.auth_config = null
@@ -454,7 +469,7 @@ export function McpServersPanel({
           const fullCommand = [template.command, ...resolvedArgs].join(" ")
           transportConfig = { type: "stdio", command: fullCommand, env: envVarsFromFields, cwd: cwd.trim() || null }
         } else {
-          transportConfig = { type: "http_sse", url: template.url || url, headers: {} }
+          transportConfig = { type: "http_sse", url: resolveMcpTemplateUrl(template, templateFieldValues) || url, headers }
         }
       } else if (transportType === "Stdio") {
         transportConfig = { type: "stdio", command, env: envVars, cwd: cwd.trim() || null }
@@ -495,7 +510,8 @@ export function McpServersPanel({
       await loadServersOnly()
       setShowCreateModal(false)
       resetForm()
-      onRefreshHealth(newServer.id)
+      onSelect(newServer.id, authMethod === "oauth_browser")
+      if (authMethod !== "oauth_browser") onRefreshHealth(newServer.id)
     } catch (error) {
       console.error("Failed to create MCP server:", error)
       toast.error(`Error creating MCP server: ${error}`)
@@ -595,7 +611,11 @@ export function McpServersPanel({
   }
 
   const handleOAuthSuccess = () => {
-    if (selectedId) { checkOAuthStatus(selectedId) }
+    if (selectedId) {
+      loadServersOnly()
+      checkOAuthStatus(selectedId)
+      onRefreshHealth(selectedId)
+    }
     setShowOAuthModal(false)
     toast.success("OAuth authentication successful")
   }
@@ -610,10 +630,7 @@ export function McpServersPanel({
     }
   }
 
-  const isOAuthConfigured = (server: McpServer) => {
-    if (server.auth_config?.type !== "oauth_browser") return false
-    return !!(server.auth_config as { client_id?: string }).client_id
-  }
+
 
   const handleStartOAuthSetup = async () => {
     if (!selectedServer) return
@@ -626,8 +643,8 @@ export function McpServersPanel({
       const transportConfig = selectedServer.transport_config as { url?: string }
       if (!transportConfig.url) { toast.error("Server URL not found"); return }
       const baseUrl = transportConfig.url.replace(/\/+$/, "")
-      const discovery = await invoke<{ auth_url: string; token_url: string; scopes: string[] } | null>(
-        "discover_mcp_oauth_endpoints", { baseUrl }
+      const discovery = await invoke<McpOAuthDiscovery | null>(
+        "discover_mcp_oauth_endpoints", { baseUrl } satisfies DiscoverMcpOAuthEndpointsParams
       )
       if (discovery) {
         setOauthDiscovery(discovery)
@@ -650,15 +667,16 @@ export function McpServersPanel({
         serverId: selectedServer.id,
         updates: {
           auth_config: {
-            type: "oauth_browser", client_id: oauthSetupClientId, client_secret: oauthSetupClientSecret,
+            type: "oauth_browser", client_id: oauthSetupClientId, client_secret: oauthSetupClientSecret || null,
             auth_url: oauthDiscovery.auth_url, token_url: oauthDiscovery.token_url,
-            scopes: oauthDiscovery.scopes, redirect_uri: "http://localhost:8080/callback",
+            scopes: oauthDiscovery.scopes_supported, redirect_uri: "http://localhost:8080/callback",
           },
         },
       })
       toast.success("OAuth credentials saved")
       setShowOAuthSetup(false)
       await loadServersOnly()
+      setShowOAuthModal(true)
     } catch (error) {
       toast.error(`Failed to save OAuth credentials: ${error}`)
     } finally {
@@ -916,75 +934,49 @@ export function McpServersPanel({
                           <CardTitle className="text-sm">OAuth Authentication</CardTitle>
                         </CardHeader>
                         <CardContent className="space-y-4">
-                          {!isOAuthConfigured(selectedServer) ? (
-                            <>
-                              <p className="text-sm text-muted-foreground">
-                                OAuth credentials are not configured. Click Setup to discover OAuth
-                                endpoints and enter your credentials.
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <p className="text-sm font-medium">
+                                {oauthStatus[selectedServer.id] ? "Authenticated" : "Not authenticated"}
                               </p>
-                              <Button size="sm" onClick={handleStartOAuthSetup} disabled={isDiscovering}>
-                                {isDiscovering ? "Discovering..." : "Setup OAuth"}
-                              </Button>
-                            </>
-                          ) : (
-                            <>
-                              <div className="flex items-center justify-between">
-                                <div>
-                                  <p className="text-sm font-medium">
-                                    {oauthStatus[selectedServer.id] ? "Authenticated" : "Not authenticated"}
-                                  </p>
-                                  <p className="text-xs text-muted-foreground">
-                                    {oauthStatus[selectedServer.id]
-                                      ? "OAuth tokens are valid and ready to use"
-                                      : "Click Authenticate to complete browser login"}
-                                  </p>
-                                </div>
-                                <Badge variant={oauthStatus[selectedServer.id] ? "success" : "secondary"}>
-                                  {oauthStatus[selectedServer.id] ? "Active" : "Inactive"}
-                                </Badge>
-                              </div>
-                              <div className="flex gap-2">
-                                <Button
-                                  size="sm"
-                                  variant={oauthStatus[selectedServer.id] ? "secondary" : "default"}
-                                  onClick={() => setShowOAuthModal(true)}
-                                >
-                                  {oauthStatus[selectedServer.id] ? "Re-authenticate" : "Authenticate"}
-                                </Button>
-                                {oauthStatus[selectedServer.id] && (
-                                  <>
-                                    <Button size="sm" variant="secondary" onClick={() => checkOAuthStatus(selectedServer.id)}>
-                                      Test
-                                    </Button>
-                                    <AlertDialog>
-                                      <AlertDialogTrigger asChild>
-                                        <Button size="sm" variant="destructive">
-                                          Revoke
-                                        </Button>
-                                      </AlertDialogTrigger>
-                                      <AlertDialogContent>
-                                        <AlertDialogHeader>
-                                          <AlertDialogTitle>Revoke OAuth Tokens?</AlertDialogTitle>
-                                          <AlertDialogDescription>
-                                            This will revoke the OAuth tokens for &ldquo;{selectedServer.name}&rdquo;. The server will lose its authenticated connection and you&apos;ll need to re-authenticate to use it again.
-                                          </AlertDialogDescription>
-                                        </AlertDialogHeader>
-                                        <AlertDialogFooter>
-                                          <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                          <AlertDialogAction
-                                            onClick={() => handleRevokeOAuth(selectedServer.id)}
-                                            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                                          >
-                                            Revoke
-                                          </AlertDialogAction>
-                                        </AlertDialogFooter>
-                                      </AlertDialogContent>
-                                    </AlertDialog>
-                                  </>
-                                )}
-                              </div>
-                            </>
-                          )}
+                              <p className="text-xs text-muted-foreground">
+                                {oauthStatus[selectedServer.id] ? "OAuth tokens are valid and ready to use" : "Sign in through your provider’s login page. Client registration is automatic when supported."}
+                              </p>
+                            </div>
+                            <Badge variant={oauthStatus[selectedServer.id] ? "success" : "secondary"}>
+                              {oauthStatus[selectedServer.id] ? "Active" : "Inactive"}
+                            </Badge>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <Button size="sm" onClick={() => setShowOAuthModal(true)}>
+                              {oauthStatus[selectedServer.id] ? "Re-authenticate" : "Authenticate"}
+                            </Button>
+                            <Button size="sm" variant="secondary" onClick={handleStartOAuthSetup} disabled={isDiscovering}>
+                              OAuth client settings
+                            </Button>
+                            {oauthStatus[selectedServer.id] && (
+                              <>
+                                <Button size="sm" variant="secondary" onClick={() => checkOAuthStatus(selectedServer.id)}>Test</Button>
+                                <AlertDialog>
+                                  <AlertDialogTrigger asChild>
+                                    <Button size="sm" variant="destructive">Revoke</Button>
+                                  </AlertDialogTrigger>
+                                  <AlertDialogContent>
+                                    <AlertDialogHeader>
+                                      <AlertDialogTitle>Revoke OAuth Tokens?</AlertDialogTitle>
+                                      <AlertDialogDescription>
+                                        Revoke tokens for &ldquo;{selectedServer.name}&rdquo;? You will need to sign in again to use this server.
+                                      </AlertDialogDescription>
+                                    </AlertDialogHeader>
+                                    <AlertDialogFooter>
+                                      <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                      <AlertDialogAction onClick={() => handleRevokeOAuth(selectedServer.id)} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">Revoke</AlertDialogAction>
+                                    </AlertDialogFooter>
+                                  </AlertDialogContent>
+                                </AlertDialog>
+                              </>
+                            )}
+                          </div>
                         </CardContent>
                       </Card>
                     )}
@@ -1009,7 +1001,7 @@ export function McpServersPanel({
                             <label className="block text-sm font-medium mb-2">Transport Type</label>
                             <LegacySelect value={transportType} onChange={(e) => setTransportType(e.target.value as "Stdio" | "Sse")}>
                               <option value="Stdio">STDIO (Subprocess)</option>
-                              <option value="Sse">HTTP-SSE (Server-Sent Events)</option>
+                              <option value="Sse">HTTP (Streamable HTTP / SSE)</option>
                             </LegacySelect>
                           </div>
                           {transportType === "Stdio" && (
@@ -1041,7 +1033,8 @@ export function McpServersPanel({
                                 <LegacySelect value={authMethod} onChange={(e) => setAuthMethod(e.target.value as typeof authMethod)}>
                                   <option value="none">None / Via headers</option>
                                   <option value="bearer">Bearer Token</option>
-                                  <option value="oauth_pregenerated">OAuth (Pre-generated credentials)</option>
+                                  <option value="oauth_browser">OAuth (Browser login)</option>
+                          <option value="oauth_pregenerated">OAuth (Pre-generated credentials)</option>
                                 </LegacySelect>
                               </div>
                               {authMethod === "bearer" && (
@@ -1294,7 +1287,7 @@ export function McpServersPanel({
                   <label className="block text-sm font-medium mb-2">Transport Type</label>
                   <LegacySelect value={transportType} onChange={(e) => setTransportType(e.target.value as "Stdio" | "Sse")}>
                     <option value="Stdio">STDIO (Subprocess)</option>
-                    <option value="Sse">HTTP-SSE (Server-Sent Events)</option>
+                    <option value="Sse">HTTP (Streamable HTTP / SSE)</option>
                   </LegacySelect>
                 </div>
                 {transportType === "Stdio" && (
@@ -1324,6 +1317,7 @@ export function McpServersPanel({
                         <LegacySelect value={authMethod} onChange={(e) => setAuthMethod(e.target.value as typeof authMethod)}>
                           <option value="none">None / Via headers</option>
                           <option value="bearer">Bearer Token</option>
+                          <option value="oauth_browser">OAuth (Browser login)</option>
                           <option value="oauth_pregenerated">OAuth (Pre-generated credentials)</option>
                         </LegacySelect>
                       </div>
@@ -1400,13 +1394,32 @@ export function McpServersPanel({
                     <label className="block text-sm font-medium mb-2">
                       {field.label}
                     </label>
-                    <Input
-                      type={field.secret ? "password" : "text"}
-                      value={templateFieldValues[field.id] || ""}
-                      onChange={(e) => setTemplateFieldValues(prev => ({ ...prev, [field.id]: e.target.value }))}
-                      placeholder={field.placeholder}
-                      required={isRequired}
-                    />
+                    {field.options ? (
+                      <div className="space-y-2 max-h-48 overflow-y-auto rounded border p-3">
+                        {field.options.map(option => {
+                          const values = (templateFieldValues[field.id] || "").split(",").filter(Boolean)
+                          return (
+                            <label key={option.value} className="flex items-center gap-2 text-sm">
+                              <Checkbox checked={values.includes(option.value)} onCheckedChange={checked => {
+                                const next = checked
+                                  ? [...values, option.value]
+                                  : values.filter(v => v !== option.value)
+                                setTemplateFieldValues(prev => ({ ...prev, [field.id]: next.join(",") }))
+                              }} />
+                              {option.label}
+                            </label>
+                          )
+                        })}
+                      </div>
+                    ) : (
+                      <Input
+                        type={field.secret ? "password" : "text"}
+                        value={templateFieldValues[field.id] || ""}
+                        onChange={(e) => setTemplateFieldValues(prev => ({ ...prev, [field.id]: e.target.value }))}
+                        placeholder={field.placeholder}
+                        required={isRequired}
+                      />
+                    )}
                     {field.helpText && (
                       <p className="text-xs text-muted-foreground mt-1">{field.helpText}</p>
                     )}
@@ -1446,7 +1459,7 @@ export function McpServersPanel({
                 <div>
                   <label className="block text-xs font-medium text-muted-foreground mb-1">URL</label>
                   <code className="block text-xs bg-muted rounded p-2 break-all text-muted-foreground">
-                    {selectedSource.template.url}
+                    {resolveMcpTemplateUrl(selectedSource.template, templateFieldValues)}
                   </code>
                 </div>
               )}
@@ -1495,7 +1508,7 @@ export function McpServersPanel({
                 <label className="block text-sm font-medium mb-2">Transport Type</label>
                 <LegacySelect value={transportType} onChange={(e) => setTransportType(e.target.value as "Stdio" | "Sse")}>
                   <option value="Stdio">STDIO (Subprocess)</option>
-                  <option value="Sse">HTTP-SSE (Server-Sent Events)</option>
+                  <option value="Sse">HTTP (Streamable HTTP / SSE)</option>
                 </LegacySelect>
               </div>
               {transportType === "Stdio" && (
@@ -1527,7 +1540,8 @@ export function McpServersPanel({
                     <LegacySelect value={authMethod} onChange={(e) => setAuthMethod(e.target.value as typeof authMethod)}>
                       <option value="none">None / Via headers</option>
                       <option value="bearer">Bearer Token</option>
-                      <option value="oauth_pregenerated">OAuth (Pre-generated credentials)</option>
+                      <option value="oauth_browser">OAuth (Browser login)</option>
+                          <option value="oauth_pregenerated">OAuth (Pre-generated credentials)</option>
                     </LegacySelect>
                   </div>
                   {authMethod === "bearer" && (
@@ -1569,7 +1583,7 @@ export function McpServersPanel({
     </Dialog>
 
     {/* OAuth Modal */}
-    {selectedServer && selectedServer.auth_config?.type === "oauth_browser" && isOAuthConfigured(selectedServer) && (
+    {selectedServer && selectedServer.auth_config?.type === "oauth_browser" && (
       <McpOAuthModal
         isOpen={showOAuthModal}
         onClose={() => setShowOAuthModal(false)}
@@ -1591,15 +1605,15 @@ export function McpServersPanel({
               <p className="font-medium mb-2">Discovered OAuth Endpoints:</p>
               <p className="text-xs text-muted-foreground truncate">Auth: {oauthDiscovery.auth_url}</p>
               <p className="text-xs text-muted-foreground truncate">Token: {oauthDiscovery.token_url}</p>
-              {oauthDiscovery.scopes && oauthDiscovery.scopes.length > 0 && (
-                <p className="text-xs text-muted-foreground">Scopes: {oauthDiscovery.scopes.join(", ")}</p>
+              {oauthDiscovery.scopes_supported && oauthDiscovery.scopes_supported.length > 0 && (
+                <p className="text-xs text-muted-foreground">Scopes: {oauthDiscovery.scopes_supported.join(", ")}</p>
               )}
             </div>
           )}
           <div>
             <label className="block text-sm font-medium mb-2">Client ID</label>
             <Input value={oauthSetupClientId} onChange={(e) => setOauthSetupClientId(e.target.value)} placeholder="your-oauth-app-client-id" />
-            <p className="text-xs text-muted-foreground mt-1">Create an OAuth app in your provider's settings</p>
+            <p className="text-xs text-muted-foreground mt-1">Leave blank to register automatically. Provide a registered client ID or client metadata URL if your provider requires it.</p>
           </div>
           <div>
             <label className="block text-sm font-medium mb-2">Client Secret</label>
@@ -1607,7 +1621,7 @@ export function McpServersPanel({
           </div>
           <div className="flex justify-end gap-2">
             <Button variant="secondary" onClick={() => setShowOAuthSetup(false)} disabled={isSavingOAuth}>Cancel</Button>
-            <Button onClick={handleSaveOAuthCredentials} disabled={!oauthSetupClientId || !oauthSetupClientSecret || isSavingOAuth}>
+            <Button onClick={handleSaveOAuthCredentials} disabled={isSavingOAuth}>
               {isSavingOAuth ? "Saving..." : "Save & Continue"}
             </Button>
           </div>
