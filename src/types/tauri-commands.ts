@@ -2019,10 +2019,28 @@ export interface OAuthTokens {
 // Rust: src-tauri/src/ui/commands_mcp.rs
 // =============================================================================
 
-/**
- * MCP OAuth endpoint discovery result.
- * Rust: crates/lr-config/src/types.rs - McpOAuthDiscovery struct
- */
+/** Rust: crates/lr-mcp/src/discovery.rs - McpConnectionDiscovery */
+export interface McpConnectionDiscovery {
+  transport: 'stdio' | 'http_sse'
+  server_name: string | null
+  server_version: string | null
+  protocol_versions: string[]
+  capabilities: Record<string, unknown> | null
+  auth_method: 'none' | 'oauth_browser' | 'bearer' | 'manual'
+  auth_required: boolean
+  oauth: {
+    issuer: string | null
+    authorization_endpoint: string
+    token_endpoint: string
+    registration_endpoint: string | null
+    scopes_supported: string[]
+    grant_types_supported: string[]
+  } | null
+  suggested_headers: string[]
+  warnings: string[]
+}
+
+/** MCP OAuth endpoint discovery result. Rust: crates/lr-config/src/types.rs */
 export interface McpOAuthDiscovery {
   auth_url: string
   token_url: string
@@ -2686,6 +2704,15 @@ export interface CancelMcpOAuthBrowserFlowParams {
 /** Params for discover_mcp_oauth_endpoints */
 export interface DiscoverMcpOAuthEndpointsParams {
   baseUrl: string
+}
+
+/** Params for discover_mcp_connection */
+export interface DiscoverMcpConnectionParams {
+  target: string
+  transportOverride: 'stdio' | 'http_sse' | null
+  headers: Record<string, string>
+  env: Record<string, string>
+  cwd: string | null
 }
 
 /** Params for test_mcp_oauth_connection */

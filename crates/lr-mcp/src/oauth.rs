@@ -113,6 +113,20 @@ pub struct AuthorizationServerMetadata {
     pub grant_types_supported: Vec<String>,
 }
 
+/// Parse an HTTP authentication challenge parameter (quoted-string or token).
+pub(crate) fn challenge_parameter(challenge: &str, name: &str) -> Option<String> {
+    let pattern = format!(
+        r#"(?i)\b{}\s*=\s*(?:"((?:\\.|[^"\\])*)"|([^\s,]+))"#,
+        regex::escape(name)
+    );
+    let regex = regex::Regex::new(&pattern).ok()?;
+    let captures = regex.captures(challenge)?;
+    captures
+        .get(1)
+        .or_else(|| captures.get(2))
+        .map(|v| v.as_str().replace("\\\"", "\"").replace("\\\\", "\\"))
+}
+
 /// Combined OAuth discovery response
 ///
 /// This is the unified response returned by discover_oauth, combining
@@ -532,6 +546,44 @@ impl McpOAuthManager {
         &self,
         base_url: &str,
     ) -> AppResult<Option<OAuthDiscoveryResponse>> {
+        // A POST-only MCP server may challenge POST requests but reject GET.
+        let probe = self
+            .client
+            .post(base_url)
+            .header("Accept", "application/json, text/event-stream")
+            .header("Mcp-Method", "server/discover")
+            .header(
+                "Mcp-Protocol-Version",
+                crate::protocol::MCP_PROTOCOL_VERSION_STATELESS,
+            )
+            .json(&crate::discovery::discovery_request())
+            .send()
+            .await;
+        let mut headers = probe
+            .map(|response| response.headers().clone())
+            .unwrap_or_default();
+        // Legacy SSE endpoints can advertise authentication only on their GET stream.
+        if !headers.contains_key(reqwest::header::WWW_AUTHENTICATE) {
+            if let Ok(response) = self
+                .client
+                .get(base_url)
+                .header("Accept", "application/json, text/event-stream")
+                .send()
+                .await
+            {
+                headers = response.headers().clone();
+            }
+        }
+        self.discover_oauth_from_headers(base_url, &headers).await
+    }
+
+    /// Discover authorization from a previously observed MCP response. Custom
+    /// credential headers are never forwarded to metadata or authorization servers.
+    pub async fn discover_oauth_from_headers(
+        &self,
+        base_url: &str,
+        headers: &reqwest::header::HeaderMap,
+    ) -> AppResult<Option<OAuthDiscoveryResponse>> {
         // Step 1: Fetch Protected Resource Metadata (RFC 9728)
         let discovery_url = build_well_known_url(base_url);
         tracing::info!(
@@ -547,22 +599,17 @@ impl McpOAuthManager {
         let mut response = None;
         let mut candidates = vec![discovery_url, root_url];
         // RFC 9728 permits servers to advertise a custom metadata location.
-        if let Ok(probe) = self
-            .client
-            .get(base_url)
-            .header("Accept", "application/json, text/event-stream")
-            .send()
-            .await
         {
-            for challenge in probe.headers().get_all(reqwest::header::WWW_AUTHENTICATE) {
+            for challenge in headers.get_all(reqwest::header::WWW_AUTHENTICATE) {
                 if let Ok(challenge) = challenge.to_str() {
-                    if let Some(metadata_url) = challenge
-                        .split("resource_metadata=\"")
-                        .nth(1)
-                        .and_then(|v| v.split('"').next())
+                    if let Some(metadata_url) = challenge_parameter(challenge, "resource_metadata")
                     {
-                        if reqwest::Url::parse(metadata_url).is_ok() {
-                            candidates.insert(0, metadata_url.to_string());
+                        if reqwest::Url::parse(&metadata_url).is_ok_and(|u| {
+                            matches!(u.scheme(), "http" | "https")
+                                && u.username().is_empty()
+                                && u.password().is_none()
+                        }) {
+                            candidates.insert(0, metadata_url);
                         }
                     }
                 }
@@ -582,12 +629,24 @@ impl McpOAuthManager {
         };
 
         // Parse protected resource metadata
-        let resource_metadata: ProtectedResourceMetadata = response.json().await.map_err(|e| {
-            AppError::Mcp(format!(
-                "Failed to parse protected resource metadata: {}",
-                e
-            ))
-        })?;
+        let mut resource_metadata: ProtectedResourceMetadata =
+            response.json().await.map_err(|e| {
+                AppError::Mcp(format!(
+                    "Failed to parse protected resource metadata: {}",
+                    e
+                ))
+            })?;
+
+        // The challenge specifies the scopes for the operation being attempted.
+        if let Some(scopes) = headers
+            .get_all(reqwest::header::WWW_AUTHENTICATE)
+            .iter()
+            .filter_map(|h| h.to_str().ok())
+            .find_map(|h| challenge_parameter(h, "scope"))
+        {
+            resource_metadata.scopes_supported =
+                scopes.split_whitespace().map(str::to_string).collect();
+        }
 
         tracing::info!(
             "Protected resource metadata: authorization_servers={:?}, scopes={:?}",
@@ -623,41 +682,63 @@ impl McpOAuthManager {
         auth_server_url: &str,
         resource_scopes: &[String],
     ) -> AppResult<Option<OAuthDiscoveryResponse>> {
-        // Try standard .well-known/oauth-authorization-server endpoint
-        let metadata_url = build_authorization_server_metadata_url(auth_server_url);
-        tracing::info!("Trying authorization server metadata at: {}", metadata_url);
+        let issuer = reqwest::Url::parse(auth_server_url)
+            .map_err(|_| AppError::Mcp("Invalid OAuth authorization server URL".into()))?;
+        if !matches!(issuer.scheme(), "http" | "https")
+            || !issuer.username().is_empty()
+            || issuer.password().is_some()
+        {
+            return Err(AppError::Mcp(
+                "Invalid OAuth authorization server URL".into(),
+            ));
+        }
+        let origin = issuer.origin().ascii_serialization();
+        let path = issuer.path().trim_end_matches('/');
+        let mut candidates = vec![
+            build_authorization_server_metadata_url(auth_server_url),
+            format!("{origin}/.well-known/openid-configuration{path}"),
+        ];
+        if !path.is_empty() {
+            candidates.push(format!("{origin}{path}/.well-known/openid-configuration"));
+        }
 
-        let response = self.client.get(&metadata_url).send().await;
+        for metadata_url in candidates {
+            tracing::info!("Trying authorization server metadata at: {}", metadata_url);
 
-        if let Ok(resp) = response {
-            if resp.status().is_success() {
-                if let Ok(metadata) = resp.json::<AuthorizationServerMetadata>().await {
-                    tracing::info!(
-                        "Authorization server metadata found: auth={}, token={}",
-                        metadata.authorization_endpoint,
-                        metadata.token_endpoint
-                    );
+            let response = self.client.get(&metadata_url).send().await;
 
-                    // Use scopes from auth server if available, otherwise from resource
-                    let scopes = if resource_scopes.is_empty() {
-                        metadata.scopes_supported
-                    } else {
-                        resource_scopes.to_vec()
-                    };
+            if let Ok(resp) = response {
+                if resp.status().is_success() {
+                    if let Ok(metadata) = resp.json::<AuthorizationServerMetadata>().await {
+                        // Metadata must be bound to exactly the advertised issuer.
+                        if metadata.issuer.as_deref() != Some(auth_server_url) {
+                            return Err(AppError::Mcp(
+                                "OAuth metadata issuer does not match the authorization server"
+                                    .into(),
+                            ));
+                        }
+                        tracing::info!(
+                            "Authorization server metadata found: auth={}, token={}",
+                            metadata.authorization_endpoint,
+                            metadata.token_endpoint
+                        );
 
-                    return Ok(Some(OAuthDiscoveryResponse {
-                        // RFC 8414 requires `issuer` to equal the URL the
-                        // metadata was derived from, so fall back to the
-                        // authorization server URL when it's omitted.
-                        issuer: metadata
-                            .issuer
-                            .or_else(|| Some(auth_server_url.trim_end_matches('/').to_string())),
-                        registration_endpoint: metadata.registration_endpoint,
-                        auth_url: metadata.authorization_endpoint,
-                        token_endpoint: metadata.token_endpoint,
-                        scopes_supported: scopes,
-                        grant_types_supported: metadata.grant_types_supported,
-                    }));
+                        // Use scopes from auth server if available, otherwise from resource
+                        let scopes = if resource_scopes.is_empty() {
+                            metadata.scopes_supported
+                        } else {
+                            resource_scopes.to_vec()
+                        };
+
+                        return Ok(Some(OAuthDiscoveryResponse {
+                            issuer: metadata.issuer,
+                            registration_endpoint: metadata.registration_endpoint,
+                            auth_url: metadata.authorization_endpoint,
+                            token_endpoint: metadata.token_endpoint,
+                            scopes_supported: scopes,
+                            grant_types_supported: metadata.grant_types_supported,
+                        }));
+                    }
                 }
             }
         }
@@ -1443,6 +1524,34 @@ impl Default for McpOAuthManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn authentication_challenge_parameters_allow_spacing_case_and_tokens() {
+        assert_eq!(
+            challenge_parameter(
+                "Bearer Resource_Metadata = \"https://example.com/meta\", scope=read",
+                "resource_metadata"
+            )
+            .as_deref(),
+            Some("https://example.com/meta")
+        );
+        assert_eq!(
+            challenge_parameter(
+                "Bearer Resource_Metadata = \"https://example.com/meta\", scope=read",
+                "scope"
+            )
+            .as_deref(),
+            Some("read")
+        );
+        assert_eq!(
+            challenge_parameter("Bearer scope=\"read write\"", "scope").as_deref(),
+            Some("read write")
+        );
+        assert_eq!(
+            challenge_parameter("Basic realm=\"login\"", "resource_metadata"),
+            None
+        );
+    }
 
     #[test]
     fn discovery_urls_strip_query_and_fragment() {

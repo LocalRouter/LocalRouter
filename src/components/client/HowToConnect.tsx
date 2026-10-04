@@ -748,10 +748,15 @@ function ReverseProxySetup({
       } satisfies ConfigureClientReverseProxyParams)
       setResult(res)
       if (res.success) toast.success(`${info?.provider_label ?? "Provider"} wrapped`)
-      else toast.error("Setup did not complete — see the details below")
+      else toast.error(`Could not wrap ${info?.provider_label ?? "provider"}`, {
+        description: res.message || "Setup returned no details. Recheck the provider and retry.",
+        duration: 15000,
+      })
       await load()
     } catch (e) {
-      toast.error(`Failed: ${e}`)
+      const message = String(e)
+      setResult({ success: false, message, modified_files: [], backup_files: [], terminal_command: null })
+      toast.error("Could not configure wrapper", { description: message, duration: 15000 })
     } finally {
       setConfiguring(false)
     }
@@ -765,7 +770,8 @@ function ReverseProxySetup({
         clientId: clientUuid,
       } satisfies UnconfigureClientReverseProxyParams)
       setResult(res)
-      toast.success("Reverted")
+      if (res.success) toast.success("Reverted")
+      else toast.error("Could not undo wrapper", { description: res.message, duration: 15000 })
       await load()
     } catch (e) {
       toast.error(`Failed: ${e}`)
@@ -1044,7 +1050,8 @@ function ReverseProxySetup({
 
       {result && (
         <div className={`rounded-md border p-2.5 text-xs whitespace-pre-line ${result.success ? "" : "border-destructive/50 text-destructive"}`}>
-          {result.message}
+          <p className="font-medium mb-1">{result.success ? "Setup complete" : "Setup failed"}</p>
+          {result.message || "Setup returned no details. Recheck the provider and retry."}
           {result.terminal_command && (
             <div className="mt-2">
               <CopyableCode value={result.terminal_command} />

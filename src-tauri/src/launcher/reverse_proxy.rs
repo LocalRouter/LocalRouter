@@ -21,6 +21,16 @@ use lr_types::{AppError, AppResult};
 use parking_lot::Mutex;
 
 use crate::launcher::proxy::{AppClientNames, CatalogPricing, RequestDedupeFlag};
+use crate::launcher::reverse_setup;
+
+/// Automatic relocation commands operate on local ports only. Never use them
+/// for a remote upstream, even when a client uses a known provider template.
+fn local_upstream_port(upstream: &str) -> Option<u16> {
+    let (host, port) = lr_proxy::reverse::parse_http_upstream(upstream).ok()?;
+    let loopback = host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1";
+    // The relocation plans bind specifically to 127.0.0.1.
+    loopback.then_some(port)
+}
 
 /// How long to keep retrying a bind, for the window where a relocated provider
 /// is still releasing its old port.
@@ -205,6 +215,16 @@ impl ReverseProxyService {
     /// enabled reverse-proxy clients, stop the rest, and restart any whose
     /// binding changed.
     pub async fn sync(&self) {
+        self.sync_inner(None).await;
+    }
+
+    /// Restore provider relocation before taking over the original ports.
+    /// Ordinary config reconciliation never restarts provider processes.
+    pub async fn restore_at_startup(&self, registry: &lr_providers::registry::ProviderRegistry) {
+        self.sync_inner(Some(registry)).await;
+    }
+
+    async fn sync_inner(&self, registry: Option<&lr_providers::registry::ProviderRegistry>) {
         let config = self.config_manager.get();
 
         let wanted: Vec<Client> = config
@@ -241,10 +261,77 @@ impl ReverseProxyService {
             if unchanged {
                 continue;
             }
+            if let Some(registry) = registry {
+                if let Some(port) = local_upstream_port(&rp.upstream_url) {
+                    if let Some(instance) = rp.provider_instance.as_deref() {
+                        if let Err(e) = crate::ui::commands_reverse_proxy::retarget_provider(
+                            registry,
+                            &self.config_manager,
+                            instance,
+                            port,
+                        )
+                        .await
+                        {
+                            self.note_error(&client.id, e);
+                            continue;
+                        }
+                    }
+                    let key = client
+                        .template_id
+                        .as_deref()
+                        .and_then(reverse_setup::provider_key_for_template)
+                        .unwrap_or(reverse_setup::CUSTOM_KEY);
+                    let plan = reverse_setup::plan_for(key, rp.listen_port, port);
+                    if let Err(e) =
+                        reverse_setup::restore_at_startup(&plan, rp.listen_port, port).await
+                    {
+                        tracing::warn!(client = %client.name, "wrapper startup recovery failed: {e}");
+                        self.note_error(&client.id, e);
+                        continue;
+                    }
+                }
+            }
             if let Err(e) = self.start_client(&client).await {
                 tracing::warn!(client = %client.name, "reverse proxy not started: {e}");
-                self.note_error(&client.id, e.to_string());
+                let key = client
+                    .template_id
+                    .as_deref()
+                    .and_then(reverse_setup::provider_key_for_template)
+                    .unwrap_or(reverse_setup::CUSTOM_KEY);
+                let port = lr_proxy::reverse::parse_http_upstream(&rp.upstream_url)
+                    .map_or(0, |(_, port)| port);
+                let plan = reverse_setup::plan_for(key, rp.listen_port, port);
+                let guidance = if plan.supports_auto() {
+                    format!(
+                        "Open this wrapper's setup and configure {} again.",
+                        plan.provider_label
+                    )
+                } else {
+                    plan.manual_steps.join(" ")
+                };
+                self.note_error(&client.id, format!("{e}. {guidance}"));
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn startup_relocation_is_restricted_to_supported_loopback_addresses() {
+        assert_eq!(local_upstream_port("http://127.0.0.1:11435"), Some(11435));
+        assert_eq!(local_upstream_port("http://localhost:1235/v1"), Some(1235));
+        for url in [
+            "http://192.168.1.5:11435",
+            "http://127.0.0.2:11435",
+            "http://example.com:1235",
+            "http://[::1]:11435",
+            "https://localhost:1235",
+            "localhost:1235",
+        ] {
+            assert_eq!(local_upstream_port(url), None, "{url}");
         }
     }
 }

@@ -50,6 +50,9 @@ pub const CUSTOM_KEY: &str = "custom";
 /// empty.
 pub const CUSTOM_DEFAULT_PORTS: (u16, u16) = (8000, 8001);
 
+/// Select standalone Ollama servers without matching pull/run commands.
+const OLLAMA_SERVER_PATTERN: &str = "(^|/)ollama serve$";
+
 /// Client-template id → provider key (`reverse-ollama` → `ollama`,
 /// `reverse-custom` → `custom`).
 pub fn provider_key_for_template(template_id: &str) -> Option<&'static str> {
@@ -446,13 +449,17 @@ fn ollama_plan(host_port: &str, listen_port: u16, upstream_port: u16) -> Reverse
             &["-e", "tell application \"Ollama\" to quit"],
         )];
         // Ollama commonly declines the scripted quit; SIGTERM to the app is
-        // then the only way to release the port. Matched by exact name so the
-        // lowercase `ollama serve` child is not hit directly — the app has to
-        // go down for the new environment to apply.
+        // then the only way to release the port. Stop the app before the
+        // server so it cannot respawn a child with its old environment.
         // Best-effort like every stop command: `pkill` exits non-zero simply
         // because nothing matched (the app is already down), which is a
         // success for our purposes. The port check below is the real gate.
-        plan.force_stop = vec![Cmd::optional("pkill", &["-x", "Ollama"])];
+        plan.force_stop = vec![
+            Cmd::optional("pkill", &["-x", "Ollama"]),
+            // A standalone server has no app to quit. Limit termination to
+            // the original port's owner so other Ollama servers are untouched.
+            ollama_server_stop(listen_port),
+        ];
         plan.start = vec![Cmd::new("open", &["-a", "Ollama"])];
         plan.notes = vec![
             format!("Sets OLLAMA_HOST={host_port} for GUI apps (launchctl setenv), then restarts the Ollama app so it picks the value up."),
@@ -480,6 +487,18 @@ fn ollama_plan(host_port: &str, listen_port: u16, upstream_port: u16) -> Reverse
             .to_string(),
     );
     plan
+}
+
+/// Stop only an Ollama server holding the port being relocated. lsof/ps are
+/// available on macOS; all interpolated values are trusted constants or u16s.
+fn ollama_server_stop(port: u16) -> Cmd {
+    let script = format!(
+        "for listener_pid in $(/usr/sbin/lsof -nP -tiTCP:{port} -sTCP:LISTEN); do \
+         server_command=$(/bin/ps -p \"$listener_pid\" -o args=); \
+         if printf '%s\\n' \"$server_command\" | /usr/bin/grep -Eq '{OLLAMA_SERVER_PATTERN}'; then \
+         /bin/kill -TERM \"$listener_pid\"; fi; done"
+    );
+    Cmd::optional("/bin/sh", &["-c", &script])
 }
 
 /// `ollama serve` on the new port, for the shell the user actually has.
@@ -725,6 +744,34 @@ async fn port_in_use(port: u16) -> bool {
     .is_ok_and(|r| r.is_ok())
 }
 
+/// Restore an enabled wrapper after login. Session-only configuration (notably
+/// launchctl's environment) may have disappeared, or a provider may have
+/// auto-started on its original port. Never restart an answering upstream.
+pub async fn restore_at_startup(
+    plan: &ReversePlan,
+    listen_port: u16,
+    upstream_port: u16,
+) -> Result<(), String> {
+    if port_in_use(upstream_port).await {
+        return Ok(());
+    }
+    // An elevated system service transaction belongs in the explicit setup
+    // action, not in an unattended login that might show a password prompt.
+    if !plan.supports_auto() || plan.configure_restarts {
+        // Keep the listener available: manually managed servers may start
+        // later during login. Their setup panel already reports reachability.
+        tracing::warn!(
+            "{} is not answering on port {upstream_port}. {}",
+            plan.provider_label,
+            plan.manual_steps.join(" ")
+        );
+        return Ok(());
+    }
+    relocate(plan, listen_port, upstream_port, &plan.configure)
+        .await
+        .map(|_| ())
+}
+
 /// Poll until `port` reaches `want_in_use`, or the deadline passes.
 async fn wait_for_port(port: u16, want_in_use: bool, limit: Duration) -> bool {
     let deadline = tokio::time::Instant::now() + limit;
@@ -900,6 +947,93 @@ pub async fn relocate(
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn startup_leaves_a_healthy_provider_running() {
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let original = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        // Even an occupied original port must not cause a healthy upstream
+        // to restart. The listener bind will report the separate collision.
+        let plan = ReversePlan {
+            configure: vec![Cmd::new("nonexistent-relocation-command", &[])],
+            start: vec![Cmd::new("nonexistent-relocation-command", &[])],
+            ..Default::default()
+        };
+        assert!(restore_at_startup(
+            &plan,
+            original.local_addr().unwrap().port(),
+            upstream.local_addr().unwrap().port(),
+        )
+        .await
+        .is_ok());
+    }
+
+    #[tokio::test]
+    async fn startup_does_not_run_manual_or_elevated_plans() {
+        let reserved = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = reserved.local_addr().unwrap().port();
+        drop(reserved);
+        for configure_restarts in [false, true] {
+            let plan = ReversePlan {
+                configure: vec![Cmd::new("nonexistent-relocation-command", &[])],
+                configure_restarts,
+                ..Default::default()
+            };
+            assert!(restore_at_startup(&plan, port, port).await.is_ok());
+        }
+    }
+
+    #[tokio::test]
+    async fn startup_reports_automatic_relocation_failures() {
+        let reserved = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = reserved.local_addr().unwrap().port();
+        drop(reserved);
+        let plan = ReversePlan {
+            configure: vec![Cmd::new("nonexistent-relocation-command", &[])],
+            start: vec![Cmd::new("nonexistent-relocation-command", &[])],
+            ..Default::default()
+        };
+        let error = restore_at_startup(&plan, port, port).await.unwrap_err();
+        assert!(error.contains("could not run"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn startup_configures_and_restarts_an_offline_provider() {
+        let temp = tempfile::tempdir().unwrap();
+        let configured = temp.path().join("configured");
+        let started = temp.path().join("started");
+        let reserved = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = reserved.local_addr().unwrap().port();
+        drop(reserved);
+        let original = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let original_port = original.local_addr().unwrap().port();
+        drop(original);
+        let plan = ReversePlan {
+            configure: vec![Cmd::new("touch", &[configured.to_str().unwrap()])],
+            start: vec![Cmd::new("touch", &[started.to_str().unwrap()])],
+            ..Default::default()
+        };
+        let started_signal = started.clone();
+        let server = tokio::spawn(async move {
+            while !started_signal.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            tokio::net::TcpListener::bind(("127.0.0.1", port))
+                .await
+                .unwrap()
+        });
+        // Keep the returned listener alive through verification.
+        let server_holder = tokio::spawn(async move {
+            let listener = server.await.unwrap();
+            std::future::pending::<()>().await;
+            drop(listener);
+        });
+        let result = restore_at_startup(&plan, original_port, port).await;
+        server_holder.abort();
+        assert!(result.is_ok(), "{result:?}");
+        assert!(configured.exists() && started.exists());
+    }
+
     #[test]
     fn maps_templates_to_providers_and_ports() {
         assert_eq!(provider_key_for_template("reverse-ollama"), Some("ollama"));
@@ -1014,6 +1148,41 @@ mod tests {
             .auto_commands()
             .iter()
             .any(|c| c.contains("pkill") && c.contains("only if the port is still held")));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_ollama_also_stops_standalone_servers() {
+        let plan = plan_for("ollama", 11434, 11435);
+        assert_eq!(plan.force_stop[0].args, ["-x", "Ollama"]);
+        let stop_server = &plan.force_stop[1];
+        assert_eq!(stop_server.program, "/bin/sh");
+        assert!(stop_server.args[1].contains("-tiTCP:11434 -sTCP:LISTEN"));
+        assert!(stop_server.args[1].contains(OLLAMA_SERVER_PATTERN));
+        let pattern = regex::Regex::new(OLLAMA_SERVER_PATTERN).unwrap();
+        for command in ["ollama serve", "/usr/local/bin/ollama serve"] {
+            assert!(pattern.is_match(command), "{command}");
+        }
+        for command in [
+            "ollama pull llama3",
+            "/usr/local/bin/ollama run llama3",
+            "/Applications/Ollama.app/Contents/MacOS/Ollama",
+            "another-ollama serve",
+            "ollama serve-unrelated",
+        ] {
+            assert!(!pattern.is_match(command), "{command}");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn macos_ollama_stop_preserves_other_port_owners() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // The relocation port can belong to an unrelated service. The stop
+        // command must inspect its owner and leave this test process alive.
+        run_one(&ollama_server_stop(port)).unwrap();
+        assert!(port_in_use(port).await);
     }
 
     #[test]

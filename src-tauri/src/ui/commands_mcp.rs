@@ -17,6 +17,35 @@ use tauri::{Emitter, State};
 // MCP Server Commands
 // ============================================================================
 
+/// Probe an unsaved MCP connection; does not save a server or begin OAuth login.
+#[tauri::command]
+pub async fn discover_mcp_connection(
+    target: String,
+    transport_override: Option<String>,
+    headers: std::collections::HashMap<String, String>,
+    env: std::collections::HashMap<String, String>,
+    cwd: Option<String>,
+    oauth_manager: State<'_, Arc<lr_mcp::oauth::McpOAuthManager>>,
+) -> Result<lr_mcp::discovery::McpConnectionDiscovery, String> {
+    tokio::time::timeout(
+        std::time::Duration::from_secs(45),
+        lr_mcp::discovery::discover_connection(
+            &target,
+            transport_override.as_deref(),
+            headers,
+            env,
+            cwd,
+            &oauth_manager,
+        ),
+    )
+    .await
+    .map_err(|_| {
+        "Discovery timed out. You can configure the server manually or retry with credentials."
+            .to_string()
+    })?
+    .map_err(|e| e.to_string())
+}
+
 /// Frontend auth config format (with raw secrets)
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]

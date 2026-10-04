@@ -19,6 +19,7 @@
 import { mockIPC, mockWindows, clearMocks } from '@tauri-apps/api/mocks'
 import { emit } from '@tauri-apps/api/event'
 import type { InvokeArgs } from '@tauri-apps/api/core'
+import type { McpConnectionDiscovery } from '@app/types/tauri-commands'
 import { toast } from 'sonner'
 import { mockData } from './mockData'
 // Types for mock return values - see src/types/tauri-commands.ts for full type definitions
@@ -2649,6 +2650,19 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'poll_mcp_oauth_browser_status': () => ({ type: 'Success', expires_in: 3600 }),
   'cancel_mcp_oauth_browser_flow': () => null,
   'test_mcp_oauth_connection': () => true,
+  'discover_mcp_connection': (args): McpConnectionDiscovery => ({
+    transport: args?.transportOverride === 'stdio' ? 'stdio' : 'http_sse',
+    server_name: 'Discovered MCP Server', server_version: '1.0.0',
+    protocol_versions: ['2026-07-28'], capabilities: { tools: {} },
+    auth_method: args?.transportOverride === 'stdio' ? 'none' : 'oauth_browser',
+    auth_required: args?.transportOverride !== 'stdio',
+    oauth: args?.transportOverride === 'stdio' ? null : {
+      issuer: 'https://example.com', authorization_endpoint: 'https://example.com/authorize',
+      token_endpoint: 'https://example.com/token', registration_endpoint: 'https://example.com/register',
+      scopes_supported: ['mcp:tools'], grant_types_supported: ['authorization_code'],
+    },
+    suggested_headers: [], warnings: [],
+  }),
   'discover_mcp_oauth_endpoints': () => ({ auth_url: 'https://example.com/authorize', token_url: 'https://example.com/token', scopes_supported: [], discovered_at: new Date().toISOString() }),
   'revoke_mcp_oauth_tokens': () => {
     toast.success('OAuth tokens revoked (demo)')

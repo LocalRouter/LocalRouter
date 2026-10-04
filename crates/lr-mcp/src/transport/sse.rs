@@ -24,6 +24,17 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
+/// Cancel the background stream when connection setup fails or is cancelled.
+struct ConnectingStream(Option<JoinHandle<()>>);
+
+impl Drop for ConnectingStream {
+    fn drop(&mut self) {
+        if let Some(task) = self.0.take() {
+            task.abort();
+        }
+    }
+}
+
 /// Global shared HTTP client with connection pooling
 ///
 /// This client is shared across all SSE transports to reuse connections.
@@ -341,7 +352,7 @@ impl SseTransport {
         let stream_client = STREAM_CLIENT.clone();
         let stream_message_endpoint = message_endpoint.clone();
 
-        let stream_task = tokio::spawn(async move {
+        let mut stream_task = ConnectingStream(Some(tokio::spawn(async move {
             Self::sse_stream_task(
                 stream_url,
                 stream_headers,
@@ -355,7 +366,7 @@ impl SseTransport {
                 stream_session_id,
             )
             .await;
-        });
+        })));
 
         // Wait for stream to be ready (with timeout)
         // This prevents race conditions where requests are sent before stream connects
@@ -405,7 +416,7 @@ impl SseTransport {
             stream_ready,
             notification_callback,
             request_callback,
-            stream_task: Arc::new(RwLock::new(Some(stream_task))),
+            stream_task: Arc::new(RwLock::new(stream_task.0.take())),
         };
 
         tracing::info!("MCP SSE transport connected successfully with persistent stream");
@@ -813,6 +824,15 @@ impl SseTransport {
         }
 
         Ok(())
+    }
+}
+
+impl Drop for SseTransport {
+    fn drop(&mut self) {
+        *self.closed.write() = true;
+        if let Some(task) = self.stream_task.write().take() {
+            task.abort();
+        }
     }
 }
 

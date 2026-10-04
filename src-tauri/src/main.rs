@@ -741,7 +741,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
     if let Some(svc) = reverse_proxy_service.clone() {
         // Bind now, before the UI is up, so wrapped providers are covered from
         // the moment the app starts.
-        svc.sync().await;
+        svc.restore_at_startup(&provider_registry).await;
     }
 
     let exit_supervisor = engine_supervisor.clone();
@@ -2672,6 +2672,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::poll_mcp_oauth_browser_status,
             ui::commands::cancel_mcp_oauth_browser_flow,
             ui::commands::discover_mcp_oauth_endpoints,
+            ui::commands::discover_mcp_connection,
             ui::commands::test_mcp_oauth_connection,
             ui::commands::revoke_mcp_oauth_tokens,
             // Inline OAuth flow commands (for MCP server creation)

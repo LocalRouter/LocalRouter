@@ -39,6 +39,7 @@ import LegacySelect from "@/components/ui/Select"
 import KeyValueInput from "@/components/ui/KeyValueInput"
 import { McpServerTemplates, McpServerTemplate, MCP_SERVER_TEMPLATES } from "@/components/mcp/McpServerTemplates"
 import { McpOAuthModal } from "@/components/mcp/McpOAuthModal"
+import { CustomMcpDiscovery } from "@/components/mcp/CustomMcpDiscovery"
 import { MarketplaceSearchPanel, McpServerListing } from "@/components/add-resource"
 import ServiceIcon from "@/components/ServiceIcon"
 import { McpTab } from "@/views/try-it-out/mcp-tab"
@@ -200,6 +201,7 @@ export function McpServersPanel({
   // Auth config state
   const [authMethod, setAuthMethod] = useState<"none" | "bearer" | "oauth_pregenerated" | "oauth_browser">("none")
   const [bearerToken, setBearerToken] = useState("")
+  const [customAuthOverridden, setCustomAuthOverridden] = useState(false)
 
   // OAuth credentials state (for pregenerated flow)
   const [oauthClientId, setOauthClientId] = useState("")
@@ -361,6 +363,7 @@ export function McpServersPanel({
   }
 
   const resetForm = () => {
+    setCustomAuthOverridden(false)
     setServerName("")
     setTransportType("Stdio")
     setCommand("")
@@ -1279,6 +1282,21 @@ export function McpServersPanel({
             {/* Custom Tab */}
             <TabsContent value="custom" className="mt-4 flex-1 overflow-y-auto">
               <form onSubmit={handleCreateServer} className="space-y-4">
+                <CustomMcpDiscovery
+                  params={{ target: transportType === "Sse" ? url : command,
+                    transportOverride: transportType === "Sse" ? "http_sse" : "stdio",
+                    headers: { ...headers, ...(authMethod === "bearer" && bearerToken ? { Authorization: `Bearer ${bearerToken}` } : {}) },
+                    env: envVars, cwd: cwd.trim() || null }}
+                  formRevision={JSON.stringify([serverName, authMethod, customAuthOverridden, transportType, url, command, headers, envVars, cwd, bearerToken])}
+                  onTargetChange={target => {
+                    if (/^https?:\/\//i.test(target.trim())) { setTransportType("Sse"); setUrl(target) }
+                    else { setTransportType("Stdio"); setCommand(target) }
+                  }}
+                  onDiscovered={result => {
+                    if (!serverName.trim() && result.server_name) setServerName(result.server_name)
+                    if (!customAuthOverridden && authMethod === "none" && (result.auth_method === "oauth_browser" || result.auth_method === "bearer")) setAuthMethod(result.auth_method)
+                  }}
+                />
                 <div>
                   <label className="block text-sm font-medium mb-2">Server Name</label>
                   <Input value={serverName} onChange={(e) => setServerName(e.target.value)} placeholder="My MCP Server" required />
@@ -1314,7 +1332,10 @@ export function McpServersPanel({
                       <h3 className="text-md font-semibold mb-3">Authentication (Optional)</h3>
                       <div>
                         <label className="block text-sm font-medium mb-2">Authentication Method</label>
-                        <LegacySelect value={authMethod} onChange={(e) => setAuthMethod(e.target.value as typeof authMethod)}>
+                        <LegacySelect value={authMethod} onChange={(e) => {
+                          setCustomAuthOverridden(true)
+                          setAuthMethod(e.target.value as typeof authMethod)
+                        }}>
                           <option value="none">None / Via headers</option>
                           <option value="bearer">Bearer Token</option>
                           <option value="oauth_browser">OAuth (Browser login)</option>

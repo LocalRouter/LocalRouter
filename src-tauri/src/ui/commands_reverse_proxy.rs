@@ -194,7 +194,7 @@ pub(crate) fn retarget_base_url(base_url: &str, new_port: u16) -> String {
 /// Move the wrapped provider instance onto the relocated port, in both the
 /// running registry and the config file. Without this the gateway would keep
 /// calling the old port — which is now LocalRouter itself, a loop.
-async fn retarget_provider(
+pub(crate) async fn retarget_provider(
     registry: &ProviderRegistry,
     config_manager: &ConfigManager,
     instance_name: &str,
@@ -296,7 +296,7 @@ pub async fn configure_client_reverse_proxy(
     if let Some(instance) = binding.provider_instance.as_deref() {
         match retarget_provider(&registry, &config_manager, instance, upstream_port).await {
             Ok(url) => steps.push(format!("Provider '{instance}' now points at {url}")),
-            Err(e) => steps.push(format!("Could not retarget provider '{instance}': {e}")),
+            Err(e) => return Err(format!("Could not retarget provider '{instance}': {e}")),
         }
     }
 
@@ -344,7 +344,11 @@ pub async fn configure_client_reverse_proxy(
                 });
             }
         },
-        None => "Reverse proxy service unavailable".to_string(),
+        None => {
+            return Err(
+                "Reverse proxy service unavailable; restart LocalRouter and retry.".to_string(),
+            )
+        }
     };
     steps.push(listener_msg);
 
@@ -429,19 +433,30 @@ pub async fn unconfigure_client_reverse_proxy(
     })
 }
 
-/// Start (or retry) just the listener, without touching the provider. This is
-/// the button for providers we can't relocate automatically: the user moves the
-/// provider themselves, then binds the port.
+/// Start (or retry) the listener and align the linked provider's address. This
+/// never restarts the provider process: for manual providers, the user moves
+/// the server themselves before binding the original port.
 #[tauri::command]
 pub async fn start_client_reverse_proxy(
     client_id: String,
     app: tauri::AppHandle,
     config_manager: State<'_, ConfigManager>,
+    registry: State<'_, Arc<ProviderRegistry>>,
 ) -> Result<ReverseListenerState, String> {
-    let (client, _binding) = client_binding(&config_manager, &client_id)?;
+    let (client, binding) = client_binding(&config_manager, &client_id)?;
     let service = app
         .try_state::<Arc<ReverseProxyService>>()
         .ok_or_else(|| "Reverse proxy service unavailable".to_string())?;
+    if let Some(instance) = binding.provider_instance.as_deref() {
+        retarget_provider(
+            &registry,
+            &config_manager,
+            instance,
+            upstream_port_of(&binding),
+        )
+        .await?;
+        let _ = app.emit("providers-changed", ());
+    }
     if let Err(e) = service.start_client(&client).await {
         return Err(e.to_string());
     }
