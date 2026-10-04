@@ -1,4 +1,14 @@
-import type { MonitorEventFilter, MonitorEventSummary, MonitorEventType } from '../../types/tauri-commands'
+import type { MonitorEvent, MonitorEventFilter, MonitorEventSummary, MonitorEventType } from '../../types/tauri-commands'
+
+/** Pending durations use the event's start time; terminal events use backend timing. */
+export function eventDurationMs(
+  event: Pick<MonitorEvent, 'timestamp' | 'status' | 'duration_ms'>,
+  now: number,
+): number | null {
+  if (event.status !== 'pending') return event.duration_ms
+  const startedAt = Date.parse(event.timestamp)
+  return Number.isFinite(startedAt) ? Math.max(0, now - startedAt) : event.duration_ms
+}
 
 /** Mirror the backend predicate for live events, which bypass its query API. */
 export function matchesFilter(summary: MonitorEventSummary, filter?: MonitorEventFilter | null): boolean {

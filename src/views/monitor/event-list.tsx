@@ -1,4 +1,5 @@
 import { singleLinePreview } from './monitor-events'
+import { EventDuration } from './event-duration'
 import { cn } from '@/lib/utils'
 import { Wrench, Shield, GitBranch, Link, AlertTriangle, Loader2, CheckCircle2, XCircle, KeyRound, Gauge, AlertCircle, Server, Ban, Minimize2, Database, Forward } from 'lucide-react'
 import { ProvidersIcon } from '@/components/icons/category-icons'
@@ -160,7 +161,7 @@ export function EventList({ events, showType, selectedId, onSelect }: EventListP
                   {singleLinePreview(event.answer)}
                 </td>
                 <td className="px-2 py-1 text-right font-mono text-muted-foreground">
-                  {event.duration_ms != null ? `${event.duration_ms}ms` : '—'}
+                  <EventDuration event={event} />
                 </td>
               </tr>
             )

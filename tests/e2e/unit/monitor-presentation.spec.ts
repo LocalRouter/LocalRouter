@@ -1,7 +1,7 @@
 import { codexAnswer, codexRequest, codexStream, codexTruncated } from '../monitor/codex-fixture'
 import { test, expect } from '@playwright/test'
 import { capturedExcerpt, capturedRequestBody, capturedResponseMessages, contentText, requestMessages, responseMessages } from '../../../src/views/monitor/message-content'
-import { matchesFilter, mergeMonitorEvents, showEventTypeColumn, singleLinePreview } from '../../../src/views/monitor/monitor-events'
+import { eventDurationMs, matchesFilter, mergeMonitorEvents, showEventTypeColumn, singleLinePreview } from '../../../src/views/monitor/monitor-events'
 import type { MonitorEventFilter, MonitorEventSummary } from '../../../src/types/tauri-commands'
 
 const event: MonitorEventSummary = {
@@ -11,6 +11,23 @@ const event: MonitorEventSummary = {
 }
 const filter = (fields: Partial<MonitorEventFilter>): MonitorEventFilter => ({
   event_types: null, session_id: null, client_id: null, status: null, search: null, ...fields,
+})
+
+test('pending durations increase from their start time and terminal durations stay fixed', () => {
+  const start = Date.parse(event.timestamp)
+  expect(eventDurationMs(event, start)).toBe(0)
+  expect(eventDurationMs(event, start + 1250)).toBe(1250)
+  expect(eventDurationMs({ ...event, duration_ms: 100 }, start + 2500)).toBe(2500)
+  for (const status of ['complete', 'error'] as const) {
+    expect(eventDurationMs({ ...event, status, duration_ms: 1234 }, start + 9000)).toBe(1234)
+    expect(eventDurationMs({ ...event, status }, start + 9000)).toBeNull()
+  }
+})
+
+test('future and invalid start timestamps do not display negative or NaN durations', () => {
+  expect(eventDurationMs(event, Date.parse(event.timestamp) - 1000)).toBe(0)
+  expect(eventDurationMs({ ...event, timestamp: 'invalid' }, Date.now())).toBeNull()
+  expect(eventDurationMs({ ...event, timestamp: 'invalid', duration_ms: 50 }, Date.now())).toBe(50)
 })
 
 test('type column follows enabled types, including empty and all selections', () => {

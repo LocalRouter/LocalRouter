@@ -88,6 +88,54 @@ test('a pending selection updates to its response without switching a tab', asyn
   await expect(page.getByText('Waiting for response…')).toHaveCount(0)
 })
 
+for (const status of ['complete', 'error'] as const) {
+  test(`duration increments in the list and detail until the request is ${status}`, async ({ page }) => {
+    const start = new Date('2026-10-03T12:00:00Z')
+    await page.clock.install({ time: start })
+    await page.clock.pauseAt(start)
+    await page.evaluate(async () => {
+      const eventModule: string = '/src/stubs/tauri-api-event.ts'
+      const { emit } = await import(/* @vite-ignore */ eventModule)
+      const mockModule: string = '/src/components/demo/mockData.ts'
+      const { mockData } = await import(/* @vite-ignore */ mockModule)
+      const pending = { ...mockData.monitorEvents.find((event: { id: string }) => event.id === 'mon-001'),
+        timestamp: new Date().toISOString(), status: 'pending', duration_ms: null }
+      const target = window as unknown as { __TAURI_IPC_HANDLER__: (cmd: string, args: unknown) => unknown }
+      const original = target.__TAURI_IPC_HANDLER__
+      target.__TAURI_IPC_HANDLER__ = (cmd, args) => cmd === 'get_monitor_event_detail' ? pending : original(cmd, args)
+      await emit('monitor-event-updated', JSON.stringify(pending))
+    })
+    await page.clock.runFor(0)
+    const row = page.getByRole('row').filter({ hasText: 'How should I retry failed API requests?' })
+    const duration = row.locator('td').last()
+    await expect(duration).toHaveText('0ms')
+    await row.click()
+    const detailDuration = page.getByTestId('event-detail-duration')
+    await expect(detailDuration).toHaveText('0ms')
+    await page.clock.runFor(1000)
+    await expect(duration).toHaveText('1000ms')
+    await expect(detailDuration).toHaveText('1000ms')
+    await page.clock.runFor(1000)
+    await expect(duration).toHaveText('2000ms')
+    await expect(detailDuration).toHaveText('2000ms')
+    await page.evaluate(async status => {
+      const eventModule: string = '/src/stubs/tauri-api-event.ts'
+      const { emit } = await import(/* @vite-ignore */ eventModule)
+      const target = window as unknown as { __TAURI_IPC_HANDLER__: (cmd: string, args: unknown) => unknown }
+      const terminal = { ...(target.__TAURI_IPC_HANDLER__('get_monitor_event_detail', {}) as object), status, duration_ms: 1987 }
+      const original = target.__TAURI_IPC_HANDLER__
+      target.__TAURI_IPC_HANDLER__ = (cmd, args) => cmd === 'get_monitor_event_detail' ? terminal : original(cmd, args)
+      await emit('monitor-event-updated', JSON.stringify(terminal))
+    }, status)
+    await page.clock.runFor(0)
+    await expect(duration).toHaveText('1987ms')
+    await expect(detailDuration).toHaveText('1987ms')
+    await page.clock.runFor(2000)
+    await expect(duration).toHaveText('1987ms')
+    await expect(detailDuration).toHaveText('1987ms')
+  })
+}
+
 
 test('Codex request and streamed answer display from truncated legacy captures', async ({ page }) => {
   await page.evaluate(({ request, stream, truncated }) => {

@@ -2,7 +2,8 @@ import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { McpToolDisplay, type McpToolDisplayItem } from '@/components/shared/McpToolDisplay'
 import { cn } from '@/lib/utils'
-import { Clock, User, Server, Copy, Check, FileText, AlertTriangle, ChevronRight, ArrowUpRight, ArrowDownLeft, Loader2 } from 'lucide-react'
+import { User, Server, Copy, Check, FileText, AlertTriangle, ChevronRight, ArrowUpRight, ArrowDownLeft, Loader2 } from 'lucide-react'
+import { EventDuration } from './event-duration'
 import { useState, useCallback, type ReactNode } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import ReactMarkdown from 'react-markdown'
@@ -164,12 +165,7 @@ export function EventDetail({ event, loading, error, onRetry }: EventDetailProps
               <User className="h-3 w-3" />{event.client_name || event.client_id}
             </span>
           )}
-          {event.duration_ms != null && (
-            <span className="text-xs text-muted-foreground flex items-center gap-1">
-              <Clock className="h-3 w-3" />
-              {event.duration_ms}ms
-            </span>
-          )}
+          <EventDuration event={event} showClock />
           <Button
             variant="outline"
             size="sm"
