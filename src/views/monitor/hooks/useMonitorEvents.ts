@@ -16,6 +16,8 @@ export function useMonitorEvents(filter?: MonitorEventFilter | null) {
   const [selectedEvent, setSelectedEvent] = useState<MonitorEvent | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const [isDetailLoading, setIsDetailLoading] = useState(false)
+  const [detailError, setDetailError] = useState<string | null>(null)
   const selectedIdRef = useRef<string | null>(null)
   const listRequestRef = useRef(0)
   const detailRequestRef = useRef(0)
@@ -53,13 +55,23 @@ export function useMonitorEvents(filter?: MonitorEventFilter | null) {
 
   const loadDetail = useCallback((id: string) => {
     const request = ++detailRequestRef.current
+    setIsDetailLoading(true)
+    setDetailError(null)
     invoke<MonitorEvent | null>('get_monitor_event_detail', { eventId: id })
       .then(detail => {
         if (request === detailRequestRef.current && selectedIdRef.current === id) {
           setSelectedEvent(detail)
+          if (!detail) setDetailError('This event is no longer available.')
         }
       })
-      .catch(() => {})
+      .catch(() => {
+        if (request === detailRequestRef.current && selectedIdRef.current === id) {
+          setDetailError('Unable to load event details.')
+        }
+      })
+      .finally(() => {
+        if (request === detailRequestRef.current && selectedIdRef.current === id) setIsDetailLoading(false)
+      })
   }, [])
 
   // Listen for new events
@@ -89,12 +101,14 @@ export function useMonitorEvents(filter?: MonitorEventFilter | null) {
   }, [])
 
   const selectEvent = useCallback((id: string | null) => {
+    if (selectedIdRef.current === id) return
     selectedIdRef.current = id
     ++detailRequestRef.current
     setSelectedId(id)
     setSelectedEvent(null)
+    setDetailError(null)
     if (!id) {
-      setSelectedEvent(null)
+      setIsDetailLoading(false)
       return
     }
     loadDetail(id)
@@ -110,11 +124,20 @@ export function useMonitorEvents(filter?: MonitorEventFilter | null) {
       setEvents([])
       setSelectedEvent(null)
       setSelectedId(null)
+      setIsDetailLoading(false)
+      setDetailError(null)
     }).catch(() => {})
   }, [])
 
+  const retryDetail = useCallback(() => {
+    if (selectedIdRef.current) loadDetail(selectedIdRef.current)
+  }, [loadDetail])
+
   return {
     events,
+    isDetailLoading,
+    detailError,
+    retryDetail,
     selectedEvent,
     selectedId,
     isLoading,

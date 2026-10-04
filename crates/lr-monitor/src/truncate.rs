@@ -53,17 +53,34 @@ pub fn truncate_json(value: &Value, max_bytes: usize) -> Value {
 
 fn marker(value: &Value, max_bytes: usize) -> Value {
     let serialized = serde_json::to_string(value).unwrap_or_default();
+    // Extract content before metadata/tool schemas consume the raw prefix. These
+    // excerpts share the existing capture budget rather than increasing it.
+    let preview = serde_json::json!({
+        "question": crate::preview::request(value),
+        "answer": crate::preview::response(value),
+    });
+    let preview_size = serialized_len(&preview);
+    let keep_preview = preview_size <= max_bytes / 2;
+    let prefix_budget = if keep_preview {
+        max_bytes - preview_size
+    } else {
+        max_bytes
+    };
     // `max_bytes` can land inside a multi-byte character, which would panic a
     // plain range slice — bodies routinely carry non-ASCII prose.
-    let mut end = max_bytes.min(serialized.len());
+    let mut end = prefix_budget.min(serialized.len());
     while end > 0 && !serialized.is_char_boundary(end) {
         end -= 1;
     }
-    serde_json::json!({
+    let mut marker = serde_json::json!({
         "_truncated": true,
         "_original_size": serialized.len(),
         "_preview": &serialized[..end],
-    })
+    });
+    if keep_preview {
+        marker["_monitor_preview"] = preview;
+    }
+    marker
 }
 
 #[cfg(test)]
@@ -118,5 +135,25 @@ mod tests {
         let value = serde_json::json!({"prompt": "x".repeat(1_000_000)});
         let out = truncate_json(&value, 4_096);
         assert!(crate::size::json_size(&out) < crate::size::json_size(&value) / 100);
+    }
+    #[test]
+    fn excerpts_survive_large_metadata_before_user_input_and_output() {
+        let request = serde_json::json!({
+            "metadata":{"large":"m".repeat(80_000)},
+            "input":[{"type":"message", "role":"user", "content":[{"type":"input_text", "text":"Synthetic question"}]}]
+        });
+        let response = serde_json::json!({
+            "metadata":{"large":"m".repeat(80_000)}, "error":null,
+            "output":[{"type":"message", "role":"assistant", "content":[{"type":"output_text", "text":"Synthetic answer"}]}]
+        });
+        let req = truncate_json(&request, 65_536);
+        let resp = truncate_json_owned(response, 65_536);
+        assert_eq!(crate::preview::request(&req), "Synthetic question");
+        assert_eq!(crate::preview::response(&resp), "Synthetic answer");
+        for body in [req, resp] {
+            let excerpt = serialized_len(&body["_monitor_preview"]);
+            assert!(body["_preview"].as_str().unwrap().len() + excerpt <= 65_536);
+            assert_eq!(body["_truncated"], true);
+        }
     }
 }

@@ -271,60 +271,145 @@ pub fn parse_responses_response(body: &Value) -> ResponseMeta {
     }
 }
 
-/// Reconstruct a Responses API SSE stream into (metadata, assembled body).
-///
-/// The final `response.completed` event carries the entire response object, so
-/// when present we parse that directly; otherwise we fall back to accumulating
-/// `response.output_text.delta` / reasoning-summary deltas.
+/// Reconstruct Responses output before applying monitor capture caps. Codex lite
+/// streams leave terminal `output` empty, so completed items and text events are
+/// retained while the terminal envelope supplies usage and completion metadata.
 pub fn reconstruct_responses_sse(raw: &str) -> (ResponseMeta, Value) {
-    let mut completed: Option<Value> = None;
-    let mut text = String::new();
-    let mut reasoning = String::new();
-    let mut meta = ResponseMeta::default();
+    use std::collections::BTreeMap;
+
+    let mut envelope = serde_json::json!({});
+    let mut items: BTreeMap<u64, Value> = BTreeMap::new();
+    let mut parts: BTreeMap<(u64, &'static str, u64), Value> = BTreeMap::new();
 
     for json in crate::wire::sse_json_events(raw) {
-        match json.get("type").and_then(Value::as_str) {
-            Some("response.created") => {
-                let r = json.get("response");
-                meta.message_id = str_field(r, "id");
-                meta.model = str_field(r, "model");
-            }
-            Some("response.output_text.delta") => {
-                if let Some(t) = json.get("delta").and_then(Value::as_str) {
-                    text.push_str(t);
+        let kind = json["type"].as_str().unwrap_or_default();
+        let output_index = json["output_index"].as_u64().unwrap_or(0);
+        match kind {
+            "response.created"
+            | "response.in_progress"
+            | "response.completed"
+            | "response.incomplete"
+            | "response.failed" => {
+                if let Some(response) = json.get("response").filter(|v| v.is_object()) {
+                    envelope = response.clone();
                 }
             }
-            Some("response.reasoning_summary_text.delta") => {
-                if let Some(t) = json.get("delta").and_then(Value::as_str) {
-                    reasoning.push_str(t);
+            "response.output_item.added" | "response.output_item.done" => {
+                if let Some(item) = json.get("item").filter(|v| v.is_object()) {
+                    items.insert(output_index, item.clone());
                 }
             }
-            Some("response.completed") | Some("response.incomplete") | Some("response.failed") => {
-                if let Some(r) = json.get("response") {
-                    completed = Some(r.clone());
+            "response.content_part.added"
+            | "response.content_part.done"
+            | "response.reasoning_summary_part.added"
+            | "response.reasoning_summary_part.done" => {
+                let summary = kind.starts_with("response.reasoning_summary");
+                let field = if summary { "summary" } else { "content" };
+                let index = json[if summary {
+                    "summary_index"
+                } else {
+                    "content_index"
+                }]
+                .as_u64()
+                .unwrap_or(0);
+                if let Some(part) = json.get("part").filter(|v| v.is_object()) {
+                    parts.insert((output_index, field, index), part.clone());
+                }
+            }
+            "response.output_text.delta"
+            | "response.output_text.done"
+            | "response.reasoning_summary_text.delta"
+            | "response.reasoning_summary_text.done" => {
+                let summary = kind.starts_with("response.reasoning_summary");
+                let field = if summary { "summary" } else { "content" };
+                let index = json[if summary {
+                    "summary_index"
+                } else {
+                    "content_index"
+                }]
+                .as_u64()
+                .unwrap_or(0);
+                let part = parts.entry((output_index, field, index)).or_insert_with(|| {
+                    serde_json::json!({"type": if summary {"summary_text"} else {"output_text"}, "text": ""})
+                });
+                if let Some(text) = json[if kind.ends_with(".done") {
+                    "text"
+                } else {
+                    "delta"
+                }]
+                .as_str()
+                {
+                    let accumulated = &mut part["text"];
+                    if kind.ends_with(".done") || !accumulated.is_string() {
+                        *accumulated = text.into();
+                    } else if let Value::String(current) = accumulated {
+                        current.push_str(text);
+                    }
+                }
+            }
+            "response.function_call_arguments.delta" | "response.function_call_arguments.done" => {
+                let item = items.entry(output_index).or_insert_with(
+                    || serde_json::json!({"type": "function_call", "arguments": ""}),
+                );
+                if let Some(text) = json[if kind.ends_with(".done") {
+                    "arguments"
+                } else {
+                    "delta"
+                }]
+                .as_str()
+                {
+                    let arguments = &mut item["arguments"];
+                    if kind.ends_with(".done") || !arguments.is_string() {
+                        *arguments = text.into();
+                    } else if let Value::String(current) = arguments {
+                        current.push_str(text);
+                    }
                 }
             }
             _ => {}
         }
     }
 
-    if let Some(body) = completed {
-        let meta = parse_responses_response(&body);
-        return (meta, body);
+    // Item snapshots are authoritative. Fill only missing/empty parts from
+    // deltas, using ordered maps so sparse untrusted indices never allocate gaps.
+    let mut assembled_parts: BTreeMap<(u64, &str), BTreeMap<u64, Value>> = BTreeMap::new();
+    for ((output_index, field, part_index), part) in parts {
+        assembled_parts
+            .entry((output_index, field))
+            .or_default()
+            .insert(part_index, part);
     }
-
-    // Stream ended without a terminal event (disconnect): salvage the deltas.
-    meta.content_preview = (!text.is_empty()).then(|| truncate(&text));
-    meta.reasoning_preview = (!reasoning.is_empty()).then(|| truncate(&reasoning));
-    let body = serde_json::json!({
-        "id": meta.message_id,
-        "model": meta.model,
-        "output": [{
-            "type": "message",
-            "content": [{ "type": "output_text", "text": text }],
-        }],
-    });
-    (meta, body)
+    for ((index, field), parts) in assembled_parts {
+        let item = items.entry(index).or_insert_with(|| {
+            serde_json::json!({"type": if field == "summary" {"reasoning"} else {"message"}, "role": "assistant"})
+        });
+        let mut existing: BTreeMap<u64, Value> = item
+            .get(field)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .cloned()
+            .enumerate()
+            .map(|(i, v)| (i as u64, v))
+            .collect();
+        for (part_index, part) in parts {
+            let replace = existing
+                .get(&part_index)
+                .is_none_or(|v| v["text"].as_str().is_some_and(str::is_empty));
+            if replace {
+                existing.insert(part_index, part);
+            }
+        }
+        item[field] = existing.into_values().collect::<Vec<_>>().into();
+    }
+    if envelope
+        .get("output")
+        .and_then(Value::as_array)
+        .is_none_or(|o| o.is_empty())
+    {
+        envelope["output"] = items.into_values().collect::<Vec<_>>().into();
+    }
+    (parse_responses_response(&envelope), envelope)
 }
 
 #[cfg(test)]
@@ -459,5 +544,74 @@ mod tests {
         let (meta, _) = reconstruct_responses_sse(raw);
         assert_eq!(meta.message_id.as_deref(), Some("resp_2"));
         assert_eq!(meta.content_preview.as_deref(), Some("cut o"));
+    }
+    #[test]
+    fn codex_lite_retains_done_items_and_terminal_usage_without_duplicate_text() {
+        let answer = r#"{"outcome":"allow","rationale":"Synthetic assessment"}"#;
+        let message = json!({"id":"msg_test", "type":"message", "role":"assistant",
+            "content":[{"type":"output_text", "text":answer}]});
+        let events = [
+            json!({"type":"codex.rate_limits", "rate_limits":{"allowed":true}}),
+            json!({"type":"response.created", "response":{"id":"resp_test", "model":"codex-auto-review", "output":[]}}),
+            json!({"type":"response.output_item.done", "output_index":0,
+                "item":{"type":"reasoning", "encrypted_content":"synthetic-ciphertext", "summary":[]}}),
+            json!({"type":"response.output_item.added", "output_index":1,
+                "item":{"id":"msg_test", "type":"message", "role":"assistant", "content":[]}}),
+            json!({"type":"response.output_text.delta", "output_index":1, "content_index":0, "delta":"incomplete"}),
+            json!({"type":"response.output_text.done", "output_index":1, "content_index":0, "text":answer}),
+            json!({"type":"response.content_part.done", "output_index":1, "content_index":0,
+                "part":{"type":"output_text", "text":answer}}),
+            json!({"type":"response.output_item.done", "output_index":1, "item":message}),
+            json!({"type":"response.completed", "response":{"id":"resp_test", "model":"codex-auto-review",
+                "status":"completed", "error":null, "output":[], "tools":[{"description":"x".repeat(70_000)}],
+                "usage":{"input_tokens":100, "output_tokens":20, "output_tokens_details":{"reasoning_tokens":8}}}}),
+        ];
+        let raw = events
+            .iter()
+            .map(|e| format!("data: {e}\n\n"))
+            .collect::<String>();
+        let (meta, body) = reconstruct_responses_sse(&raw);
+        assert_eq!(meta.content_preview.as_deref(), Some(answer));
+        assert_eq!(meta.reasoning_preview, None);
+        assert_eq!(meta.input_tokens, Some(100));
+        assert_eq!(meta.output_tokens, Some(20));
+        assert_eq!(meta.reasoning_tokens, Some(8));
+        assert_eq!(meta.stop_reason.as_deref(), Some("completed"));
+        assert_eq!(body["output"][1], message);
+        assert_eq!(body["output"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            body["tools"][0]["description"].as_str().unwrap().len(),
+            70_000
+        );
+    }
+
+    #[test]
+    fn lite_terminal_and_disconnect_salvage_ordered_text_reasoning_and_tool_arguments() {
+        for terminal in [None, Some("response.incomplete"), Some("response.failed")] {
+            let mut events = vec![
+                json!({"type":"response.output_item.added", "output_index":9,
+                    "item":{"type":"message", "role":"assistant", "content":[{"type":"output_text", "text":""}]}}),
+                json!({"type":"response.output_text.delta", "output_index":9, "content_index":1, "delta":"second"}),
+                json!({"type":"response.output_text.delta", "output_index":9, "content_index":0, "delta":"first "}),
+                json!({"type":"response.reasoning_summary_text.delta", "output_index":1, "summary_index":0, "delta":"Summary"}),
+                json!({"type":"response.output_item.added", "output_index":3,
+                    "item":{"type":"function_call", "call_id":"call_test", "name":"lookup", "arguments":""}}),
+                json!({"type":"response.function_call_arguments.delta", "output_index":3, "delta":"{"}),
+                json!({"type":"response.function_call_arguments.done", "output_index":3, "arguments":"{}"}),
+            ];
+            if let Some(kind) = terminal {
+                events.push(json!({"type":kind, "response":{"status":kind.strip_prefix("response.").unwrap(), "output":[]}}));
+            }
+            let raw = events
+                .iter()
+                .map(|e| format!("data: {e}\n\n"))
+                .collect::<String>();
+            let (meta, body) = reconstruct_responses_sse(&raw);
+            assert_eq!(meta.content_preview.as_deref(), Some("first second"));
+            assert_eq!(meta.reasoning_preview.as_deref(), Some("Summary"));
+            assert_eq!(body["output"][1]["name"], "lookup");
+            assert_eq!(body["output"][1]["arguments"], "{}");
+            assert_eq!(body["output"].as_array().unwrap().len(), 3);
+        }
     }
 }

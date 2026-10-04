@@ -1,5 +1,6 @@
+import { codexAnswer, codexRequest, codexStream, codexTruncated } from '../monitor/codex-fixture'
 import { test, expect } from '@playwright/test'
-import { contentText, requestMessages, responseMessages } from '../../../src/views/monitor/message-content'
+import { capturedExcerpt, capturedRequestBody, capturedResponseMessages, contentText, requestMessages, responseMessages } from '../../../src/views/monitor/message-content'
 import { matchesFilter, mergeMonitorEvents, showEventTypeColumn, singleLinePreview } from '../../../src/views/monitor/monitor-events'
 import type { MonitorEventFilter, MonitorEventSummary } from '../../../src/types/tauri-commands'
 
@@ -59,4 +60,38 @@ test('absent and non-text payloads do not turn into fabricated answers', () => {
   expect(responseMessages({ error: { message: 'Failed' } })).toEqual([])
   expect(contentText([{ type: 'image', source: 'image bytes' }, null])).toBe('')
   expect(responseMessages({ choices: [{ text: 'Completion' }] })).toEqual([{ role: 'assistant', content: 'Completion' }])
+})
+
+
+test('Codex lite raw captures recover the answer once despite empty terminal output', () => {
+  for (const body of [undefined, codexTruncated, { error: null, output: [] }]) {
+    const messages = capturedResponseMessages(body, codexStream)
+    expect(messages).toHaveLength(1)
+    expect(contentText(messages[0].content)).toBe(codexAnswer)
+  }
+  const messages = requestMessages(capturedRequestBody(codexTruncated, JSON.stringify(codexRequest)))
+  expect(contentText(messages[0].content)).toBe('Assess this synthetic request.')
+})
+
+test('raw fallback tolerates partial frames and preserves ordered content without metadata', () => {
+  const raw = [
+    { type: 'response.output_item.added', output_index: 4, item: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '' }] } },
+    { type: 'response.output_text.delta', output_index: 4, content_index: 1, delta: 'second' },
+    { type: 'response.output_text.delta', output_index: 4, content_index: 0, delta: 'first' },
+    { type: 'response.output_text.done', output_index: 4, content_index: 0, text: 'first complete' },
+    { type: 'response.reasoning_summary_text.delta', delta: 'Do not show as answer' },
+  ].map(event => `data: ${JSON.stringify(event)}\r\n\r\n`).join('') + 'data: {broken'
+  expect(contentText(capturedResponseMessages(undefined, raw)[0].content)).toBe('first complete\nsecond')
+  expect(capturedResponseMessages({ error: null, output: [] }, 'data: {broken')).toEqual([])
+  expect(capturedRequestBody(codexTruncated, '{broken')).toBe(codexTruncated)
+  expect(capturedResponseMessages({ output_text: 'Complete body' }, codexStream)[0].content).toBe('Complete body')
+  expect(capturedResponseMessages(undefined, JSON.stringify({ output_text: 'Plain response' }))[0].content).toBe('Plain response')
+})
+
+test('bounded excerpts remain useful without a complete raw capture', () => {
+  const body = { ...codexTruncated, _monitor_preview: { question: 'Question excerpt', answer: 'Answer excerpt' } }
+  expect(capturedExcerpt(body, 'question')).toBe('Question excerpt')
+  expect(capturedExcerpt(body, 'answer')).toBe('Answer excerpt')
+  expect(capturedExcerpt(undefined, 'answer')).toBe('')
+  expect(capturedExcerpt({ output_text: 'Complete body' }, 'answer')).toBe('')
 })

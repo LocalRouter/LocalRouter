@@ -86,6 +86,9 @@ export function MonitorView() {
     events,
     selectedEvent,
     selectedId,
+    isDetailLoading,
+    detailError,
+    retryDetail,
     selectEvent,
     clearEvents,
   } = useMonitorEvents(activeFilter)
@@ -115,7 +118,7 @@ export function MonitorView() {
     </div>
   )
 
-  const eventSplit = selectedEvent ? (
+  const eventSplit = selectedId ? (
     <ResizablePanelGroup direction="vertical" className="flex-1">
       <ResizablePanel defaultSize="35%" minSize="20%">
         <EventList
@@ -127,7 +130,7 @@ export function MonitorView() {
       </ResizablePanel>
       <ResizableHandle withHandle orientation="vertical" />
       <ResizablePanel defaultSize="65%" minSize="20%">
-        <EventDetail key={selectedEvent.id} event={selectedEvent} />
+        <EventDetail key={selectedId} event={selectedEvent} loading={isDetailLoading} error={detailError} onRetry={retryDetail} />
       </ResizablePanel>
     </ResizablePanelGroup>
   ) : (

@@ -76,7 +76,13 @@ fn display_value(value: &Value) -> String {
         .unwrap_or_else(|| single_line(&value.to_string()))
 }
 
-fn request(body: &Value) -> String {
+pub(crate) fn request(body: &Value) -> String {
+    if body["_truncated"] == true {
+        return body["_monitor_preview"]["question"]
+            .as_str()
+            .map(single_line)
+            .unwrap_or_default();
+    }
     if let Some(questions) = body.get("questions").and_then(Value::as_object) {
         return single_line(
             &questions
@@ -105,7 +111,13 @@ fn request(body: &Value) -> String {
         .unwrap_or_default()
 }
 
-fn response(body: &Value) -> String {
+pub(crate) fn response(body: &Value) -> String {
+    if body["_truncated"] == true {
+        return body["_monitor_preview"]["answer"]
+            .as_str()
+            .map(single_line)
+            .unwrap_or_default();
+    }
     if let Some(answers) = body.get("answers").and_then(Value::as_object) {
         return single_line(
             &answers
@@ -157,7 +169,8 @@ fn response(body: &Value) -> String {
         }
     }
     body.get("error")
-        .map(|e| e.get("message").unwrap_or(e))
+        .filter(|e| !e.is_null())
+        .map(|e| e.get("message").filter(|m| !m.is_null()).unwrap_or(e))
         .map(display_value)
         .unwrap_or_default()
 }
@@ -398,5 +411,18 @@ mod tests {
         assert_eq!(preview.chars().count(), MAX_PREVIEW_CHARS + 3);
         assert!(preview.ends_with("..."));
         assert_eq!(single_line("  hi\n\r\t world  "), "hi world");
+    }
+    #[test]
+    fn null_error_is_not_an_answer_and_does_not_hide_a_content_preview() {
+        let body = serde_json::json!({"output":[], "error":null});
+        assert_eq!(response(&body), "");
+        assert_eq!(
+            preview_response(Some(&body), Some("Actual answer"), None),
+            "Actual answer"
+        );
+        assert_eq!(
+            response(&serde_json::json!({"error":{"message":"Failed"}})),
+            "Failed"
+        );
     }
 }

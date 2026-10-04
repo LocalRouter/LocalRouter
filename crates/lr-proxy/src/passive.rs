@@ -777,6 +777,59 @@ mod tests {
     }
 
     #[test]
+    fn codex_lite_pending_and_completed_summaries_survive_truncation() {
+        let store = Arc::new(MonitorEventStore::new(16));
+        let interceptor = PassiveInterceptor::new(store.clone());
+        let request = json!({"type":"response.create", "model":"codex-auto-review", "stream":true,
+            "input":[{"type":"message", "role":"user", "content":[{"type":"input_text", "text":"Synthetic question"}]}],
+            "tools":[{"description":"x".repeat(PARSED_CAP * 2)}]});
+        let events = [
+            json!({"type":"response.output_item.done", "output_index":0, "item":{"type":"message", "role":"assistant",
+                "content":[{"type":"output_text", "text":"Synthetic answer"}]}}),
+            json!({"type":"response.completed", "response":{"id":"resp_test", "model":"codex-auto-review", "status":"completed",
+                "error":null, "output":[], "tools":[{"description":"x".repeat(PARSED_CAP * 2)}],
+                "usage":{"input_tokens":100, "output_tokens":20}}}),
+        ];
+        let mut ex = exchange();
+        ex.host = "chatgpt.com".into();
+        ex.path = "/backend-api/codex/responses".into();
+        ex.request_body = Some(serde_json::to_vec(&request).unwrap());
+        ex.response_is_sse = true;
+        ex.response_body = Some(
+            events
+                .iter()
+                .map(|v| format!("data: {v}\n\n"))
+                .collect::<String>()
+                .into_bytes(),
+        );
+        let id = interceptor.emit_pending(&ex).unwrap();
+        let pending = &store.list(0, 10, None).events[0];
+        assert_eq!(pending.question, "Synthetic question");
+        assert_eq!(pending.answer, "");
+        interceptor.complete(&id, &ex);
+        let summary = &store.list(0, 10, None).events[0];
+        assert_eq!(summary.question, "Synthetic question");
+        assert_eq!(summary.answer, "Synthetic answer");
+        assert_eq!(summary.status, EventStatus::Complete);
+        let event = store.get(&id).unwrap();
+        let MonitorEventData::LlmCall {
+            request_body,
+            response_body,
+            input_tokens,
+            output_tokens,
+            ..
+        } = &event.data
+        else {
+            panic!("LLM call");
+        };
+        assert_eq!(request_body["_truncated"], true);
+        assert_eq!(response_body.as_ref().unwrap()["_truncated"], true);
+        assert_eq!(*input_tokens, Some(100));
+        assert_eq!(*output_tokens, Some(20));
+        assert!(lr_monitor::event_size(&event) < 2 * RAW_CAP + 2 * PARSED_CAP + 8192);
+    }
+
+    #[test]
     fn bodies_under_the_cap_are_stored_whole() {
         let store = Arc::new(MonitorEventStore::new(16));
         let it = PassiveInterceptor::new(store.clone());

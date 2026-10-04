@@ -7,7 +7,7 @@ import { useState, useCallback, type ReactNode } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { contentText, requestMessages, responseMessages } from './message-content'
+import { capturedExcerpt, capturedRequestBody, capturedResponseMessages, contentText, requestMessages } from './message-content'
 import type { EventStatus, LlmProtocol, MonitorEvent, ReadMemoryArchiveFileParams } from '@/types/tauri-commands'
 import type { SystemOneAnswer, SystemOneQuestion } from '@/types/systemone'
 import { SystemOneAnswerView, SystemOneQuestionView } from '@/components/shared/SystemOneAnswers'
@@ -118,12 +118,15 @@ function SmartText({ text }: { text: string }) {
 
 interface EventDetailProps {
   event: MonitorEvent | null
+  loading?: boolean
+  error?: string | null
+  onRetry?: () => void
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type EventData = Record<string, any>
 
-export function EventDetail({ event }: EventDetailProps) {
+export function EventDetail({ event, loading, error, onRetry }: EventDetailProps) {
   const [copied, setCopied] = useState(false)
   const handleCopyEvent = useCallback(() => {
     navigator.clipboard.writeText(JSON.stringify(event, null, 2)).then(() => {
@@ -134,8 +137,9 @@ export function EventDetail({ event }: EventDetailProps) {
 
   if (!event) {
     return (
-      <div className="flex h-full items-center justify-center text-muted-foreground text-sm">
-        Select an event to view details
+      <div className="flex h-full flex-col gap-3 items-center justify-center text-muted-foreground text-sm" role="status">
+        {loading ? <><Loader2 className="h-4 w-4 animate-spin" />Loading event details…</> : error ?? 'Select an event to view details'}
+        {!loading && error && <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button>}
       </div>
     )
   }
@@ -144,6 +148,7 @@ export function EventDetail({ event }: EventDetailProps) {
   const type = data.type as string
   return (
     <div className="flex h-full flex-col min-h-0">
+      {error && <div className="flex items-center gap-3 px-4 py-2 text-sm text-destructive" role="status">{error}<Button variant="outline" size="sm" onClick={onRetry}>Retry</Button></div>}
       {/* Fixed header (stays put while the detail below scrolls) */}
       <div className="px-4 py-2.5 space-y-2 shrink-0 border-b bg-muted/20">
         {/* Header */}
@@ -547,11 +552,12 @@ function ResponseError({ error }: { error: unknown }) {
 
 function LlmResponseContent({ data, status }: { data: EventData; status: EventStatus }) {
   const body = data.response_body as Record<string, unknown> | undefined
-  const messages = responseMessages(body)
+  const messages = capturedResponseMessages(body, data.raw_response)
   const visibleMessages = messages.filter(message => contentText(message.content) || (message.tool_calls as unknown[] | undefined)?.length)
   const reasoning = messages.map(message => message.reasoning_content).filter(Boolean).join('\n') || extractReasoning(body)
   const systemOne = isSystemOneEvent(data) && body?.answers != null
-  const hasContent = systemOne || visibleMessages.length > 0 || data.content_preview
+  const excerpt = capturedExcerpt(body, 'answer')
+  const hasContent = systemOne || visibleMessages.length > 0 || data.content_preview || excerpt
 
   return (
     <>
@@ -560,7 +566,8 @@ function LlmResponseContent({ data, status }: { data: EventData; status: EventSt
         <div className="space-y-2">
           {visibleMessages.map((message, index) => <MessageItem key={index} message={message} />)}
         </div>
-      ) : data.content_preview ? <SmartText text={data.content_preview} /> : !data.error && !body?.error ? (
+      ) : excerpt ? <div><p className="text-muted-foreground mb-2">Captured excerpt</p><SmartText text={excerpt} /></div>
+      : data.content_preview ? <SmartText text={data.content_preview} /> : !data.error && !body?.error ? (
         body && !reasoning ? <JsonBlock data={body} label="response" /> : !reasoning && !data.raw_response && <ResponseState status={status} />
       ) : null}
       {reasoning && <Disclosure title="Reasoning"><SmartText text={reasoning} /></Disclosure>}
@@ -569,14 +576,16 @@ function LlmResponseContent({ data, status }: { data: EventData; status: EventSt
   )
 }
 
-function RequestContent({ body }: { body: Record<string, unknown> | undefined }) {
+function RequestContent({ body: capturedBody, raw }: { body: Record<string, unknown> | undefined; raw?: string }) {
+  const body = capturedRequestBody(capturedBody, raw)
+  const excerpt = capturedExcerpt(body, 'question')
   const messages = requestMessages(body)
   const latestUser = messages.map(m => m.role).lastIndexOf('user')
   const primary = latestUser >= 0 ? latestUser : messages.length - 1
   const context = messages.filter((_, index) => index !== primary)
   return (
     <>
-      {primary >= 0 ? <MessageItem message={messages[primary]} /> : body ? <JsonBlock data={body} label="request" /> : <p className="text-muted-foreground">No request body was captured.</p>}
+      {primary >= 0 ? <MessageItem message={messages[primary]} /> : excerpt ? <div><p className="text-muted-foreground mb-2">Captured excerpt</p><SmartText text={excerpt} /></div> : body ? <JsonBlock data={body} label="request" /> : <p className="text-muted-foreground">No request body was captured.</p>}
       {(context.length > 0 || body?.system || body?.instructions) && (
         <Disclosure title="Conversation context" description={`${messages.length} message${messages.length === 1 ? '' : 's'}`}>
           {body?.system != null && <MessageItem message={{ role: 'system', content: body.system }} />}
@@ -621,7 +630,7 @@ function LlmCallDetail({ data, status }: { data: EventData; status: EventStatus 
               {showTransformed && data.transformations_applied?.map((value: string) => <Badge key={value} variant="secondary" className="text-[10px]">{value}</Badge>)}
             </div>
           )}
-          {isSystemOneEvent(data) && activeBody?.questions ? <SystemOneRequestView body={activeBody} /> : <RequestContent body={activeBody} />}
+          {isSystemOneEvent(data) && activeBody?.questions ? <SystemOneRequestView body={activeBody} /> : <RequestContent body={activeBody} raw={showTransformed ? undefined : data.raw_request} />}
         </ExchangeCard>
         <ExchangeCard title="Response" description={data.status_code != null ? `HTTP ${data.status_code}${data.streamed ? ' · streamed' : ''}` : status === 'pending' ? 'In progress' : undefined} payload={responseCopy} error={status === 'error'}>
           <LlmResponseContent data={data} status={status} />
