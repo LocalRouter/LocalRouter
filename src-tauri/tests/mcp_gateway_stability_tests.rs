@@ -1071,3 +1071,88 @@ async fn servers_granted_mid_session_become_routable_without_rebuild() {
     assert!(call.error.is_none(), "tools/call: {:?}", call.error);
     assert!(Arc::ptr_eq(&before, &gateway.get_session("s14").unwrap()));
 }
+
+// ── Skill script locations per client mode ──────────────────────────
+
+async fn skill_read_as(gateway: &McpGateway, session: &str, mode: lr_config::ClientMode) -> String {
+    let skills = lr_config::SkillsPermissions {
+        global: PermissionState::Allow,
+        ..Default::default()
+    };
+    let response = gateway
+        .handle_request_with_skills(
+            "client-1",
+            Some(session),
+            vec![],
+            vec![],
+            McpPermissions::default(),
+            skills,
+            "Test Client".to_string(),
+            PermissionState::Off,
+            PermissionState::Off,
+            None,
+            overrides(false, false),
+            PermissionState::default(),
+            PermissionState::default(),
+            None,
+            None,
+            mode,
+            JsonRpcRequest::new(
+                Some(json!(1)),
+                "tools/call".to_string(),
+                Some(json!({"name": "SkillRead", "arguments": {"name": "runner"}})),
+            ),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(response.error.is_none(), "SkillRead: {:?}", response.error);
+    response.result.unwrap()["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+#[tokio::test]
+async fn skill_read_shows_disk_paths_to_direct_clients_only() {
+    let tmp = tempfile::tempdir().unwrap();
+    let skill_dir = tmp.path().join("runner");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: runner\n---\nRun `{{SKILL_DIR}}/run.sh`.\n",
+    )
+    .unwrap();
+    std::fs::write(skill_dir.join("run.sh"), "#!/bin/bash\necho run").unwrap();
+    let skill_dir = std::fs::canonicalize(&skill_dir).unwrap();
+
+    let manager = Arc::new(lr_skills::SkillManager::new());
+    manager.initial_scan(&[skill_dir.display().to_string()], &[]);
+    let gateway = McpGateway::new(
+        Arc::new(McpServerManager::new()),
+        GatewayConfig::default(),
+        test_router(),
+    );
+    gateway.register_virtual_server(Arc::new(
+        localrouter::mcp::gateway::virtual_skills::SkillsVirtualServer::new(
+            manager,
+            lr_config::ContextManagementConfig::default(),
+            lr_config::SkillsConfig::default(),
+        ),
+    ));
+
+    let script = format!("{}/run.sh", skill_dir.display());
+    let direct = skill_read_as(&gateway, "direct", lr_config::ClientMode::McpOnly).await;
+    assert!(direct.contains(&format!("Run `{script}`")), "{direct}");
+    assert!(
+        direct.contains(&format!("**Location:** `{}/`", skill_dir.display())),
+        "{direct}"
+    );
+
+    let via_llm = skill_read_as(&gateway, "via-llm", lr_config::ClientMode::McpViaLlm).await;
+    assert!(via_llm.contains("Run `run.sh`"), "{via_llm}");
+    assert!(
+        !via_llm.contains(&skill_dir.display().to_string()),
+        "{via_llm}"
+    );
+}

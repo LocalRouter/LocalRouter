@@ -636,6 +636,11 @@ impl McpGateway {
             // the real client identity
             c.id = client_id.to_string();
             c.memory_folder = memory_folder;
+            // MCP-via-LLM sessions have no shell of their own; virtual
+            // servers adapt (e.g. skills show virtual instead of disk paths)
+            if client_mode == lr_config::ClientMode::McpViaLlm {
+                c.mcp_mode = lr_config::McpMode::ViaLlm;
+            }
             c.mcp_permissions = mcp_permissions.clone();
             c.skills_permissions = skills_permissions.clone();
             c.marketplace_permission = marketplace_permission.clone();

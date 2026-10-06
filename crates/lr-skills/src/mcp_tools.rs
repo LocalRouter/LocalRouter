@@ -37,7 +37,7 @@ pub enum SkillToolResult {
 ///
 /// The tool accepts a `name` parameter. Available skill names are listed
 /// in the parameter description for direct discoverability.
-fn build_meta_tool(tool_name: &str, skill_names: &[&str]) -> McpTool {
+fn build_meta_tool(tool_name: &str, skill_names: &[&str], style: SkillPathStyle) -> McpTool {
     let name_desc = if skill_names.is_empty() {
         "Skill name".to_string()
     } else {
@@ -46,11 +46,18 @@ fn build_meta_tool(tool_name: &str, skill_names: &[&str]) -> McpTool {
 
     McpTool {
         name: tool_name.to_string(),
-        description: Some(
-            "Read a skill's full instructions, metadata, and file listing. \
-             Pass 'path' to read a specific skill file instead."
+        description: Some(match style {
+            SkillPathStyle::Disk => "Read a skill's full instructions, metadata, and files. \
+                 The response gives the skill's directory and the absolute path of each \
+                 bundled script, so scripts can be run in place with your shell. \
+                 Pass 'path' to read a specific skill file instead."
                 .to_string(),
-        ),
+            SkillPathStyle::Virtual => {
+                "Read a skill's full instructions, metadata, and file listing. \
+                 Pass 'path' to read a specific skill file instead."
+                    .to_string()
+            }
+        }),
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -83,6 +90,7 @@ pub fn build_skill_tools(
     skill_manager: &SkillManager,
     permissions: &SkillsPermissions,
     tool_name: &str,
+    style: SkillPathStyle,
 ) -> Vec<McpTool> {
     let has_any_access = permissions.has_any_access();
     if !has_any_access {
@@ -104,7 +112,7 @@ pub fn build_skill_tools(
         .map(|s| s.metadata.name.as_str())
         .collect();
 
-    vec![build_meta_tool(tool_name, &skill_names)]
+    vec![build_meta_tool(tool_name, &skill_names, style)]
 }
 
 /// Build the skill catalog text for inclusion in the welcome message.
@@ -121,6 +129,7 @@ pub fn build_skill_catalog(
     context_management_enabled: bool,
     tool_name: &str,
     search_tool_name: &str,
+    style: SkillPathStyle,
 ) -> Option<String> {
     let has_any_access = permissions.has_any_access();
     if !has_any_access {
@@ -190,6 +199,13 @@ pub fn build_skill_catalog(
         "Read skill files with {}(name=\"<skill>\", path=\"<relative-path>\").\n",
         tool_name
     ));
+    if style == SkillPathStyle::Disk {
+        text.push_str(&format!(
+            "{}(name) also gives each skill's directory and the absolute paths of its scripts; \
+             run scripts from there with your shell.\n",
+            tool_name
+        ));
+    }
 
     Some(text)
 }
@@ -206,6 +222,7 @@ pub fn build_skill_catalog(
 pub fn build_skill_index_entries(
     skill_manager: &SkillManager,
     permissions: &SkillsPermissions,
+    style: SkillPathStyle,
 ) -> Vec<(String, String)> {
     let has_any_access = permissions.has_any_access();
     if !has_any_access {
@@ -231,17 +248,26 @@ pub fn build_skill_index_entries(
             content.push_str(&format!("Tags: {}\n", skill.metadata.tags.join(", ")));
         }
 
+        let dir = skill_dir_path(skill);
+        if style == SkillPathStyle::Disk {
+            content.push_str(&format!("Location: {}/\n", dir.display()));
+        }
+
         let file_count = skill.scripts.len() + skill.references.len() + skill.assets.len();
         if file_count > 0 {
             content.push_str(&format!("Files: {}\n", file_count));
-            for script in &skill.scripts {
-                content.push_str(&format!("- {}\n", script));
-            }
-            for reference in &skill.references {
-                content.push_str(&format!("- {}\n", reference));
-            }
-            for asset in &skill.assets {
-                content.push_str(&format!("- {}\n", asset));
+            for file in skill
+                .scripts
+                .iter()
+                .chain(&skill.references)
+                .chain(&skill.assets)
+            {
+                match style {
+                    SkillPathStyle::Disk => {
+                        content.push_str(&format!("- {} ({})\n", file, dir.join(file).display()))
+                    }
+                    SkillPathStyle::Virtual => content.push_str(&format!("- {}\n", file)),
+                }
             }
         }
 
@@ -279,6 +305,7 @@ pub async fn handle_skill_tool_call(
     skill_manager: &SkillManager,
     permissions: &SkillsPermissions,
     configured_tool_name: &str,
+    style: SkillPathStyle,
 ) -> Result<Option<SkillToolResult>, String> {
     if tool_name != configured_tool_name {
         return Ok(None);
@@ -307,6 +334,7 @@ pub async fn handle_skill_tool_call(
             permissions,
             configured_tool_name,
             configured_tool_name, // same tool for both now
+            style,
         )?;
         let response = json!({
             "content": [{ "type": "text", "text": content }]
@@ -322,7 +350,7 @@ pub async fn handle_skill_tool_call(
         if !skill.enabled {
             return Err(format!("Skill '{}' is disabled", skill_name));
         }
-        let response = build_skill_read_response(&skill, configured_tool_name);
+        let response = build_skill_read_response(&skill, configured_tool_name, style);
         return Ok(Some(SkillToolResult::Response(response)));
     }
 
@@ -336,7 +364,7 @@ pub async fn handle_skill_tool_call(
                 return Err(not_found_error(skill_name, skill_manager, permissions));
             }
 
-            let mut response = build_skill_read_response(&skill, configured_tool_name);
+            let mut response = build_skill_read_response(&skill, configured_tool_name, style);
             prepend_correction_note(&mut response, skill_name, resolved_name, &match_kind);
             Ok(Some(SkillToolResult::Response(response)))
         }
@@ -362,6 +390,7 @@ pub fn read_skill_file(
     permissions: &SkillsPermissions,
     configured_tool_name: &str,
     configured_rfile_name: &str,
+    style: SkillPathStyle,
 ) -> Result<String, String> {
     // Verify access
     let has_any_access = permissions.has_any_access();
@@ -408,9 +437,23 @@ pub fn read_skill_file(
         if all_files.is_empty() {
             return Ok("This skill has no readable files.".to_string());
         }
-        let mut listing = format!("Files in skill '{}':\n", skill.metadata.name);
+        let mut listing = match style {
+            SkillPathStyle::Disk => format!(
+                "Files in skill '{}' (located at {}/):\n",
+                skill.metadata.name,
+                skill_dir_path(&skill).display()
+            ),
+            SkillPathStyle::Virtual => format!("Files in skill '{}':\n", skill.metadata.name),
+        };
         for f in &all_files {
-            listing.push_str(&format!("- {}\n", f));
+            match style {
+                SkillPathStyle::Disk => listing.push_str(&format!(
+                    "- {} ({})\n",
+                    f,
+                    skill_dir_path(&skill).join(f).display()
+                )),
+                SkillPathStyle::Virtual => listing.push_str(&format!("- {}\n", f)),
+            }
         }
         let mut prefix = String::new();
         if let Some(note) = correction_note {
@@ -605,12 +648,73 @@ fn not_found_error(
 // skill_read response builder
 // ---------------------------------------------------------------------------
 
+/// Placeholder in SKILL.md bodies resolved to the skill's directory, so
+/// instructions can reference bundled scripts wherever the skill lives.
+pub const SKILL_DIR_PLACEHOLDER: &str = "{{SKILL_DIR}}";
+
+/// How skill file locations are presented to the agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SkillPathStyle {
+    /// The client runs on this machine with its own shell (direct MCP):
+    /// show the skill directory and absolute file paths so bundled scripts
+    /// can be executed in place.
+    #[default]
+    Disk,
+    /// The model is driven by LocalRouter (MCP via LLM) and has no shell:
+    /// files are reachable only through `SkillRead(name, path)`.
+    Virtual,
+}
+
+/// Absolute skill directory (symlinks resolved when possible).
+fn skill_dir_path(skill: &SkillDefinition) -> std::path::PathBuf {
+    std::fs::canonicalize(&skill.skill_dir).unwrap_or_else(|_| skill.skill_dir.clone())
+}
+
+/// Resolve skill-directory references in a SKILL.md body.
+///
+/// `{{SKILL_DIR}}` and the Claude Code install paths `.claude/skills/<name>/`
+/// (as `~/`, `$HOME/`, `./` or bare prefixes) point at the skill's own
+/// directory. With [`SkillPathStyle::Disk`] they become the absolute
+/// directory; with [`SkillPathStyle::Virtual`] they become paths relative to
+/// the skill, matching `SkillRead(name, path)`.
+pub fn resolve_skill_body(skill: &SkillDefinition, style: SkillPathStyle) -> String {
+    let dir_prefix = match style {
+        SkillPathStyle::Disk => format!("{}/", skill_dir_path(skill).display()),
+        SkillPathStyle::Virtual => String::new(),
+    };
+    let name = &skill.metadata.name;
+    let mut body = skill.body.clone();
+    // Longest prefixes first: the bare form is a suffix of the others
+    for legacy in [
+        format!("${{HOME}}/.claude/skills/{name}/"),
+        format!("$HOME/.claude/skills/{name}/"),
+        format!("~/.claude/skills/{name}/"),
+        format!("./.claude/skills/{name}/"),
+        format!(".claude/skills/{name}/"),
+    ] {
+        body = body.replace(&legacy, &dir_prefix);
+    }
+    body = body.replace(&format!("{SKILL_DIR_PLACEHOLDER}/"), &dir_prefix);
+    let bare_dir = match style {
+        SkillPathStyle::Disk => skill_dir_path(skill).display().to_string(),
+        SkillPathStyle::Virtual => ".".to_string(),
+    };
+    body.replace(SKILL_DIR_PLACEHOLDER, &bare_dir)
+}
+
 /// Build the response for a skill_read tool call.
 ///
-/// Shows skill file paths with SkillRead(name, path) syntax.
-fn build_skill_read_response(skill: &SkillDefinition, tool_name: &str) -> serde_json::Value {
+/// With [`SkillPathStyle::Disk`] the response carries the skill's location
+/// and absolute file paths — an agent can't run a script it only has as
+/// text. Files are always also readable via `SkillRead(name, path)`.
+fn build_skill_read_response(
+    skill: &SkillDefinition,
+    tool_name: &str,
+    style: SkillPathStyle,
+) -> serde_json::Value {
     let mut text = String::new();
     let skill_name = &skill.metadata.name;
+    let dir = skill_dir_path(skill);
 
     // Header
     text.push_str(&format!("# Skill: {}\n\n", skill_name));
@@ -631,48 +735,57 @@ fn build_skill_read_response(skill: &SkillDefinition, tool_name: &str) -> serde_
         text.push_str(&format!("**Tags:** {}\n", skill.metadata.tags.join(", ")));
     }
 
+    if style == SkillPathStyle::Disk {
+        text.push_str(&format!("**Location:** `{}/`\n", dir.display()));
+    }
+
     text.push('\n');
 
-    // File listings with SkillRead(name, path) syntax
-    if !skill.scripts.is_empty() {
-        text.push_str("## Scripts\n\n");
-        text.push_str(&format!(
-            "Read with `{}(name=\"{}\", path=\"...\")`.\n\n",
-            tool_name, skill_name
-        ));
-        for script in &skill.scripts {
-            text.push_str(&format!("- `{}`\n", script));
+    let read_hint = format!(
+        "Read with `{}(name=\"{}\", path=\"...\")`.",
+        tool_name, skill_name
+    );
+    let sections: [(&str, &Vec<String>); 3] = [
+        ("Scripts", &skill.scripts),
+        ("References", &skill.references),
+        ("Assets", &skill.assets),
+    ];
+    for (title, files) in sections {
+        if files.is_empty() {
+            continue;
         }
-        text.push('\n');
-    }
-
-    if !skill.references.is_empty() {
-        text.push_str("## References\n\n");
-        text.push_str(&format!(
-            "Read with `{}(name=\"{}\", path=\"...\")`.\n\n",
-            tool_name, skill_name
-        ));
-        for reference in &skill.references {
-            text.push_str(&format!("- `{}`\n", reference));
-        }
-        text.push('\n');
-    }
-
-    if !skill.assets.is_empty() {
-        text.push_str("## Assets\n\n");
-        text.push_str(&format!(
-            "Read with `{}(name=\"{}\", path=\"...\")`.\n\n",
-            tool_name, skill_name
-        ));
-        for asset in &skill.assets {
-            text.push_str(&format!("- `{}`\n", asset));
+        text.push_str(&format!("## {}\n\n", title));
+        match style {
+            SkillPathStyle::Disk => {
+                if title == "Scripts" {
+                    text.push_str("Run scripts from their absolute path with your shell. ");
+                }
+                text.push_str(&read_hint);
+                text.push_str("\n\n");
+                for file in files {
+                    text.push_str(&format!("- `{}` (`{}`)\n", dir.join(file).display(), file));
+                }
+            }
+            SkillPathStyle::Virtual => {
+                text.push_str(&read_hint);
+                text.push_str("\n\n");
+                for file in files {
+                    text.push_str(&format!("- `{}`\n", file));
+                }
+            }
         }
         text.push('\n');
     }
 
     // Full SKILL.md body
     text.push_str("## Instructions\n\n");
-    text.push_str(&skill.body);
+    if style == SkillPathStyle::Disk {
+        text.push_str(&format!(
+            "> Relative paths in these instructions are relative to `{}/`.\n\n",
+            dir.display()
+        ));
+    }
+    text.push_str(&resolve_skill_body(skill, style));
 
     json!({
         "content": [{
@@ -685,6 +798,195 @@ fn build_skill_read_response(skill: &SkillDefinition, tool_name: &str) -> serde_
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A script-based skill like `ticket-monitor`: a root-level script and
+    /// instructions written against Claude Code's install path.
+    fn script_skill() -> (
+        tempfile::TempDir,
+        SkillManager,
+        SkillsPermissions,
+        std::path::PathBuf,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join("ticket-monitor");
+        std::fs::create_dir_all(skill_dir.join("references")).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: ticket-monitor\ndescription: Watch tickets\n---\n\
+             Run `.claude/skills/ticket-monitor/monitor-tickets.sh watch SU-1` in the background.\n\
+             Or `~/.claude/skills/ticket-monitor/monitor-tickets.sh once`.\n\
+             Or `{{SKILL_DIR}}/monitor-tickets.sh list` from `{{SKILL_DIR}}`.\n\
+             See references/usage.md.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            skill_dir.join("monitor-tickets.sh"),
+            "#!/bin/bash\necho watching",
+        )
+        .unwrap();
+        std::fs::write(skill_dir.join("references/usage.md"), "usage").unwrap();
+
+        let manager = SkillManager::new();
+        manager.initial_scan(&[skill_dir.display().to_string()], &[]);
+        let permissions = SkillsPermissions {
+            global: lr_config::PermissionState::Allow,
+            ..Default::default()
+        };
+        let canonical = std::fs::canonicalize(&skill_dir).unwrap();
+        (dir, manager, permissions, canonical)
+    }
+
+    async fn skill_read_text(
+        manager: &SkillManager,
+        permissions: &SkillsPermissions,
+        args: serde_json::Value,
+        style: SkillPathStyle,
+    ) -> String {
+        let Some(SkillToolResult::Response(response)) =
+            handle_skill_tool_call("SkillRead", &args, manager, permissions, "SkillRead", style)
+                .await
+                .unwrap()
+        else {
+            panic!("expected a SkillRead response");
+        };
+        response["content"][0]["text"].as_str().unwrap().to_string()
+    }
+
+    #[tokio::test]
+    async fn skill_read_gives_shell_clients_runnable_paths() {
+        let (_tmp, manager, permissions, dir) = script_skill();
+        let dir = dir.display().to_string();
+        let text = skill_read_text(
+            &manager,
+            &permissions,
+            json!({"name": "ticket-monitor"}),
+            SkillPathStyle::Disk,
+        )
+        .await;
+
+        assert!(text.contains(&format!("**Location:** `{dir}/`")), "{text}");
+        assert!(
+            text.contains(&format!(
+                "- `{dir}/monitor-tickets.sh` (`monitor-tickets.sh`)"
+            )),
+            "{text}"
+        );
+        assert!(text.contains(&format!("relative to `{dir}/`")), "{text}");
+        // Hardcoded Claude Code paths and the placeholder resolve to the skill
+        assert!(
+            text.contains(&format!("`{dir}/monitor-tickets.sh watch SU-1`")),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!("`{dir}/monitor-tickets.sh once`")),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!("`{dir}/monitor-tickets.sh list` from `{dir}`")),
+            "{text}"
+        );
+        assert!(!text.contains(".claude/skills"), "{text}");
+        assert!(!text.contains(SKILL_DIR_PLACEHOLDER), "{text}");
+    }
+
+    #[tokio::test]
+    async fn skill_read_without_a_shell_keeps_paths_virtual() {
+        let (_tmp, manager, permissions, dir) = script_skill();
+        let text = skill_read_text(
+            &manager,
+            &permissions,
+            json!({"name": "ticket-monitor"}),
+            SkillPathStyle::Virtual,
+        )
+        .await;
+
+        assert!(!text.contains(&dir.display().to_string()), "{text}");
+        assert!(!text.contains("**Location:**"), "{text}");
+        assert!(text.contains("- `monitor-tickets.sh`"), "{text}");
+        // Paths become relative to the skill, as SkillRead(name, path) expects
+        assert!(text.contains("`monitor-tickets.sh watch SU-1`"), "{text}");
+        assert!(
+            text.contains("`monitor-tickets.sh list` from `.`"),
+            "{text}"
+        );
+        assert!(!text.contains(".claude/skills"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn skill_file_reads_stay_byte_exact_and_listings_show_paths() {
+        let (_tmp, manager, permissions, dir) = script_skill();
+        let script = skill_read_text(
+            &manager,
+            &permissions,
+            json!({"name": "ticket-monitor", "path": "monitor-tickets.sh"}),
+            SkillPathStyle::Disk,
+        )
+        .await;
+        assert_eq!(script, "#!/bin/bash\necho watching");
+
+        let listing = skill_read_text(
+            &manager,
+            &permissions,
+            json!({"name": "ticket-monitor", "path": "."}),
+            SkillPathStyle::Disk,
+        )
+        .await;
+        assert!(
+            listing.contains(&format!(
+                "- monitor-tickets.sh ({}/monitor-tickets.sh)",
+                dir.display()
+            )),
+            "{listing}"
+        );
+    }
+
+    #[test]
+    fn catalog_tool_and_index_mention_paths_only_for_shell_clients() {
+        let (_tmp, manager, permissions, dir) = script_skill();
+        let dir = dir.display().to_string();
+
+        let disk_tool =
+            &build_skill_tools(&manager, &permissions, "SkillRead", SkillPathStyle::Disk)[0];
+        assert!(disk_tool
+            .description
+            .as_ref()
+            .unwrap()
+            .contains("absolute path"));
+        let virtual_tool =
+            &build_skill_tools(&manager, &permissions, "SkillRead", SkillPathStyle::Virtual)[0];
+        assert!(!virtual_tool
+            .description
+            .as_ref()
+            .unwrap()
+            .contains("absolute path"));
+
+        let disk_catalog = build_skill_catalog(
+            &manager,
+            &permissions,
+            false,
+            "SkillRead",
+            "IndexSearch",
+            SkillPathStyle::Disk,
+        )
+        .unwrap();
+        assert!(disk_catalog.contains("run scripts from there"));
+        let virtual_catalog = build_skill_catalog(
+            &manager,
+            &permissions,
+            false,
+            "SkillRead",
+            "IndexSearch",
+            SkillPathStyle::Virtual,
+        )
+        .unwrap();
+        assert!(!virtual_catalog.contains("run scripts from there"));
+
+        let disk_index = build_skill_index_entries(&manager, &permissions, SkillPathStyle::Disk);
+        assert!(disk_index[0].1.contains(&format!("Location: {dir}/")));
+        let virtual_index =
+            build_skill_index_entries(&manager, &permissions, SkillPathStyle::Virtual);
+        assert!(!virtual_index[0].1.contains(&dir));
+    }
 
     #[cfg(unix)]
     #[test]
@@ -718,6 +1020,7 @@ mod tests {
             &permissions,
             "SkillRead",
             "ReadFile",
+            SkillPathStyle::Disk,
         )
         .unwrap_err();
         assert!(error.contains("outside the skill directory"));
@@ -728,7 +1031,8 @@ mod tests {
                 &manager,
                 &permissions,
                 "SkillRead",
-                "ReadFile"
+                "ReadFile",
+                SkillPathStyle::Disk,
             )
             .unwrap(),
             "skill data"

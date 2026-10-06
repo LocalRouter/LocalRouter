@@ -54,6 +54,17 @@ pub struct SkillsSessionState {
     pub tool_name: String,
     /// Configured search tool name (e.g. "IndexSearch") for catalog hints.
     pub search_tool_name: String,
+    /// How skill file locations are shown: absolute disk paths for clients
+    /// with their own shell, virtual paths for MCP via LLM.
+    pub path_style: lr_skills::mcp_tools::SkillPathStyle,
+}
+
+fn path_style_for(client: &lr_config::Client) -> lr_skills::mcp_tools::SkillPathStyle {
+    if client.mcp_mode == lr_config::McpMode::ViaLlm {
+        lr_skills::mcp_tools::SkillPathStyle::Virtual
+    } else {
+        lr_skills::mcp_tools::SkillPathStyle::Disk
+    }
 }
 
 impl VirtualSessionState for SkillsSessionState {
@@ -108,6 +119,7 @@ impl VirtualMcpServer for SkillsVirtualServer {
             &self.skill_manager,
             &state.permissions,
             &state.tool_name,
+            state.path_style,
         )
     }
 
@@ -164,6 +176,7 @@ impl VirtualMcpServer for SkillsVirtualServer {
             &self.skill_manager,
             &state.permissions,
             &state.tool_name,
+            state.path_style,
         )
         .await
         {
@@ -195,6 +208,7 @@ impl VirtualMcpServer for SkillsVirtualServer {
             state.context_management_enabled,
             &state.tool_name,
             &state.search_tool_name,
+            state.path_style,
         );
 
         Some(VirtualInstructions {
@@ -211,7 +225,11 @@ impl VirtualMcpServer for SkillsVirtualServer {
             .downcast_ref::<SkillsSessionState>()
             .expect("wrong state type for SkillsVirtualServer");
 
-        lr_skills::mcp_tools::build_skill_index_entries(&self.skill_manager, &state.permissions)
+        lr_skills::mcp_tools::build_skill_index_entries(
+            &self.skill_manager,
+            &state.permissions,
+            state.path_style,
+        )
     }
 
     fn create_session_state(&self, client: &lr_config::Client) -> Box<dyn VirtualSessionState> {
@@ -222,6 +240,7 @@ impl VirtualMcpServer for SkillsVirtualServer {
             context_management_enabled: client.is_context_management_enabled(&config),
             tool_name: skills_config.tool_name.clone(),
             search_tool_name: config.search_tool_name.clone(),
+            path_style: path_style_for(client),
         })
     }
 
@@ -237,6 +256,7 @@ impl VirtualMcpServer for SkillsVirtualServer {
             s.context_management_enabled = client.is_context_management_enabled(&config);
             s.tool_name = skills_config.tool_name.clone();
             s.search_tool_name = config.search_tool_name.clone();
+            s.path_style = path_style_for(client);
         }
     }
 
