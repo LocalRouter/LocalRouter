@@ -30,6 +30,9 @@ lost the paths too.
   (`.claude/skills/<name>/` with `~/`, `$HOME/`, `${HOME}/`, `./` or bare
   prefixes): absolute for Disk, skill-relative for Virtual.
 - File reads (`SkillRead(name, path)`) stay byte-exact.
+- Read hints are prefilled with a real file instead of `path="..."`: each
+  SkillRead section uses its first file, and the skills catalog adds an
+  `e.g. SkillRead(name="<first skill with files>", path="<its first file>")`.
 
 ## Tests
 `lr-skills`: Disk vs Virtual responses for a ticket-monitor-like skill

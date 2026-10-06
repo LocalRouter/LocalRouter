@@ -196,9 +196,25 @@ pub fn build_skill_catalog(
         tool_name
     ));
     text.push_str(&format!(
-        "Read skill files with {}(name=\"<skill>\", path=\"<relative-path>\").\n",
+        "Read skill files with {}(name=\"<skill>\", path=\"<relative-path>\")",
         tool_name
     ));
+    let example = accessible.iter().find_map(|skill| {
+        skill
+            .scripts
+            .iter()
+            .chain(&skill.references)
+            .chain(&skill.assets)
+            .next()
+            .map(|file| (skill.metadata.name.as_str(), file.as_str()))
+    });
+    match example {
+        Some((skill, file)) => text.push_str(&format!(
+            ", e.g. {}(name=\"{}\", path=\"{}\").\n",
+            tool_name, skill, file
+        )),
+        None => text.push_str(".\n"),
+    }
     if style == SkillPathStyle::Disk {
         text.push_str(&format!(
             "{}(name) also gives each skill's directory and the absolute paths of its scripts; \
@@ -741,10 +757,13 @@ fn build_skill_read_response(
 
     text.push('\n');
 
-    let read_hint = format!(
-        "Read with `{}(name=\"{}\", path=\"...\")`.",
-        tool_name, skill_name
-    );
+    // Prefilled with the section's first file so the call works as written
+    let read_hint = |example: &str| {
+        format!(
+            "Read with `{}(name=\"{}\", path=\"{}\")`.",
+            tool_name, skill_name, example
+        )
+    };
     let sections: [(&str, &Vec<String>); 3] = [
         ("Scripts", &skill.scripts),
         ("References", &skill.references),
@@ -760,14 +779,14 @@ fn build_skill_read_response(
                 if title == "Scripts" {
                     text.push_str("Run scripts from their absolute path with your shell. ");
                 }
-                text.push_str(&read_hint);
+                text.push_str(&read_hint(&files[0]));
                 text.push_str("\n\n");
                 for file in files {
                     text.push_str(&format!("- `{}` (`{}`)\n", dir.join(file).display(), file));
                 }
             }
             SkillPathStyle::Virtual => {
-                text.push_str(&read_hint);
+                text.push_str(&read_hint(&files[0]));
                 text.push_str("\n\n");
                 for file in files {
                     text.push_str(&format!("- `{}`\n", file));
@@ -866,6 +885,19 @@ mod tests {
 
         assert!(text.contains(&format!("**Location:** `{dir}/`")), "{text}");
         assert!(
+            text.contains(
+                r#"Read with `SkillRead(name="ticket-monitor", path="monitor-tickets.sh")`."#
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                r#"Read with `SkillRead(name="ticket-monitor", path="references/usage.md")`."#
+            ),
+            "{text}"
+        );
+        assert!(!text.contains(r#"path="...""#), "{text}");
+        assert!(
             text.contains(&format!(
                 "- `{dir}/monitor-tickets.sh` (`monitor-tickets.sh`)"
             )),
@@ -903,6 +935,12 @@ mod tests {
         assert!(!text.contains(&dir.display().to_string()), "{text}");
         assert!(!text.contains("**Location:**"), "{text}");
         assert!(text.contains("- `monitor-tickets.sh`"), "{text}");
+        assert!(
+            text.contains(
+                r#"Read with `SkillRead(name="ticket-monitor", path="monitor-tickets.sh")`."#
+            ),
+            "{text}"
+        );
         // Paths become relative to the skill, as SkillRead(name, path) expects
         assert!(text.contains("`monitor-tickets.sh watch SU-1`"), "{text}");
         assert!(
@@ -970,6 +1008,11 @@ mod tests {
         )
         .unwrap();
         assert!(disk_catalog.contains("run scripts from there"));
+        assert!(
+            disk_catalog
+                .contains(r#"e.g. SkillRead(name="ticket-monitor", path="monitor-tickets.sh")."#),
+            "{disk_catalog}"
+        );
         let virtual_catalog = build_skill_catalog(
             &manager,
             &permissions,
