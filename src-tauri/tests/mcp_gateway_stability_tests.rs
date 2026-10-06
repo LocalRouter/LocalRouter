@@ -99,10 +99,25 @@ fn http_server(id: &str, name: &str, url: String, enabled: bool) -> McpServerCon
     }
 }
 
+type Broadcast =
+    tokio::sync::broadcast::Sender<(String, localrouter::mcp::protocol::JsonRpcNotification)>;
+
 /// Gateway with one working "Echo Server" (tools `echo` and `danger`,
 /// prompts `shown` and `hidden`) plus one globally disabled server that always
 /// fails to start.
 async fn setup() -> (Arc<McpGateway>, MockServer) {
+    setup_with_broadcast(None).await
+}
+
+async fn setup_with_broadcast(broadcast: Option<Arc<Broadcast>>) -> (Arc<McpGateway>, MockServer) {
+    setup_full(broadcast, Vec::new()).await
+}
+
+/// `extra_servers` are configured but not part of any session's server list.
+async fn setup_full(
+    broadcast: Option<Arc<Broadcast>>,
+    extra_servers: Vec<McpServerConfig>,
+) -> (Arc<McpGateway>, MockServer) {
     let echo = MockServer::start().await;
     mock(
         &echo,
@@ -123,12 +138,19 @@ async fn setup() -> (Arc<McpGateway>, MockServer) {
         ]})),
     )
     .await;
-    mock(
-        &echo,
-        "tools/call",
-        Some(json!({"content": [{"type": "text", "text": "echoed"}]})),
-    )
-    .await;
+    // tools/call streams a progress notification before its result
+    let progress = json!({"jsonrpc": "2.0", "method": "notifications/progress",
+        "params": {"progressToken": "tok-1", "progress": 1}});
+    let result = json!({"jsonrpc": "2.0", "id": 1,
+        "result": {"content": [{"type": "text", "text": "echoed"}]}});
+    Mock::given(http_method("POST"))
+        .and(JsonRpcMethod("tools/call"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            format!("data: {progress}\n\ndata: {result}\n\n"),
+            "text/event-stream",
+        ))
+        .mount(&echo)
+        .await;
     mock(
         &echo,
         "prompts/list",
@@ -151,11 +173,15 @@ async fn setup() -> (Arc<McpGateway>, MockServer) {
         "http://127.0.0.1:9/mcp".to_string(),
         false,
     ));
+    for server in extra_servers {
+        manager.add_config(server);
+    }
 
-    let gateway = Arc::new(McpGateway::new(
+    let gateway = Arc::new(McpGateway::new_with_broadcast(
         manager,
         GatewayConfig::default(),
         test_router(),
+        broadcast,
     ));
     (gateway, echo)
 }
@@ -529,4 +555,519 @@ async fn both_indexing_features_off_exposes_no_search_tools() {
     );
     names.sort();
     assert_eq!(names, vec![echo_tool("danger"), echo_tool("echo")]);
+}
+
+// ── Tool Responses Indexing for virtual servers ─────────────────────
+
+mod big_output {
+    use async_trait::async_trait;
+    use localrouter::mcp::gateway::virtual_server::{
+        VirtualFirewallResult, VirtualInstructions, VirtualMcpServer, VirtualSessionState,
+        VirtualToolCallResult,
+    };
+    use localrouter::mcp::gateway::FirewallDecisionResult;
+    use localrouter::mcp::protocol::McpTool;
+    use serde_json::{json, Value};
+    use std::any::Any;
+
+    pub const ID: &str = "_big";
+    pub const TOOL: &str = "BigDump";
+
+    #[derive(Clone)]
+    struct State;
+
+    impl VirtualSessionState for State {
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+        fn as_any_mut(&mut self) -> &mut dyn Any {
+            self
+        }
+        fn clone_box(&self) -> Box<dyn VirtualSessionState> {
+            Box::new(self.clone())
+        }
+    }
+
+    /// Virtual server whose single tool returns a 5 KB text result.
+    pub struct BigOutput;
+
+    #[async_trait]
+    impl VirtualMcpServer for BigOutput {
+        fn id(&self) -> &str {
+            ID
+        }
+        fn display_name(&self) -> &str {
+            "Big Output"
+        }
+        fn owns_tool(&self, tool_name: &str) -> bool {
+            tool_name == TOOL
+        }
+        fn is_enabled(&self, _client: &lr_config::Client) -> bool {
+            true
+        }
+        fn list_tools(&self, _state: &dyn VirtualSessionState) -> Vec<McpTool> {
+            vec![McpTool {
+                name: TOOL.to_string(),
+                description: None,
+                input_schema: json!({"type": "object"}),
+            }]
+        }
+        fn check_permissions(
+            &self,
+            _state: &dyn VirtualSessionState,
+            _tool_name: &str,
+            _arguments: Option<&Value>,
+            _session_approved: bool,
+            _session_denied: bool,
+        ) -> VirtualFirewallResult {
+            VirtualFirewallResult::Handled(FirewallDecisionResult::Proceed)
+        }
+        async fn handle_tool_call(
+            &self,
+            _state: Box<dyn VirtualSessionState>,
+            _tool_name: &str,
+            _arguments: Value,
+            _client_id: &str,
+            _client_name: &str,
+        ) -> VirtualToolCallResult {
+            VirtualToolCallResult::Success(
+                json!({"content": [{"type": "text", "text": "line of output\n".repeat(400)}]}),
+            )
+        }
+        fn build_instructions(
+            &self,
+            _state: &dyn VirtualSessionState,
+        ) -> Option<VirtualInstructions> {
+            None
+        }
+        fn create_session_state(
+            &self,
+            _client: &lr_config::Client,
+        ) -> Box<dyn VirtualSessionState> {
+            Box::new(State)
+        }
+        fn update_session_state(
+            &self,
+            _state: &mut dyn VirtualSessionState,
+            _client: &lr_config::Client,
+        ) {
+        }
+        fn all_tool_names(&self) -> Vec<String> {
+            vec![TOOL.to_string()]
+        }
+    }
+}
+
+async fn call_big_dump(virtual_indexing: lr_config::GatewayIndexingPermissions) -> String {
+    let (gateway, _echo) = setup().await;
+    gateway.register_virtual_server(Arc::new(ContextModeVirtualServer::new(
+        lr_config::ContextManagementConfig {
+            virtual_indexing,
+            ..Default::default()
+        },
+    )));
+    gateway.register_virtual_server(Arc::new(big_output::BigOutput));
+    let cm = overrides(true, false);
+    initialize(&gateway, "s9", &[ECHO_ID], &allow_all(), cm.clone()).await;
+    let call = send(
+        &gateway,
+        "s9",
+        &[ECHO_ID],
+        &allow_all(),
+        cm,
+        "tools/call",
+        Some(json!({"name": big_output::TOOL, "arguments": {}})),
+    )
+    .await;
+    assert!(call.error.is_none(), "tools/call: {:?}", call.error);
+    call.result.unwrap()["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+#[tokio::test]
+async fn large_virtual_tool_responses_are_indexed_when_enabled() {
+    let text = call_big_dump(lr_config::GatewayIndexingPermissions::default()).await;
+    assert!(text.starts_with("[Response compressed"), "{text}");
+}
+
+#[tokio::test]
+async fn virtual_indexing_disabled_for_a_server_keeps_full_responses() {
+    let mut perms = lr_config::GatewayIndexingPermissions::default();
+    perms.servers.insert(
+        big_output::ID.to_string(),
+        lr_config::IndexingState::Disable,
+    );
+    let text = call_big_dump(perms).await;
+    assert_eq!(text, "line of output\n".repeat(400));
+}
+
+// ── Notification scoping & settings-change notifications ────────────
+
+use localrouter::mcp::gateway::types::notification_target;
+
+fn new_broadcast() -> Arc<Broadcast> {
+    Arc::new(tokio::sync::broadcast::channel(64).0)
+}
+
+/// Drain everything currently queued on a receiver.
+async fn drain(
+    rx: &mut tokio::sync::broadcast::Receiver<(
+        String,
+        localrouter::mcp::protocol::JsonRpcNotification,
+    )>,
+) -> Vec<(String, localrouter::mcp::protocol::JsonRpcNotification)> {
+    // Notification forwarding runs on spawned tasks
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let mut out = Vec::new();
+    while let Ok(item) = rx.try_recv() {
+        out.push(item);
+    }
+    out
+}
+
+#[tokio::test]
+async fn backend_notifications_reach_only_their_session_unchanged() {
+    let broadcast = new_broadcast();
+    let mut rx = broadcast.subscribe();
+    let (gateway, _echo) = setup_with_broadcast(Some(broadcast)).await;
+    initialize(&gateway, "s10", &[ECHO_ID], &allow_all(), None).await;
+    send(
+        &gateway,
+        "s10",
+        &[ECHO_ID],
+        &allow_all(),
+        None,
+        "tools/call",
+        Some(
+            json!({"name": echo_tool("echo"), "arguments": {"_meta": {"progressToken": "tok-1"}}}),
+        ),
+    )
+    .await;
+
+    let progress: Vec<_> = drain(&mut rx)
+        .await
+        .into_iter()
+        .filter(|(_, n)| n.method == "notifications/progress")
+        .collect();
+    assert_eq!(progress.len(), 1);
+    let (key, notification) = &progress[0];
+    let allowed = vec![ECHO_ID.to_string()];
+    assert_eq!(notification_target(key, "s10", &allowed), Some(ECHO_ID));
+    // Another client allowed the same server must not receive it
+    assert_eq!(notification_target(key, "other-session", &allowed), None);
+    // The client's own token comes back as-is
+    assert_eq!(
+        notification.params.as_ref().unwrap()["progressToken"],
+        json!("tok-1")
+    );
+}
+
+#[tokio::test]
+async fn settings_change_between_requests_notifies_that_session() {
+    let broadcast = new_broadcast();
+    let mut rx = broadcast.subscribe();
+    let (gateway, _echo) = setup_with_broadcast(Some(broadcast)).await;
+    initialize(&gateway, "s11", &[ECHO_ID], &allow_all(), None).await;
+    send(
+        &gateway,
+        "s11",
+        &[ECHO_ID],
+        &allow_all(),
+        None,
+        "tools/list",
+        None,
+    )
+    .await;
+    drain(&mut rx).await;
+
+    // Same settings: no notification
+    send(
+        &gateway,
+        "s11",
+        &[ECHO_ID],
+        &allow_all(),
+        None,
+        "tools/list",
+        None,
+    )
+    .await;
+    assert!(drain(&mut rx).await.is_empty());
+
+    // Turning catalog indexing on changes the tool list
+    send(
+        &gateway,
+        "s11",
+        &[ECHO_ID],
+        &allow_all(),
+        overrides(false, true),
+        "tools/list",
+        None,
+    )
+    .await;
+    let events = drain(&mut rx).await;
+    let methods: Vec<&str> = events
+        .iter()
+        .filter(|(key, _)| notification_target(key, "s11", &[]).is_some())
+        .map(|(_, n)| n.method.as_str())
+        .collect();
+    assert_eq!(methods, vec!["notifications/tools/list_changed"]);
+    assert!(events
+        .iter()
+        .all(|(key, _)| notification_target(key, "s12", &[]).is_none()));
+}
+
+#[tokio::test]
+async fn config_change_hook_waits_for_busy_sessions() {
+    let (gateway, _echo) = setup().await;
+    initialize(&gateway, "s13", &[ECHO_ID], &allow_all(), None).await;
+    send(
+        &gateway,
+        "s13",
+        &[ECHO_ID],
+        &allow_all(),
+        None,
+        "tools/list",
+        None,
+    )
+    .await;
+
+    let mut client = lr_config::Client::new_with_strategy("Test Client".to_string(), String::new());
+    client.id = "client-1".to_string();
+    client.mcp_permissions = allow_all();
+    client
+        .mcp_permissions
+        .tools
+        .insert(format!("{ECHO_ID}__danger"), PermissionState::Off);
+
+    // Hold the session lock briefly, as an in-flight request would
+    let session = gateway.get_session("s13").unwrap();
+    let guard = session.clone().read_owned().await;
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        drop(guard);
+    });
+
+    let notified = std::sync::Mutex::new(Vec::new());
+    gateway
+        .check_and_notify_permission_changes(&[client], &[ECHO_ID.to_string()], |id, t, r, p| {
+            notified.lock().unwrap().push((id.to_string(), t, r, p));
+        })
+        .await;
+    assert_eq!(
+        notified.into_inner().unwrap(),
+        vec![("client-1".to_string(), true, false, false)]
+    );
+
+    // The new permission applies to the next list
+    let names = tool_names(
+        &send(
+            &gateway,
+            "s13",
+            &[ECHO_ID],
+            &{
+                let mut p = allow_all();
+                p.tools
+                    .insert(format!("{ECHO_ID}__danger"), PermissionState::Off);
+                p
+            },
+            None,
+            "tools/list",
+            None,
+        )
+        .await,
+    );
+    assert!(!names.contains(&echo_tool("danger")));
+}
+
+// ── Servers granted mid-session (marketplace install) ───────────────
+
+mod installer {
+    use async_trait::async_trait;
+    use localrouter::mcp::gateway::virtual_server::{
+        VirtualFirewallResult, VirtualInstructions, VirtualMcpServer, VirtualSessionState,
+        VirtualToolCallResult,
+    };
+    use localrouter::mcp::gateway::FirewallDecisionResult;
+    use localrouter::mcp::protocol::McpTool;
+    use serde_json::{json, Value};
+    use std::any::Any;
+
+    pub const TOOL: &str = "InstallSecond";
+
+    #[derive(Clone)]
+    struct State;
+
+    impl VirtualSessionState for State {
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+        fn as_any_mut(&mut self) -> &mut dyn Any {
+            self
+        }
+        fn clone_box(&self) -> Box<dyn VirtualSessionState> {
+            Box::new(self.clone())
+        }
+    }
+
+    /// Mimics a marketplace install granting `server_id` to the session.
+    pub struct Installer {
+        pub server_id: String,
+    }
+
+    #[async_trait]
+    impl VirtualMcpServer for Installer {
+        fn id(&self) -> &str {
+            "_installer"
+        }
+        fn display_name(&self) -> &str {
+            "Installer"
+        }
+        fn owns_tool(&self, tool_name: &str) -> bool {
+            tool_name == TOOL
+        }
+        fn is_enabled(&self, _client: &lr_config::Client) -> bool {
+            true
+        }
+        fn list_tools(&self, _state: &dyn VirtualSessionState) -> Vec<McpTool> {
+            vec![McpTool {
+                name: TOOL.to_string(),
+                description: None,
+                input_schema: json!({"type": "object"}),
+            }]
+        }
+        fn check_permissions(
+            &self,
+            _state: &dyn VirtualSessionState,
+            _tool_name: &str,
+            _arguments: Option<&Value>,
+            _session_approved: bool,
+            _session_denied: bool,
+        ) -> VirtualFirewallResult {
+            VirtualFirewallResult::Handled(FirewallDecisionResult::Proceed)
+        }
+        async fn handle_tool_call(
+            &self,
+            _state: Box<dyn VirtualSessionState>,
+            _tool_name: &str,
+            _arguments: Value,
+            _client_id: &str,
+            _client_name: &str,
+        ) -> VirtualToolCallResult {
+            VirtualToolCallResult::SuccessWithSideEffects {
+                response: json!({"content": [{"type": "text", "text": "installed"}]}),
+                invalidate_cache: true,
+                send_list_changed: true,
+                state_update: None,
+                add_allowed_servers: Some(vec![self.server_id.clone()]),
+            }
+        }
+        fn build_instructions(
+            &self,
+            _state: &dyn VirtualSessionState,
+        ) -> Option<VirtualInstructions> {
+            None
+        }
+        fn create_session_state(
+            &self,
+            _client: &lr_config::Client,
+        ) -> Box<dyn VirtualSessionState> {
+            Box::new(State)
+        }
+        fn update_session_state(
+            &self,
+            _state: &mut dyn VirtualSessionState,
+            _client: &lr_config::Client,
+        ) {
+        }
+        fn all_tool_names(&self) -> Vec<String> {
+            vec![TOOL.to_string()]
+        }
+    }
+}
+
+#[tokio::test]
+async fn servers_granted_mid_session_become_routable_without_rebuild() {
+    let second = MockServer::start().await;
+    mock(
+        &second,
+        "initialize",
+        Some(json!({
+            "protocolVersion": "2025-11-25",
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "second", "version": "1.0"}
+        })),
+    )
+    .await;
+    mock(
+        &second,
+        "tools/list",
+        Some(json!({"tools": [{"name": "fresh", "inputSchema": {"type": "object"}}]})),
+    )
+    .await;
+    mock(
+        &second,
+        "tools/call",
+        Some(json!({"content": [{"type": "text", "text": "fresh result"}]})),
+    )
+    .await;
+
+    let (gateway, _echo) = setup_full(
+        None,
+        vec![http_server(
+            "second-id",
+            "Second Server",
+            second.uri(),
+            true,
+        )],
+    )
+    .await;
+    gateway.register_virtual_server(Arc::new(installer::Installer {
+        server_id: "second-id".to_string(),
+    }));
+
+    initialize(&gateway, "s14", &[ECHO_ID], &allow_all(), None).await;
+    let before = gateway.get_session("s14").unwrap();
+    let install = send(
+        &gateway,
+        "s14",
+        &[ECHO_ID],
+        &allow_all(),
+        None,
+        "tools/call",
+        Some(json!({"name": installer::TOOL, "arguments": {}})),
+    )
+    .await;
+    assert!(install.error.is_none(), "install: {:?}", install.error);
+
+    let names = tool_names(
+        &send(
+            &gateway,
+            "s14",
+            &[ECHO_ID],
+            &allow_all(),
+            None,
+            "tools/list",
+            None,
+        )
+        .await,
+    );
+    assert!(
+        names.contains(&"second-server__fresh".to_string()),
+        "{names:?}"
+    );
+
+    let call = send(
+        &gateway,
+        "s14",
+        &[ECHO_ID],
+        &allow_all(),
+        None,
+        "tools/call",
+        Some(json!({"name": "second-server__fresh", "arguments": {}})),
+    )
+    .await;
+    assert!(call.error.is_none(), "tools/call: {:?}", call.error);
+    assert!(Arc::ptr_eq(&before, &gateway.get_session("s14").unwrap()));
 }

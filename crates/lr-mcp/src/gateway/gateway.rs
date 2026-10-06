@@ -650,26 +650,16 @@ impl McpGateway {
         };
 
         // Update permissions and virtual server states on session
-        {
+        let list_changes = {
             let mut session_write = session.write().await;
-            session_write.mcp_permissions = mcp_permissions;
-            session_write.skills_permissions = skills_permissions;
+            let list_changes = session_write.apply_listing_snapshot(
+                super::session::ClientListingSnapshot::from_client(&synthetic_client),
+            );
             session_write.client_name = client_name;
             session_write.mcp_sampling_permission = mcp_sampling_permission;
             session_write.mcp_elicitation_permission = mcp_elicitation_permission;
             session_write.client_mode = client_mode;
-
-            // Invalidate tools cache if context management overrides changed
-            if session_write.context_management_overrides != context_management_overrides {
-                if session_write.context_management_overrides.is_some() {
-                    tracing::info!(
-                        "Context management overrides changed for session {}, invalidating tools cache",
-                        session_key
-                    );
-                    session_write.invalidate_tools_cache();
-                }
-                session_write.context_management_overrides = context_management_overrides.clone();
-            }
+            session_write.context_management_overrides = context_management_overrides.clone();
 
             // Update virtual server states
             for vs in self.virtual_servers.read().iter() {
@@ -682,6 +672,19 @@ impl McpGateway {
                         .insert(vs.id().to_string(), state);
                 }
             }
+            list_changes
+        };
+
+        // Settings changed since this session's previous request (and the
+        // config-change hook didn't get to it first): tell the client to
+        // re-list. Session-scoped, so only this connection receives it.
+        if list_changes.any() {
+            tracing::info!(
+                "Client settings changed for session {}: {:?}",
+                session_key,
+                list_changes
+            );
+            self.send_list_changed(&session_notification_key(session_key), list_changes);
         }
 
         // Update last activity and set monitor session_id
@@ -1440,6 +1443,105 @@ impl McpGateway {
         }
     }
 
+    /// Start and handshake transports for servers granted to a live session
+    /// (e.g. a marketplace install), then route to them — without rebuilding
+    /// the session and losing its state. Servers that fail to start are
+    /// skipped; a later session rebuild retries them.
+    pub(crate) async fn attach_servers_to_session(
+        &self,
+        session: &Arc<RwLock<GatewaySession>>,
+        server_ids: Vec<String>,
+    ) {
+        let (transports, client_id, session_key, client_mode, capabilities) = {
+            let s = session.read().await;
+            (
+                s.transports.clone(),
+                s.client_id.clone(),
+                s.session_key.clone(),
+                s.client_mode,
+                s.client_capabilities
+                    .as_ref()
+                    .and_then(|c| serde_json::to_value(c).ok())
+                    .unwrap_or_else(|| json!({})),
+            )
+        };
+        // Not initialized yet: the initialize flow will start them
+        let Some(transports) = transports else {
+            return;
+        };
+        let timeout = Duration::from_secs(self.config.server_timeout_seconds.max(15));
+
+        for server_id in server_ids {
+            if !transports.is_running(&server_id) {
+                let transport = match tokio::time::timeout(
+                    timeout,
+                    self.server_manager.create_transport(&server_id),
+                )
+                .await
+                {
+                    Ok(Ok(t)) => t,
+                    Ok(Err(e)) => {
+                        tracing::warn!("Could not start newly granted server {}: {}", server_id, e);
+                        continue;
+                    }
+                    Err(_) => {
+                        tracing::warn!("Starting newly granted server {} timed out", server_id);
+                        continue;
+                    }
+                };
+                transports.insert(server_id.clone(), transport);
+                let ids = vec![server_id.clone()];
+                self.register_request_handlers_on_transports(
+                    &ids,
+                    &client_id,
+                    &session_key,
+                    client_mode,
+                    &transports,
+                );
+                self.register_notification_handlers_on_transports(&ids, session, &transports);
+
+                let init = JsonRpcRequest::new(
+                    Some(json!("_attach_init")),
+                    "initialize".to_string(),
+                    Some(json!({
+                        "protocolVersion": crate::protocol::MCP_PROTOCOL_VERSION,
+                        "capabilities": capabilities,
+                        "clientInfo": {
+                            "name": "LocalRouter MCP Gateway",
+                            "version": env!("CARGO_PKG_VERSION"),
+                        },
+                    })),
+                );
+                let initialized = matches!(
+                    tokio::time::timeout(timeout, transports.send_request(&server_id, init)).await,
+                    Ok(Ok(ref response)) if response.error.is_none()
+                );
+                if !initialized {
+                    tracing::warn!("Newly granted server {} failed to initialize", server_id);
+                    transports.close_server(&server_id).await;
+                    continue;
+                }
+                let _ = transports
+                    .send_request(
+                        &server_id,
+                        JsonRpcRequest::new(
+                            None,
+                            "notifications/initialized".to_string(),
+                            Some(json!({})),
+                        ),
+                    )
+                    .await;
+            }
+
+            let mut sw = session.write().await;
+            if !sw.allowed_servers.contains(&server_id) {
+                sw.allowed_servers.push(server_id.clone());
+            }
+            sw.invalidate_all_caches();
+            tracing::info!("Attached server {} to session {}", server_id, session_key);
+        }
+    }
+
     /// Register per-session notification callbacks on transports.
     ///
     /// Replaces the global `register_notification_handlers` for sessions that
@@ -1459,24 +1561,29 @@ impl McpGateway {
                 None => continue,
             };
 
-            let session_clone = session.clone();
+            // Weak: the session owns the transport that owns this callback
+            let session_weak = Arc::downgrade(session);
             let server_id_clone = server_id.clone();
             let broadcast_clone = self.notification_broadcast.clone();
 
             let callback: NotificationCallback =
                 Arc::new(move |notification: JsonRpcNotification| {
-                    let session_inner = session_clone.clone();
+                    let session_weak = session_weak.clone();
                     let server_id_inner = server_id_clone.clone();
                     let broadcast_inner = broadcast_clone.clone();
 
                     tokio::spawn(async move {
+                        let Some(session_inner) = session_weak.upgrade() else {
+                            return; // session already closed
+                        };
                         match notification.method.as_str() {
                             "notifications/tools/list_changed" => {
                                 tracing::info!(
                                     "Received tools/list_changed notification from server: {}",
                                     server_id_inner
                                 );
-                                if let Ok(mut session_write) = session_inner.try_write() {
+                                {
+                                    let mut session_write = session_inner.write().await;
                                     session_write.cache_ttl_manager.record_invalidation();
                                     session_write.cached_tools = None;
                                 }
@@ -1486,7 +1593,8 @@ impl McpGateway {
                                     "Received resources/list_changed notification from server: {}",
                                     server_id_inner
                                 );
-                                if let Ok(mut session_write) = session_inner.try_write() {
+                                {
+                                    let mut session_write = session_inner.write().await;
                                     session_write.cache_ttl_manager.record_invalidation();
                                     session_write.cached_resources = None;
                                 }
@@ -1496,7 +1604,8 @@ impl McpGateway {
                                     "Received prompts/list_changed notification from server: {}",
                                     server_id_inner
                                 );
-                                if let Ok(mut session_write) = session_inner.try_write() {
+                                {
+                                    let mut session_write = session_inner.write().await;
                                     session_write.cache_ttl_manager.record_invalidation();
                                     session_write.cached_prompts = None;
                                 }
@@ -1510,36 +1619,18 @@ impl McpGateway {
                             }
                         }
 
-                        // Forward notification to external clients (if broadcast channel exists)
-                        // Namespace progress tokens to avoid collisions between servers
-                        let forwarded_notification =
-                            if notification.method == "notifications/progress" {
-                                let mut n = notification.clone();
-                                if let Some(ref mut params) = n.params {
-                                    if let Some(token) = params.get("progressToken").cloned() {
-                                        let namespaced = format!(
-                                            "{}__{}",
-                                            server_id_inner,
-                                            token
-                                                .as_str()
-                                                .map(|s| s.to_string())
-                                                .unwrap_or_else(|| token.to_string())
-                                        );
-                                        if let Some(obj) = params.as_object_mut() {
-                                            obj.insert(
-                                                "progressToken".to_string(),
-                                                serde_json::json!(namespaced),
-                                            );
-                                        }
-                                    }
-                                }
-                                n
-                            } else {
-                                notification.clone()
-                            };
-
+                        // Forward to the client of this session only: the transport
+                        // belongs to the session, so progress tokens, log messages and
+                        // resource updates are this client's own and pass through unchanged.
                         if let Some(broadcast) = broadcast_inner.as_ref() {
-                            let payload = (server_id_inner.clone(), forwarded_notification);
+                            let session_key = session_inner.read().await.session_key.clone();
+                            let payload = (
+                                super::types::session_server_notification_key(
+                                    &session_key,
+                                    &server_id_inner,
+                                ),
+                                notification,
+                            );
                             match broadcast.send(payload) {
                                 Ok(receiver_count) => {
                                     tracing::debug!(
@@ -2885,34 +2976,30 @@ impl McpGateway {
         }
     }
 
-    /// Check all active sessions for permission changes and notify clients.
+    /// Check all active sessions for client setting changes and notify clients.
     ///
-    /// Compares stored permission snapshots with current client config.
-    /// For each session with changed permissions, invalidates relevant caches,
-    /// updates the stored snapshot, and calls the `notify` callback.
+    /// Compares each session's listing snapshot with the current client
+    /// config. For each changed session, invalidates affected caches, stops
+    /// routing to servers that lost access, and calls `notify`. Waits for
+    /// busy sessions rather than skipping them.
     ///
     /// # Arguments
     /// * `clients` - Current client configs from the config manager
     /// * `all_enabled_server_ids` - All enabled MCP server IDs (for computing allowed servers)
     /// * `notify` - Callback called with (client_id, tools_changed, resources_changed, prompts_changed)
-    pub fn check_and_notify_permission_changes(
+    pub async fn check_and_notify_permission_changes(
         &self,
         clients: &[lr_config::Client],
         all_enabled_server_ids: &[String],
         notify: impl Fn(&str, bool, bool, bool),
     ) {
-        for entry in self.sessions.iter() {
-            let session = entry.value();
+        // Snapshot first: awaiting session locks while iterating would hold
+        // DashMap shard locks across the await.
+        let sessions: Vec<Arc<RwLock<GatewaySession>>> =
+            self.sessions.iter().map(|e| e.value().clone()).collect();
 
-            // Try to acquire write lock (non-blocking to avoid deadlocks)
-            let Ok(mut session_write) = session.try_write() else {
-                tracing::debug!(
-                    "Could not acquire session lock for permission check: {}",
-                    entry.key()
-                );
-                continue;
-            };
-
+        for session in sessions {
+            let mut session_write = session.write().await;
             let client_id = session_write.client_id.clone();
 
             // Find matching client in config
@@ -2920,68 +3007,65 @@ impl McpGateway {
                 continue; // Client may have been deleted
             };
 
-            let old_mcp = &session_write.mcp_permissions;
-            let old_skills = &session_write.skills_permissions;
-            let new_mcp = &client.mcp_permissions;
-            let new_skills = &client.skills_permissions;
-
-            // Check if anything changed
-            if old_mcp == new_mcp && old_skills == new_skills {
+            // Sessions that never served a request have nothing to compare
+            if session_write.listing_snapshot.is_none() {
+                continue;
+            }
+            let changes = session_write
+                .apply_listing_snapshot(super::session::ClientListingSnapshot::from_client(client));
+            if !changes.any() {
                 continue;
             }
 
             tracing::info!(
-                "Permission change detected for client {}, computing notifications",
-                client_id
+                "Settings change detected for client {}: {:?}",
+                client_id,
+                changes
             );
-
-            // Determine what changed
-            let tools_changed = old_mcp.global != new_mcp.global
-                || old_mcp.servers != new_mcp.servers
-                || old_mcp.tools != new_mcp.tools
-                || old_skills != new_skills;
-
-            let resources_changed = old_mcp.global != new_mcp.global
-                || old_mcp.servers != new_mcp.servers
-                || old_mcp.resources != new_mcp.resources;
-
-            let prompts_changed = old_mcp.global != new_mcp.global
-                || old_mcp.servers != new_mcp.servers
-                || old_mcp.prompts != new_mcp.prompts;
-
-            // Invalidate relevant caches
-            if tools_changed {
-                session_write.invalidate_tools_cache();
-            }
-            if resources_changed {
-                session_write.invalidate_resources_cache();
-            }
-            if prompts_changed {
-                session_write.invalidate_prompts_cache();
-            }
 
             // Stop routing to servers that lost access. Servers that gained
             // access have no transport in this session yet; the next request
             // carries the wider server list and rebuilds the session.
+            let new_mcp = client.mcp_permissions.clone();
             let still_allowed = |sid: &String| {
                 all_enabled_server_ids.contains(sid) && new_mcp.has_any_enabled_for_server(sid)
             };
             session_write.allowed_servers.retain(still_allowed);
             session_write.requested_servers.retain(still_allowed);
 
-            // Update stored snapshots
-            session_write.mcp_permissions = new_mcp.clone();
-            session_write.skills_permissions = new_skills.clone();
             session_write.mcp_sampling_permission = client.mcp_sampling_permission.clone();
             session_write.mcp_elicitation_permission = client.mcp_elicitation_permission.clone();
+            drop(session_write);
 
-            // Call notify callback
             notify(
                 &client_id,
-                tools_changed,
-                resources_changed,
-                prompts_changed,
+                changes.tools,
+                changes.resources,
+                changes.prompts,
             );
+        }
+    }
+
+    /// Broadcast `list_changed` notifications for the changed lists.
+    fn send_list_changed(&self, key: &str, changes: super::session::ListChanges) {
+        let Some(broadcast) = &self.notification_broadcast else {
+            return;
+        };
+        for (changed, method) in [
+            (changes.tools, "notifications/tools/list_changed"),
+            (changes.resources, "notifications/resources/list_changed"),
+            (changes.prompts, "notifications/prompts/list_changed"),
+        ] {
+            if changed {
+                let _ = broadcast.send((
+                    key.to_string(),
+                    JsonRpcNotification {
+                        jsonrpc: "2.0".to_string(),
+                        method: method.to_string(),
+                        params: None,
+                    },
+                ));
+            }
         }
     }
 

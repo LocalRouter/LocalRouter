@@ -570,11 +570,41 @@ pub struct MergedCapabilities {
     pub instructions: Option<String>,
 }
 
-/// Broadcast key for notifications that belong to one gateway session (e.g.
-/// `tools/list_changed` after IndexSearch activates deferred tools). Routes
-/// forward these only to the connection serving that session.
+const SESSION_KEY_PREFIX: &str = "_session:";
+/// Separates session key and server id inside a session notification key
+/// (ASCII unit separator: never part of an id).
+const SESSION_KEY_SEPARATOR: char = '\u{1f}';
+
+/// Broadcast key for notifications that belong to one gateway session and
+/// were raised by the gateway itself (e.g. `tools/list_changed` after
+/// IndexSearch activates deferred tools). Routes forward these only to the
+/// connection serving that session.
 pub fn session_notification_key(session_key: &str) -> String {
-    format!("_session:{session_key}")
+    format!("{SESSION_KEY_PREFIX}{session_key}")
+}
+
+/// Broadcast key for a notification from a backend server over a session's
+/// own transport (progress, log messages, list changes, resource updates).
+pub fn session_server_notification_key(session_key: &str, server_id: &str) -> String {
+    format!("{SESSION_KEY_PREFIX}{session_key}{SESSION_KEY_SEPARATOR}{server_id}")
+}
+
+/// Decide whether a broadcast notification is delivered to a connection.
+///
+/// Session-scoped keys reach only the connection serving that session; plain
+/// server-id keys (server-wide events) reach connections allowed that server.
+/// Returns the originating server id (empty for gateway-originated
+/// notifications) when the notification should be delivered.
+pub fn notification_target<'a>(
+    key: &'a str,
+    session_key: &str,
+    allowed_servers: &[String],
+) -> Option<&'a str> {
+    if let Some(rest) = key.strip_prefix(SESSION_KEY_PREFIX) {
+        let (session, server_id) = rest.split_once(SESSION_KEY_SEPARATOR).unwrap_or((rest, ""));
+        return (session == session_key).then_some(server_id);
+    }
+    allowed_servers.iter().any(|s| s == key).then_some(key)
 }
 
 #[cfg(test)]
@@ -648,5 +678,24 @@ mod tests {
         let (server, tool) = parse_namespace("everything-mcp-server__echo").unwrap();
         assert_eq!(server, "everything-mcp-server");
         assert_eq!(tool, "echo");
+    }
+
+    #[test]
+    fn notification_target_scopes_session_keys() {
+        let allowed = vec!["srv".to_string()];
+        let own = session_server_notification_key("sess-a", "srv");
+        assert_eq!(notification_target(&own, "sess-a", &allowed), Some("srv"));
+        // Another session's backend notification never leaks, even for a
+        // server this connection is allowed
+        assert_eq!(notification_target(&own, "sess-b", &allowed), None);
+        // Gateway-originated session notification
+        let gw = session_notification_key("sess-a");
+        assert_eq!(notification_target(&gw, "sess-a", &[]), Some(""));
+        assert_eq!(notification_target(&gw, "sess-b", &[]), None);
+        // Server-wide keys follow the allowed-server list
+        assert_eq!(notification_target("srv", "sess-a", &allowed), Some("srv"));
+        assert_eq!(notification_target("other", "sess-a", &allowed), None);
+        // A session key that is a prefix of another must not match it
+        assert_eq!(notification_target(&own, "sess", &allowed), None);
     }
 }

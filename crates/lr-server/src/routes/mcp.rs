@@ -189,8 +189,6 @@ pub async fn mcp_gateway_get_handler(
     // Subscribe to per-client permission change notifications
     let mut client_notification_rx = state.client_notification_broadcast.subscribe();
 
-    let own_notification_key = lr_mcp::gateway::types::session_notification_key(&session_id);
-
     // Clone for cleanup
     let session_id_cleanup = session_id.clone();
     let sse_manager = state.sse_connection_manager.clone();
@@ -281,36 +279,26 @@ pub async fn mcp_gateway_get_handler(
                 // Handle notifications from MCP servers
                 notif_result = notification_rx.recv() => {
                     match notif_result {
-                        Ok((server_id, notification)) => {
-                            // Only forward notifications for allowed servers
-                            // or for this connection's own gateway session
-                            if allowed_servers.contains(&server_id)
-                                || server_id == own_notification_key
-                            {
-                                // Forward with standard MCP method names so SDK clients
-                                // can match them (e.g. ToolListChangedNotificationSchema).
-                                // For resource update notifications, namespace the URI in params.
-                                let forwarded = if notification.method == "notifications/resources/updated" {
-                                    // Namespace the resource URI so clients can match it
-                                    let params = notification.params.as_ref().map(|p| {
-                                        let mut p = p.clone();
-                                        if let Some(uri) = p.get("uri").and_then(|v| v.as_str()) {
-                                            p["uri"] = serde_json::Value::String(
-                                                format!("{}::{}", server_id, uri)
-                                            );
-                                        }
-                                        p
-                                    });
-                                    lr_mcp::protocol::JsonRpcNotification {
-                                        jsonrpc: notification.jsonrpc.clone(),
-                                        method: notification.method.clone(),
-                                        params,
-                                    }
-                                } else {
-                                    notification
-                                };
-                                // Send raw JSON-RPC notification (MCP SSE transport spec)
-                                if let Ok(json) = serde_json::to_string(&forwarded) {
+                        Ok((key, notification)) => {
+                            // Forward this session's notifications and server-wide
+                            // events of allowed servers, unchanged: URIs and progress
+                            // tokens are exactly what this client listed or sent.
+                            // Streamable-HTTP clients POST without a sessionId, so
+                            // their gateway session is keyed by client id.
+                            let target = lr_mcp::gateway::types::notification_target(
+                                &key,
+                                &session_id,
+                                &allowed_servers,
+                            )
+                            .or_else(|| {
+                                lr_mcp::gateway::types::notification_target(
+                                    &key,
+                                    &client_id,
+                                    &allowed_servers,
+                                )
+                            });
+                            if target.is_some() {
+                                if let Ok(json) = serde_json::to_string(&notification) {
                                     yield Ok::<_, Infallible>(Event::default().event("message").data(json));
                                 }
                             }
@@ -847,9 +835,10 @@ pub async fn mcp_gateway_handler(
                     };
 
                     // Broadcast via the MCP notification channel so SSE clients receive it
-                    let _ = state
-                        .mcp_notification_broadcast
-                        .send(("_sampling_passthrough".to_string(), notification));
+                    let _ = state.mcp_notification_broadcast.send((
+                        lr_mcp::gateway::types::session_notification_key(&connection_key),
+                        notification,
+                    ));
 
                     tracing::info!(
                         "Forwarding sampling request to external client (passthrough {})",
@@ -1433,10 +1422,9 @@ const ALL_SUBSCRIPTION_TYPES: &[&str] = &[
 ];
 
 /// Transform a backend notification for delivery on a `subscriptions/listen`
-/// stream: filter by opted-in type, namespace resource URIs, and tag with the
+/// stream: filter by opted-in type and subscribed resource URI, and tag with the
 /// subscription id. Returns `None` when the notification isn't subscribed.
 fn build_subscription_notification(
-    server_id: &str,
     notification: &lr_mcp::protocol::JsonRpcNotification,
     notifications: &serde_json::Map<String, serde_json::Value>,
     subscription_id: &serde_json::Value,
@@ -1453,18 +1441,17 @@ fn build_subscription_notification(
         .clone()
         .unwrap_or_else(|| serde_json::json!({}));
 
-    // Namespace resource URIs the same way the legacy SSE stream does
+    // Resource updates are delivered only for subscribed URIs. The gateway
+    // lists resources under their backend URIs, so they are matched as-is.
     if notification.method == "notifications/resources/updated" {
         if let Some(uri) = params.get("uri").and_then(|v| v.as_str()) {
-            let namespaced = format!("{}::{}", server_id, uri);
             if !notifications
                 .get("resourceSubscriptions")
                 .and_then(|v| v.as_array())
-                .is_some_and(|uris| uris.iter().any(|value| value.as_str() == Some(&namespaced)))
+                .is_some_and(|uris| uris.iter().any(|value| value.as_str() == Some(uri)))
             {
                 return None;
             }
-            params["uri"] = serde_json::Value::String(namespaced);
         }
     }
 
@@ -1516,7 +1503,7 @@ fn subscriptions_listen_response(
     let subscription_id = request.id.clone().unwrap_or(serde_json::Value::Null);
     let mut notification_rx = state.mcp_notification_broadcast.subscribe();
     let client_id = client_id.to_string();
-    let own_notification_key = lr_mcp::gateway::types::session_notification_key(session_key);
+    let session_key = session_key.to_string();
 
     tracing::info!(
         "subscriptions/listen opened: client={}, subscription={}, notifications={:?}",
@@ -1541,12 +1528,13 @@ fn subscriptions_listen_response(
 
         loop {
             match notification_rx.recv().await {
-                Ok((server_id, notification)) => {
-                    if !allowed_servers.contains(&server_id) && server_id != own_notification_key {
+                Ok((key, notification)) => {
+                    if lr_mcp::gateway::types::notification_target(&key, &session_key, &allowed_servers)
+                        .is_none()
+                    {
                         continue;
                     }
                     if let Some(tagged) = build_subscription_notification(
-                        &server_id,
                         &notification,
                         &notifications,
                         &subscription_id,
@@ -1765,7 +1753,7 @@ mod tests {
     fn all_types() -> serde_json::Map<String, serde_json::Value> {
         serde_json::json!({
             "toolsListChanged": true, "resourcesListChanged": true, "promptsListChanged": true,
-            "resourceSubscriptions": ["srv1::file:///a.txt"]
+            "resourceSubscriptions": ["file:///a.txt"]
         })
         .as_object()
         .unwrap()
@@ -1775,9 +1763,8 @@ mod tests {
     #[test]
     fn test_subscription_notification_tagged_and_delivered() {
         let n = notification("notifications/tools/list_changed", serde_json::json!({}));
-        let tagged =
-            build_subscription_notification("srv1", &n, &all_types(), &serde_json::json!(123))
-                .expect("subscribed type is delivered");
+        let tagged = build_subscription_notification(&n, &all_types(), &serde_json::json!(123))
+            .expect("subscribed type is delivered");
 
         assert_eq!(tagged.method, "notifications/tools/list_changed");
         let meta = &tagged.params.unwrap()["_meta"];
@@ -1792,13 +1779,10 @@ mod tests {
             .unwrap()
             .clone();
 
-        assert!(build_subscription_notification(
-            "srv1",
-            &n,
-            &only_resources,
-            &serde_json::json!("sub")
-        )
-        .is_none());
+        assert!(
+            build_subscription_notification(&n, &only_resources, &serde_json::json!("sub"))
+                .is_none()
+        );
     }
 
     #[test]
@@ -1807,13 +1791,10 @@ mod tests {
         // stream, never the subscriptions/listen stream.
         for method in ["notifications/progress", "notifications/message"] {
             let n = notification(method, serde_json::json!({}));
-            assert!(build_subscription_notification(
-                "srv1",
-                &n,
-                &all_types(),
-                &serde_json::json!("sub")
-            )
-            .is_none());
+            assert!(
+                build_subscription_notification(&n, &all_types(), &serde_json::json!("sub"))
+                    .is_none()
+            );
         }
     }
 
@@ -1823,13 +1804,9 @@ mod tests {
             "notifications/resources/updated",
             serde_json::json!({"uri":"file:///other.txt"}),
         );
-        assert!(
-            build_subscription_notification("srv1", &n, &all_types(), &serde_json::json!(1))
-                .is_none()
-        );
+        assert!(build_subscription_notification(&n, &all_types(), &serde_json::json!(1)).is_none());
         let n = notification("notifications/tools/list_changed", serde_json::json!({}));
         assert!(build_subscription_notification(
-            "srv1",
             &n,
             &serde_json::Map::new(),
             &serde_json::json!(1)
@@ -1839,22 +1816,20 @@ mod tests {
             .as_object()
             .unwrap()
             .clone();
-        assert!(
-            build_subscription_notification("srv1", &n, &disabled, &serde_json::json!(1)).is_none()
-        );
+        assert!(build_subscription_notification(&n, &disabled, &serde_json::json!(1)).is_none());
     }
 
     #[test]
-    fn test_subscription_notification_namespaces_resource_uri() {
+    fn test_subscription_notification_keeps_listed_resource_uri() {
         let n = notification(
             "notifications/resources/updated",
             serde_json::json!({ "uri": "file:///a.txt" }),
         );
         let tagged =
-            build_subscription_notification("srv1", &n, &all_types(), &serde_json::json!("sub"))
-                .unwrap();
+            build_subscription_notification(&n, &all_types(), &serde_json::json!("sub")).unwrap();
         let params = tagged.params.unwrap();
-        assert_eq!(params["uri"], "srv1::file:///a.txt");
+        // Delivered under the URI resources/list exposed and the client subscribed to
+        assert_eq!(params["uri"], "file:///a.txt");
         assert_eq!(
             params["_meta"]["io.modelcontextprotocol/subscriptionId"],
             "sub"

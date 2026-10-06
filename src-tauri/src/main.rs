@@ -1491,8 +1491,10 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                         .collect();
 
                     let broadcast = app_state_for_clients.client_notification_broadcast.clone();
-                    app_state_for_clients
-                        .mcp_gateway
+                    let gateway = app_state_for_clients.mcp_gateway.clone();
+                    // Async: waits for busy sessions instead of skipping them
+                    tauri::async_runtime::spawn(async move {
+                    gateway
                         .check_and_notify_permission_changes(
                             &config.clients,
                             &all_enabled_server_ids,
@@ -1524,7 +1526,9 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                                     client_id, tools, resources, prompts
                                 );
                             },
-                        );
+                        )
+                        .await;
+                    });
                 });
                 info!("Registered clients-changed listener for permission notifications");
 

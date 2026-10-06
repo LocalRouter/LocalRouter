@@ -119,6 +119,8 @@ pub struct ContextModeSessionState {
     pub read_tool_name: String,
     /// Snapshotted gateway indexing permissions.
     pub gateway_indexing: lr_config::GatewayIndexingPermissions,
+    /// Snapshotted virtual server indexing permissions.
+    pub virtual_indexing: lr_config::GatewayIndexingPermissions,
     /// Snapshotted client tools indexing default.
     pub client_tools_indexing_default: lr_config::IndexingState,
     /// Snapshotted per-client tools indexing overrides.
@@ -157,6 +159,7 @@ impl Clone for ContextModeSessionState {
             search_tool_name: self.search_tool_name.clone(),
             read_tool_name: self.read_tool_name.clone(),
             gateway_indexing: self.gateway_indexing.clone(),
+            virtual_indexing: self.virtual_indexing.clone(),
             client_tools_indexing_default: self.client_tools_indexing_default.clone(),
             client_tools_indexing: self.client_tools_indexing.clone(),
         }
@@ -428,6 +431,7 @@ impl VirtualMcpServer for ContextModeVirtualServer {
             search_tool_name: config.search_tool_name.clone(),
             read_tool_name: config.read_tool_name.clone(),
             gateway_indexing: config.gateway_indexing.clone(),
+            virtual_indexing: config.virtual_indexing.clone(),
             client_tools_indexing_default: config.client_tools_indexing_default.clone(),
             client_tools_indexing: client.client_tools_indexing.clone(),
         })
@@ -452,6 +456,7 @@ impl VirtualMcpServer for ContextModeVirtualServer {
         state.search_tool_name = config.search_tool_name.clone();
         state.read_tool_name = config.read_tool_name.clone();
         state.gateway_indexing = config.gateway_indexing.clone();
+        state.virtual_indexing = config.virtual_indexing.clone();
         state.client_tools_indexing_default = config.client_tools_indexing_default.clone();
         state.client_tools_indexing = client.client_tools_indexing.clone();
     }
@@ -1040,6 +1045,7 @@ mod tests {
             search_tool_name: "IndexSearch".to_string(),
             read_tool_name: "IndexRead".to_string(),
             gateway_indexing: lr_config::GatewayIndexingPermissions::default(),
+            virtual_indexing: lr_config::GatewayIndexingPermissions::default(),
             client_tools_indexing_default: lr_config::IndexingState::Enable,
             client_tools_indexing: None,
         };

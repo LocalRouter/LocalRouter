@@ -18,6 +18,15 @@ use super::access_control::{self, FirewallCheckContext, FirewallCheckResult};
 use super::firewall::{self, FirewallApprovalAction};
 use super::gateway::McpGateway;
 
+/// Which indexing settings govern a tool response.
+#[derive(Clone, Copy)]
+enum IndexingScope<'a> {
+    /// Upstream MCP server tool (`gateway_indexing`, keyed by server slug)
+    Gateway,
+    /// Built-in virtual server tool (`virtual_indexing`, keyed by server id)
+    Virtual { server_id: &'a str },
+}
+
 /// Result of a firewall access decision check
 pub enum FirewallDecisionResult {
     /// Proceed with the original request unchanged
@@ -648,7 +657,7 @@ impl McpGateway {
         // Context management: compress large responses
         if let Ok(response) = result {
             let compressed = self
-                .maybe_compress_response(&session, &tool_name, response)
+                .maybe_compress_response(&session, &tool_name, response, IndexingScope::Gateway)
                 .await;
             Ok(compressed)
         } else {
@@ -1121,10 +1130,11 @@ impl McpGateway {
                         }
                     }),
                 );
-                Ok(JsonRpcResponse::success(
-                    request.id.unwrap_or(Value::Null),
-                    response,
-                ))
+                let response =
+                    JsonRpcResponse::success(request.id.unwrap_or(Value::Null), response);
+                Ok(self
+                    .maybe_compress_virtual_response(&vs, &session, tool_name, response)
+                    .await)
             }
             VirtualToolCallResult::SuccessWithSideEffects {
                 response,
@@ -1152,7 +1162,7 @@ impl McpGateway {
                         }
                     }),
                 );
-                if state_update.is_some() || invalidate_cache || add_allowed_servers.is_some() {
+                if state_update.is_some() || invalidate_cache {
                     let mut sw = session.write().await;
                     if let Some(updater) = state_update {
                         if let Some(state) = sw.virtual_server_state.get_mut(vs.id()) {
@@ -1162,13 +1172,9 @@ impl McpGateway {
                     if invalidate_cache {
                         sw.invalidate_tools_cache();
                     }
-                    if let Some(new_servers) = add_allowed_servers {
-                        for server_id in new_servers {
-                            if !sw.allowed_servers.contains(&server_id) {
-                                sw.allowed_servers.push(server_id);
-                            }
-                        }
-                    }
+                }
+                if let Some(new_servers) = add_allowed_servers {
+                    self.attach_servers_to_session(&session, new_servers).await;
                 }
                 if send_list_changed {
                     if let Some(broadcast) = &self.notification_broadcast {
@@ -1183,10 +1189,11 @@ impl McpGateway {
                         let _ = broadcast.send((key, notification));
                     }
                 }
-                Ok(JsonRpcResponse::success(
-                    request.id.unwrap_or(Value::Null),
-                    response,
-                ))
+                let response =
+                    JsonRpcResponse::success(request.id.unwrap_or(Value::Null), response);
+                Ok(self
+                    .maybe_compress_virtual_response(&vs, &session, tool_name, response)
+                    .await)
             }
             VirtualToolCallResult::NotHandled => {
                 self.update_monitor_event(
@@ -1250,11 +1257,33 @@ impl McpGateway {
     ///
     /// Indexes the full response into context-mode FTS5 and replaces it with a truncated
     /// preview + search hint. Responses from ctx_* tools are never compressed.
+    /// Tool Responses Indexing for a virtual server tool (skills, memory, …),
+    /// governed by the virtual indexing settings.
+    async fn maybe_compress_virtual_response(
+        &self,
+        vs: &Arc<dyn super::virtual_server::VirtualMcpServer>,
+        session: &Arc<RwLock<GatewaySession>>,
+        tool_name: &str,
+        response: JsonRpcResponse,
+    ) -> JsonRpcResponse {
+        if !vs.is_tool_indexable(tool_name) {
+            return response;
+        }
+        self.maybe_compress_response(
+            session,
+            tool_name,
+            response,
+            IndexingScope::Virtual { server_id: vs.id() },
+        )
+        .await
+    }
+
     async fn maybe_compress_response(
         &self,
         session: &Arc<RwLock<GatewaySession>>,
         tool_name: &str,
         response: JsonRpcResponse,
+        scope: IndexingScope<'_>,
     ) -> JsonRpcResponse {
         // Never compress error responses
         if response.error.is_some() {
@@ -1291,15 +1320,21 @@ impl McpGateway {
                     {
                         return response;
                     }
-                    // Check gateway indexing eligibility
-                    let (server_slug, original_name) = match tool_name.split_once("__") {
-                        Some((s, t)) => (s, t),
-                        None => (tool_name, tool_name),
+                    let eligible = match scope {
+                        IndexingScope::Gateway => {
+                            let (server_slug, original_name) = match tool_name.split_once("__") {
+                                Some((s, t)) => (s, t),
+                                None => (tool_name, tool_name),
+                            };
+                            cm_state
+                                .gateway_indexing
+                                .is_tool_eligible(server_slug, original_name)
+                        }
+                        IndexingScope::Virtual { server_id } => cm_state
+                            .virtual_indexing
+                            .is_tool_eligible(server_id, tool_name),
                     };
-                    if !cm_state
-                        .gateway_indexing
-                        .is_tool_eligible(server_slug, original_name)
-                    {
+                    if !eligible {
                         return response;
                     }
                     let run_id = cm_state.next_run_id(tool_name);

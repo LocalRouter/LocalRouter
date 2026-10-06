@@ -10,6 +10,74 @@ use super::virtual_server::VirtualSessionState;
 use crate::protocol::Root;
 use crate::transport::SessionTransportSet;
 
+/// Client settings that shape what a session lists. Compared on every
+/// request and on config changes to decide which `list_changed`
+/// notifications the client needs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClientListingSnapshot {
+    pub mcp_permissions: lr_config::McpPermissions,
+    pub skills_permissions: lr_config::SkillsPermissions,
+    pub marketplace_permission: lr_config::PermissionState,
+    pub coding_agent_permission: lr_config::PermissionState,
+    pub coding_agent_type: Option<lr_config::CodingAgentType>,
+    pub memory_enabled: Option<bool>,
+    pub memory_folder: Option<String>,
+    pub context_management_enabled: Option<bool>,
+    pub catalog_compression_enabled: Option<bool>,
+}
+
+impl ClientListingSnapshot {
+    pub fn from_client(client: &lr_config::Client) -> Self {
+        Self {
+            mcp_permissions: client.mcp_permissions.clone(),
+            skills_permissions: client.skills_permissions.clone(),
+            marketplace_permission: client.marketplace_permission.clone(),
+            coding_agent_permission: client.coding_agent_permission.clone(),
+            coding_agent_type: client.coding_agent_type,
+            memory_enabled: client.memory_enabled,
+            memory_folder: client.memory_folder.clone(),
+            context_management_enabled: client.context_management_enabled,
+            catalog_compression_enabled: client.catalog_compression_enabled,
+        }
+    }
+
+    /// Which lists differ between `old` and `self`.
+    pub fn changes_from(&self, old: &Self) -> ListChanges {
+        let (new_mcp, old_mcp) = (&self.mcp_permissions, &old.mcp_permissions);
+        let mcp_scope_changed =
+            new_mcp.global != old_mcp.global || new_mcp.servers != old_mcp.servers;
+        // Virtual servers (skills, marketplace, coding agents, memory,
+        // context management) only contribute tools
+        let virtual_changed = self.skills_permissions != old.skills_permissions
+            || self.marketplace_permission != old.marketplace_permission
+            || self.coding_agent_permission != old.coding_agent_permission
+            || self.coding_agent_type != old.coding_agent_type
+            || self.memory_enabled != old.memory_enabled
+            || self.memory_folder != old.memory_folder
+            || self.context_management_enabled != old.context_management_enabled
+            || self.catalog_compression_enabled != old.catalog_compression_enabled;
+        ListChanges {
+            tools: mcp_scope_changed || new_mcp.tools != old_mcp.tools || virtual_changed,
+            resources: mcp_scope_changed || new_mcp.resources != old_mcp.resources,
+            prompts: mcp_scope_changed || new_mcp.prompts != old_mcp.prompts,
+        }
+    }
+}
+
+/// Lists a client must re-fetch after a settings change.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ListChanges {
+    pub tools: bool,
+    pub resources: bool,
+    pub prompts: bool,
+}
+
+impl ListChanges {
+    pub fn any(&self) -> bool {
+        self.tools || self.resources || self.prompts
+    }
+}
+
 /// Gateway session (one per client)
 pub struct GatewaySession {
     /// Client ID
@@ -86,6 +154,10 @@ pub struct GatewaySession {
 
     /// MCP permissions snapshot for this client (for change detection)
     pub mcp_permissions: lr_config::McpPermissions,
+
+    /// Last applied listing-relevant client settings (None until the first
+    /// request); see `apply_listing_snapshot`.
+    pub listing_snapshot: Option<ClientListingSnapshot>,
 
     /// Skills permissions for this client (hierarchical Allow/Ask/Off)
     pub skills_permissions: lr_config::SkillsPermissions,
@@ -197,6 +269,7 @@ impl GatewaySession {
             roots,
             subscribed_resources: HashMap::new(),
             mcp_permissions: lr_config::McpPermissions::default(),
+            listing_snapshot: None,
             skills_permissions: lr_config::SkillsPermissions::default(),
             client_name: String::new(),
             firewall_session_approvals: HashSet::new(),
@@ -310,6 +383,30 @@ impl GatewaySession {
                 (prompt.server_id.clone(), prompt.original_name.clone()),
             );
         }
+    }
+
+    /// Apply the client's current listing settings, invalidating the caches
+    /// of lists they affect. Returns what changed since the previous
+    /// snapshot (nothing on the first call).
+    pub fn apply_listing_snapshot(&mut self, snapshot: ClientListingSnapshot) -> ListChanges {
+        let changes = self
+            .listing_snapshot
+            .as_ref()
+            .map(|old| snapshot.changes_from(old))
+            .unwrap_or_default();
+        if changes.tools {
+            self.invalidate_tools_cache();
+        }
+        if changes.resources {
+            self.invalidate_resources_cache();
+        }
+        if changes.prompts {
+            self.invalidate_prompts_cache();
+        }
+        self.mcp_permissions = snapshot.mcp_permissions.clone();
+        self.skills_permissions = snapshot.skills_permissions.clone();
+        self.listing_snapshot = Some(snapshot);
+        changes
     }
 
     /// The catalog compression plan, if catalog compression is currently
@@ -911,5 +1008,90 @@ mod tests {
         );
         assert!(session.tool_mapping.contains_key("b__read"));
         assert!(!session.tool_mapping.contains_key("a__read"));
+    }
+
+    #[test]
+    fn listing_snapshot_reports_what_changed() {
+        let mut session = session_with_perms(lr_config::McpPermissions::default());
+        let mut client = lr_config::Client::new_with_strategy("c".to_string(), "s".to_string());
+
+        // First application establishes the baseline without notifying
+        assert!(!session
+            .apply_listing_snapshot(ClientListingSnapshot::from_client(&client))
+            .any());
+
+        // Marketplace only adds tools
+        client.marketplace_permission = lr_config::PermissionState::Allow;
+        assert_eq!(
+            session.apply_listing_snapshot(ClientListingSnapshot::from_client(&client)),
+            ListChanges {
+                tools: true,
+                resources: false,
+                prompts: false
+            }
+        );
+
+        // Same settings again: nothing to notify
+        assert!(!session
+            .apply_listing_snapshot(ClientListingSnapshot::from_client(&client))
+            .any());
+
+        // Server-level MCP change affects every list
+        client
+            .mcp_permissions
+            .servers
+            .insert("srv-a".to_string(), lr_config::PermissionState::Off);
+        assert_eq!(
+            session.apply_listing_snapshot(ClientListingSnapshot::from_client(&client)),
+            ListChanges {
+                tools: true,
+                resources: true,
+                prompts: true
+            }
+        );
+        assert_eq!(session.mcp_permissions, client.mcp_permissions);
+
+        // A prompt override only affects prompts
+        client
+            .mcp_permissions
+            .prompts
+            .insert("srv-a__p".to_string(), lr_config::PermissionState::Allow);
+        assert_eq!(
+            session.apply_listing_snapshot(ClientListingSnapshot::from_client(&client)),
+            ListChanges {
+                tools: false,
+                resources: false,
+                prompts: true
+            }
+        );
+
+        // Indexing toggles change the tool list (search tools, deferral)
+        for change in [
+            |c: &mut lr_config::Client| c.context_management_enabled = Some(false),
+            |c: &mut lr_config::Client| c.catalog_compression_enabled = Some(false),
+            |c: &mut lr_config::Client| c.memory_enabled = Some(true),
+            |c: &mut lr_config::Client| c.coding_agent_permission = lr_config::PermissionState::Ask,
+        ] {
+            change(&mut client);
+            assert!(
+                session
+                    .apply_listing_snapshot(ClientListingSnapshot::from_client(&client))
+                    .tools
+            );
+        }
+    }
+
+    #[test]
+    fn applying_a_changed_snapshot_invalidates_affected_caches() {
+        let mut session = session_with_perms(lr_config::McpPermissions::default());
+        let mut client = lr_config::Client::new_with_strategy("c".to_string(), "s".to_string());
+        session.apply_listing_snapshot(ClientListingSnapshot::from_client(&client));
+        session.cached_tools = Some(CachedList::new(Vec::new(), Duration::from_secs(60)));
+        session.cached_prompts = Some(CachedList::new(Vec::new(), Duration::from_secs(60)));
+
+        client.skills_permissions.global = lr_config::PermissionState::Allow;
+        session.apply_listing_snapshot(ClientListingSnapshot::from_client(&client));
+        assert!(session.cached_tools.is_none());
+        assert!(session.cached_prompts.is_some());
     }
 }

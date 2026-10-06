@@ -44,6 +44,8 @@ function slugify(name: string): string {
 export function GatewayIndexingTree({ permissions, onUpdate }: GatewayIndexingTreeProps) {
   const [servers, setServers] = useState<McpServer[]>([])
   const [capabilities, setCapabilities] = useState<Record<string, McpServerCapabilities>>({})
+  const [capabilityErrors, setCapabilityErrors] = useState<Record<string, string>>({})
+  const [loadingServers, setLoadingServers] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
 
@@ -53,6 +55,7 @@ export function GatewayIndexingTree({ permissions, onUpdate }: GatewayIndexingTr
       const enabledServers = serverList.filter((s) => s.enabled)
       setServers(enabledServers)
       setLoading(false)
+      setLoadingServers(new Set(enabledServers.map((s) => s.id)))
 
       // Load capabilities in parallel
       await Promise.all(
@@ -62,8 +65,19 @@ export function GatewayIndexingTree({ permissions, onUpdate }: GatewayIndexingTr
               serverId: server.id,
             })
             setCapabilities((prev) => ({ ...prev, [server.id]: caps }))
+            setCapabilityErrors((prev) => {
+              const { [server.id]: _, ...rest } = prev
+              return rest
+            })
           } catch (error) {
             console.error(`Failed to load capabilities for ${server.id}:`, error)
+            setCapabilityErrors((prev) => ({ ...prev, [server.id]: `Failed to load tools: ${error}` }))
+          } finally {
+            setLoadingServers((prev) => {
+              const next = new Set(prev)
+              next.delete(server.id)
+              return next
+            })
           }
         })
       )
@@ -100,6 +114,8 @@ export function GatewayIndexingTree({ permissions, onUpdate }: GatewayIndexingTr
       id: slug,
       label: server.name,
       children: toolChildren.length > 0 ? toolChildren : undefined,
+      loading: loadingServers.has(server.id),
+      error: capabilityErrors[server.id],
     }
   })
 

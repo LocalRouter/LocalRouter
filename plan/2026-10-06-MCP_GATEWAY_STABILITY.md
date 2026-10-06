@@ -90,12 +90,32 @@ Date: 2026-10-06
   wiremock servers (session reuse with a failing server, tools/call without
   tools/list, tool/prompt permissions, all-servers-failing, indexing toggles).
 
-## Known remaining gaps
+## Follow-up: remaining gaps closed
 
-- Upstream server notifications are broadcast per server id, not per session:
-  clients sharing a server can receive each other's progress/log notifications.
-- `virtual_indexing` settings are not applied (virtual tool responses are never
-  compressed).
-- Permission changes to marketplace/coding agents/memory/context management do
-  not emit `list_changed`; a session whose lock is busy during the change is
-  updated on its next request without a notification.
+- **Notification scoping**: backend notifications from a session's own
+  transports are broadcast under `session_server_notification_key(session,
+  server)`; routes deliver them only to that session's connection
+  (`notification_target`). Server-wide keys still follow the allowed-server
+  list. Progress tokens and resource URIs pass through unchanged — the
+  `server__token` / `server::uri` rewrites never matched what clients sent or
+  subscribed to. The SSE sampling passthrough is keyed to its session.
+  Notification callbacks hold the session weakly and invalidate caches with an
+  awaited lock.
+- **Virtual indexing applied**: virtual tool responses (`is_tool_indexable`,
+  e.g. SkillRead, marketplace search, coding agent status/list, memory) go
+  through Tool Responses Indexing governed by `virtual_indexing` (keyed by
+  virtual server id).
+- **Settings-change notifications**: `ClientListingSnapshot` covers MCP,
+  skills, marketplace, coding agents, memory and both indexing toggles. It is
+  diffed on every request (session-scoped `list_changed`) and by the
+  `clients-changed` hook, which is now async and waits for busy sessions.
+- **Mid-session grants**: marketplace installs start, register and handshake
+  the new server's transport in the live session
+  (`attach_servers_to_session`) instead of routing to a server without one.
+- The gateway indexing tree shows per-server capability load errors.
+
+Tests: notification target scoping (unit), listing snapshot diffs and cache
+invalidation (unit), and integration tests for backend notification scoping
+with unchanged progress tokens, request-path settings notifications, the hook
+waiting on a busy session, virtual response indexing on/off, and mid-session
+server attach.
