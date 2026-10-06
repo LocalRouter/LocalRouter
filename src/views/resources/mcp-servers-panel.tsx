@@ -104,6 +104,7 @@ export function McpServersPanel({
 
   // OAuth status state
   const [oauthStatus, setOauthStatus] = useState<Record<string, boolean>>({})
+  const [testingConnection, setTestingConnection] = useState(false)
   const [showOAuthModal, setShowOAuthModal] = useState(false)
   useEffect(() => {
     if (initialAuthenticate) {
@@ -613,6 +614,22 @@ export function McpServersPanel({
     }
   }
 
+  // Connect with the stored credentials and list tools, reporting the outcome
+  const testOAuthConnection = async (serverId: string) => {
+    setTestingConnection(true)
+    try {
+      const caps = await invoke<{ tools: unknown[] }>("get_mcp_server_capabilities", { serverId })
+      setOauthStatus((prev) => ({ ...prev, [serverId]: true }))
+      toast.success(`Connection OK — ${caps.tools.length} tool${caps.tools.length === 1 ? "" : "s"} available`)
+    } catch (error) {
+      await checkOAuthStatus(serverId)
+      toast.error(`Connection test failed: ${error}`)
+    } finally {
+      setTestingConnection(false)
+      onRefreshHealth(serverId)
+    }
+  }
+
   const handleOAuthSuccess = () => {
     if (selectedId) {
       loadServersOnly()
@@ -930,6 +947,11 @@ export function McpServersPanel({
                       </CardContent>
                     </Card>
 
+                  </div>
+                </TabsContent>
+
+                <TabsContent value="settings">
+                  <div className="space-y-6">
                     {/* OAuth Status */}
                     {selectedServer.auth_config?.type === "oauth_browser" && (
                       <Card>
@@ -957,9 +979,11 @@ export function McpServersPanel({
                             <Button size="sm" variant="secondary" onClick={handleStartOAuthSetup} disabled={isDiscovering}>
                               OAuth client settings
                             </Button>
+                            <Button size="sm" variant="secondary" onClick={() => testOAuthConnection(selectedServer.id)} disabled={testingConnection}>
+                              {testingConnection ? "Testing..." : "Test"}
+                            </Button>
                             {oauthStatus[selectedServer.id] && (
                               <>
-                                <Button size="sm" variant="secondary" onClick={() => checkOAuthStatus(selectedServer.id)}>Test</Button>
                                 <AlertDialog>
                                   <AlertDialogTrigger asChild>
                                     <Button size="sm" variant="destructive">Revoke</Button>
@@ -983,11 +1007,6 @@ export function McpServersPanel({
                         </CardContent>
                       </Card>
                     )}
-                  </div>
-                </TabsContent>
-
-                <TabsContent value="settings">
-                  <div className="space-y-6">
                     {/* Inline Edit Form */}
                     <Card>
                       <CardHeader>

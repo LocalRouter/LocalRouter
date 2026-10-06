@@ -81,36 +81,16 @@ pub async fn mcp_websocket_handler(
     }
 
     // Check MCP access using mcp_permissions (hierarchical)
-    if !client.mcp_permissions.global.is_enabled() && client.mcp_permissions.servers.is_empty() {
+    if !client.mcp_permissions.has_any_access() {
         return ApiErrorResponse::forbidden(
             "Client has no MCP server access. Configure mcp_permissions in client settings.",
         )
         .into_response();
     }
 
-    // Get allowed servers based on mcp_permissions
-    let all_server_ids: Vec<String> = state
-        .config_manager
-        .get()
-        .mcp_servers
-        .iter()
-        .map(|s| s.id.clone())
-        .collect();
-
-    let allowed_servers: Vec<String> = if client.mcp_permissions.global.is_enabled() {
-        all_server_ids
-    } else {
-        // Filter to only servers with explicit Allow/Ask permission
-        all_server_ids
-            .into_iter()
-            .filter(|server_id| {
-                client
-                    .mcp_permissions
-                    .resolve_server(server_id)
-                    .is_enabled()
-            })
-            .collect()
-    };
+    let allowed_servers = client
+        .mcp_permissions
+        .allowed_server_ids(&state.config_manager.get().mcp_servers);
 
     tracing::info!(
         "WebSocket connection from client {} with access to {} server(s)",
@@ -189,7 +169,11 @@ async fn handle_websocket(
                                 break;
                             }
                         }
-                        Err(_) => {
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!("WS notification forwarder lagged, skipped {} messages", n);
+                            continue;
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                             // Broadcast channel closed
                             break;
                         }
@@ -220,7 +204,11 @@ async fn handle_websocket(
                                 }
                             }
                         }
-                        Err(_) => {
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!("WS client notification forwarder lagged, skipped {} messages", n);
+                            continue;
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                             // Client notification broadcast channel closed
                             break;
                         }

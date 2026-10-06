@@ -322,22 +322,9 @@ pub(crate) async fn apply_model_access_checks(
                         .unwrap_or_default();
 
                     if is_mcp_via_llm {
-                        let all_ids: Vec<String> = state
-                            .config_manager
-                            .get()
-                            .mcp_servers
-                            .iter()
-                            .map(|s| s.id.clone())
-                            .collect();
-                        let allowed = if client.mcp_permissions.global.is_enabled() {
-                            all_ids.clone()
-                        } else {
-                            all_ids
-                                .iter()
-                                .filter(|id| client.mcp_permissions.has_any_enabled_for_server(id))
-                                .cloned()
-                                .collect()
-                        };
+                        let allowed = client
+                            .mcp_permissions
+                            .allowed_server_ids(&state.config_manager.get().mcp_servers);
                         match state
                             .mcp_via_llm_manager
                             .list_tools_for_preview(state.mcp_gateway.clone(), &client, allowed)

@@ -570,6 +570,13 @@ pub struct MergedCapabilities {
     pub instructions: Option<String>,
 }
 
+/// Broadcast key for notifications that belong to one gateway session (e.g.
+/// `tools/list_changed` after IndexSearch activates deferred tools). Routes
+/// forward these only to the connection serving that session.
+pub fn session_notification_key(session_key: &str) -> String {
+    format!("_session:{session_key}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

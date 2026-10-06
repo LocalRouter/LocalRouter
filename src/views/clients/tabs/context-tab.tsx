@@ -85,11 +85,14 @@ export function ClientContextTab({ client, onUpdate, onViewChange }: ContextTabP
 
   const isMcpViaLlm = client.mcp_mode === "via_llm"
 
-  // Context management is implicitly enabled when any indexing is configured (mirrors Rust is_enabled())
+  // Response indexing is implicitly enabled when any indexing is configured (mirrors Rust ContextManagementConfig::is_enabled())
+  const anyEnabled = (perms: ContextManagementConfig["gateway_indexing"]) =>
+    perms.global === "enable" ||
+    Object.values(perms.servers ?? {}).some(s => s === "enable") ||
+    Object.values(perms.tools ?? {}).some(s => s === "enable")
   const isGloballyEnabled = globalConfig != null && (
-    globalConfig.gateway_indexing.global === "enable" ||
-    Object.values(globalConfig.gateway_indexing.servers).some(s => s === "enable") ||
-    Object.values(globalConfig.gateway_indexing.tools).some(s => s === "enable") ||
+    anyEnabled(globalConfig.gateway_indexing) ||
+    anyEnabled(globalConfig.virtual_indexing) ||
     globalConfig.client_tools_indexing_default === "enable"
   )
 
@@ -106,7 +109,7 @@ export function ClientContextTab({ client, onUpdate, onViewChange }: ContextTabP
               <CardTitle className="text-base">{FEATURES.responseRag.name}</CardTitle>
             </div>
             <div className="flex items-center gap-1">
-              <InfoTooltip content="Indexes MCP tool descriptions for full-text search, allowing the router to serve only relevant tools per request instead of the full catalog." />
+              <InfoTooltip content="Indexes large MCP tool responses for full-text search and returns a compact preview instead of the full output. Independent of catalog indexing." />
               <TriStateButton
                 value={contextManagement}
                 onChange={handleContextManagementChange}
@@ -118,9 +121,9 @@ export function ClientContextTab({ client, onUpdate, onViewChange }: ContextTabP
             </div>
           </div>
           <CardDescription>
-            Enables context management: FTS5 search indexing of welcome messages and tool descriptions.
-            Requires client support for{" "}
-            <code className="px-1 py-0.5 rounded bg-muted text-xs">tools/listChanged</code> notifications.
+            Tool responses larger than the configured threshold are indexed (FTS5) and replaced with a
+            preview; the full content stays retrievable through the search and read tools. All MCP
+            tools remain listed.
           </CardDescription>
         </CardHeader>
         {globalConfig && isMcpViaLlm && (contextManagement === true || (contextManagement === null && isGloballyEnabled)) && (
@@ -145,7 +148,7 @@ export function ClientContextTab({ client, onUpdate, onViewChange }: ContextTabP
               <CardTitle className="text-base">{FEATURES.catalogCompression.name}</CardTitle>
             </div>
             <div className="flex items-center gap-1">
-              <InfoTooltip content="Defers tool/prompt/resource catalogs behind FTS5 search indexing, reducing initial context size for clients with large tool sets." />
+              <InfoTooltip content="Defers tool/prompt/resource catalogs behind FTS5 search indexing, reducing initial context size for clients with large tool sets. Independent of response indexing." />
               <TriStateButton
                 value={catalogCompression}
                 onChange={handleCatalogCompressionChange}

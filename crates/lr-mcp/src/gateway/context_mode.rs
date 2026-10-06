@@ -82,9 +82,14 @@ impl ContextModeVirtualServer {
 
 /// Per-session state for context-mode.
 pub struct ContextModeSessionState {
-    /// Whether this client has context management enabled.
+    /// Whether the search/read tools are exposed: either feature below is on.
     pub enabled: bool,
-    /// Whether catalog compression (deferral) is enabled.
+    /// Tool Responses Indexing: large tool responses are indexed and replaced
+    /// with a preview (`Client::is_context_management_enabled`).
+    pub response_indexing_enabled: bool,
+    /// MCP Catalog Indexing: the catalog is indexed and deferred behind the
+    /// search tool (`Client::is_catalog_compression_enabled`). Independent
+    /// of response indexing.
     pub catalog_compression_enabled: bool,
     /// Native content store (shared via Arc for cheap cloning).
     pub store: Arc<ContentStore>,
@@ -136,6 +141,7 @@ impl Clone for ContextModeSessionState {
     fn clone(&self) -> Self {
         Self {
             enabled: self.enabled,
+            response_indexing_enabled: self.response_indexing_enabled,
             catalog_compression_enabled: self.catalog_compression_enabled,
             store: self.store.clone(), // Arc clone — shares same ContentStore
             catalog_sources: self.catalog_sources.clone(),
@@ -272,6 +278,7 @@ impl VirtualMcpServer for ContextModeVirtualServer {
     fn is_enabled(&self, client: &lr_config::Client) -> bool {
         let config = self.config.read().unwrap();
         client.is_context_management_enabled(&config)
+            || client.is_catalog_compression_enabled(&config)
     }
 
     fn list_tools(&self, state: &dyn VirtualSessionState) -> Vec<McpTool> {
@@ -370,11 +377,19 @@ impl VirtualMcpServer for ContextModeVirtualServer {
             return None;
         }
 
+        let purpose = match (
+            state.catalog_compression_enabled,
+            state.response_indexing_enabled,
+        ) {
+            (true, true) => "discover MCP capabilities and retrieve compressed content",
+            (true, false) => "discover MCP capabilities",
+            _ => "retrieve compressed tool responses",
+        };
         Some(VirtualInstructions {
             section_title: "Context Management".to_string(),
             content: format!(
-                "Use {} to discover MCP capabilities and retrieve compressed content. Use {} to read full indexed sources.",
-                state.search_tool_name, state.read_tool_name
+                "Use {} to {}. Use {} to read full indexed sources.",
+                state.search_tool_name, purpose, state.read_tool_name
             ),
             tool_names: Vec::new(), // populated by gateway
             priority: 0,
@@ -383,7 +398,8 @@ impl VirtualMcpServer for ContextModeVirtualServer {
 
     fn create_session_state(&self, client: &lr_config::Client) -> Box<dyn VirtualSessionState> {
         let config = self.config.read().unwrap();
-        let enabled = client.is_context_management_enabled(&config);
+        let response_indexing_enabled = client.is_context_management_enabled(&config);
+        let catalog_compression_enabled = client.is_catalog_compression_enabled(&config);
 
         let store = Arc::new(ContentStore::new().expect("Failed to create in-memory ContentStore"));
 
@@ -395,8 +411,9 @@ impl VirtualMcpServer for ContextModeVirtualServer {
         }
 
         Box::new(ContextModeSessionState {
-            enabled,
-            catalog_compression_enabled: enabled && client.is_catalog_compression_enabled(&config),
+            enabled: response_indexing_enabled || catalog_compression_enabled,
+            response_indexing_enabled,
+            catalog_compression_enabled,
             store,
             catalog_sources: HashMap::new(),
             run_counters: HashMap::new(),
@@ -427,9 +444,9 @@ impl VirtualMcpServer for ContextModeVirtualServer {
             .downcast_mut::<ContextModeSessionState>()
             .expect("wrong state type for ContextModeVirtualServer");
 
-        state.enabled = client.is_context_management_enabled(&config);
-        state.catalog_compression_enabled =
-            state.enabled && client.is_catalog_compression_enabled(&config);
+        state.response_indexing_enabled = client.is_context_management_enabled(&config);
+        state.catalog_compression_enabled = client.is_catalog_compression_enabled(&config);
+        state.enabled = state.response_indexing_enabled || state.catalog_compression_enabled;
         state.catalog_threshold_bytes = config.catalog_threshold_bytes;
         state.response_threshold_bytes = config.response_threshold_bytes;
         state.search_tool_name = config.search_tool_name.clone();
@@ -1007,6 +1024,7 @@ mod tests {
     fn test_next_run_id_increments() {
         let mut state = ContextModeSessionState {
             enabled: true,
+            response_indexing_enabled: true,
             catalog_compression_enabled: true,
             store: Arc::new(ContentStore::new().unwrap()),
             catalog_sources: HashMap::new(),
@@ -1032,66 +1050,83 @@ mod tests {
         assert_eq!(state.next_run_id("fs__read_file"), 3);
     }
 
-    #[test]
-    fn test_session_state_cm_enabled_compression_follows() {
-        // Default config has is_enabled() == true
-        let config = lr_config::ContextManagementConfig::default();
-        let vs = ContextModeVirtualServer::new(config);
-        let mut client =
-            lr_config::Client::new_with_strategy("test".to_string(), "strat-1".to_string());
-        client.context_management_enabled = None;
-
-        let state = vs.create_session_state(&client);
-        let cm = state
+    fn cm_state(state: &dyn VirtualSessionState) -> &ContextModeSessionState {
+        state
             .as_any()
             .downcast_ref::<ContextModeSessionState>()
-            .unwrap();
+            .unwrap()
+    }
+
+    fn client_with(responses: Option<bool>, catalog: Option<bool>) -> lr_config::Client {
+        let mut client =
+            lr_config::Client::new_with_strategy("test".to_string(), "strat-1".to_string());
+        client.context_management_enabled = responses;
+        client.catalog_compression_enabled = catalog;
+        client
+    }
+
+    #[test]
+    fn test_session_state_inherits_global_defaults() {
+        // Defaults: indexing enabled (responses on), catalog_compression = true
+        let vs = ContextModeVirtualServer::new(lr_config::ContextManagementConfig::default());
+        let state = vs.create_session_state(&client_with(None, None));
+        let cm = cm_state(state.as_ref());
         assert!(cm.enabled);
-        // Catalog compression always follows CM enabled state
+        assert!(cm.response_indexing_enabled);
         assert!(cm.catalog_compression_enabled);
-    }
 
-    #[test]
-    fn test_session_state_cm_disabled_disables_all() {
-        // Default config has is_enabled() == true, but client overrides to false
-        let config = lr_config::ContextManagementConfig::default();
-        let vs = ContextModeVirtualServer::new(config);
-        let mut client =
-            lr_config::Client::new_with_strategy("test".to_string(), "strat-1".to_string());
-        client.context_management_enabled = Some(false);
-
-        let state = vs.create_session_state(&client);
-        let cm = state
-            .as_any()
-            .downcast_ref::<ContextModeSessionState>()
-            .unwrap();
-        assert!(!cm.enabled);
+        let vs = ContextModeVirtualServer::new(lr_config::ContextManagementConfig {
+            catalog_compression: false,
+            ..Default::default()
+        });
+        let state = vs.create_session_state(&client_with(None, None));
+        let cm = cm_state(state.as_ref());
+        assert!(cm.response_indexing_enabled);
         assert!(!cm.catalog_compression_enabled);
     }
 
     #[test]
-    fn test_update_session_state_compression_follows_enabled() {
-        let config = lr_config::ContextManagementConfig::default();
-        let vs = ContextModeVirtualServer::new(config);
-        let mut client =
-            lr_config::Client::new_with_strategy("test".to_string(), "strat-1".to_string());
+    fn test_response_indexing_and_catalog_compression_are_independent() {
+        let vs = ContextModeVirtualServer::new(lr_config::ContextManagementConfig::default());
+        for responses in [false, true] {
+            for catalog in [false, true] {
+                let state = vs.create_session_state(&client_with(Some(responses), Some(catalog)));
+                let cm = cm_state(state.as_ref());
+                assert_eq!(cm.response_indexing_enabled, responses);
+                assert_eq!(cm.catalog_compression_enabled, catalog);
+                // Search tools are exposed whenever either feature is on
+                assert_eq!(cm.enabled, responses || catalog);
+                assert_eq!(
+                    vs.list_tools(state.as_ref()).is_empty(),
+                    !(responses || catalog)
+                );
+                assert_eq!(
+                    vs.is_enabled(&client_with(Some(responses), Some(catalog))),
+                    responses || catalog
+                );
+            }
+        }
+    }
 
-        let mut state = vs.create_session_state(&client);
-        let cm = state
-            .as_any()
-            .downcast_ref::<ContextModeSessionState>()
-            .unwrap();
+    #[test]
+    fn test_update_session_state_toggles_each_feature_alone() {
+        let vs = ContextModeVirtualServer::new(lr_config::ContextManagementConfig::default());
+        let mut state = vs.create_session_state(&client_with(Some(false), Some(false)));
+        assert!(!cm_state(state.as_ref()).enabled);
+
+        // Turning catalog compression on must not turn response indexing on
+        vs.update_session_state(state.as_mut(), &client_with(Some(false), Some(true)));
+        let cm = cm_state(state.as_ref());
+        assert!(cm.enabled);
         assert!(cm.catalog_compression_enabled);
+        assert!(!cm.response_indexing_enabled);
 
-        // Disabling CM also disables catalog compression
-        client.context_management_enabled = Some(false);
-        vs.update_session_state(state.as_mut(), &client);
-
-        let cm = state
-            .as_any()
-            .downcast_ref::<ContextModeSessionState>()
-            .unwrap();
+        // ...and vice versa
+        vs.update_session_state(state.as_mut(), &client_with(Some(true), Some(false)));
+        let cm = cm_state(state.as_ref());
+        assert!(cm.enabled);
         assert!(!cm.catalog_compression_enabled);
+        assert!(cm.response_indexing_enabled);
     }
 
     #[test]
@@ -1106,6 +1141,7 @@ mod tests {
                 ..Default::default()
             },
             client_tools_indexing_default: lr_config::IndexingState::Disable,
+            catalog_compression: false,
             ..Default::default()
         };
         let vs = ContextModeVirtualServer::new(config);
@@ -1665,6 +1701,7 @@ mod tests {
                 ..Default::default()
             },
             client_tools_indexing_default: lr_config::IndexingState::Disable,
+            catalog_compression: false,
             ..Default::default()
         };
         let vs = ContextModeVirtualServer::new(config);

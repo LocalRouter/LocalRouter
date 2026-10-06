@@ -471,22 +471,9 @@ pub async fn create_response(
 /// `handle_mcp_via_llm`; kept inline here to avoid another helper
 /// extraction.
 fn compute_allowed_mcp_servers(state: &AppState, client: &lr_config::Client) -> Vec<String> {
-    let all_server_ids: Vec<String> = state
-        .config_manager
-        .get()
-        .mcp_servers
-        .iter()
-        .map(|s| s.id.clone())
-        .collect();
-    if client.mcp_permissions.global.is_enabled() {
-        all_server_ids
-    } else {
-        all_server_ids
-            .iter()
-            .filter(|id| client.mcp_permissions.has_any_enabled_for_server(id))
-            .cloned()
-            .collect()
-    }
+    client
+        .mcp_permissions
+        .allowed_server_ids(&state.config_manager.get().mcp_servers)
 }
 
 // ============================================================================

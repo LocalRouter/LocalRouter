@@ -13,7 +13,6 @@ use super::session::GatewaySession;
 use super::types::*;
 
 use super::gateway::McpGateway;
-use super::gateway_tools::apply_catalog_compression_prompts;
 
 impl McpGateway {
     /// Handle prompts/list request
@@ -27,11 +26,7 @@ impl McpGateway {
         // Check cache
         if let Some(cached) = &session_read.cached_prompts {
             if cached.is_valid() {
-                let prompts = apply_catalog_compression_prompts(
-                    &cached.data,
-                    session_read.catalog_compression.as_ref(),
-                    session_read.activated_prompts(),
-                );
+                let prompts = session_read.visible_prompts(&cached.data);
                 drop(session_read);
 
                 return Ok(JsonRpcResponse::success(
@@ -56,23 +51,15 @@ impl McpGateway {
         // Update session mappings, cache, and failures
         {
             let mut session_write = session.write().await;
-            session_write.update_prompt_mappings(&prompts);
+            session_write.update_prompt_mappings(&prompts, &failures);
             session_write.last_broadcast_failures = failures.clone();
 
             let cache_ttl = session_write.cache_ttl_manager.get_ttl();
             session_write.cached_prompts = Some(CachedList::new(prompts.clone(), cache_ttl));
         }
 
-        // Apply catalog compression (filter deferred prompts)
-        let prompts = {
-            let session_read = session.read().await;
-            let filtered = apply_catalog_compression_prompts(
-                &prompts,
-                session_read.catalog_compression.as_ref(),
-                session_read.activated_prompts(),
-            );
-            filtered
-        };
+        // Apply permissions and catalog compression (filter deferred prompts)
+        let prompts = session.read().await.visible_prompts(&prompts);
 
         let mut result = json!({"prompts": prompts});
         if !failures.is_empty() {
@@ -103,17 +90,14 @@ impl McpGateway {
 
         let (successes, failures) = separate_results(results);
 
-        // If all servers failed, return error
+        // Even if every server failed, return an empty list plus failures:
+        // virtual tools (skills, search, ...) are still served, and callers
+        // report the failures as partial_failure metadata.
         if successes.is_empty() && !failures.is_empty() {
-            let error_summary = failures
-                .iter()
-                .map(|f| format!("{}: {}", f.server_id, f.error))
-                .collect::<Vec<_>>()
-                .join("; ");
-            return Err(AppError::Mcp(format!(
-                "All servers failed to respond: {}",
-                error_summary
-            )));
+            tracing::warn!(
+                "prompts/list: all {} servers failed to respond",
+                failures.len()
+            );
         }
 
         // Parse prompts from results, exhausting pagination for each server
@@ -234,19 +218,59 @@ impl McpGateway {
             }
         };
 
-        // Look up prompt in session mapping to get server_id (UUID) and original_name
-        let session_read = session.read().await;
-        let (server_id, original_name) = match session_read.prompt_mapping.get(prompt_name) {
-            Some((id, name)) => (id.clone(), name.clone()),
-            None => {
-                drop(session_read);
-                return Ok(JsonRpcResponse::error(
-                    request.id.unwrap_or(Value::Null),
-                    JsonRpcError::prompt_not_found(prompt_name),
-                ));
+        // Look up prompt in session mapping to get server_id (UUID) and original_name.
+        // The mapping is filled by prompts/list; refresh once on a miss so a
+        // client holding a list from an earlier session can still get it.
+        let mut mapped = session
+            .read()
+            .await
+            .prompt_mapping
+            .get(prompt_name)
+            .cloned();
+        if mapped.is_none() {
+            let list_request = JsonRpcRequest::new(
+                Some(json!("_prompts_get_lookup")),
+                "prompts/list".to_string(),
+                None,
+            );
+            match self
+                .handle_prompts_list(session.clone(), list_request)
+                .await
+            {
+                Ok(_) => {
+                    mapped = session
+                        .read()
+                        .await
+                        .prompt_mapping
+                        .get(prompt_name)
+                        .cloned()
+                }
+                Err(e) => tracing::warn!(
+                    "prompts/get: refreshing prompt list for {} failed: {}",
+                    prompt_name,
+                    e
+                ),
             }
+        }
+        let Some((server_id, original_name)) = mapped else {
+            return Ok(JsonRpcResponse::error(
+                request.id.unwrap_or(Value::Null),
+                JsonRpcError::prompt_not_found(prompt_name),
+            ));
         };
-        drop(session_read);
+
+        let permitted = session
+            .read()
+            .await
+            .mcp_permissions
+            .resolve_prompt(&server_id, &original_name)
+            .is_enabled();
+        if !permitted {
+            return Ok(JsonRpcResponse::error(
+                request.id.unwrap_or(Value::Null),
+                JsonRpcError::prompt_not_found(prompt_name),
+            ));
+        }
 
         // Transform request: Strip namespace
         let mut transformed_request = request.clone();

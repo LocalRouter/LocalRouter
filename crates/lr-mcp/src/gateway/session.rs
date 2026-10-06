@@ -18,7 +18,13 @@ pub struct GatewaySession {
     /// Session key (SSE connection UUID for SSE, client_id for non-SSE)
     pub session_key: String,
 
-    /// List of MCP servers this client is allowed to access
+    /// Servers the session was created for (sorted). Compared against each
+    /// request's server list to detect permission/config changes; unlike
+    /// `allowed_servers` it is not narrowed when a server fails to start.
+    pub requested_servers: Vec<String>,
+
+    /// Servers this session currently routes to: the requested servers minus
+    /// any that failed to start.
     pub allowed_servers: Vec<String>,
 
     /// Initialization status for each server
@@ -164,9 +170,13 @@ impl GatewaySession {
             server_init_status.insert(server_id.clone(), InitStatus::NotStarted);
         }
 
+        let mut requested_servers = allowed_servers.clone();
+        requested_servers.sort();
+
         Self {
             session_key: client_id.clone(), // default; overridden by gateway for SSE
             client_id,
+            requested_servers,
             allowed_servers,
             server_init_status,
             merged_capabilities: None,
@@ -241,9 +251,14 @@ impl GatewaySession {
         self.last_activity = Instant::now();
     }
 
-    /// Update tool mappings from a list of namespaced tools
-    pub fn update_tool_mappings(&mut self, tools: &[NamespacedTool]) {
-        self.tool_mapping.clear();
+    /// Update tool mappings from a freshly fetched list of namespaced tools.
+    ///
+    /// Entries of servers in `failures` are kept: a transient `tools/list`
+    /// failure must not make that server's tools uncallable.
+    pub fn update_tool_mappings(&mut self, tools: &[NamespacedTool], failures: &[ServerFailure]) {
+        let failed = failed_server_ids(failures);
+        self.tool_mapping
+            .retain(|_, (server_id, _)| failed.contains(server_id.as_str()));
         for tool in tools {
             self.tool_mapping.insert(
                 tool.name.clone(),
@@ -252,10 +267,18 @@ impl GatewaySession {
         }
     }
 
-    /// Update resource mappings from a list of namespaced resources
-    pub fn update_resource_mappings(&mut self, resources: &[NamespacedResource]) {
-        self.resource_mapping.clear();
-        self.resource_uri_mapping.clear();
+    /// Update resource mappings from a freshly fetched list of namespaced
+    /// resources, keeping entries of servers in `failures`.
+    pub fn update_resource_mappings(
+        &mut self,
+        resources: &[NamespacedResource],
+        failures: &[ServerFailure],
+    ) {
+        let failed = failed_server_ids(failures);
+        self.resource_mapping
+            .retain(|_, (server_id, _)| failed.contains(server_id.as_str()));
+        self.resource_uri_mapping
+            .retain(|_, (server_id, _)| failed.contains(server_id.as_str()));
         for resource in resources {
             // Map by namespaced name
             self.resource_mapping.insert(
@@ -271,15 +294,117 @@ impl GatewaySession {
         }
     }
 
-    /// Update prompt mappings from a list of namespaced prompts
-    pub fn update_prompt_mappings(&mut self, prompts: &[NamespacedPrompt]) {
-        self.prompt_mapping.clear();
+    /// Update prompt mappings from a freshly fetched list of namespaced
+    /// prompts, keeping entries of servers in `failures`.
+    pub fn update_prompt_mappings(
+        &mut self,
+        prompts: &[NamespacedPrompt],
+        failures: &[ServerFailure],
+    ) {
+        let failed = failed_server_ids(failures);
+        self.prompt_mapping
+            .retain(|_, (server_id, _)| failed.contains(server_id.as_str()));
         for prompt in prompts {
             self.prompt_mapping.insert(
                 prompt.name.clone(),
                 (prompt.server_id.clone(), prompt.original_name.clone()),
             );
         }
+    }
+
+    /// The catalog compression plan, if catalog compression is currently
+    /// enabled for this client. The plan is computed at initialize; turning
+    /// the feature off mid-session stops deferral immediately.
+    pub fn active_catalog_compression(&self) -> Option<&CatalogCompressionPlan> {
+        let enabled = self
+            .virtual_server_state
+            .get("_context_mode")
+            .and_then(|s| s.as_any().downcast_ref::<ContextModeSessionState>())
+            .is_some_and(|cm| cm.catalog_compression_enabled);
+        if enabled {
+            self.catalog_compression.as_ref()
+        } else {
+            None
+        }
+    }
+
+    /// Tools to advertise in `tools/list`: those the client's permissions
+    /// enable, minus any deferred by catalog compression. Tools excluded from
+    /// indexing are never deferred — search could not surface them.
+    pub fn visible_tools(&self, tools: &[NamespacedTool]) -> Vec<NamespacedTool> {
+        let permitted: Vec<NamespacedTool> = tools
+            .iter()
+            .filter(|t| {
+                self.mcp_permissions
+                    .resolve_tool(&t.server_id, &t.original_name)
+                    .is_enabled()
+            })
+            .cloned()
+            .collect();
+        let Some(plan) = self.active_catalog_compression() else {
+            return permitted;
+        };
+        let kept: HashSet<String> = super::gateway_tools::apply_catalog_compression_tools(
+            &permitted,
+            Some(plan),
+            self.activated_tools(),
+        )
+        .into_iter()
+        .map(|t| t.name)
+        .collect();
+        let indexing = self
+            .virtual_server_state
+            .get("_context_mode")
+            .and_then(|s| s.as_any().downcast_ref::<ContextModeSessionState>())
+            .map(|cm| &cm.gateway_indexing);
+        permitted
+            .into_iter()
+            .filter(|t| {
+                kept.contains(&t.name)
+                    || indexing.is_some_and(|perms| {
+                        let slug = t.name.split_once("__").map_or(t.name.as_str(), |(s, _)| s);
+                        !perms.is_tool_eligible(slug, &t.original_name)
+                    })
+            })
+            .collect()
+    }
+
+    /// Resources to advertise in `resources/list` (permission-filtered by
+    /// URI, minus deferred).
+    pub fn visible_resources(&self, resources: &[NamespacedResource]) -> Vec<NamespacedResource> {
+        let permitted: Vec<NamespacedResource> = resources
+            .iter()
+            .filter(|r| {
+                self.mcp_permissions
+                    .resolve_resource(&r.server_id, &r.uri)
+                    .is_enabled()
+            })
+            .cloned()
+            .collect();
+        super::gateway_tools::apply_catalog_compression_resources(
+            &permitted,
+            self.active_catalog_compression(),
+            self.activated_resources(),
+        )
+    }
+
+    /// Prompts to advertise in `prompts/list` (permission-filtered, minus
+    /// deferred).
+    pub fn visible_prompts(&self, prompts: &[NamespacedPrompt]) -> Vec<NamespacedPrompt> {
+        let permitted: Vec<NamespacedPrompt> = prompts
+            .iter()
+            .filter(|p| {
+                self.mcp_permissions
+                    .resolve_prompt(&p.server_id, &p.original_name)
+                    .is_enabled()
+            })
+            .cloned()
+            .collect();
+        super::gateway_tools::apply_catalog_compression_prompts(
+            &permitted,
+            self.active_catalog_compression(),
+            self.activated_prompts(),
+        )
     }
 
     /// Invalidate tools cache
@@ -393,6 +518,10 @@ impl GatewaySession {
     }
 }
 
+fn failed_server_ids(failures: &[ServerFailure]) -> HashSet<&str> {
+    failures.iter().map(|f| f.server_id.as_str()).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -453,7 +582,7 @@ mod tests {
             input_schema: serde_json::json!({}),
         }];
 
-        session.update_tool_mappings(&tools);
+        session.update_tool_mappings(&tools, &[]);
 
         assert_eq!(session.tool_mapping.len(), 1);
         assert_eq!(
@@ -550,5 +679,237 @@ mod tests {
         // Get all subscriptions
         let all_subs = session.get_all_subscriptions();
         assert_eq!(all_subs.len(), 3);
+    }
+
+    // ── permission-aware visibility & mapping stability ─────────────
+
+    fn tool(server_id: &str, server_slug: &str, name: &str) -> NamespacedTool {
+        NamespacedTool {
+            name: format!("{server_slug}__{name}"),
+            original_name: name.to_string(),
+            server_id: server_id.to_string(),
+            description: None,
+            input_schema: serde_json::json!({}),
+        }
+    }
+
+    fn session_with_perms(perms: lr_config::McpPermissions) -> GatewaySession {
+        let mut session = GatewaySession::new(
+            "client".to_string(),
+            vec!["srv-a".to_string(), "srv-b".to_string()],
+            Duration::from_secs(3600),
+            300,
+            Vec::new(),
+        );
+        session.mcp_permissions = perms;
+        session
+    }
+
+    /// Install context-mode state for a client with the given feature flags.
+    fn install_context_mode(
+        session: &mut GatewaySession,
+        responses: Option<bool>,
+        catalog: Option<bool>,
+        config: lr_config::ContextManagementConfig,
+    ) {
+        use super::super::virtual_server::VirtualMcpServer;
+        let vs = super::super::context_mode::ContextModeVirtualServer::new(config);
+        let mut client = lr_config::Client::new_with_strategy("c".to_string(), "s".to_string());
+        client.context_management_enabled = responses;
+        client.catalog_compression_enabled = catalog;
+        session.virtual_server_state.insert(
+            "_context_mode".to_string(),
+            vs.create_session_state(&client),
+        );
+    }
+
+    fn defer_server(slug: &str) -> CatalogCompressionPlan {
+        CatalogCompressionPlan {
+            indexed_welcomes: Vec::new(),
+            deferred_servers: vec![DeferredServer {
+                server_slug: slug.to_string(),
+                batches: Vec::new(),
+                definition_savings: 0,
+            }],
+            welcome_toc_dropped: Vec::new(),
+            batch_toc_dropped: Vec::new(),
+        }
+    }
+
+    fn names(tools: &[NamespacedTool]) -> Vec<&str> {
+        tools.iter().map(|t| t.name.as_str()).collect()
+    }
+
+    #[test]
+    fn requested_servers_are_sorted_and_survive_trimming() {
+        let mut session = GatewaySession::new(
+            "client".to_string(),
+            vec!["b".to_string(), "a".to_string()],
+            Duration::from_secs(3600),
+            300,
+            Vec::new(),
+        );
+        assert_eq!(session.requested_servers, vec!["a", "b"]);
+        // A server failing to start narrows routing but not the requested set
+        session.allowed_servers.retain(|s| s != "b");
+        assert_eq!(session.requested_servers, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn visible_tools_applies_tool_overrides_over_global_allow() {
+        let mut perms = lr_config::McpPermissions {
+            global: lr_config::PermissionState::Allow,
+            ..Default::default()
+        };
+        perms
+            .tools
+            .insert("srv-a__delete".to_string(), lr_config::PermissionState::Off);
+        perms
+            .servers
+            .insert("srv-b".to_string(), lr_config::PermissionState::Off);
+        let session = session_with_perms(perms);
+
+        let tools = vec![
+            tool("srv-a", "a", "read"),
+            tool("srv-a", "a", "delete"),
+            tool("srv-b", "b", "read"),
+        ];
+        assert_eq!(names(&session.visible_tools(&tools)), vec!["a__read"]);
+    }
+
+    #[test]
+    fn visible_tools_tool_allow_under_server_off_shows_only_that_tool() {
+        let mut perms = lr_config::McpPermissions::default(); // global Off
+        perms
+            .servers
+            .insert("srv-a".to_string(), lr_config::PermissionState::Off);
+        perms
+            .tools
+            .insert("srv-a__read".to_string(), lr_config::PermissionState::Ask);
+        let session = session_with_perms(perms);
+
+        let tools = vec![tool("srv-a", "a", "read"), tool("srv-a", "a", "write")];
+        assert_eq!(names(&session.visible_tools(&tools)), vec!["a__read"]);
+    }
+
+    #[test]
+    fn visible_resources_and_prompts_follow_permissions() {
+        let mut perms = lr_config::McpPermissions {
+            global: lr_config::PermissionState::Allow,
+            ..Default::default()
+        };
+        perms.resources.insert(
+            "srv-a__file:///secret".to_string(),
+            lr_config::PermissionState::Off,
+        );
+        perms
+            .prompts
+            .insert("srv-a__hidden".to_string(), lr_config::PermissionState::Off);
+        let session = session_with_perms(perms);
+
+        let resource = |uri: &str, name: &str| NamespacedResource {
+            name: format!("a__{name}"),
+            original_name: name.to_string(),
+            server_id: "srv-a".to_string(),
+            uri: uri.to_string(),
+            description: None,
+            mime_type: None,
+        };
+        let resources = vec![
+            resource("file:///secret", "secret"),
+            resource("file:///open", "open"),
+        ];
+        let visible: Vec<String> = session
+            .visible_resources(&resources)
+            .into_iter()
+            .map(|r| r.uri)
+            .collect();
+        assert_eq!(visible, vec!["file:///open"]);
+
+        let prompt = |name: &str| NamespacedPrompt {
+            name: format!("a__{name}"),
+            original_name: name.to_string(),
+            server_id: "srv-a".to_string(),
+            description: None,
+            arguments: None,
+        };
+        let visible: Vec<String> = session
+            .visible_prompts(&[prompt("hidden"), prompt("shown")])
+            .into_iter()
+            .map(|p| p.name)
+            .collect();
+        assert_eq!(visible, vec!["a__shown"]);
+    }
+
+    #[test]
+    fn catalog_plan_is_ignored_when_catalog_compression_is_off() {
+        let mut session = session_with_perms(lr_config::McpPermissions {
+            global: lr_config::PermissionState::Allow,
+            ..Default::default()
+        });
+        session.catalog_compression = Some(defer_server("a"));
+        let tools = vec![tool("srv-a", "a", "read"), tool("srv-b", "b", "read")];
+
+        // Response indexing on, catalog compression off → nothing deferred
+        install_context_mode(
+            &mut session,
+            Some(true),
+            Some(false),
+            lr_config::ContextManagementConfig::default(),
+        );
+        assert!(session.active_catalog_compression().is_none());
+        assert_eq!(
+            names(&session.visible_tools(&tools)),
+            vec!["a__read", "b__read"]
+        );
+
+        // Catalog compression on → server a deferred
+        install_context_mode(
+            &mut session,
+            Some(false),
+            Some(true),
+            lr_config::ContextManagementConfig::default(),
+        );
+        assert!(session.active_catalog_compression().is_some());
+        assert_eq!(names(&session.visible_tools(&tools)), vec!["b__read"]);
+    }
+
+    #[test]
+    fn deferral_keeps_tools_excluded_from_indexing_visible() {
+        let mut session = session_with_perms(lr_config::McpPermissions {
+            global: lr_config::PermissionState::Allow,
+            ..Default::default()
+        });
+        session.catalog_compression = Some(defer_server("a"));
+        let mut config = lr_config::ContextManagementConfig::default();
+        config
+            .gateway_indexing
+            .tools
+            .insert("a__secret".to_string(), lr_config::IndexingState::Disable);
+        install_context_mode(&mut session, None, Some(true), config);
+
+        let tools = vec![tool("srv-a", "a", "read"), tool("srv-a", "a", "secret")];
+        // `read` is deferred (searchable); `secret` can't be searched, so it stays listed
+        assert_eq!(names(&session.visible_tools(&tools)), vec!["a__secret"]);
+    }
+
+    #[test]
+    fn tool_mappings_survive_a_failed_refresh_of_their_server() {
+        let mut session = session_with_perms(lr_config::McpPermissions::default());
+        session.update_tool_mappings(
+            &[tool("srv-a", "a", "read"), tool("srv-b", "b", "read")],
+            &[],
+        );
+
+        // srv-b times out on the next tools/list; srv-a drops a tool
+        session.update_tool_mappings(
+            &[],
+            &[ServerFailure {
+                server_id: "srv-b".to_string(),
+                error: "timeout".to_string(),
+            }],
+        );
+        assert!(session.tool_mapping.contains_key("b__read"));
+        assert!(!session.tool_mapping.contains_key("a__read"));
     }
 }

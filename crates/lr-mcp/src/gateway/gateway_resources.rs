@@ -13,7 +13,6 @@ use super::session::GatewaySession;
 use super::types::*;
 
 use super::gateway::McpGateway;
-use super::gateway_tools::apply_catalog_compression_resources;
 
 impl McpGateway {
     /// Handle resources/list request
@@ -28,11 +27,7 @@ impl McpGateway {
         // Check cache
         if let Some(cached) = &session_read.cached_resources {
             if cached.is_valid() {
-                let resources = apply_catalog_compression_resources(
-                    &cached.data,
-                    session_read.catalog_compression.as_ref(),
-                    session_read.activated_resources(),
-                );
+                let resources = session_read.visible_resources(&cached.data);
                 drop(session_read);
 
                 tracing::debug!(
@@ -76,7 +71,7 @@ impl McpGateway {
         // Update session mappings, cache, failures, and mark as fetched
         {
             let mut session_write = session.write().await;
-            session_write.update_resource_mappings(&resources);
+            session_write.update_resource_mappings(&resources, &failures);
             session_write.last_broadcast_failures = failures.clone();
             session_write.resources_list_fetched = true;
 
@@ -84,16 +79,8 @@ impl McpGateway {
             session_write.cached_resources = Some(CachedList::new(resources.clone(), cache_ttl));
         }
 
-        // Apply catalog compression (filter deferred resources)
-        let resources = {
-            let session_read = session.read().await;
-            let filtered = apply_catalog_compression_resources(
-                &resources,
-                session_read.catalog_compression.as_ref(),
-                session_read.activated_resources(),
-            );
-            filtered
-        };
+        // Apply permissions and catalog compression (filter deferred resources)
+        let resources = session.read().await.visible_resources(&resources);
 
         let mut result = json!({"resources": resources});
         if !failures.is_empty() {
@@ -124,17 +111,14 @@ impl McpGateway {
 
         let (successes, failures) = separate_results(results);
 
-        // If all servers failed, return error
+        // Even if every server failed, return an empty list plus failures:
+        // virtual tools (skills, search, ...) are still served, and callers
+        // report the failures as partial_failure metadata.
         if successes.is_empty() && !failures.is_empty() {
-            let error_summary = failures
-                .iter()
-                .map(|f| format!("{}: {}", f.server_id, f.error))
-                .collect::<Vec<_>>()
-                .join("; ");
-            return Err(AppError::Mcp(format!(
-                "All servers failed to respond: {}",
-                error_summary
-            )));
+            tracing::warn!(
+                "resources/list: all {} servers failed to respond",
+                failures.len()
+            );
         }
 
         // Parse resources from results, exhausting pagination for each server
@@ -315,7 +299,7 @@ impl McpGateway {
                     .ok_or_else(|| AppError::Mcp("Session not initialized".to_string()))?;
 
                 // Fetch resources/list to populate the URI mapping (only once per session)
-                let (resources, _failures) = self
+                let (resources, failures) = self
                     .fetch_and_merge_resources(
                         &allowed_servers,
                         JsonRpcRequest::new(
@@ -329,7 +313,7 @@ impl McpGateway {
 
                 // Update session mappings and mark as fetched
                 let mut session_write = session.write().await;
-                session_write.update_resource_mappings(&resources);
+                session_write.update_resource_mappings(&resources, &failures);
                 session_write.resources_list_fetched = true;
                 let new_mapping = session_write.resource_uri_mapping.get(uri).cloned();
                 drop(session_write);
@@ -367,6 +351,47 @@ impl McpGateway {
                 }
             }
         };
+
+        // Resource permissions are keyed by URI
+        let permitted = {
+            let session_read = session.read().await;
+            let uri = params
+                .get("uri")
+                .and_then(|u| u.as_str())
+                .map(str::to_string)
+                .or_else(|| {
+                    session_read
+                        .resource_uri_mapping
+                        .iter()
+                        .find(|(_, (sid, orig))| *sid == server_id && *orig == original_name)
+                        .map(|(uri, _)| uri.clone())
+                });
+            match uri {
+                Some(uri) => session_read
+                    .mcp_permissions
+                    .resolve_resource(&server_id, &uri)
+                    .is_enabled(),
+                None => session_read
+                    .mcp_permissions
+                    .resolve_server(&server_id)
+                    .is_enabled(),
+            }
+        };
+        if !permitted {
+            return Ok(JsonRpcResponse::error(
+                request.id.unwrap_or(Value::Null),
+                JsonRpcError::custom(
+                    not_found_code,
+                    format!(
+                        "Resource not found: {}",
+                        resource_name
+                            .or_else(|| params.get("uri").and_then(|u| u.as_str()))
+                            .unwrap_or_default()
+                    ),
+                    None,
+                ),
+            ));
+        }
 
         // Transform request based on routing method
         let mut transformed_request = request.clone();

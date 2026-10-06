@@ -483,181 +483,14 @@ impl McpServerManager {
             }
         };
 
-        // Apply auth config (if specified)
-        if let Some(auth_config) = &config.auth_config {
-            match auth_config {
-                lr_config::McpAuthConfig::BearerToken { token_ref: _ } => {
-                    // Retrieve token from keychain
-                    let keychain = lr_api_keys::CachedKeychain::auto()
-                        .unwrap_or_else(|_| lr_api_keys::CachedKeychain::system());
-                    // Token is stored with account name: {server_id}_bearer_token
-                    let account_name = format!("{}_bearer_token", config.id);
-                    if let Ok(Some(token)) =
-                        keychain.get(lr_config::MCP_KEYRING_SERVICE, &account_name)
-                    {
-                        headers.insert("Authorization".to_string(), format!("Bearer {}", token));
-                        tracing::debug!("Applied bearer token auth for SSE server: {}", server_id);
-                    } else {
-                        tracing::warn!("Bearer token not found in keychain for MCP server");
-                    }
-                }
-                lr_config::McpAuthConfig::CustomHeaders { header_refs } => {
-                    // Resolve header values from keychain
-                    let keychain = lr_api_keys::CachedKeychain::auto()
-                        .unwrap_or_else(|_| lr_api_keys::CachedKeychain::system());
-                    for (header_name, ref_key) in header_refs {
-                        match keychain.get(lr_config::MCP_KEYRING_SERVICE, ref_key) {
-                            Ok(Some(value)) => {
-                                headers.insert(header_name.clone(), value);
-                            }
-                            Ok(None) => {
-                                tracing::warn!(
-                                    "Header '{}' ref '{}' not found in keychain",
-                                    header_name,
-                                    ref_key
-                                );
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    "Failed to read header '{}' from keychain: {}",
-                                    header_name,
-                                    e
-                                );
-                            }
-                        }
-                    }
-                    tracing::debug!("Applied custom headers auth for SSE server: {}", server_id);
-                }
-                lr_config::McpAuthConfig::OAuth {
-                    client_id,
-                    client_secret_ref,
-                    token_url,
-                    scopes,
-                    ..
-                } => {
-                    // Get keychain
-                    let keychain = lr_api_keys::CachedKeychain::auto()
-                        .unwrap_or_else(|_| lr_api_keys::CachedKeychain::system());
-
-                    // Get client secret from keychain
-                    let client_secret = match keychain
-                        .get(lr_config::MCP_KEYRING_SERVICE, client_secret_ref)
-                    {
-                        Ok(Some(secret)) => secret,
-                        Ok(None) => {
-                            let msg =
-                                format!("OAuth client secret not found for server: {}", server_id);
-                            tracing::warn!(
-                                "OAuth client secret not found in keychain for MCP server"
-                            );
-                            self.emit_monitor_event(
-                                lr_monitor::MonitorEventType::OAuthEvent,
-                                None,
-                                None,
-                                None,
-                                lr_monitor::MonitorEventData::OAuthEvent {
-                                    action: "secret_retrieval_failed".to_string(),
-                                    client_id_hint: Some(server_id.to_string()),
-                                    message: msg.clone(),
-                                    status_code: 500,
-                                },
-                                lr_monitor::EventStatus::Error,
-                                None,
-                            );
-                            return Err(AppError::Mcp(msg));
-                        }
-                        Err(e) => {
-                            let msg = format!("Failed to retrieve OAuth client secret: {}", e);
-                            tracing::error!("{}", msg);
-                            self.emit_monitor_event(
-                                lr_monitor::MonitorEventType::OAuthEvent,
-                                None,
-                                None,
-                                None,
-                                lr_monitor::MonitorEventData::OAuthEvent {
-                                    action: "secret_retrieval_failed".to_string(),
-                                    client_id_hint: Some(server_id.to_string()),
-                                    message: msg,
-                                    status_code: 500,
-                                },
-                                lr_monitor::EventStatus::Error,
-                                None,
-                            );
-                            return Err(e);
-                        }
-                    };
-
-                    // Acquire OAuth token via Client Credentials flow
-                    tracing::debug!("Acquiring OAuth token for SSE server: {}", server_id);
-
-                    // Build token request
-                    let client = reqwest::Client::new();
-                    let mut form_params = vec![
-                        ("grant_type", "client_credentials"),
-                        ("client_id", client_id.as_str()),
-                        ("client_secret", client_secret.as_str()),
-                    ];
-
-                    // Add scopes if provided
-                    let scopes_str = scopes.join(" ");
-                    if !scopes.is_empty() {
-                        form_params.push(("scope", scopes_str.as_str()));
-                    }
-
-                    // Send token request
-                    let token_response = client
-                        .post(token_url)
-                        .form(&form_params)
-                        .send()
-                        .await
-                        .map_err(|e| AppError::Mcp(format!("OAuth token request failed: {}", e)))?;
-
-                    if !token_response.status().is_success() {
-                        let status = token_response.status();
-                        let body = token_response.text().await.unwrap_or_default();
-                        return Err(AppError::Mcp(format!(
-                            "OAuth token request failed with status {}: {}",
-                            status, body
-                        )));
-                    }
-
-                    // Parse token response
-                    let token_json: serde_json::Value =
-                        token_response.json().await.map_err(|e| {
-                            AppError::Mcp(format!("Failed to parse OAuth token response: {}", e))
-                        })?;
-
-                    let access_token = token_json
-                        .get("access_token")
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| {
-                            AppError::Mcp("OAuth response missing access_token".to_string())
-                        })?;
-
-                    // Add Authorization header with token
-                    headers.insert(
-                        "Authorization".to_string(),
-                        format!("Bearer {}", access_token),
-                    );
-
-                    tracing::info!("Applied OAuth token for SSE server: {}", server_id);
-                }
-                auth @ lr_config::McpAuthConfig::OAuthBrowser { .. } => {
-                    let token = self
-                        .oauth_manager
-                        .get_browser_token(&config.id, auth, &url)
-                        .await?;
-                    headers.insert("Authorization".to_string(), format!("Bearer {token}"));
-                }
-                _ => {
-                    // None or EnvVars (not applicable for SSE)
-                    tracing::debug!("No applicable auth config for SSE server: {}", server_id);
-                }
-            }
-        }
+        self.apply_auth_headers(server_id, config, &mut headers)
+            .await?;
 
         // Connect to the SSE server
         let transport = SseTransport::connect(url, headers).await?;
+        if config.auth_config.is_some() {
+            transport.set_auth_refresher(self.auth_refresher(server_id));
+        }
 
         // Set up notification callback
         let server_id_for_callback = server_id.to_string();
@@ -689,173 +522,8 @@ impl McpServerManager {
             }
         };
 
-        // Apply auth config (if specified)
-        if let Some(auth_config) = &config.auth_config {
-            match auth_config {
-                lr_config::McpAuthConfig::BearerToken { token_ref: _ } => {
-                    // Retrieve token from keychain
-                    let keychain = lr_api_keys::CachedKeychain::auto()
-                        .unwrap_or_else(|_| lr_api_keys::CachedKeychain::system());
-                    let account_name = format!("{}_bearer_token", config.id);
-                    if let Ok(Some(token)) =
-                        keychain.get(lr_config::MCP_KEYRING_SERVICE, &account_name)
-                    {
-                        headers.insert("Authorization".to_string(), format!("Bearer {}", token));
-                        tracing::debug!(
-                            "Applied bearer token auth for WebSocket server: {}",
-                            server_id
-                        );
-                    } else {
-                        tracing::warn!("Bearer token not found in keychain for MCP server");
-                    }
-                }
-                lr_config::McpAuthConfig::CustomHeaders { header_refs } => {
-                    // Resolve header values from keychain
-                    let keychain = lr_api_keys::CachedKeychain::auto()
-                        .unwrap_or_else(|_| lr_api_keys::CachedKeychain::system());
-                    for (header_name, ref_key) in header_refs {
-                        match keychain.get(lr_config::MCP_KEYRING_SERVICE, ref_key) {
-                            Ok(Some(value)) => {
-                                headers.insert(header_name.clone(), value);
-                            }
-                            Ok(None) => {
-                                tracing::warn!(
-                                    "Header '{}' ref '{}' not found in keychain",
-                                    header_name,
-                                    ref_key
-                                );
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    "Failed to read header '{}' from keychain: {}",
-                                    header_name,
-                                    e
-                                );
-                            }
-                        }
-                    }
-                    tracing::debug!(
-                        "Applied custom headers auth for WebSocket server: {}",
-                        server_id
-                    );
-                }
-                lr_config::McpAuthConfig::OAuth {
-                    client_id,
-                    client_secret_ref,
-                    token_url,
-                    scopes,
-                    ..
-                } => {
-                    // Get keychain
-                    let keychain = lr_api_keys::CachedKeychain::auto()
-                        .unwrap_or_else(|_| lr_api_keys::CachedKeychain::system());
-
-                    // Get client secret from keychain
-                    let client_secret = match keychain
-                        .get(lr_config::MCP_KEYRING_SERVICE, client_secret_ref)
-                    {
-                        Ok(Some(secret)) => secret,
-                        Ok(None) => {
-                            let msg =
-                                format!("OAuth client secret not found for server: {}", server_id);
-                            tracing::warn!(
-                                "OAuth client secret not found in keychain for MCP server"
-                            );
-                            self.emit_monitor_event(
-                                lr_monitor::MonitorEventType::OAuthEvent,
-                                None,
-                                None,
-                                None,
-                                lr_monitor::MonitorEventData::OAuthEvent {
-                                    action: "secret_retrieval_failed".to_string(),
-                                    client_id_hint: Some(server_id.to_string()),
-                                    message: msg.clone(),
-                                    status_code: 500,
-                                },
-                                lr_monitor::EventStatus::Error,
-                                None,
-                            );
-                            return Err(AppError::Mcp(msg));
-                        }
-                        Err(e) => {
-                            let msg = format!("Failed to retrieve OAuth client secret: {}", e);
-                            tracing::error!("{}", msg);
-                            self.emit_monitor_event(
-                                lr_monitor::MonitorEventType::OAuthEvent,
-                                None,
-                                None,
-                                None,
-                                lr_monitor::MonitorEventData::OAuthEvent {
-                                    action: "secret_retrieval_failed".to_string(),
-                                    client_id_hint: Some(server_id.to_string()),
-                                    message: msg,
-                                    status_code: 500,
-                                },
-                                lr_monitor::EventStatus::Error,
-                                None,
-                            );
-                            return Err(e);
-                        }
-                    };
-
-                    // Acquire OAuth token
-                    tracing::debug!("Acquiring OAuth token for WebSocket server: {}", server_id);
-
-                    let client = reqwest::Client::new();
-                    let mut form_params = vec![
-                        ("grant_type", "client_credentials"),
-                        ("client_id", client_id.as_str()),
-                        ("client_secret", client_secret.as_str()),
-                    ];
-
-                    let scopes_str = scopes.join(" ");
-                    if !scopes.is_empty() {
-                        form_params.push(("scope", scopes_str.as_str()));
-                    }
-
-                    let token_response = client
-                        .post(token_url)
-                        .form(&form_params)
-                        .send()
-                        .await
-                        .map_err(|e| AppError::Mcp(format!("OAuth token request failed: {}", e)))?;
-
-                    if !token_response.status().is_success() {
-                        let status = token_response.status();
-                        let body = token_response.text().await.unwrap_or_default();
-                        return Err(AppError::Mcp(format!(
-                            "OAuth token request failed with status {}: {}",
-                            status, body
-                        )));
-                    }
-
-                    let token_json: serde_json::Value =
-                        token_response.json().await.map_err(|e| {
-                            AppError::Mcp(format!("Failed to parse OAuth token response: {}", e))
-                        })?;
-
-                    let access_token = token_json
-                        .get("access_token")
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| {
-                            AppError::Mcp("OAuth response missing access_token".to_string())
-                        })?;
-
-                    headers.insert(
-                        "Authorization".to_string(),
-                        format!("Bearer {}", access_token),
-                    );
-
-                    tracing::info!("Applied OAuth token for WebSocket server: {}", server_id);
-                }
-                _ => {
-                    tracing::debug!(
-                        "No applicable auth config for WebSocket server: {}",
-                        server_id
-                    );
-                }
-            }
-        }
+        self.apply_auth_headers(server_id, config, &mut headers)
+            .await?;
 
         // Connect to the WebSocket server
         let transport = WebSocketTransport::connect(url, headers).await?;
@@ -1043,6 +711,9 @@ impl McpServerManager {
             .await?;
 
         let transport = SseTransport::connect(url, headers).await?;
+        if config.auth_config.is_some() {
+            transport.set_auth_refresher(self.auth_refresher(server_id));
+        }
         Ok(Arc::new(transport))
     }
 
@@ -1074,6 +745,39 @@ impl McpServerManager {
         server_id: &str,
         config: &McpServerConfig,
         headers: &mut HashMap<String, String>,
+    ) -> AppResult<()> {
+        self.apply_auth_headers_with(server_id, config, headers, false)
+            .await
+    }
+
+    /// Build a callback that re-resolves a server's auth headers after a
+    /// 401, forcing a browser-OAuth token refresh (the stored token was
+    /// rejected even if it looks unexpired).
+    fn auth_refresher(&self, server_id: &str) -> crate::transport::sse::AuthRefresher {
+        let manager = self.clone();
+        let server_id = server_id.to_string();
+        Arc::new(move || {
+            let manager = manager.clone();
+            let server_id = server_id.clone();
+            Box::pin(async move {
+                let config = manager
+                    .get_config(&server_id)
+                    .ok_or_else(|| AppError::Mcp(format!("Server not found: {}", server_id)))?;
+                let mut headers = HashMap::new();
+                manager
+                    .apply_auth_headers_with(&server_id, &config, &mut headers, true)
+                    .await?;
+                Ok(headers)
+            })
+        })
+    }
+
+    async fn apply_auth_headers_with(
+        &self,
+        server_id: &str,
+        config: &McpServerConfig,
+        headers: &mut HashMap<String, String>,
+        force_refresh: bool,
     ) -> AppResult<()> {
         let Some(auth_config) = &config.auth_config else {
             return Ok(());
@@ -1199,10 +903,15 @@ impl McpServerManager {
                         ))
                     }
                 };
-                let token = self
-                    .oauth_manager
-                    .get_browser_token(&config.id, auth, resource_url)
-                    .await?;
+                let token = if force_refresh {
+                    self.oauth_manager
+                        .refresh_browser_token(&config.id, auth, resource_url)
+                        .await?
+                } else {
+                    self.oauth_manager
+                        .get_browser_token(&config.id, auth, resource_url)
+                        .await?
+                };
                 headers.insert("Authorization".to_string(), format!("Bearer {token}"));
             }
             _ => {

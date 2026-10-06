@@ -67,8 +67,7 @@ impl StdioBridge {
 
         // Validate client has MCP servers configured using mcp_permissions
         let client = find_client_by_id(&client_id, &config)?;
-        if !client.mcp_permissions.global.is_enabled() && client.mcp_permissions.servers.is_empty()
-        {
+        if !client.mcp_permissions.has_any_access() {
             return Err(AppError::Config(format!(
                 "Client '{}' has no MCP servers configured. Set 'mcp_permissions' in config.yaml",
                 client_id
@@ -76,11 +75,10 @@ impl StdioBridge {
         }
 
         // Get server count for logging
-        let server_count = if client.mcp_permissions.global.is_enabled() {
-            config.mcp_servers.len()
-        } else {
-            client.mcp_permissions.servers.len()
-        };
+        let server_count = client
+            .mcp_permissions
+            .allowed_server_ids(&config.mcp_servers)
+            .len();
 
         info!(
             "Bridge initialized for client '{}' with {} MCP servers (global: {:?})",
@@ -355,10 +353,7 @@ fn find_first_enabled_client(config: &AppConfig) -> AppResult<&Client> {
     config
         .clients
         .iter()
-        .find(|c| {
-            c.enabled
-                && (c.mcp_permissions.global.is_enabled() || !c.mcp_permissions.servers.is_empty())
-        })
+        .find(|c| c.enabled && c.mcp_permissions.has_any_access())
         .ok_or_else(|| {
             AppError::Config(
                 "No enabled clients with MCP servers found. Configure a client in config.yaml"

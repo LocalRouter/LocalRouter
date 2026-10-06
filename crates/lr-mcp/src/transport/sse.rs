@@ -62,6 +62,20 @@ static STREAM_CLIENT: Lazy<Client> = Lazy::new(|| {
 /// Notification callback type for SSE transport
 pub type SseNotificationCallback = Arc<dyn Fn(JsonRpcNotification) + Send + Sync>;
 
+/// Produces fresh auth headers (e.g. `Authorization`) after the server
+/// rejects a request with 401 — OAuth access tokens expire while a
+/// long-lived transport keeps running.
+pub type AuthRefresher = Arc<
+    dyn Fn()
+            -> Pin<Box<dyn std::future::Future<Output = AppResult<HashMap<String, String>>> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// Request headers shared with the background stream task, so refreshed
+/// auth is used for stream reconnects too.
+type SharedHeaders = Arc<RwLock<HashMap<String, String>>>;
+
 /// SSE transport implementation
 ///
 /// Implements Streamable HTTP per MCP spec:
@@ -85,7 +99,10 @@ pub struct SseTransport {
     client: Client,
 
     /// Custom headers to include in requests
-    headers: HashMap<String, String>,
+    headers: SharedHeaders,
+
+    /// Refreshes auth headers after a 401
+    auth_refresher: Arc<RwLock<Option<AuthRefresher>>>,
 
     /// Pending requests waiting for responses
     /// Maps request ID to response sender
@@ -260,7 +277,7 @@ impl SseTransport {
                                 .post(&self.url)
                                 .json(&response)
                                 .header("Accept", "application/json, text/event-stream");
-                            for (key, value) in &self.headers {
+                            for (key, value) in self.headers.read().clone() {
                                 post = post.header(key, value);
                             }
                             if let Some(id) = self.session_id.read().clone() {
@@ -340,6 +357,7 @@ impl SseTransport {
         let message_endpoint = Arc::new(RwLock::new(None));
         let session_id = Arc::new(RwLock::new(None));
         let stream_session_id = session_id.clone();
+        let headers: SharedHeaders = Arc::new(RwLock::new(headers));
 
         // Start persistent SSE stream in background
         let stream_url = url.clone();
@@ -410,6 +428,7 @@ impl SseTransport {
             session_id,
             client,
             headers,
+            auth_refresher: Arc::new(RwLock::new(None)),
             pending,
             next_id: Arc::new(RwLock::new(1)),
             closed,
@@ -434,7 +453,7 @@ impl SseTransport {
     /// Uses exponential backoff for reconnection with a maximum of 10 attempts.
     async fn sse_stream_task(
         url: String,
-        headers: HashMap<String, String>,
+        headers: SharedHeaders,
         client: Client,
         pending: Arc<RwLock<HashMap<String, oneshot::Sender<JsonRpcResponse>>>>,
         closed: Arc<RwLock<bool>>,
@@ -473,7 +492,7 @@ impl SseTransport {
             let mut request = client.get(&url);
 
             // Add headers
-            for (key, value) in &headers {
+            for (key, value) in headers.read().clone() {
                 request = request.header(key, value);
             }
             request = request.header("Accept", "text/event-stream");
@@ -681,7 +700,7 @@ impl SseTransport {
                                                     .clone()
                                                     .unwrap_or_else(|| url.clone());
                                                 let response_client = client.clone();
-                                                let response_headers = headers.clone();
+                                                let response_headers = headers.read().clone();
                                                 let response_session = session_id.read().clone();
 
                                                 tokio::spawn(async move {
@@ -807,6 +826,30 @@ impl SseTransport {
         id
     }
 
+    /// Install the callback used to refresh auth headers after a 401.
+    pub fn set_auth_refresher(&self, refresher: AuthRefresher) {
+        *self.auth_refresher.write() = Some(refresher);
+    }
+
+    /// Run the auth refresher, merging the returned headers. Returns whether
+    /// the request should be retried.
+    async fn refresh_auth(&self) -> bool {
+        let Some(refresher) = self.auth_refresher.read().clone() else {
+            return false;
+        };
+        match refresher().await {
+            Ok(new_headers) => {
+                tracing::info!("SSE transport: refreshed auth after 401 for {}", self.url);
+                self.headers.write().extend(new_headers);
+                true
+            }
+            Err(e) => {
+                tracing::warn!("SSE transport: auth refresh for {} failed: {}", self.url, e);
+                false
+            }
+        }
+    }
+
     /// Check if the transport is healthy
     pub fn is_healthy(&self) -> bool {
         !*self.closed.read()
@@ -867,7 +910,7 @@ impl Transport for SseTransport {
             for (key, value) in mcp_request_headers(&request) {
                 req_builder = req_builder.header(key, value);
             }
-            for (key, value) in &self.headers {
+            for (key, value) in self.headers.read().clone() {
                 req_builder = req_builder.header(key, value);
             }
 
@@ -927,38 +970,49 @@ impl Transport for SseTransport {
             .clone()
             .unwrap_or_else(|| self.url.clone());
 
-        // Build POST request
-        let mut req_builder = self.client.post(&post_url).json(&request);
-        if let Some(id) = self.session_id.read().clone() {
-            req_builder = req_builder.header("Mcp-Session-Id", id);
-        }
+        // Send the POST; on 401 refresh auth once and retry (expired OAuth token)
+        let mut auth_refreshed = false;
+        let post_response = loop {
+            let mut req_builder = self.client.post(&post_url).json(&request);
+            if let Some(id) = self.session_id.read().clone() {
+                req_builder = req_builder.header("Mcp-Session-Id", id);
+            }
 
-        // Add Accept header for content negotiation
-        req_builder = req_builder.header("Accept", "application/json, text/event-stream");
+            // Add Accept header for content negotiation
+            req_builder = req_builder.header("Accept", "application/json, text/event-stream");
 
-        // Add standard MCP request headers (SEP-2243)
-        for (key, value) in mcp_request_headers(&request) {
-            req_builder = req_builder.header(key, value);
-        }
+            // Add standard MCP request headers (SEP-2243)
+            for (key, value) in mcp_request_headers(&request) {
+                req_builder = req_builder.header(key, value);
+            }
 
-        // Add custom headers
-        for (key, value) in &self.headers {
-            req_builder = req_builder.header(key, value);
-        }
+            // Add custom headers
+            let headers = self.headers.read().clone();
+            tracing::debug!(
+                "SSE POST request: url={}, method={}, header_names={:?}",
+                post_url,
+                request.method,
+                headers.keys().collect::<Vec<_>>()
+            );
+            for (key, value) in headers {
+                req_builder = req_builder.header(key, value);
+            }
 
-        tracing::debug!(
-            "SSE POST request: url={}, method={}, header_names={:?}",
-            post_url,
-            request.method,
-            self.headers.keys().collect::<Vec<_>>()
-        );
+            let response = req_builder.send().await.map_err(|e| {
+                // Remove from pending on error
+                self.pending.write().remove(&request_id);
+                AppError::Mcp(format!("Failed to send request: {}", e))
+            })?;
 
-        // Send POST request
-        let post_response = req_builder.send().await.map_err(|e| {
-            // Remove from pending on error
-            self.pending.write().remove(&request_id);
-            AppError::Mcp(format!("Failed to send request: {}", e))
-        })?;
+            if response.status() == reqwest::StatusCode::UNAUTHORIZED
+                && !auth_refreshed
+                && self.refresh_auth().await
+            {
+                auth_refreshed = true;
+                continue;
+            }
+            break response;
+        };
 
         // Check POST status (should be 202 Accepted or 200 OK)
         if !post_response.status().is_success() {
@@ -1077,7 +1131,7 @@ impl Transport for SseTransport {
         }
 
         // Add headers
-        for (key, value) in &self.headers {
+        for (key, value) in self.headers.read().clone() {
             req_builder = req_builder.header(key, value);
         }
         req_builder = req_builder.header("Accept", "text/event-stream");
@@ -1185,7 +1239,7 @@ impl Transport for SseTransport {
         }
         *self.session_id.write() = None;
         let url = self.url.clone();
-        let headers = self.headers.clone();
+        let headers = self.headers.read().clone();
         let callback = self.notification_callback.clone();
         let closed = self.closed.clone();
         let next_id = self.next_id.clone();
@@ -1308,6 +1362,106 @@ impl Transport for SseTransport {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Server that accepts only `Bearer fresh`, like an OAuth resource
+    /// server after the access token expired.
+    async fn spawn_token_checking_server() -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        use axum::{http::HeaderMap, response::IntoResponse, routing::post, Json, Router};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let rejected = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let rejected_count = rejected.clone();
+        let app = Router::new().route(
+            "/mcp",
+            post(
+                move |headers: HeaderMap, Json(request): Json<JsonRpcRequest>| {
+                    let rejected_count = rejected_count.clone();
+                    async move {
+                        let auth = headers
+                            .get("Authorization")
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or_default();
+                        if auth != "Bearer fresh" {
+                            rejected_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            return axum::http::StatusCode::UNAUTHORIZED.into_response();
+                        }
+                        Json(json!({"jsonrpc": "2.0", "id": request.id, "result": {"tools": []}}))
+                            .into_response()
+                    }
+                },
+            ),
+        );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (url, rejected)
+    }
+
+    #[tokio::test]
+    async fn unauthorized_request_refreshes_auth_and_retries_once() {
+        let (url, rejected) = spawn_token_checking_server().await;
+        let headers = HashMap::from([("Authorization".to_string(), "Bearer stale".to_string())]);
+        let transport = SseTransport::connect(url, headers).await.unwrap();
+        let refreshes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let refresh_count = refreshes.clone();
+        transport.set_auth_refresher(Arc::new(move || {
+            refresh_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async {
+                Ok(HashMap::from([(
+                    "Authorization".to_string(),
+                    "Bearer fresh".to_string(),
+                )]))
+            })
+        }));
+
+        let response = transport
+            .send_request(JsonRpcRequest::with_id(1, "tools/list".into(), None))
+            .await
+            .unwrap();
+        assert!(response.error.is_none());
+        assert_eq!(refreshes.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(rejected.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        // The refreshed header sticks: no further refresh or rejection
+        transport
+            .send_request(JsonRpcRequest::with_id(2, "tools/list".into(), None))
+            .await
+            .unwrap();
+        assert_eq!(refreshes.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(rejected.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn unauthorized_without_refresher_fails() {
+        let (url, _rejected) = spawn_token_checking_server().await;
+        let headers = HashMap::from([("Authorization".to_string(), "Bearer stale".to_string())]);
+        let transport = SseTransport::connect(url, headers).await.unwrap();
+        let err = transport
+            .send_request(JsonRpcRequest::with_id(1, "tools/list".into(), None))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("401"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn failed_refresh_does_not_loop() {
+        let (url, rejected) = spawn_token_checking_server().await;
+        let transport = SseTransport::connect(url, HashMap::new()).await.unwrap();
+        transport.set_auth_refresher(Arc::new(|| {
+            Box::pin(async {
+                Ok(HashMap::from([(
+                    "Authorization".to_string(),
+                    "Bearer still-bad".to_string(),
+                )]))
+            })
+        }));
+        assert!(transport
+            .send_request(JsonRpcRequest::with_id(1, "tools/list".into(), None))
+            .await
+            .is_err());
+        // Original attempt + exactly one retry
+        assert_eq!(rejected.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
 
     #[tokio::test]
     async fn legacy_http_preserves_session_and_query_and_reads_open_sse() {
@@ -1444,7 +1598,8 @@ mod tests {
             message_endpoint: Arc::new(RwLock::new(None)),
             session_id: Arc::new(RwLock::new(None)),
             client: Client::new(),
-            headers: HashMap::new(),
+            headers: Arc::new(RwLock::new(HashMap::new())),
+            auth_refresher: Arc::new(RwLock::new(None)),
             pending: Arc::new(RwLock::new(HashMap::new())),
             next_id: Arc::new(RwLock::new(1)),
             closed: Arc::new(RwLock::new(false)),

@@ -157,11 +157,7 @@ impl McpGateway {
         // Check cache
         if let Some(cached) = &session_read.cached_tools {
             if cached.is_valid() {
-                let filtered = apply_catalog_compression_tools(
-                    &cached.data,
-                    session_read.catalog_compression.as_ref(),
-                    session_read.activated_tools(),
-                );
+                let filtered = session_read.visible_tools(&cached.data);
                 let mut tools: Vec<serde_json::Value> = filtered
                     .iter()
                     .map(|t| serde_json::to_value(t).unwrap_or_default())
@@ -180,27 +176,11 @@ impl McpGateway {
             }
         }
 
-        let allowed_servers = session_read.allowed_servers.clone();
-        let transports = session_read
-            .transports
-            .clone()
-            .ok_or_else(|| AppError::Mcp("Session not initialized".to_string()))?;
         drop(session_read);
 
-        // Fetch from servers
-        let (tools, failures) = self
-            .fetch_and_merge_tools(&allowed_servers, request.clone(), &transports)
+        let tools = self
+            .refresh_tools_catalog(&session, request.clone())
             .await?;
-
-        // Update session mappings, cache, and failures
-        {
-            let mut session_write = session.write().await;
-            session_write.update_tool_mappings(&tools);
-            session_write.last_broadcast_failures = failures;
-
-            let cache_ttl = session_write.cache_ttl_manager.get_ttl();
-            session_write.cached_tools = Some(CachedList::new(tools.clone(), cache_ttl));
-        }
 
         // Check if there were any failures during fetch
         let session_read = session.read().await;
@@ -210,11 +190,7 @@ impl McpGateway {
         } else {
             None
         };
-        let filtered = apply_catalog_compression_tools(
-            &tools,
-            session_read.catalog_compression.as_ref(),
-            session_read.activated_tools(),
-        );
+        let filtered = session_read.visible_tools(&tools);
         let mut all_tools: Vec<serde_json::Value> = filtered
             .iter()
             .map(|t| serde_json::to_value(t).unwrap_or_default())
@@ -238,6 +214,37 @@ impl McpGateway {
         ))
     }
 
+    /// Fetch the merged tool list from the session's servers and store it as
+    /// the session's tool mappings, cache, and failures.
+    pub(crate) async fn refresh_tools_catalog(
+        &self,
+        session: &Arc<RwLock<GatewaySession>>,
+        request: JsonRpcRequest,
+    ) -> AppResult<Vec<NamespacedTool>> {
+        let (allowed_servers, transports) = {
+            let session_read = session.read().await;
+            (
+                session_read.allowed_servers.clone(),
+                session_read
+                    .transports
+                    .clone()
+                    .ok_or_else(|| AppError::Mcp("Session not initialized".to_string()))?,
+            )
+        };
+
+        let (tools, failures) = self
+            .fetch_and_merge_tools(&allowed_servers, request, &transports)
+            .await?;
+
+        let mut session_write = session.write().await;
+        session_write.update_tool_mappings(&tools, &failures);
+        session_write.last_broadcast_failures = failures;
+        let cache_ttl = session_write.cache_ttl_manager.get_ttl();
+        session_write.cached_tools = Some(CachedList::new(tools.clone(), cache_ttl));
+
+        Ok(tools)
+    }
+
     /// Fetch and merge tools from servers
     pub(crate) async fn fetch_and_merge_tools(
         &self,
@@ -253,17 +260,14 @@ impl McpGateway {
 
         let (successes, failures) = separate_results(results);
 
-        // If all servers failed, return error
+        // Even if every server failed, return an empty list plus failures:
+        // virtual tools (skills, search, ...) are still served, and callers
+        // report the failures as partial_failure metadata.
         if successes.is_empty() && !failures.is_empty() {
-            let error_summary = failures
-                .iter()
-                .map(|f| format!("{}: {}", f.server_id, f.error))
-                .collect::<Vec<_>>()
-                .join("; ");
-            return Err(AppError::Mcp(format!(
-                "All servers failed to respond: {}",
-                error_summary
-            )));
+            tracing::warn!(
+                "tools/list: all {} servers failed to respond",
+                failures.len()
+            );
         }
 
         // Parse tools from results, exhausting pagination for each server
@@ -406,18 +410,37 @@ impl McpGateway {
         // Look up tool in session mapping to get server_id (UUID) and original_name
         // The mapping stores: namespaced_name -> (server_id, original_name)
         // where namespaced_name uses human-readable server name but server_id is the UUID for routing
-        let session_read = session.read().await;
-        let (server_id, original_name) = match session_read.tool_mapping.get(&tool_name) {
-            Some((id, name)) => (id.clone(), name.clone()),
+        let mapped = session.read().await.tool_mapping.get(&tool_name).cloned();
+        let mapped = match mapped {
+            Some(m) => Some(m),
+            // The mapping is filled by tools/list. Clients may call a tool
+            // from a list they fetched on an earlier session (reconnect,
+            // session expiry, server restart), so refresh once before failing.
             None => {
-                drop(session_read);
-                return Ok(JsonRpcResponse::error(
-                    request.id.unwrap_or(Value::Null),
-                    JsonRpcError::tool_not_found(&tool_name),
-                ));
+                let list_request = JsonRpcRequest::new(
+                    Some(json!("_tools_call_lookup")),
+                    "tools/list".to_string(),
+                    None,
+                );
+                match self.refresh_tools_catalog(&session, list_request).await {
+                    Ok(_) => session.read().await.tool_mapping.get(&tool_name).cloned(),
+                    Err(e) => {
+                        tracing::warn!(
+                            "tools/call: refreshing tool list for {} failed: {}",
+                            tool_name,
+                            e
+                        );
+                        None
+                    }
+                }
             }
         };
-        drop(session_read);
+        let Some((server_id, original_name)) = mapped else {
+            return Ok(JsonRpcResponse::error(
+                request.id.unwrap_or(Value::Null),
+                JsonRpcError::tool_not_found(&tool_name),
+            ));
+        };
 
         // Firewall check for MCP tools
         // Pass both namespaced name (for session tracking/display) and original name (for permission lookup)
@@ -884,8 +907,7 @@ impl McpGateway {
 
         // Collect deferred virtual-server slugs from the compression plan
         let deferred_virtual: std::collections::HashSet<&str> = session
-            .catalog_compression
-            .as_ref()
+            .active_catalog_compression()
             .map(|plan| {
                 plan.deferred_servers
                     .iter()
@@ -1155,7 +1177,10 @@ impl McpGateway {
                             method: "notifications/tools/list_changed".to_string(),
                             params: None,
                         };
-                        let _ = broadcast.send((vs.id().to_string(), notification));
+                        // The change is this session's (activated tools,
+                        // newly installed server): notify only its client.
+                        let key = session_notification_key(&session.read().await.session_key);
+                        let _ = broadcast.send((key, notification));
                     }
                 }
                 Ok(JsonRpcResponse::success(
@@ -1255,7 +1280,9 @@ impl McpGateway {
                     .as_any_mut()
                     .downcast_mut::<super::context_mode::ContextModeSessionState>(
                 ) {
-                    if !cm_state.enabled || full_text.len() <= cm_state.response_threshold_bytes {
+                    if !cm_state.response_indexing_enabled
+                        || full_text.len() <= cm_state.response_threshold_bytes
+                    {
                         return response;
                     }
                     // Skip compression for our own search/read tools
@@ -1393,7 +1420,7 @@ fn extract_server_slug(namespaced_name: &str) -> &str {
 /// Apply catalog compression plan to a tools list:
 /// 1. Filter out tools from servers whose tools are deferred
 /// 2. Re-include tools that were individually activated via ctx_search
-fn apply_catalog_compression_tools(
+pub(crate) fn apply_catalog_compression_tools(
     tools: &[NamespacedTool],
     plan: Option<&CatalogCompressionPlan>,
     activated: Option<&std::collections::HashSet<String>>,

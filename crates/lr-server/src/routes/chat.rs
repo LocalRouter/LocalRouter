@@ -388,23 +388,9 @@ async fn handle_mcp_via_llm(
         .map_err(|_| ApiErrorResponse::internal_error("Client lookup failed"))?;
 
     // Compute allowed MCP servers respecting client's mcp_permissions
-    let all_server_ids: Vec<String> = state
-        .config_manager
-        .get()
-        .mcp_servers
-        .iter()
-        .map(|s| s.id.clone())
-        .collect();
-
-    let allowed_servers: Vec<String> = if client.mcp_permissions.global.is_enabled() {
-        all_server_ids
-    } else {
-        all_server_ids
-            .iter()
-            .filter(|server_id| client.mcp_permissions.has_any_enabled_for_server(server_id))
-            .cloned()
-            .collect()
-    };
+    let allowed_servers = client
+        .mcp_permissions
+        .allowed_server_ids(&state.config_manager.get().mcp_servers);
 
     // Run model firewall with augmented request (MCP tools visible in popup)
     if request.model != "localrouter/auto" {

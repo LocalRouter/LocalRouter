@@ -914,6 +914,31 @@ impl McpOAuthManager {
         auth: &lr_config::McpAuthConfig,
         resource_url: &str,
     ) -> AppResult<String> {
+        self.browser_token(server_id, auth, resource_url, false)
+            .await
+    }
+
+    /// Refresh the browser token even if the stored one has not expired —
+    /// used after the server rejected it (revoked, or expiry clock skew).
+    pub async fn refresh_browser_token(
+        &self,
+        server_id: &str,
+        auth: &lr_config::McpAuthConfig,
+        resource_url: &str,
+    ) -> AppResult<String> {
+        self.browser_token(server_id, auth, resource_url, true)
+            .await
+    }
+
+    async fn browser_token(
+        &self,
+        server_id: &str,
+        auth: &lr_config::McpAuthConfig,
+        resource_url: &str,
+        force_refresh: bool,
+    ) -> AppResult<String> {
+        // Refresh slightly before expiry so a token is never sent just as it lapses
+        const EXPIRY_MARGIN_SECS: i64 = 60;
         let refresh_lock = self
             .browser_refresh_locks
             .entry(server_id.to_string())
@@ -937,7 +962,10 @@ impl McpOAuthManager {
             .keychain
             .get(MCP_OAUTH_SERVICE, &format!("{server_id}_expires_at"))?
             .and_then(|value| value.parse::<i64>().ok());
-        if expiry.is_none_or(|timestamp| timestamp > Utc::now().timestamp()) {
+        if !force_refresh
+            && expiry
+                .is_none_or(|timestamp| timestamp > Utc::now().timestamp() + EXPIRY_MARGIN_SECS)
+        {
             if let Some(token) = self
                 .keychain
                 .get(MCP_OAUTH_SERVICE, &format!("{server_id}_access_token"))?

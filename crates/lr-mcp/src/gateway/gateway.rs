@@ -545,6 +545,7 @@ impl McpGateway {
             lr_config::PermissionState::default(), // mcp_sampling_permission
             lr_config::PermissionState::default(), // mcp_elicitation_permission
             None,                            // memory_enabled
+            None,                            // memory_folder
             lr_config::ClientMode::default(), // client_mode
             request,
             None, // monitor_session_id
@@ -573,6 +574,7 @@ impl McpGateway {
         mcp_sampling_permission: lr_config::PermissionState,
         mcp_elicitation_permission: lr_config::PermissionState,
         memory_enabled: Option<bool>,
+        memory_folder: Option<String>,
         client_mode: lr_config::ClientMode,
         request: JsonRpcRequest,
         monitor_session_id: Option<String>,
@@ -612,12 +614,9 @@ impl McpGateway {
         // The old task continues on its orphaned Arc but won't block new tasks.
         if method == "initialize" {
             if let Some((_, old_session)) = self.sessions.remove(session_key) {
-                // Close per-session transports before re-initializing
-                if let Ok(session_read) = old_session.try_read() {
-                    if let Some(transports) = &session_read.transports {
-                        transports.close_all().await;
-                    }
-                }
+                // Close the old session's transports in the background: a
+                // task still running on it may hold its lock for a while.
+                tokio::spawn(async move { close_session_transports(&old_session).await });
                 tracing::info!(
                     "Gateway: removed stale session for session_key={} before re-initialize",
                     session_key
@@ -633,6 +632,10 @@ impl McpGateway {
         // Build a synthetic Client for virtual server state updates
         let synthetic_client = {
             let mut c = lr_config::Client::new_with_strategy(client_name.clone(), String::new());
+            // Virtual servers key per-client state (e.g. the memory folder) on
+            // the real client identity
+            c.id = client_id.to_string();
+            c.memory_folder = memory_folder;
             c.mcp_permissions = mcp_permissions.clone();
             c.skills_permissions = skills_permissions.clone();
             c.marketplace_permission = marketplace_permission.clone();
@@ -1019,8 +1022,10 @@ impl McpGateway {
         allowed_servers: Vec<String>,
         roots: Vec<crate::protocol::Root>,
     ) -> AppResult<Arc<RwLock<GatewaySession>>> {
-        // Check if session exists
-        if let Some(session) = self.sessions.get(session_key) {
+        // Check if session exists (clone the Arc out: holding the DashMap
+        // entry across the awaits below would block the shard)
+        let existing = self.sessions.get(session_key).map(|s| s.value().clone());
+        if let Some(session) = existing {
             let session_read = session.read().await;
 
             // Check if expired
@@ -1039,11 +1044,13 @@ impl McpGateway {
                 // Check if allowed servers changed (e.g. switching between direct/all modes)
                 // If so, drop the stale session and create a fresh one since cached state
                 // (tool mappings, init statuses, etc.) is tied to the server list
+                // Compare against the requested set, not `allowed_servers`:
+                // the latter drops servers that failed to start, and comparing
+                // it would rebuild the session (wiping tool mappings) on every
+                // request while any server is down.
                 let mut servers_sorted = allowed_servers.clone();
                 servers_sorted.sort();
-                let mut existing_sorted = session_read.allowed_servers.clone();
-                existing_sorted.sort();
-                let servers_changed = servers_sorted != existing_sorted;
+                let servers_changed = servers_sorted != session_read.requested_servers;
                 // Clone transports before dropping the read lock
                 let transports = if servers_changed {
                     session_read.transports.clone()
@@ -2406,8 +2413,10 @@ impl McpGateway {
 
         let virtual_instructions = self.collect_virtual_instructions(&session).await;
 
-        // Check if context management is enabled for this session
-        let (cm_enabled, cm_catalog_threshold, cm_search_tool_name) = {
+        // Catalog indexing and deferral run only when MCP Catalog Indexing
+        // (catalog compression) is on; Tool Responses Indexing alone leaves
+        // the catalog fully visible.
+        let (catalog_enabled, cm_catalog_threshold, cm_search_tool_name) = {
             let session_read = session.read().await;
             if let Some(state) = session_read.virtual_server_state.get("_context_mode") {
                 if let Some(cm_state) = state
@@ -2415,7 +2424,7 @@ impl McpGateway {
                     .downcast_ref::<super::context_mode::ContextModeSessionState>()
                 {
                     (
-                        cm_state.enabled,
+                        cm_state.catalog_compression_enabled,
                         cm_state.catalog_threshold_bytes,
                         cm_state.search_tool_name.clone(),
                     )
@@ -2481,13 +2490,13 @@ impl McpGateway {
         // Context management: index catalog into native FTS5 store synchronously
         // (before computing compression plan, which needs index results).
         // Also compute item definition sizes for the threshold calculation.
-        let item_definition_sizes = if cm_enabled {
+        let item_definition_sizes = if catalog_enabled {
             compute_item_definition_sizes(&tools_catalog, &resources_catalog, &prompts_catalog)
         } else {
             std::collections::HashMap::new()
         };
 
-        if cm_enabled {
+        if catalog_enabled {
             let session_bg = session.clone();
             let server_infos_bg = server_infos.clone();
             let tools_catalog_bg = tools_catalog.clone();
@@ -2690,15 +2699,15 @@ impl McpGateway {
         let mut instructions_ctx = InstructionsContext {
             servers: server_infos,
             unavailable_servers: unavailable,
-            context_management_enabled: cm_enabled,
+            context_management_enabled: catalog_enabled,
             catalog_compression: None,
             virtual_instructions,
             search_tool_name: cm_search_tool_name,
             item_definition_sizes,
         };
 
-        // Context management: compute compression plan
-        if cm_enabled {
+        // Catalog compression: compute deferral plan
+        if catalog_enabled {
             // Context-mode provides its own discovery via ctx_search, so always
             // enable deferral when it's active — don't require client listChanged support.
             let supports_tools_changed = true;
@@ -2826,13 +2835,8 @@ impl McpGateway {
         }
 
         for (session_key, session) in to_remove {
-            // Close per-session transports before removing
-            if let Ok(session_read) = session.try_read() {
-                if let Some(transports) = &session_read.transports {
-                    transports.close_all().await;
-                }
-            }
             self.sessions.remove(&session_key);
+            close_session_transports(&session).await;
             tracing::info!("Removed expired gateway session: {}", session_key);
         }
     }
@@ -2956,17 +2960,14 @@ impl McpGateway {
                 session_write.invalidate_prompts_cache();
             }
 
-            // Update allowed_servers based on new permissions
-            let new_allowed: Vec<String> = if new_mcp.global.is_enabled() {
-                all_enabled_server_ids.to_vec()
-            } else {
-                all_enabled_server_ids
-                    .iter()
-                    .filter(|sid| new_mcp.has_any_enabled_for_server(sid))
-                    .cloned()
-                    .collect()
+            // Stop routing to servers that lost access. Servers that gained
+            // access have no transport in this session yet; the next request
+            // carries the wider server list and rebuilds the session.
+            let still_allowed = |sid: &String| {
+                all_enabled_server_ids.contains(sid) && new_mcp.has_any_enabled_for_server(sid)
             };
-            session_write.allowed_servers = new_allowed;
+            session_write.allowed_servers.retain(still_allowed);
+            session_write.requested_servers.retain(still_allowed);
 
             // Update stored snapshots
             session_write.mcp_permissions = new_mcp.clone();
@@ -3078,12 +3079,7 @@ impl McpGateway {
     /// Closes all per-session transports before removing.
     pub async fn terminate_session(&self, session_key: &str) -> Result<(), String> {
         if let Some((_, session)) = self.sessions.remove(session_key) {
-            // Close per-session transports
-            if let Ok(session_read) = session.try_read() {
-                if let Some(transports) = &session_read.transports {
-                    transports.close_all().await;
-                }
-            }
+            close_session_transports(&session).await;
             tracing::info!(
                 "Gateway: terminated session for session_key={}",
                 session_key
@@ -3096,27 +3092,24 @@ impl McpGateway {
 
     /// Terminate all sessions for a given client ID.
     pub async fn terminate_sessions_for_client(&self, client_id: &str) -> usize {
-        let keys_to_remove: Vec<String> = self
+        // Snapshot first: awaiting session locks while iterating would hold
+        // DashMap shard locks across the await.
+        let all_sessions: Vec<(String, Arc<RwLock<GatewaySession>>)> = self
             .sessions
             .iter()
-            .filter_map(|entry| {
-                if let Ok(session_read) = entry.value().try_read() {
-                    if session_read.client_id == client_id {
-                        return Some(entry.key().clone());
-                    }
-                }
-                None
-            })
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
             .collect();
+        let mut keys_to_remove = Vec::new();
+        for (key, session) in all_sessions {
+            if session.read().await.client_id == client_id {
+                keys_to_remove.push(key);
+            }
+        }
 
         let count = keys_to_remove.len();
         for key in &keys_to_remove {
             if let Some((_, session)) = self.sessions.remove(key) {
-                if let Ok(session_read) = session.try_read() {
-                    if let Some(transports) = &session_read.transports {
-                        transports.close_all().await;
-                    }
-                }
+                close_session_transports(&session).await;
             }
         }
         if count > 0 {
@@ -3668,4 +3661,20 @@ pub struct CatalogSourceEntry {
     pub source_label: String,
     pub item_type: String,
     pub activated: bool,
+}
+
+/// Close a removed session's backend transports (stdio processes, HTTP
+/// streams). Waits briefly for the session lock instead of skipping a busy
+/// session, which would leak its processes.
+async fn close_session_transports(session: &Arc<RwLock<GatewaySession>>) {
+    let transports = match tokio::time::timeout(Duration::from_secs(5), session.read()).await {
+        Ok(session_read) => session_read.transports.clone(),
+        Err(_) => {
+            tracing::warn!("Timed out waiting for session lock; closing transports skipped");
+            None
+        }
+    };
+    if let Some(transports) = transports {
+        transports.close_all().await;
+    }
 }

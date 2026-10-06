@@ -163,6 +163,7 @@ async fn test_skills_e2e_all_tool_commands() {
             lr_config::PermissionState::default(), // mcp_sampling_permission
             lr_config::PermissionState::default(), // mcp_elicitation_permission
             None,                                  // memory_enabled
+            None,                                  // memory_folder
             lr_config::ClientMode::default(),
             tools_list_req,
             None, // monitor_session_id
@@ -220,6 +221,7 @@ async fn test_skills_e2e_all_tool_commands() {
             lr_config::PermissionState::default(), // mcp_sampling_permission
             lr_config::PermissionState::default(), // mcp_elicitation_permission
             None,                                  // memory_enabled
+            None,                                  // memory_folder
             lr_config::ClientMode::default(),
             show_req,
             None, // monitor_session_id
@@ -274,6 +276,7 @@ async fn test_skills_e2e_all_tool_commands() {
             lr_config::PermissionState::default(), // mcp_sampling_permission
             lr_config::PermissionState::default(), // mcp_elicitation_permission
             None,                                  // memory_enabled
+            None,                                  // memory_folder
             lr_config::ClientMode::default(),
             tools_list_req2,
             None, // monitor_session_id
@@ -362,6 +365,7 @@ async fn init_skills_session(gateway: &McpGateway, client_id: &str) {
             lr_config::PermissionState::default(),
             lr_config::PermissionState::default(),
             None,
+            None, // memory_folder
             lr_config::ClientMode::default(),
             init,
             None,
@@ -405,6 +409,7 @@ async fn test_no_skill_tools_when_no_skills_configured() {
             lr_config::PermissionState::default(), // mcp_sampling_permission
             lr_config::PermissionState::default(), // mcp_elicitation_permission
             None,                                  // memory_enabled
+            None,                                  // memory_folder
             lr_config::ClientMode::default(),
             req,
             None, // monitor_session_id
@@ -455,6 +460,7 @@ async fn test_skill_tools_present_after_cache_hit() {
             lr_config::PermissionState::default(), // mcp_sampling_permission
             lr_config::PermissionState::default(), // mcp_elicitation_permission
             None,                                  // memory_enabled
+            None,                                  // memory_folder
             lr_config::ClientMode::default(),
             req,
             None, // monitor_session_id
@@ -487,6 +493,7 @@ async fn test_skill_tools_present_after_cache_hit() {
             lr_config::PermissionState::default(), // mcp_sampling_permission
             lr_config::PermissionState::default(), // mcp_elicitation_permission
             None,                                  // memory_enabled
+            None,                                  // memory_folder
             lr_config::ClientMode::default(),
             req2,
             None, // monitor_session_id

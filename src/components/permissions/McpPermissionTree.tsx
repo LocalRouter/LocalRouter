@@ -22,12 +22,48 @@ interface McpPermissionTreeProps extends PermissionTreeProps {
   permissions: McpPermissions
 }
 
+/** Split `prefix__rest` at the first separator; server IDs never contain `__`,
+ *  but tool names and resource URIs may. */
+function splitOnce(key: string): [string, string] | null {
+  const idx = key.indexOf("__")
+  return idx === -1 ? null : [key.slice(0, idx), key.slice(idx + 2)]
+}
+
+/** Parse a tree node key: `serverId` or `serverId__{tool|resource|prompt}__name`. */
+function parseMcpNodeKey(
+  key: string,
+): { serverId: string } | { serverId: string; type: "tool" | "resource" | "prompt"; name: string } | null {
+  const first = splitOnce(key)
+  if (!first) return { serverId: key }
+  const [serverId, rest] = first
+  const second = splitOnce(rest)
+  if (!second) return null
+  const [type, name] = second
+  if (type !== "tool" && type !== "resource" && type !== "prompt") return null
+  return { serverId, type, name }
+}
+
 export function McpPermissionTree({ clientId, permissions, onUpdate }: McpPermissionTreeProps) {
   const [servers, setServers] = useState<McpServer[]>([])
   const [capabilities, setCapabilities] = useState<Record<string, McpServerCapabilities>>({})
+  const [capabilityErrors, setCapabilityErrors] = useState<Record<string, string>>({})
   const [loadingServers, setLoadingServers] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+
+  const fetchCapabilities = useCallback(async (serverId: string) => {
+    try {
+      const caps = await invoke<McpServerCapabilities>("get_mcp_server_capabilities", { serverId })
+      setCapabilities((prev) => ({ ...prev, [serverId]: caps }))
+      setCapabilityErrors((prev) => {
+        const { [serverId]: _, ...rest } = prev
+        return rest
+      })
+    } catch (error) {
+      console.error(`Failed to load capabilities for ${serverId}:`, error)
+      setCapabilityErrors((prev) => ({ ...prev, [serverId]: `Failed to load tools: ${error}` }))
+    }
+  }, [])
 
   const loadServers = useCallback(async () => {
     try {
@@ -44,12 +80,7 @@ export function McpPermissionTree({ clientId, permissions, onUpdate }: McpPermis
       await Promise.all(
         enabledServers.map(async (server) => {
           try {
-            const caps = await invoke<McpServerCapabilities>("get_mcp_server_capabilities", {
-              serverId: server.id,
-            })
-            setCapabilities((prev) => ({ ...prev, [server.id]: caps }))
-          } catch (error) {
-            console.error(`Failed to load capabilities for ${server.id}:`, error)
+            await fetchCapabilities(server.id)
           } finally {
             setLoadingServers((prev) => {
               const next = new Set(prev)
@@ -63,7 +94,7 @@ export function McpPermissionTree({ clientId, permissions, onUpdate }: McpPermis
       console.error("Failed to load MCP servers:", error)
       setLoading(false)
     }
-  }, [])
+  }, [fetchCapabilities])
 
   useEffect(() => {
     loadServers()
@@ -79,15 +110,7 @@ export function McpPermissionTree({ clientId, permissions, onUpdate }: McpPermis
 
   const loadCapabilities = async (serverId: string) => {
     if (capabilities[serverId]) return // Already loaded
-
-    try {
-      const caps = await invoke<McpServerCapabilities>("get_mcp_server_capabilities", {
-        serverId,
-      })
-      setCapabilities((prev) => ({ ...prev, [serverId]: caps }))
-    } catch (error) {
-      console.error(`Failed to load capabilities for ${serverId}:`, error)
-    }
+    await fetchCapabilities(serverId)
   }
 
   const handlePermissionChange = async (key: string, state: PermissionState, parentState: PermissionState) => {
@@ -99,9 +122,10 @@ export function McpPermissionTree({ clientId, permissions, onUpdate }: McpPermis
 
       // Parse the key to determine the level
       // Format: server_id or server_id__type__name
-      const parts = key.split("__")
+      const parsed = parseMcpNodeKey(key)
+      if (!parsed) return
 
-      if (parts.length === 1) {
+      if (!("type" in parsed)) {
         // Server level - also clear all child permissions (tools/resources/prompts)
         await invoke("clear_client_mcp_child_permissions", {
           clientId,
@@ -118,12 +142,12 @@ export function McpPermissionTree({ clientId, permissions, onUpdate }: McpPermis
         if (state !== "off") {
           loadCapabilities(key)
         }
-      } else if (parts.length === 3) {
+      } else {
         // Tool/resource/prompt level
-        const [serverId, type, name] = parts
+        const { serverId, type, name } = parsed
         await invoke("set_client_mcp_permission", {
           clientId,
-          level: type as "tool" | "resource" | "prompt",
+          level: type,
           key: `${serverId}__${name}`,
           state,
           clear: shouldClear,
@@ -214,6 +238,7 @@ export function McpPermissionTree({ clientId, permissions, onUpdate }: McpPermis
         label: server.name,
         children: children.length > 0 ? children : undefined,
         loading: loadingServers.has(server.id),
+        error: capabilityErrors[server.id],
       }
     })
   }
@@ -230,28 +255,15 @@ export function McpPermissionTree({ clientId, permissions, onUpdate }: McpPermis
     }
 
     // Tool permissions
-    if (permissions.tools) {
-      for (const [key, state] of Object.entries(permissions.tools)) {
-        const [serverId, toolName] = key.split("__")
-        map[`${serverId}__tool__${toolName}`] = state
+    const addChildren = (entries: Record<string, PermissionState> | undefined, type: string) => {
+      for (const [key, state] of Object.entries(entries ?? {})) {
+        const parts = splitOnce(key)
+        if (parts) map[`${parts[0]}__${type}__${parts[1]}`] = state
       }
     }
-
-    // Resource permissions
-    if (permissions.resources) {
-      for (const [key, state] of Object.entries(permissions.resources)) {
-        const [serverId, uri] = key.split("__")
-        map[`${serverId}__resource__${uri}`] = state
-      }
-    }
-
-    // Prompt permissions
-    if (permissions.prompts) {
-      for (const [key, state] of Object.entries(permissions.prompts)) {
-        const [serverId, promptName] = key.split("__")
-        map[`${serverId}__prompt__${promptName}`] = state
-      }
-    }
+    addChildren(permissions.tools, "tool")
+    addChildren(permissions.resources, "resource")
+    addChildren(permissions.prompts, "prompt")
 
     return map
   }

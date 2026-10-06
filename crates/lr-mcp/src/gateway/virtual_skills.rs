@@ -95,8 +95,7 @@ impl VirtualMcpServer for SkillsVirtualServer {
     }
 
     fn is_enabled(&self, client: &lr_config::Client) -> bool {
-        client.skills_permissions.global.is_enabled()
-            || !client.skills_permissions.skills.is_empty()
+        client.skills_permissions.has_any_access()
     }
 
     fn list_tools(&self, state: &dyn VirtualSessionState) -> Vec<McpTool> {
@@ -185,9 +184,7 @@ impl VirtualMcpServer for SkillsVirtualServer {
             .downcast_ref::<SkillsSessionState>()
             .expect("wrong state type for SkillsVirtualServer");
 
-        let has_any_access =
-            state.permissions.global.is_enabled() || !state.permissions.skills.is_empty();
-        if !has_any_access {
+        if !state.permissions.has_any_access() {
             return None;
         }
 

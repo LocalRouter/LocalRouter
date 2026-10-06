@@ -115,12 +115,12 @@ pub async fn mcp_gateway_get_handler(
         }
     };
 
-    // Get all server IDs
-    let all_server_ids: Vec<String> = state
-        .config_manager
-        .get()
+    let config = state.config_manager.get();
+    // Globally enabled server IDs (disabled servers are never started)
+    let all_server_ids: Vec<String> = config
         .mcp_servers
         .iter()
+        .filter(|s| s.enabled)
         .map(|s| s.id.clone())
         .collect();
 
@@ -160,18 +160,11 @@ pub async fn mcp_gateway_get_handler(
             return e.into_response();
         }
 
-        // Get allowed servers based on mcp_permissions
         // An empty server list is valid — the gateway also serves marketplace,
         // coding agents, and skills which don't require MCP server access.
-        if client.mcp_permissions.global.is_enabled() {
-            all_server_ids
-        } else {
-            // Filter to servers with enabled permission at server or sub-item level
-            all_server_ids
-                .into_iter()
-                .filter(|server_id| client.mcp_permissions.has_any_enabled_for_server(server_id))
-                .collect()
-        }
+        client
+            .mcp_permissions
+            .allowed_server_ids(&config.mcp_servers)
     };
 
     // Generate a unique session ID for this SSE connection.
@@ -195,6 +188,8 @@ pub async fn mcp_gateway_get_handler(
 
     // Subscribe to per-client permission change notifications
     let mut client_notification_rx = state.client_notification_broadcast.subscribe();
+
+    let own_notification_key = lr_mcp::gateway::types::session_notification_key(&session_id);
 
     // Clone for cleanup
     let session_id_cleanup = session_id.clone();
@@ -288,7 +283,10 @@ pub async fn mcp_gateway_get_handler(
                     match notif_result {
                         Ok((server_id, notification)) => {
                             // Only forward notifications for allowed servers
-                            if allowed_servers.contains(&server_id) {
+                            // or for this connection's own gateway session
+                            if allowed_servers.contains(&server_id)
+                                || server_id == own_notification_key
+                            {
                                 // Forward with standard MCP method names so SDK clients
                                 // can match them (e.g. ToolListChangedNotificationSchema).
                                 // For resource update notifications, namespace the URI in params.
@@ -581,12 +579,12 @@ pub async fn mcp_gateway_handler(
         .and_then(|v| v.to_str().ok())
         .map(|v| v.to_string());
 
-    // Get all server IDs for later use
-    let all_server_ids: Vec<String> = state
-        .config_manager
-        .get()
+    let config = state.config_manager.get();
+    // Globally enabled server IDs (disabled servers are never started)
+    let all_server_ids: Vec<String> = config
         .mcp_servers
         .iter()
+        .filter(|s| s.enabled)
         .map(|s| s.id.clone())
         .collect();
 
@@ -679,6 +677,7 @@ pub async fn mcp_gateway_handler(
         //   aren't relevant when testing a single server
         if !is_all_mode {
             test_client.context_management_enabled = Some(false);
+            test_client.catalog_compression_enabled = Some(false);
         }
 
         tracing::info!(
@@ -702,19 +701,11 @@ pub async fn mcp_gateway_handler(
             return e.into_response();
         }
 
-        // Get allowed servers based on mcp_permissions
         // An empty server list is valid — the gateway also serves marketplace,
         // coding agents, and skills which don't require MCP server access.
-        let allowed = if client.mcp_permissions.global.is_enabled() {
-            all_server_ids.clone()
-        } else {
-            // Filter to servers with enabled permission at server or sub-item level
-            all_server_ids
-                .iter()
-                .filter(|server_id| client.mcp_permissions.has_any_enabled_for_server(server_id))
-                .cloned()
-                .collect()
-        };
+        let allowed = client
+            .mcp_permissions
+            .allowed_server_ids(&config.mcp_servers);
 
         (client, allowed)
     };
@@ -734,7 +725,14 @@ pub async fn mcp_gateway_handler(
     // stream carrying opted-in change notifications; replaces the legacy
     // GET SSE endpoint + resources/subscribe for stateless clients.
     if request.method == "subscriptions/listen" {
-        return subscriptions_listen_response(&state, &client_id, allowed_servers, request);
+        let session_key = session_id.as_deref().unwrap_or(&client_id);
+        return subscriptions_listen_response(
+            &state,
+            &client_id,
+            session_key,
+            allowed_servers,
+            request,
+        );
     }
 
     // Intercept client capability methods before routing to gateway
@@ -1004,8 +1002,16 @@ pub async fn mcp_gateway_handler(
         );
 
         let join_handle = tokio::spawn(async move {
-            // Overall timeout: must complete before the MCP SDK's client-side timeout (60s)
-            let gateway_timeout = tokio::time::Duration::from_secs(15);
+            // Overall timeout: must complete before the MCP SDK's client-side timeout (60s).
+            // initialize gets room for its 15s server start budget plus the
+            // handshake broadcast. tools/call is bounded by per-server
+            // timeouts and may legitimately wait on a firewall approval
+            // popup, so it is not cut off here.
+            let gateway_timeout = tokio::time::Duration::from_secs(match request_method.as_str() {
+                "initialize" => 45,
+                "tools/call" => 24 * 60 * 60,
+                _ => 15,
+            });
             let result = tokio::time::timeout(
                 gateway_timeout,
                 gateway.handle_request_with_skills(
@@ -1026,6 +1032,7 @@ pub async fn mcp_gateway_handler(
                     client.mcp_sampling_permission.clone(),
                     client.mcp_elicitation_permission.clone(),
                     client.memory_enabled,
+                    client.memory_folder.clone(),
                     client.effective_client_mode(),
                     request,
                     None, // monitor_session_id
@@ -1129,6 +1136,7 @@ pub async fn mcp_gateway_handler(
                 client.mcp_sampling_permission.clone(),
                 client.mcp_elicitation_permission.clone(),
                 client.memory_enabled,
+                client.memory_folder.clone(),
                 client.effective_client_mode(),
                 request,
                 None, // monitor_session_id
@@ -1277,6 +1285,7 @@ async fn run_stateless_with_mrtr(
                     client_for_task.mcp_sampling_permission.clone(),
                     client_for_task.mcp_elicitation_permission.clone(),
                     client_for_task.memory_enabled,
+                    client_for_task.memory_folder.clone(),
                     client_for_task.effective_client_mode(),
                     request,
                     None, // monitor_session_id
@@ -1482,6 +1491,7 @@ fn build_subscription_notification(
 fn subscriptions_listen_response(
     state: &AppState,
     client_id: &str,
+    session_key: &str,
     allowed_servers: Vec<String>,
     request: JsonRpcRequest,
 ) -> Response {
@@ -1506,6 +1516,7 @@ fn subscriptions_listen_response(
     let subscription_id = request.id.clone().unwrap_or(serde_json::Value::Null);
     let mut notification_rx = state.mcp_notification_broadcast.subscribe();
     let client_id = client_id.to_string();
+    let own_notification_key = lr_mcp::gateway::types::session_notification_key(session_key);
 
     tracing::info!(
         "subscriptions/listen opened: client={}, subscription={}, notifications={:?}",
@@ -1531,7 +1542,7 @@ fn subscriptions_listen_response(
         loop {
             match notification_rx.recv().await {
                 Ok((server_id, notification)) => {
-                    if !allowed_servers.contains(&server_id) {
+                    if !allowed_servers.contains(&server_id) && server_id != own_notification_key {
                         continue;
                     }
                     if let Some(tagged) = build_subscription_notification(

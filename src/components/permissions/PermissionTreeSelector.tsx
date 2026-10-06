@@ -217,6 +217,9 @@ export function PermissionTreeSelector<S extends string>({
                 Loading tools...
               </span>
             )}
+            {node.error && !node.loading && (
+              <p className="text-xs text-destructive break-words mt-0.5">{node.error}</p>
+            )}
           </div>
 
           {/* Permission selector - not shown for group nodes (Tools/Resources/Prompts headers) */}

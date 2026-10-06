@@ -34,6 +34,8 @@ export interface TreeNode {
   depth?: number
   /** Show a loading indicator for this node (e.g. capabilities still loading) */
   loading?: boolean
+  /** Error shown under the node (e.g. capabilities failed to load) */
+  error?: string
   /** Disable permission toggling for this node (e.g. non-indexable tools) */
   disabled?: boolean
 }

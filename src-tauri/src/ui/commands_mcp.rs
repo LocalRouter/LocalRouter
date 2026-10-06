@@ -1958,7 +1958,10 @@ pub async fn discover_mcp_oauth_endpoints(
 
 /// Test OAuth connection for an MCP server
 ///
-/// Checks if the server has a valid OAuth token
+/// For browser OAuth, obtains a usable access token from the keychain,
+/// refreshing it with the stored refresh token when expired — the in-memory
+/// token cache is empty after a restart and stale after expiry, so it can't
+/// answer this.
 ///
 /// # Arguments
 /// * `server_id` - MCP server ID
@@ -1968,9 +1971,34 @@ pub async fn discover_mcp_oauth_endpoints(
 #[tauri::command]
 pub async fn test_mcp_oauth_connection(
     server_id: String,
+    mcp_manager: State<'_, Arc<McpServerManager>>,
     oauth_browser_manager: State<'_, Arc<lr_mcp::oauth_browser::McpOAuthBrowserManager>>,
 ) -> Result<bool, String> {
-    Ok(oauth_browser_manager.has_valid_auth(&server_id).await)
+    let config = mcp_manager
+        .get_config(&server_id)
+        .ok_or_else(|| format!("MCP server not found: {}", server_id))?;
+    let resource_url = match &config.transport_config {
+        McpTransportConfig::Sse { url, .. } | McpTransportConfig::HttpSse { url, .. } => {
+            Some(url.as_str())
+        }
+        _ => None,
+    };
+    match (&config.auth_config, resource_url) {
+        (Some(auth @ lr_config::McpAuthConfig::OAuthBrowser { .. }), Some(url)) => {
+            match mcp_manager
+                .oauth_manager()
+                .get_browser_token(&server_id, auth, url)
+                .await
+            {
+                Ok(_) => Ok(true),
+                Err(e) => {
+                    tracing::info!("OAuth check for MCP server {} failed: {}", server_id, e);
+                    Ok(false)
+                }
+            }
+        }
+        _ => Ok(oauth_browser_manager.has_valid_auth(&server_id).await),
+    }
 }
 
 /// Revoke OAuth tokens for an MCP server
@@ -2219,27 +2247,60 @@ pub struct McpServerCapabilities {
 /// Get capabilities (tools, resources, prompts) for an MCP server
 ///
 /// Used by the permission tree UI to display available items for each server.
-/// Starts the server if not running.
+/// Starts the server if not running. If listing fails on an already-running
+/// server (e.g. its upstream session expired), the server is restarted once.
 ///
 /// # Arguments
 /// * `server_id` - The MCP server ID
 ///
 /// # Returns
-/// * MCP server capabilities (tools, resources, prompts)
+/// * MCP server capabilities (tools, resources, prompts), or an error when
+///   the server can't be reached or rejects `tools/list`
 #[tauri::command]
 pub async fn get_mcp_server_capabilities(
     server_id: String,
     mcp_manager: State<'_, Arc<McpServerManager>>,
 ) -> Result<McpServerCapabilities, String> {
-    use lr_mcp::protocol::JsonRpcRequest;
-
     tracing::info!("📋 Getting capabilities for MCP server: {}", server_id);
 
-    // Start server if not running
-    if !mcp_manager.is_running(&server_id) {
+    let was_running = mcp_manager.is_running(&server_id);
+    let mut result = discover_server_capabilities(&mcp_manager, &server_id).await;
+    if result.is_err() && was_running {
+        tracing::warn!(
+            "Listing capabilities of running MCP server {} failed ({}); restarting it",
+            server_id,
+            result
+                .as_ref()
+                .err()
+                .map(String::as_str)
+                .unwrap_or_default()
+        );
+        let _ = mcp_manager.stop_server(&server_id).await;
+        result = discover_server_capabilities(&mcp_manager, &server_id).await;
+    }
+
+    let capabilities = result?;
+    tracing::info!(
+        "✅ MCP server {} capabilities: {} tools, {} resources, {} prompts",
+        server_id,
+        capabilities.tools.len(),
+        capabilities.resources.len(),
+        capabilities.prompts.len()
+    );
+    Ok(capabilities)
+}
+
+/// Start (if needed), handshake with, and list an MCP server's capabilities.
+async fn discover_server_capabilities(
+    mcp_manager: &McpServerManager,
+    server_id: &str,
+) -> Result<McpServerCapabilities, String> {
+    use lr_mcp::protocol::JsonRpcRequest;
+
+    if !mcp_manager.is_running(server_id) {
         tracing::info!("MCP server {} not running, starting it now...", server_id);
         mcp_manager
-            .start_server(&server_id)
+            .start_server(server_id)
             .await
             .map_err(|e| format!("Failed to start MCP server: {}", e))?;
     }
@@ -2247,7 +2308,7 @@ pub async fn get_mcp_server_capabilities(
     // Register a request callback so server-initiated requests (sampling/elicitation/roots)
     // during init don't block the server. We decline or return defaults during discovery.
     mcp_manager.set_request_callback(
-        &server_id,
+        server_id,
         std::sync::Arc::new(|request| {
             Box::pin(async move {
                 let request_id = request.id.unwrap_or(serde_json::Value::Null);
@@ -2294,7 +2355,7 @@ pub async fn get_mcp_server_capabilities(
             }
         })),
     );
-    if let Err(e) = mcp_manager.send_request(&server_id, init_request).await {
+    if let Err(e) = mcp_manager.send_request(server_id, init_request).await {
         tracing::warn!("Failed to initialize MCP server {}: {}", server_id, e);
     }
 
@@ -2304,10 +2365,7 @@ pub async fn get_mcp_server_capabilities(
         "notifications/initialized".to_string(),
         Some(serde_json::json!({})),
     );
-    if let Err(e) = mcp_manager
-        .send_request(&server_id, init_notification)
-        .await
-    {
+    if let Err(e) = mcp_manager.send_request(server_id, init_notification).await {
         tracing::warn!(
             "Failed to send initialized notification to {}: {}",
             server_id,
@@ -2315,101 +2373,96 @@ pub async fn get_mcp_server_capabilities(
         );
     }
 
-    let mut capabilities = McpServerCapabilities {
-        tools: Vec::new(),
-        resources: Vec::new(),
-        prompts: Vec::new(),
-    };
-
-    // Fetch tools/list
-    let tools_request = JsonRpcRequest::with_id(1, "tools/list".to_string(), None);
-    if let Ok(response) = mcp_manager.send_request(&server_id, tools_request).await {
-        if let Some(result) = response.result {
-            if let Some(tools) = result.get("tools").and_then(|t| t.as_array()) {
-                for tool in tools {
-                    if let Some(obj) = tool.as_object() {
-                        capabilities.tools.push(McpToolInfo {
-                            name: obj
-                                .get("name")
-                                .and_then(|n| n.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                            description: obj
-                                .get("description")
-                                .and_then(|d| d.as_str())
-                                .map(|s| s.to_string()),
-                        });
-                    }
-                }
-            }
-        }
-    }
-
-    // Fetch resources/list
-    let resources_request = JsonRpcRequest::with_id(2, "resources/list".to_string(), None);
-    if let Ok(response) = mcp_manager
-        .send_request(&server_id, resources_request)
+    // tools/list failures are reported; servers without resources/prompts
+    // support legitimately reject those lists, so their errors are ignored.
+    let tools = list_server_items(mcp_manager, server_id, "tools/list", "tools").await?;
+    let resources = list_server_items(mcp_manager, server_id, "resources/list", "resources")
         .await
-    {
-        if let Some(result) = response.result {
-            if let Some(resources) = result.get("resources").and_then(|r| r.as_array()) {
-                for resource in resources {
-                    if let Some(obj) = resource.as_object() {
-                        capabilities.resources.push(McpResourceInfo {
-                            uri: obj
-                                .get("uri")
-                                .and_then(|u| u.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                            name: obj
-                                .get("name")
-                                .and_then(|n| n.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                            description: obj
-                                .get("description")
-                                .and_then(|d| d.as_str())
-                                .map(|s| s.to_string()),
-                        });
-                    }
-                }
+        .unwrap_or_else(|e| {
+            tracing::debug!("resources/list on {} failed: {}", server_id, e);
+            Vec::new()
+        });
+    let prompts = list_server_items(mcp_manager, server_id, "prompts/list", "prompts")
+        .await
+        .unwrap_or_else(|e| {
+            tracing::debug!("prompts/list on {} failed: {}", server_id, e);
+            Vec::new()
+        });
+
+    let str_field = |item: &serde_json::Value, key: &str| {
+        item.get(key)
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    };
+    Ok(McpServerCapabilities {
+        tools: tools
+            .iter()
+            .map(|t| McpToolInfo {
+                name: str_field(t, "name").unwrap_or_default(),
+                description: str_field(t, "description"),
+            })
+            .collect(),
+        resources: resources
+            .iter()
+            .map(|r| McpResourceInfo {
+                uri: str_field(r, "uri").unwrap_or_default(),
+                name: str_field(r, "name").unwrap_or_default(),
+                description: str_field(r, "description"),
+            })
+            .collect(),
+        prompts: prompts
+            .iter()
+            .map(|p| McpPromptInfo {
+                name: str_field(p, "name").unwrap_or_default(),
+                description: str_field(p, "description"),
+            })
+            .collect(),
+    })
+}
+
+/// Run a paginated MCP list method and collect the items under `key`.
+/// A server answering "method not found" has no such items.
+async fn list_server_items(
+    mcp_manager: &McpServerManager,
+    server_id: &str,
+    method: &str,
+    key: &str,
+) -> Result<Vec<serde_json::Value>, String> {
+    const MAX_PAGES: usize = 100;
+    let mut items = Vec::new();
+    let mut cursor: Option<String> = None;
+    for page in 0..MAX_PAGES {
+        let params = cursor.as_ref().map(|c| serde_json::json!({ "cursor": c }));
+        let request =
+            lr_mcp::protocol::JsonRpcRequest::with_id(page as u64 + 1, method.to_string(), params);
+        let response = mcp_manager
+            .send_request(server_id, request)
+            .await
+            .map_err(|e| format!("{} failed: {}", method, e))?;
+        if let Some(error) = response.error {
+            if error.code == lr_mcp::protocol::METHOD_NOT_FOUND {
+                return Ok(items);
             }
+            return Err(format!(
+                "{} failed: {} (code {})",
+                method, error.message, error.code
+            ));
+        }
+        let Some(result) = response.result else {
+            break;
+        };
+        if let Some(page_items) = result.get(key).and_then(|v| v.as_array()) {
+            items.extend(page_items.iter().cloned());
+        }
+        cursor = result
+            .get("nextCursor")
+            .and_then(|c| c.as_str())
+            .map(|s| s.to_string());
+        if cursor.is_none() {
+            break;
         }
     }
-
-    // Fetch prompts/list
-    let prompts_request = JsonRpcRequest::with_id(3, "prompts/list".to_string(), None);
-    if let Ok(response) = mcp_manager.send_request(&server_id, prompts_request).await {
-        if let Some(result) = response.result {
-            if let Some(prompts) = result.get("prompts").and_then(|p| p.as_array()) {
-                for prompt in prompts {
-                    if let Some(obj) = prompt.as_object() {
-                        capabilities.prompts.push(McpPromptInfo {
-                            name: obj
-                                .get("name")
-                                .and_then(|n| n.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                            description: obj
-                                .get("description")
-                                .and_then(|d| d.as_str())
-                                .map(|s| s.to_string()),
-                        });
-                    }
-                }
-            }
-        }
-    }
-
-    tracing::info!(
-        "✅ MCP server {} capabilities: {} tools, {} resources, {} prompts",
-        server_id,
-        capabilities.tools.len(),
-        capabilities.resources.len(),
-        capabilities.prompts.len()
-    );
-
-    Ok(capabilities)
+    Ok(items)
 }
 
 // ============================================================================

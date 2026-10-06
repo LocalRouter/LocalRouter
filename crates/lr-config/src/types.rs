@@ -1640,6 +1640,20 @@ impl McpPermissions {
         false
     }
 
+    /// IDs of the servers a client may reach: globally enabled servers whose
+    /// resolved permission (server override, else global) is enabled, or that
+    /// have an explicitly enabled tool/resource/prompt. Preserves input order.
+    pub fn allowed_server_ids<'a>(
+        &self,
+        servers: impl IntoIterator<Item = &'a McpServerConfig>,
+    ) -> Vec<String> {
+        servers
+            .into_iter()
+            .filter(|server| server.enabled && self.has_any_enabled_for_server(&server.id))
+            .map(|server| server.id.clone())
+            .collect()
+    }
+
     /// Check if the client has any MCP access configured at any level
     ///
     /// Returns true if:
@@ -3297,14 +3311,16 @@ pub struct Client {
     )]
     pub mcp_server_access: McpServerAccess,
 
-    /// Enable context management for this client.
-    /// None = inherit global setting, Some(false) = disabled regardless of global.
+    /// Tool Responses Indexing for this client: large tool responses are
+    /// indexed and replaced with a preview.
+    /// None = inherit global setting (on when any indexing is enabled).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_management_enabled: Option<bool>,
 
-    /// Enable catalog compression for this client.
-    /// None = inherit global setting (enabled when context management is on),
-    /// Some(false) = disabled regardless of global.
+    /// MCP Catalog Indexing for this client: the tool/resource/prompt catalog
+    /// is indexed and deferred behind the search tool. Independent of
+    /// `context_management_enabled`.
+    /// None = inherit global `context_management.catalog_compression`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub catalog_compression_enabled: Option<bool>,
 
@@ -4554,7 +4570,7 @@ impl Client {
         }
     }
 
-    /// Resolve whether context management is enabled for this client.
+    /// Resolve whether Tool Responses Indexing is enabled for this client.
     /// Checks per-client override first, then falls back to global config.
     pub fn is_context_management_enabled(&self, global: &ContextManagementConfig) -> bool {
         // Per-client override takes precedence
@@ -4565,9 +4581,9 @@ impl Client {
         global.is_enabled()
     }
 
-    /// Resolve whether catalog compression is enabled for this client.
-    /// Checks per-client override first, then falls back to global config.
-    /// Only effective when context management is also enabled.
+    /// Resolve whether MCP Catalog Indexing (catalog compression) is enabled
+    /// for this client. Checks per-client override first, then falls back to
+    /// global config. Independent of response indexing.
     pub fn is_catalog_compression_enabled(&self, global: &ContextManagementConfig) -> bool {
         if let Some(enabled) = self.catalog_compression_enabled {
             return enabled;
@@ -5771,5 +5787,172 @@ sampling_permission: "off"
             let back: CodingAgentType = serde_json::from_str(&json).unwrap();
             assert_eq!(*agent, back, "round-trip failed for {json}");
         }
+    }
+
+    // ── MCP server access & feature-flag inheritance ────────────────
+
+    fn mcp_server(id: &str, enabled: bool) -> McpServerConfig {
+        let mut server = McpServerConfig::new(
+            id.to_string(),
+            McpTransportType::HttpSse,
+            McpTransportConfig::HttpSse {
+                url: "http://localhost/mcp".to_string(),
+                headers: HashMap::new(),
+            },
+        );
+        server.id = id.to_string();
+        server.enabled = enabled;
+        server
+    }
+
+    #[test]
+    fn allowed_server_ids_honours_server_off_under_global_allow() {
+        // Mirrors a real client: global allow, one server turned off, and a
+        // globally disabled server that must never be started.
+        let servers = vec![
+            mcp_server("netget", false),
+            mcp_server("vocalcord", true),
+            mcp_server("atlassian", true),
+            mcp_server("datadog", true),
+        ];
+        let mut perms = McpPermissions {
+            global: PermissionState::Allow,
+            ..Default::default()
+        };
+        perms
+            .servers
+            .insert("vocalcord".to_string(), PermissionState::Off);
+
+        assert_eq!(
+            perms.allowed_server_ids(&servers),
+            vec!["atlassian".to_string(), "datadog".to_string()]
+        );
+    }
+
+    #[test]
+    fn allowed_server_ids_includes_servers_with_only_child_grants() {
+        let servers = vec![
+            mcp_server("a", true),
+            mcp_server("b", true),
+            mcp_server("c", true),
+        ];
+        let mut perms = McpPermissions::default(); // global off
+        perms.servers.insert("a".to_string(), PermissionState::Ask);
+        perms
+            .tools
+            .insert("b__read".to_string(), PermissionState::Allow);
+        perms.servers.insert("c".to_string(), PermissionState::Off);
+        perms
+            .tools
+            .insert("c__read".to_string(), PermissionState::Off);
+
+        assert_eq!(
+            perms.allowed_server_ids(&servers),
+            vec!["a".to_string(), "b".to_string()]
+        );
+        assert!(perms.has_any_access());
+        assert!(!McpPermissions {
+            servers: HashMap::from([("x".to_string(), PermissionState::Off)]),
+            ..Default::default()
+        }
+        .has_any_access());
+    }
+
+    #[test]
+    fn mcp_permission_resolution_falls_back_tool_server_global() {
+        let mut perms = McpPermissions {
+            global: PermissionState::Ask,
+            ..Default::default()
+        };
+        perms
+            .servers
+            .insert("s".to_string(), PermissionState::Allow);
+        perms.tools.insert("s__t".to_string(), PermissionState::Off);
+        perms
+            .resources
+            .insert("s__file:///x".to_string(), PermissionState::Off);
+        perms
+            .prompts
+            .insert("s__p".to_string(), PermissionState::Ask);
+
+        assert_eq!(perms.resolve_tool("s", "t"), PermissionState::Off);
+        assert_eq!(perms.resolve_tool("s", "other"), PermissionState::Allow);
+        assert_eq!(perms.resolve_tool("unknown", "t"), PermissionState::Ask);
+        assert_eq!(
+            perms.resolve_resource("s", "file:///x"),
+            PermissionState::Off
+        );
+        assert_eq!(
+            perms.resolve_resource("s", "file:///y"),
+            PermissionState::Allow
+        );
+        assert_eq!(perms.resolve_prompt("s", "p"), PermissionState::Ask);
+        assert_eq!(perms.resolve_prompt("unknown", "p"), PermissionState::Ask);
+    }
+
+    #[test]
+    fn response_and_catalog_indexing_inherit_independently() {
+        let mut client = Client::new_with_strategy("c".to_string(), "s".to_string());
+        let all_on = ContextManagementConfig::default();
+        let indexing_off = ContextManagementConfig {
+            catalog_compression: false,
+            gateway_indexing: GatewayIndexingPermissions {
+                global: IndexingState::Disable,
+                ..Default::default()
+            },
+            virtual_indexing: GatewayIndexingPermissions {
+                global: IndexingState::Disable,
+                ..Default::default()
+            },
+            client_tools_indexing_default: IndexingState::Disable,
+            ..Default::default()
+        };
+
+        // Inherit both from global
+        assert!(client.is_context_management_enabled(&all_on));
+        assert!(client.is_catalog_compression_enabled(&all_on));
+        assert!(!client.is_context_management_enabled(&indexing_off));
+        assert!(!client.is_catalog_compression_enabled(&indexing_off));
+
+        // A response-indexing override leaves catalog inheriting (and vice versa)
+        client.context_management_enabled = Some(true);
+        assert!(client.is_context_management_enabled(&indexing_off));
+        assert!(!client.is_catalog_compression_enabled(&indexing_off));
+
+        client.context_management_enabled = None;
+        client.catalog_compression_enabled = Some(true);
+        assert!(!client.is_context_management_enabled(&indexing_off));
+        assert!(client.is_catalog_compression_enabled(&indexing_off));
+
+        client.catalog_compression_enabled = Some(false);
+        assert!(client.is_context_management_enabled(&all_on));
+        assert!(!client.is_catalog_compression_enabled(&all_on));
+    }
+
+    #[test]
+    fn response_indexing_global_default_counts_virtual_indexing() {
+        let only_virtual = ContextManagementConfig {
+            gateway_indexing: GatewayIndexingPermissions {
+                global: IndexingState::Disable,
+                ..Default::default()
+            },
+            client_tools_indexing_default: IndexingState::Disable,
+            ..Default::default()
+        };
+        assert!(only_virtual.is_enabled());
+    }
+
+    #[test]
+    fn skills_access_counts_tool_level_grants() {
+        let mut perms = SkillsPermissions::default(); // global off
+        assert!(!perms.has_any_access());
+        perms.skills.insert("s".to_string(), PermissionState::Off);
+        assert!(!perms.has_any_access());
+        perms
+            .tools
+            .insert("s__run".to_string(), PermissionState::Allow);
+        assert!(perms.has_any_access());
+        assert!(perms.has_any_enabled_for_skill("s"));
+        assert_eq!(perms.resolve_skill("s"), PermissionState::Off);
     }
 }

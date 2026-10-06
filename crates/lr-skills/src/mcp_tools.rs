@@ -84,7 +84,7 @@ pub fn build_skill_tools(
     permissions: &SkillsPermissions,
     tool_name: &str,
 ) -> Vec<McpTool> {
-    let has_any_access = permissions.global.is_enabled() || !permissions.skills.is_empty();
+    let has_any_access = permissions.has_any_access();
     if !has_any_access {
         return Vec::new();
     }
@@ -92,7 +92,7 @@ pub fn build_skill_tools(
     let all_skills = skill_manager.get_all();
     let accessible: Vec<&SkillDefinition> = all_skills
         .iter()
-        .filter(|s| s.enabled && permissions.resolve_skill(&s.metadata.name).is_enabled())
+        .filter(|s| s.enabled && permissions.has_any_enabled_for_skill(&s.metadata.name))
         .collect();
 
     if accessible.is_empty() {
@@ -122,7 +122,7 @@ pub fn build_skill_catalog(
     tool_name: &str,
     search_tool_name: &str,
 ) -> Option<String> {
-    let has_any_access = permissions.global.is_enabled() || !permissions.skills.is_empty();
+    let has_any_access = permissions.has_any_access();
     if !has_any_access {
         return None;
     }
@@ -130,7 +130,7 @@ pub fn build_skill_catalog(
     let all_skills = skill_manager.get_all();
     let accessible: Vec<&SkillDefinition> = all_skills
         .iter()
-        .filter(|s| s.enabled && permissions.resolve_skill(&s.metadata.name).is_enabled())
+        .filter(|s| s.enabled && permissions.has_any_enabled_for_skill(&s.metadata.name))
         .collect();
 
     if accessible.is_empty() {
@@ -207,7 +207,7 @@ pub fn build_skill_index_entries(
     skill_manager: &SkillManager,
     permissions: &SkillsPermissions,
 ) -> Vec<(String, String)> {
-    let has_any_access = permissions.global.is_enabled() || !permissions.skills.is_empty();
+    let has_any_access = permissions.has_any_access();
     if !has_any_access {
         return Vec::new();
     }
@@ -215,7 +215,7 @@ pub fn build_skill_index_entries(
     let all_skills = skill_manager.get_all();
     let accessible: Vec<&SkillDefinition> = all_skills
         .iter()
-        .filter(|s| s.enabled && permissions.resolve_skill(&s.metadata.name).is_enabled())
+        .filter(|s| s.enabled && permissions.has_any_enabled_for_skill(&s.metadata.name))
         .collect();
 
     let mut entries = Vec::with_capacity(accessible.len());
@@ -293,7 +293,7 @@ pub async fn handle_skill_tool_call(
     let path = arguments.get("path").and_then(|v| v.as_str());
 
     // Verify the client has any skill access at all
-    let has_any_access = permissions.global.is_enabled() || !permissions.skills.is_empty();
+    let has_any_access = permissions.has_any_access();
     if !has_any_access {
         return Err("No skill access".to_string());
     }
@@ -316,7 +316,7 @@ pub async fn handle_skill_tool_call(
 
     // Try exact match first (fast path)
     if let Some(skill) = skill_manager.get(skill_name) {
-        if !permissions.resolve_skill(skill_name).is_enabled() {
+        if !permissions.has_any_enabled_for_skill(skill_name) {
             return Err(format!("Skill '{}' is not permitted", skill_name));
         }
         if !skill.enabled {
@@ -332,7 +332,7 @@ pub async fn handle_skill_tool_call(
             let resolved_name = &skill.metadata.name;
 
             // Check permissions on the resolved name
-            if !permissions.resolve_skill(resolved_name).is_enabled() {
+            if !permissions.has_any_enabled_for_skill(resolved_name) {
                 return Err(not_found_error(skill_name, skill_manager, permissions));
             }
 
@@ -364,14 +364,14 @@ pub fn read_skill_file(
     configured_rfile_name: &str,
 ) -> Result<String, String> {
     // Verify access
-    let has_any_access = permissions.global.is_enabled() || !permissions.skills.is_empty();
+    let has_any_access = permissions.has_any_access();
     if !has_any_access {
         return Err("No skill access".to_string());
     }
 
     // Resolve skill: exact match first, then fuzzy fallback
     let (skill, correction_note) = if let Some(skill) = skill_manager.get(skill_name) {
-        if !permissions.resolve_skill(skill_name).is_enabled() {
+        if !permissions.has_any_enabled_for_skill(skill_name) {
             return Err(format!("Skill '{}' is not permitted", skill_name));
         }
         if !skill.enabled {
@@ -383,7 +383,7 @@ pub fn read_skill_file(
         match skill_manager.find_closest(skill_name) {
             Some((skill, match_kind)) if !matches!(match_kind, crate::fuzzy::MatchKind::Exact) => {
                 let resolved = &skill.metadata.name;
-                if !permissions.resolve_skill(resolved).is_enabled() {
+                if !permissions.has_any_enabled_for_skill(resolved) {
                     return Err(not_found_error(skill_name, skill_manager, permissions));
                 }
                 let note = format!(
@@ -586,7 +586,7 @@ fn not_found_error(
     let all_skills = skill_manager.get_all();
     let accessible_names: Vec<&str> = all_skills
         .iter()
-        .filter(|s| s.enabled && permissions.resolve_skill(&s.metadata.name).is_enabled())
+        .filter(|s| s.enabled && permissions.has_any_enabled_for_skill(&s.metadata.name))
         .map(|s| s.metadata.name.as_str())
         .collect();
 

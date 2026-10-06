@@ -2205,8 +2205,12 @@ async fn test_connection_refused() {
         .handle_request("test-client-refused", allowed_servers, vec![], request)
         .await;
 
-    // Should handle connection refused gracefully
-    assert!(result.is_err());
+    // An unreachable server degrades to an empty list with failure metadata
+    // instead of failing the whole tools/list (virtual tools stay available)
+    let response = result.expect("tools/list should not fail outright");
+    let value = response.result.expect("tools/list result");
+    assert_eq!(value["tools"], json!([]));
+    assert_eq!(value["_meta"]["partial_failure"], json!(true));
 }
 
 #[tokio::test]
