@@ -6,12 +6,13 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
-use super::{start_server_with_monitor, state::AppState, ServerConfig};
+use super::{serve_state, state::AppState, ServerConfig};
 use lr_mcp::McpServerManager;
 use lr_providers::registry::ProviderRegistry;
 use lr_router::{RateLimiterManager, Router};
 
-/// Dependencies needed to start the server
+/// Dependencies needed to start the server. Only the first start builds the
+/// server state from them; later starts serve that same state again.
 pub struct ServerDependencies {
     pub router: Arc<Router>,
     pub mcp_server_manager: Arc<McpServerManager>,
@@ -40,17 +41,18 @@ pub struct ServerManager {
     /// Cancels the running server: stops accepting connections and kills any
     /// in-flight requests/streams via the kill-switch middleware.
     shutdown_token: Arc<RwLock<Option<CancellationToken>>>,
-    /// Monitor event store shared by every server start, so the event history
-    /// and the proxies writing into it survive restarts and stay readable
-    /// while the server is stopped.
-    monitor_store: Arc<lr_monitor::MonitorEventStore>,
+    /// State built by the first start and served by every later one, so a
+    /// restart keeps everything wired into it (virtual servers, guardrails,
+    /// secret scanner, app handle, monitor events) and stays the state the
+    /// proxies and UI commands hold.
+    built_state: Arc<RwLock<Option<AppState>>>,
 }
 
 impl ServerManager {
     pub fn new() -> Self {
         Self {
             app_state: Arc::new(RwLock::new(None)),
-            monitor_store: Arc::new(lr_monitor::MonitorEventStore::new(1000)),
+            built_state: Arc::new(RwLock::new(None)),
             server_handle: Arc::new(RwLock::new(None)),
             status: Arc::new(RwLock::new(ServerStatus::Stopped)),
             actual_port: Arc::new(RwLock::new(None)),
@@ -86,22 +88,28 @@ impl ServerManager {
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         }
 
-        // Start the new server
+        let state = self.built_state.read().clone();
+        let state = match state {
+            Some(state) => state,
+            None => {
+                let state = AppState::new(
+                    deps.router,
+                    deps.rate_limiter,
+                    deps.provider_registry,
+                    deps.config_manager,
+                    deps.client_manager,
+                    deps.token_store,
+                    deps.metrics_collector,
+                    deps.health_cache,
+                )
+                .with_mcp(deps.mcp_server_manager);
+                *self.built_state.write() = Some(state.clone());
+                state
+            }
+        };
+
         let host = config.host.clone();
-        let (state, handle, actual_port, shutdown_token) = start_server_with_monitor(
-            config,
-            deps.router,
-            deps.mcp_server_manager,
-            deps.rate_limiter,
-            deps.provider_registry,
-            deps.config_manager,
-            deps.client_manager,
-            deps.token_store,
-            deps.metrics_collector,
-            deps.health_cache,
-            self.monitor_store.clone(),
-        )
-        .await?;
+        let (handle, actual_port, shutdown_token) = serve_state(config, state.clone()).await?;
 
         // Update to the new server
         *self.app_state.write() = Some(state);
@@ -136,7 +144,8 @@ impl ServerManager {
             handle.abort();
         }
 
-        // Clear the app state
+        // Hide the state from `get_state` while stopped; `built_state` keeps
+        // it for the next start.
         *self.app_state.write() = None;
         *self.actual_port.write() = None;
         *self.status.write() = ServerStatus::Stopped;
@@ -150,8 +159,12 @@ impl ServerManager {
     }
 
     /// The monitor event store, available whether or not the server is running
-    pub fn monitor_store(&self) -> Arc<lr_monitor::MonitorEventStore> {
-        self.monitor_store.clone()
+    /// once it has started for the first time.
+    pub fn monitor_store(&self) -> Option<Arc<lr_monitor::MonitorEventStore>> {
+        self.built_state
+            .read()
+            .as_ref()
+            .map(|state| state.monitor_store.clone())
     }
 
     /// Get the app state

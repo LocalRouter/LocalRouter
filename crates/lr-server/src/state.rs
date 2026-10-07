@@ -992,7 +992,27 @@ impl AppState {
             monitor_store: Arc::new(lr_monitor::MonitorEventStore::new(1000)),
         };
 
-        result.wire_mcp_via_llm_monitor();
+        // Wire MCP via LLM monitor callbacks
+        let monitor = result.monitor_store.clone();
+        result.mcp_via_llm_manager.set_monitor_emit(Arc::new(
+            move |event_type, client_id, client_name, session_id, data, status, duration_ms| {
+                monitor.push(
+                    event_type,
+                    client_id,
+                    client_name,
+                    session_id,
+                    data,
+                    status,
+                    duration_ms,
+                )
+            },
+        ));
+        let monitor = result.monitor_store.clone();
+        result
+            .mcp_via_llm_manager
+            .set_monitor_update(Arc::new(move |id, updater| {
+                monitor.update(id, updater);
+            }));
 
         result
     }
@@ -1006,38 +1026,6 @@ impl AppState {
     /// Replace the safety engine at runtime (e.g. after downloading models)
     pub fn replace_safety_engine(&self, engine: Arc<lr_guardrails::SafetyEngine>) {
         *self.safety_engine.write() = Some(engine);
-    }
-
-    /// Use `monitor_store` for this server's events instead of a store of its
-    /// own, so the event history outlives server restarts. Call before
-    /// `with_mcp`, which wires the MCP gateway to the store.
-    pub fn with_monitor_store(mut self, monitor_store: Arc<lr_monitor::MonitorEventStore>) -> Self {
-        self.monitor_store = monitor_store;
-        self.wire_mcp_via_llm_monitor();
-        self
-    }
-
-    /// Route MCP-via-LLM events into the monitor store.
-    fn wire_mcp_via_llm_monitor(&self) {
-        let monitor = self.monitor_store.clone();
-        self.mcp_via_llm_manager.set_monitor_emit(Arc::new(
-            move |event_type, client_id, client_name, session_id, data, status, duration_ms| {
-                monitor.push(
-                    event_type,
-                    client_id,
-                    client_name,
-                    session_id,
-                    data,
-                    status,
-                    duration_ms,
-                )
-            },
-        ));
-        let monitor = self.monitor_store.clone();
-        self.mcp_via_llm_manager
-            .set_monitor_update(Arc::new(move |id, updater| {
-                monitor.update(id, updater);
-            }));
     }
 
     /// Add MCP manager to the state

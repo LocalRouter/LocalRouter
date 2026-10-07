@@ -1,4 +1,4 @@
-//! Monitor store lifetime and per-request event noise.
+//! Server state across restarts, and per-request monitor event noise.
 
 use std::sync::Arc;
 
@@ -72,32 +72,52 @@ fn push_marker(state: &AppState) -> String {
     )
 }
 
-/// Events outlive a server restart and stay readable while it is stopped:
-/// the proxies keep the store they were given at launch, so a restart must
-/// not swap in a fresh one.
+async fn health(manager: &ServerManager) -> reqwest::StatusCode {
+    let port = manager.get_actual_port().expect("listening");
+    reqwest::get(format!("http://127.0.0.1:{port}/health"))
+        .await
+        .expect("server answers")
+        .status()
+}
+
+/// A restart serves the state built by the first start, so everything wired
+/// into it at launch (and held by the proxies and UI commands) stays live, and
+/// monitor events stay readable while the server is stopped.
 #[tokio::test]
-async fn monitor_store_survives_server_restart() {
+async fn restart_serves_the_same_state() {
     let manager = ServerManager::new();
+    assert!(manager.monitor_store().is_none());
     manager
         .start(server_config(), dependencies())
         .await
         .expect("server starts");
+    assert!(health(&manager).await.is_success());
     let first = manager.get_state().expect("running");
-    assert!(Arc::ptr_eq(&first.monitor_store, &manager.monitor_store()));
     let id = push_marker(&first);
+    let engine =
+        lr_secret_scanner::SecretScanEngine::new(&lr_secret_scanner::SecretScanEngineConfig {
+            entropy_threshold: 3.0,
+            allowlist: vec![],
+            scan_system_messages: false,
+        })
+        .expect("engine builds");
+    *first.secret_scanner.write() = Some(Arc::new(engine));
 
     manager.stop().await;
     assert!(manager.get_state().is_none());
-    let listed = manager.monitor_store().list(0, 10, None);
-    assert_eq!(listed.events.len(), 1);
-    assert_eq!(listed.events[0].id, id);
+    let store = manager.monitor_store().expect("built");
+    assert!(Arc::ptr_eq(&store, &first.monitor_store));
+    assert_eq!(store.list(0, 10, None).events[0].id, id);
 
     manager
         .start(server_config(), dependencies())
         .await
         .expect("server restarts");
+    assert!(health(&manager).await.is_success());
     let second = manager.get_state().expect("running");
     assert!(Arc::ptr_eq(&second.monitor_store, &first.monitor_store));
+    assert!(Arc::ptr_eq(&second.mcp_gateway, &first.mcp_gateway));
+    assert!(second.secret_scanner.read().is_some());
     assert!(second.monitor_store.get(&id).is_some());
     manager.stop().await;
 }

@@ -1,7 +1,7 @@
 //! Monitor-related Tauri commands
 //!
 //! Commands for real-time traffic inspection via the in-memory MonitorEventStore.
-//! The store outlives server restarts, so these work while the server is stopped.
+//! The store outlives server restarts, so these also work while it is stopped.
 
 use std::sync::Arc;
 use tauri::State;
@@ -9,6 +9,14 @@ use tauri::State;
 use lr_mcp::gateway::firewall::InterceptRule;
 use lr_monitor::{MonitorEvent, MonitorEventFilter, MonitorEventListResponse, MonitorStats};
 use lr_server::ServerManager;
+
+fn monitor_store(
+    server_manager: &ServerManager,
+) -> Result<Arc<lr_monitor::MonitorEventStore>, String> {
+    server_manager
+        .monitor_store()
+        .ok_or_else(|| "Server has not started".to_string())
+}
 
 /// Get paginated monitor events (summaries for list view).
 #[tauri::command]
@@ -18,9 +26,7 @@ pub async fn get_monitor_events(
     filter: Option<MonitorEventFilter>,
     server_manager: State<'_, Arc<ServerManager>>,
 ) -> Result<MonitorEventListResponse, String> {
-    Ok(server_manager
-        .monitor_store()
-        .list(offset, limit, filter.as_ref()))
+    Ok(monitor_store(&server_manager)?.list(offset, limit, filter.as_ref()))
 }
 
 /// Get full detail for a single monitor event.
@@ -29,7 +35,7 @@ pub async fn get_monitor_event_detail(
     event_id: String,
     server_manager: State<'_, Arc<ServerManager>>,
 ) -> Result<Option<MonitorEvent>, String> {
-    Ok(server_manager.monitor_store().get(&event_id))
+    Ok(monitor_store(&server_manager)?.get(&event_id))
 }
 
 /// Clear all monitor events.
@@ -37,7 +43,7 @@ pub async fn get_monitor_event_detail(
 pub async fn clear_monitor_events(
     server_manager: State<'_, Arc<ServerManager>>,
 ) -> Result<(), String> {
-    server_manager.monitor_store().clear();
+    monitor_store(&server_manager)?.clear();
     Ok(())
 }
 
@@ -46,7 +52,7 @@ pub async fn clear_monitor_events(
 pub async fn get_monitor_stats(
     server_manager: State<'_, Arc<ServerManager>>,
 ) -> Result<MonitorStats, String> {
-    Ok(server_manager.monitor_store().stats())
+    Ok(monitor_store(&server_manager)?.stats())
 }
 
 /// Update the maximum event capacity.
@@ -55,7 +61,7 @@ pub async fn set_monitor_max_capacity(
     capacity: usize,
     server_manager: State<'_, Arc<ServerManager>>,
 ) -> Result<(), String> {
-    server_manager.monitor_store().set_max_capacity(capacity);
+    monitor_store(&server_manager)?.set_max_capacity(capacity);
     Ok(())
 }
 
@@ -69,7 +75,7 @@ pub async fn set_monitor_max_bytes(
     max_bytes: usize,
     server_manager: State<'_, Arc<ServerManager>>,
 ) -> Result<(), String> {
-    server_manager.monitor_store().set_max_bytes(max_bytes);
+    monitor_store(&server_manager)?.set_max_bytes(max_bytes);
     Ok(())
 }
 
