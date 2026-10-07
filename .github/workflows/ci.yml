@@ -93,7 +93,9 @@ jobs:
           restore-keys: catalog-
 
       - name: Install Linux dependencies
+        timeout-minutes: 15
         run: |
+          scripts/ci-apt-config.sh
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \

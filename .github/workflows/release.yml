@@ -143,7 +143,9 @@ jobs:
 
       - name: Install Linux dependencies
         if: startsWith(matrix.settings.platform, 'ubuntu')
+        timeout-minutes: 15
         run: |
+          scripts/ci-apt-config.sh
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
@@ -478,7 +480,9 @@ jobs:
           fetch-depth: 0
 
       - name: Install flatpak-builder
+        timeout-minutes: 15
         run: |
+          scripts/ci-apt-config.sh
           sudo apt-get update
           sudo apt-get install -y flatpak flatpak-builder
           flatpak remote-add --user --if-not-exists flathub \
@@ -627,7 +631,9 @@ jobs:
           fetch-depth: 0
 
       - name: Install repository tooling
+        timeout-minutes: 15
         run: |
+          scripts/ci-apt-config.sh
           sudo apt-get update
           # flatpak + ostree drive build-flatpak-repo.sh (build-commit-from,
           # build-update-repo); the rest is for the APT/YUM metadata.
