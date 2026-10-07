@@ -40,3 +40,21 @@ lost the paths too.
 file reads, listings, tool description, catalog and index entries.
 `mcp_gateway_stability_tests`: the gateway serves disk paths to direct MCP
 clients and virtual paths to MCP-via-LLM sessions.
+
+## Follow-up: cross-skill references (after v0.0.151)
+v0.0.151 resolved only the skill's own `.claude/skills/<self>/` paths, so
+support-tickets, support-ap and support-aic still showed dead
+`.claude/skills/ticket-monitor/...` references. `resolve_skill_body` now
+resolves `.claude/skills/<name>/` and the new `{{SKILL_DIR:<name>}}` against
+every skill the client may access (by skill name or directory name):
+absolute in Disk style, `<name>/` in Virtual style. References to unknown or
+inaccessible skills stay as written, so a skill's location is never revealed
+to a client without access to it.
+
+The rewrite is now a single regex pass. Sequential replacements re-matched
+their own output when a skill lives in `~/.claude/skills`, doubling the path.
+Matches can't start inside a longer path, so author-written absolute paths
+are left alone.
+
+Verified against the real skill folders: all five Upwave skills render with
+no remaining `.claude/skills` references.

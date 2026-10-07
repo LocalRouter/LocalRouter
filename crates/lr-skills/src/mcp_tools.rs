@@ -366,7 +366,9 @@ pub async fn handle_skill_tool_call(
         if !skill.enabled {
             return Err(format!("Skill '{}' is disabled", skill_name));
         }
-        let response = build_skill_read_response(&skill, configured_tool_name, style);
+        let known = accessible_skills(skill_manager, permissions);
+        let known: Vec<&SkillDefinition> = known.iter().collect();
+        let response = build_skill_read_response(&skill, configured_tool_name, style, &known);
         return Ok(Some(SkillToolResult::Response(response)));
     }
 
@@ -380,7 +382,10 @@ pub async fn handle_skill_tool_call(
                 return Err(not_found_error(skill_name, skill_manager, permissions));
             }
 
-            let mut response = build_skill_read_response(&skill, configured_tool_name, style);
+            let known = accessible_skills(skill_manager, permissions);
+            let known: Vec<&SkillDefinition> = known.iter().collect();
+            let mut response =
+                build_skill_read_response(&skill, configured_tool_name, style, &known);
             prepend_correction_note(&mut response, skill_name, resolved_name, &match_kind);
             Ok(Some(SkillToolResult::Response(response)))
         }
@@ -686,36 +691,99 @@ fn skill_dir_path(skill: &SkillDefinition) -> std::path::PathBuf {
     std::fs::canonicalize(&skill.skill_dir).unwrap_or_else(|_| skill.skill_dir.clone())
 }
 
+/// Matches a Claude Code skill install path: `.claude/skills/<dir>/`, bare
+/// or after `~/`, `$HOME/`, `${HOME}/` or `./`. The leading group keeps the
+/// match from starting inside a longer path (an absolute path that already
+/// points into `~/.claude/skills`).
+static CLAUDE_SKILL_PATH: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"(^|[^\w./~$}-])(?:\$\{HOME\}/|\$HOME/|~/|\./)?\.claude/skills/([\w.-]+)/")
+        .expect("valid regex")
+});
+
+/// Matches `{{SKILL_DIR}}` or `{{SKILL_DIR:<skill>}}`, with an optional
+/// trailing slash.
+static SKILL_DIR_TOKEN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"\{\{SKILL_DIR(?::([\w.-]+))?\}\}(/?)").expect("valid regex")
+});
+
 /// Resolve skill-directory references in a SKILL.md body.
 ///
-/// `{{SKILL_DIR}}` and the Claude Code install paths `.claude/skills/<name>/`
-/// (as `~/`, `$HOME/`, `./` or bare prefixes) point at the skill's own
-/// directory. With [`SkillPathStyle::Disk`] they become the absolute
-/// directory; with [`SkillPathStyle::Virtual`] they become paths relative to
-/// the skill, matching `SkillRead(name, path)`.
-pub fn resolve_skill_body(skill: &SkillDefinition, style: SkillPathStyle) -> String {
-    let dir_prefix = match style {
-        SkillPathStyle::Disk => format!("{}/", skill_dir_path(skill).display()),
-        SkillPathStyle::Virtual => String::new(),
+/// References: `{{SKILL_DIR}}` (this skill), `{{SKILL_DIR:<name>}}` (another
+/// skill), and Claude Code install paths `.claude/skills/<name>/`. Each
+/// resolves against `known` — the skills this client may access — by skill
+/// name or directory name; references to unknown or inaccessible skills are
+/// left as written. With [`SkillPathStyle::Disk`] they become absolute
+/// directories; with [`SkillPathStyle::Virtual`] they become paths relative
+/// to the skill being read (`<name>/` for other skills).
+///
+/// Single pass, so a replacement is never matched again (a skill that lives
+/// in `~/.claude/skills` resolves to a path containing `.claude/skills`).
+pub fn resolve_skill_body(
+    skill: &SkillDefinition,
+    style: SkillPathStyle,
+    known: &[&SkillDefinition],
+) -> String {
+    let find = |name: &str| -> Option<&SkillDefinition> {
+        if skill.metadata.name == name || dir_name(skill) == Some(name) {
+            return Some(skill);
+        }
+        known
+            .iter()
+            .copied()
+            .find(|s| s.metadata.name == name)
+            .or_else(|| known.iter().copied().find(|s| dir_name(s) == Some(name)))
     };
-    let name = &skill.metadata.name;
-    let mut body = skill.body.clone();
-    // Longest prefixes first: the bare form is a suffix of the others
-    for legacy in [
-        format!("${{HOME}}/.claude/skills/{name}/"),
-        format!("$HOME/.claude/skills/{name}/"),
-        format!("~/.claude/skills/{name}/"),
-        format!("./.claude/skills/{name}/"),
-        format!(".claude/skills/{name}/"),
-    ] {
-        body = body.replace(&legacy, &dir_prefix);
-    }
-    body = body.replace(&format!("{SKILL_DIR_PLACEHOLDER}/"), &dir_prefix);
-    let bare_dir = match style {
-        SkillPathStyle::Disk => skill_dir_path(skill).display().to_string(),
-        SkillPathStyle::Virtual => ".".to_string(),
+    // Directory of `target` as seen from `skill`, with a trailing slash
+    // (empty for the skill itself in Virtual style).
+    let dir_with_slash = |target: &SkillDefinition| -> String {
+        match style {
+            SkillPathStyle::Disk => format!("{}/", skill_dir_path(target).display()),
+            SkillPathStyle::Virtual if std::ptr::eq(target, skill) => String::new(),
+            SkillPathStyle::Virtual => format!("{}/", target.metadata.name),
+        }
     };
-    body.replace(SKILL_DIR_PLACEHOLDER, &bare_dir)
+
+    let body = SKILL_DIR_TOKEN.replace_all(&skill.body, |caps: &regex::Captures| {
+        let target = match caps.get(1) {
+            Some(name) => find(name.as_str()),
+            None => Some(skill),
+        };
+        let Some(target) = target else {
+            return caps[0].to_string();
+        };
+        let with_slash = dir_with_slash(target);
+        if !caps[2].is_empty() {
+            return with_slash;
+        }
+        match with_slash.strip_suffix('/') {
+            Some(dir) => dir.to_string(),
+            None => ".".to_string(), // Virtual, this skill
+        }
+    });
+
+    CLAUDE_SKILL_PATH
+        .replace_all(&body, |caps: &regex::Captures| match find(&caps[2]) {
+            Some(target) => format!("{}{}", &caps[1], dir_with_slash(target)),
+            None => caps[0].to_string(),
+        })
+        .into_owned()
+}
+
+fn dir_name(skill: &SkillDefinition) -> Option<&str> {
+    skill.skill_dir.file_name().and_then(|n| n.to_str())
+}
+
+/// Skills a client may read: enabled and permitted.
+fn accessible_skills(
+    skill_manager: &SkillManager,
+    permissions: &SkillsPermissions,
+) -> Vec<SkillDefinition> {
+    skill_manager
+        .get_all()
+        .iter()
+        .filter(|s| s.enabled && permissions.has_any_enabled_for_skill(&s.metadata.name))
+        .cloned()
+        .collect()
 }
 
 /// Build the response for a skill_read tool call.
@@ -727,6 +795,7 @@ fn build_skill_read_response(
     skill: &SkillDefinition,
     tool_name: &str,
     style: SkillPathStyle,
+    known: &[&SkillDefinition],
 ) -> serde_json::Value {
     let mut text = String::new();
     let skill_name = &skill.metadata.name;
@@ -804,7 +873,7 @@ fn build_skill_read_response(
             dir.display()
         ));
     }
-    text.push_str(&resolve_skill_body(skill, style));
+    text.push_str(&resolve_skill_body(skill, style, known));
 
     json!({
         "content": [{
@@ -975,6 +1044,133 @@ mod tests {
                 dir.display()
             )),
             "{listing}"
+        );
+    }
+
+    /// `support-tickets` references `ticket-monitor`; `home-skill` lives in a
+    /// real `.claude/skills` directory; `hidden` is not permitted.
+    fn cross_skill_fixture() -> (tempfile::TempDir, SkillManager, SkillsPermissions) {
+        let tmp = tempfile::tempdir().unwrap();
+        let write_skill = |dir: &std::path::Path, name: &str, body: &str| {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(
+                dir.join("SKILL.md"),
+                format!("---\nname: {name}\n---\n{body}"),
+            )
+            .unwrap();
+        };
+        let monitor = tmp.path().join("skills/ticket-monitor");
+        write_skill(&monitor, "ticket-monitor", "Monitor.");
+        std::fs::write(monitor.join("monitor-tickets.sh"), "#!/bin/bash").unwrap();
+        let support = tmp.path().join("skills/support-tickets");
+        write_skill(
+            &support,
+            "support-tickets",
+            "Run `.claude/skills/ticket-monitor/monitor-tickets.sh watch PDS-1`.\n\
+             See `.claude/skills/ticket-monitor/SKILL.md`.\n\
+             Or `{{SKILL_DIR:ticket-monitor}}/monitor-tickets.sh` and `{{SKILL_DIR:ticket-monitor}}`.\n\
+             Hidden: `.claude/skills/hidden/x.sh` and `{{SKILL_DIR:hidden}}/x.sh`.\n\
+             Unknown: `.claude/skills/nope/x.sh`.\n\
+             Absolute: `/opt/elsewhere/.claude/skills/ticket-monitor/x.sh`.\n",
+        );
+        let home = tmp.path().join("home/.claude/skills/home-skill");
+        write_skill(
+            &home,
+            "home-skill",
+            "Run `~/.claude/skills/home-skill/run.sh`.",
+        );
+        let hidden = tmp.path().join("skills/hidden");
+        write_skill(&hidden, "hidden", "Secret.");
+
+        let manager = SkillManager::new();
+        manager.initial_scan(
+            &[monitor, support, home, hidden]
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>(),
+            &[],
+        );
+        let mut permissions = SkillsPermissions {
+            global: lr_config::PermissionState::Allow,
+            ..Default::default()
+        };
+        permissions
+            .skills
+            .insert("hidden".to_string(), lr_config::PermissionState::Off);
+        (tmp, manager, permissions)
+    }
+
+    #[tokio::test]
+    async fn cross_skill_references_resolve_to_the_referenced_skill() {
+        let (tmp, manager, permissions) = cross_skill_fixture();
+        let monitor = std::fs::canonicalize(tmp.path().join("skills/ticket-monitor")).unwrap();
+        let monitor = monitor.display();
+
+        let disk = skill_read_text(
+            &manager,
+            &permissions,
+            json!({"name": "support-tickets"}),
+            SkillPathStyle::Disk,
+        )
+        .await;
+        assert!(
+            disk.contains(&format!("Run `{monitor}/monitor-tickets.sh watch PDS-1`")),
+            "{disk}"
+        );
+        assert!(
+            disk.contains(&format!("See `{monitor}/SKILL.md`")),
+            "{disk}"
+        );
+        assert!(
+            disk.contains(&format!(
+                "Or `{monitor}/monitor-tickets.sh` and `{monitor}`"
+            )),
+            "{disk}"
+        );
+        // Inaccessible and unknown skills are left exactly as written
+        assert!(
+            disk.contains("Hidden: `.claude/skills/hidden/x.sh` and `{{SKILL_DIR:hidden}}/x.sh`"),
+            "{disk}"
+        );
+        assert!(
+            disk.contains("Unknown: `.claude/skills/nope/x.sh`"),
+            "{disk}"
+        );
+        // An absolute path the author wrote is not rewritten
+        assert!(
+            disk.contains("Absolute: `/opt/elsewhere/.claude/skills/ticket-monitor/x.sh`"),
+            "{disk}"
+        );
+
+        let virt = skill_read_text(
+            &manager,
+            &permissions,
+            json!({"name": "support-tickets"}),
+            SkillPathStyle::Virtual,
+        )
+        .await;
+        assert!(
+            virt.contains("Run `ticket-monitor/monitor-tickets.sh watch PDS-1`"),
+            "{virt}"
+        );
+        assert!(!virt.contains(&monitor.to_string()), "{virt}");
+    }
+
+    #[tokio::test]
+    async fn skill_living_in_claude_skills_resolves_once() {
+        let (tmp, manager, permissions) = cross_skill_fixture();
+        let home =
+            std::fs::canonicalize(tmp.path().join("home/.claude/skills/home-skill")).unwrap();
+        let text = skill_read_text(
+            &manager,
+            &permissions,
+            json!({"name": "home-skill"}),
+            SkillPathStyle::Disk,
+        )
+        .await;
+        assert!(
+            text.contains(&format!("Run `{}/run.sh`", home.display())),
+            "{text}"
         );
     }
 
