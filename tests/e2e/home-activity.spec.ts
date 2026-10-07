@@ -85,7 +85,7 @@ test('the monitor filter selection is remembered across reloads', async ({
   await page.getByLabel('Proxy Passthrough', { exact: true }).click()
   await page.keyboard.press('Escape')
   await expect(
-    monitor.getByRole('button', { name: '8 types' }),
+    monitor.getByRole('button', { name: '9 types' }),
   ).toBeVisible()
   await expect
     .poll(() =>
@@ -95,13 +95,13 @@ test('the monitor filter selection is remembered across reloads', async ({
             .event_types?.length,
       ),
     )
-    .toBe(24)
+    .toBe(25)
   await page.reload()
   await expect(
     page.getByRole('region', { name: 'Request monitor' }).getByPlaceholder('Search...'),
   ).toHaveValue('cursor')
   await expect(
-    page.getByRole('region', { name: 'Request monitor' }).getByRole('button', { name: '8 types' }),
+    page.getByRole('region', { name: 'Request monitor' }).getByRole('button', { name: '9 types' }),
   ).toBeVisible()
 })
 

@@ -41,13 +41,14 @@ pub(crate) fn estimate_token_count(messages: &[ChatMessage]) -> u64 {
 ///
 /// No-op when `response_format` is not JSON, when repair is disabled
 /// globally and for this client, or when the content is already valid.
-/// Records a `feature_json_repair` metrics event when repair was
-/// actually applied.
+/// When repair was actually applied, records a `feature_json_repair`
+/// metrics event and a JsonRepair monitor event next to `llm_event_id`.
 pub(crate) fn maybe_repair_json_content(
     content: String,
     request: &ChatCompletionRequest,
     state: &AppState,
     auth: &AuthContext,
+    llm_event_id: &str,
 ) -> String {
     // A duplicate hop passes the upstream response through untouched.
     if lr_types::is_duplicate_hop() {
@@ -98,8 +99,97 @@ pub(crate) fn maybe_repair_json_content(
         state
             .metrics_collector
             .record_feature_event("feature_json_repair", 0, 0.0);
+        super::monitor_helpers::record_json_repair(
+            state,
+            llm_event_id,
+            &request.model,
+            false,
+            &result.repairs,
+            Some(&result.original),
+            Some(&result.repaired),
+        );
     }
     result.repaired
+}
+
+/// Streaming JSON repair for one chat response. Records a JsonRepair monitor
+/// event next to the LLM call when the finished stream needed repairs.
+pub(crate) struct StreamingRepair {
+    repairer: lr_json_repair::StreamingJsonRepairer,
+    state: AppState,
+    llm_event_id: String,
+    model: String,
+}
+
+impl StreamingRepair {
+    /// `None` unless the request asks for JSON and syntax repair is enabled
+    /// for the client. A duplicate hop passes the stream through untouched.
+    pub(crate) fn for_request(
+        state: &AppState,
+        auth: &AuthContext,
+        request: &ChatCompletionRequest,
+        llm_event_id: &str,
+    ) -> Option<Self> {
+        if !matches!(
+            request.response_format,
+            Some(crate::types::ResponseFormat::JsonObject { .. })
+                | Some(crate::types::ResponseFormat::JsonSchema { .. })
+        ) || lr_types::is_duplicate_hop()
+        {
+            return None;
+        }
+        let config = state.config_manager.get();
+        let client = state.client_manager.get_client(&auth.api_key_id);
+        let enabled = client
+            .as_ref()
+            .and_then(|c| c.json_repair.enabled)
+            .unwrap_or(config.json_repair.enabled);
+        let syntax_repair = client
+            .as_ref()
+            .and_then(|c| c.json_repair.syntax_repair)
+            .unwrap_or(config.json_repair.syntax_repair);
+        (enabled && syntax_repair).then(|| Self {
+            repairer: lr_json_repair::StreamingJsonRepairer::new(
+                None,
+                lr_json_repair::RepairOptions::default(),
+            ),
+            state: state.clone(),
+            llm_event_id: llm_event_id.to_string(),
+            model: request.model.clone(),
+        })
+    }
+
+    /// Repair the content of a chunk's choices in place. A choice carrying a
+    /// finish reason flushes the repairer and records any repairs made.
+    pub(crate) fn apply(&mut self, choices: &mut [crate::types::ChatCompletionChunkChoice]) {
+        for choice in choices {
+            if let Some(text) = choice.delta.content.take() {
+                let repaired = self.repairer.push_content(&text);
+                if !repaired.is_empty() {
+                    choice.delta.content = Some(repaired);
+                }
+            }
+            if choice.finish_reason.is_some() {
+                let flushed = self.repairer.finish();
+                if !flushed.is_empty() {
+                    let existing = choice.delta.content.take().unwrap_or_default();
+                    choice.delta.content = Some(format!("{}{}", existing, flushed));
+                }
+                let actions = self.repairer.take_actions();
+                if !actions.is_empty() {
+                    super::monitor_helpers::record_json_repair(
+                        &self.state,
+                        &self.llm_event_id,
+                        &self.model,
+                        true,
+                        &actions,
+                        None,
+                        None,
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// The usage a turn is charged for: the upstream's, with `prompt_tokens`

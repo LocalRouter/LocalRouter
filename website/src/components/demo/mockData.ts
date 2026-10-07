@@ -1436,5 +1436,13 @@ export const mockData = {
       question: "", answer: "Failed to spawn process: No such file or directory (os error 2)",
       data: { type: "mcp_server_event", server_id: "filesystem", server_name: "Filesystem MCP", action: "connection_failed", message: "Failed to spawn process: No such file or directory (os error 2)" },
     },
+    {
+      id: "mon-012", sequence: 0, timestamp: new Date(Date.now() - 60000).toISOString(),
+      event_type: "json_repair", session_id: "sess-001", client_id: "client-1", client_name: "Claude Code",
+      status: "complete", duration_ms: null,
+      summary: "json repair: 2 fixes — gpt-5.5",
+      question: "```json {\"department\": \"billing\", \"urgent\": true,} ```", answer: "{\"department\": \"billing\", \"urgent\": true}",
+      data: { type: "json_repair", model: "gpt-5.5", streamed: false, repairs: ["Stripped markdown code fences", "Fixed JSON syntax"], original: "```json\n{\"department\": \"billing\", \"urgent\": true,}\n```", repaired: "{\"department\": \"billing\", \"urgent\": true}" },
+    },
   ] as Array<Record<string, unknown>>,
 }

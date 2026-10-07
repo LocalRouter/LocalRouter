@@ -297,6 +297,18 @@ fn data_size(data: &MonitorEventData) -> usize {
             message,
         } => str_size(transport) + str_size(action) + str_size(message),
         MonitorEventData::PromptCompression { method, .. } => str_size(method),
+        MonitorEventData::JsonRepair {
+            model,
+            repairs,
+            original,
+            repaired,
+            ..
+        } => {
+            str_size(model)
+                + repairs.iter().map(|r| str_size(r)).sum::<usize>()
+                + opt_str(original)
+                + opt_str(repaired)
+        }
         MonitorEventData::MemoryCompaction {
             session_id,
             model,

@@ -117,6 +117,7 @@ pub enum MonitorEventType {
     ModerationEvent,
     ConnectionError,
     PromptCompression,
+    JsonRepair,
     MemoryCompaction,
     FirewallDecision,
     SseConnection,
@@ -148,6 +149,7 @@ impl MonitorEventType {
             Self::ModerationEvent => "Moderation Event",
             Self::ConnectionError => "Connection Error",
             Self::PromptCompression => "Prompt Compression",
+            Self::JsonRepair => "JSON Repair",
             Self::MemoryCompaction => "Memory Compaction",
             Self::FirewallDecision => "Firewall Decision",
             Self::SseConnection => "SSE Connection",
@@ -173,7 +175,7 @@ impl MonitorEventType {
             Self::InternalError => "internal",
             Self::ModerationEvent => "moderation",
             Self::ConnectionError | Self::SseConnection => "connection",
-            Self::PromptCompression => "optimization",
+            Self::PromptCompression | Self::JsonRepair => "optimization",
             Self::MemoryCompaction => "memory",
             Self::FirewallDecision => "firewall",
             Self::ProxyPassthrough => "proxy",
@@ -564,6 +566,20 @@ pub enum MonitorEventData {
         reduction_percent: f64,
         duration_ms: u64,
         method: String,
+    },
+    /// A JSON response LocalRouter repaired before returning it.
+    JsonRepair {
+        model: String,
+        /// Whether the repair ran on a streamed response
+        streamed: bool,
+        /// One human-readable line per repair applied
+        repairs: Vec<String>,
+        /// Response content before repair (non-streamed responses only)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        original: Option<String>,
+        /// Response content after repair (non-streamed responses only)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        repaired: Option<String>,
     },
     MemoryCompaction {
         // Request fields (populated at creation)

@@ -312,6 +312,12 @@ pub(crate) fn question_and_answer(data: &MonitorEventData) -> (String, String) {
         MonitorEventData::FirewallDecision {
             item_name, action, ..
         } => (item_name.clone(), action.clone()),
+        MonitorEventData::JsonRepair {
+            original, repaired, ..
+        } => (
+            original.clone().unwrap_or_default(),
+            repaired.clone().unwrap_or_default(),
+        ),
         MonitorEventData::RouteLlmClassify { .. }
         | MonitorEventData::RoutingDecision { .. }
         | MonitorEventData::PromptCompression { .. }

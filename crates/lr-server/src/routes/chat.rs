@@ -471,37 +471,9 @@ async fn handle_mcp_via_llm(
         let completion_tx = Arc::new(Mutex::new(Some(completion_tx)));
 
         // Set up streaming JSON repair if enabled and response_format is JSON
-        let streaming_repairer = {
-            let is_json_format = matches!(
-                &request.response_format,
-                Some(crate::types::ResponseFormat::JsonObject { .. })
-                    | Some(crate::types::ResponseFormat::JsonSchema { .. })
-            );
-            if is_json_format {
-                let config = state.config_manager.get();
-                let client_cfg = state.client_manager.get_client(&auth.api_key_id);
-                let enabled = client_cfg
-                    .as_ref()
-                    .and_then(|c| c.json_repair.enabled)
-                    .unwrap_or(config.json_repair.enabled);
-                let syntax_repair = client_cfg
-                    .as_ref()
-                    .and_then(|c| c.json_repair.syntax_repair)
-                    .unwrap_or(config.json_repair.syntax_repair);
-                if enabled && syntax_repair && !lr_types::is_duplicate_hop() {
-                    Some(Arc::new(Mutex::new(
-                        lr_json_repair::StreamingJsonRepairer::new(
-                            None,
-                            lr_json_repair::RepairOptions::default(),
-                        ),
-                    )))
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        };
+        let streaming_repairer =
+            super::finalize::StreamingRepair::for_request(&state, &auth, &request, &llm_event_id)
+                .map(|repair| Arc::new(Mutex::new(repair)));
         let streaming_repairer_map = streaming_repairer.clone();
 
         let tracker_map = tracker.clone();
@@ -564,23 +536,7 @@ async fn handle_mcp_via_llm(
 
                             // Apply streaming JSON repair
                             if let Some(ref repairer) = streaming_repairer_map {
-                                for choice in &mut choices {
-                                    if let Some(text) = choice.delta.content.take() {
-                                        let repaired = repairer.lock().push_content(&text);
-                                        if !repaired.is_empty() {
-                                            choice.delta.content = Some(repaired);
-                                        }
-                                    }
-                                    if choice.finish_reason.is_some() {
-                                        let flushed = repairer.lock().finish();
-                                        if !flushed.is_empty() {
-                                            let existing =
-                                                choice.delta.content.take().unwrap_or_default();
-                                            choice.delta.content =
-                                                Some(format!("{}{}", existing, flushed));
-                                        }
-                                    }
-                                }
+                                repairer.lock().apply(&mut choices);
                             }
 
                             choices
@@ -1196,7 +1152,13 @@ async fn build_non_streaming_response(
                             None
                         } else {
                             // Apply JSON repair if enabled and response_format is JSON
-                            let text = maybe_repair_json_content(text, &request, &state, &auth);
+                            let text = maybe_repair_json_content(
+                                text,
+                                &request,
+                                &state,
+                                &auth,
+                                &llm_event_id,
+                            );
                             Some(MessageContent::Text(text))
                         }
                     }
@@ -1457,37 +1419,9 @@ async fn handle_streaming(
     let completion_tx = Arc::new(Mutex::new(Some(completion_tx)));
 
     // Set up streaming JSON repair if enabled and response_format is JSON
-    let streaming_repairer = {
-        let is_json_format = matches!(
-            &request.response_format,
-            Some(crate::types::ResponseFormat::JsonObject { .. })
-                | Some(crate::types::ResponseFormat::JsonSchema { .. })
-        );
-        if is_json_format {
-            let config = state.config_manager.get();
-            let client = state.client_manager.get_client(&auth.api_key_id);
-            let enabled = client
-                .as_ref()
-                .and_then(|c| c.json_repair.enabled)
-                .unwrap_or(config.json_repair.enabled);
-            let syntax_repair = client
-                .as_ref()
-                .and_then(|c| c.json_repair.syntax_repair)
-                .unwrap_or(config.json_repair.syntax_repair);
-            if enabled && syntax_repair && !lr_types::is_duplicate_hop() {
-                Some(Arc::new(Mutex::new(
-                    lr_json_repair::StreamingJsonRepairer::new(
-                        None,
-                        lr_json_repair::RepairOptions::default(),
-                    ),
-                )))
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    };
+    let streaming_repairer =
+        super::finalize::StreamingRepair::for_request(&state, &auth, &request, &llm_event_id)
+            .map(|repair| Arc::new(Mutex::new(repair)));
     let streaming_repairer_map = streaming_repairer.clone();
 
     // Clone for the stream closures
@@ -1557,23 +1491,7 @@ async fn handle_streaming(
 
                         // Apply streaming JSON repair outside the map closure
                         if let Some(ref repairer) = streaming_repairer_map {
-                            for choice in &mut choices {
-                                if let Some(text) = choice.delta.content.take() {
-                                    let repaired = repairer.lock().push_content(&text);
-                                    if !repaired.is_empty() {
-                                        choice.delta.content = Some(repaired);
-                                    }
-                                }
-                                if choice.finish_reason.is_some() {
-                                    let flushed = repairer.lock().finish();
-                                    if !flushed.is_empty() {
-                                        let existing =
-                                            choice.delta.content.take().unwrap_or_default();
-                                        choice.delta.content =
-                                            Some(format!("{}{}", existing, flushed));
-                                    }
-                                }
-                            }
+                            repairer.lock().apply(&mut choices);
                         }
 
                         choices
@@ -1825,37 +1743,12 @@ async fn handle_streaming_parallel(
         let mut stream = stream;
 
         // Set up streaming JSON repair if enabled and response_format is JSON
-        let parallel_streaming_repairer = {
-            let is_json_format = matches!(
-                &request.response_format,
-                Some(crate::types::ResponseFormat::JsonObject { .. })
-                    | Some(crate::types::ResponseFormat::JsonSchema { .. })
-            );
-            if is_json_format {
-                let config = state_clone.config_manager.get();
-                let client = state_clone
-                    .client_manager
-                    .get_client(&auth_clone.api_key_id);
-                let enabled = client
-                    .as_ref()
-                    .and_then(|c| c.json_repair.enabled)
-                    .unwrap_or(config.json_repair.enabled);
-                let syntax_repair = client
-                    .as_ref()
-                    .and_then(|c| c.json_repair.syntax_repair)
-                    .unwrap_or(config.json_repair.syntax_repair);
-                if enabled && syntax_repair && !lr_types::is_duplicate_hop() {
-                    Some(lr_json_repair::StreamingJsonRepairer::new(
-                        None,
-                        lr_json_repair::RepairOptions::default(),
-                    ))
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        };
+        let parallel_streaming_repairer = super::finalize::StreamingRepair::for_request(
+            &state_clone,
+            &auth_clone,
+            &request,
+            &llm_event_id,
+        );
 
         lr_types::spawn_traced(async move {
             let mut buffer: Vec<Result<Event, std::convert::Infallible>> = Vec::new();
@@ -1868,7 +1761,7 @@ async fn handle_streaming_parallel(
             let convert_chunk = |provider_chunk: lr_providers::CompletionChunk,
                                  gen_id: &str,
                                  created_ts: i64,
-                                 repairer: &mut Option<lr_json_repair::StreamingJsonRepairer>|
+                                 repairer: &mut Option<super::finalize::StreamingRepair>|
              -> Result<Event, std::convert::Infallible> {
                 let api_chunk = ChatCompletionChunk {
                     id: gen_id.to_string(),
@@ -1911,23 +1804,7 @@ async fn handle_streaming_parallel(
 
                         // Apply streaming JSON repair outside the map closure
                         if let Some(ref mut rep) = repairer {
-                            for choice in &mut choices {
-                                if let Some(text) = choice.delta.content.take() {
-                                    let repaired = rep.push_content(&text);
-                                    if !repaired.is_empty() {
-                                        choice.delta.content = Some(repaired);
-                                    }
-                                }
-                                if choice.finish_reason.is_some() {
-                                    let flushed = rep.finish();
-                                    if !flushed.is_empty() {
-                                        let existing =
-                                            choice.delta.content.take().unwrap_or_default();
-                                        choice.delta.content =
-                                            Some(format!("{}{}", existing, flushed));
-                                    }
-                                }
-                            }
+                            rep.apply(&mut choices);
                         }
 
                         choices

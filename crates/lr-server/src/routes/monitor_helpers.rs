@@ -795,6 +795,72 @@ pub fn emit_prompt_compression(
     );
 }
 
+// ---- JSON repair events ----
+
+/// Record a JsonRepair event for a response LocalRouter repaired. The event
+/// takes its client and session from the LLM call it belongs to, so it
+/// groups with that call in the monitor.
+pub fn record_json_repair(
+    state: &AppState,
+    llm_event_id: &str,
+    model: &str,
+    streamed: bool,
+    actions: &[lr_json_repair::RepairAction],
+    original: Option<&str>,
+    repaired: Option<&str>,
+) {
+    let (client_id, client_name, session_id) = state
+        .monitor_store
+        .get(llm_event_id)
+        .map(|e| (e.client_id, e.client_name, e.session_id))
+        .unwrap_or_default();
+    state.monitor_store.push(
+        MonitorEventType::JsonRepair,
+        client_id,
+        client_name,
+        session_id,
+        MonitorEventData::JsonRepair {
+            model: model.to_string(),
+            streamed,
+            repairs: describe_repairs(actions),
+            original: original.map(|s| truncate_string(s, 4000)),
+            repaired: repaired.map(|s| truncate_string(s, 4000)),
+        },
+        EventStatus::Complete,
+        None,
+    );
+}
+
+/// One line per distinct repair; the streaming repairer reports a syntax
+/// fix for every bracket it closes.
+fn describe_repairs(actions: &[lr_json_repair::RepairAction]) -> Vec<String> {
+    use lr_json_repair::RepairAction;
+    let mut lines: Vec<String> = Vec::new();
+    for action in actions {
+        let line = match action {
+            RepairAction::StrippedMarkdownFences => "Stripped markdown code fences".to_string(),
+            RepairAction::StrippedProse => "Stripped text around the JSON".to_string(),
+            RepairAction::SyntaxRepaired => "Fixed JSON syntax".to_string(),
+            RepairAction::TypeCoerced { path, from, to } => {
+                format!("Coerced {path} from {from} to {to}")
+            }
+            RepairAction::ExtraFieldRemoved { path } => {
+                format!("Removed {path}, which the schema does not allow")
+            }
+            RepairAction::DefaultAdded { path } => {
+                format!("Added missing required field {path}")
+            }
+            RepairAction::EnumNormalized { path, from, to } => {
+                format!("Normalized {path} from \"{from}\" to \"{to}\"")
+            }
+        };
+        if !lines.contains(&line) {
+            lines.push(line);
+        }
+    }
+    lines
+}
+
 // ---- Firewall decision events ----
 
 /// Emit a FirewallDecision event when a popup is shown and the user responds.

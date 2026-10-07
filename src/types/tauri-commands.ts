@@ -4273,7 +4273,7 @@ export type MonitorEventType =
   | 'routing_decision' | 'auth_error' | 'access_denied'
   | 'rate_limit_event' | 'validation_error' | 'mcp_server_event'
   | 'oauth_event' | 'internal_error' | 'moderation_event'
-  | 'connection_error' | 'prompt_compression' | 'memory_compaction'
+  | 'connection_error' | 'prompt_compression' | 'json_repair' | 'memory_compaction'
   | 'firewall_decision' | 'sse_connection'
   | 'proxy_passthrough'
 

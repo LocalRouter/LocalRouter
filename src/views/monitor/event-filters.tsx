@@ -29,22 +29,24 @@ const TYPE_GROUPS: { key: string; label: string; types: MonitorEventType[] }[] =
     'rate_limit_event', 'validation_error', 'internal_error',
     'moderation_event', 'connection_error',
   ]},
+  { key: 'optimization', label: 'Optimizations', types: ['prompt_compression', 'json_repair'] },
   { key: 'memory', label: 'Memory', types: ['memory_compaction'] },
   // Non-LLM traffic the HTTPS proxy forwarded untouched — its own group so it
   // can be hidden, or isolated when hunting for stray egress.
   { key: 'proxy', label: 'Proxy Passthrough', types: ['proxy_passthrough'] },
-  { key: 'other', label: 'Other', types: ['prompt_compression', 'firewall_decision', 'sse_connection'] },
+  { key: 'other', label: 'Other', types: ['firewall_decision', 'sse_connection'] },
 ]
 
 const ALL_TYPE_GROUP_KEYS = TYPE_GROUPS.map(g => g.key)
 
 // Reverse the group→event_types mapping so a persisted/external filter restores
 // the correct group selection. `null` means "all events" (no filter); a group
-// counts as selected when every one of its event types is present.
+// counts as selected when any of its event types is present, so a saved
+// selection picks up event types added to its groups since it was saved.
 function groupsFromEventTypes(eventTypes: MonitorEventType[] | null): string[] {
   if (eventTypes == null) return ALL_TYPE_GROUP_KEYS
   const present = new Set(eventTypes)
-  return TYPE_GROUPS.filter(g => g.types.every(t => present.has(t))).map(g => g.key)
+  return TYPE_GROUPS.filter(g => g.types.some(t => present.has(t))).map(g => g.key)
 }
 
 const ALL_INTERCEPT_CATEGORIES: { label: string; value: InterceptCategory }[] = [

@@ -334,6 +334,10 @@ pub fn generate_summary(event: &MonitorEvent) -> String {
         } => {
             format!("compression: {:.1}% reduction", reduction_percent)
         }
+        MonitorEventData::JsonRepair { model, repairs, .. } => {
+            let fixes = if repairs.len() == 1 { "fix" } else { "fixes" };
+            format!("json repair: {} {} — {}", repairs.len(), fixes, model)
+        }
         MonitorEventData::MemoryCompaction {
             session_id,
             model,

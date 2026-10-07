@@ -40,7 +40,7 @@ function getCategory(type: MonitorEventType): string {
   if (type.startsWith('guardrail')) return 'guardrail'
   if (type === 'secret_scan') return 'secret_scan'
   if (type === 'route_llm_classify' || type === 'routing_decision') return 'routing'
-  if (type === 'prompt_compression') return 'optimization'
+  if (type === 'prompt_compression' || type === 'json_repair') return 'optimization'
   if (type === 'memory_compaction') return 'memory'
   if (type === 'firewall_decision') return 'firewall'
   if (type === 'sse_connection' || type === 'connection_error') return 'connection'
@@ -58,6 +58,7 @@ function getTypeLabel(type: MonitorEventType): string {
     .replace(/_/g, ' ')
     .replace(/\b\w/g, l => l.toUpperCase())
     .replace('Llm', 'LLM')
+    .replace('Json', 'JSON')
     .replace('Mcp', 'MCP')
     .replace('Sse', 'SSE')
     .replace('Oauth', 'OAuth')

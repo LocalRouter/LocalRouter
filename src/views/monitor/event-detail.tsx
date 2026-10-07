@@ -219,6 +219,7 @@ export function EventDetail({ event, loading, error, onRetry }: EventDetailProps
         {type === 'moderation_event' && <ModerationEventDetail data={data} />}
         {type === 'connection_error' && <ConnectionErrorDetail data={data} />}
         {type === 'prompt_compression' && <PromptCompressionDetail data={data} />}
+        {type === 'json_repair' && <JsonRepairDetail data={data} />}
         {type === 'memory_compaction' && <MemoryCompactionDetail data={data} status={event.status} />}
         {type === 'firewall_decision' && <FirewallDecisionDetail data={data} />}
         {type === 'sse_connection' && <SseConnectionDetail data={data} />}
@@ -1113,6 +1114,36 @@ function PromptCompressionDetail({ data }: { data: EventData }) {
       <Field label="Original Tokens" value={String(data.original_tokens)} />
       <Field label="Compressed Tokens" value={String(data.compressed_tokens)} />
       <Field label="Duration" value={`${data.duration_ms}ms`} />
+    </div>
+  )
+}
+
+function JsonRepairDetail({ data }: { data: EventData }) {
+  const repairs = (data.repairs as string[] | undefined) ?? []
+  return (
+    <div className="space-y-3 text-xs">
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="Model" value={data.model as string} />
+        <Field label="Response" value={data.streamed ? 'Streamed' : 'Complete'} />
+      </div>
+      <div>
+        <span className="text-muted-foreground font-medium">Repairs:</span>
+        <ul className="mt-1 list-disc pl-5 space-y-0.5">
+          {repairs.map(repair => <li key={repair}>{repair}</li>)}
+        </ul>
+      </div>
+      {data.original != null && (
+        <div>
+          <span className="text-muted-foreground font-medium">Before:</span>
+          <div className="mt-1"><RawBlock label="before" text={data.original as string} /></div>
+        </div>
+      )}
+      {data.repaired != null && (
+        <div>
+          <span className="text-muted-foreground font-medium">After:</span>
+          <div className="mt-1"><RawBlock label="after" text={data.repaired as string} /></div>
+        </div>
+      )}
     </div>
   )
 }
