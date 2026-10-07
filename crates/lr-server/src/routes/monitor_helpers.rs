@@ -609,15 +609,19 @@ pub fn emit_internal_error(state: &AppState, error_type: &str, message: &str, st
 
 // ---- Guardrail events (combined: request + response) ----
 
-/// Emit a pending GuardrailScan event before running input safety checks. Returns event ID.
-pub fn emit_guardrail_scan(
+/// Record a GuardrailScan event for a request the safety check flagged.
+/// Passing scans are not recorded: they would add an event to every request.
+pub fn record_guardrail_scan(
     state: &AppState,
     client_ctx: Option<&ClientAuthContext>,
     session_id: Option<&str>,
     direction: &str,
     text_preview: &str,
     models_used: Vec<String>,
-) -> String {
+    flagged_categories: Vec<lr_monitor::FlaggedCategory>,
+    action_taken: &str,
+    latency_ms: u64,
+) {
     let (client_id, client_name) = resolve_client_ctx(state, client_ctx);
     state.monitor_store.push(
         MonitorEventType::GuardrailScan,
@@ -628,42 +632,14 @@ pub fn emit_guardrail_scan(
             direction: direction.to_string(),
             text_preview: truncate_string(text_preview, 500),
             models_used,
-            result: None,
-            flagged_categories: None,
-            action_taken: None,
-            latency_ms: None,
+            result: Some("flagged".to_string()),
+            flagged_categories: Some(flagged_categories),
+            action_taken: Some(action_taken.to_string()),
+            latency_ms: Some(latency_ms),
         },
-        EventStatus::Pending,
-        None,
-    )
-}
-
-/// Complete a GuardrailScan event with the scan result.
-pub fn complete_guardrail_scan(
-    state: &AppState,
-    event_id: &str,
-    result: &str,
-    flagged_categories: Vec<lr_monitor::FlaggedCategory>,
-    action_taken: &str,
-    latency_ms: u64,
-) {
-    state.monitor_store.update(event_id, |event| {
-        event.status = EventStatus::Complete;
-        event.duration_ms = Some(latency_ms);
-        if let MonitorEventData::GuardrailScan {
-            result: ref mut r,
-            flagged_categories: ref mut fc,
-            action_taken: ref mut at,
-            latency_ms: ref mut lm,
-            ..
-        } = &mut event.data
-        {
-            *r = Some(result.to_string());
-            *fc = Some(flagged_categories);
-            *at = Some(action_taken.to_string());
-            *lm = Some(latency_ms);
-        }
-    });
+        EventStatus::Complete,
+        Some(latency_ms),
+    );
 }
 
 /// Emit a pending GuardrailResponseScan event for output safety checks. Returns event ID.
@@ -725,14 +701,19 @@ pub fn complete_guardrail_response_scan(
 
 // ---- Secret scan events (combined: request + response) ----
 
-/// Emit a pending SecretScan event before scanning. Returns event ID.
-pub fn emit_secret_scan(
+/// Record a SecretScan event for a request with findings. Clean scans are
+/// not recorded: they would add an event to every request.
+pub fn record_secret_scan(
     state: &AppState,
     client_ctx: Option<&ClientAuthContext>,
     session_id: Option<&str>,
     text_preview: &str,
     rules_count: usize,
-) -> String {
+    findings_count: usize,
+    findings: serde_json::Value,
+    action_taken: &str,
+    latency_ms: u64,
+) {
     let (client_id, client_name) = resolve_client_ctx(state, client_ctx);
     state.monitor_store.push(
         MonitorEventType::SecretScan,
@@ -742,42 +723,14 @@ pub fn emit_secret_scan(
         MonitorEventData::SecretScan {
             text_preview: truncate_string(text_preview, 500),
             rules_count,
-            findings_count: None,
-            findings: None,
-            action_taken: None,
-            latency_ms: None,
+            findings_count: Some(findings_count),
+            findings: Some(findings),
+            action_taken: Some(action_taken.to_string()),
+            latency_ms: Some(latency_ms),
         },
-        EventStatus::Pending,
-        None,
-    )
-}
-
-/// Complete a SecretScan event with scan results.
-pub fn complete_secret_scan(
-    state: &AppState,
-    event_id: &str,
-    findings_count: usize,
-    findings: serde_json::Value,
-    action_taken: &str,
-    latency_ms: u64,
-) {
-    state.monitor_store.update(event_id, |event| {
-        event.status = EventStatus::Complete;
-        event.duration_ms = Some(latency_ms);
-        if let MonitorEventData::SecretScan {
-            findings_count: ref mut fc,
-            findings: ref mut f,
-            action_taken: ref mut at,
-            latency_ms: ref mut lm,
-            ..
-        } = &mut event.data
-        {
-            *fc = Some(findings_count);
-            *f = Some(findings);
-            *at = Some(action_taken.to_string());
-            *lm = Some(latency_ms);
-        }
-    });
+        EventStatus::Complete,
+        Some(latency_ms),
+    );
 }
 
 // ---- Routing events ----

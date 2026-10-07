@@ -16,7 +16,7 @@ export function useMonitorEvents(filter?: MonitorEventFilter | null) {
   const [selectedEvent, setSelectedEvent] = useState<MonitorEvent | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
-  const [loadError, setLoadError] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [reloadToken, setReloadToken] = useState(0)
   const [isDetailLoading, setIsDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState<string | null>(null)
@@ -43,11 +43,12 @@ export function useMonitorEvents(filter?: MonitorEventFilter | null) {
       .then(res => {
         if (request !== listRequestRef.current) return
         setEvents(mergeMonitorEvents(res.events, pendingUpdatesRef.current?.values() ?? [], filter, MAX_DISPLAY))
-        setLoadError(false)
+        setLoadError(null)
       })
-      .catch(() => {
+      .catch(error => {
         // Keep the last loaded events; live updates continue to merge in.
-        if (request === listRequestRef.current) setLoadError(true)
+        console.error('Failed to load monitor events:', error)
+        if (request === listRequestRef.current) setLoadError(String(error))
       })
       .finally(() => {
         if (request !== listRequestRef.current) return

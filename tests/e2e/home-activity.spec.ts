@@ -63,15 +63,15 @@ test('30-day traffic has one point per day', async ({ page }) => {
   )
 })
 
-test('the monitor fills the dashboard viewport and Try It Out opens beside it', async ({
+test('the monitor list height is capped and Try It Out opens beside it', async ({
   page,
 }) => {
   const monitor = page.getByRole('region', { name: 'Request monitor' })
-  const sizes = await monitor.evaluate((el) => ({
-    monitor: el.getBoundingClientRect().height,
-    viewport: el.parentElement!.clientHeight,
+  const sizes = await monitor.getByTestId('monitor-event-list').evaluate((el) => ({
+    list: el.getBoundingClientRect().height,
+    viewport: window.innerHeight,
   }))
-  expect(Math.abs(sizes.monitor - sizes.viewport)).toBeLessThanOrEqual(1)
+  expect(sizes.list).toBeLessThanOrEqual(sizes.viewport * 0.7 + 1)
   await monitor.getByRole('button', { name: 'Try It Out' }).click()
   await expect(monitor.getByText('Select a client to get started')).toBeVisible()
 })

@@ -173,9 +173,6 @@ pub async fn chat_completions(
                 .unwrap_or("unknown");
             transformations.push(format!("routellm ({})", tier));
         }
-        if guardrail_handle.is_some() {
-            transformations.push("guardrails".to_string());
-        }
         if !transformations.is_empty() {
             let req_json = serde_json::to_value(&request).unwrap_or_default();
             super::monitor_helpers::update_llm_call_transformed(

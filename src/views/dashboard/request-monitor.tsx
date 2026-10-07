@@ -146,6 +146,7 @@ export function RequestMonitor({ reloadSignal, className }: RequestMonitorProps)
     >
       Activity could not be refreshed.{' '}
       {events.length > 0 ? 'Showing the last loaded events.' : 'Activity is unavailable.'}
+      <span className="ml-1 opacity-80">({loadError})</span>
       <button onClick={reload} className="ml-2 underline">
         Retry
       </button>
@@ -163,25 +164,20 @@ export function RequestMonitor({ reloadSignal, className }: RequestMonitorProps)
     />
   )
 
-  const eventSplit = selectedId ? (
-    <ResizablePanelGroup direction="vertical" className="flex-1 min-h-0">
-      <ResizablePanel defaultSize="35%" minSize="20%">
-        {list}
-      </ResizablePanel>
-      <ResizableHandle withHandle orientation="vertical" />
-      <ResizablePanel defaultSize="65%" minSize="20%">
-        <EventDetail key={selectedId} event={selectedEvent} loading={isDetailLoading} error={detailError} onRetry={retryDetail} />
-      </ResizablePanel>
-    </ResizablePanelGroup>
-  ) : (
-    <div className="flex-1 min-h-0">{list}</div>
-  )
-
+  // The dashboard page is the scroll container: the list scrolls within a
+  // capped height and the selected event's detail flows below it in full.
   const monitor = (
-    <div className="flex flex-col h-full">
-      {filterBar}
-      {errorBanner}
-      {eventSplit}
+    <div className="flex flex-col">
+      <div className="flex max-h-[70vh] min-h-[320px] flex-col" data-testid="monitor-event-list">
+        {filterBar}
+        {errorBanner}
+        <div className="flex-1 min-h-0">{list}</div>
+      </div>
+      {selectedId && (
+        <div className="border-t" data-testid="monitor-event-detail">
+          <EventDetail key={selectedId} event={selectedEvent} loading={isDetailLoading} error={detailError} onRetry={retryDetail} />
+        </div>
+      )}
     </div>
   )
 

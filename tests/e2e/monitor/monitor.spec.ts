@@ -158,14 +158,13 @@ test('Codex request and streamed answer display from truncated legacy captures',
   await page.screenshot({ path: 'test-results/monitor/monitor-codex-lite.png' })
 })
 
-test('switching events keeps the resized pane mounted and ignores late details', async ({ page }) => {
+test('the selected event shows below the list and ignores late details', async ({ page }) => {
   await page.locator('tbody tr').first().click()
   await expect(page.getByRole('region', { name: 'Response', exact: true })).toBeVisible()
-  const separator = page.getByRole('separator')
-  await separator.focus()
-  await page.keyboard.press('ArrowDown')
-  const before = await separator.boundingBox()
-  await separator.evaluate(element => { (window as unknown as { monitorSeparator: Element }).monitorSeparator = element })
+  await expect(page.getByRole('separator')).toHaveCount(0)
+  const list = (await page.getByTestId('monitor-event-list').boundingBox())!
+  const detail = page.getByTestId('monitor-event-detail')
+  expect((await detail.boundingBox())!.y).toBeGreaterThanOrEqual(list.y + list.height - 1)
   await page.evaluate(() => {
     type Pending = { resolve: (value: unknown) => void; result: { data: Record<string, unknown> } }
     const target = window as unknown as { __TAURI_IPC_HANDLER__: (cmd: string, args: unknown) => unknown; monitorPending: Pending[] }
@@ -179,8 +178,6 @@ test('switching events keeps the resized pane mounted and ignores late details',
   await page.locator('tbody tr').nth(1).click()
   await expect(page.getByRole('status').filter({ hasText: 'Loading event details' })).toBeVisible()
   await page.locator('tbody tr').nth(2).click()
-  expect(await separator.evaluate(element => element === (window as unknown as { monitorSeparator: Element }).monitorSeparator)).toBe(true)
-  expect((await separator.boundingBox())!.y).toBeCloseTo(before!.y, 0)
   await page.evaluate(() => {
     const target = window as unknown as { monitorPending: { resolve: (value: unknown) => void; result: { data: Record<string, unknown> } }[] }
     const latest = target.monitorPending[1]
@@ -194,7 +191,6 @@ test('switching events keeps the resized pane mounted and ignores late details',
   })
   await expect(page.getByRole('region', { name: 'Response', exact: true })).toContainText('Latest answer')
   await expect(page.getByText('Stale answer')).toHaveCount(0)
-  expect(await separator.evaluate(element => element === (window as unknown as { monitorSeparator: Element }).monitorSeparator)).toBe(true)
 })
 
 test('failed and missing detail loads keep the pane available for retry', async ({ page }) => {
@@ -212,7 +208,7 @@ test('failed and missing detail loads keep the pane available for retry', async 
   })
   await page.locator('tbody tr').first().click()
   await expect(page.getByRole('status')).toContainText('Unable to load event details.')
-  await expect(page.getByRole('separator')).toBeVisible()
+  await expect(page.getByTestId('monitor-event-detail')).toBeVisible()
   await page.getByRole('button', { name: 'Retry', exact: true }).click()
   await expect(page.getByRole('status')).toContainText('This event is no longer available.')
   await page.getByRole('button', { name: 'Retry', exact: true }).click()

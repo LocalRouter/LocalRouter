@@ -896,22 +896,21 @@ pub(crate) async fn run_prompt_compression(
         .await?;
     let comp_duration = comp_start.elapsed().as_millis() as u64;
 
-    // Emit prompt compression monitor event
-    let reduction_pct = if result.original_tokens > 0 {
-        (1.0 - (result.compressed_tokens as f64 / result.original_tokens as f64)) * 100.0
-    } else {
-        0.0
-    };
-    super::monitor_helpers::emit_prompt_compression(
-        state,
-        client_context,
-        None,
-        result.original_tokens as u64,
-        result.compressed_tokens as u64,
-        reduction_pct,
-        comp_duration,
-        "llmlingua",
-    );
+    // Only a compression that saved tokens is recorded in the monitor
+    if result.compressed_tokens < result.original_tokens {
+        let reduction_pct =
+            (1.0 - (result.compressed_tokens as f64 / result.original_tokens as f64)) * 100.0;
+        super::monitor_helpers::emit_prompt_compression(
+            state,
+            client_context,
+            None,
+            result.original_tokens as u64,
+            result.compressed_tokens as u64,
+            reduction_pct,
+            comp_duration,
+            "llmlingua",
+        );
+    }
 
     Ok(Some(result))
 }
@@ -1155,34 +1154,11 @@ pub async fn guardrails_scan_request(
         return None;
     }
 
-    // Emit guardrail request event
-    let model_names: Vec<String> = vec!["guardrails".to_string()];
-    let text_preview = lr_guardrails::text_extractor::extract_request_text(request_json)
-        .first()
-        .map(|t| t.text.clone())
-        .unwrap_or_default();
-    let guardrail_event_id = super::monitor_helpers::emit_guardrail_scan(
-        state,
-        client_context,
-        None,
-        "request",
-        &text_preview,
-        model_names,
-    );
-
     let started = std::time::Instant::now();
     let result = engine.check_input(request_json).await;
     let latency_ms = started.elapsed().as_millis() as u64;
 
     if result.is_safe {
-        super::monitor_helpers::complete_guardrail_scan(
-            state,
-            &guardrail_event_id,
-            "pass",
-            vec![],
-            "none",
-            latency_ms,
-        );
         return None;
     }
 
@@ -1197,18 +1173,10 @@ pub async fn guardrails_scan_request(
         .collect();
     let result = result.apply_client_category_overrides(&overrides);
     if result.is_safe {
-        super::monitor_helpers::complete_guardrail_scan(
-            state,
-            &guardrail_event_id,
-            "pass",
-            vec![],
-            "none",
-            latency_ms,
-        );
         return None;
     }
 
-    // Emit flagged guardrail response
+    // Only flagged requests are recorded in the monitor
     let flagged_cats: Vec<lr_monitor::FlaggedCategory> = result
         .actions_required
         .iter()
@@ -1218,10 +1186,17 @@ pub async fn guardrails_scan_request(
             action: format!("{:?}", a.action),
         })
         .collect();
-    super::monitor_helpers::complete_guardrail_scan(
+    let text_preview = lr_guardrails::text_extractor::extract_request_text(request_json)
+        .first()
+        .map(|t| t.text.clone())
+        .unwrap_or_default();
+    super::monitor_helpers::record_guardrail_scan(
         state,
-        &guardrail_event_id,
-        "flagged",
+        client_context,
+        None,
+        "request",
+        &text_preview,
+        vec!["guardrails".to_string()],
         flagged_cats,
         "ask",
         latency_ms,
@@ -1614,24 +1589,6 @@ pub async fn scan_request_for_secrets(
         })
         .collect();
 
-    // Emit secret scan request event
-    let scan_text_preview = texts.first().map(|t| t.text.as_str()).unwrap_or("");
-    let rules_count = if scanner.has_rules() {
-        scanner.rule_metadata().len()
-    } else {
-        0
-    };
-    let client_ctx = ClientAuthContext {
-        client_id: client_id.to_string(),
-    };
-    let secret_scan_event_id = super::monitor_helpers::emit_secret_scan(
-        state,
-        Some(&client_ctx),
-        None,
-        scan_text_preview,
-        rules_count,
-    );
-
     let scan_start = std::time::Instant::now();
     let mut result = scanner.scan(&texts);
 
@@ -1673,18 +1630,6 @@ pub async fn scan_request_for_secrets(
                 "Secret scan: {dismissed_count} finding(s) ignored by client {client_id}'s dismissed-secret list"
             );
         }
-        super::monitor_helpers::complete_secret_scan(
-            state,
-            &secret_scan_event_id,
-            0,
-            serde_json::json!([]),
-            if dismissed_count > 0 {
-                "dismissed"
-            } else {
-                "pass"
-            },
-            scan_latency,
-        );
         return SecretScanOutcome::Allow;
     }
 
@@ -1696,9 +1641,16 @@ pub async fn scan_request_for_secrets(
 
     let findings_json = serde_json::to_value(&result.findings).unwrap_or(serde_json::json!([]));
     let action_name = format!("{:?}", effective_action).to_lowercase();
-    super::monitor_helpers::complete_secret_scan(
+    // Only scans with findings are recorded in the monitor
+    let client_ctx = ClientAuthContext {
+        client_id: client_id.to_string(),
+    };
+    super::monitor_helpers::record_secret_scan(
         state,
-        &secret_scan_event_id,
+        Some(&client_ctx),
+        None,
+        texts.first().map(|t| t.text.as_str()).unwrap_or(""),
+        scanner.rule_metadata().len(),
         result.findings.len(),
         findings_json,
         &action_name,

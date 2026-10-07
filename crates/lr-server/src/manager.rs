@@ -6,7 +6,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
-use super::{start_server, state::AppState, ServerConfig};
+use super::{start_server_with_monitor, state::AppState, ServerConfig};
 use lr_mcp::McpServerManager;
 use lr_providers::registry::ProviderRegistry;
 use lr_router::{RateLimiterManager, Router};
@@ -40,12 +40,17 @@ pub struct ServerManager {
     /// Cancels the running server: stops accepting connections and kills any
     /// in-flight requests/streams via the kill-switch middleware.
     shutdown_token: Arc<RwLock<Option<CancellationToken>>>,
+    /// Monitor event store shared by every server start, so the event history
+    /// and the proxies writing into it survive restarts and stay readable
+    /// while the server is stopped.
+    monitor_store: Arc<lr_monitor::MonitorEventStore>,
 }
 
 impl ServerManager {
     pub fn new() -> Self {
         Self {
             app_state: Arc::new(RwLock::new(None)),
+            monitor_store: Arc::new(lr_monitor::MonitorEventStore::new(1000)),
             server_handle: Arc::new(RwLock::new(None)),
             status: Arc::new(RwLock::new(ServerStatus::Stopped)),
             actual_port: Arc::new(RwLock::new(None)),
@@ -83,7 +88,7 @@ impl ServerManager {
 
         // Start the new server
         let host = config.host.clone();
-        let (state, handle, actual_port, shutdown_token) = start_server(
+        let (state, handle, actual_port, shutdown_token) = start_server_with_monitor(
             config,
             deps.router,
             deps.mcp_server_manager,
@@ -94,6 +99,7 @@ impl ServerManager {
             deps.token_store,
             deps.metrics_collector,
             deps.health_cache,
+            self.monitor_store.clone(),
         )
         .await?;
 
@@ -141,6 +147,11 @@ impl ServerManager {
     /// Get the server status
     pub fn get_status(&self) -> ServerStatus {
         *self.status.read()
+    }
+
+    /// The monitor event store, available whether or not the server is running
+    pub fn monitor_store(&self) -> Arc<lr_monitor::MonitorEventStore> {
+        self.monitor_store.clone()
     }
 
     /// Get the app state

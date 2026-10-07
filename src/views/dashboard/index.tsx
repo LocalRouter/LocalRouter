@@ -9,8 +9,8 @@ export function DashboardView() {
   const [monitorReload, setMonitorReload] = useState(0)
   const home = useHomeActivity(range)
 
-  // The page is its own scroll container so the monitor can be exactly one
-  // viewport tall: scrolling past the traffic chart shows it at full height.
+  // The page is its own scroll container: the monitor's list has a capped
+  // height and a selected event's detail extends the page below it.
   return (
     <div className="flex h-full flex-col gap-5 overflow-y-auto">
       <h1 className="mx-auto w-full max-w-[1440px] shrink-0 text-[28px] font-semibold leading-tight tracking-tight">
@@ -30,7 +30,7 @@ export function DashboardView() {
       />
 
       <RequestMonitor
-        className="mx-auto h-full min-h-[480px] w-full max-w-[1440px] shrink-0"
+        className="mx-auto w-full max-w-[1440px] shrink-0"
         reloadSignal={monitorReload}
       />
     </div>

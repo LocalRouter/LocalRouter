@@ -93,6 +93,41 @@ pub async fn start_server(
     u16,
     CancellationToken,
 )> {
+    start_server_with_monitor(
+        config,
+        router,
+        mcp_server_manager,
+        rate_limiter,
+        provider_registry,
+        config_manager,
+        client_manager,
+        token_store,
+        metrics_collector,
+        health_cache,
+        Arc::new(lr_monitor::MonitorEventStore::new(1000)),
+    )
+    .await
+}
+
+/// Like [`start_server`], recording monitor events into `monitor_store`.
+pub async fn start_server_with_monitor(
+    config: ServerConfig,
+    router: Arc<AppRouter>,
+    mcp_server_manager: Arc<McpServerManager>,
+    rate_limiter: Arc<RateLimiterManager>,
+    provider_registry: Arc<ProviderRegistry>,
+    config_manager: Arc<lr_config::ConfigManager>,
+    client_manager: Arc<lr_clients::ClientManager>,
+    token_store: Arc<lr_clients::TokenStore>,
+    metrics_collector: Arc<lr_monitoring::metrics::MetricsCollector>,
+    health_cache: Option<Arc<lr_providers::health_cache::HealthCacheManager>>,
+    monitor_store: Arc<lr_monitor::MonitorEventStore>,
+) -> anyhow::Result<(
+    AppState,
+    tokio::task::JoinHandle<()>,
+    u16,
+    CancellationToken,
+)> {
     info!("Starting web server on {}:{}", config.host, config.port);
 
     // Shutdown signal: cancelling this stops the accept loop (graceful
@@ -111,6 +146,7 @@ pub async fn start_server(
         metrics_collector,
         health_cache,
     )
+    .with_monitor_store(monitor_store)
     .with_mcp(mcp_server_manager);
 
     // Build the router with auth layer applied
