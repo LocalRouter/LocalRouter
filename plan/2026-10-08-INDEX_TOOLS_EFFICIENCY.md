@@ -75,3 +75,34 @@ Source: analysis of Claude Code (`~/.claude/projects`) and Codex
 17. Plan review, test coverage review, bug hunt, CI-parity checks
     (clippy/fmt/test on rustup stable), commit, merge `--no-ff` to master,
     push. No release.
+
+## Outcome
+
+- Activation in Claude Code had the same root cause as Codex's failure: the
+  MCP TS SDK opens its GET notification stream only after
+  `notifications/initialized` returns 202, so `tools/list_changed` never
+  reached it. The 202 fix covers both; an HTTP-level test drives the path.
+  "Tool not found" for listed tools was already fixed in 0.0.150; a call to a
+  tool whose server failed to start now names that server and the error.
+- Offline replay of the recorded IndexSearch calls against the real payloads
+  (vector search on), old vs new code, exact data only (120 calls):
+  on-source hits 19% → 100%, best hit first 12/245 → 426/426, output
+  2.18M → 0.61M chars, duplicated chars 766K → 0. The two recorded
+  `catalog:skills` searches (source never indexed) return an error naming the
+  indexed labels instead of 14K/1.6K chars of unrelated hits.
+- At the 16 KB default, 51 of the 56 recorded compressed responses pass
+  through whole: 50 fewer round trips, ~9% fewer chars.
+- Replay found three issues, fixed before merge: minified-JSON chunks all
+  claimed line 2 (now mapped to their real line, and re-serialized chunks no
+  longer show line numbers that don't exist); cross-query "same as" hid
+  different chunks or other parts of a chunk (now only identical snippets are
+  referenced); the IndexSearch description listed `catalog:skills`/`mcp/`
+  even when catalog indexing is off (now built from what the session indexes).
+
+### Follow-ups (not in this change)
+
+- Streamable HTTP clients sharing one client token share one gateway session
+  (no `Mcp-Session-Id`), so one instance's `initialize` resets another's
+  activated tools.
+- Configs with a hand-set `response_threshold_bytes` (not a past default)
+  keep it; v28 only resets values that were defaults.

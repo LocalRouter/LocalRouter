@@ -391,22 +391,36 @@ pub(crate) fn chunk_json(content: &str) -> Vec<Chunk> {
         return chunk_plain_text(content);
     }
 
-    // Assign approximate line numbers based on content position
-    let total_lines = content.lines().count();
-    let total_content_len: usize = chunks.iter().map(|c| c.content.len()).sum();
-    let mut running_line = 1;
+    // Chunks are re-serialized, so their position in the source is
+    // estimated: each chunk's share of the chunk bytes maps to the same share
+    // of the source bytes, and that offset to the source line holding it.
+    // Minified JSON is a single line, so every chunk lands on line 1 instead
+    // of on lines that do not exist.
+    let line_ends: Vec<usize> = content
+        .lines()
+        .scan(0usize, |offset, line| {
+            *offset += line.len() + 1;
+            Some(*offset)
+        })
+        .collect();
+    let line_at = |byte: usize| -> usize {
+        line_ends
+            .partition_point(|&end| end <= byte)
+            .min(line_ends.len().saturating_sub(1))
+            + 1
+    };
+    let total_content_len: usize = chunks.iter().map(|c| c.content.len()).sum::<usize>().max(1);
+    let scale = content.len() as f64 / total_content_len as f64;
+    let mut consumed = 0usize;
     for chunk in &mut chunks {
-        chunk.line_start = running_line;
-        chunk.line_ref = running_line.to_string();
-        let estimated_lines = if total_content_len > 0 {
-            ((chunk.content.len() as f64 / total_content_len as f64) * total_lines as f64).ceil()
-                as usize
-        } else {
-            1
-        }
-        .max(1);
-        chunk.line_end = (running_line + estimated_lines - 1).min(total_lines);
-        running_line = chunk.line_end + 1;
+        let start = (consumed as f64 * scale) as usize;
+        consumed += chunk.content.len();
+        let end = ((consumed as f64 * scale) as usize)
+            .saturating_sub(1)
+            .max(start);
+        chunk.line_start = line_at(start);
+        chunk.line_end = line_at(end).max(chunk.line_start);
+        chunk.line_ref = chunk.line_start.to_string();
     }
 
     chunks
@@ -1170,5 +1184,35 @@ mod tests {
         // Last sub-chunk should end at or before line 59
         let last = result.last().unwrap();
         assert!(last.line_end <= 59);
+    }
+
+    #[test]
+    fn test_chunk_json_minified_maps_to_its_one_line() {
+        let fields: Vec<String> = (0..40)
+            .map(|i| format!("\"field{i}\":{{\"name\":\"value {i}\",\"tags\":[\"a\",\"b\"]}}"))
+            .collect();
+        let content = format!("{{{}}}", fields.join(","));
+        let chunks = chunk_json(&content);
+        assert!(chunks.len() > 1);
+        for c in &chunks {
+            assert_eq!((c.line_start, c.line_end), (1, 1), "{}", c.title);
+        }
+    }
+
+    #[test]
+    fn test_chunk_json_pretty_lines_stay_in_range_and_ordered() {
+        let value: serde_json::Value = serde_json::json!({
+            "a": {"x": [1, 2, 3], "y": {"deep": "v"}},
+            "b": {"x": [4, 5, 6], "y": {"deep": "w"}},
+            "c": {"x": [7, 8, 9], "y": {"deep": "z"}},
+        });
+        let content = serde_json::to_string_pretty(&value).unwrap();
+        let total = content.lines().count();
+        let chunks = chunk_json(&content);
+        let mut prev = 1;
+        for c in &chunks {
+            assert!(c.line_start >= prev && c.line_start <= c.line_end && c.line_end <= total);
+            prev = c.line_start;
+        }
     }
 }

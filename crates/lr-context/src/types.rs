@@ -460,8 +460,10 @@ fn known_sources_list(known: &[String]) -> String {
 // Display implementations (LLM-friendly output)
 // ─────────────────────────────────────────────────────────
 
-/// Key identifying a hit across queries: (source, line_start, line_end).
-type HitKey = (String, usize, usize);
+/// Key identifying a shown hit across queries: (source, snippet text). Only
+/// an identical snippet is referenced, so a later query never loses text —
+/// a different chunk, or another part of the same chunk, is shown in full.
+type HitKey = (String, String);
 
 /// `line N` or `lines A-B` (a range never reads backwards).
 fn line_span(start: usize, end: usize) -> String {
@@ -513,7 +515,7 @@ fn write_search_result(
             source_annotation,
         ));
 
-        let key = (hit.source.clone(), hit.line_start, hit.line_end);
+        let key = (hit.source.clone(), hit.content.clone());
         if let Some(&(q, n)) = seen.get(&key) {
             out.push_str(&format!(
                 " \u{2014} same as query {} hit [{}] above\n\n",
@@ -813,6 +815,42 @@ mod tests {
             "*Hits are ranked best-first. Read around a hit with \
              MemoryRead(label=\"<source>\", offset=\"<line>\").*"
         ));
+    }
+
+    #[test]
+    fn different_chunks_on_the_same_line_are_both_shown() {
+        // Minified JSON: every chunk is on line 1
+        let hit = |title: &str, content: &str| SearchHit {
+            title: title.to_string(),
+            content: content.to_string(),
+            source: "jira__getIssue:2".to_string(),
+            rank: -1.0,
+            content_type: ContentType::Prose,
+            match_layer: MatchLayer::Porter,
+            line_start: 1,
+            line_end: 1,
+        };
+        let results = [
+            SearchResult {
+                query: "labels".to_string(),
+                hits: vec![hit("data > fields > labels", "[\"monitor\"]")],
+                corrected_query: None,
+            },
+            SearchResult {
+                query: "transition".to_string(),
+                hits: vec![hit("data > fields > status", "{\"name\": \"Done\"}")],
+                corrected_query: None,
+            },
+            SearchResult {
+                query: "monitor".to_string(),
+                hits: vec![hit("data > fields > labels", "[\"monitor\"]")],
+                corrected_query: None,
+            },
+        ];
+        let out = format_search_results(&results, SEARCH_OUTPUT_CAP, "IndexRead");
+        assert!(out.contains("{\"name\": \"Done\"}"), "{out}");
+        assert_eq!(out.matches("same as query").count(), 1, "{out}");
+        assert!(out.contains("same as query 1 hit [1] above"), "{out}");
     }
 
     #[test]

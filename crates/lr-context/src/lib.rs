@@ -917,12 +917,24 @@ impl ContentStore {
                 hybrid::VectorSearchHit {
                     source: entry.source.clone(),
                     title: entry.title.clone(),
-                    // Same line-numbered, length-capped shape as FTS snippets
-                    content: search::format_first_n_lines(
-                        &entry.content,
-                        entry.line_start.max(1),
-                        max_snippet_len,
-                    ),
+                    // Same shape as FTS snippets: length-capped, line-numbered
+                    // when the chunk's lines are the source's lines
+                    content: {
+                        let snippet = search::format_first_n_lines(
+                            &entry.content,
+                            entry.line_start.max(1),
+                            max_snippet_len,
+                        );
+                        if search::chunk_lines_match_source(
+                            &entry.content,
+                            entry.line_start,
+                            entry.line_end,
+                        ) {
+                            snippet
+                        } else {
+                            search::strip_line_numbers(&snippet)
+                        }
+                    },
                     score,
                     content_type: entry.content_type,
                     line_start: entry.line_start,

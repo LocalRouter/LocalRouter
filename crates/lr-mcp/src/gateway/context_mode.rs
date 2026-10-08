@@ -25,23 +25,51 @@ use crate::protocol::McpTool;
 const CTX_SEARCH_DEFAULT: &str = "IndexSearch";
 const INDEX_READ_DEFAULT: &str = "IndexRead";
 
-/// MCP Gateway source label guide appended to ctx_search description.
-const CTX_SEARCH_SOURCE_GUIDE: &str = r#"
+/// Source label guide appended to the search tool's description. Only the
+/// kinds of source this session indexes are listed, so the model is not
+/// invited to search sources that do not exist.
+fn search_source_guide(catalog: bool, responses: bool) -> String {
+    let mut lines: Vec<&str> = Vec::new();
+    if catalog {
+        lines.extend([
+            "  source=\"mcp/\"                         — search all MCP catalog entries (tools, resources, prompts, server docs)",
+            "  source=\"mcp/filesystem\"               — search within a specific server (docs + all its items)",
+            "  source=\"mcp/filesystem/tool/\"         — search tools from a specific server",
+            "  source=\"mcp/filesystem/resource/\"     — search resources from a specific server",
+            "  source=\"catalog:skills\"               — search all skill descriptions and metadata",
+            "  source=\"catalog:skills/MySkill\"       — find a specific skill's details",
+        ]);
+    }
+    if responses {
+        lines.extend([
+            "  source=\"filesystem__read_file:\"       — find all compressed responses from a specific tool",
+            "  source=\"filesystem__read_file:3\"      — find a specific invocation (the label a compressed response reports)",
+        ]);
+    }
+    if lines.is_empty() {
+        return String::new();
+    }
+    let mut guide = format!(
+        "\n\nSource labels (use with 'source' parameter):\n{}",
+        lines.join("\n")
+    );
+    if catalog {
+        guide.push_str(
+            "\n\nSearching catalog entries automatically activates matching tools/resources/prompts for use.",
+        );
+    }
+    guide
+}
 
-MCP Gateway source labels (use with 'source' parameter):
-  source="mcp/"                         — search all MCP catalog entries (tools, resources, prompts, server docs)
-  source="mcp/filesystem"               — search within a specific server (docs + all its items)
-  source="mcp/filesystem/tool/"         — search tools from a specific server
-  source="mcp/filesystem/resource/"     — search resources from a specific server
-  source="catalog:skills"               — search all skill descriptions and metadata
-  source="catalog:skills/MySkill"       — find a specific skill's details
-  source="filesystem__read_file:"       — find all compressed responses from a specific tool
-  source="filesystem__read_file:3"      — find a specific invocation
-
-Searching catalog entries automatically activates matching tools/resources/prompts for use."#;
-
-/// Additional source guide appended to ctx_search's `source` parameter description.
-const CTX_SEARCH_SOURCE_PARAM_GUIDE: &str = r#" MCP examples: "mcp/" for all MCP entries, "mcp/filesystem" for one server, "filesystem__read_file:" for a tool's responses."#;
+/// Examples appended to the search tool's `source` parameter description.
+fn search_source_param_guide(catalog: bool, responses: bool) -> &'static str {
+    match (catalog, responses) {
+        (true, true) => " Examples: \"mcp/\" for all MCP entries, \"mcp/filesystem\" for one server, \"filesystem__read_file:\" for a tool's responses.",
+        (true, false) => " Examples: \"mcp/\" for all MCP entries, \"mcp/filesystem\" for one server.",
+        (false, true) => " Example: \"filesystem__read_file:\" for a tool's responses.",
+        (false, false) => "",
+    }
+}
 
 /// Per-tool run counters shared by every session in this process, so a
 /// response label (`tool:N`) is never reused while LocalRouter runs — a label
@@ -273,6 +301,17 @@ impl VirtualSessionState for ContextModeSessionState {
 
 /// Build the tool definitions for the native context-mode server using configured names.
 fn build_native_tools_with_names(search_name: &str, read_name: &str) -> Vec<McpTool> {
+    build_native_tools_for(search_name, read_name, true, true)
+}
+
+/// Tool definitions whose source guide covers only what is indexed:
+/// `catalog` for MCP Catalog Indexing, `responses` for Tool Responses Indexing.
+fn build_native_tools_for(
+    search_name: &str,
+    read_name: &str,
+    catalog: bool,
+    responses: bool,
+) -> Vec<McpTool> {
     let mut search_desc = format!(
         "Search indexed content (compressed tool responses, MCP catalog). Pass ALL search \
          questions as the queries array in ONE call. Hits are ranked best-first and show \
@@ -280,12 +319,12 @@ fn build_native_tools_with_names(search_name: &str, read_name: &str) -> Vec<McpT
          query. Use 'source' to scope results.",
         read_name
     );
-    search_desc.push_str(CTX_SEARCH_SOURCE_GUIDE);
+    search_desc.push_str(&search_source_guide(catalog, responses));
 
     let mut source_desc =
         "Only search sources whose label starts with this (e.g. a label from a compressed response)."
             .to_string();
-    source_desc.push_str(CTX_SEARCH_SOURCE_PARAM_GUIDE);
+    source_desc.push_str(search_source_param_guide(catalog, responses));
 
     vec![
         McpTool {
@@ -404,7 +443,12 @@ impl VirtualMcpServer for ContextModeVirtualServer {
             return Vec::new();
         }
 
-        build_native_tools_with_names(&state.search_tool_name, &state.read_tool_name)
+        build_native_tools_for(
+            &state.search_tool_name,
+            &state.read_tool_name,
+            state.catalog_compression_enabled,
+            state.response_indexing_enabled,
+        )
     }
 
     fn check_permissions(
@@ -1132,7 +1176,7 @@ mod tests {
 
         let search_desc = tools[0].description.as_ref().unwrap();
         assert!(search_desc.contains("Search indexed content"));
-        assert!(search_desc.contains("MCP Gateway source labels"));
+        assert!(search_desc.contains("Source labels (use with 'source' parameter)"));
         assert!(search_desc.contains("mcp/"));
 
         // Each tool points at the other by its configured name
@@ -1184,6 +1228,30 @@ mod tests {
         // an old label never names new content
         let recreated = make_state();
         assert_eq!(recreated.next_run_id("runid_test__read_file"), 3);
+    }
+
+    #[test]
+    fn source_guide_lists_only_indexed_sources() {
+        let desc = |catalog, responses| {
+            build_native_tools_for("IndexSearch", "IndexRead", catalog, responses)[0]
+                .description
+                .clone()
+                .unwrap()
+        };
+        let responses_only = desc(false, true);
+        assert!(
+            !responses_only.contains("catalog:skills"),
+            "{responses_only}"
+        );
+        assert!(
+            !responses_only.contains("source=\"mcp/\""),
+            "{responses_only}"
+        );
+        assert!(responses_only.contains("filesystem__read_file:3"));
+
+        let catalog_only = desc(true, false);
+        assert!(catalog_only.contains("catalog:skills"));
+        assert!(!catalog_only.contains("filesystem__read_file:3"));
     }
 
     #[test]

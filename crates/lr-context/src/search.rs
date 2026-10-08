@@ -442,6 +442,25 @@ pub(crate) fn format_first_n_lines(content: &str, line_start: usize, max_len: us
     output.trim_end_matches('\n').to_string()
 }
 
+/// Whether a chunk's text maps line-for-line onto its source lines. JSON
+/// chunks are re-serialized (pretty-printed), so their lines do not exist in
+/// the source and must not be shown with source line numbers.
+pub(crate) fn chunk_lines_match_source(content: &str, line_start: usize, line_end: usize) -> bool {
+    content.lines().count() <= line_end.saturating_sub(line_start) + 1
+}
+
+/// Drop the `<line>\t` labels from a formatted snippet (keeping `…` gaps).
+pub(crate) fn strip_line_numbers(snippet: &str) -> String {
+    snippet
+        .lines()
+        .map(|l| match l.split_once('\t') {
+            Some((label, text)) if label.trim().chars().all(|c| c.is_ascii_digit()) => text,
+            _ => l.trim(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn raw_hits_to_search_hits(
     hits: Vec<RawHit>,
     layer: MatchLayer,
@@ -450,8 +469,12 @@ fn raw_hits_to_search_hits(
     hits.into_iter()
         .map(|h| {
             let line_start = h.line_start.max(1) as usize;
-            let content =
+            let line_end = (h.line_end.max(1) as usize).max(line_start);
+            let mut content =
                 extract_multi_snippet(&h.highlighted, &h.content, line_start, max_snippet_len);
+            if !chunk_lines_match_source(&h.content, line_start, line_end) {
+                content = strip_line_numbers(&content);
+            }
             SearchHit {
                 title: h.title,
                 content,
@@ -460,7 +483,7 @@ fn raw_hits_to_search_hits(
                 content_type: ContentType::parse(&h.content_type),
                 match_layer: layer,
                 line_start,
-                line_end: h.line_end.max(1) as usize,
+                line_end,
             }
         })
         .collect()
@@ -791,5 +814,13 @@ mod tests {
         };
         let display = result.to_string();
         assert!(display.contains("**[1] docs:api \u{2014} Auth > OAuth** (lines 8-14)"));
+    }
+
+    #[test]
+    fn reserialized_chunks_lose_fake_line_numbers() {
+        assert!(chunk_lines_match_source("a\nb", 4, 5));
+        assert!(!chunk_lines_match_source("{\n  \"a\": 1\n}", 1, 1));
+        let snippet = "  9\t{\n 10\t  \"a\": 1\n  \u{2026}\n 12\t}";
+        assert_eq!(strip_line_numbers(snippet), "{\n  \"a\": 1\n\u{2026}\n}");
     }
 }
