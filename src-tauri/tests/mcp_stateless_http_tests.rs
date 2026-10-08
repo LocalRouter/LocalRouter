@@ -26,6 +26,11 @@ fn create_test_client(id: &str, strategy_id: &str) -> Client {
 /// Start the real HTTP server (no MCP backends configured — the gateway also
 /// serves stateless lifecycle methods without any backend running).
 async fn start_test_server() -> (String, String) {
+    let (base_url, secret, _state) = start_test_server_with_state().await;
+    (base_url, secret)
+}
+
+async fn start_test_server_with_state() -> (String, String, server::state::AppState) {
     let test_client = create_test_client("test-api-key", "default");
     let strategy = Strategy::new("Default".to_string());
 
@@ -83,7 +88,7 @@ async fn start_test_server() -> (String, String) {
     let secret = state.get_internal_test_secret();
     sleep(Duration::from_millis(200)).await;
 
-    (base_url, secret)
+    (base_url, secret, state)
 }
 
 fn stateless_meta() -> serde_json::Value {
@@ -259,6 +264,147 @@ async fn test_legacy_mcp_post_unchanged() {
     let result = &body["result"];
     assert!(result["protocolVersion"].is_string());
     assert!(result.get("resultType").is_none());
+}
+
+/// Strict Streamable HTTP clients (Codex's rmcp) abandon the server when a
+/// notification or a client response is answered with a JSON body; the
+/// transport requires `202 Accepted` with no body.
+#[tokio::test]
+async fn test_notifications_and_client_responses_get_empty_202() {
+    let (base_url, secret) = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let init = client
+        .post(&base_url)
+        .bearer_auth(&secret)
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 0,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "codex-mcp-client", "version": "1.0"}
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(init.status(), 200);
+
+    for body in [
+        json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+        json!({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 7}}),
+        // A response to a server-initiated request nobody is waiting for
+        json!({"jsonrpc": "2.0", "id": "srv-1", "result": {}}),
+    ] {
+        let response = client
+            .post(&base_url)
+            .bearer_auth(&secret)
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 202, "status for {body}");
+        assert_eq!(response.text().await.unwrap(), "", "body for {body}");
+    }
+
+    // A stateless (2026-07-28) peer's notification gets the same answer
+    let response = client
+        .post(&base_url)
+        .bearer_auth(&secret)
+        .header("MCP-Protocol-Version", "2026-07-28")
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/cancelled",
+            "params": {"requestId": 9, "_meta": stateless_meta()}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 202);
+    assert_eq!(response.text().await.unwrap(), "");
+}
+
+/// The path a tool activation takes to a Streamable HTTP client: the
+/// client opens its GET notification stream only after `notifications/initialized`
+/// is answered with 202, and a `tools/list_changed` for its session (keyed by
+/// client id, as POSTs carry no sessionId) must arrive on that stream.
+#[tokio::test]
+async fn test_list_changed_reaches_streamable_http_client() {
+    use futures::StreamExt;
+
+    let (base_url, secret, state) = start_test_server_with_state().await;
+    let client = reqwest::Client::new();
+
+    let init = client
+        .post(&base_url)
+        .bearer_auth(&secret)
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 0,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "claude-code", "version": "2.1"}
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(init.status(), 200);
+    let initialized = client
+        .post(&base_url)
+        .bearer_auth(&secret)
+        .json(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(initialized.status(), 202);
+
+    let stream_response = client
+        .get(&base_url)
+        .bearer_auth(&secret)
+        .header("Accept", "text/event-stream")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(stream_response.status(), 200);
+    let mut stream = stream_response.bytes_stream();
+
+    let mut seen = String::new();
+    async fn read_until<B: AsRef<[u8]>>(
+        stream: &mut (impl futures::Stream<Item = reqwest::Result<B>> + Unpin),
+        seen: &mut String,
+        needle: &str,
+    ) {
+        let found = tokio::time::timeout(Duration::from_secs(5), async {
+            while !seen.contains(needle) {
+                let chunk = stream.next().await.expect("stream ended").unwrap();
+                seen.push_str(&String::from_utf8_lossy(chunk.as_ref()));
+            }
+        })
+        .await;
+        assert!(found.is_ok(), "no {needle:?} on the stream; got: {seen}");
+    }
+
+    // The stream is registered once its first event arrives
+    read_until(&mut stream, &mut seen, "event: endpoint").await;
+
+    // What the gateway broadcasts when IndexSearch activates a deferred tool
+    let client_id = "internal-test";
+    state
+        .mcp_notification_broadcast
+        .send((
+            localrouter::mcp::gateway::types::session_notification_key(client_id),
+            localrouter::mcp::protocol::JsonRpcNotification::new(
+                "notifications/tools/list_changed".to_string(),
+                None,
+            ),
+        ))
+        .unwrap();
+    read_until(&mut stream, &mut seen, "notifications/tools/list_changed").await;
 }
 
 #[tokio::test]

@@ -51,7 +51,7 @@ fn send_response(
             &connection_key[..8.min(connection_key.len())],
             response_id
         );
-        (axum::http::StatusCode::ACCEPTED, "").into_response()
+        accepted_empty()
     } else {
         // No SSE connection - fall back to returning in HTTP body
         tracing::debug!(
@@ -61,6 +61,13 @@ fn send_response(
         );
         Json(response).into_response()
     }
+}
+
+/// `202 Accepted` with an empty body: the Streamable HTTP answer to a
+/// JSON-RPC notification or response. A JSON body here (even `{}`) breaks
+/// strict clients such as Codex's rmcp, which drop the server mid-handshake.
+fn accepted_empty() -> Response {
+    (axum::http::StatusCode::ACCEPTED, "").into_response()
 }
 
 /// Unified MCP gateway with content negotiation
@@ -370,6 +377,7 @@ pub async fn mcp_gateway_get_handler(
     request_body = lr_mcp::protocol::JsonRpcRequest,
     responses(
         (status = 200, description = "JSON-RPC response", body = lr_mcp::protocol::JsonRpcResponse),
+        (status = 202, description = "Notification or client response accepted (empty body), or request accepted with the response delivered over SSE"),
         (status = 401, description = "Unauthorized", body = crate::types::ErrorResponse),
         (status = 500, description = "Internal server error", body = crate::types::ErrorResponse)
     ),
@@ -424,31 +432,20 @@ pub async fn mcp_gateway_handler(
             response_id
         );
 
-        // Route the response to the pending server-initiated request
-        if state
+        // Route the response to the pending server-initiated request. Either
+        // way the answer is 202 with an empty body (Streamable HTTP): the
+        // response may be for a request that already timed out.
+        if !state
             .sse_connection_manager
             .resolve_server_request(&connection_key, response)
         {
-            return Json(crate::types::MessageResponse {
-                message: "Response accepted".to_string(),
-            })
-            .into_response();
-        } else {
             tracing::warn!(
                 "No pending server request matched for response id={} on connection={}",
                 response_id,
                 &connection_key[..8.min(connection_key.len())]
             );
-            // Still return 202 - the response may have been for a request that already
-            // timed out or was handled by another path
-            return (
-                axum::http::StatusCode::ACCEPTED,
-                Json(crate::types::MessageResponse {
-                    message: "Response accepted (no pending request matched)".to_string(),
-                }),
-            )
-                .into_response();
         }
+        return accepted_empty();
     }
 
     // Parse as a JSON-RPC request
@@ -973,6 +970,9 @@ pub async fn mcp_gateway_handler(
     // This prevents the MCP SDK's request timeout from firing while the gateway
     // processes slow operations (starting servers, broadcasting initialize,
     // indexing catalogs for context management, etc.).
+    // JSON-RPC notifications carry no id and get no response.
+    let is_notification = request.id.is_none();
+
     if state.sse_connection_manager.has_connection(&connection_key) {
         let gateway = state.mcp_gateway.clone();
         let sse_manager = state.sse_connection_manager.clone();
@@ -1063,6 +1063,9 @@ pub async fn mcp_gateway_handler(
                 }
             };
 
+            if is_notification {
+                return;
+            }
             if !sse_manager.send_response(&connection_key_owned, response) {
                 tracing::error!(
                     "Failed to send response via SSE: connection_key={}, method={}",
@@ -1080,7 +1083,7 @@ pub async fn mcp_gateway_handler(
                 .register_gateway_task(&connection_key, join_handle.abort_handle());
         }
 
-        (axum::http::StatusCode::ACCEPTED, "").into_response()
+        accepted_empty()
     } else {
         // Detect stateless (2026-07-28) peers by header or body _meta
         let stateless_peer = stateless_transport
@@ -1088,7 +1091,7 @@ pub async fn mcp_gateway_handler(
                 .revision()
                 .is_some_and(|r| r.is_stateless());
 
-        if stateless_peer {
+        if stateless_peer && !is_notification {
             // Stateless peer without an SSE push channel: run with MRTR
             // support — a backend elicitation that needs this client's input
             // parks the call and returns input_required (SEP-2322).
@@ -1132,7 +1135,16 @@ pub async fn mcp_gateway_handler(
             )
             .await
         {
+            Ok(_) if is_notification => accepted_empty(),
             Ok(response) => send_response(&state.sse_connection_manager, &connection_key, response),
+            Err(err) if is_notification => {
+                tracing::warn!(
+                    "Gateway error on notification for client {}: {}",
+                    client_id,
+                    err
+                );
+                accepted_empty()
+            }
             Err(err) => {
                 tracing::error!("Gateway error for client {}: {}", client_id, err);
                 ApiErrorResponse::internal_error(format!("Gateway error: {}", err)).into_response()

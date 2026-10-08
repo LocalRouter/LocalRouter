@@ -9,7 +9,7 @@ use crate::truncate::smart_truncate;
 // ─────────────────────────────────────────────────────────
 
 /// Chars before a line is split into sub-chunks in read().
-pub(crate) const LONG_LINE_THRESHOLD: usize = 500;
+pub(crate) const LONG_LINE_THRESHOLD: usize = 2000;
 
 /// Max bytes for TOC section in index display.
 const INDEX_TOC_CAP: usize = 4 * 1024;
@@ -18,10 +18,44 @@ const INDEX_TOC_CAP: usize = 4 * 1024;
 const TOC_TITLE_MAX_CHARS: usize = 120;
 
 /// Max bytes for search output. Use with `format_search_results()`.
-pub const SEARCH_OUTPUT_CAP: usize = 40 * 1024;
+pub const SEARCH_OUTPUT_CAP: usize = 64 * 1024;
 
 /// Max bytes for batch output.
-pub(crate) const BATCH_OUTPUT_CAP: usize = 40 * 1024;
+pub(crate) const BATCH_OUTPUT_CAP: usize = 64 * 1024;
+
+/// Hits per query when the caller does not ask for a number.
+pub const SEARCH_DEFAULT_LIMIT: usize = 5;
+
+/// Most hits per query a caller may ask for.
+pub const SEARCH_MAX_LIMIT: usize = 20;
+
+/// Marker appended when output is cut at its byte cap.
+fn truncation_marker(cap: usize) -> String {
+    format!(
+        "\n\u{2026} [output truncated at ~{}KB \u{2014} narrow with source or fewer queries] \u{2026}\n",
+        cap / 1024
+    )
+}
+
+// ─────────────────────────────────────────────────────────
+// Tool names used in hints
+// ─────────────────────────────────────────────────────────
+
+/// Names of the search and read tools, so hints spell out the exact call.
+#[derive(Debug, Clone, Copy)]
+pub struct ToolNames<'a> {
+    pub search: &'a str,
+    pub read: &'a str,
+}
+
+impl Default for ToolNames<'static> {
+    fn default() -> Self {
+        Self {
+            search: "IndexSearch",
+            read: "IndexRead",
+        }
+    }
+}
 
 // ─────────────────────────────────────────────────────────
 // Date range filter
@@ -47,6 +81,11 @@ impl DateRange {
             after: after.unwrap_or_else(|| Self::SENTINEL_AFTER.to_string()),
             before: before.unwrap_or_else(|| Self::SENTINEL_BEFORE.to_string()),
         }
+    }
+
+    /// Whether this range matches every date.
+    pub fn is_unbounded(&self) -> bool {
+        self.after == Self::SENTINEL_AFTER && self.before == Self::SENTINEL_BEFORE
     }
 }
 
@@ -198,6 +237,23 @@ impl IndexResult {
     /// `## Contents` block with optional depth filter + search/read hints.
     /// Pass `None` for unlimited depth, `Some(1)` for top-level only, etc.
     pub fn toc(&self, max_depth: Option<usize>) -> String {
+        self.toc_with(max_depth, ToolNames::default())
+    }
+
+    /// [`Self::toc`] with hints naming the given tools.
+    pub fn toc_with(&self, max_depth: Option<usize>, tools: ToolNames<'_>) -> String {
+        let mut out = self.outline(max_depth, INDEX_TOC_CAP, tools.search);
+        out.push_str(&format!(
+            "\nUse {}(queries: [...], source: {:?}) to find specific content.\n\
+             Use {}(label: {:?}, offset: \"1\") to read sections.",
+            tools.search, self.label, tools.read, self.label
+        ));
+        out
+    }
+
+    /// Just the `## Contents` block (no hints), pruned to `cap` bytes.
+    /// Empty when the content has no sections.
+    pub fn outline(&self, max_depth: Option<usize>, cap: usize, search_tool: &str) -> String {
         let mut out = String::new();
 
         let filtered: Vec<&ChunkToc> = if let Some(max_d) = max_depth {
@@ -212,7 +268,7 @@ impl IndexResult {
         if !filtered.is_empty() {
             out.push_str("## Contents\n");
 
-            let (kept, depth_pruned, list_truncated) = prune_toc(&filtered, INDEX_TOC_CAP);
+            let (kept, depth_pruned, list_truncated) = prune_toc(&filtered, cap);
 
             for entry in &kept {
                 let indent = "  ".repeat(entry.depth);
@@ -231,8 +287,8 @@ impl IndexResult {
 
             if depth_pruned > 0 {
                 out.push_str(&format!(
-                    "  \u{2026} {} deeper sections pruned \u{2014} use search() to discover\n",
-                    depth_pruned
+                    "  \u{2026} {} deeper sections pruned \u{2014} use {} to discover\n",
+                    depth_pruned, search_tool
                 ));
             }
 
@@ -240,12 +296,6 @@ impl IndexResult {
                 out.push_str(&format!("  \u{2026} {} more sections\n", list_truncated));
             }
         }
-
-        out.push_str(&format!(
-            "\nUse search(queries: [...]) to find specific content.\n\
-             Use read(source: {:?}, offset: \"1\") to read sections.",
-            self.label
-        ));
         out
     }
 }
@@ -280,7 +330,12 @@ impl BatchIndexResult {
     }
 
     /// TOC listing each indexed item. `max_depth=Some(1)` shows only item names (no sub-entries).
-    pub fn toc(&self, _max_depth: Option<usize>) -> String {
+    pub fn toc(&self, max_depth: Option<usize>) -> String {
+        self.toc_with(max_depth, ToolNames::default())
+    }
+
+    /// [`Self::toc`] with hints naming the given search tool.
+    pub fn toc_with(&self, _max_depth: Option<usize>, tools: ToolNames<'_>) -> String {
         let mut out = String::new();
         if !self.item_summaries.is_empty() {
             out.push_str("## Contents\n");
@@ -289,8 +344,8 @@ impl BatchIndexResult {
             }
         }
         out.push_str(&format!(
-            "\nUse search(queries: [...], source: {:?}) to discover items.",
-            self.root_path
+            "\nUse {}(queries: [...], source: {:?}) to discover items.",
+            tools.search, self.root_path
         ));
         out
     }
@@ -333,6 +388,10 @@ pub struct ReadResult {
     pub total_lines: usize,
     pub showing_start: String,
     pub showing_end: String,
+    /// Offset that continues where this read stopped; `None` at the end.
+    pub next_offset: Option<String>,
+    /// Lines from `next_offset` to the end (counting a partly shown line).
+    pub remaining_lines: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -368,71 +427,147 @@ pub enum ContextError {
     #[error("Source not found: {0}")]
     SourceNotFound(String),
 
+    #[error("No indexed source matches {prefix:?}. Indexed sources: {}", known_sources_list(.known))]
+    NoMatchingSource { prefix: String, known: Vec<String> },
+
     #[error("Invalid parameters: {0}")]
     InvalidParams(String),
+}
+
+/// Labels listed in a [`ContextError::NoMatchingSource`] message.
+const KNOWN_SOURCES_SHOWN: usize = 30;
+
+fn known_sources_list(known: &[String]) -> String {
+    if known.is_empty() {
+        return "(none)".to_string();
+    }
+    let mut out = known
+        .iter()
+        .take(KNOWN_SOURCES_SHOWN)
+        .map(|l| format!("{:?}", l))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if known.len() > KNOWN_SOURCES_SHOWN {
+        out.push_str(&format!(
+            ", \u{2026} {} more",
+            known.len() - KNOWN_SOURCES_SHOWN
+        ));
+    }
+    out
 }
 
 // ─────────────────────────────────────────────────────────
 // Display implementations (LLM-friendly output)
 // ─────────────────────────────────────────────────────────
 
+/// Key identifying a shown hit across queries: (source, snippet text). Only
+/// an identical snippet is referenced, so a later query never loses text —
+/// a different chunk, or another part of the same chunk, is shown in full.
+type HitKey = (String, String);
+
+/// `line N` or `lines A-B` (a range never reads backwards).
+fn line_span(start: usize, end: usize) -> String {
+    let end = end.max(start);
+    if start == end {
+        format!("line {}", start)
+    } else {
+        format!("lines {}-{}", start, end)
+    }
+}
+
+/// Write one query's results. Hits already shown for an earlier query (per
+/// `seen`) are listed by reference instead of repeating their snippet.
+fn write_search_result(
+    out: &mut String,
+    result: &SearchResult,
+    seen: &mut std::collections::HashMap<HitKey, (usize, usize)>,
+    query_no: usize,
+) {
+    if result.hits.is_empty() {
+        out.push_str(&format!("### No results for {:?}\n", result.query));
+        return;
+    }
+
+    out.push_str(&format!("### Results for {:?}", result.query));
+    if let Some(ref corrected) = result.corrected_query {
+        out.push_str(&format!(" (corrected to {:?})", corrected));
+    }
+    out.push_str("\n\n");
+
+    for (i, hit) in result.hits.iter().enumerate() {
+        // Annotate memory session sources so the LLM knows if it's
+        // reading a raw transcript or a compacted summary
+        let source_annotation = if hit.source.starts_with("session/") {
+            if hit.source.ends_with("-summary") {
+                " `[compacted summary]`"
+            } else {
+                " `[transcript]`"
+            }
+        } else {
+            ""
+        };
+        out.push_str(&format!(
+            "**[{}] {} \u{2014} {}** ({}){}",
+            i + 1,
+            hit.source,
+            hit.title,
+            line_span(hit.line_start, hit.line_end),
+            source_annotation,
+        ));
+
+        let key = (hit.source.clone(), hit.content.clone());
+        if let Some(&(q, n)) = seen.get(&key) {
+            out.push_str(&format!(
+                " \u{2014} same as query {} hit [{}] above\n\n",
+                q, n
+            ));
+            continue;
+        }
+        seen.insert(key, (query_no, i + 1));
+
+        // Content already has line numbers from search extraction
+        out.push('\n');
+        out.push_str(&hit.content);
+        out.push_str("\n\n");
+    }
+}
+
 impl fmt::Display for SearchResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.hits.is_empty() {
-            writeln!(f, "### No results for {:?}", self.query)?;
-            return Ok(());
-        }
-
-        write!(f, "### Results for {:?}", self.query)?;
-        if let Some(ref corrected) = self.corrected_query {
-            write!(f, " (corrected to {:?})", corrected)?;
-        }
-        writeln!(f)?;
-        writeln!(f)?;
-
-        for (i, hit) in self.hits.iter().enumerate() {
-            // Annotate memory session sources so the LLM knows if it's
-            // reading a raw transcript or a compacted summary
-            let source_annotation = if hit.source.starts_with("session/") {
-                if hit.source.ends_with("-summary") {
-                    " `[compacted summary]`"
-                } else {
-                    " `[transcript]`"
-                }
-            } else {
-                ""
-            };
-            writeln!(
-                f,
-                "**[{}] {} \u{2014} {}** (lines {}-{}){}",
-                i + 1,
-                hit.source,
-                hit.title,
-                hit.line_start,
-                hit.line_end,
-                source_annotation,
-            )?;
-
-            // Content already has line numbers from search extraction
-            writeln!(f, "{}", hit.content)?;
-            writeln!(f)?;
-        }
-
-        writeln!(f, "---")?;
-        write!(f, "*Use read(source, offset, limit) for full context.*")?;
-        Ok(())
+        let mut out = String::new();
+        write_search_result(&mut out, self, &mut std::collections::HashMap::new(), 1);
+        write!(f, "{}", out.trim_end_matches('\n'))
     }
 }
 
 impl fmt::Display for ReadResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(
-            f,
-            "Source: {} (lines {}-{} of {})",
-            self.label, self.showing_start, self.showing_end, self.total_lines,
-        )?;
+        let split = self.showing_start.contains('-') || self.showing_end.contains('-');
+        if split {
+            // "1-1 to 1-14" reads better than "1-1-1-14"
+            writeln!(
+                f,
+                "Source: {} (lines {} to {} of {}; \"N-M\" is part M of long line N)",
+                self.label, self.showing_start, self.showing_end, self.total_lines,
+            )?;
+        } else {
+            writeln!(
+                f,
+                "Source: {} (lines {}-{} of {})",
+                self.label, self.showing_start, self.showing_end, self.total_lines,
+            )?;
+        }
         writeln!(f)?;
         write!(f, "{}", self.content)?;
+        if let Some(ref next) = self.next_offset {
+            write!(
+                f,
+                "\n\n[{} more line{} \u{2014} continue with offset=\"{}\"]",
+                self.remaining_lines,
+                if self.remaining_lines == 1 { "" } else { "s" },
+                next
+            )?;
+        }
         Ok(())
     }
 }
@@ -460,7 +595,7 @@ impl fmt::Display for BatchResult {
                 let formatted = result.to_string();
                 total += formatted.len();
                 if total > BATCH_OUTPUT_CAP {
-                    buf.push_str("\n\u{2026} [output truncated at ~40KB] \u{2026}\n");
+                    buf.push_str(&truncation_marker(BATCH_OUTPUT_CAP));
                     let truncated = smart_truncate(&buf, BATCH_OUTPUT_CAP);
                     return write!(f, "{}", truncated);
                 }
@@ -478,7 +613,7 @@ impl fmt::Display for BatchResult {
                 let formatted = result.to_string();
                 total += formatted.len();
                 if total > BATCH_OUTPUT_CAP {
-                    buf.push_str("\n\u{2026} [output truncated at ~40KB] \u{2026}\n");
+                    buf.push_str(&truncation_marker(BATCH_OUTPUT_CAP));
                     let truncated = smart_truncate(&buf, BATCH_OUTPUT_CAP);
                     return write!(f, "{}", truncated);
                 }
@@ -496,18 +631,33 @@ impl fmt::Display for BatchResult {
 // ─────────────────────────────────────────────────────────
 
 /// Format multiple search results with an output byte cap.
-pub fn format_search_results(results: &[SearchResult], cap: usize) -> String {
+///
+/// A hit already shown for an earlier query is listed by reference, and one
+/// footer tells the model how to read around a hit with `read_tool`.
+pub fn format_search_results(results: &[SearchResult], cap: usize, read_tool: &str) -> String {
     let mut output = String::new();
-    for result in results {
-        let formatted = result.to_string();
+    let mut seen = std::collections::HashMap::new();
+    let mut any_hits = false;
+    for (i, result) in results.iter().enumerate() {
+        let mut formatted = String::new();
+        write_search_result(&mut formatted, result, &mut seen, i + 1);
+        let formatted = formatted.trim_end_matches('\n');
+        any_hits |= !result.hits.is_empty();
         if output.len() + formatted.len() > cap && !output.is_empty() {
-            output.push_str("\n\u{2026} [output truncated at ~40KB] \u{2026}\n");
+            output.push_str(&truncation_marker(cap));
             break;
         }
         if !output.is_empty() {
-            output.push('\n');
+            output.push_str("\n\n");
         }
-        output.push_str(&formatted);
+        output.push_str(formatted);
+    }
+    if any_hits {
+        output.push_str(&format!(
+            "\n\n---\n*Hits are ranked best-first. Read around a hit with \
+             {}(label=\"<source>\", offset=\"<line>\").*",
+            read_tool
+        ));
     }
     // Apply smart_truncate as final safety net
     smart_truncate(&output, cap)
@@ -659,7 +809,66 @@ mod tests {
         assert!(display.contains("**[1] docs:api"));
         assert!(display.contains("(lines 45-62)"));
         assert!(display.contains("The OAuth flow"));
-        assert!(display.contains("read(source, offset, limit)"));
+
+        let formatted = format_search_results(&[result], SEARCH_OUTPUT_CAP, "MemoryRead");
+        assert!(formatted.ends_with(
+            "*Hits are ranked best-first. Read around a hit with \
+             MemoryRead(label=\"<source>\", offset=\"<line>\").*"
+        ));
+    }
+
+    #[test]
+    fn different_chunks_on_the_same_line_are_both_shown() {
+        // Minified JSON: every chunk is on line 1
+        let hit = |title: &str, content: &str| SearchHit {
+            title: title.to_string(),
+            content: content.to_string(),
+            source: "jira__getIssue:2".to_string(),
+            rank: -1.0,
+            content_type: ContentType::Prose,
+            match_layer: MatchLayer::Porter,
+            line_start: 1,
+            line_end: 1,
+        };
+        let results = [
+            SearchResult {
+                query: "labels".to_string(),
+                hits: vec![hit("data > fields > labels", "[\"monitor\"]")],
+                corrected_query: None,
+            },
+            SearchResult {
+                query: "transition".to_string(),
+                hits: vec![hit("data > fields > status", "{\"name\": \"Done\"}")],
+                corrected_query: None,
+            },
+            SearchResult {
+                query: "monitor".to_string(),
+                hits: vec![hit("data > fields > labels", "[\"monitor\"]")],
+                corrected_query: None,
+            },
+        ];
+        let out = format_search_results(&results, SEARCH_OUTPUT_CAP, "IndexRead");
+        assert!(out.contains("{\"name\": \"Done\"}"), "{out}");
+        assert_eq!(out.matches("same as query").count(), 1, "{out}");
+        assert!(out.contains("same as query 1 hit [1] above"), "{out}");
+    }
+
+    #[test]
+    fn line_span_never_reads_backwards() {
+        assert_eq!(line_span(2, 1), "line 2");
+        assert_eq!(line_span(3, 3), "line 3");
+        assert_eq!(line_span(3, 9), "lines 3-9");
+    }
+
+    #[test]
+    fn no_footer_when_nothing_found() {
+        let empty = SearchResult {
+            query: "x".to_string(),
+            hits: vec![],
+            corrected_query: None,
+        };
+        let formatted = format_search_results(&[empty], SEARCH_OUTPUT_CAP, "IndexRead");
+        assert_eq!(formatted, "### No results for \"x\"");
     }
 
     #[test]
@@ -701,6 +910,8 @@ mod tests {
             total_lines: 120,
             showing_start: "45".to_string(),
             showing_end: "46".to_string(),
+            next_offset: None,
+            remaining_lines: 0,
         };
         let display = result.to_string();
         assert!(display.contains("Source: docs:api (lines 45-46 of 120)"));
@@ -804,6 +1015,8 @@ mod tests {
                 total_lines: 1,
                 showing_start: "1".to_string(),
                 showing_end: "1".to_string(),
+                next_offset: None,
+                remaining_lines: 0,
             }],
         };
         let display = batch.to_string();
@@ -818,7 +1031,7 @@ mod tests {
             hits: vec![],
             corrected_query: None,
         }];
-        let output = format_search_results(&results, SEARCH_OUTPUT_CAP);
+        let output = format_search_results(&results, SEARCH_OUTPUT_CAP, "IndexRead");
         assert!(!output.contains("truncated"));
     }
 
@@ -873,6 +1086,8 @@ mod tests {
                 total_lines: 1,
                 showing_start: "1".to_string(),
                 showing_end: "1".to_string(),
+                next_offset: None,
+                remaining_lines: 0,
             }],
         };
         let display = batch.to_string();
@@ -902,7 +1117,7 @@ mod tests {
                 corrected_query: None,
             })
             .collect();
-        let output = format_search_results(&results, SEARCH_OUTPUT_CAP);
+        let output = format_search_results(&results, SEARCH_OUTPUT_CAP, "IndexRead");
         assert!(output.len() <= SEARCH_OUTPUT_CAP + 200); // small slack
     }
 }

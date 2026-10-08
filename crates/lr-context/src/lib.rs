@@ -18,7 +18,7 @@ pub use types::format_search_results;
 pub use types::{
     BatchIndexResult, BatchItemSummary, BatchResult, Chunk, ChunkToc, ContentType, ContextError,
     DateRange, IndexResult, MatchLayer, ReadRequest, ReadResult, SearchHit, SearchResult,
-    SourceInfo, SEARCH_OUTPUT_CAP,
+    SourceInfo, ToolNames, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT, SEARCH_OUTPUT_CAP,
 };
 
 use once_cell::sync::Lazy;
@@ -33,10 +33,10 @@ use truncate::smart_truncate;
 use types::{ChunkToc as ChunkTocType, LineOffset, LONG_LINE_THRESHOLD};
 
 /// Max bytes for read() output.
-const READ_OUTPUT_CAP: usize = 40 * 1024;
+const READ_OUTPUT_CAP: usize = 64 * 1024;
 
 /// Default number of lines returned by `read()` when no limit is specified.
-pub const READ_DEFAULT_LIMIT: usize = 15;
+pub const READ_DEFAULT_LIMIT: usize = 200;
 
 // ─────────────────────────────────────────────────────────
 // Stopwords (ported from context-mode/src/store.ts)
@@ -358,6 +358,25 @@ impl ContentStore {
         date_range: &DateRange,
     ) -> Result<Vec<SearchResult>, ContextError> {
         let conn = self.conn.lock();
+
+        // A source filter that matches nothing is almost always a typo or a
+        // stale label: say so instead of returning an empty (or, with vector
+        // search, unrelated) result.
+        if let Some(prefix) = source {
+            if !Self::any_source_matches(&conn, prefix)? {
+                let known = Self::labels(&conn)?;
+                return Err(ContextError::NoMatchingSource {
+                    prefix: prefix.to_string(),
+                    known,
+                });
+            }
+        }
+
+        // Labels a vector hit may come from: the same source prefix and date
+        // range the FTS layers filter on.
+        #[cfg(feature = "vector")]
+        let vector_scope = Self::vector_scope(&conn, source, date_range)?;
+
         let results: Vec<SearchResult> = queries
             .iter()
             .map(|q| {
@@ -375,7 +394,13 @@ impl ContentStore {
                 #[cfg(feature = "vector")]
                 {
                     let fts_hits = std::mem::take(&mut sr.hits);
-                    sr.hits = self.vector_search_and_merge(q, fts_hits, limit);
+                    sr.hits = self.vector_search_and_merge(
+                        q,
+                        fts_hits,
+                        limit,
+                        vector_scope.as_ref(),
+                        max_snippet_len,
+                    );
                 }
 
                 // Deduplicate hits with overlapping line ranges from the same source.
@@ -389,8 +414,54 @@ impl ContentStore {
         Ok(results)
     }
 
-    /// Remove hits from the same source whose line ranges overlap.
-    /// Keeps the best-ranked (closest to 0) hit when two overlap.
+    /// Whether any indexed source label starts with `prefix`.
+    fn any_source_matches(conn: &Connection, prefix: &str) -> Result<bool, ContextError> {
+        let filter = format!("{}%", search::escape_like(prefix));
+        let found = conn
+            .prepare_cached("SELECT 1 FROM sources WHERE label LIKE ?1 ESCAPE '\\' LIMIT 1")?
+            .exists(params![filter])?;
+        Ok(found)
+    }
+
+    /// All indexed source labels, newest first.
+    fn labels(conn: &Connection) -> Result<Vec<String>, ContextError> {
+        let mut stmt = conn.prepare_cached("SELECT label FROM sources ORDER BY id DESC")?;
+        let labels = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(labels)
+    }
+
+    /// Labels vector search may return for this source/date filter, or
+    /// `None` when unfiltered (every label is eligible).
+    #[cfg(feature = "vector")]
+    fn vector_scope(
+        conn: &Connection,
+        source: Option<&str>,
+        date_range: &DateRange,
+    ) -> Result<Option<HashSet<String>>, ContextError> {
+        if source.is_none() && date_range.is_unbounded() {
+            return Ok(None);
+        }
+        let filter = format!("{}%", search::escape_like(source.unwrap_or("")));
+        let mut stmt = conn.prepare_cached(
+            "SELECT label FROM sources WHERE label LIKE ?1 ESCAPE '\\' \
+             AND indexed_at > ?2 AND indexed_at < ?3",
+        )?;
+        let labels = stmt
+            .query_map(
+                params![filter, &date_range.after, &date_range.before],
+                |row| row.get::<_, String>(0),
+            )?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(Some(labels))
+    }
+
+    /// Remove hits from the same source whose line ranges overlap, keeping
+    /// the better-ranked one. Ranks follow the BM25 convention: lower (more
+    /// negative) is better, for FTS and RRF hits alike. Returns best first.
     fn dedup_overlapping_hits(mut hits: Vec<SearchHit>) -> Vec<SearchHit> {
         if hits.len() <= 1 {
             return hits;
@@ -406,9 +477,7 @@ impl ContentStore {
             if let Some(last) = kept.last() {
                 // Same source and overlapping line range → keep better rank
                 if last.source == hit.source && hit.line_start <= last.line_end {
-                    // BM25 ranks are negative (closer to 0 = better);
-                    // RRF ranks are also stored as negative. Compare by absolute closeness to 0.
-                    if hit.rank > last.rank {
+                    if hit.rank < last.rank {
                         // New hit has better rank — replace
                         *kept.last_mut().unwrap() = hit;
                     }
@@ -420,8 +489,8 @@ impl ContentStore {
         }
         // Re-sort by rank (best first) since we disturbed the original ordering
         kept.sort_by(|a, b| {
-            b.rank
-                .partial_cmp(&a.rank)
+            a.rank
+                .partial_cmp(&b.rank)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         kept
@@ -430,6 +499,10 @@ impl ContentStore {
     // ── Read ──
 
     /// Read original content with pagination. Offset supports "5" or "5-2" (sub-line) format.
+    ///
+    /// `limit` counts physical lines: a long line split into parts is
+    /// returned whole (from the offset's part on). Output stops at
+    /// [`READ_OUTPUT_CAP`] on a line boundary and reports where to continue.
     pub fn read(
         &self,
         label: &str,
@@ -450,6 +523,7 @@ impl ContentStore {
                 }
                 other => ContextError::Database(other),
             })?;
+        drop(conn);
 
         let total_lines = total_lines as usize;
         let limit = limit.unwrap_or(READ_DEFAULT_LIMIT);
@@ -460,67 +534,65 @@ impl ContentStore {
             None => LineOffset { line: 1, sub: None },
         };
 
-        // Build virtual line list: split long lines into sub-chunks
-        let lines: Vec<&str> = content.lines().collect();
-        let mut virtual_lines: Vec<(String, &str)> = Vec::new(); // (label, text)
-
-        for (i, line) in lines.iter().enumerate() {
-            let line_num = i + 1; // 1-based
-            let char_count = line.chars().count();
-
-            if char_count > LONG_LINE_THRESHOLD {
-                // Compute byte boundaries once; summing every preceding
-                // character for each sub-line made very long lines quadratic.
-                let byte_offsets: Vec<usize> = line
-                    .char_indices()
-                    .map(|(offset, _)| offset)
-                    .chain(std::iter::once(line.len()))
-                    .collect();
-                let sub_count = char_count.div_ceil(LONG_LINE_THRESHOLD);
-                for sub_idx in 0..sub_count {
-                    let start = sub_idx * LONG_LINE_THRESHOLD;
-                    let end = ((sub_idx + 1) * LONG_LINE_THRESHOLD).min(char_count);
-                    let label = format!("{}-{}", line_num, sub_idx + 1);
-                    // We need to convert char range to byte range for the slice
-                    let byte_start = byte_offsets[start];
-                    let byte_end = byte_offsets[end];
-                    let text = &line[byte_start..byte_end];
-                    virtual_lines.push((label, text));
-                }
-            } else {
-                virtual_lines.push((format!("{}", line_num), line));
-            }
-        }
+        let virtual_lines = build_virtual_lines(&content);
 
         // Find starting position matching parsed offset
         let start_pos = find_virtual_start(&virtual_lines, &parsed_offset);
-        let end_pos = start_pos.saturating_add(limit).min(virtual_lines.len());
-        let showing = &virtual_lines[start_pos..end_pos];
-
-        if showing.is_empty() {
-            return Ok(ReadResult {
-                label: label.to_string(),
-                content: String::new(),
-                total_lines,
-                showing_start: "0".to_string(),
-                showing_end: "0".to_string(),
-            });
+        let empty = || ReadResult {
+            label: label.to_string(),
+            content: String::new(),
+            total_lines,
+            showing_start: "0".to_string(),
+            showing_end: "0".to_string(),
+            next_offset: None,
+            remaining_lines: 0,
+        };
+        let Some(first) = virtual_lines.get(start_pos) else {
+            return Ok(empty());
+        };
+        if limit == 0 {
+            return Ok(empty());
         }
+        let last_line = first.line.saturating_add(limit - 1);
 
-        // Format with right-aligned labels + tab (cat -n style)
-        let max_width = showing.iter().map(|(lbl, _)| lbl.len()).max().unwrap_or(1);
-
-        let formatted: String = showing
+        // Collect lines up to the limit, stopping before the byte cap
+        let label_width = virtual_lines
             .iter()
-            .map(|(lbl, text)| format!("{:>width$}\t{}", lbl, text, width = max_width))
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        let showing_start = showing[0].0.clone();
-        let showing_end = showing[showing.len() - 1].0.clone();
-
-        // Apply output cap
+            .skip(start_pos)
+            .take_while(|v| v.line <= last_line)
+            .map(|v| v.label.len())
+            .max()
+            .unwrap_or(1);
+        let mut formatted = String::new();
+        let mut end_pos = start_pos;
+        for v in virtual_lines[start_pos..]
+            .iter()
+            .take_while(|v| v.line <= last_line)
+        {
+            let row = format!("{:>width$}\t{}", v.label, v.text, width = label_width);
+            let added = row.len() + usize::from(!formatted.is_empty());
+            if !formatted.is_empty() && formatted.len() + added > READ_OUTPUT_CAP {
+                break;
+            }
+            if !formatted.is_empty() {
+                formatted.push('\n');
+            }
+            formatted.push_str(&row);
+            end_pos += 1;
+        }
+        // A single row over the cap (only possible with extreme limits on
+        // the part size) is cut rather than dropped.
         let formatted = smart_truncate(&formatted, READ_OUTPUT_CAP);
+
+        let showing_start = virtual_lines[start_pos].label.clone();
+        let showing_end = virtual_lines[end_pos - 1].label.clone();
+        let (next_offset, remaining_lines) = match virtual_lines.get(end_pos) {
+            Some(next) => (
+                Some(next.label.clone()),
+                total_lines.saturating_sub(next.line) + 1,
+            ),
+            None => (None, 0),
+        };
 
         Ok(ReadResult {
             label: label.to_string(),
@@ -528,6 +600,8 @@ impl ContentStore {
             total_lines,
             showing_start,
             showing_end,
+            next_offset,
+            remaining_lines,
         })
     }
 
@@ -566,6 +640,8 @@ impl ContentStore {
                         total_lines: 0,
                         showing_start: "0".to_string(),
                         showing_end: "0".to_string(),
+                        next_offset: None,
+                        remaining_lines: 0,
                     });
                 }
             }
@@ -798,6 +874,8 @@ impl ContentStore {
         query: &str,
         fts_hits: Vec<SearchHit>,
         limit: usize,
+        scope: Option<&HashSet<String>>,
+        max_snippet_len: usize,
     ) -> Vec<SearchHit> {
         let service = {
             let guard = self.embedding_service.lock();
@@ -821,6 +899,7 @@ impl ContentStore {
         let mut scored: Vec<(usize, f32)> = entries
             .iter()
             .enumerate()
+            .filter(|(_, entry)| scope.is_none_or(|labels| labels.contains(&entry.source)))
             .map(|(i, entry)| {
                 let score = dot_product(&query_embedding, &entry.embedding);
                 (i, score)
@@ -838,7 +917,24 @@ impl ContentStore {
                 hybrid::VectorSearchHit {
                     source: entry.source.clone(),
                     title: entry.title.clone(),
-                    content: entry.content.clone(),
+                    // Same shape as FTS snippets: length-capped, line-numbered
+                    // when the chunk's lines are the source's lines
+                    content: {
+                        let snippet = search::format_first_n_lines(
+                            &entry.content,
+                            entry.line_start.max(1),
+                            max_snippet_len,
+                        );
+                        if search::chunk_lines_match_source(
+                            &entry.content,
+                            entry.line_start,
+                            entry.line_end,
+                        ) {
+                            snippet
+                        } else {
+                            search::strip_line_numbers(&snippet)
+                        }
+                    },
                     score,
                     content_type: entry.content_type,
                     line_start: entry.line_start,
@@ -857,45 +953,75 @@ fn dot_product(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
 }
 
+/// One row of `read()` output: a whole line, or one part of a long line.
+struct VirtualLine<'a> {
+    /// Display label and offset: "N" or "N-M" (part M of line N).
+    label: String,
+    /// 1-based physical line number.
+    line: usize,
+    text: &'a str,
+}
+
+/// Split content into rows, cutting lines longer than [`LONG_LINE_THRESHOLD`]
+/// chars into numbered parts (labels match the chunker's `line_ref`s).
+fn build_virtual_lines(content: &str) -> Vec<VirtualLine<'_>> {
+    let mut virtual_lines = Vec::new();
+    for (i, line) in content.lines().enumerate() {
+        let line_num = i + 1; // 1-based
+        let char_count = line.chars().count();
+
+        if char_count > LONG_LINE_THRESHOLD {
+            // Compute byte boundaries once; summing every preceding
+            // character for each sub-line made very long lines quadratic.
+            let byte_offsets: Vec<usize> = line
+                .char_indices()
+                .map(|(offset, _)| offset)
+                .chain(std::iter::once(line.len()))
+                .collect();
+            let sub_count = char_count.div_ceil(LONG_LINE_THRESHOLD);
+            for sub_idx in 0..sub_count {
+                let start = sub_idx * LONG_LINE_THRESHOLD;
+                let end = ((sub_idx + 1) * LONG_LINE_THRESHOLD).min(char_count);
+                virtual_lines.push(VirtualLine {
+                    label: format!("{}-{}", line_num, sub_idx + 1),
+                    line: line_num,
+                    text: &line[byte_offsets[start]..byte_offsets[end]],
+                });
+            }
+        } else {
+            virtual_lines.push(VirtualLine {
+                label: format!("{}", line_num),
+                line: line_num,
+                text: line,
+            });
+        }
+    }
+    virtual_lines
+}
+
 /// Find the starting position in the virtual line list for the given offset.
 /// Gracefully falls through: if the exact offset doesn't exist (e.g., "5-2" on a
 /// short line), finds the next valid position (e.g., line 6).
-fn find_virtual_start(virtual_lines: &[(String, &str)], offset: &LineOffset) -> usize {
+fn find_virtual_start(virtual_lines: &[VirtualLine<'_>], offset: &LineOffset) -> usize {
     let target = offset.to_display();
     // Find exact match first
-    if let Some(pos) = virtual_lines.iter().position(|(lbl, _)| *lbl == target) {
+    if let Some(pos) = virtual_lines.iter().position(|v| v.label == target) {
         return pos;
     }
 
     // If offset has no sub, find the first entry for that line number
     if offset.sub.is_none() {
-        let line_str = format!("{}", offset.line);
-        let line_dash = format!("{}-", offset.line);
-        if let Some(pos) = virtual_lines
-            .iter()
-            .position(|(lbl, _)| *lbl == line_str || lbl.starts_with(&line_dash))
-        {
+        if let Some(pos) = virtual_lines.iter().position(|v| v.line == offset.line) {
             return pos;
         }
     }
 
     // Graceful fallthrough: find the first virtual line whose line number > offset.line.
     // This handles cases like "5-2" on a short line → start at line 6.
-    for (pos, (lbl, _)) in virtual_lines.iter().enumerate() {
-        // Parse the line number from the label (either "N" or "N-M")
-        let lbl_line: usize = lbl
-            .split_once('-')
-            .map(|(l, _)| l)
-            .unwrap_or(lbl)
-            .parse()
-            .unwrap_or(0);
-        if lbl_line > offset.line {
-            return pos;
-        }
-    }
-
-    // Truly past end
-    virtual_lines.len()
+    virtual_lines
+        .iter()
+        .position(|v| v.line > offset.line)
+        .unwrap_or(virtual_lines.len())
 }
 
 #[cfg(test)]
@@ -1325,7 +1451,10 @@ mod tests {
             let display = results[0].to_string();
             assert!(display.contains("### Results for"));
             assert!(display.contains("**[1]"));
-            assert!(display.contains("read(source, offset, limit)"));
+            // The read hint is a single footer added by format_search_results
+            assert!(!display.contains("Read around a hit"));
+            let formatted = format_search_results(&results, SEARCH_OUTPUT_CAP, "IndexRead");
+            assert!(formatted.contains("IndexRead(label=\"<source>\", offset=\"<line>\")"));
         }
     }
 
@@ -1480,15 +1609,18 @@ mod tests {
     }
 
     #[test]
-    fn read_sub_chunks_count_toward_limit() {
+    fn read_limit_counts_physical_lines() {
         let store = ContentStore::new().unwrap();
-        let long_line = "x".repeat(5000);
+        let long_line = "x".repeat(5000); // 3 parts
         let content = format!("short\n{}\nend", long_line);
         store.index("test", &content).unwrap();
 
-        let read = store.read("test", None, Some(3)).unwrap();
-        // limit=3 should return 3 virtual entries
-        assert_eq!(read.content.lines().count(), 3);
+        // limit=2 covers line 1 and every part of line 2
+        let read = store.read("test", None, Some(2)).unwrap();
+        assert_eq!(read.content.lines().count(), 4);
+        assert_eq!(read.showing_end, "2-3");
+        assert_eq!(read.next_offset.as_deref(), Some("3"));
+        assert_eq!(read.remaining_lines, 1);
     }
 
     #[test]
@@ -1498,9 +1630,67 @@ mod tests {
         let content = format!("short\n{}\nend", long_line);
         store.index("test", &content).unwrap();
 
-        let read = store.read("test", Some("2-2"), Some(2)).unwrap();
+        // Resuming mid-line returns the rest of that line
+        let read = store.read("test", Some("2-2"), Some(1)).unwrap();
         assert_eq!(read.showing_start, "2-2");
+        assert_eq!(read.showing_end, "2-3");
         assert_eq!(read.content.lines().count(), 2);
+        assert_eq!(read.next_offset.as_deref(), Some("3"));
+    }
+
+    #[test]
+    fn read_stops_at_cap_and_resumes() {
+        let store = ContentStore::new().unwrap();
+        // ~100 bytes per line, far more than the cap in total
+        let content: String = (1..=2000)
+            .map(|i| format!("{:04} {}\n", i, "z".repeat(95)))
+            .collect();
+        store.index("big", &content).unwrap();
+
+        let first = store.read("big", None, Some(2000)).unwrap();
+        assert!(first.content.len() <= READ_OUTPUT_CAP);
+        let next = first.next_offset.clone().expect("cap leaves lines to read");
+        let next_line: usize = next.parse().unwrap();
+        // Rows are whole: the last shown line is the one before `next`
+        assert_eq!(first.showing_end, (next_line - 1).to_string());
+        assert_eq!(first.remaining_lines, 2000 - next_line + 1);
+        assert!(first
+            .to_string()
+            .contains(&format!("continue with offset=\"{}\"", next)));
+
+        let second = store.read("big", Some(&next), Some(2000)).unwrap();
+        assert_eq!(second.showing_start, next);
+        assert!(second
+            .content
+            .trim_start()
+            .starts_with(&format!("{}\t{:04} ", next_line, next_line)));
+    }
+
+    #[test]
+    fn read_to_end_has_no_continuation() {
+        let store = ContentStore::new().unwrap();
+        store.index("t", "a\nb\nc").unwrap();
+        let read = store.read("t", None, None).unwrap();
+        assert_eq!(read.next_offset, None);
+        assert!(!read.to_string().contains("continue with"));
+
+        let partial = store.read("t", None, Some(2)).unwrap();
+        assert_eq!(partial.next_offset.as_deref(), Some("3"));
+        assert!(partial
+            .to_string()
+            .ends_with("[1 more line \u{2014} continue with offset=\"3\"]"));
+    }
+
+    #[test]
+    fn read_header_for_split_lines_is_readable() {
+        let store = ContentStore::new().unwrap();
+        store.index("j", &"q".repeat(5000)).unwrap();
+        let read = store.read("j", None, None).unwrap();
+        let header = read.to_string().lines().next().unwrap().to_string();
+        assert_eq!(
+            header,
+            "Source: j (lines 1-1 to 1-3 of 1; \"N-M\" is part M of long line N)"
+        );
     }
 
     #[test]
@@ -1586,8 +1776,132 @@ mod tests {
         let store = ContentStore::new().unwrap();
         let result = store.index("docs:api", sample_markdown()).unwrap();
         let display = result.to_string();
-        assert!(display.contains("search(queries: [...])"));
-        assert!(display.contains("read(source:"));
+        assert!(display.contains("IndexSearch(queries: [...], source: \"docs:api\")"));
+        assert!(display.contains("IndexRead(label: \"docs:api\", offset: \"1\")"));
+
+        let renamed = result.toc_with(
+            None,
+            ToolNames {
+                search: "Find",
+                read: "Open",
+            },
+        );
+        assert!(renamed.contains("Find(queries:"));
+        assert!(renamed.contains("Open(label:"));
+    }
+
+    // ── Ranking ──
+
+    fn hit(source: &str, start: usize, end: usize, rank: f64) -> SearchHit {
+        SearchHit {
+            title: format!("{source}:{start}"),
+            content: String::new(),
+            source: source.to_string(),
+            rank,
+            content_type: ContentType::Prose,
+            match_layer: MatchLayer::Porter,
+            line_start: start,
+            line_end: end,
+        }
+    }
+
+    #[test]
+    fn dedup_keeps_better_hit_and_sorts_best_first() {
+        // BM25: lower is better
+        let hits = vec![
+            hit("a", 8, 20, -1.0),
+            hit("b", 1, 5, -3.0),
+            hit("a", 1, 10, -5.0),
+        ];
+        let kept = ContentStore::dedup_overlapping_hits(hits);
+        assert_eq!(kept.len(), 2);
+        assert_eq!((kept[0].source.as_str(), kept[0].rank), ("a", -5.0));
+        assert_eq!((kept[1].source.as_str(), kept[1].rank), ("b", -3.0));
+    }
+
+    #[test]
+    fn search_returns_best_match_first() {
+        let store = ContentStore::new().unwrap();
+        let filler = "lorem ipsum dolor sit amet consectetur adipiscing elit ".repeat(20);
+        store
+            .index(
+                "weak",
+                &format!("{filler}\nwidget mentioned once\n{filler}"),
+            )
+            .unwrap();
+        store
+            .index("strong", "widget widget widget: the widget guide")
+            .unwrap();
+        let results = store
+            .search(&["widget".to_string()], 5, None, &DateRange::default())
+            .unwrap();
+        let sources: Vec<&str> = results[0].hits.iter().map(|h| h.source.as_str()).collect();
+        assert_eq!(sources.first(), Some(&"strong"), "got {sources:?}");
+    }
+
+    // ── Source filter ──
+
+    #[test]
+    fn search_unknown_source_is_an_error_listing_sources() {
+        let store = ContentStore::new().unwrap();
+        store.index("tool__a:1", "alpha content").unwrap();
+        store.index("tool__b:1", "beta content").unwrap();
+        let err = store
+            .search_combined(Some("alpha"), None, 5, Some("catalog:skills"), None, None)
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("No indexed source matches \"catalog:skills\""),
+            "{msg}"
+        );
+        assert!(
+            msg.contains("\"tool__a:1\"") && msg.contains("\"tool__b:1\""),
+            "{msg}"
+        );
+
+        // A prefix of an existing label is fine
+        assert!(store
+            .search_combined(Some("alpha"), None, 5, Some("tool__"), None, None)
+            .is_ok());
+    }
+
+    #[cfg(feature = "vector")]
+    #[test]
+    fn vector_scope_follows_source_prefix() {
+        let store = ContentStore::new().unwrap();
+        store.index("tool__a:1", "alpha").unwrap();
+        store.index("tool__b:1", "beta").unwrap();
+        let conn = store.conn.lock();
+        assert!(
+            ContentStore::vector_scope(&conn, None, &DateRange::default())
+                .unwrap()
+                .is_none()
+        );
+        let scope = ContentStore::vector_scope(&conn, Some("tool__a"), &DateRange::default())
+            .unwrap()
+            .unwrap();
+        assert!(scope.contains("tool__a:1"));
+        assert!(!scope.contains("tool__b:1"));
+    }
+
+    #[test]
+    fn format_search_results_dedups_across_queries() {
+        let store = ContentStore::new().unwrap();
+        store
+            .index("doc", "the frobnicator handles widget sprockets")
+            .unwrap();
+        let results = store
+            .search(
+                &["frobnicator".to_string(), "sprockets".to_string()],
+                5,
+                None,
+                &DateRange::default(),
+            )
+            .unwrap();
+        let out = format_search_results(&results, SEARCH_OUTPUT_CAP, "IndexRead");
+        assert_eq!(out.matches("the frobnicator handles").count(), 1, "{out}");
+        assert!(out.contains("same as query 1 hit [1] above"), "{out}");
+        assert_eq!(out.matches("Read around a hit").count(), 1, "{out}");
     }
 
     // ── Search combined ──
@@ -1805,7 +2119,7 @@ mod tests {
         let results = store
             .search(&["Section 250".to_string()], 5, None, &DateRange::default())
             .unwrap();
-        let output = format_search_results(&results, types::SEARCH_OUTPUT_CAP);
+        let output = format_search_results(&results, types::SEARCH_OUTPUT_CAP, "IndexRead");
         assert!(output.len() <= types::SEARCH_OUTPUT_CAP + 500);
 
         let read = store.read("large", None, None).unwrap();
@@ -1867,7 +2181,7 @@ mod tests {
                 &DateRange::default(),
             )
             .unwrap();
-        let output = format_search_results(&results, types::SEARCH_OUTPUT_CAP);
+        let output = format_search_results(&results, types::SEARCH_OUTPUT_CAP, "IndexRead");
         assert!(
             output.len() <= types::SEARCH_OUTPUT_CAP + 500,
             "Search output too large: {} bytes",
@@ -1952,7 +2266,7 @@ mod tests {
     #[test]
     fn read_offset_sub_on_long_line_works() {
         let store = ContentStore::new().unwrap();
-        let long_line = "abcdef".repeat(100); // 600 chars → 2 sub-chunks at threshold=500
+        let long_line = "abcdef".repeat(400); // 2400 chars → 2 sub-chunks at threshold=2000
         let content = format!("first\n{}\nlast", long_line);
         store.index("test", &content).unwrap();
 

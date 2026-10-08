@@ -630,9 +630,10 @@ mod big_output {
             _client_id: &str,
             _client_name: &str,
         ) -> VirtualToolCallResult {
-            VirtualToolCallResult::Success(
-                json!({"content": [{"type": "text", "text": "line of output\n".repeat(400)}]}),
-            )
+            VirtualToolCallResult::Success(json!({
+                "content": [{"type": "text", "text": "line of output\n".repeat(2000)}],
+                "structuredContent": {"lines": vec!["line of output"; 2000]},
+            }))
         }
         fn build_instructions(
             &self,
@@ -658,7 +659,7 @@ mod big_output {
     }
 }
 
-async fn call_big_dump(virtual_indexing: lr_config::GatewayIndexingPermissions) -> String {
+async fn call_big_dump(virtual_indexing: lr_config::GatewayIndexingPermissions) -> Value {
     let (gateway, _echo) = setup().await;
     gateway.register_virtual_server(Arc::new(ContextModeVirtualServer::new(
         lr_config::ContextManagementConfig {
@@ -680,16 +681,27 @@ async fn call_big_dump(virtual_indexing: lr_config::GatewayIndexingPermissions) 
     )
     .await;
     assert!(call.error.is_none(), "tools/call: {:?}", call.error);
-    call.result.unwrap()["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .to_string()
+    call.result.unwrap()
+}
+
+fn first_text(result: &Value) -> &str {
+    result["content"][0]["text"].as_str().unwrap()
 }
 
 #[tokio::test]
 async fn large_virtual_tool_responses_are_indexed_when_enabled() {
-    let text = call_big_dump(lr_config::GatewayIndexingPermissions::default()).await;
+    let result = call_big_dump(lr_config::GatewayIndexingPermissions::default()).await;
+    let text = first_text(&result);
     assert!(text.starts_with("[Response compressed"), "{text}");
+    // The placeholder names the exact read call for the label it reports
+    let label = format!("{}:", big_output::TOOL);
+    assert!(
+        text.contains(&format!("IndexRead(label=\"{label}")),
+        "{text}"
+    );
+    assert!(text.contains("limit=2000)"), "{text}");
+    // structuredContent repeats the payload; it must not slip past
+    assert!(result.get("structuredContent").is_none(), "{result}");
 }
 
 #[tokio::test]
@@ -699,8 +711,9 @@ async fn virtual_indexing_disabled_for_a_server_keeps_full_responses() {
         big_output::ID.to_string(),
         lr_config::IndexingState::Disable,
     );
-    let text = call_big_dump(perms).await;
-    assert_eq!(text, "line of output\n".repeat(400));
+    let result = call_big_dump(perms).await;
+    assert_eq!(first_text(&result), "line of output\n".repeat(2000));
+    assert!(result.get("structuredContent").is_some());
 }
 
 // ── Notification scoping & settings-change notifications ────────────

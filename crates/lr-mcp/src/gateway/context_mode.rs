@@ -5,13 +5,15 @@
 
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex};
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
+pub use lr_context::ToolNames;
 use lr_context::{
-    format_search_results, ContentStore, SearchResult, READ_DEFAULT_LIMIT, SEARCH_OUTPUT_CAP,
+    format_search_results, ContentStore, ContextError, IndexResult, SearchResult,
+    READ_DEFAULT_LIMIT, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT, SEARCH_OUTPUT_CAP,
 };
 
 use super::gateway_tools::FirewallDecisionResult;
@@ -23,23 +25,150 @@ use crate::protocol::McpTool;
 const CTX_SEARCH_DEFAULT: &str = "IndexSearch";
 const INDEX_READ_DEFAULT: &str = "IndexRead";
 
-/// MCP Gateway source label guide appended to ctx_search description.
-const CTX_SEARCH_SOURCE_GUIDE: &str = r#"
+/// Source label guide appended to the search tool's description. Only the
+/// kinds of source this session indexes are listed, so the model is not
+/// invited to search sources that do not exist.
+fn search_source_guide(catalog: bool, responses: bool) -> String {
+    let mut lines: Vec<&str> = Vec::new();
+    if catalog {
+        lines.extend([
+            "  source=\"mcp/\"                         — search all MCP catalog entries (tools, resources, prompts, server docs)",
+            "  source=\"mcp/filesystem\"               — search within a specific server (docs + all its items)",
+            "  source=\"mcp/filesystem/tool/\"         — search tools from a specific server",
+            "  source=\"mcp/filesystem/resource/\"     — search resources from a specific server",
+            "  source=\"catalog:skills\"               — search all skill descriptions and metadata",
+            "  source=\"catalog:skills/MySkill\"       — find a specific skill's details",
+        ]);
+    }
+    if responses {
+        lines.extend([
+            "  source=\"filesystem__read_file:\"       — find all compressed responses from a specific tool",
+            "  source=\"filesystem__read_file:3\"      — find a specific invocation (the label a compressed response reports)",
+        ]);
+    }
+    if lines.is_empty() {
+        return String::new();
+    }
+    let mut guide = format!(
+        "\n\nSource labels (use with 'source' parameter):\n{}",
+        lines.join("\n")
+    );
+    if catalog {
+        guide.push_str(
+            "\n\nSearching catalog entries automatically activates matching tools/resources/prompts for use.",
+        );
+    }
+    guide
+}
 
-MCP Gateway source labels (use with 'source' parameter):
-  source="mcp/"                         — search all MCP catalog entries (tools, resources, prompts, server docs)
-  source="mcp/filesystem"               — search within a specific server (docs + all its items)
-  source="mcp/filesystem/tool/"         — search tools from a specific server
-  source="mcp/filesystem/resource/"     — search resources from a specific server
-  source="catalog:skills"               — search all skill descriptions and metadata
-  source="catalog:skills/MySkill"       — find a specific skill's details
-  source="filesystem__read_file:"       — find all compressed responses from a specific tool
-  source="filesystem__read_file:3"      — find a specific invocation
+/// Examples appended to the search tool's `source` parameter description.
+fn search_source_param_guide(catalog: bool, responses: bool) -> &'static str {
+    match (catalog, responses) {
+        (true, true) => " Examples: \"mcp/\" for all MCP entries, \"mcp/filesystem\" for one server, \"filesystem__read_file:\" for a tool's responses.",
+        (true, false) => " Examples: \"mcp/\" for all MCP entries, \"mcp/filesystem\" for one server.",
+        (false, true) => " Example: \"filesystem__read_file:\" for a tool's responses.",
+        (false, false) => "",
+    }
+}
 
-Searching catalog entries automatically activates matching tools/resources/prompts for use."#;
+/// Per-tool run counters shared by every session in this process, so a
+/// response label (`tool:N`) is never reused while LocalRouter runs — a label
+/// a client kept from a session that has since been recreated cannot
+/// silently resolve to different content.
+static RUN_COUNTERS: LazyLock<Mutex<HashMap<String, u32>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Additional source guide appended to ctx_search's `source` parameter description.
-const CTX_SEARCH_SOURCE_PARAM_GUIDE: &str = r#" MCP examples: "mcp/" for all MCP entries, "mcp/filesystem" for one server, "filesystem__read_file:" for a tool's responses."#;
+/// Next run number for a tool/resource/prompt's indexed responses.
+pub fn next_response_run_id(namespaced_name: &str) -> u32 {
+    let mut counters = RUN_COUNTERS.lock().unwrap_or_else(|e| e.into_inner());
+    let counter = counters.entry(namespaced_name.to_string()).or_insert(0);
+    *counter += 1;
+    *counter
+}
+
+/// Preview size for a compressed response: an eighth of the threshold,
+/// between 256 bytes and 2 KB.
+pub fn compression_preview_bytes(response_threshold_bytes: usize) -> usize {
+    (response_threshold_bytes / 8).clamp(256, 2048)
+}
+
+/// Max bytes of section outline shown in a compressed-response placeholder.
+const PLACEHOLDER_OUTLINE_CAP: usize = 1536;
+
+/// Leading `max_bytes` of `text`, cut at a line end when one falls in the
+/// second half of the budget (else at a char boundary).
+fn preview_text(text: &str, max_bytes: usize) -> &str {
+    if text.len() <= max_bytes {
+        return text;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let head = &text[..end];
+    match head.rfind('\n') {
+        Some(nl) if nl >= max_bytes / 2 => &head[..nl],
+        _ => head,
+    }
+}
+
+/// The text that replaces a compressed tool response: a preview, the section
+/// outline, and the exact calls that read or search the full output.
+pub fn compressed_response_text(
+    full_text: &str,
+    index: &IndexResult,
+    response_threshold_bytes: usize,
+    tools: ToolNames<'_>,
+) -> String {
+    let source = &index.label;
+    let total_lines = index.total_lines.max(1);
+    let preview = preview_text(
+        full_text,
+        compression_preview_bytes(response_threshold_bytes),
+    );
+    let preview_lines = preview.lines().count().max(1);
+
+    let mut out = format!(
+        "[Response compressed \u{2014} {} bytes, {} lines, indexed as \"{}\"]\n\n{}\n",
+        full_text.len(),
+        total_lines,
+        source,
+        preview.trim_end()
+    );
+    if preview.len() < full_text.len() {
+        out.push_str(&format!(
+            "[\u{2026} preview ends at line {} of {}]\n",
+            preview_lines, total_lines
+        ));
+    }
+    if index.total_chunks > 1 {
+        let outline = index.outline(None, PLACEHOLDER_OUTLINE_CAP, tools.search);
+        if !outline.is_empty() {
+            out.push('\n');
+            out.push_str(&outline);
+        }
+    }
+    out.push_str(&format!(
+        "\nRead all of it: {read}(label=\"{source}\", limit={total_lines})\n\
+         Read a range:   {read}(label=\"{source}\", offset=\"<line>\", limit=<lines>)\n\
+         Search it:      {search}(queries=[\"<terms>\"], source=\"{source}\")",
+        read = tools.read,
+        search = tools.search,
+    ));
+    out
+}
+
+/// Parse a numeric tool argument leniently: integers, floats (`5.0`) and
+/// numeric strings (`"5"`) all count. Non-positive or unparseable → `None`.
+fn parse_count(value: Option<&Value>) -> Option<usize> {
+    let v = value?;
+    let n = v
+        .as_u64()
+        .map(|n| n as f64)
+        .or_else(|| v.as_f64())
+        .or_else(|| v.as_str().and_then(|s| s.trim().parse::<f64>().ok()))?;
+    (n.is_finite() && n >= 1.0).then(|| n.round() as usize)
+}
 
 /// The type of catalog item associated with a source label.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,8 +224,6 @@ pub struct ContextModeSessionState {
     pub store: Arc<ContentStore>,
     /// Catalog source labels → item type (for activation on ctx_search).
     pub catalog_sources: HashMap<String, CatalogItemType>,
-    /// Per-tool/resource/prompt response run ID counters.
-    pub run_counters: HashMap<String, u32>,
     /// Full tool catalog (for search-based activation).
     pub full_tool_catalog: Vec<NamespacedTool>,
     /// Activated tools (subset of full_tool_catalog made visible).
@@ -129,13 +256,8 @@ pub struct ContextModeSessionState {
 
 impl ContextModeSessionState {
     /// Get the next run ID for a given namespaced name (tool/resource/prompt).
-    pub fn next_run_id(&mut self, namespaced_name: &str) -> u32 {
-        let counter = self
-            .run_counters
-            .entry(namespaced_name.to_string())
-            .or_insert(0);
-        *counter += 1;
-        *counter
+    pub fn next_run_id(&self, namespaced_name: &str) -> u32 {
+        next_response_run_id(namespaced_name)
     }
 }
 
@@ -147,7 +269,6 @@ impl Clone for ContextModeSessionState {
             catalog_compression_enabled: self.catalog_compression_enabled,
             store: self.store.clone(), // Arc clone — shares same ContentStore
             catalog_sources: self.catalog_sources.clone(),
-            run_counters: self.run_counters.clone(),
             full_tool_catalog: self.full_tool_catalog.clone(),
             activated_tools: self.activated_tools.clone(),
             full_resource_catalog: self.full_resource_catalog.clone(),
@@ -180,11 +301,30 @@ impl VirtualSessionState for ContextModeSessionState {
 
 /// Build the tool definitions for the native context-mode server using configured names.
 fn build_native_tools_with_names(search_name: &str, read_name: &str) -> Vec<McpTool> {
-    let mut search_desc = "Search indexed content. Pass ALL search questions as queries array in ONE call.\n\nTIPS: 2-4 specific terms per query. Use 'source' to scope results.".to_string();
-    search_desc.push_str(CTX_SEARCH_SOURCE_GUIDE);
+    build_native_tools_for(search_name, read_name, true, true)
+}
 
-    let mut source_desc = "Filter to a specific indexed source (partial match).".to_string();
-    source_desc.push_str(CTX_SEARCH_SOURCE_PARAM_GUIDE);
+/// Tool definitions whose source guide covers only what is indexed:
+/// `catalog` for MCP Catalog Indexing, `responses` for Tool Responses Indexing.
+fn build_native_tools_for(
+    search_name: &str,
+    read_name: &str,
+    catalog: bool,
+    responses: bool,
+) -> Vec<McpTool> {
+    let mut search_desc = format!(
+        "Search indexed content (compressed tool responses, MCP catalog). Pass ALL search \
+         questions as the queries array in ONE call. Hits are ranked best-first and show \
+         line numbers; use {} to read more around a hit.\n\nTIPS: 2-4 specific terms per \
+         query. Use 'source' to scope results.",
+        read_name
+    );
+    search_desc.push_str(&search_source_guide(catalog, responses));
+
+    let mut source_desc =
+        "Only search sources whose label starts with this (e.g. a label from a compressed response)."
+            .to_string();
+    source_desc.push_str(search_source_param_guide(catalog, responses));
 
     vec![
         McpTool {
@@ -208,16 +348,22 @@ fn build_native_tools_with_names(search_name: &str, read_name: &str) -> Vec<McpT
                     },
                     "limit": {
                         "type": "number",
-                        "description": "Results per query (default: 3)"
+                        "description": format!(
+                            "Results per query (default: {}, max: {})",
+                            SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT
+                        )
                     }
                 }
             }),
         },
         McpTool {
             name: read_name.to_string(),
-            description: Some(
-                format!("Read the full content of an indexed source. Use after {} to get complete context around a search hit.", search_name),
-            ),
+            description: Some(format!(
+                "Read an indexed source (such as a compressed tool response) by label. \
+                     Returns numbered lines; when output stops early it says which offset to \
+                     continue from. Use after {} to get complete context around a search hit.",
+                search_name
+            )),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -227,11 +373,14 @@ fn build_native_tools_with_names(search_name: &str, read_name: &str) -> Vec<McpT
                     },
                     "offset": {
                         "type": "string",
-                        "description": "Line offset to start from (e.g. \"5\" or \"5-2\" for sub-line). Default: start of content."
+                        "description": "Line to start from, e.g. \"120\". Very long lines are split into parts labelled \"N-M\" (part M of line N); pass one to resume mid-line. Default: \"1\"."
                     },
                     "limit": {
                         "type": "number",
-                        "description": format!("Number of lines to return (default: {})", READ_DEFAULT_LIMIT)
+                        "description": format!(
+                            "Number of lines to return (default: {}). Output stops at ~64KB and reports the offset to continue from.",
+                            READ_DEFAULT_LIMIT
+                        )
                     }
                 },
                 "required": ["label"]
@@ -294,7 +443,12 @@ impl VirtualMcpServer for ContextModeVirtualServer {
             return Vec::new();
         }
 
-        build_native_tools_with_names(&state.search_tool_name, &state.read_tool_name)
+        build_native_tools_for(
+            &state.search_tool_name,
+            &state.read_tool_name,
+            state.catalog_compression_enabled,
+            state.response_indexing_enabled,
+        )
     }
 
     fn check_permissions(
@@ -344,6 +498,7 @@ impl VirtualMcpServer for ContextModeVirtualServer {
                 handle_ctx_search_blocking(
                     &store,
                     arguments,
+                    &read_name,
                     &catalog_sources,
                     &activated_tools,
                     &activated_resources,
@@ -419,7 +574,6 @@ impl VirtualMcpServer for ContextModeVirtualServer {
             catalog_compression_enabled,
             store,
             catalog_sources: HashMap::new(),
-            run_counters: HashMap::new(),
             full_tool_catalog: Vec::new(),
             activated_tools: HashSet::new(),
             full_resource_catalog: Vec::new(),
@@ -479,6 +633,7 @@ impl VirtualMcpServer for ContextModeVirtualServer {
 fn handle_ctx_search_blocking(
     store: &ContentStore,
     arguments: Value,
+    read_tool_name: &str,
     catalog_sources: &HashMap<String, CatalogItemType>,
     activated_tools: &HashSet<String>,
     activated_resources: &HashSet<String>,
@@ -499,7 +654,9 @@ fn handle_ctx_search_blocking(
         .and_then(|s| s.as_str())
         .map(|s| s.to_string());
 
-    let limit = arguments.get("limit").and_then(|l| l.as_u64()).unwrap_or(3) as usize;
+    let limit = parse_count(arguments.get("limit"))
+        .unwrap_or(SEARCH_DEFAULT_LIMIT)
+        .min(SEARCH_MAX_LIMIT);
 
     // Execute search using search_combined (handles both query + queries)
     let results = match store.search_combined(
@@ -517,7 +674,7 @@ fn handle_ctx_search_blocking(
     };
 
     // Format results
-    let formatted = format_search_results(&results, SEARCH_OUTPUT_CAP);
+    let formatted = format_search_results(&results, SEARCH_OUTPUT_CAP, read_tool_name);
     let result = json!({
         "content": [{
             "type": "text",
@@ -541,7 +698,8 @@ fn handle_ctx_search_blocking(
         let mut modified_result = result;
         let names: Vec<&str> = activated.iter().map(|(n, _)| n.as_str()).collect();
         let activation_msg = format!(
-            "\n\n---\nActivated: {}\nThese items are now available for use.",
+            "\n\n---\nActivated: {}\nThese are now in the tool list; clients that follow \
+             tools/list_changed show them after refreshing.",
             names.join(", ")
         );
         append_text_to_mcp_result(&mut modified_result, &activation_msg);
@@ -604,10 +762,7 @@ fn handle_index_read_blocking(
         .and_then(|o| o.as_str())
         .map(|s| s.to_string());
 
-    let limit = arguments
-        .get("limit")
-        .and_then(|l| l.as_u64())
-        .map(|l| l as usize);
+    let limit = parse_count(arguments.get("limit"));
 
     match store.read(&label, offset.as_deref(), limit) {
         Ok(read_result) => {
@@ -662,6 +817,12 @@ fn handle_index_read_blocking(
 
             VirtualToolCallResult::Success(result)
         }
+        Err(ContextError::SourceNotFound(label)) => VirtualToolCallResult::ToolError(format!(
+            "Read failed: no indexed source {:?}. Labels come from compressed responses \
+             and search results; indexed content does not survive a new session or a \
+             LocalRouter restart, so call the original tool again if it is gone.",
+            label
+        )),
         Err(e) => VirtualToolCallResult::ToolError(format!("Read failed: {}", e)),
     }
 }
@@ -729,46 +890,45 @@ fn extract_item_name_from_source(source: &str) -> &str {
 /// Compress and index a client tool response into the session's ContentStore.
 ///
 /// Used by MCP via LLM orchestrator to index eligible client tool results.
-/// Returns the compressed text if indexing was performed, or None if skipped.
+/// Returns the compressed text if indexing was performed, or None if skipped
+/// (under the threshold, indexing failed, or the placeholder would not be
+/// smaller than the response).
 pub fn compress_client_tool_response(
     store: &ContentStore,
     tool_name: &str,
-    run_id: u32,
     full_text: &str,
     response_threshold_bytes: usize,
-    search_tool_name: &str,
+    tools: ToolNames<'_>,
 ) -> Option<String> {
     if full_text.len() <= response_threshold_bytes {
         return None;
     }
 
-    let source = format!("__client__{}:{}", tool_name, run_id);
+    let source = format!(
+        "__client__{}:{}",
+        tool_name,
+        next_response_run_id(&format!("__client__{}", tool_name))
+    );
     let byte_size = full_text.len();
 
-    if let Err(e) = store.index(&source, full_text) {
-        tracing::warn!(
-            "Failed to index client tool response for {} ({}): {}",
-            tool_name,
-            source,
-            e
-        );
+    let index = match store.index(&source, full_text) {
+        Ok(index) => index,
+        Err(e) => {
+            tracing::warn!(
+                "Failed to index client tool response for {} ({}): {}",
+                tool_name,
+                source,
+                e
+            );
+            return None;
+        }
+    };
+
+    let compressed = compressed_response_text(full_text, &index, response_threshold_bytes, tools);
+    if compressed.len() >= byte_size {
+        let _ = store.delete(&source);
         return None;
     }
-
-    let preview_bytes = (response_threshold_bytes / 8).clamp(200, 500);
-    let preview = &full_text[..full_text
-        .char_indices()
-        .take_while(|(i, _)| *i < preview_bytes)
-        .last()
-        .map(|(i, c)| i + c.len_utf8())
-        .unwrap_or(full_text.len())
-        .min(full_text.len())];
-
-    let compressed = format!(
-        "[Response compressed — {} bytes indexed as {}]\n\n{}\n\nFull output indexed. \
-         Use {}(queries=[\"your search terms\"], source=\"{}\") to retrieve specific sections.",
-        byte_size, source, preview, search_tool_name, source
-    );
 
     tracing::info!(
         "Compressed client tool response for {} ({} bytes → {} bytes, source={})",
@@ -1016,24 +1176,32 @@ mod tests {
 
         let search_desc = tools[0].description.as_ref().unwrap();
         assert!(search_desc.contains("Search indexed content"));
-        assert!(search_desc.contains("MCP Gateway source labels"));
+        assert!(search_desc.contains("Source labels (use with 'source' parameter)"));
         assert!(search_desc.contains("mcp/"));
 
+        // Each tool points at the other by its configured name
+        assert!(search_desc.contains("use IndexRead to read more"));
+
         let read_desc = tools[1].description.as_ref().unwrap();
-        assert!(read_desc.contains("Read the full content"));
+        assert!(read_desc.contains("Read an indexed source"));
+        assert!(read_desc.contains("Use after IndexSearch"));
+
+        let limit_desc = tools[0].input_schema["properties"]["limit"]["description"]
+            .as_str()
+            .unwrap();
+        assert_eq!(limit_desc, "Results per query (default: 5, max: 20)");
     }
 
     // ── ContextModeSessionState tests ───────────────────────────────
 
     #[test]
     fn test_next_run_id_increments() {
-        let mut state = ContextModeSessionState {
+        let make_state = || ContextModeSessionState {
             enabled: true,
             response_indexing_enabled: true,
             catalog_compression_enabled: true,
             store: Arc::new(ContentStore::new().unwrap()),
             catalog_sources: HashMap::new(),
-            run_counters: HashMap::new(),
             full_tool_catalog: Vec::new(),
             activated_tools: HashSet::new(),
             full_resource_catalog: Vec::new(),
@@ -1049,11 +1217,104 @@ mod tests {
             client_tools_indexing_default: lr_config::IndexingState::Enable,
             client_tools_indexing: None,
         };
+        let state = make_state();
 
-        assert_eq!(state.next_run_id("fs__read_file"), 1);
-        assert_eq!(state.next_run_id("fs__read_file"), 2);
-        assert_eq!(state.next_run_id("fs__write_file"), 1);
-        assert_eq!(state.next_run_id("fs__read_file"), 3);
+        // Unique names: the counters are process-wide and tests run in parallel
+        assert_eq!(state.next_run_id("runid_test__read_file"), 1);
+        assert_eq!(state.next_run_id("runid_test__read_file"), 2);
+        assert_eq!(state.next_run_id("runid_test__write_file"), 1);
+
+        // A new session (e.g. after a client reconnects) keeps counting, so
+        // an old label never names new content
+        let recreated = make_state();
+        assert_eq!(recreated.next_run_id("runid_test__read_file"), 3);
+    }
+
+    #[test]
+    fn source_guide_lists_only_indexed_sources() {
+        let desc = |catalog, responses| {
+            build_native_tools_for("IndexSearch", "IndexRead", catalog, responses)[0]
+                .description
+                .clone()
+                .unwrap()
+        };
+        let responses_only = desc(false, true);
+        assert!(
+            !responses_only.contains("catalog:skills"),
+            "{responses_only}"
+        );
+        assert!(
+            !responses_only.contains("source=\"mcp/\""),
+            "{responses_only}"
+        );
+        assert!(responses_only.contains("filesystem__read_file:3"));
+
+        let catalog_only = desc(true, false);
+        assert!(catalog_only.contains("catalog:skills"));
+        assert!(!catalog_only.contains("filesystem__read_file:3"));
+    }
+
+    #[test]
+    fn parse_count_is_lenient() {
+        assert_eq!(parse_count(Some(&json!(5))), Some(5));
+        assert_eq!(parse_count(Some(&json!(5.0))), Some(5));
+        assert_eq!(parse_count(Some(&json!("7"))), Some(7));
+        assert_eq!(parse_count(Some(&json!(0))), None);
+        assert_eq!(parse_count(Some(&json!(-3))), None);
+        assert_eq!(parse_count(Some(&json!("all"))), None);
+        assert_eq!(parse_count(None), None);
+    }
+
+    fn indexed(label: &str, text: &str) -> IndexResult {
+        ContentStore::new().unwrap().index(label, text).unwrap()
+    }
+
+    #[test]
+    fn compressed_text_names_tools_and_exact_calls() {
+        let body: String = (1..=400).map(|i| format!("row {i} value\n")).collect();
+        let index = indexed("jira__getIssue:4", &body);
+        let text = compressed_response_text(
+            &body,
+            &index,
+            16 * 1024,
+            ToolNames {
+                search: "IndexSearch",
+                read: "IndexRead",
+            },
+        );
+        assert!(text.starts_with(&format!(
+            "[Response compressed \u{2014} {} bytes, 400 lines, indexed as \"jira__getIssue:4\"]",
+            body.len()
+        )));
+        // 2 KB preview of whole lines, and where it stops
+        assert!(text.contains("row 1 value\nrow 2 value"));
+        assert!(text.contains("[\u{2026} preview ends at line "));
+        assert!(text.contains("IndexRead(label=\"jira__getIssue:4\", limit=400)"));
+        assert!(text.contains("IndexRead(label=\"jira__getIssue:4\", offset=\"<line>\""));
+        assert!(text.contains("IndexSearch(queries=[\"<terms>\"], source=\"jira__getIssue:4\")"));
+    }
+
+    #[test]
+    fn compressed_text_includes_outline_for_sectioned_content() {
+        let mut body = String::new();
+        for section in ["Overview", "Setup", "Usage", "Troubleshooting"] {
+            body.push_str(&format!("## {section}\n\n"));
+            for i in 0..40 {
+                body.push_str(&format!("{section} detail line {i} with some words\n"));
+            }
+            body.push('\n');
+        }
+        let index = indexed("SkillRead:2", &body);
+        let text = compressed_response_text(&body, &index, 16 * 1024, ToolNames::default());
+        assert!(text.contains("## Contents"), "{text}");
+        assert!(text.contains("Troubleshooting"), "{text}");
+    }
+
+    #[test]
+    fn preview_is_proportional_to_threshold() {
+        assert_eq!(compression_preview_bytes(200), 256);
+        assert_eq!(compression_preview_bytes(16 * 1024), 2048);
+        assert_eq!(compression_preview_bytes(1 << 20), 2048);
     }
 
     fn cm_state(state: &dyn VirtualSessionState) -> &ContextModeSessionState {
@@ -1245,6 +1506,7 @@ mod tests {
         let result = handle_ctx_search_blocking(
             &store,
             json!({"queries": ["read file"]}),
+            "IndexRead",
             &HashMap::new(),
             &HashSet::new(),
             &HashSet::new(),
@@ -1273,6 +1535,7 @@ mod tests {
         let result = handle_ctx_search_blocking(
             &store,
             json!({"query": "read file"}),
+            "IndexRead",
             &HashMap::new(),
             &HashSet::new(),
             &HashSet::new(),
@@ -1301,6 +1564,7 @@ mod tests {
         let result = handle_ctx_search_blocking(
             &store,
             json!({"query": "read file", "queries": ["write content"]}),
+            "IndexRead",
             &HashMap::new(),
             &HashSet::new(),
             &HashSet::new(),
@@ -1326,6 +1590,7 @@ mod tests {
         let result = handle_ctx_search_blocking(
             &store,
             json!({}),
+            "IndexRead",
             &HashMap::new(),
             &HashSet::new(),
             &HashSet::new(),
@@ -1350,6 +1615,7 @@ mod tests {
         let result = handle_ctx_search_blocking(
             &store,
             json!({"queries": ["content"], "source": "response:"}),
+            "IndexRead",
             &HashMap::new(),
             &HashSet::new(),
             &HashSet::new(),
@@ -1381,6 +1647,7 @@ mod tests {
         let result = handle_ctx_search_blocking(
             &store,
             json!({"queries": ["read file disk"]}),
+            "IndexRead",
             &make_catalog_sources(),
             &HashSet::new(),
             &HashSet::new(),

@@ -1972,12 +1972,45 @@ pub async fn get_skill(
         .ok_or_else(|| format!("Skill '{}' not found", skill_name))
 }
 
+/// Effective context management settings for the UI. Unlike the config
+/// file, which omits fields at their default, every field is present.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ContextManagementConfigView {
+    pub catalog_compression: bool,
+    pub catalog_threshold_bytes: usize,
+    pub response_threshold_bytes: usize,
+    pub gateway_indexing: lr_config::GatewayIndexingPermissions,
+    pub virtual_indexing: lr_config::GatewayIndexingPermissions,
+    pub client_tools_indexing_default: lr_config::IndexingState,
+    pub search_tool_name: String,
+    pub read_tool_name: String,
+    pub vector_search_enabled: bool,
+}
+
+impl From<&lr_config::ContextManagementConfig> for ContextManagementConfigView {
+    fn from(c: &lr_config::ContextManagementConfig) -> Self {
+        Self {
+            catalog_compression: c.catalog_compression,
+            catalog_threshold_bytes: c.catalog_threshold_bytes,
+            response_threshold_bytes: c.response_threshold_bytes,
+            gateway_indexing: c.gateway_indexing.clone(),
+            virtual_indexing: c.virtual_indexing.clone(),
+            client_tools_indexing_default: c.client_tools_indexing_default.clone(),
+            search_tool_name: c.search_tool_name.clone(),
+            read_tool_name: c.read_tool_name.clone(),
+            vector_search_enabled: c.vector_search_enabled,
+        }
+    }
+}
+
 /// Get context management configuration
 #[tauri::command]
 pub async fn get_context_management_config(
     config_manager: State<'_, ConfigManager>,
-) -> Result<lr_config::ContextManagementConfig, String> {
-    Ok(config_manager.get().context_management.clone())
+) -> Result<ContextManagementConfigView, String> {
+    Ok(ContextManagementConfigView::from(
+        &config_manager.get().context_management,
+    ))
 }
 
 /// Update context management configuration
@@ -2607,18 +2640,6 @@ fn rag_preview_store() -> &'static parking_lot::Mutex<Option<lr_context::Content
     STORE.get_or_init(|| parking_lot::Mutex::new(None))
 }
 
-/// Truncate a string to at most `max_bytes` at a char boundary.
-fn rag_truncate_to_char_boundary(s: &str, max_bytes: usize) -> &str {
-    if s.len() <= max_bytes {
-        return s;
-    }
-    let mut end = max_bytes;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
-}
-
 #[derive(Serialize)]
 pub struct RagPreviewIndexResult {
     pub compressed_preview: String,
@@ -2632,18 +2653,21 @@ pub async fn preview_rag_index(
     content: String,
     label: String,
     response_threshold_bytes: usize,
+    config_manager: State<'_, ConfigManager>,
 ) -> Result<RagPreviewIndexResult, String> {
+    let cm = config_manager.get().context_management.clone();
     tokio::task::spawn_blocking(move || {
         let store = lr_context::ContentStore::new().map_err(|e| e.to_string())?;
         let index_result = store.index(&label, &content).map_err(|e| e.to_string())?;
 
-        let byte_size = content.len();
-        let preview_bytes = (response_threshold_bytes / 8).clamp(200, 500);
-        let preview = rag_truncate_to_char_boundary(&content, preview_bytes);
-        let compressed_preview = format!(
-            "[Response compressed — {} bytes indexed as {}]\n\n{}\n\n\
-             Full output indexed. Use IndexSearch(queries=[\"your search terms\"], source=\"{}\") to retrieve specific sections.",
-            byte_size, label, preview, label
+        let compressed_preview = lr_mcp::gateway::context_mode::compressed_response_text(
+            &content,
+            &index_result,
+            response_threshold_bytes,
+            lr_mcp::gateway::context_mode::ToolNames {
+                search: &cm.search_tool_name,
+                read: &cm.read_tool_name,
+            },
         );
 
         let sources = store.list_sources(None, None).map_err(|e| e.to_string())?;
@@ -2672,7 +2696,9 @@ pub async fn preview_rag_search(
         let store = guard
             .as_ref()
             .ok_or("No content indexed yet. Index a document first.")?;
-        let limit = limit.unwrap_or(5);
+        let limit = limit
+            .unwrap_or(lr_context::SEARCH_DEFAULT_LIMIT)
+            .clamp(1, lr_context::SEARCH_MAX_LIMIT);
         store
             .search_combined(
                 query.as_deref(),
@@ -5079,6 +5105,7 @@ pub async fn memory_test_search(query: String, top_k: Option<usize>) -> Result<S
     Ok(lr_context::format_search_results(
         &results,
         lr_context::SEARCH_OUTPUT_CAP,
+        "MemoryRead",
     ))
 }
 

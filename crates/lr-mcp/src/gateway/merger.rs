@@ -44,6 +44,8 @@ pub struct InstructionsContext {
     pub virtual_instructions: Vec<super::virtual_server::VirtualInstructions>,
     /// Configured search tool name (for search hints in instructions)
     pub search_tool_name: String,
+    /// Configured read tool name (for read hints in instructions)
+    pub read_tool_name: String,
     /// Byte size of each tool/resource/prompt definition as serialized JSON.
     /// Key is the namespaced name (e.g., "filesystem__read_file").
     pub item_definition_sizes: std::collections::HashMap<String, usize>,
@@ -58,8 +60,17 @@ impl Default for InstructionsContext {
             catalog_compression: None,
             virtual_instructions: Vec::new(),
             search_tool_name: "IndexSearch".to_string(),
+            read_tool_name: "IndexRead".to_string(),
             item_definition_sizes: std::collections::HashMap::new(),
         }
+    }
+}
+
+/// The configured search/read tool names, for index hints.
+fn tool_names(ctx: &InstructionsContext) -> lr_context::ToolNames<'_> {
+    lr_context::ToolNames {
+        search: &ctx.search_tool_name,
+        read: &ctx.read_tool_name,
     }
 }
 
@@ -1884,7 +1895,7 @@ pub fn compute_catalog_compression_plan(
         };
 
         let summary = index_result.summary();
-        let toc = index_result.toc(None);
+        let toc = index_result.toc_with(None, tool_names(ctx));
         let compressed_size = summary.len() + toc.len();
         let savings = welcome_size.saturating_sub(compressed_size);
 
@@ -1963,7 +1974,7 @@ pub fn compute_catalog_compression_plan(
                 let root = format!("mcp/{}/tool/", slug);
                 if let Ok(result) = store.batch_index(&root, &items_ref) {
                     let summary = result.summary();
-                    let toc = result.toc(Some(1));
+                    let toc = result.toc_with(Some(1), tool_names(ctx));
                     batch_output_size += summary.len() + toc.len();
                     batches.push(DeferredServerBatch {
                         batch_summary: summary,
@@ -1987,7 +1998,7 @@ pub fn compute_catalog_compression_plan(
                 let root = format!("mcp/{}/resource/", slug);
                 if let Ok(result) = store.batch_index(&root, &items_ref) {
                     let summary = result.summary();
-                    let toc = result.toc(Some(1));
+                    let toc = result.toc_with(Some(1), tool_names(ctx));
                     batch_output_size += summary.len() + toc.len();
                     batches.push(DeferredServerBatch {
                         batch_summary: summary,
@@ -2011,7 +2022,7 @@ pub fn compute_catalog_compression_plan(
                 let root = format!("mcp/{}/prompt/", slug);
                 if let Ok(result) = store.batch_index(&root, &items_ref) {
                     let summary = result.summary();
-                    let toc = result.toc(Some(1));
+                    let toc = result.toc_with(Some(1), tool_names(ctx));
                     batch_output_size += summary.len() + toc.len();
                     batches.push(DeferredServerBatch {
                         batch_summary: summary,

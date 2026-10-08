@@ -1119,8 +1119,8 @@ export interface SkillsConfig {
 }
 
 /**
- * Context management configuration.
- * Rust: crates/lr-config/src/types.rs - ContextManagementConfig struct
+ * Effective context management configuration (every field resolved).
+ * Rust: src-tauri/src/ui/commands.rs - ContextManagementConfigView struct
  */
 export interface ContextManagementConfig {
   catalog_compression: boolean
@@ -1322,6 +1322,10 @@ export interface RagReadResult {
   total_lines: number
   showing_start: string
   showing_end: string
+  /** Offset that continues where this read stopped; null at the end */
+  next_offset: string | null
+  /** Lines from next_offset to the end */
+  remaining_lines: number
 }
 
 /** Rust: crates/lr-context/src/types.rs - SourceInfo */

@@ -105,7 +105,7 @@ export function ContentStorePreview({
     try {
       const results = await invoke<RagSearchResult[]>("preview_rag_search", {
         query: searchQuery,
-        limit: 5,
+        limit: null,
       } satisfies PreviewRagSearchParams)
       setSearchResults(results)
     } catch (e) {
@@ -287,9 +287,8 @@ export function ContentStorePreview({
                           </div>
                         ))}
                         <p className="text-[10px] text-muted-foreground mt-2">
-                          Use IndexRead(source=&quot;
-                          {r.hits[0]?.source ?? sourceLabel}&quot;, offset, limit) for full
-                          context.
+                          Hits are ranked best-first. Read around a hit with IndexRead(label=&quot;
+                          {r.hits[0]?.source ?? sourceLabel}&quot;, offset=&quot;&lt;line&gt;&quot;).
                         </p>
                       </div>
                     ))}
@@ -359,6 +358,12 @@ export function ContentStorePreview({
                     Lines {readResult.showing_start}-{readResult.showing_end} of{" "}
                     {readResult.total_lines}
                   </span>
+                  {readResult.next_offset && (
+                    <span>
+                      {readResult.remaining_lines} more — continue with offset &quot;
+                      {readResult.next_offset}&quot;
+                    </span>
+                  )}
                 </div>
                 <div className="bg-muted/50 rounded-md p-3 max-h-[400px] overflow-y-auto">
                   <pre className="text-xs whitespace-pre-wrap font-mono leading-relaxed">

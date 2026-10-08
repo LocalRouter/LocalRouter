@@ -445,9 +445,17 @@ impl McpGateway {
             }
         };
         let Some((server_id, original_name)) = mapped else {
+            // A tool whose server failed to start is not "not found": say
+            // which server is down and why, so the model stops retrying.
+            let failures = session.read().await.last_broadcast_failures.clone();
+            let unavailable = self.build_unavailable_server_infos(&failures);
+            let error = match unavailable_server_error(&tool_name, &unavailable) {
+                Some(message) => JsonRpcError::new(crate::protocol::TOOL_NOT_FOUND, message, None),
+                None => JsonRpcError::tool_not_found(&tool_name),
+            };
             return Ok(JsonRpcResponse::error(
                 request.id.unwrap_or(Value::Null),
-                JsonRpcError::tool_not_found(&tool_name),
+                error,
             ));
         };
 
@@ -1302,7 +1310,7 @@ impl McpGateway {
         }
 
         // Check context management state and extract store in a single lock acquisition
-        let (threshold, run_id, store, search_tool_name) = {
+        let (threshold, run_id, store, search_tool_name, read_tool_name) = {
             let mut session_write = session.write().await;
             if let Some(state) = session_write.virtual_server_state.get_mut("_context_mode") {
                 if let Some(cm_state) = state
@@ -1343,6 +1351,7 @@ impl McpGateway {
                         run_id,
                         cm_state.store.clone(),
                         cm_state.search_tool_name.clone(),
+                        cm_state.read_tool_name.clone(),
                     )
                 } else {
                     return response;
@@ -1355,40 +1364,55 @@ impl McpGateway {
         let source = format!("{}:{}", tool_name, run_id);
         let byte_size = full_text.len();
 
-        // Index full content into native ContentStore.
-        // Use spawn_blocking since ContentStore uses parking_lot::Mutex.
+        // Index full content into native ContentStore and build the
+        // placeholder. Use spawn_blocking since ContentStore uses parking_lot::Mutex.
         let source_idx = source.clone();
         let full_text_for_index = full_text.clone();
-        let index_result = tokio::task::spawn_blocking(move || {
-            store
+        let indexed = tokio::task::spawn_blocking(move || {
+            let index = store
                 .index(&source_idx, &full_text_for_index)
-                .map(|_| ())
-                .map_err(|e| e.to_string())
+                .map_err(|e| e.to_string())?;
+            let text = super::context_mode::compressed_response_text(
+                &full_text_for_index,
+                &index,
+                threshold,
+                super::context_mode::ToolNames {
+                    search: &search_tool_name,
+                    read: &read_tool_name,
+                },
+            );
+            // A placeholder that is not smaller than the response saves
+            // nothing and costs the model a read: send the response as is.
+            if text.len() >= full_text_for_index.len() {
+                let _ = store.delete(&source_idx);
+                return Ok(None);
+            }
+            Ok(Some(text))
         })
         .await
         .unwrap_or_else(|e| Err(format!("Index task panicked: {}", e)));
 
-        if let Err(e) = index_result {
-            tracing::warn!(
-                "Failed to index response for {} ({}): {}",
-                tool_name,
-                source,
-                e
-            );
-            return response;
-        }
+        let compressed_text = match indexed {
+            Ok(Some(text)) => text,
+            Ok(None) => return response,
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to index response for {} ({}): {}",
+                    tool_name,
+                    source,
+                    e
+                );
+                return response;
+            }
+        };
 
-        // Build compressed response with preview
-        let preview_bytes = (threshold / 8).clamp(200, 500);
-        let preview = truncate_to_char_boundary(&full_text, preview_bytes);
-        let compressed_text = format!(
-            "[Response compressed — {} bytes indexed as {}]\n\n{}\n\nFull output indexed. \
-             Use {}(queries=[\"your search terms\"], source=\"{}\") to retrieve specific sections.",
-            byte_size, source, preview, search_tool_name, source
-        );
-
-        // Build new response with compressed content
+        // Build new response with compressed content. structuredContent
+        // carries the same payload, so it goes too (the gateway never lists an
+        // outputSchema, so clients do not require it).
         let mut new_result = result.clone();
+        if let Some(obj) = new_result.as_object_mut() {
+            obj.remove("structuredContent");
+        }
         if let Some(content) = new_result.get_mut("content").and_then(|c| c.as_array_mut()) {
             content.clear();
             content.push(json!({
@@ -1417,6 +1441,20 @@ impl McpGateway {
     }
 }
 
+/// Error text for a call to a tool whose server (by namespace prefix) is
+/// among the session's unavailable servers, or `None` if it is not.
+fn unavailable_server_error(
+    tool_name: &str,
+    unavailable: &[super::merger::UnavailableServerInfo],
+) -> Option<String> {
+    let slug = tool_name.split_once(NAMESPACE_SEPARATOR)?.0;
+    let server = unavailable.iter().find(|u| u.name == slug)?;
+    Some(format!(
+        "Tool not found: {} \u{2014} its MCP server \"{}\" is unavailable: {}",
+        tool_name, server.name, server.error
+    ))
+}
+
 /// Extract all text content from an MCP result value.
 fn extract_text_from_result(result: &Value) -> String {
     result
@@ -1429,18 +1467,6 @@ fn extract_text_from_result(result: &Value) -> String {
                 .join("\n")
         })
         .unwrap_or_default()
-}
-
-/// Truncate a string to at most `max_bytes` at a char boundary.
-fn truncate_to_char_boundary(s: &str, max_bytes: usize) -> &str {
-    if s.len() <= max_bytes {
-        return s;
-    }
-    let mut end = max_bytes;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
 }
 
 /// Extract the server slug (namespace prefix) from a namespaced name.
@@ -1589,4 +1615,27 @@ pub(crate) fn apply_catalog_compression_prompts(
     }
 
     result
+}
+
+#[cfg(test)]
+mod unavailable_server_tests {
+    use super::*;
+    use crate::gateway::merger::UnavailableServerInfo;
+
+    #[test]
+    fn names_the_unavailable_server_of_a_missing_tool() {
+        let down = vec![UnavailableServerInfo {
+            name: "atlassian-upwave".to_string(),
+            error: "OAuth token expired".to_string(),
+        }];
+        assert_eq!(
+            unavailable_server_error("atlassian-upwave__getJiraIssue", &down).as_deref(),
+            Some(
+                "Tool not found: atlassian-upwave__getJiraIssue \u{2014} its MCP server \
+                 \"atlassian-upwave\" is unavailable: OAuth token expired"
+            )
+        );
+        assert_eq!(unavailable_server_error("github__get_issue", &down), None);
+        assert_eq!(unavailable_server_error("no_namespace", &down), None);
+    }
 }

@@ -49,7 +49,10 @@ impl SkillsVirtualServer {
 #[derive(Clone)]
 pub struct SkillsSessionState {
     pub permissions: lr_config::SkillsPermissions,
-    pub context_management_enabled: bool,
+    /// Whether skill descriptions are in the session's catalog index
+    /// (`catalog:skills/*`). Only then may a long skill list be shortened to
+    /// names plus a search hint — the hint would otherwise find nothing.
+    pub catalog_indexed: bool,
     /// Configured tool name for the skill-read meta-tool.
     pub tool_name: String,
     /// Configured search tool name (e.g. "IndexSearch") for catalog hints.
@@ -205,7 +208,7 @@ impl VirtualMcpServer for SkillsVirtualServer {
         let catalog = lr_skills::mcp_tools::build_skill_catalog(
             &self.skill_manager,
             &state.permissions,
-            state.context_management_enabled,
+            state.catalog_indexed,
             &state.tool_name,
             &state.search_tool_name,
             state.path_style,
@@ -237,7 +240,7 @@ impl VirtualMcpServer for SkillsVirtualServer {
         let skills_config = self.skills_config.read().unwrap();
         Box::new(SkillsSessionState {
             permissions: client.skills_permissions.clone(),
-            context_management_enabled: client.is_context_management_enabled(&config),
+            catalog_indexed: client.is_catalog_compression_enabled(&config),
             tool_name: skills_config.tool_name.clone(),
             search_tool_name: config.search_tool_name.clone(),
             path_style: path_style_for(client),
@@ -253,7 +256,7 @@ impl VirtualMcpServer for SkillsVirtualServer {
         let skills_config = self.skills_config.read().unwrap();
         if let Some(s) = state.as_any_mut().downcast_mut::<SkillsSessionState>() {
             s.permissions = client.skills_permissions.clone();
-            s.context_management_enabled = client.is_context_management_enabled(&config);
+            s.catalog_indexed = client.is_catalog_compression_enabled(&config);
             s.tool_name = skills_config.tool_name.clone();
             s.search_tool_name = config.search_tool_name.clone();
             s.path_style = path_style_for(client);
@@ -268,5 +271,40 @@ impl VirtualMcpServer for SkillsVirtualServer {
     fn is_tool_indexable(&self, tool_name: &str) -> bool {
         let skills_config = self.skills_config.read().unwrap();
         tool_name == skills_config.tool_name
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn server(catalog_compression: bool) -> SkillsVirtualServer {
+        let config = lr_config::ContextManagementConfig {
+            catalog_compression,
+            ..Default::default()
+        };
+        SkillsVirtualServer::new(
+            Arc::new(SkillManager::new()),
+            config,
+            lr_config::SkillsConfig::default(),
+        )
+    }
+
+    fn catalog_indexed(vs: &SkillsVirtualServer) -> bool {
+        let client = lr_config::Client::new_with_strategy("c".to_string(), "s".to_string());
+        let state = vs.create_session_state(&client);
+        state
+            .as_any()
+            .downcast_ref::<SkillsSessionState>()
+            .unwrap()
+            .catalog_indexed
+    }
+
+    /// Response indexing is on by default; it must not shorten the skill
+    /// list into a `catalog:skills` search hint unless that source exists.
+    #[test]
+    fn skill_list_shortening_follows_catalog_indexing() {
+        assert!(!catalog_indexed(&server(false)));
+        assert!(catalog_indexed(&server(true)));
     }
 }
