@@ -4,7 +4,7 @@
 
 The `/mcp` path is also accepted as an alias (e.g., `POST /mcp`). Both the MCP gateway and OpenAI gateway share the same root — their endpoints do not conflict because MCP uses JSON-RPC while the OpenAI gateway uses REST paths.
 
-Session state is tracked via the `Mcp-Session-Id` header — if omitted on the first request, a new session is created and the ID is returned in the response header.
+Session state is tracked via the `Mcp-Session-Id` header: `initialize` without one starts a new session and returns its ID in the response header. Send it on later requests and when opening the `GET` notification stream. Each ID is its own session, so several instances of a client sharing one API key do not reset each other.
 
 <!-- @entry mcp-tool-namespacing -->
 
@@ -16,7 +16,7 @@ When calling a tool, use the namespaced name — the gateway strips the prefix t
 
 MCP sessions follow the protocol's lifecycle: `initialize` → `initialized` notification → operational requests → `close`. The `initialize` request negotiates protocol version and capabilities between the client and gateway. After `initialized`, the client can call `tools/list`, `tools/call`, `resources/list`, etc.
 
-Sessions persist across multiple HTTP requests using the `Mcp-Session-Id` header. Idle sessions are automatically cleaned up after a configurable timeout (default: 30 minutes).
+Sessions persist across multiple HTTP requests using the `Mcp-Session-Id` header. `DELETE /` with the header ends a session; idle sessions are cleaned up after one hour, and a later request with the same ID starts it afresh.
 
 <!-- @entry mcp-authentication -->
 

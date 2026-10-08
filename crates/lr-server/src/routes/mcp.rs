@@ -179,6 +179,14 @@ pub async fn mcp_gateway_get_handler(
     // each with its own gateway session and ContextMode process.
     let session_id = Uuid::new_v4().to_string();
 
+    // A Streamable HTTP client opens this stream with the Mcp-Session-Id it
+    // was issued; that gateway session's notifications come here.
+    let streamable_key = headers
+        .get(lr_mcp::gateway::types::MCP_SESSION_ID_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .filter(|id| lr_mcp::gateway::types::is_valid_session_id(id))
+        .map(|id| lr_mcp::gateway::types::streamable_session_key(&client_id, id));
+
     tracing::debug!(
         "Unified SSE connection established for client {} (session={}) with {} servers (skills support: {})",
         client_id,
@@ -298,6 +306,15 @@ pub async fn mcp_gateway_get_handler(
                                 &allowed_servers,
                             )
                             .or_else(|| {
+                                streamable_key.as_deref().and_then(|session_key| {
+                                    lr_mcp::gateway::types::notification_target(
+                                        &key,
+                                        session_key,
+                                        &allowed_servers,
+                                    )
+                                })
+                            })
+                            .or_else(|| {
                                 lr_mcp::gateway::types::notification_target(
                                     &key,
                                     &client_id,
@@ -357,6 +374,47 @@ pub async fn mcp_gateway_get_handler(
     Sse::new(sse_stream)
         .keep_alive(KeepAlive::default())
         .into_response()
+}
+
+/// End a Streamable HTTP session (`DELETE` with `Mcp-Session-Id`).
+#[utoipa::path(
+    delete,
+    path = "/",
+    tag = "mcp",
+    responses(
+        (status = 204, description = "Session ended"),
+        (status = 400, description = "Missing or invalid Mcp-Session-Id header", body = crate::types::ErrorResponse),
+        (status = 401, description = "Unauthorized", body = crate::types::ErrorResponse),
+        (status = 404, description = "No such session", body = crate::types::ErrorResponse)
+    ),
+    security(("bearer" = []))
+)]
+pub async fn mcp_gateway_delete_handler(
+    State(state): State<AppState>,
+    client_auth: Option<axum::Extension<ClientAuthContext>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let Some(ctx) = client_auth else {
+        return ApiErrorResponse::unauthorized("Missing authentication context").into_response();
+    };
+    let Some(id) = headers
+        .get(lr_mcp::gateway::types::MCP_SESSION_ID_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .filter(|id| lr_mcp::gateway::types::is_valid_session_id(id))
+    else {
+        return ApiErrorResponse::bad_request("Missing or invalid Mcp-Session-Id header")
+            .into_response();
+    };
+    let session_key = lr_mcp::gateway::types::streamable_session_key(&ctx.0.client_id, id);
+    match state.mcp_gateway.terminate_session(&session_key).await {
+        Ok(()) => axum::http::StatusCode::NO_CONTENT.into_response(),
+        Err(_) => ApiErrorResponse::new(
+            axum::http::StatusCode::NOT_FOUND,
+            "not_found_error",
+            "No such MCP session",
+        )
+        .into_response(),
+    }
 }
 
 /// MCP unified gateway handler
@@ -540,6 +598,41 @@ pub async fn mcp_gateway_handler(
                         serde_json::json!(lr_mcp::protocol::MCP_PROTOCOL_VERSION_STATELESS)
                     });
             }
+        }
+    }
+
+    // Streamable HTTP sessions: `initialize` without a session gets a fresh
+    // Mcp-Session-Id, and requests carrying one use that gateway session.
+    // Without it, every client instance sharing a token shared one session
+    // (keyed by client id), and one instance's initialize reset the others'
+    // activated tools. Legacy SSE (?sessionId) and stateless peers are
+    // unaffected.
+    let mut session_id = session_id;
+    let mut issued_session_id: Option<String> = None;
+    if session_id.is_none() && !stateless_transport {
+        let presented = headers
+            .get(lr_mcp::gateway::types::MCP_SESSION_ID_HEADER)
+            .and_then(|v| v.to_str().ok());
+        match presented {
+            Some(id) if !lr_mcp::gateway::types::is_valid_session_id(id) => {
+                return ApiErrorResponse::bad_request("Invalid Mcp-Session-Id header")
+                    .into_response();
+            }
+            Some(id) => {
+                session_id = Some(lr_mcp::gateway::types::streamable_session_key(
+                    &client_id, id,
+                ));
+            }
+            None if request.method == "initialize"
+                && !state.sse_connection_manager.has_connection(&connection_key) =>
+            {
+                let id = Uuid::new_v4().to_string();
+                session_id = Some(lr_mcp::gateway::types::streamable_session_key(
+                    &client_id, &id,
+                ));
+                issued_session_id = Some(id);
+            }
+            None => {}
         }
     }
 
@@ -1136,7 +1229,18 @@ pub async fn mcp_gateway_handler(
             .await
         {
             Ok(_) if is_notification => accepted_empty(),
-            Ok(response) => send_response(&state.sse_connection_manager, &connection_key, response),
+            Ok(response) => {
+                let mut http_response =
+                    send_response(&state.sse_connection_manager, &connection_key, response);
+                if let Some(id) = issued_session_id {
+                    if let Ok(value) = axum::http::HeaderValue::from_str(&id) {
+                        http_response
+                            .headers_mut()
+                            .insert(lr_mcp::gateway::types::MCP_SESSION_ID_HEADER, value);
+                    }
+                }
+                http_response
+            }
             Err(err) if is_notification => {
                 tracing::warn!(
                     "Gateway error on notification for client {}: {}",

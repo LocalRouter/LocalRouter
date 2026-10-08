@@ -99,10 +99,18 @@ Source: analysis of Claude Code (`~/.claude/projects`) and Codex
   referenced); the IndexSearch description listed `catalog:skills`/`mcp/`
   even when catalog indexing is off (now built from what the session indexes).
 
-### Follow-ups (not in this change)
+### Follow-ups
 
-- Streamable HTTP clients sharing one client token share one gateway session
-  (no `Mcp-Session-Id`), so one instance's `initialize` resets another's
-  activated tools.
+- Done (feat/mcp-session-id): Streamable HTTP `initialize` issues an
+  `Mcp-Session-Id`; requests and the GET notification stream carrying it use
+  their own gateway session (keyed `<client_id>#<id>`, so an id is useless
+  with another client's token), and `DELETE` ends it. Instances sharing a
+  token no longer reset each other's activated tools. Expired sessions are
+  recreated lazily under the same id rather than answered with 404.
 - Configs with a hand-set `response_threshold_bytes` (not a past default)
   keep it; v28 only resets values that were defaults.
+- Local, outside the repo: removed the stale `[mcp_servers.localrouter]`
+  entry from `~/.codex/config.toml` (401 since 09-27; the Codex client has
+  MCP off, which LocalRouter's own sync would also remove); upwave
+  `AGENTS.md` made client-agnostic (tool names without the client prefix,
+  client-neutral deferred-tool loading, stale cross-skill path note dropped).

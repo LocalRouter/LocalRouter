@@ -232,11 +232,15 @@ fn build_app(state: AppState, enable_cors: bool, shutdown: CancellationToken) ->
     let mcp_routes = Router::new()
         .route(
             "/",
-            get(routes::mcp_gateway_get_handler).post(routes::mcp_gateway_handler),
+            get(routes::mcp_gateway_get_handler)
+                .post(routes::mcp_gateway_handler)
+                .delete(routes::mcp_gateway_delete_handler),
         ) // Unified MCP gateway: GET for SSE/info, POST for JSON-RPC
         .route(
             "/mcp",
-            get(routes::mcp_gateway_get_handler).post(routes::mcp_gateway_handler),
+            get(routes::mcp_gateway_get_handler)
+                .post(routes::mcp_gateway_handler)
+                .delete(routes::mcp_gateway_delete_handler),
         ) // Alias: /mcp also serves unified gateway
         .route("/ws", get(routes::mcp_websocket_handler)) // WebSocket notifications
         .route("/mcp/ws", get(routes::mcp_websocket_handler)) // Alias: /mcp/ws

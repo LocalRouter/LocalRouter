@@ -57,6 +57,7 @@ use utoipa::OpenApi;
         // MCP endpoints
         crate::routes::mcp::mcp_gateway_get_handler,
         crate::routes::mcp::mcp_gateway_handler,
+        crate::routes::mcp::mcp_gateway_delete_handler,
         crate::routes::mcp::elicitation_response_handler,
 
         // OAuth endpoints
