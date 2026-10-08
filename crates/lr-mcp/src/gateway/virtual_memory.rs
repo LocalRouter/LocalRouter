@@ -17,7 +17,6 @@ use crate::protocol::McpTool;
 
 const DEFAULT_SEARCH_TOOL: &str = "MemorySearch";
 const DEFAULT_READ_TOOL: &str = "MemoryRead";
-const DEFAULT_SEARCH_LIMIT: usize = 3;
 
 /// Virtual MCP server for persistent conversation memory.
 pub struct MemoryVirtualServer {
@@ -86,6 +85,7 @@ impl VirtualMcpServer for MemoryVirtualServer {
             return Vec::new();
         }
 
+        let search_limit = self.default_search_limit();
         vec![
             // MemorySearch — like IndexSearch
             McpTool {
@@ -130,7 +130,11 @@ impl VirtualMcpServer for MemoryVirtualServer {
                         },
                         "limit": {
                             "type": "number",
-                            "description": "Max results per query (default: 3)"
+                            "description": format!(
+                                "Max results per query (default: {}, max: {})",
+                                search_limit,
+                                lr_context::SEARCH_MAX_LIMIT
+                            )
                         }
                     }
                 }),
@@ -156,7 +160,10 @@ impl VirtualMcpServer for MemoryVirtualServer {
                         },
                         "limit": {
                             "type": "number",
-                            "description": "Number of lines to return (default: 15)"
+                            "description": format!(
+                                "Number of lines to return (default: {}). Output stops at ~64KB and reports the offset to continue from.",
+                                lr_context::READ_DEFAULT_LIMIT
+                            )
                         }
                     },
                     "required": ["label"]
@@ -206,7 +213,7 @@ impl VirtualMcpServer for MemoryVirtualServer {
         if tool_name == read_tool_name || tool_name == DEFAULT_READ_TOOL {
             self.handle_memory_read(arguments, memory_folder)
         } else {
-            self.handle_memory_search(arguments, memory_folder)
+            self.handle_memory_search(arguments, memory_folder, &read_tool_name)
         }
     }
 
@@ -275,7 +282,21 @@ impl VirtualMcpServer for MemoryVirtualServer {
 
 impl MemoryVirtualServer {
     /// Handle MemorySearch tool call.
-    fn handle_memory_search(&self, arguments: Value, client_id: &str) -> VirtualToolCallResult {
+    /// Results per query when the caller gives no limit: the configured
+    /// "Search results limit", within the shared maximum.
+    fn default_search_limit(&self) -> usize {
+        self.memory_service
+            .config()
+            .search_top_k
+            .clamp(1, lr_context::SEARCH_MAX_LIMIT)
+    }
+
+    fn handle_memory_search(
+        &self,
+        arguments: Value,
+        client_id: &str,
+        read_tool_name: &str,
+    ) -> VirtualToolCallResult {
         let query = arguments
             .get("query")
             .and_then(|v| v.as_str())
@@ -296,8 +317,8 @@ impl MemoryVirtualServer {
         let limit = arguments
             .get("limit")
             .and_then(|v| v.as_u64())
-            .map(|n| n as usize)
-            .unwrap_or(DEFAULT_SEARCH_LIMIT);
+            .map(|n| (n as usize).clamp(1, lr_context::SEARCH_MAX_LIMIT))
+            .unwrap_or_else(|| self.default_search_limit());
 
         // Resolve optional date range filters
         let after = match arguments.get("after").and_then(|v| v.as_str()) {
@@ -344,8 +365,11 @@ impl MemoryVirtualServer {
 
         if has_hits {
             // Format using lr_context's Display (includes line numbers, source labels)
-            let formatted =
-                lr_context::format_search_results(&results, lr_context::SEARCH_OUTPUT_CAP);
+            let formatted = lr_context::format_search_results(
+                &results,
+                lr_context::SEARCH_OUTPUT_CAP,
+                read_tool_name,
+            );
             VirtualToolCallResult::Success(serde_json::json!({
                 "content": [{ "type": "text", "text": formatted }]
             }))

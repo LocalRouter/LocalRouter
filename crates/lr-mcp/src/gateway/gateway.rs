@@ -473,7 +473,7 @@ impl McpGateway {
     }
 
     /// Build `UnavailableServerInfo` list from server failures.
-    fn build_unavailable_server_infos(
+    pub(crate) fn build_unavailable_server_infos(
         &self,
         failures: &[ServerFailure],
     ) -> Vec<UnavailableServerInfo> {
@@ -2512,7 +2512,7 @@ impl McpGateway {
         // Catalog indexing and deferral run only when MCP Catalog Indexing
         // (catalog compression) is on; Tool Responses Indexing alone leaves
         // the catalog fully visible.
-        let (catalog_enabled, cm_catalog_threshold, cm_search_tool_name) = {
+        let (catalog_enabled, cm_catalog_threshold, cm_search_tool_name, cm_read_tool_name) = {
             let session_read = session.read().await;
             if let Some(state) = session_read.virtual_server_state.get("_context_mode") {
                 if let Some(cm_state) = state
@@ -2523,12 +2523,13 @@ impl McpGateway {
                         cm_state.catalog_compression_enabled,
                         cm_state.catalog_threshold_bytes,
                         cm_state.search_tool_name.clone(),
+                        cm_state.read_tool_name.clone(),
                     )
                 } else {
-                    (false, 0, "IndexSearch".to_string())
+                    (false, 0, "IndexSearch".to_string(), "IndexRead".to_string())
                 }
             } else {
-                (false, 0, "IndexSearch".to_string())
+                (false, 0, "IndexSearch".to_string(), "IndexRead".to_string())
             }
         };
 
@@ -2799,6 +2800,7 @@ impl McpGateway {
             catalog_compression: None,
             virtual_instructions,
             search_tool_name: cm_search_tool_name,
+            read_tool_name: cm_read_tool_name,
             item_definition_sizes,
         };
 
@@ -3316,7 +3318,7 @@ impl McpGateway {
 
         // Extract the Arc<ContentStore> under a brief async lock, then release it
         // before performing the blocking search.
-        let store = {
+        let (store, read_tool_name) = {
             let session = session_arc.read().await;
             let state = session
                 .virtual_server_state
@@ -3329,7 +3331,7 @@ impl McpGateway {
             if !cm.enabled {
                 return Err("Context management is not enabled for this session".to_string());
             }
-            cm.store.clone()
+            (cm.store.clone(), cm.read_tool_name.clone())
         };
 
         // Run the blocking FTS5 search off the async executor
@@ -3348,8 +3350,11 @@ impl McpGateway {
 
         match result {
             Ok(results) => {
-                let formatted =
-                    lr_context::format_search_results(&results, lr_context::SEARCH_OUTPUT_CAP);
+                let formatted = lr_context::format_search_results(
+                    &results,
+                    lr_context::SEARCH_OUTPUT_CAP,
+                    &read_tool_name,
+                );
                 Ok(serde_json::json!({
                     "content": [{
                         "type": "text",

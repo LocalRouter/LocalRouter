@@ -976,10 +976,12 @@ pub async fn resume_after_mixed(
                         .downcast_ref::<lr_mcp::gateway::context_mode::ContextModeSessionState>()
                         .map(|cm| {
                             (
-                                cm.enabled,
+                                // Catalog compression alone does not index responses
+                                cm.response_indexing_enabled,
                                 cm.store.clone(),
                                 cm.response_threshold_bytes,
                                 cm.search_tool_name.clone(),
+                                cm.read_tool_name.clone(),
                             )
                         })
                 })
@@ -989,7 +991,6 @@ pub async fn resume_after_mixed(
     };
 
     // Add tool results in the order of the original tool_calls
-    let mut client_tool_run_counter: u32 = 0;
     if let Some(ref tool_calls) = full_assistant_message.tool_calls {
         for tc in tool_calls {
             // Check if this is an MCP result
@@ -1012,7 +1013,7 @@ pub async fn resume_after_mixed(
             {
                 // Check if we should index this client tool result
                 let mut result_to_push = client_result.clone();
-                if let Some((cm_enabled, ref store, threshold, ref search_name)) =
+                if let Some((cm_enabled, ref store, threshold, ref search_name, ref read_name)) =
                     cm_state_for_indexing
                 {
                     if cm_enabled
@@ -1022,17 +1023,16 @@ pub async fn resume_after_mixed(
                         )
                     {
                         if let ChatMessageContent::Text(ref text) = client_result.content {
-                            // Use a stable incrementing counter keyed by tool name
-                            client_tool_run_counter += 1;
-                            let run_id = client_tool_run_counter;
                             if let Some(compressed) =
                                 lr_mcp::gateway::context_mode::compress_client_tool_response(
                                     store,
                                     &tc.function.name,
-                                    run_id,
                                     text,
                                     threshold,
-                                    search_name,
+                                    lr_mcp::gateway::context_mode::ToolNames {
+                                        search: search_name,
+                                        read: read_name,
+                                    },
                                 )
                             {
                                 result_to_push = ChatMessage {

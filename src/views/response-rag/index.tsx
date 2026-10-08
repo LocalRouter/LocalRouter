@@ -31,7 +31,7 @@ import type {
 } from "@/types/tauri-commands"
 
 // Must match defaults in crates/lr-config/src/types.rs
-const DEFAULT_RESPONSE_THRESHOLD_BYTES = 200
+const DEFAULT_RESPONSE_THRESHOLD_BYTES = 16384
 
 const SAMPLE_DOCUMENT = `# API Reference - Authentication Service
 

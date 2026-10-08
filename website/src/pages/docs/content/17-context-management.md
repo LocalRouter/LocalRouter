@@ -1,80 +1,98 @@
 <!-- @entry context-management-overview -->
 
-Context Management is an intelligent compression and search system that reduces the context window footprint of MCP tool catalogs by up to 98%. Instead of loading every tool, resource, and prompt description into the AI's context at session start, Context Management progressively compresses the catalog and provides a full-text search index for on-demand discovery.
+Context Management keeps MCP traffic from flooding the AI's context window. It does two independent jobs:
 
-When enabled, the gateway spawns a per-session `context-mode` process backed by an FTS5 (SQLite full-text search) database. All original tool descriptions, resource templates, and prompt definitions are indexed into this database. The AI receives a single `ctx_search` tool instead of hundreds of individual tool schemas.
+- **Tool Responses Indexing** — a tool response larger than the response threshold is indexed and replaced with a preview plus the exact calls that read or search the rest.
+- **MCP Catalog Indexing** (catalog compression) — when the combined tool, resource, and prompt catalog is larger than the catalog threshold, server instructions and tool definitions are indexed and deferred behind search.
+
+Both are backed by a per-session, in-memory SQLite FTS5 index (with optional hybrid vector search). The AI gets two tools to use it: `IndexSearch` and `IndexRead` (names are configurable).
 
 **Key benefits:**
 
-- Reduces initial context consumption from tens of thousands of tokens to under 1,000
-- No information loss — all capabilities remain searchable and activatable
-- Automatic progressive compression tuned to configurable thresholds
+- Large tool responses no longer consume the context window, yet nothing is lost
+- Small and medium responses (up to 16 KB by default) pass through untouched
+- Large catalogs shrink to summaries; deferred tools are activated on demand
 - Per-client enable/disable with global defaults
 
 <!-- @entry catalog-compression -->
 
-Catalog compression runs automatically during MCP session initialization. It operates in three progressive phases, applying each phase in order until the total catalog size falls below the configured threshold (default: 8,192 bytes).
+Catalog compression runs during MCP session initialization when MCP Catalog Indexing is on. It applies progressive phases, in order, until the estimated catalog size falls below the catalog threshold (default: 1,000 bytes).
 
 <!-- @entry compression-phase-1 -->
 
-### Phase 1: Description Compression
+### Phase 1: Index Server Instructions
 
-Each tool, resource, and prompt description is individually compressed using an extractive summarizer. The original full descriptions are indexed into the FTS5 database with search hints, then replaced with one-line summaries in the catalog.
+The largest server instructions (welcome messages) are indexed under `mcp/<server>` and replaced in the gateway instructions by a one-line summary and a table of contents with line references:
 
-For example, a tool with a 500-token description like:
-
-> `filesystem__read_file` — Reads the contents of a file at the specified path. Supports text and binary files. Returns the file content as a string. Can optionally specify encoding...
-
-Becomes:
-
-> `filesystem__read_file` — Read file contents. *Search: file read content path encoding*
+> Indexed "mcp/github" — 45 lines, 2.1KB, 8 chunks
+>
+> \## Contents
+> \- [L5] Issues
+> \- [L12] Pull Requests
 
 <!-- @entry compression-phase-2 -->
 
-### Phase 2: Server Deferral
+### Phase 2: Defer Tool Definitions
 
-If Phase 1 doesn't bring the catalog under the threshold, entire MCP servers are deferred. Tools from deferred servers are removed from the `tools/list` response entirely. When the client supports `tools/listChanged` notifications, deferred tools can be transparently re-activated when discovered via search.
-
-Servers are deferred in order of least to most frequently used (based on session history), preserving the most relevant tools.
+If that is not enough, tool definitions are indexed under `mcp/<server>/tool/<name>` and removed from `tools/list`, starting with the servers whose definitions save the most. A deferred tool stays callable; searching or reading its catalog entry activates it, and the gateway sends `notifications/tools/list_changed` so the client lists it again.
 
 <!-- @entry compression-phase-3 -->
 
-### Phase 3: List Truncation
+### Phase 3: Drop Tables of Contents
 
-As a final measure, remaining tool/resource/prompt lists are truncated to just item counts with search directions. For example:
-
-> *5 MCP servers with 42 tools available. Use `ctx_search` to discover and activate tools by keyword.*
-
-This achieves maximum compression while still informing the AI about the scope of available capabilities.
+As a final measure, the tables of contents are dropped, leaving one summary line per indexed server and per deferred batch, each telling the AI which `source` to search.
 
 <!-- @entry search-based-activation -->
 
-The gateway exposes a `ctx_search` tool that queries the FTS5 full-text index. When the AI needs a capability, it searches by keyword:
+`IndexSearch` queries the index. Pass every question in one call:
 
 ```json
 {
-  "tool": "ctx_search",
+  "tool": "IndexSearch",
   "arguments": {
-    "queries": ["create github issue", "file management"]
+    "queries": ["create github issue", "file management"],
+    "source": "mcp/"
   }
 }
 ```
 
-The search returns matching tools, resources, and prompts with their full descriptions. Any deferred tools found in the search results are automatically activated — the gateway sends a `tools/listChanged` notification, and the newly available tools appear in the next `tools/list` response.
+- Hits are ranked best-first, show line numbers, and come with up to ~3,000 characters of context each. A chunk already shown for an earlier query is referenced instead of repeated.
+- `limit` sets hits per query (default 5, max 20).
+- `source` keeps only sources whose label starts with it — `mcp/` for the catalog, `mcp/github` for one server, `jira__getIssue:` for one tool's responses. A `source` that matches nothing returns an error listing the indexed labels.
+- Deferred tools, resources, and prompts found by a search are activated, and the gateway notifies the client with `notifications/tools/list_changed`.
 
-Each search result includes a source label (e.g., `catalog:github__create_issue`) for traceability, and the response summary tells the AI exactly which tools were activated.
+`IndexRead` returns a source by label as numbered lines — 200 lines by default, up to ~64 KB per call. When it stops early it ends with the offset to continue from:
+
+```
+[173 more lines — continue with offset="61"]
+```
+
+Lines longer than 2,000 characters are split into parts labelled `N-M` (part M of line N); `limit` counts whole lines.
 
 <!-- @entry response-compression -->
 
-Beyond catalog compression, Context Management also compresses large tool call responses. When a tool response exceeds the response threshold (default: 4,096 bytes), the full output is indexed into the FTS5 database with a unique label (e.g., `filesystem__read_file:3` for the third invocation), and the response is truncated with a search hint:
+When a tool response exceeds the response threshold (default: 16,384 bytes), the full output is indexed under a unique label — the tool name and a run number, e.g. `filesystem__read_file:3` — and the response is replaced with:
 
-> *[Content truncated — 12,400 bytes indexed as `filesystem__read_file:3`. Use `ctx_search` with relevant keywords to retrieve specific sections.]*
+```
+[Response compressed — 34176 bytes, 233 lines, indexed as "filesystem__read_file:3"]
 
-This prevents a single large tool response from consuming the AI's entire context window while keeping the full content searchable.
+<first ~2 KB of the response>
+[… preview ends at line 41 of 233]
+
+## Contents
+- [L1] Overview
+- [L42] Endpoints
+
+Read all of it: IndexRead(label="filesystem__read_file:3", limit=233)
+Read a range:   IndexRead(label="filesystem__read_file:3", offset="<line>", limit=<lines>)
+Search it:      IndexSearch(queries=["<terms>"], source="filesystem__read_file:3")
+```
+
+A response is left unchanged when the placeholder would not be smaller than the response itself. Run numbers are never reused while LocalRouter runs, so a label always names the same content.
 
 <!-- @entry context-management-config -->
 
-Context Management is configured globally and can be overridden per client.
+Context Management is configured globally and can be overridden per client. Settings left at their defaults are not written to the config file, so improved defaults reach you automatically.
 
 <!-- @entry context-thresholds -->
 
@@ -84,10 +102,10 @@ Two thresholds control compression behavior:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `catalog_threshold_bytes` | 8,192 | Maximum total size of all tool/resource/prompt descriptions after compression |
-| `response_threshold_bytes` | 4,096 | Maximum individual tool response size before indexing and truncation |
+| `catalog_threshold_bytes` | 1,000 | Catalog size above which MCP Catalog Indexing starts compressing |
+| `response_threshold_bytes` | 16,384 | Tool response size above which the response is indexed and replaced with a preview |
 
-Lower thresholds produce more aggressive compression. A `catalog_threshold_bytes` of 2,048 is suitable for models with very small context windows.
+The preview shown in a compressed response is an eighth of the response threshold, between 256 bytes and 2 KB. Raise the response threshold to compress fewer responses; lower it for models with small context windows.
 
 <!-- @entry context-per-client -->
 

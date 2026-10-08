@@ -165,6 +165,11 @@ pub fn migrate_config(mut config: AppConfig) -> AppResult<AppConfig> {
         config = migrate_to_v27(config)?;
     }
 
+    // Migrate to v28: Drop context management values that are (or were) defaults
+    if config.version < 28 {
+        config = migrate_to_v28(config)?;
+    }
+
     // Update version to current
     config.version = CONFIG_VERSION;
 
@@ -917,6 +922,34 @@ fn migrate_to_v27(mut config: AppConfig) -> AppResult<AppConfig> {
     Ok(config)
 }
 
+/// Migrate to version 28: context management values that equal a current or
+/// earlier default are reset to the current default.
+///
+/// The whole section used to be written out, so every config carries the
+/// defaults it was created with. Resetting them lets the new defaults apply
+/// (response threshold 200 B → 16 KB), and fields at their default are no
+/// longer written, so the section empties out on the next save. Values a
+/// user chose themselves are kept.
+fn migrate_to_v28(mut config: AppConfig) -> AppResult<AppConfig> {
+    info!("Migrating to version 28: reset context management values that are defaults");
+
+    /// Response threshold defaults before v28: 4096 (initial), 200.
+    const PAST_RESPONSE_THRESHOLD_DEFAULTS: [usize; 2] = [4096, 200];
+    /// Catalog threshold defaults before v28: 8192 (initial).
+    const PAST_CATALOG_THRESHOLD_DEFAULTS: [usize; 1] = [8192];
+
+    let cm = &mut config.context_management;
+    if PAST_RESPONSE_THRESHOLD_DEFAULTS.contains(&cm.response_threshold_bytes) {
+        cm.response_threshold_bytes = super::types::default_response_threshold_bytes();
+    }
+    if PAST_CATALOG_THRESHOLD_DEFAULTS.contains(&cm.catalog_threshold_bytes) {
+        cm.catalog_threshold_bytes = super::types::default_catalog_threshold_bytes();
+    }
+
+    config.version = 28;
+    Ok(config)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1077,6 +1110,57 @@ mod tests {
         assert_eq!(
             migrated.clients[0].mcp_elicitation_permission,
             PermissionState::Ask
+        );
+    }
+
+    #[test]
+    fn test_migrate_to_v28_resets_past_default_thresholds() {
+        for (response, catalog) in [(200, 1000), (4096, 8192)] {
+            let mut config = AppConfig {
+                version: 27,
+                ..Default::default()
+            };
+            config.context_management.response_threshold_bytes = response;
+            config.context_management.catalog_threshold_bytes = catalog;
+            let migrated = migrate_config(config).unwrap();
+            assert_eq!(migrated.version, CONFIG_VERSION);
+            assert_eq!(
+                migrated.context_management.response_threshold_bytes,
+                16 * 1024
+            );
+            assert_eq!(migrated.context_management.catalog_threshold_bytes, 1000);
+            // Everything is now a default, so nothing is written
+            assert!(migrated.context_management.is_default());
+            let yaml = serde_yaml::to_string(&migrated).unwrap();
+            assert!(!yaml.contains("context_management"), "{yaml}");
+        }
+    }
+
+    #[test]
+    fn test_migrate_to_v28_keeps_chosen_values() {
+        let mut config = AppConfig {
+            version: 27,
+            ..Default::default()
+        };
+        config.context_management.response_threshold_bytes = 1000;
+        config.context_management.catalog_compression = false;
+        let migrated = migrate_config(config).unwrap();
+        let cm = &migrated.context_management;
+        assert_eq!(cm.response_threshold_bytes, 1000);
+        assert!(!cm.catalog_compression);
+
+        // Only the non-default fields are written
+        let yaml = serde_yaml::to_string(&migrated).unwrap();
+        let section = yaml.split("context_management:").nth(1).unwrap();
+        let section: String = section
+            .lines()
+            .skip(1)
+            .take_while(|l| l.starts_with("  "))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(
+            section,
+            "  catalog_compression: false\n  response_threshold_bytes: 1000"
         );
     }
 }

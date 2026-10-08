@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use uuid::Uuid;
 
-pub(crate) const CONFIG_VERSION: u32 = 27;
+pub(crate) const CONFIG_VERSION: u32 = 28;
 
 /// Keyring service name for provider API keys
 pub const PROVIDER_KEYRING_SERVICE: &str = "LocalRouter-Providers";
@@ -549,7 +549,7 @@ pub struct AppConfig {
     pub coding_agents: CodingAgentsConfig,
 
     /// Context management configuration (context-mode integration)
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "ContextManagementConfig::is_default")]
     pub context_management: ContextManagementConfig,
 
     /// Prompt compression configuration (LLMLingua-2 integration)
@@ -2077,6 +2077,11 @@ pub enum IndexingState {
 }
 
 impl IndexingState {
+    /// Whether this is the default state (Enable).
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
     pub fn is_enabled(&self) -> bool {
         matches!(self, IndexingState::Enable)
     }
@@ -2100,6 +2105,11 @@ pub struct GatewayIndexingPermissions {
 }
 
 impl GatewayIndexingPermissions {
+    /// Whether these are the default permissions (global Enable, no overrides).
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
     /// Resolve the indexing state for a specific tool.
     /// Checks: tool override → server override → global default.
     pub fn resolve_tool(&self, server_slug: &str, tool_name: &str) -> &IndexingState {
@@ -2194,44 +2204,68 @@ fn default_read_tool_name() -> String {
 /// When enabled, uses a per-session native ContentStore for FTS5 search,
 /// content indexing, and progressive catalog compression to reduce
 /// context window consumption.
+///
+/// Fields equal to their default are not written to the config file, so a
+/// later change of a default reaches every user who never changed it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ContextManagementConfig {
     /// Enable catalog compression (defer tools/resources/prompts behind ctx_search)
-    #[serde(default = "default_true")]
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub catalog_compression: bool,
 
     /// Progressive catalog compression kicks in above this byte threshold
-    #[serde(default = "default_catalog_threshold_bytes")]
+    #[serde(
+        default = "default_catalog_threshold_bytes",
+        skip_serializing_if = "is_default_catalog_threshold_bytes"
+    )]
     pub catalog_threshold_bytes: usize,
 
     /// Compress individual tool/resource/prompt responses above this byte threshold
-    #[serde(default = "default_response_threshold_bytes")]
+    #[serde(
+        default = "default_response_threshold_bytes",
+        skip_serializing_if = "is_default_response_threshold_bytes"
+    )]
     pub response_threshold_bytes: usize,
 
     /// Unified MCP Gateway indexing permissions (GLOBAL only)
-    #[serde(default)]
+    #[serde(
+        default,
+        skip_serializing_if = "GatewayIndexingPermissions::is_default"
+    )]
     pub gateway_indexing: GatewayIndexingPermissions,
 
     /// Built-in virtual MCP server indexing permissions
-    #[serde(default)]
+    #[serde(
+        default,
+        skip_serializing_if = "GatewayIndexingPermissions::is_default"
+    )]
     pub virtual_indexing: GatewayIndexingPermissions,
 
     /// Default On/Off for client tool indexing (all clients)
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "IndexingState::is_default")]
     pub client_tools_indexing_default: IndexingState,
 
     /// Search tool name (default: "IndexSearch")
-    #[serde(default = "default_search_tool_name")]
+    #[serde(
+        default = "default_search_tool_name",
+        skip_serializing_if = "is_default_search_tool_name"
+    )]
     pub search_tool_name: String,
 
     /// Read tool name (default: "IndexRead")
-    #[serde(default = "default_read_tool_name")]
+    #[serde(
+        default = "default_read_tool_name",
+        skip_serializing_if = "is_default_read_tool_name"
+    )]
     pub read_tool_name: String,
 
     /// Enable semantic vector search (hybrid FTS5 + embeddings) globally.
     /// When true and the embedding model is downloaded, all ContentStore instances
     /// (session + memory) use both keyword (FTS5) and vector (cosine similarity) matching.
-    #[serde(default = "default_vector_search_enabled")]
+    #[serde(
+        default = "default_vector_search_enabled",
+        skip_serializing_if = "is_default_vector_search_enabled"
+    )]
     pub vector_search_enabled: bool,
 }
 
@@ -2244,6 +2278,11 @@ pub struct ContextManagementOverrides {
 }
 
 impl ContextManagementConfig {
+    /// Whether every field holds its default (the section is then omitted).
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
     /// Context management is implicitly enabled when any indexing is configured.
     pub fn is_enabled(&self) -> bool {
         self.gateway_indexing.has_any_enabled()
@@ -2268,12 +2307,38 @@ impl Default for ContextManagementConfig {
     }
 }
 
-fn default_catalog_threshold_bytes() -> usize {
+pub fn default_catalog_threshold_bytes() -> usize {
     1000
 }
 
-fn default_response_threshold_bytes() -> usize {
-    200
+/// Responses up to 16 KB (~4K tokens) reach the model whole; compressing
+/// smaller ones only made models read them straight back.
+pub fn default_response_threshold_bytes() -> usize {
+    16 * 1024
+}
+
+fn is_true(v: &bool) -> bool {
+    *v
+}
+
+fn is_default_catalog_threshold_bytes(v: &usize) -> bool {
+    *v == default_catalog_threshold_bytes()
+}
+
+fn is_default_response_threshold_bytes(v: &usize) -> bool {
+    *v == default_response_threshold_bytes()
+}
+
+fn is_default_search_tool_name(v: &str) -> bool {
+    v == default_search_tool_name()
+}
+
+fn is_default_read_tool_name(v: &str) -> bool {
+    v == default_read_tool_name()
+}
+
+fn is_default_vector_search_enabled(v: &bool) -> bool {
+    *v == default_vector_search_enabled()
 }
 
 /// Configuration for a single coding agent.

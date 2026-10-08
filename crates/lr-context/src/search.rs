@@ -3,13 +3,13 @@ use rusqlite::{params, Connection};
 use crate::fuzzy;
 use crate::types::{ContentType, DateRange, MatchLayer, SearchHit, SearchResult};
 
-const SNIPPET_WINDOW: usize = 300; // chars radius per match
-pub(crate) const SNIPPET_MAX_LEN: usize = 1500; // default per-hit max
-pub(crate) const SNIPPET_BATCH_MAX_LEN: usize = 3000; // batch mode
-const SNIPPET_LINE_MAX_CHARS: usize = 200; // max chars per line in snippet
+const SNIPPET_WINDOW: usize = 600; // max chars radius per match
+pub(crate) const SNIPPET_MAX_LEN: usize = 3000; // default per-hit max
+pub(crate) const SNIPPET_BATCH_MAX_LEN: usize = 6000; // batch mode
+const SNIPPET_LINE_MAX_CHARS: usize = 500; // max chars per line in snippet
 
 /// Escape SQL LIKE metacharacters (`%`, `_`, `\`) so they match literally.
-fn escape_like(s: &str) -> String {
+pub(crate) fn escape_like(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('%', "\\%")
         .replace('_', "\\_")
@@ -314,12 +314,14 @@ fn extract_multi_snippet(
             .saturating_sub(1)
     };
 
-    // Create char-based windows around each match
+    // Create char-based windows around each match; small budgets get
+    // proportionally smaller windows so one window fits in `max_len`.
+    let radius = (max_len / 5).clamp(1, SNIPPET_WINDOW);
     let mut windows: Vec<(usize, usize)> = match_positions
         .iter()
         .map(|&pos| {
-            let start = pos.saturating_sub(SNIPPET_WINDOW);
-            let end = (pos + SNIPPET_WINDOW).min(content_len);
+            let start = pos.saturating_sub(radius);
+            let end = (pos + radius).min(content_len);
             (start, end)
         })
         .collect();
@@ -415,7 +417,7 @@ fn extract_multi_snippet(
 }
 
 /// Format the first N lines of content with line numbers (fallback when no matches).
-fn format_first_n_lines(content: &str, line_start: usize, max_len: usize) -> String {
+pub(crate) fn format_first_n_lines(content: &str, line_start: usize, max_len: usize) -> String {
     let mut output = String::new();
     let lines: Vec<&str> = content.lines().collect();
     let total = lines.len();
@@ -762,7 +764,7 @@ mod tests {
 
     #[test]
     fn search_display_long_line_truncated() {
-        let long_line = "x".repeat(500);
+        let long_line = "x".repeat(SNIPPET_LINE_MAX_CHARS + 100);
         let content = format!("short\n{}\nshort", long_line);
         let highlighted = format!("short\n\x02{}\x03\nshort", long_line);
         let result = extract_multi_snippet(&highlighted, &content, 1, SNIPPET_MAX_LEN);
