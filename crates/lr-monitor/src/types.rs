@@ -112,6 +112,9 @@ pub enum MonitorEventType {
     RateLimitEvent,
     ValidationError,
     McpServerEvent,
+    // snake_case would spell this `o_auth_event`; the UI and filters use
+    // `oauth_event`, and the old spelling is still accepted.
+    #[serde(rename = "oauth_event", alias = "o_auth_event")]
     OAuthEvent,
     InternalError,
     ModerationEvent,
@@ -523,6 +526,7 @@ pub enum MonitorEventData {
     },
 
     // ---- OAuth ----
+    #[serde(rename = "oauth_event", alias = "o_auth_event")]
     OAuthEvent {
         /// "secret_retrieval_failed", "browser_token_failed", "credential_validation_failed",
         /// "token_generation_failed", "rate_limited"
@@ -783,4 +787,56 @@ pub struct MonitorStats {
     /// exceeds this, independently of `max_capacity`.
     pub max_bytes: usize,
     pub events_by_type: std::collections::HashMap<MonitorEventType, usize>,
+}
+
+#[cfg(test)]
+mod wire_name_tests {
+    use super::*;
+
+    /// The `MonitorEventType` names the frontend sends (its TypeScript union).
+    fn frontend_event_types() -> Vec<String> {
+        let ts = include_str!("../../../src/types/tauri-commands.ts");
+        let start = ts
+            .find("export type MonitorEventType =")
+            .expect("MonitorEventType union in tauri-commands.ts");
+        let union = &ts[start..];
+        let union = &union[..union.find("\n\n").unwrap_or(union.len())];
+        union
+            .split('\'')
+            .skip(1)
+            .step_by(2)
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Every event type the frontend can filter on deserializes and keeps
+    /// its name, so a filter is never rejected for naming a type.
+    #[test]
+    fn frontend_event_type_names_round_trip() {
+        let names = frontend_event_types();
+        assert!(names.len() > 20, "parsed {names:?}");
+        for name in names {
+            let parsed: MonitorEventType = serde_json::from_value(serde_json::json!(name))
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(
+                serde_json::to_value(parsed).unwrap(),
+                serde_json::json!(name)
+            );
+        }
+    }
+
+    #[test]
+    fn oauth_event_accepts_the_old_spelling() {
+        let parsed: MonitorEventType =
+            serde_json::from_value(serde_json::json!("o_auth_event")).unwrap();
+        assert_eq!(parsed, MonitorEventType::OAuthEvent);
+
+        let data = MonitorEventData::OAuthEvent {
+            action: "rate_limited".into(),
+            client_id_hint: None,
+            message: "slow down".into(),
+            status_code: 429,
+        };
+        assert_eq!(serde_json::to_value(&data).unwrap()["type"], "oauth_event");
+    }
 }
