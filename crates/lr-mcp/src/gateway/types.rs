@@ -570,6 +570,23 @@ pub struct MergedCapabilities {
     pub instructions: Option<String>,
 }
 
+/// Header carrying a Streamable HTTP session id (issued on `initialize`).
+pub const MCP_SESSION_ID_HEADER: &str = "mcp-session-id";
+
+/// Gateway session key for a Streamable HTTP session id. Scoped by client:
+/// an id presented with another client's token names a different session.
+pub fn streamable_session_key(client_id: &str, session_id: &str) -> String {
+    format!("{client_id}#{session_id}")
+}
+
+/// Whether a client-presented session id is usable: 1–128 visible ASCII
+/// chars (the Streamable HTTP rule).
+pub fn is_valid_session_id(session_id: &str) -> bool {
+    !session_id.is_empty()
+        && session_id.len() <= 128
+        && session_id.bytes().all(|b| (0x21..=0x7e).contains(&b))
+}
+
 const SESSION_KEY_PREFIX: &str = "_session:";
 /// Separates session key and server id inside a session notification key
 /// (ASCII unit separator: never part of an id).

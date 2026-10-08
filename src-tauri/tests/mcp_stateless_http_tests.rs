@@ -354,9 +354,17 @@ async fn test_list_changed_reaches_streamable_http_client() {
         .await
         .unwrap();
     assert_eq!(init.status(), 200);
+    let session_id = init
+        .headers()
+        .get("mcp-session-id")
+        .expect("initialize issues a session id")
+        .to_str()
+        .unwrap()
+        .to_string();
     let initialized = client
         .post(&base_url)
         .bearer_auth(&secret)
+        .header("Mcp-Session-Id", &session_id)
         .json(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
         .send()
         .await
@@ -367,6 +375,7 @@ async fn test_list_changed_reaches_streamable_http_client() {
         .get(&base_url)
         .bearer_auth(&secret)
         .header("Accept", "text/event-stream")
+        .header("Mcp-Session-Id", &session_id)
         .send()
         .await
         .unwrap();
@@ -392,19 +401,122 @@ async fn test_list_changed_reaches_streamable_http_client() {
     // The stream is registered once its first event arrives
     read_until(&mut stream, &mut seen, "event: endpoint").await;
 
-    // What the gateway broadcasts when IndexSearch activates a deferred tool
-    let client_id = "internal-test";
-    state
-        .mcp_notification_broadcast
-        .send((
-            localrouter::mcp::gateway::types::session_notification_key(client_id),
-            localrouter::mcp::protocol::JsonRpcNotification::new(
-                "notifications/tools/list_changed".to_string(),
-                None,
-            ),
-        ))
+    // What the gateway broadcasts when IndexSearch activates a deferred
+    // tool: keyed by the gateway session, which is this client's session id.
+    // Another session's notification must not arrive here.
+    use localrouter::mcp::gateway::types::{session_notification_key, streamable_session_key};
+    let notify = |session_key: &str, which: &str| {
+        state
+            .mcp_notification_broadcast
+            .send((
+                session_notification_key(session_key),
+                localrouter::mcp::protocol::JsonRpcNotification::new(
+                    "notifications/tools/list_changed".to_string(),
+                    Some(json!({"which": which})),
+                ),
+            ))
+            .unwrap();
+    };
+    notify(
+        &streamable_session_key("internal-test", "other-instance"),
+        "other",
+    );
+    notify(
+        &streamable_session_key("internal-test", &session_id),
+        "mine",
+    );
+    read_until(&mut stream, &mut seen, "\"mine\"").await;
+    assert!(seen.contains("notifications/tools/list_changed"));
+    assert!(!seen.contains("\"other\""), "{seen}");
+}
+
+async fn initialize_session(client: &reqwest::Client, base_url: &str, secret: &str) -> String {
+    let response = client
+        .post(base_url)
+        .bearer_auth(secret)
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 0,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "claude-code", "version": "2.1"}
+            }
+        }))
+        .send()
+        .await
         .unwrap();
-    read_until(&mut stream, &mut seen, "notifications/tools/list_changed").await;
+    assert_eq!(response.status(), 200);
+    response
+        .headers()
+        .get("mcp-session-id")
+        .expect("initialize issues a session id")
+        .to_str()
+        .unwrap()
+        .to_string()
+}
+
+/// Two instances of a client sharing one token get separate gateway
+/// sessions: one's initialize must not reset the other's (activated tools,
+/// indexed responses). DELETE ends a session.
+#[tokio::test]
+async fn test_streamable_sessions_are_isolated_and_deletable() {
+    use localrouter::mcp::gateway::types::streamable_session_key;
+
+    let (base_url, secret, state) = start_test_server_with_state().await;
+    let client = reqwest::Client::new();
+    let gateway = &state.mcp_gateway;
+
+    let a = initialize_session(&client, &base_url, &secret).await;
+    let b = initialize_session(&client, &base_url, &secret).await;
+    assert_ne!(a, b);
+    let key_a = streamable_session_key("internal-test", &a);
+    let key_b = streamable_session_key("internal-test", &b);
+    assert!(
+        gateway.get_session(&key_a).is_some(),
+        "A survives B's initialize"
+    );
+    assert!(gateway.get_session(&key_b).is_some());
+
+    // Requests carrying the id use that session
+    let list = client
+        .post(&base_url)
+        .bearer_auth(&secret)
+        .header("Mcp-Session-Id", &a)
+        .json(&json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(list.status(), 200);
+    assert!(
+        list.headers().get("mcp-session-id").is_none(),
+        "only initialize issues ids"
+    );
+
+    let delete = |id: Option<&str>| {
+        let mut request = client.delete(&base_url).bearer_auth(&secret);
+        if let Some(id) = id {
+            request = request.header("Mcp-Session-Id", id);
+        }
+        request.send()
+    };
+    assert_eq!(delete(Some(&a)).await.unwrap().status(), 204);
+    assert!(gateway.get_session(&key_a).is_none());
+    assert!(gateway.get_session(&key_b).is_some());
+    assert_eq!(delete(Some(&a)).await.unwrap().status(), 404);
+    assert_eq!(delete(None).await.unwrap().status(), 400);
+
+    // An id that is not visible ASCII is rejected
+    let bad = client
+        .post(&base_url)
+        .bearer_auth(&secret)
+        .header("Mcp-Session-Id", "has space")
+        .json(&json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad.status(), 400);
 }
 
 #[tokio::test]
