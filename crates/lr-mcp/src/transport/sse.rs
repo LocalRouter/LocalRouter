@@ -573,6 +573,10 @@ impl SseTransport {
             // Read SSE events
             let mut stream = response.bytes_stream();
             let mut buffer = String::new();
+            // The server controls how much it sends before a blank line; cap
+            // the pending-event buffer so a misbehaving server cannot grow
+            // memory without bound (the inline POST path has the same cap).
+            const MAX_PENDING_EVENT_BYTES: usize = 16 * 1024 * 1024;
 
             while let Some(chunk_result) = stream.next().await {
                 // Check if closed
@@ -582,6 +586,14 @@ impl SseTransport {
 
                 match chunk_result {
                     Ok(chunk) => {
+                        if buffer.len() + utf8_buffer.len() + chunk.len() > MAX_PENDING_EVENT_BYTES {
+                            tracing::error!(
+                                "MCP SSE event from {} exceeds {} MiB without a terminator; dropping stream",
+                                url,
+                                MAX_PENDING_EVENT_BYTES / (1024 * 1024)
+                            );
+                            break;
+                        }
                         // Proper UTF-8 handling: append chunk to byte buffer and decode
                         utf8_buffer.extend_from_slice(&chunk);
 
