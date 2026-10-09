@@ -170,6 +170,11 @@ pub fn migrate_config(mut config: AppConfig) -> AppResult<AppConfig> {
         config = migrate_to_v28(config)?;
     }
 
+    // Migrate to v29: Catalog threshold default 1000 B → 16 KB
+    if config.version < 29 {
+        config = migrate_to_v29(config)?;
+    }
+
     // Update version to current
     config.version = CONFIG_VERSION;
 
@@ -950,6 +955,24 @@ fn migrate_to_v28(mut config: AppConfig) -> AppResult<AppConfig> {
     Ok(config)
 }
 
+/// Migrate to version 29: catalog thresholds equal to an earlier default
+/// (8192, 1000) are reset to the current default (16 KB), the same as v28 did
+/// for the response threshold. Values a user chose are kept.
+fn migrate_to_v29(mut config: AppConfig) -> AppResult<AppConfig> {
+    info!("Migrating to version 29: reset catalog threshold values that are defaults");
+
+    /// Catalog threshold defaults before v29: 8192 (initial), 1000.
+    const PAST_CATALOG_THRESHOLD_DEFAULTS: [usize; 2] = [8192, 1000];
+
+    let cm = &mut config.context_management;
+    if PAST_CATALOG_THRESHOLD_DEFAULTS.contains(&cm.catalog_threshold_bytes) {
+        cm.catalog_threshold_bytes = super::types::default_catalog_threshold_bytes();
+    }
+
+    config.version = 29;
+    Ok(config)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1128,7 +1151,10 @@ mod tests {
                 migrated.context_management.response_threshold_bytes,
                 16 * 1024
             );
-            assert_eq!(migrated.context_management.catalog_threshold_bytes, 1000);
+            assert_eq!(
+                migrated.context_management.catalog_threshold_bytes,
+                16 * 1024
+            );
             // Everything is now a default, so nothing is written
             assert!(migrated.context_management.is_default());
             let yaml = serde_yaml::to_string(&migrated).unwrap();
@@ -1162,5 +1188,22 @@ mod tests {
             section,
             "  catalog_compression: false\n  response_threshold_bytes: 1000"
         );
+    }
+
+    #[test]
+    fn test_migrate_to_v29_resets_past_default_catalog_threshold() {
+        for (from, want) in [(1000, 16 * 1024), (8192, 16 * 1024), (15900, 15900)] {
+            let mut config = AppConfig {
+                version: 28,
+                ..Default::default()
+            };
+            config.context_management.catalog_threshold_bytes = from;
+            let migrated = migrate_config(config).unwrap();
+            assert_eq!(migrated.version, CONFIG_VERSION);
+            assert_eq!(
+                migrated.context_management.catalog_threshold_bytes, want,
+                "from {from}"
+            );
+        }
     }
 }

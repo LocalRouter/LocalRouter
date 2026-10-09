@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use uuid::Uuid;
 
-pub(crate) const CONFIG_VERSION: u32 = 28;
+pub(crate) const CONFIG_VERSION: u32 = 29;
 
 /// Keyring service name for provider API keys
 pub const PROVIDER_KEYRING_SERVICE: &str = "LocalRouter-Providers";
@@ -2307,8 +2307,10 @@ impl Default for ContextManagementConfig {
     }
 }
 
+/// Catalogs up to 16 KB stay whole; smaller thresholds hid the tools of
+/// nearly every catalog behind search.
 pub fn default_catalog_threshold_bytes() -> usize {
-    1000
+    16 * 1024
 }
 
 /// Responses up to 16 KB (~4K tokens) reach the model whole; compressing
