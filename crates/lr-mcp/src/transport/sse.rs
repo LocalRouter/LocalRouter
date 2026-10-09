@@ -47,6 +47,10 @@ static HTTP_CLIENT: Lazy<Client> = Lazy::new(|| {
         .pool_max_idle_per_host(10)
         .pool_idle_timeout(Duration::from_secs(60))
         .timeout(Duration::from_secs(30))
+        // Never follow redirects: every request carries the server's
+        // configured credentials (bearer tokens, custom auth headers), and a
+        // redirect could carry them to another host or downgrade to http.
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("Failed to create global HTTP client")
 });
@@ -55,9 +59,30 @@ static HTTP_CLIENT: Lazy<Client> = Lazy::new(|| {
 static STREAM_CLIENT: Lazy<Client> = Lazy::new(|| {
     Client::builder()
         .connect_timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("MCP stream HTTP client")
 });
+
+/// Resolve the `endpoint` event of the legacy SSE transport against the
+/// configured server URL, accepting it only when it stays on the same origin.
+///
+/// Every later POST attaches the server's credentials, so an `endpoint`
+/// naming another scheme, host or port would let a malicious or compromised
+/// server redirect those credentials elsewhere and use LocalRouter as an
+/// HTTP client against arbitrary (including internal) hosts.
+pub(crate) fn resolve_endpoint(base_url: &str, endpoint: &str) -> Option<String> {
+    let base = reqwest::Url::parse(base_url).ok()?;
+    let resolved = base.join(endpoint).ok()?;
+    let same_origin = resolved.scheme() == base.scheme()
+        && resolved.host_str() == base.host_str()
+        && resolved.port_or_known_default() == base.port_or_known_default();
+    if same_origin {
+        Some(resolved.to_string())
+    } else {
+        None
+    }
+}
 
 /// Notification callback type for SSE transport
 pub type SseNotificationCallback = Arc<dyn Fn(JsonRpcNotification) + Send + Sync>;
@@ -622,27 +647,25 @@ impl SseTransport {
                             // Handle "endpoint" event (MCP SSE transport spec)
                             if event_type.as_deref() == Some("endpoint") {
                                 if let Some(endpoint_path) = event_data {
-                                    // Resolve endpoint URL relative to base URL
-                                    let endpoint_url = if endpoint_path.starts_with("http://")
-                                        || endpoint_path.starts_with("https://")
-                                    {
-                                        endpoint_path.clone()
-                                    } else {
-                                        // Resolve relative path against base URL
-                                        if let Ok(base) = reqwest::Url::parse(&url) {
-                                            base.join(&endpoint_path)
-                                                .map(|u| u.to_string())
-                                                .unwrap_or_else(|_| endpoint_path.clone())
-                                        } else {
-                                            endpoint_path.clone()
+                                    // Resolve against the configured URL; only a
+                                    // same-origin endpoint may receive our POSTs.
+                                    match resolve_endpoint(&url, &endpoint_path) {
+                                        Some(endpoint_url) => {
+                                            tracing::info!(
+                                                "Received MCP endpoint event: {} -> {}",
+                                                endpoint_path,
+                                                endpoint_url
+                                            );
+                                            *message_endpoint.write() = Some(endpoint_url);
                                         }
-                                    };
-                                    tracing::info!(
-                                        "Received MCP endpoint event: {} -> {}",
-                                        endpoint_path,
-                                        endpoint_url
-                                    );
-                                    *message_endpoint.write() = Some(endpoint_url);
+                                        None => {
+                                            tracing::warn!(
+                                                "Ignoring MCP endpoint event {:?}: not on the same origin as {}",
+                                                endpoint_path,
+                                                url
+                                            );
+                                        }
+                                    }
                                 }
                                 continue;
                             }
@@ -1360,6 +1383,30 @@ impl Transport for SseTransport {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn endpoint_event_must_stay_on_the_servers_origin() {
+        let base = "https://mcp.example.com:8443/sse";
+        assert_eq!(
+            super::resolve_endpoint(base, "/messages?sessionId=abc").as_deref(),
+            Some("https://mcp.example.com:8443/messages?sessionId=abc")
+        );
+        assert_eq!(
+            super::resolve_endpoint(base, "messages").as_deref(),
+            Some("https://mcp.example.com:8443/messages")
+        );
+        assert_eq!(
+            super::resolve_endpoint(base, "https://mcp.example.com:8443/other").as_deref(),
+            Some("https://mcp.example.com:8443/other")
+        );
+        // Different host, scheme or port: credentials must not go there.
+        assert!(super::resolve_endpoint(base, "https://evil.example.com/messages").is_none());
+        assert!(super::resolve_endpoint(base, "http://mcp.example.com:8443/messages").is_none());
+        assert!(super::resolve_endpoint(base, "https://mcp.example.com/messages").is_none());
+        assert!(super::resolve_endpoint(base, "http://127.0.0.1:9/admin").is_none());
+        assert!(super::resolve_endpoint(base, "//evil.example.com/messages").is_none());
+        assert!(super::resolve_endpoint("not a url", "/messages").is_none());
+    }
+
     use super::*;
     use serde_json::json;
 
