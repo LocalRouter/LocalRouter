@@ -1,0 +1,86 @@
+{
+  "model": "kev-0.8b",
+  "policy": "terse",
+  "question": {
+    "type": "choice",
+    "instructions": "Classify task difficulty.",
+    "criteria": {
+      "strong": "Complex, difficult reasoning task.",
+      "weak": "Simple, routine, easy task."
+    }
+  },
+  "reverse": true,
+  "cases_sha256": "746745e4976da8890e0246e87add521c96e5f60f43a71d630da6572d4566d5bc",
+  "started_utc": "2026-10-09T01:04:59Z",
+  "warmups": [
+    {
+      "score": 0.1394,
+      "response": {
+        "model": "kev-0.8b",
+        "answers": {
+          "route": {
+            "type": "choice",
+            "choice": "weak",
+            "confidence": 0.7211,
+            "probabilities": {
+              "strong": 0.1394,
+              "weak": 0.8606
+            }
+          }
+        },
+        "usage": {
+          "input_tokens": 35,
+          "output_tokens": 52
+        },
+        "latency_ms": 222.8
+      },
+      "latency_ms": 235.24425004143268
+    },
+    {
+      "score": 0.1394,
+      "response": {
+        "model": "kev-0.8b",
+        "answers": {
+          "route": {
+            "type": "choice",
+            "choice": "weak",
+            "confidence": 0.7211,
+            "probabilities": {
+              "strong": 0.1394,
+              "weak": 0.8606
+            }
+          }
+        },
+        "usage": {
+          "input_tokens": 35,
+          "output_tokens": 52
+        },
+        "latency_ms": 24.5
+      },
+      "latency_ms": 37.80608397210017
+    },
+    {
+      "score": 0.1394,
+      "response": {
+        "model": "kev-0.8b",
+        "answers": {
+          "route": {
+            "type": "choice",
+            "choice": "weak",
+            "confidence": 0.7211,
+            "probabilities": {
+              "strong": 0.1394,
+              "weak": 0.8606
+            }
+          }
+        },
+        "usage": {
+          "input_tokens": 35,
+          "output_tokens": 52
+        },
+        "latency_ms": 102.1
+      },
+      "latency_ms": 158.61158398911357
+    }
+  ]
+}

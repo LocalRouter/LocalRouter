@@ -1,0 +1,1727 @@
+{
+  "laya": {
+    "all": {
+      "total": 72,
+      "correct": 46,
+      "accuracy": 0.6388888888888888,
+      "errors": 2,
+      "majority_baseline_correct": 13,
+      "confusion": {
+        "planning -> planning": 6,
+        "implementation -> implementation": 8,
+        "review -> review": 3,
+        "general -> general": 6,
+        "general -> planning": 3,
+        "general -> implementation": 1,
+        "implementation -> planning": 1,
+        "review -> implementation": 1,
+        "code -> code": 4,
+        "writing -> writing": 5,
+        "analysis -> analysis": 2,
+        "analysis -> general": 1,
+        "writing -> code": 1,
+        "analysis -> code": 1,
+        "billing -> billing": 4,
+        "technical -> technical": 1,
+        "cancellation -> cancellation": 2,
+        "general -> billing": 2,
+        "technical -> billing": 3,
+        "billing -> cancellation": 1,
+        "Astra -> Astra": 3,
+        "Sol -> Astra": 7,
+        "Astra -> Sol": 2,
+        "Sol -> Sol": 2,
+        "implementation -> ERROR": 1,
+        "general -> ERROR": 1
+      },
+      "failures": [
+        "workflow-08",
+        "workflow-11",
+        "workflow-13",
+        "workflow-20",
+        "workflow-23",
+        "workflow-25",
+        "specialist-09",
+        "specialist-12",
+        "specialist-14",
+        "custom_support-04",
+        "custom_support-06",
+        "custom_support-07",
+        "custom_support-08",
+        "custom_support-12",
+        "custom_support-14",
+        "mode-02",
+        "mode-03",
+        "mode-04",
+        "mode-06",
+        "mode-07",
+        "mode-10",
+        "mode-11",
+        "mode-12",
+        "mode-13",
+        "workflow-27",
+        "workflow-28"
+      ],
+      "warm_success_latency_ms": {
+        "p50": 31.131875002756715,
+        "p95": 48.845166980754584,
+        "max": 77.71195902023464
+      },
+      "selective": [
+        {
+          "min_top_probability": 0.5,
+          "accepted": 57,
+          "correct": 38,
+          "accuracy": 0.6666666666666666,
+          "fallback_required": 15
+        },
+        {
+          "min_top_probability": 0.7,
+          "accepted": 22,
+          "correct": 18,
+          "accuracy": 0.8181818181818182,
+          "fallback_required": 50
+        },
+        {
+          "min_top_probability": 0.9,
+          "accepted": 8,
+          "correct": 6,
+          "accuracy": 0.75,
+          "fallback_required": 64
+        }
+      ]
+    },
+    "policies": {
+      "custom_support": {
+        "total": 14,
+        "correct": 8,
+        "accuracy": 0.5714285714285714,
+        "errors": 0,
+        "majority_baseline_correct": 5,
+        "confusion": {
+          "billing -> billing": 4,
+          "technical -> technical": 1,
+          "cancellation -> cancellation": 2,
+          "general -> billing": 2,
+          "technical -> billing": 3,
+          "billing -> cancellation": 1,
+          "general -> general": 1
+        },
+        "failures": [
+          "custom_support-04",
+          "custom_support-06",
+          "custom_support-07",
+          "custom_support-08",
+          "custom_support-12",
+          "custom_support-14"
+        ],
+        "warm_success_latency_ms": {
+          "p50": 29.42606300348416,
+          "p95": 40.10024998569861,
+          "max": 40.10024998569861
+        },
+        "selective": [
+          {
+            "min_top_probability": 0.5,
+            "accepted": 14,
+            "correct": 8,
+            "accuracy": 0.5714285714285714,
+            "fallback_required": 0
+          },
+          {
+            "min_top_probability": 0.7,
+            "accepted": 10,
+            "correct": 8,
+            "accuracy": 0.8,
+            "fallback_required": 4
+          },
+          {
+            "min_top_probability": 0.9,
+            "accepted": 3,
+            "correct": 2,
+            "accuracy": 0.6666666666666666,
+            "fallback_required": 11
+          }
+        ]
+      },
+      "mode": {
+        "total": 14,
+        "correct": 5,
+        "accuracy": 0.35714285714285715,
+        "errors": 0,
+        "majority_baseline_correct": 9,
+        "confusion": {
+          "Astra -> Astra": 3,
+          "Sol -> Astra": 7,
+          "Astra -> Sol": 2,
+          "Sol -> Sol": 2
+        },
+        "failures": [
+          "mode-02",
+          "mode-03",
+          "mode-04",
+          "mode-06",
+          "mode-07",
+          "mode-10",
+          "mode-11",
+          "mode-12",
+          "mode-13"
+        ],
+        "warm_success_latency_ms": {
+          "p50": 26.845229003811255,
+          "p95": 37.50425000907853,
+          "max": 37.50425000907853
+        },
+        "selective": [
+          {
+            "min_top_probability": 0.5,
+            "accepted": 14,
+            "correct": 5,
+            "accuracy": 0.35714285714285715,
+            "fallback_required": 0
+          },
+          {
+            "min_top_probability": 0.7,
+            "accepted": 1,
+            "correct": 0,
+            "accuracy": 0.0,
+            "fallback_required": 13
+          },
+          {
+            "min_top_probability": 0.9,
+            "accepted": 1,
+            "correct": 0,
+            "accuracy": 0.0,
+            "fallback_required": 13
+          }
+        ]
+      },
+      "specialist": {
+        "total": 16,
+        "correct": 13,
+        "accuracy": 0.8125,
+        "errors": 0,
+        "majority_baseline_correct": 6,
+        "confusion": {
+          "code -> code": 4,
+          "writing -> writing": 5,
+          "analysis -> analysis": 2,
+          "analysis -> general": 1,
+          "general -> general": 2,
+          "writing -> code": 1,
+          "analysis -> code": 1
+        },
+        "failures": [
+          "specialist-09",
+          "specialist-12",
+          "specialist-14"
+        ],
+        "warm_success_latency_ms": {
+          "p50": 30.95104152453132,
+          "p95": 54.89820800721645,
+          "max": 54.89820800721645
+        },
+        "selective": [
+          {
+            "min_top_probability": 0.5,
+            "accepted": 14,
+            "correct": 13,
+            "accuracy": 0.9285714285714286,
+            "fallback_required": 2
+          },
+          {
+            "min_top_probability": 0.7,
+            "accepted": 8,
+            "correct": 7,
+            "accuracy": 0.875,
+            "fallback_required": 8
+          },
+          {
+            "min_top_probability": 0.9,
+            "accepted": 3,
+            "correct": 3,
+            "accuracy": 1.0,
+            "fallback_required": 13
+          }
+        ]
+      },
+      "workflow": {
+        "total": 28,
+        "correct": 20,
+        "accuracy": 0.7142857142857143,
+        "errors": 2,
+        "majority_baseline_correct": 10,
+        "confusion": {
+          "planning -> planning": 6,
+          "implementation -> implementation": 8,
+          "review -> review": 3,
+          "general -> general": 3,
+          "general -> planning": 3,
+          "general -> implementation": 1,
+          "implementation -> planning": 1,
+          "review -> implementation": 1,
+          "implementation -> ERROR": 1,
+          "general -> ERROR": 1
+        },
+        "failures": [
+          "workflow-08",
+          "workflow-11",
+          "workflow-13",
+          "workflow-20",
+          "workflow-23",
+          "workflow-25",
+          "workflow-27",
+          "workflow-28"
+        ],
+        "warm_success_latency_ms": {
+          "p50": 36.301688000094146,
+          "p95": 65.52058301167563,
+          "max": 77.71195902023464
+        },
+        "selective": [
+          {
+            "min_top_probability": 0.5,
+            "accepted": 15,
+            "correct": 12,
+            "accuracy": 0.8,
+            "fallback_required": 13
+          },
+          {
+            "min_top_probability": 0.7,
+            "accepted": 3,
+            "correct": 3,
+            "accuracy": 1.0,
+            "fallback_required": 25
+          },
+          {
+            "min_top_probability": 0.9,
+            "accepted": 1,
+            "correct": 1,
+            "accuracy": 1.0,
+            "fallback_required": 27
+          }
+        ]
+      }
+    },
+    "history_cases": {
+      "total": 7,
+      "correct": 5,
+      "accuracy": 0.7142857142857143,
+      "errors": 0,
+      "majority_baseline_correct": 3,
+      "confusion": {
+        "implementation -> implementation": 3,
+        "planning -> planning": 1,
+        "review -> implementation": 1,
+        "general -> planning": 1,
+        "billing -> billing": 1
+      },
+      "failures": [
+        "workflow-23",
+        "workflow-25"
+      ],
+      "warm_success_latency_ms": {
+        "p50": 37.76020900113508,
+        "p95": 40.10024998569861,
+        "max": 40.10024998569861
+      },
+      "selective": [
+        {
+          "min_top_probability": 0.5,
+          "accepted": 6,
+          "correct": 4,
+          "accuracy": 0.6666666666666666,
+          "fallback_required": 1
+        },
+        {
+          "min_top_probability": 0.7,
+          "accepted": 1,
+          "correct": 1,
+          "accuracy": 1.0,
+          "fallback_required": 6
+        },
+        {
+          "min_top_probability": 0.9,
+          "accepted": 0,
+          "correct": 0,
+          "accuracy": null,
+          "fallback_required": 7
+        }
+      ]
+    },
+    "option_order": {
+      "valid_pairs": 70,
+      "changed_choices": [
+        "custom_support-04",
+        "custom_support-14",
+        "mode-02",
+        "mode-03",
+        "mode-08",
+        "mode-12",
+        "specialist-09",
+        "workflow-08",
+        "workflow-19"
+      ]
+    }
+  },
+  "kev": {
+    "all": {
+      "total": 72,
+      "correct": 52,
+      "accuracy": 0.7222222222222222,
+      "errors": 0,
+      "majority_baseline_correct": 13,
+      "confusion": {
+        "planning -> planning": 6,
+        "implementation -> implementation": 6,
+        "review -> review": 2,
+        "general -> general": 10,
+        "general -> implementation": 2,
+        "implementation -> planning": 4,
+        "review -> implementation": 2,
+        "general -> planning": 1,
+        "code -> code": 3,
+        "code -> analysis": 1,
+        "writing -> writing": 6,
+        "analysis -> analysis": 4,
+        "billing -> billing": 5,
+        "technical -> technical": 2,
+        "cancellation -> cancellation": 1,
+        "technical -> billing": 2,
+        "cancellation -> billing": 1,
+        "Astra -> Astra": 4,
+        "Sol -> Astra": 6,
+        "Sol -> Sol": 3,
+        "Astra -> Sol": 1
+      },
+      "failures": [
+        "workflow-11",
+        "workflow-13",
+        "workflow-15",
+        "workflow-21",
+        "workflow-23",
+        "workflow-24",
+        "workflow-25",
+        "specialist-03",
+        "custom_support-08",
+        "custom_support-09",
+        "custom_support-12",
+        "mode-02",
+        "mode-03",
+        "mode-06",
+        "mode-07",
+        "mode-08",
+        "mode-10",
+        "mode-13",
+        "workflow-27",
+        "workflow-28"
+      ],
+      "warm_success_latency_ms": {
+        "p50": 55.977479030843824,
+        "p95": 98.07091701077297,
+        "max": 297.24908398929983
+      },
+      "selective": [
+        {
+          "min_top_probability": 0.5,
+          "accepted": 63,
+          "correct": 48,
+          "accuracy": 0.7619047619047619,
+          "fallback_required": 9
+        },
+        {
+          "min_top_probability": 0.7,
+          "accepted": 31,
+          "correct": 23,
+          "accuracy": 0.7419354838709677,
+          "fallback_required": 41
+        },
+        {
+          "min_top_probability": 0.9,
+          "accepted": 4,
+          "correct": 4,
+          "accuracy": 1.0,
+          "fallback_required": 68
+        }
+      ]
+    },
+    "policies": {
+      "custom_support": {
+        "total": 14,
+        "correct": 11,
+        "accuracy": 0.7857142857142857,
+        "errors": 0,
+        "majority_baseline_correct": 5,
+        "confusion": {
+          "billing -> billing": 5,
+          "technical -> technical": 2,
+          "cancellation -> cancellation": 1,
+          "general -> general": 3,
+          "technical -> billing": 2,
+          "cancellation -> billing": 1
+        },
+        "failures": [
+          "custom_support-08",
+          "custom_support-09",
+          "custom_support-12"
+        ],
+        "warm_success_latency_ms": {
+          "p50": 53.635000018402934,
+          "p95": 76.55320898629725,
+          "max": 76.55320898629725
+        },
+        "selective": [
+          {
+            "min_top_probability": 0.5,
+            "accepted": 12,
+            "correct": 10,
+            "accuracy": 0.8333333333333334,
+            "fallback_required": 2
+          },
+          {
+            "min_top_probability": 0.7,
+            "accepted": 10,
+            "correct": 8,
+            "accuracy": 0.8,
+            "fallback_required": 4
+          },
+          {
+            "min_top_probability": 0.9,
+            "accepted": 4,
+            "correct": 4,
+            "accuracy": 1.0,
+            "fallback_required": 10
+          }
+        ]
+      },
+      "mode": {
+        "total": 14,
+        "correct": 7,
+        "accuracy": 0.5,
+        "errors": 0,
+        "majority_baseline_correct": 9,
+        "confusion": {
+          "Astra -> Astra": 4,
+          "Sol -> Astra": 6,
+          "Sol -> Sol": 3,
+          "Astra -> Sol": 1
+        },
+        "failures": [
+          "mode-02",
+          "mode-03",
+          "mode-06",
+          "mode-07",
+          "mode-08",
+          "mode-10",
+          "mode-13"
+        ],
+        "warm_success_latency_ms": {
+          "p50": 51.81270849425346,
+          "p95": 77.33691699104384,
+          "max": 77.33691699104384
+        },
+        "selective": [
+          {
+            "min_top_probability": 0.5,
+            "accepted": 14,
+            "correct": 7,
+            "accuracy": 0.5,
+            "fallback_required": 0
+          },
+          {
+            "min_top_probability": 0.7,
+            "accepted": 4,
+            "correct": 1,
+            "accuracy": 0.25,
+            "fallback_required": 10
+          },
+          {
+            "min_top_probability": 0.9,
+            "accepted": 0,
+            "correct": 0,
+            "accuracy": null,
+            "fallback_required": 14
+          }
+        ]
+      },
+      "specialist": {
+        "total": 16,
+        "correct": 15,
+        "accuracy": 0.9375,
+        "errors": 0,
+        "majority_baseline_correct": 6,
+        "confusion": {
+          "code -> code": 3,
+          "code -> analysis": 1,
+          "writing -> writing": 6,
+          "analysis -> analysis": 4,
+          "general -> general": 2
+        },
+        "failures": [
+          "specialist-03"
+        ],
+        "warm_success_latency_ms": {
+          "p50": 52.20524995820597,
+          "p95": 81.23070804867893,
+          "max": 81.23070804867893
+        },
+        "selective": [
+          {
+            "min_top_probability": 0.5,
+            "accepted": 15,
+            "correct": 14,
+            "accuracy": 0.9333333333333333,
+            "fallback_required": 1
+          },
+          {
+            "min_top_probability": 0.7,
+            "accepted": 5,
+            "correct": 5,
+            "accuracy": 1.0,
+            "fallback_required": 11
+          },
+          {
+            "min_top_probability": 0.9,
+            "accepted": 0,
+            "correct": 0,
+            "accuracy": null,
+            "fallback_required": 16
+          }
+        ]
+      },
+      "workflow": {
+        "total": 28,
+        "correct": 19,
+        "accuracy": 0.6785714285714286,
+        "errors": 0,
+        "majority_baseline_correct": 10,
+        "confusion": {
+          "planning -> planning": 6,
+          "implementation -> implementation": 6,
+          "review -> review": 2,
+          "general -> general": 5,
+          "general -> implementation": 2,
+          "implementation -> planning": 4,
+          "review -> implementation": 2,
+          "general -> planning": 1
+        },
+        "failures": [
+          "workflow-11",
+          "workflow-13",
+          "workflow-15",
+          "workflow-21",
+          "workflow-23",
+          "workflow-24",
+          "workflow-25",
+          "workflow-27",
+          "workflow-28"
+        ],
+        "warm_success_latency_ms": {
+          "p50": 66.76204202813096,
+          "p95": 237.08891699789092,
+          "max": 297.24908398929983
+        },
+        "selective": [
+          {
+            "min_top_probability": 0.5,
+            "accepted": 22,
+            "correct": 17,
+            "accuracy": 0.7727272727272727,
+            "fallback_required": 6
+          },
+          {
+            "min_top_probability": 0.7,
+            "accepted": 12,
+            "correct": 9,
+            "accuracy": 0.75,
+            "fallback_required": 16
+          },
+          {
+            "min_top_probability": 0.9,
+            "accepted": 0,
+            "correct": 0,
+            "accuracy": null,
+            "fallback_required": 28
+          }
+        ]
+      }
+    },
+    "history_cases": {
+      "total": 7,
+      "correct": 3,
+      "accuracy": 0.42857142857142855,
+      "errors": 0,
+      "majority_baseline_correct": 3,
+      "confusion": {
+        "implementation -> planning": 2,
+        "planning -> planning": 1,
+        "review -> implementation": 1,
+        "general -> planning": 1,
+        "implementation -> implementation": 1,
+        "billing -> billing": 1
+      },
+      "failures": [
+        "workflow-21",
+        "workflow-23",
+        "workflow-24",
+        "workflow-25"
+      ],
+      "warm_success_latency_ms": {
+        "p50": 64.80295903747901,
+        "p95": 105.69770802976564,
+        "max": 105.69770802976564
+      },
+      "selective": [
+        {
+          "min_top_probability": 0.5,
+          "accepted": 6,
+          "correct": 3,
+          "accuracy": 0.5,
+          "fallback_required": 1
+        },
+        {
+          "min_top_probability": 0.7,
+          "accepted": 3,
+          "correct": 1,
+          "accuracy": 0.3333333333333333,
+          "fallback_required": 4
+        },
+        {
+          "min_top_probability": 0.9,
+          "accepted": 0,
+          "correct": 0,
+          "accuracy": null,
+          "fallback_required": 7
+        }
+      ]
+    },
+    "option_order": {
+      "valid_pairs": 72,
+      "changed_choices": [
+        "mode-13",
+        "workflow-11"
+      ]
+    },
+    "latest_only_ablation": {
+      "valid_pairs": 72,
+      "changed_choices": [
+        "custom_support-13",
+        "mode-13",
+        "workflow-21",
+        "workflow-22",
+        "workflow-23",
+        "workflow-24",
+        "workflow-25",
+        "workflow-27",
+        "workflow-28"
+      ]
+    }
+  },
+  "laya-reversed": {
+    "all": {
+      "total": 72,
+      "correct": 49,
+      "accuracy": 0.6805555555555556,
+      "errors": 2,
+      "majority_baseline_correct": 13,
+      "confusion": {
+        "planning -> planning": 6,
+        "implementation -> implementation": 8,
+        "review -> review": 3,
+        "general -> general": 7,
+        "general -> implementation": 1,
+        "implementation -> planning": 1,
+        "general -> planning": 3,
+        "review -> implementation": 1,
+        "code -> code": 4,
+        "writing -> writing": 5,
+        "analysis -> analysis": 2,
+        "analysis -> writing": 1,
+        "writing -> code": 1,
+        "analysis -> code": 1,
+        "billing -> billing": 4,
+        "technical -> technical": 1,
+        "cancellation -> cancellation": 2,
+        "general -> technical": 1,
+        "technical -> billing": 3,
+        "billing -> cancellation": 1,
+        "Astra -> Astra": 2,
+        "Sol -> Sol": 5,
+        "Astra -> Sol": 3,
+        "Sol -> Astra": 4,
+        "implementation -> ERROR": 1,
+        "general -> ERROR": 1
+      },
+      "failures": [
+        "workflow-11",
+        "workflow-13",
+        "workflow-19",
+        "workflow-20",
+        "workflow-23",
+        "workflow-25",
+        "specialist-09",
+        "specialist-12",
+        "specialist-14",
+        "custom_support-04",
+        "custom_support-06",
+        "custom_support-07",
+        "custom_support-08",
+        "custom_support-12",
+        "mode-04",
+        "mode-06",
+        "mode-07",
+        "mode-08",
+        "mode-10",
+        "mode-11",
+        "mode-13",
+        "workflow-27",
+        "workflow-28"
+      ],
+      "warm_success_latency_ms": {
+        "p50": 31.616374995792285,
+        "p95": 52.73075000150129,
+        "max": 62.07220797659829
+      },
+      "selective": [
+        {
+          "min_top_probability": 0.5,
+          "accepted": 58,
+          "correct": 42,
+          "accuracy": 0.7241379310344828,
+          "fallback_required": 14
+        },
+        {
+          "min_top_probability": 0.7,
+          "accepted": 26,
+          "correct": 22,
+          "accuracy": 0.8461538461538461,
+          "fallback_required": 46
+        },
+        {
+          "min_top_probability": 0.9,
+          "accepted": 9,
+          "correct": 9,
+          "accuracy": 1.0,
+          "fallback_required": 63
+        }
+      ]
+    },
+    "policies": {
+      "custom_support": {
+        "total": 14,
+        "correct": 9,
+        "accuracy": 0.6428571428571429,
+        "errors": 0,
+        "majority_baseline_correct": 5,
+        "confusion": {
+          "billing -> billing": 4,
+          "technical -> technical": 1,
+          "cancellation -> cancellation": 2,
+          "general -> technical": 1,
+          "technical -> billing": 3,
+          "billing -> cancellation": 1,
+          "general -> general": 2
+        },
+        "failures": [
+          "custom_support-04",
+          "custom_support-06",
+          "custom_support-07",
+          "custom_support-08",
+          "custom_support-12"
+        ],
+        "warm_success_latency_ms": {
+          "p50": 29.44702102104202,
+          "p95": 31.62645798875019,
+          "max": 31.62645798875019
+        },
+        "selective": [
+          {
+            "min_top_probability": 0.5,
+            "accepted": 12,
+            "correct": 8,
+            "accuracy": 0.6666666666666666,
+            "fallback_required": 2
+          },
+          {
+            "min_top_probability": 0.7,
+            "accepted": 10,
+            "correct": 8,
+            "accuracy": 0.8,
+            "fallback_required": 4
+          },
+          {
+            "min_top_probability": 0.9,
+            "accepted": 4,
+            "correct": 4,
+            "accuracy": 1.0,
+            "fallback_required": 10
+          }
+        ]
+      },
+      "mode": {
+        "total": 14,
+        "correct": 7,
+        "accuracy": 0.5,
+        "errors": 0,
+        "majority_baseline_correct": 9,
+        "confusion": {
+          "Astra -> Astra": 2,
+          "Sol -> Sol": 5,
+          "Astra -> Sol": 3,
+          "Sol -> Astra": 4
+        },
+        "failures": [
+          "mode-04",
+          "mode-06",
+          "mode-07",
+          "mode-08",
+          "mode-10",
+          "mode-11",
+          "mode-13"
+        ],
+        "warm_success_latency_ms": {
+          "p50": 25.085458997637033,
+          "p95": 31.0051660053432,
+          "max": 31.0051660053432
+        },
+        "selective": [
+          {
+            "min_top_probability": 0.5,
+            "accepted": 14,
+            "correct": 7,
+            "accuracy": 0.5,
+            "fallback_required": 0
+          },
+          {
+            "min_top_probability": 0.7,
+            "accepted": 3,
+            "correct": 1,
+            "accuracy": 0.3333333333333333,
+            "fallback_required": 11
+          },
+          {
+            "min_top_probability": 0.9,
+            "accepted": 0,
+            "correct": 0,
+            "accuracy": null,
+            "fallback_required": 14
+          }
+        ]
+      },
+      "specialist": {
+        "total": 16,
+        "correct": 13,
+        "accuracy": 0.8125,
+        "errors": 0,
+        "majority_baseline_correct": 6,
+        "confusion": {
+          "code -> code": 4,
+          "writing -> writing": 5,
+          "analysis -> analysis": 2,
+          "analysis -> writing": 1,
+          "general -> general": 2,
+          "writing -> code": 1,
+          "analysis -> code": 1
+        },
+        "failures": [
+          "specialist-09",
+          "specialist-12",
+          "specialist-14"
+        ],
+        "warm_success_latency_ms": {
+          "p50": 32.021042046835646,
+          "p95": 52.73075000150129,
+          "max": 52.73075000150129
+        },
+        "selective": [
+          {
+            "min_top_probability": 0.5,
+            "accepted": 15,
+            "correct": 13,
+            "accuracy": 0.8666666666666667,
+            "fallback_required": 1
+          },
+          {
+            "min_top_probability": 0.7,
+            "accepted": 8,
+            "correct": 8,
+            "accuracy": 1.0,
+            "fallback_required": 8
+          },
+          {
+            "min_top_probability": 0.9,
+            "accepted": 3,
+            "correct": 3,
+            "accuracy": 1.0,
+            "fallback_required": 13
+          }
+        ]
+      },
+      "workflow": {
+        "total": 28,
+        "correct": 20,
+        "accuracy": 0.7142857142857143,
+        "errors": 2,
+        "majority_baseline_correct": 10,
+        "confusion": {
+          "planning -> planning": 6,
+          "implementation -> implementation": 8,
+          "review -> review": 3,
+          "general -> general": 3,
+          "general -> implementation": 1,
+          "implementation -> planning": 1,
+          "general -> planning": 3,
+          "review -> implementation": 1,
+          "implementation -> ERROR": 1,
+          "general -> ERROR": 1
+        },
+        "failures": [
+          "workflow-11",
+          "workflow-13",
+          "workflow-19",
+          "workflow-20",
+          "workflow-23",
+          "workflow-25",
+          "workflow-27",
+          "workflow-28"
+        ],
+        "warm_success_latency_ms": {
+          "p50": 37.619832990458235,
+          "p95": 59.00391697650775,
+          "max": 62.07220797659829
+        },
+        "selective": [
+          {
+            "min_top_probability": 0.5,
+            "accepted": 17,
+            "correct": 14,
+            "accuracy": 0.8235294117647058,
+            "fallback_required": 11
+          },
+          {
+            "min_top_probability": 0.7,
+            "accepted": 5,
+            "correct": 5,
+            "accuracy": 1.0,
+            "fallback_required": 23
+          },
+          {
+            "min_top_probability": 0.9,
+            "accepted": 2,
+            "correct": 2,
+            "accuracy": 1.0,
+            "fallback_required": 26
+          }
+        ]
+      }
+    },
+    "history_cases": {
+      "total": 7,
+      "correct": 5,
+      "accuracy": 0.7142857142857143,
+      "errors": 0,
+      "majority_baseline_correct": 3,
+      "confusion": {
+        "implementation -> implementation": 3,
+        "planning -> planning": 1,
+        "review -> implementation": 1,
+        "general -> planning": 1,
+        "billing -> billing": 1
+      },
+      "failures": [
+        "workflow-23",
+        "workflow-25"
+      ],
+      "warm_success_latency_ms": {
+        "p50": 37.214791984297335,
+        "p95": 39.16258399840444,
+        "max": 39.16258399840444
+      },
+      "selective": [
+        {
+          "min_top_probability": 0.5,
+          "accepted": 6,
+          "correct": 4,
+          "accuracy": 0.6666666666666666,
+          "fallback_required": 1
+        },
+        {
+          "min_top_probability": 0.7,
+          "accepted": 1,
+          "correct": 1,
+          "accuracy": 1.0,
+          "fallback_required": 6
+        },
+        {
+          "min_top_probability": 0.9,
+          "accepted": 0,
+          "correct": 0,
+          "accuracy": null,
+          "fallback_required": 7
+        }
+      ]
+    }
+  },
+  "kev-reversed": {
+    "all": {
+      "total": 72,
+      "correct": 53,
+      "accuracy": 0.7361111111111112,
+      "errors": 0,
+      "majority_baseline_correct": 13,
+      "confusion": {
+        "planning -> planning": 6,
+        "implementation -> implementation": 6,
+        "review -> review": 2,
+        "general -> general": 10,
+        "general -> planning": 2,
+        "implementation -> planning": 4,
+        "review -> implementation": 2,
+        "code -> code": 3,
+        "code -> analysis": 1,
+        "writing -> writing": 6,
+        "analysis -> analysis": 4,
+        "billing -> billing": 5,
+        "technical -> technical": 2,
+        "cancellation -> cancellation": 1,
+        "technical -> billing": 2,
+        "cancellation -> billing": 1,
+        "Astra -> Astra": 4,
+        "Sol -> Astra": 5,
+        "Sol -> Sol": 4,
+        "Astra -> Sol": 1,
+        "general -> implementation": 1
+      },
+      "failures": [
+        "workflow-11",
+        "workflow-13",
+        "workflow-15",
+        "workflow-21",
+        "workflow-23",
+        "workflow-24",
+        "workflow-25",
+        "specialist-03",
+        "custom_support-08",
+        "custom_support-09",
+        "custom_support-12",
+        "mode-02",
+        "mode-03",
+        "mode-06",
+        "mode-07",
+        "mode-08",
+        "mode-10",
+        "workflow-27",
+        "workflow-28"
+      ],
+      "warm_success_latency_ms": {
+        "p50": 50.335729523794726,
+        "p95": 59.82208298519254,
+        "max": 234.2984169954434
+      },
+      "selective": [
+        {
+          "min_top_probability": 0.5,
+          "accepted": 63,
+          "correct": 48,
+          "accuracy": 0.7619047619047619,
+          "fallback_required": 9
+        },
+        {
+          "min_top_probability": 0.7,
+          "accepted": 30,
+          "correct": 24,
+          "accuracy": 0.8,
+          "fallback_required": 42
+        },
+        {
+          "min_top_probability": 0.9,
+          "accepted": 3,
+          "correct": 3,
+          "accuracy": 1.0,
+          "fallback_required": 69
+        }
+      ]
+    },
+    "policies": {
+      "custom_support": {
+        "total": 14,
+        "correct": 11,
+        "accuracy": 0.7857142857142857,
+        "errors": 0,
+        "majority_baseline_correct": 5,
+        "confusion": {
+          "billing -> billing": 5,
+          "technical -> technical": 2,
+          "cancellation -> cancellation": 1,
+          "general -> general": 3,
+          "technical -> billing": 2,
+          "cancellation -> billing": 1
+        },
+        "failures": [
+          "custom_support-08",
+          "custom_support-09",
+          "custom_support-12"
+        ],
+        "warm_success_latency_ms": {
+          "p50": 49.084375001257285,
+          "p95": 52.19783401116729,
+          "max": 52.19783401116729
+        },
+        "selective": [
+          {
+            "min_top_probability": 0.5,
+            "accepted": 12,
+            "correct": 10,
+            "accuracy": 0.8333333333333334,
+            "fallback_required": 2
+          },
+          {
+            "min_top_probability": 0.7,
+            "accepted": 10,
+            "correct": 8,
+            "accuracy": 0.8,
+            "fallback_required": 4
+          },
+          {
+            "min_top_probability": 0.9,
+            "accepted": 3,
+            "correct": 3,
+            "accuracy": 1.0,
+            "fallback_required": 11
+          }
+        ]
+      },
+      "mode": {
+        "total": 14,
+        "correct": 8,
+        "accuracy": 0.5714285714285714,
+        "errors": 0,
+        "majority_baseline_correct": 9,
+        "confusion": {
+          "Astra -> Astra": 4,
+          "Sol -> Astra": 5,
+          "Sol -> Sol": 4,
+          "Astra -> Sol": 1
+        },
+        "failures": [
+          "mode-02",
+          "mode-03",
+          "mode-06",
+          "mode-07",
+          "mode-08",
+          "mode-10"
+        ],
+        "warm_success_latency_ms": {
+          "p50": 47.386104037286714,
+          "p95": 50.70804199203849,
+          "max": 50.70804199203849
+        },
+        "selective": [
+          {
+            "min_top_probability": 0.5,
+            "accepted": 14,
+            "correct": 8,
+            "accuracy": 0.5714285714285714,
+            "fallback_required": 0
+          },
+          {
+            "min_top_probability": 0.7,
+            "accepted": 5,
+            "correct": 2,
+            "accuracy": 0.4,
+            "fallback_required": 9
+          },
+          {
+            "min_top_probability": 0.9,
+            "accepted": 0,
+            "correct": 0,
+            "accuracy": null,
+            "fallback_required": 14
+          }
+        ]
+      },
+      "specialist": {
+        "total": 16,
+        "correct": 15,
+        "accuracy": 0.9375,
+        "errors": 0,
+        "majority_baseline_correct": 6,
+        "confusion": {
+          "code -> code": 3,
+          "code -> analysis": 1,
+          "writing -> writing": 6,
+          "analysis -> analysis": 4,
+          "general -> general": 2
+        },
+        "failures": [
+          "specialist-03"
+        ],
+        "warm_success_latency_ms": {
+          "p50": 49.2365414975211,
+          "p95": 52.84954101080075,
+          "max": 52.84954101080075
+        },
+        "selective": [
+          {
+            "min_top_probability": 0.5,
+            "accepted": 14,
+            "correct": 13,
+            "accuracy": 0.9285714285714286,
+            "fallback_required": 2
+          },
+          {
+            "min_top_probability": 0.7,
+            "accepted": 6,
+            "correct": 6,
+            "accuracy": 1.0,
+            "fallback_required": 10
+          },
+          {
+            "min_top_probability": 0.9,
+            "accepted": 0,
+            "correct": 0,
+            "accuracy": null,
+            "fallback_required": 16
+          }
+        ]
+      },
+      "workflow": {
+        "total": 28,
+        "correct": 19,
+        "accuracy": 0.6785714285714286,
+        "errors": 0,
+        "majority_baseline_correct": 10,
+        "confusion": {
+          "planning -> planning": 6,
+          "implementation -> implementation": 6,
+          "review -> review": 2,
+          "general -> general": 5,
+          "general -> planning": 2,
+          "implementation -> planning": 4,
+          "review -> implementation": 2,
+          "general -> implementation": 1
+        },
+        "failures": [
+          "workflow-11",
+          "workflow-13",
+          "workflow-15",
+          "workflow-21",
+          "workflow-23",
+          "workflow-24",
+          "workflow-25",
+          "workflow-27",
+          "workflow-28"
+        ],
+        "warm_success_latency_ms": {
+          "p50": 56.37733300682157,
+          "p95": 205.59120899997652,
+          "max": 234.2984169954434
+        },
+        "selective": [
+          {
+            "min_top_probability": 0.5,
+            "accepted": 23,
+            "correct": 17,
+            "accuracy": 0.7391304347826086,
+            "fallback_required": 5
+          },
+          {
+            "min_top_probability": 0.7,
+            "accepted": 9,
+            "correct": 8,
+            "accuracy": 0.8888888888888888,
+            "fallback_required": 19
+          },
+          {
+            "min_top_probability": 0.9,
+            "accepted": 0,
+            "correct": 0,
+            "accuracy": null,
+            "fallback_required": 28
+          }
+        ]
+      }
+    },
+    "history_cases": {
+      "total": 7,
+      "correct": 3,
+      "accuracy": 0.42857142857142855,
+      "errors": 0,
+      "majority_baseline_correct": 3,
+      "confusion": {
+        "implementation -> planning": 2,
+        "planning -> planning": 1,
+        "review -> implementation": 1,
+        "general -> planning": 1,
+        "implementation -> implementation": 1,
+        "billing -> billing": 1
+      },
+      "failures": [
+        "workflow-21",
+        "workflow-23",
+        "workflow-24",
+        "workflow-25"
+      ],
+      "warm_success_latency_ms": {
+        "p50": 57.96620802721009,
+        "p95": 59.82208298519254,
+        "max": 59.82208298519254
+      },
+      "selective": [
+        {
+          "min_top_probability": 0.5,
+          "accepted": 6,
+          "correct": 3,
+          "accuracy": 0.5,
+          "fallback_required": 1
+        },
+        {
+          "min_top_probability": 0.7,
+          "accepted": 2,
+          "correct": 1,
+          "accuracy": 0.5,
+          "fallback_required": 5
+        },
+        {
+          "min_top_probability": 0.9,
+          "accepted": 1,
+          "correct": 1,
+          "accuracy": 1.0,
+          "fallback_required": 6
+        }
+      ]
+    }
+  },
+  "kev-latest": {
+    "all": {
+      "total": 72,
+      "correct": 56,
+      "accuracy": 0.7777777777777778,
+      "errors": 0,
+      "majority_baseline_correct": 13,
+      "confusion": {
+        "planning -> planning": 5,
+        "implementation -> implementation": 8,
+        "review -> review": 3,
+        "general -> general": 12,
+        "general -> implementation": 1,
+        "implementation -> planning": 1,
+        "review -> implementation": 1,
+        "implementation -> general": 1,
+        "planning -> general": 1,
+        "code -> code": 3,
+        "code -> analysis": 1,
+        "writing -> writing": 6,
+        "analysis -> analysis": 4,
+        "billing -> billing": 4,
+        "technical -> technical": 2,
+        "cancellation -> cancellation": 1,
+        "technical -> billing": 2,
+        "cancellation -> billing": 1,
+        "billing -> general": 1,
+        "Astra -> Astra": 4,
+        "Sol -> Astra": 5,
+        "Sol -> Sol": 4,
+        "Astra -> Sol": 1
+      },
+      "failures": [
+        "workflow-11",
+        "workflow-13",
+        "workflow-15",
+        "workflow-21",
+        "workflow-22",
+        "specialist-03",
+        "custom_support-08",
+        "custom_support-09",
+        "custom_support-12",
+        "custom_support-13",
+        "mode-02",
+        "mode-03",
+        "mode-06",
+        "mode-07",
+        "mode-08",
+        "mode-10"
+      ],
+      "warm_success_latency_ms": {
+        "p50": 54.739292012527585,
+        "p95": 71.97791698854417,
+        "max": 171.31704202620313
+      },
+      "selective": [
+        {
+          "min_top_probability": 0.5,
+          "accepted": 62,
+          "correct": 52,
+          "accuracy": 0.8387096774193549,
+          "fallback_required": 10
+        },
+        {
+          "min_top_probability": 0.7,
+          "accepted": 31,
+          "correct": 26,
+          "accuracy": 0.8387096774193549,
+          "fallback_required": 41
+        },
+        {
+          "min_top_probability": 0.9,
+          "accepted": 4,
+          "correct": 4,
+          "accuracy": 1.0,
+          "fallback_required": 68
+        }
+      ]
+    },
+    "policies": {
+      "custom_support": {
+        "total": 14,
+        "correct": 10,
+        "accuracy": 0.7142857142857143,
+        "errors": 0,
+        "majority_baseline_correct": 5,
+        "confusion": {
+          "billing -> billing": 4,
+          "technical -> technical": 2,
+          "cancellation -> cancellation": 1,
+          "general -> general": 3,
+          "technical -> billing": 2,
+          "cancellation -> billing": 1,
+          "billing -> general": 1
+        },
+        "failures": [
+          "custom_support-08",
+          "custom_support-09",
+          "custom_support-12",
+          "custom_support-13"
+        ],
+        "warm_success_latency_ms": {
+          "p50": 61.71804148470983,
+          "p95": 115.52595801185817,
+          "max": 115.52595801185817
+        },
+        "selective": [
+          {
+            "min_top_probability": 0.5,
+            "accepted": 12,
+            "correct": 9,
+            "accuracy": 0.75,
+            "fallback_required": 2
+          },
+          {
+            "min_top_probability": 0.7,
+            "accepted": 9,
+            "correct": 7,
+            "accuracy": 0.7777777777777778,
+            "fallback_required": 5
+          },
+          {
+            "min_top_probability": 0.9,
+            "accepted": 4,
+            "correct": 4,
+            "accuracy": 1.0,
+            "fallback_required": 10
+          }
+        ]
+      },
+      "mode": {
+        "total": 14,
+        "correct": 8,
+        "accuracy": 0.5714285714285714,
+        "errors": 0,
+        "majority_baseline_correct": 9,
+        "confusion": {
+          "Astra -> Astra": 4,
+          "Sol -> Astra": 5,
+          "Sol -> Sol": 4,
+          "Astra -> Sol": 1
+        },
+        "failures": [
+          "mode-02",
+          "mode-03",
+          "mode-06",
+          "mode-07",
+          "mode-08",
+          "mode-10"
+        ],
+        "warm_success_latency_ms": {
+          "p50": 50.02952049835585,
+          "p95": 62.73162504658103,
+          "max": 62.73162504658103
+        },
+        "selective": [
+          {
+            "min_top_probability": 0.5,
+            "accepted": 14,
+            "correct": 8,
+            "accuracy": 0.5714285714285714,
+            "fallback_required": 0
+          },
+          {
+            "min_top_probability": 0.7,
+            "accepted": 4,
+            "correct": 1,
+            "accuracy": 0.25,
+            "fallback_required": 10
+          },
+          {
+            "min_top_probability": 0.9,
+            "accepted": 0,
+            "correct": 0,
+            "accuracy": null,
+            "fallback_required": 14
+          }
+        ]
+      },
+      "specialist": {
+        "total": 16,
+        "correct": 15,
+        "accuracy": 0.9375,
+        "errors": 0,
+        "majority_baseline_correct": 6,
+        "confusion": {
+          "code -> code": 3,
+          "code -> analysis": 1,
+          "writing -> writing": 6,
+          "analysis -> analysis": 4,
+          "general -> general": 2
+        },
+        "failures": [
+          "specialist-03"
+        ],
+        "warm_success_latency_ms": {
+          "p50": 49.5393130404409,
+          "p95": 171.31704202620313,
+          "max": 171.31704202620313
+        },
+        "selective": [
+          {
+            "min_top_probability": 0.5,
+            "accepted": 15,
+            "correct": 14,
+            "accuracy": 0.9333333333333333,
+            "fallback_required": 1
+          },
+          {
+            "min_top_probability": 0.7,
+            "accepted": 5,
+            "correct": 5,
+            "accuracy": 1.0,
+            "fallback_required": 11
+          },
+          {
+            "min_top_probability": 0.9,
+            "accepted": 0,
+            "correct": 0,
+            "accuracy": null,
+            "fallback_required": 16
+          }
+        ]
+      },
+      "workflow": {
+        "total": 28,
+        "correct": 23,
+        "accuracy": 0.8214285714285714,
+        "errors": 0,
+        "majority_baseline_correct": 10,
+        "confusion": {
+          "planning -> planning": 5,
+          "implementation -> implementation": 8,
+          "review -> review": 3,
+          "general -> general": 7,
+          "general -> implementation": 1,
+          "implementation -> planning": 1,
+          "review -> implementation": 1,
+          "implementation -> general": 1,
+          "planning -> general": 1
+        },
+        "failures": [
+          "workflow-11",
+          "workflow-13",
+          "workflow-15",
+          "workflow-21",
+          "workflow-22"
+        ],
+        "warm_success_latency_ms": {
+          "p50": 55.89777047862299,
+          "p95": 59.57291700178757,
+          "max": 80.30304202111438
+        },
+        "selective": [
+          {
+            "min_top_probability": 0.5,
+            "accepted": 21,
+            "correct": 21,
+            "accuracy": 1.0,
+            "fallback_required": 7
+          },
+          {
+            "min_top_probability": 0.7,
+            "accepted": 13,
+            "correct": 13,
+            "accuracy": 1.0,
+            "fallback_required": 15
+          },
+          {
+            "min_top_probability": 0.9,
+            "accepted": 0,
+            "correct": 0,
+            "accuracy": null,
+            "fallback_required": 28
+          }
+        ]
+      }
+    },
+    "history_cases": {
+      "total": 7,
+      "correct": 4,
+      "accuracy": 0.5714285714285714,
+      "errors": 0,
+      "majority_baseline_correct": 3,
+      "confusion": {
+        "implementation -> general": 1,
+        "planning -> general": 1,
+        "review -> review": 1,
+        "implementation -> implementation": 2,
+        "general -> general": 1,
+        "billing -> general": 1
+      },
+      "failures": [
+        "workflow-21",
+        "workflow-22",
+        "custom_support-13"
+      ],
+      "warm_success_latency_ms": {
+        "p50": 55.98395795095712,
+        "p95": 61.06883299071342,
+        "max": 61.06883299071342
+      },
+      "selective": [
+        {
+          "min_top_probability": 0.5,
+          "accepted": 5,
+          "correct": 4,
+          "accuracy": 0.8,
+          "fallback_required": 2
+        },
+        {
+          "min_top_probability": 0.7,
+          "accepted": 3,
+          "correct": 3,
+          "accuracy": 1.0,
+          "fallback_required": 4
+        },
+        {
+          "min_top_probability": 0.9,
+          "accepted": 0,
+          "correct": 0,
+          "accuracy": null,
+          "fallback_required": 7
+        }
+      ]
+    }
+  },
+  "exact_metadata_rule": {
+    "total": 14,
+    "correct": 14,
+    "scope": "Synthetic already-normalized mode; not client metadata extraction or detection."
+  }
+}

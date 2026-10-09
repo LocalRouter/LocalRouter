@@ -1,0 +1,83 @@
+{
+  "model": "laya:en",
+  "policy": "terse",
+  "question": {
+    "type": "choice",
+    "instructions": "Classify task difficulty.",
+    "criteria": {
+      "strong": "Complex, difficult reasoning task.",
+      "weak": "Simple, routine, easy task."
+    }
+  },
+  "reverse": true,
+  "cases_sha256": "746745e4976da8890e0246e87add521c96e5f60f43a71d630da6572d4566d5bc",
+  "started_utc": "2026-10-09T01:04:56Z",
+  "warmups": [
+    {
+      "score": 0.1014,
+      "response": {
+        "model": "laya:en",
+        "answers": {
+          "route": {
+            "type": "choice",
+            "choice": "weak",
+            "confidence": 0.7971,
+            "probabilities": {
+              "strong": 0.1014,
+              "weak": 0.8986
+            }
+          }
+        },
+        "usage": {
+          "input_tokens": 38,
+          "output_tokens": 0
+        }
+      },
+      "latency_ms": 108.49991702707484
+    },
+    {
+      "score": 0.1014,
+      "response": {
+        "model": "laya:en",
+        "answers": {
+          "route": {
+            "type": "choice",
+            "choice": "weak",
+            "confidence": 0.7971,
+            "probabilities": {
+              "strong": 0.1014,
+              "weak": 0.8986
+            }
+          }
+        },
+        "usage": {
+          "input_tokens": 38,
+          "output_tokens": 0
+        }
+      },
+      "latency_ms": 173.8317499984987
+    },
+    {
+      "score": 0.1014,
+      "response": {
+        "model": "laya:en",
+        "answers": {
+          "route": {
+            "type": "choice",
+            "choice": "weak",
+            "confidence": 0.7971,
+            "probabilities": {
+              "strong": 0.1014,
+              "weak": 0.8986
+            }
+          }
+        },
+        "usage": {
+          "input_tokens": 38,
+          "output_tokens": 0
+        }
+      },
+      "latency_ms": 100.23475001798943
+    }
+  ]
+}

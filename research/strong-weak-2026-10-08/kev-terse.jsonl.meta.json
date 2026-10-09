@@ -1,0 +1,86 @@
+{
+  "model": "kev-0.8b",
+  "policy": "terse",
+  "question": {
+    "type": "choice",
+    "instructions": "Classify task difficulty.",
+    "criteria": {
+      "weak": "Simple, routine, easy task.",
+      "strong": "Complex, difficult reasoning task."
+    }
+  },
+  "reverse": false,
+  "cases_sha256": "746745e4976da8890e0246e87add521c96e5f60f43a71d630da6572d4566d5bc",
+  "started_utc": "2026-10-09T01:04:40Z",
+  "warmups": [
+    {
+      "score": 0.1047,
+      "response": {
+        "model": "kev-0.8b",
+        "answers": {
+          "route": {
+            "type": "choice",
+            "choice": "weak",
+            "confidence": 0.7906,
+            "probabilities": {
+              "weak": 0.8953,
+              "strong": 0.1047
+            }
+          }
+        },
+        "usage": {
+          "input_tokens": 35,
+          "output_tokens": 52
+        },
+        "latency_ms": 114.0
+      },
+      "latency_ms": 124.92129200836644
+    },
+    {
+      "score": 0.1047,
+      "response": {
+        "model": "kev-0.8b",
+        "answers": {
+          "route": {
+            "type": "choice",
+            "choice": "weak",
+            "confidence": 0.7906,
+            "probabilities": {
+              "weak": 0.8953,
+              "strong": 0.1047
+            }
+          }
+        },
+        "usage": {
+          "input_tokens": 35,
+          "output_tokens": 52
+        },
+        "latency_ms": 21.7
+      },
+      "latency_ms": 27.231416024733335
+    },
+    {
+      "score": 0.1047,
+      "response": {
+        "model": "kev-0.8b",
+        "answers": {
+          "route": {
+            "type": "choice",
+            "choice": "weak",
+            "confidence": 0.7906,
+            "probabilities": {
+              "weak": 0.8953,
+              "strong": 0.1047
+            }
+          }
+        },
+        "usage": {
+          "input_tokens": 35,
+          "output_tokens": 52
+        },
+        "latency_ms": 22.4
+      },
+      "latency_ms": 28.487458010204136
+    }
+  ]
+}

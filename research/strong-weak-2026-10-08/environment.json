@@ -1,0 +1,176 @@
+{
+  "commit": "ce67d42725d9b2a0a5933fdcb9db117b1ab8fd5e",
+  "hardware": "Apple M2 Max",
+  "memory_bytes": 103079215104,
+  "ollaya_version": "0.7.5",
+  "ollaya_models": {
+    "models": [
+      {
+        "name": "laya:en",
+        "model": "laya:en",
+        "size": 852602879,
+        "digest": "c305a9276531a47000bf93559d2c94f1ed6cbb67055c9151084682dad7655e9d",
+        "details": {
+          "parent_model": "",
+          "format": "onnx",
+          "family": "laya",
+          "families": [
+            "laya"
+          ],
+          "parameter_size": "421M",
+          "quantization_level": "F32"
+        },
+        "expires_at": null,
+        "size_vram": 852602879,
+        "context_length": 512,
+        "device": "metal"
+      }
+    ]
+  },
+  "kev_models": {
+    "models": [
+      {
+        "name": "kev-latest",
+        "description": "Kev pointer head on Qwen/Qwen3.5-0.8B-Base, serving jaredpalmer/kev-0.8b at temperature 2.35",
+        "release_date": "2026-09-25",
+        "run": "jaredpalmer/kev-0.8b",
+        "base": "Qwen/Qwen3.5-0.8B-Base",
+        "lora": 16,
+        "device": "mps",
+        "backend": "mlx",
+        "dtype": "bfloat16",
+        "temperature": 2.3510958125672174,
+        "cuda_graphs": null,
+        "prefix_cache": {
+          "size": 4,
+          "min_state_tokens": 0,
+          "hits": 8,
+          "misses": 543,
+          "cached_states": 4
+        },
+        "batches": {
+          "count": 551,
+          "requests": 551,
+          "queued": 0
+        }
+      },
+      {
+        "name": "jev-latest",
+        "description": "Kev pointer head on Qwen/Qwen3.5-0.8B-Base, serving jaredpalmer/kev-0.8b at temperature 2.35",
+        "release_date": "2026-09-25",
+        "run": "jaredpalmer/kev-0.8b",
+        "base": "Qwen/Qwen3.5-0.8B-Base",
+        "lora": 16,
+        "device": "mps",
+        "backend": "mlx",
+        "dtype": "bfloat16",
+        "temperature": 2.3510958125672174,
+        "cuda_graphs": null,
+        "prefix_cache": {
+          "size": 4,
+          "min_state_tokens": 0,
+          "hits": 8,
+          "misses": 543,
+          "cached_states": 4
+        },
+        "batches": {
+          "count": 551,
+          "requests": 551,
+          "queued": 0
+        }
+      }
+    ]
+  },
+  "kev_engine_revision": "eb45fd2381396eb7edc3964b753ebc1b0ab1da2b",
+  "laya_manifest": {
+    "schemaVersion": 2,
+    "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+    "config": {
+      "mediaType": "application/vnd.ollaya.config.v1+json",
+      "digest": "sha256:90932d7af15db68b44e284c8eedbaa62acf35fb4c991c8112dfa1ff0be5f45c1",
+      "size": 385,
+      "urls": [
+        "https://ollaya.dev/blobs/sha256-90932d7af15db68b44e284c8eedbaa62acf35fb4c991c8112dfa1ff0be5f45c1"
+      ]
+    },
+    "layers": [
+      {
+        "mediaType": "application/vnd.ollaya.graph.onnx",
+        "digest": "sha256:9dc0bb17f5f7e389cc4b99cdd14f76a1043a2a60ed91daf2358524b80ab35711",
+        "size": 2689236,
+        "urls": [
+          "https://ollaya.dev/blobs/sha256-9dc0bb17f5f7e389cc4b99cdd14f76a1043a2a60ed91daf2358524b80ab35711"
+        ],
+        "annotations": {
+          "org.ollaya.precision": "fp32"
+        }
+      },
+      {
+        "mediaType": "application/vnd.ollaya.graph.onnx",
+        "digest": "sha256:32b6a61761499a64d8f20406ed1baa5fe6f0e860a65717c03f804b15bc958886",
+        "size": 3708204,
+        "urls": [
+          "https://ollaya.dev/blobs/sha256-32b6a61761499a64d8f20406ed1baa5fe6f0e860a65717c03f804b15bc958886"
+        ],
+        "annotations": {
+          "org.ollaya.precision": "fp16"
+        }
+      },
+      {
+        "mediaType": "application/vnd.ollaya.weights",
+        "digest": "sha256:891102d372688fc2a094dac56a384bc537b87c63f21f9f3dac0be2b7cbc8d86c",
+        "size": 842609210,
+        "urls": [
+          "https://huggingface.co/convaiinnovations/laya/resolve/aa8c91ca088ec597df95a0d1c76b3063cb2ae5e8/model.safetensors"
+        ]
+      },
+      {
+        "mediaType": "application/vnd.ollaya.tokenizer",
+        "digest": "sha256:6c8aaa9a542084f2457eab775d4eeb51f92a70c0fd9de28d5edb0ddec3c08d30",
+        "size": 3583228,
+        "urls": [
+          "https://huggingface.co/convaiinnovations/laya/resolve/aa8c91ca088ec597df95a0d1c76b3063cb2ae5e8/tokenizer/tokenizer.json"
+        ]
+      },
+      {
+        "mediaType": "application/vnd.ollaya.decision",
+        "digest": "sha256:dff4b9fc6cb4285be70fa781cb9d1876a8061915808df41b63ffe7ddb13dbd2c",
+        "size": 478,
+        "urls": [
+          "https://ollaya.dev/blobs/sha256-dff4b9fc6cb4285be70fa781cb9d1876a8061915808df41b63ffe7ddb13dbd2c"
+        ]
+      },
+      {
+        "mediaType": "application/vnd.ollaya.calibration",
+        "digest": "sha256:a7af5a5fafb5b418420a63511194038faed0aade75af68d210144e67fd792426",
+        "size": 352,
+        "urls": [
+          "https://ollaya.dev/blobs/sha256-a7af5a5fafb5b418420a63511194038faed0aade75af68d210144e67fd792426"
+        ]
+      },
+      {
+        "mediaType": "application/vnd.ollaya.license",
+        "digest": "sha256:ec56c3e69fab09b41de6f1c80fdcc13b83ec1eef1f72d3022baaafde3d9307e9",
+        "size": 10297,
+        "urls": [
+          "https://ollaya.dev/blobs/sha256-ec56c3e69fab09b41de6f1c80fdcc13b83ec1eef1f72d3022baaafde3d9307e9"
+        ]
+      },
+      {
+        "mediaType": "application/vnd.ollaya.arch",
+        "digest": "sha256:22b6a4694f22af19c95a96763d4f953914d12b3bfe8e8b52667e18a6e0395067",
+        "size": 1489,
+        "urls": [
+          "https://ollaya.dev/blobs/sha256-22b6a4694f22af19c95a96763d4f953914d12b3bfe8e8b52667e18a6e0395067"
+        ]
+      }
+    ]
+  },
+  "routellm": {
+    "model": "routellm/bert_gpt4_augmented",
+    "runtime": "production CandleRouter; stable Rust 1.99; dev profile; Metal",
+    "load_ms": 2719.851,
+    "warmups": 3
+  },
+  "conditions": "Shared developer laptop, not an idle dedicated machine. Engine requests serial; background Rust compilation overlapped some runs. Different model tokenizers and context limits. No cloud answer generation."
+}
