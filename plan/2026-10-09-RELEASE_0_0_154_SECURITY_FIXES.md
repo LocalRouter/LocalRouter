@@ -13,11 +13,14 @@ locally, and released.
   #30 mcp-sse-endpoint-origin, #31 mcp-remote-buffer-caps.
   All merged cleanly; #30/#31 both touch `transport/sse.rs` and #23/#24
   both touch `docker.yml` in disjoint hunks.
-- [ ] Validate: stable clippy, fmt, full workspace tests, `npx tsc --noEmit`,
-  `npm run build`, `cargo audit`, `npm audit`.
-- [ ] Push master (closes the PRs as merged), confirm CI passes.
-- [ ] Build and run the app locally (`cargo tauri dev --no-watch`), exercise
-  the changed paths against the dev server on 33625.
+- [x] Validate: stable clippy, fmt, full workspace tests (105 suites,
+  3759 passed, 0 failed), `npx tsc --noEmit`, `npm run build`,
+  `cargo audit` (22 → 6 vulnerability advisories, all in the "not fixable
+  here" set), `npm audit --omit=dev` (7 left, build tooling only).
+- [x] Push master as c8ef937f (closes #23–#31 as merged); CI run
+  37994584095.
+- [x] Build and run the app locally (`cargo tauri dev --no-watch`), exercise
+  the changed paths against the dev server on 33625 (results below).
 - [ ] Show the user the local run and wait for the go-ahead.
 - [ ] Trigger the Release workflow on master for 0.0.154 (non-prerelease).
 - [ ] Monitor the release run; verify the published release, assets, updater
@@ -137,3 +140,30 @@ locally, and released.
   behaviour.
 - Verify in prod: large tool results (a few MiB) still arrive; nothing to
   migrate.
+
+## Local run (dev server 33625, 2026-10-09)
+
+- Gemini (#28): model list shows the provider's 48 models; non-streaming
+  chat returns "pong" with usage; streaming returns content chunks and
+  `[DONE]`. Upstream 400, 404 and 503 bodies surfaced as 502s contain neither
+  the key nor `key=`.
+- Guardrails (#29): with the dev config's four safety models (three on
+  Ollama, `llama-guard3:1b` not pulled), every request logs
+  "4 models, 3 verdicts, 1 errors, 1 actions": the 404 becomes one flagged
+  `guardrail_error` action, and the global `__global: notify` policy lets the
+  request through (HTTP 200). Before the fix the error was silent.
+- MCP SSE origin pin (#30): a fake legacy SSE server on 3002 advertising
+  `endpoint: http://127.0.0.1:3003/steal` is logged as "Ignoring MCP endpoint
+  event ... not on the same origin"; POSTs fall back to the configured URL and
+  the sink on 3003 received zero requests. server-everything on 3001
+  (relative endpoint) resolves to `http://127.0.0.1:3001/message?...`.
+- Found while testing, pre-existing since ab55a08e (2026-10-03, 0.0.149):
+  a legacy SSE server answering a POST with a plain `202 Accepted` body (the
+  TypeScript SDK's `SSEServerTransport`) failed with "No valid JSON found in
+  response" instead of waiting for the result on the stream. Fixed in
+  `read_inline_response` via `inline_response_json`: a non-JSON, non-SSE body
+  means "no inline response". Unit test
+  `inline_response_json_ignores_plain_acknowledgements`.
+- Dependencies (#26/#27): TLS to Gemini, Mistral and OpenRouter and the
+  model-list fetches work on the updated rustls/h2; the webview bundle built
+  from the updated lockfile loads.

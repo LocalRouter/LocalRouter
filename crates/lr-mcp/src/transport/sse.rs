@@ -225,6 +225,17 @@ impl SseTransport {
         ))
     }
 
+    /// JSON-RPC payload carried inline in a non-SSE POST body, if any.
+    ///
+    /// `None` means the body is empty or a plain acknowledgement (for example
+    /// "Accepted"), so the response is expected on the SSE stream instead.
+    fn inline_response_json(text: &str) -> Option<String> {
+        if text.trim().is_empty() {
+            return None;
+        }
+        Self::parse_sse_response(text).ok()
+    }
+
     /// Read a POST response incrementally; SSE may remain open after the result.
     async fn read_inline_response(
         &self,
@@ -240,11 +251,17 @@ impl SseTransport {
                 .text()
                 .await
                 .map_err(|e| AppError::Mcp(format!("Failed to read MCP response: {e}")))?;
-            if text.trim().is_empty() {
+            // Legacy servers sometimes send SSE framing without an SSE content
+            // type; others acknowledge the POST with a plain-text body such as
+            // "Accepted" (the TypeScript SDK's SSEServerTransport answers
+            // 202 "Accepted") and deliver the result on the persistent stream.
+            let Some(json) = Self::inline_response_json(&text) else {
+                tracing::debug!(
+                    "SSE POST acknowledged without an inline JSON-RPC body ({} bytes); waiting on the stream",
+                    text.len()
+                );
                 return Ok(None);
-            }
-            // Legacy servers sometimes send SSE framing without an SSE content type.
-            let json = Self::parse_sse_response(&text)?;
+            };
             return serde_json::from_str(&json)
                 .map(Some)
                 .map_err(|e| AppError::Mcp(format!("Invalid MCP JSON response: {e}")));
@@ -1672,6 +1689,27 @@ mod tests {
         assert_eq!(transport.next_request_id(), 1);
         assert_eq!(transport.next_request_id(), 2);
         assert_eq!(transport.next_request_id(), 3);
+    }
+
+    /// A legacy SSE server may acknowledge a POST with a plain-text body (the
+    /// TypeScript SDK answers 202 "Accepted") and send the result on the
+    /// stream; that must not be treated as a malformed inline response.
+    #[test]
+    fn inline_response_json_ignores_plain_acknowledgements() {
+        assert_eq!(SseTransport::inline_response_json("Accepted"), None);
+        assert_eq!(SseTransport::inline_response_json("  \n"), None);
+        assert_eq!(
+            SseTransport::inline_response_json("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}")
+                .as_deref(),
+            Some("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}")
+        );
+        assert_eq!(
+            SseTransport::inline_response_json(
+                "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n\n"
+            )
+            .as_deref(),
+            Some("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}")
+        );
     }
 
     #[test]
