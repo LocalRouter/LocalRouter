@@ -16,7 +16,7 @@ Both are backed by a per-session, in-memory SQLite FTS5 index (with optional hyb
 
 <!-- @entry catalog-compression -->
 
-Catalog compression runs during MCP session initialization when MCP Catalog Indexing is on. It applies progressive phases, in order, until the estimated catalog size falls below the catalog threshold (default: 1,000 bytes).
+Catalog compression runs during MCP session initialization when MCP Catalog Indexing is on. It applies progressive phases, in order, until the estimated catalog size falls below the catalog threshold (default: 16,384 bytes).
 
 <!-- @entry compression-phase-1 -->
 
@@ -102,7 +102,7 @@ Two thresholds control compression behavior:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `catalog_threshold_bytes` | 1,000 | Catalog size above which MCP Catalog Indexing starts compressing |
+| `catalog_threshold_bytes` | 16,384 | Catalog size above which MCP Catalog Indexing starts compressing |
 | `response_threshold_bytes` | 16,384 | Tool response size above which the response is indexed and replaced with a preview |
 
 The preview shown in a compressed response is an eighth of the response threshold, between 256 bytes and 2 KB. Raise the response threshold to compress fewer responses; lower it for models with small context windows.

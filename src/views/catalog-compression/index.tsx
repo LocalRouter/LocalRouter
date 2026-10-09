@@ -27,7 +27,7 @@ import type { McpToolDisplayItem } from "@/components/shared/McpToolDisplay"
 import type { ContextManagementConfig, ActiveSessionInfo, CatalogSourceEntry, CatalogCompressionPreview, PreviewCatalogCompressionParams, PreviewServerEntry, ClientInfo, ClientFeatureStatus, GetFeatureClientsStatusParams, EmbeddingStatus } from "@/types/tauri-commands"
 
 // Must match defaults in crates/lr-config/src/types.rs
-const DEFAULT_CATALOG_THRESHOLD_BYTES = 1000
+const DEFAULT_CATALOG_THRESHOLD_BYTES = 16384
 
 
 interface CatalogCompressionViewProps {
@@ -727,7 +727,7 @@ export function CatalogCompressionView({ activeSubTab, onTabChange }: CatalogCom
         {/* Preview Tab */}
         <TabsContent value="preview" className="flex-1 min-h-0 mt-4">
           <CompressionPreview
-            initialThreshold={config?.catalog_threshold_bytes ?? 1000}
+            initialThreshold={config?.catalog_threshold_bytes ?? DEFAULT_CATALOG_THRESHOLD_BYTES}
           />
         </TabsContent>
       </Tabs>
@@ -778,7 +778,7 @@ function CatalogThresholdSlider({ config, updateField }: CatalogThresholdSliderP
             onChange={(e) => setSliderValue(Number(e.target.value))}
             min={0}
             max={102400}
-            step={100}
+            step={1024}
             className="w-full"
           />
           <div className="flex justify-between text-xs text-muted-foreground">
@@ -893,7 +893,7 @@ function CompressionPreview({ initialThreshold }: CompressionPreviewProps) {
               onChange={(e) => setThreshold(Number(e.target.value))}
               min={0}
               max={102400}
-              step={100}
+              step={1024}
               className="w-full"
             />
             <div className="flex justify-between text-xs text-muted-foreground">
