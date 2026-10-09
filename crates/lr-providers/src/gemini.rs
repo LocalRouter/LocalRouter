@@ -19,6 +19,25 @@ use super::{
 use crate::openai_compatible::stream_usage;
 use lr_types::{AppError, AppResult};
 
+/// Header carrying the Gemini API key.
+///
+/// The key is deliberately sent as a header rather than a `?key=` query
+/// parameter: reqwest attaches the full request URL to transport errors
+/// (timeouts, connection failures), and those messages are surfaced to API
+/// clients as 502 bodies, logs and monitor events. Keeping the key out of the
+/// URL means no error path can disclose it.
+const API_KEY_HEADER: &str = "x-goog-api-key";
+
+/// Format a transport error without its URL (defense in depth: URLs never
+/// carry the key any more, but reqwest's `Display` would otherwise echo the
+/// full request URL, query string included).
+fn transport_error_message(e: reqwest_middleware::Error) -> String {
+    match e {
+        reqwest_middleware::Error::Reqwest(e) => e.without_url().to_string(),
+        reqwest_middleware::Error::Middleware(e) => e.to_string(),
+    }
+}
+
 /// Google Gemini provider
 pub struct GeminiProvider {
     client: ClientWithMiddleware,
@@ -213,12 +232,15 @@ impl ModelProvider for GeminiProvider {
         // Query a single model instead of listing all models.
         // Accept both 200 (exists) and 404 (retired but API up, auth valid).
         // A bad API key returns 401/403, correctly treated as unhealthy.
-        let url = format!(
-            "{}/models/gemini-2.0-flash?key={}",
-            self.base_url, self.api_key
-        );
+        let url = format!("{}/models/gemini-2.0-flash", self.base_url);
 
-        match self.client.get(&url).send().await {
+        match self
+            .client
+            .get(&url)
+            .header(API_KEY_HEADER, &self.api_key)
+            .send()
+            .await
+        {
             Ok(response) => {
                 let latency_ms = start.elapsed().as_millis() as u64;
                 let status = response.status();
@@ -266,12 +288,20 @@ impl ModelProvider for GeminiProvider {
     }
 
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
-        let url = format!("{}/models?key={}", self.base_url, self.api_key);
+        let url = format!("{}/models", self.base_url);
         debug!("Fetching Gemini models from: {}", url);
 
-        let response =
-            self.client.get(&url).send().await.map_err(|e| {
-                AppError::Provider(format!("Failed to connect to Gemini API: {}", e))
+        let response = self
+            .client
+            .get(&url)
+            .header(API_KEY_HEADER, &self.api_key)
+            .send()
+            .await
+            .map_err(|e| {
+                AppError::Provider(format!(
+                    "Failed to connect to Gemini API: {}",
+                    transport_error_message(e)
+                ))
             })?;
 
         if !response.status().is_success() {
@@ -372,10 +402,7 @@ impl ModelProvider for GeminiProvider {
             format!("models/{}", request.model)
         };
 
-        let url = format!(
-            "{}/{}:generateContent?key={}",
-            self.base_url, model_name, self.api_key
-        );
+        let url = format!("{}/{}:generateContent", self.base_url, model_name);
         debug!("Sending completion request to Gemini: {}", url);
 
         let (system_instruction, gemini_contents) =
@@ -433,10 +460,16 @@ impl ModelProvider for GeminiProvider {
         let response = self
             .client
             .post(&url)
+            .header(API_KEY_HEADER, &self.api_key)
             .json(&gemini_request)
             .send()
             .await
-            .map_err(|e| AppError::Provider(format!("Gemini request failed: {}", e)))?;
+            .map_err(|e| {
+                AppError::Provider(format!(
+                    "Gemini request failed: {}",
+                    transport_error_message(e)
+                ))
+            })?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -559,8 +592,8 @@ impl ModelProvider for GeminiProvider {
         };
 
         let url = format!(
-            "{}/{}:streamGenerateContent?key={}&alt=sse",
-            self.base_url, model_name, self.api_key
+            "{}/{}:streamGenerateContent?alt=sse",
+            self.base_url, model_name
         );
         debug!("Sending streaming completion request to Gemini: {}", url);
 
@@ -619,10 +652,16 @@ impl ModelProvider for GeminiProvider {
         let response = self
             .client
             .post(&url)
+            .header(API_KEY_HEADER, &self.api_key)
             .json(&gemini_request)
             .send()
             .await
-            .map_err(|e| AppError::Provider(format!("Gemini streaming request failed: {}", e)))?;
+            .map_err(|e| {
+                AppError::Provider(format!(
+                    "Gemini streaming request failed: {}",
+                    transport_error_message(e)
+                ))
+            })?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -864,10 +903,7 @@ impl ModelProvider for GeminiProvider {
         };
 
         // Gemini embeddings use the embedContent endpoint
-        let url = format!(
-            "{}/models/{}:embedContent?key={}",
-            self.base_url, request.model, self.api_key
-        );
+        let url = format!("{}/models/{}:embedContent", self.base_url, request.model);
 
         let gemini_request = serde_json::json!({
             "content": {
@@ -883,10 +919,16 @@ impl ModelProvider for GeminiProvider {
             .client
             .post(&url)
             .header("Content-Type", "application/json")
+            .header(API_KEY_HEADER, &self.api_key)
             .json(&gemini_request)
             .send()
             .await
-            .map_err(|e| AppError::Provider(format!("Gemini request failed: {}", e)))?;
+            .map_err(|e| {
+                AppError::Provider(format!(
+                    "Gemini request failed: {}",
+                    transport_error_message(e)
+                ))
+            })?;
 
         let status = response.status();
         if !status.is_success() {
@@ -945,7 +987,7 @@ impl ModelProvider for GeminiProvider {
             format!("models/{}", request.model)
         };
 
-        let url = format!("{}/{}:predict?key={}", self.base_url, model, self.api_key);
+        let url = format!("{}/{}:predict", self.base_url, model);
 
         // Imagen request format
         let instances = vec![serde_json::json!({
@@ -995,10 +1037,13 @@ impl ModelProvider for GeminiProvider {
             .client
             .post(&url)
             .header("Content-Type", "application/json")
+            .header(API_KEY_HEADER, &self.api_key)
             .json(&gemini_request)
             .send()
             .await
-            .map_err(|e| AppError::Provider(format!("Request failed: {}", e)))?;
+            .map_err(|e| {
+                AppError::Provider(format!("Request failed: {}", transport_error_message(e)))
+            })?;
 
         let status = response.status();
         if !status.is_success() {
@@ -1246,6 +1291,75 @@ impl GeminiUsageMetadata {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Security regression: the API key must travel in a header, never in the
+    /// URL, and transport errors must not echo the URL. Previously the key was
+    /// a `?key=` query parameter and reqwest's error text (which includes the
+    /// full URL) was returned to API clients in 502 bodies.
+    #[tokio::test]
+    async fn api_key_never_appears_in_url_or_transport_errors() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        const KEY: &str = "AIzaSyTESTKEY-secret-0123456789";
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (seen_tx, seen_rx) = tokio::sync::oneshot::channel::<String>();
+        tokio::spawn(async move {
+            // First connection: read the request head, answer 500, report what we saw.
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = Vec::new();
+            let mut tmp = [0u8; 1024];
+            loop {
+                let n = sock.read(&mut tmp).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&tmp[..n]);
+                if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let _ = sock
+                .write_all(b"HTTP/1.1 500 Internal Server Error\r\ncontent-length: 4\r\nconnection: close\r\n\r\nboom")
+                .await;
+            let _ = seen_tx.send(String::from_utf8_lossy(&buf).to_string());
+            // Second connection: drop immediately so reqwest reports a transport error.
+            let (sock, _) = listener.accept().await.unwrap();
+            drop(sock);
+        });
+
+        let provider =
+            GeminiProvider::with_base_url(KEY.to_string(), format!("http://{}/v1beta", addr));
+
+        // 1. The request carries the key in a header and not in the URL.
+        let err = provider.list_models().await.unwrap_err().to_string();
+        let seen = seen_rx.await.unwrap();
+        let request_line = seen.lines().next().unwrap_or_default().to_string();
+        assert!(
+            request_line.starts_with("GET /v1beta/models "),
+            "unexpected request line: {request_line}"
+        );
+        assert!(
+            !request_line.contains(KEY),
+            "key leaked into URL: {request_line}"
+        );
+        assert!(
+            seen.to_ascii_lowercase()
+                .contains(&format!("{}: {}", API_KEY_HEADER, KEY).to_ascii_lowercase()),
+            "key header missing from request:\n{seen}"
+        );
+        assert!(!err.contains(KEY), "key leaked into HTTP error: {err}");
+
+        // 2. A transport-level failure is reported without the URL (and so
+        //    without anything that was ever in the URL).
+        let err = provider.list_models().await.unwrap_err().to_string();
+        assert!(!err.contains(KEY), "key leaked into transport error: {err}");
+        assert!(
+            !err.contains("for url"),
+            "transport error still echoes the URL: {err}"
+        );
+    }
     use crate::{ChatMessageContent, FunctionCall, ToolCall};
 
     #[test]
