@@ -72,6 +72,33 @@ jobs:
           echo "appimage_url_arm64=https://github.com/${{ github.repository }}/releases/download/v${VERSION}/LocalRouter_${VERSION}_aarch64.AppImage" >> "$GITHUB_OUTPUT"
           echo "Resolved version: $VERSION (prerelease=$IS_PRERELEASE)"
 
+      - name: Compute AppImage checksums
+        id: sums
+        # Download the exact release assets the image will fetch and pin their
+        # SHA-256 into the build, so the Dockerfile verifies what it downloads.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          mkdir -p /tmp/appimages
+          gh release download "v${VERSION}" --repo "${GITHUB_REPOSITORY}" \
+            --dir /tmp/appimages \
+            --pattern "LocalRouter_${VERSION}_amd64.AppImage" \
+            --pattern "LocalRouter_${VERSION}_aarch64.AppImage"
+          SHA_AMD64="$(sha256sum "/tmp/appimages/LocalRouter_${VERSION}_amd64.AppImage" | cut -d' ' -f1)"
+          SHA_ARM64="$(sha256sum "/tmp/appimages/LocalRouter_${VERSION}_aarch64.AppImage" | cut -d' ' -f1)"
+          for sum in "$SHA_AMD64" "$SHA_ARM64"; do
+            if ! [[ "$sum" =~ ^[0-9a-f]{64}$ ]]; then
+              echo "Error: implausible sha256 '$sum'"
+              exit 1
+            fi
+          done
+          echo "sha256_amd64=$SHA_AMD64" >> "$GITHUB_OUTPUT"
+          echo "sha256_arm64=$SHA_ARM64" >> "$GITHUB_OUTPUT"
+          echo "amd64: $SHA_AMD64"
+          echo "arm64: $SHA_ARM64"
+          rm -rf /tmp/appimages
+
       - name: Set up QEMU (for arm64 image stages)
         uses: docker/setup-qemu-action@v3
 
@@ -112,6 +139,8 @@ jobs:
           build-args: |
             APPIMAGE_URL_AMD64=${{ steps.ver.outputs.appimage_url_amd64 }}
             APPIMAGE_URL_ARM64=${{ steps.ver.outputs.appimage_url_arm64 }}
+            APPIMAGE_SHA256_AMD64=${{ steps.sums.outputs.sha256_amd64 }}
+            APPIMAGE_SHA256_ARM64=${{ steps.sums.outputs.sha256_arm64 }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.version=${{ steps.ver.outputs.version }}
