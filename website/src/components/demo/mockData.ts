@@ -1,3 +1,4 @@
+import { routingTemplate } from '@app/components/strategy/RoutingPolicyEditor'
 /**
  * Mock data for website demo
  *
@@ -6,7 +7,7 @@
  */
 
 // Types for mock data validation - see src/types/tauri-commands.ts for full definitions
-import type { ClientInfo, RouteLLMStatus, SkillInfo } from '@app/types/tauri-commands'
+import type { ClientInfo, SkillInfo } from '@app/types/tauri-commands'
 
 // MCP Server interface - simplified for mock data
 // Full type: McpServerInfo from @app/types/tauri-commands
@@ -874,7 +875,7 @@ export const mockData = {
         model_name: "localrouter/auto",
         prioritized_models: [] as [string, string][],
         available_models: [] as [string, string][],
-        routellm_config: null,
+        routing_policy: null,
       },
       rate_limits: [
         { limit_type: 'requests' as const, value: 100, time_window_seconds: 3600, enabled: true },
@@ -905,7 +906,7 @@ export const mockData = {
           ["groq-fast", "llama-3.2-3b-instruct"],
         ] as [string, string][],
         available_models: [] as [string, string][],
-        routellm_config: null,
+        routing_policy: null,
       },
       rate_limits: [],
       free_tier_only: true,
@@ -933,14 +934,7 @@ export const mockData = {
           ["gemini-google", "gemini-1.5-pro"],
         ] as [string, string][],
         available_models: [] as [string, string][],
-        routellm_config: {
-          enabled: true,
-          threshold: 0.5,
-          weak_models: [
-            ["openai-primary", "gpt-4o-mini"],
-            ["groq-fast", "llama-3.2-3b-instruct"],
-          ] as [string, string][],
-        },
+        routing_policy: routingTemplate("client_mode"),
       },
       rate_limits: [],
       free_tier_only: false,
@@ -964,7 +958,7 @@ export const mockData = {
           ["ollama-local", "mistral:latest"],
         ] as [string, string][],
         available_models: [] as [string, string][],
-        routellm_config: null,
+        routing_policy: null,
       },
       rate_limits: [],
       free_tier_only: false,
@@ -1199,14 +1193,7 @@ export const mockData = {
     },
   ],
 
-  // RouteLLMStatus - matches src/types/tauri-commands.ts
-  routellmStatus: {
-    state: 'downloaded_not_running',
-    memory_usage_mb: null,
-    last_access_secs_ago: null,
-    model_dir: '~/.localrouter/routellm',
-    model_name: 'routellm/bert_gpt4_augmented',
-  } satisfies RouteLLMStatus,
+
 
   // UpdateConfig - matches src/types/tauri-commands.ts
   updateConfig: {

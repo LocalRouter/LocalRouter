@@ -74,11 +74,11 @@ pub async fn list_models<B>(
         }
     }
 
-    // If auto-routing is configured with prioritized models and permission is enabled,
+    // If auto-routing is configured with chat destinations and permission is enabled,
     // prepend the virtual localrouter/auto model to the list
     let mut auto_model: Option<ModelData> = None;
     if let Some(auto_config) = &strategy.auto_config {
-        if auto_config.permission.is_enabled() && !auto_config.prioritized_models.is_empty() {
+        if auto_config.permission.is_enabled() && auto_config.has_chat_candidates() {
             auto_model = Some(ModelData {
                 id: auto_config.model_name.clone(),
                 object: "model".to_string(),
@@ -176,7 +176,7 @@ pub async fn get_model<B>(
 
     // Special handling for auto router virtual model
     if let Some(auto_config) = &strategy.auto_config {
-        if !auto_config.prioritized_models.is_empty() && model_id == auto_config.model_name {
+        if auto_config.has_chat_candidates() && model_id == auto_config.model_name {
             return Ok(Json(ModelData {
                 id: auto_config.model_name.clone(),
                 object: "model".to_string(),

@@ -295,9 +295,10 @@ pub(crate) async fn apply_model_access_checks(
     if request.model == "localrouter/auto" {
         if let Ok((client, strategy)) = get_client_with_strategy(state, &auth.api_key_id) {
             if let Some(auto_config) = &strategy.auto_config {
-                if auto_config.prioritized_models.is_empty() {
+                if !auto_config.has_chat_candidates() {
                     return Err(llm_guard.capture_err(ApiErrorResponse::bad_request(
-                        "Auto routing has no prioritized models configured".to_string(),
+                        "Auto routing has no priority or policy destination models configured"
+                            .to_string(),
                     )));
                 }
 
@@ -1991,73 +1992,19 @@ pub(crate) fn convert_to_provider_request(
     })
 }
 
-/// Spawn a RouteLLM classification for `localrouter/auto` requests.
-///
-/// Returns `None` when the client has no RouteLLM config, no
-/// RouteLLM service is loaded, or the client/strategy resolves to
-/// nothing. When spawned, the task returns an `Option<PreComputedRouting>`
-/// the caller stamps onto the provider request so the router can skip
-/// its own classification step.
-pub(crate) fn spawn_routellm_classification(
+/// Classify original role-aware input before compression; provider choice is configured per client.
+pub(crate) fn spawn_decision_classification(
     state: &AppState,
     client_context: Option<&ClientAuthContext>,
     request: &ChatCompletionRequest,
 ) -> Option<tokio::task::JoinHandle<Option<PreComputedRouting>>> {
-    let client_id = &client_context?.client_id;
-    let config = state.config_manager.get();
-    let client = config.clients.iter().find(|c| c.id == *client_id)?;
-    let strategy = config
-        .strategies
-        .iter()
-        .find(|s| s.id == client.strategy_id)?;
-    let auto_config = strategy.auto_config.as_ref()?;
-    let routellm_config = auto_config.routellm_config.as_ref().filter(|c| c.enabled)?;
-    let service = state.router.get_routellm_service()?.clone();
-    let threshold = routellm_config.threshold;
-    let request_clone = request.clone();
-    let metrics_collector = state.metrics_collector.clone();
-
+    let client_id = client_context?.client_id.clone();
+    let router = state.router.clone();
+    let request = convert_to_provider_request(request).ok()?;
     Some(lr_types::spawn_traced(async move {
-        let prompt = request_clone
-            .messages
-            .iter()
-            .filter_map(|m| match &m.content {
-                Some(MessageContent::Text(text)) => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        match service.predict_with_threshold(&prompt, threshold).await {
-            Ok((is_strong, win_rate)) => {
-                tracing::info!(
-                    "RouteLLM classification: win_rate={:.3}, threshold={:.3}, selected={}",
-                    win_rate,
-                    threshold,
-                    if is_strong { "strong" } else { "weak" }
-                );
-                // Track strong/weak classification for dashboard (persisted to metrics DB)
-                if is_strong {
-                    metrics_collector.record_feature_event("feature_routellm_strong", 0, 0.0);
-                } else {
-                    metrics_collector.record_feature_event("feature_routellm_weak", 0, 0.0);
-                }
-                Some(PreComputedRouting {
-                    is_strong,
-                    win_rate,
-                })
-            }
-            Err(e) => {
-                tracing::warn!("RouteLLM classification failed: {}", e);
-                None
-            }
-        }
+        router.classify_routing(&client_id, &request).await
     }))
 }
-
-// ============================================================================
-// Shared pipeline entry point: `run_turn_pipeline`
-// ============================================================================
 
 /// Per-endpoint capability flags. Adapters opt into the features
 /// they want to run for a given turn. Each stage in
@@ -2067,9 +2014,9 @@ pub(crate) struct PipelineCaps {
     /// Run prompt compression (mutates the request's messages
     /// in-place when the compressor produces a shorter version).
     pub allow_compression: bool,
-    /// Resolve `localrouter/auto` requests via RouteLLM classification
+    /// Resolve `localrouter/auto` requests via Decision routing classification
     /// and bake the decision into `provider_request.pre_computed_routing`.
-    pub allow_routellm: bool,
+    pub allow_decision_routing: bool,
     /// Spawn the guardrail scan as a parallel `JoinHandle` (returned
     /// on `TurnContext`). When `false`, the scan runs sequentially
     /// inside `run_turn_pipeline` and any result is handled via
@@ -2084,33 +2031,26 @@ impl PipelineCaps {
     pub(crate) fn chat() -> Self {
         Self {
             allow_compression: true,
-            allow_routellm: true,
+            allow_decision_routing: true,
             parallel_guardrails: true,
         }
     }
 
-    /// Defaults for `/v1/responses` — compression runs, RouteLLM
-    /// does not (the adapter never sees `localrouter/auto` in its
-    /// model field because `/responses` resolves models differently),
-    /// guardrails run sequentially (simpler; no parallelism win for
-    /// the typical single-turn pattern).
+    /// Responses uses the same policy routing and preserves metadata.
     pub(crate) fn responses() -> Self {
         Self {
             allow_compression: true,
-            allow_routellm: false,
+            allow_decision_routing: true,
             parallel_guardrails: false,
         }
     }
 
     /// Defaults for legacy `/v1/completions` — every stage enabled.
-    /// Historically completions didn't run compression or RouteLLM;
-    /// threading them through `run_turn_pipeline` brings the legacy
-    /// endpoint up to feature parity at no extra cost (both are
-    /// no-ops for the typical single-prompt case).
+    /// Uses the shared compression and configured decision-policy stages.
     pub(crate) fn completions() -> Self {
         Self {
             allow_compression: true,
-            allow_routellm: true,
+            allow_decision_routing: true,
             parallel_guardrails: true,
         }
     }
@@ -2155,7 +2095,7 @@ pub(crate) struct TurnContext {
 }
 
 /// Canonical pre-LLM pipeline. Runs validate → access checks → rate
-/// limits → secret scan → guardrails → compression → RouteLLM →
+/// limits → secret scan → guardrails → compression → Decision routing →
 /// provider-request conversion in order, gated by `caps`.
 ///
 /// Emits validation / rate-limit monitor events with the supplied
@@ -2193,7 +2133,7 @@ pub(crate) async fn run_turn_pipeline(
     let caps = if is_duplicate {
         PipelineCaps {
             allow_compression: false,
-            allow_routellm: false,
+            allow_decision_routing: false,
             parallel_guardrails: false,
         }
     } else {
@@ -2281,10 +2221,10 @@ pub(crate) async fn run_turn_pipeline(
         None
     };
 
-    // Stages 6–7: compression + RouteLLM. Both spawn as tasks (so
+    // Stages 6–7: compression + Decision routing. Both spawn as tasks (so
     // they run concurrently with the in-flight guardrails scan) and
     // we await them together via `tokio::join!` before converting
-    // to the provider shape — RouteLLM's result bakes into
+    // to the provider shape — Decision routing's result bakes into
     // `provider_request.pre_computed_routing`, and compression may
     // mutate `chat_req.messages`, so both must resolve before the
     // conversion step.
@@ -2301,8 +2241,8 @@ pub(crate) async fn run_turn_pipeline(
     } else {
         None
     };
-    let routellm_task = if caps.allow_routellm && chat_req.model == "localrouter/auto" {
-        spawn_routellm_classification(state, client_auth.map(|e| &e.0), &chat_req)
+    let decision_task = if caps.allow_decision_routing && chat_req.model == "localrouter/auto" {
+        spawn_decision_classification(state, client_auth.map(|e| &e.0), &chat_req)
     } else {
         None
     };
@@ -2364,11 +2304,11 @@ pub(crate) async fn run_turn_pipeline(
         }
     }
 
-    // Await RouteLLM
-    let routellm_routing = if let Some(handle) = routellm_task {
+    // Await Decision routing
+    let decision_routing = if let Some(handle) = decision_task {
         handle.await.map_err(|e| {
             llm_guard.capture_err(ApiErrorResponse::internal_error(format!(
-                "RouteLLM task failed: {}",
+                "Decision routing task failed: {}",
                 e
             )))
         })?
@@ -2379,7 +2319,7 @@ pub(crate) async fn run_turn_pipeline(
     // Stage 8: convert to provider request (with routing stamped on)
     let mut provider_request =
         convert_to_provider_request(&chat_req).map_err(|e| llm_guard.capture_err(e))?;
-    if let Some(routing) = routellm_routing {
+    if let Some(routing) = decision_routing {
         provider_request.pre_computed_routing = Some(routing);
     }
 
@@ -2621,25 +2561,23 @@ mod tests {
     #[test]
     fn pipeline_caps_chat_enables_everything() {
         // The chat endpoint is the most aggressive — it parallelizes
-        // guardrails with dispatch, runs RouteLLM for `localrouter/auto`,
+        // guardrails with dispatch, runs Decision routing for `localrouter/auto`,
         // and spawns prompt compression. A regression that quietly
         // disables one of these would silently degrade
         // `/v1/chat/completions`.
         let caps = PipelineCaps::chat();
         assert!(caps.allow_compression);
-        assert!(caps.allow_routellm);
+        assert!(caps.allow_decision_routing);
         assert!(caps.parallel_guardrails);
     }
 
     #[test]
-    fn pipeline_caps_responses_skips_routellm_and_runs_serial() {
-        // /v1/responses adapter sets its own model on the wire (no
-        // `localrouter/auto`); RouteLLM is a no-op. Sequential
-        // guardrails are intentional — no parallelism win for the
-        // typical single-turn `/responses` pattern.
+    fn pipeline_caps_responses_routes_and_runs_serial() {
+        // Responses preserves the auto model and explicit mode metadata.
+        // Sequential guardrails remain intentional for this adapter.
         let caps = PipelineCaps::responses();
         assert!(caps.allow_compression);
-        assert!(!caps.allow_routellm);
+        assert!(caps.allow_decision_routing);
         assert!(!caps.parallel_guardrails);
     }
 
@@ -2652,7 +2590,7 @@ mod tests {
         // from collapsed prompts), this test guards the diff.
         let caps = PipelineCaps::completions();
         assert!(caps.allow_compression);
-        assert!(caps.allow_routellm);
+        assert!(caps.allow_decision_routing);
         assert!(caps.parallel_guardrails);
     }
 

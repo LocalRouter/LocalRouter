@@ -250,8 +250,8 @@ function getStrategyProviders(client: Client, strategies: GraphStrategy[]): Set<
   for (const [providerId] of auto.available_models ?? []) {
     providers.add(providerId)
   }
-  if (auto.routellm_config?.enabled) {
-    for (const [providerId] of auto.routellm_config.weak_models ?? []) {
+  if (auto.routing_policy?.enabled) {
+    for (const [providerId] of [...auto.routing_policy.options.flatMap(o => o.models), ...(auto.routing_policy.decision_model ? [auto.routing_policy.decision_model] : [])]) {
       providers.add(providerId)
     }
   }

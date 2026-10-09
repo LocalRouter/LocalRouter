@@ -74,7 +74,7 @@ export function ClientDetail({
   const isProxy = llmMode === "proxy"
   // The LLM (models) tab applies to the native gateway and to proxy clients —
   // for a proxy client its Model Permissions + rate limits drive interception.
-  // Proxy clients get a restricted variant (no weak-model / free-tier routing).
+  // Proxy clients get a restricted variant (no decision policies / free-tier routing).
   const showModelsTab = llmMode === "gateway" || isProxy
   const showMcpTab = mcpMode !== "off"
   // Try-It-Out needs an address we can construct a request against: the native

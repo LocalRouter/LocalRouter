@@ -16,8 +16,8 @@
  * 4. Run `npx tsc --noEmit` to verify types compile
  *
  * Usage:
- *   import type { RouteLLMTestResult, RouteLLMTestPredictionParams } from '@/types/tauri-commands'
- *   const result = await invoke<RouteLLMTestResult>('routellm_test_prediction', params satisfies RouteLLMTestPredictionParams)
+ *   import type { RoutingPolicyPreview, PreviewRoutingPolicyParams } from '@/types/tauri-commands'
+ *   const result = await invoke<RoutingPolicyPreview>('preview_routing_policy', params satisfies PreviewRoutingPolicyParams)
  *
  * See AGENTS.md "Adding/Modifying Tauri Commands" for full checklist.
  */
@@ -309,14 +309,40 @@ export interface AvailableModelsSelection {
   selected_models: [string, string][]
 }
 
-/**
- * RouteLLM routing configuration within auto model config.
- * Rust: crates/lr-config/src/types.rs - RouteLLMConfig struct
- */
-export interface RouteLLMConfig {
+/** Rust: crates/lr-config/src/routing_policy.rs */
+export interface RoutingOption {
+  id: string
+  description: string
+  models: [string, string][]
+}
+export interface RoutingPolicy {
+  version: number
   enabled: boolean
-  threshold: number
-  weak_models: [string, string][]
+  mode: 'semantic' | 'client_mode'
+  decision_model: [string, string] | null
+  question: string
+  options: RoutingOption[]
+  default_route: string
+  mode_rules: { mode: string; route: string }[]
+  min_probability: number
+  timeout_ms: number
+  max_context_chars: number
+  history_messages: number
+}
+/** Rust: lr-providers::PreComputedRouting */
+export interface RoutingDecision {
+  route: string
+  source: string
+  reason: string
+  probabilities: Record<string, number>
+  latency_ms: number
+  policy_version: number
+  context_omitted: number
+}
+/** Rust: src-tauri/src/ui/commands_decision_routing.rs */
+export interface RoutingPolicyPreview {
+  decision: RoutingDecision
+  context: unknown
 }
 
 /**
@@ -328,7 +354,7 @@ export interface AutoModelConfig {
   model_name: string
   prioritized_models: [string, string][]
   available_models: [string, string][]
-  routellm_config?: RouteLLMConfig | null
+  routing_policy?: RoutingPolicy | null
 }
 
 /**
@@ -1573,46 +1599,6 @@ export interface LoggingConfigResponse {
 }
 
 // =============================================================================
-// RouteLLM Types
-// Rust: crates/lr-routellm/src/status.rs
-// =============================================================================
-
-/**
- * RouteLLM operational state.
- * Rust: crates/lr-routellm/src/status.rs - RouteLLMState enum
- */
-export type RouteLLMState =
-  | 'not_downloaded'
-  | 'downloading'
-  | 'downloaded_not_running'
-  | 'initializing'
-  | 'started'
-
-/**
- * RouteLLM status information.
- * Rust: crates/lr-routellm/src/status.rs - RouteLLMStatus struct
- */
-export interface RouteLLMStatus {
-  state: RouteLLMState
-  memory_usage_mb?: number | null
-  last_access_secs_ago?: number | null
-  /** Display path for the routellm directory (e.g. ~/.localrouter-dev/routellm/) */
-  model_dir: string
-  /** HuggingFace model identifier (e.g. routellm/bert_gpt4_augmented) */
-  model_name: string
-}
-
-/**
- * RouteLLM test prediction result.
- * Rust: crates/lr-routellm/src/status.rs - RouteLLMTestResult struct
- */
-export interface RouteLLMTestResult {
-  is_strong: boolean
-  win_rate: number
-  latency_ms: number
-}
-
-// =============================================================================
 // Update Configuration Types
 // Rust: crates/lr-config/src/types.rs
 // =============================================================================
@@ -2390,6 +2376,7 @@ export interface RecoverClientStrategyParams {
 /** Params for update_strategy */
 export interface UpdateStrategyParams {
   strategyId: string
+  modelPermissions?: ModelPermissions | null
   name?: string | null
   allowedModels?: AvailableModelsSelection | null
   autoConfig?: AutoModelConfig | null
@@ -2423,7 +2410,7 @@ export interface ClientFeatureStatus {
 
 /** Params for get_feature_clients_status */
 export interface GetFeatureClientsStatusParams {
-  feature: 'json_repair' | 'prompt_compression' | 'guardrails' | 'secret_scanning' | 'catalog_compression' | 'context_management' | 'memory' | 'strong_weak' | 'coding_agents'
+  feature: 'json_repair' | 'prompt_compression' | 'guardrails' | 'secret_scanning' | 'catalog_compression' | 'context_management' | 'memory' | 'decision_routing' | 'strong_weak' | 'coding_agents'
 }
 
 // =============================================================================
@@ -2746,20 +2733,12 @@ export interface CancelInlineOAuthFlowParams {
   flowId: string
 }
 
-// =============================================================================
-// RouteLLM Commands
-// Rust: src-tauri/src/ui/commands_routellm.rs
-// =============================================================================
-
-/** Params for routellm_test_prediction */
-export interface RouteLLMTestPredictionParams {
+/** Params for preview_routing_policy. Rust: commands_decision_routing.rs */
+export interface PreviewRoutingPolicyParams {
+  strategyId: string
+  policy: RoutingPolicy
   prompt: string
-  threshold: number
-}
-
-/** Params for routellm_update_settings */
-export interface RouteLLMUpdateSettingsParams {
-  idleTimeoutSecs: number
+  mode: string | null
 }
 
 // =============================================================================
@@ -4337,6 +4316,7 @@ export interface RoutingAttempt {
 
 /** Rust: crates/lr-monitor/src/types.rs - AutoRoutingInfo */
 export interface AutoRoutingInfo {
+  decision_routing?: RoutingDecision | null
   routellm_tier?: string | null
   routellm_win_rate?: number | null
   candidate_models: string[]

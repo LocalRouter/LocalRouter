@@ -23,7 +23,7 @@ import type { McpConnectionDiscovery } from '@app/types/tauri-commands'
 import { toast } from 'sonner'
 import { mockData } from './mockData'
 // Types for mock return values - see src/types/tauri-commands.ts for full type definitions
-import type { RouteLLMTestResult, GraphData, ProviderFeatureSupport, FeatureEndpointMatrix, InstallSourceInfo, RequestDedupeConfig } from '@app/types/tauri-commands'
+import type { RoutingPolicyPreview, GraphData, ProviderFeatureSupport, FeatureEndpointMatrix, InstallSourceInfo, RequestDedupeConfig } from '@app/types/tauri-commands'
 import type {
   EmbeddedCatalogModel,
   ListProviderModelsDetailedParams,
@@ -227,7 +227,7 @@ function openaiFeatureSupport(instanceName: string): ProviderFeatureSupport {
       { name: 'Guardrails', support: 'supported', notes: 'Content safety scanning on chat/completion requests' },
       { name: 'Prompt Compression', support: 'supported', notes: 'LLMLingua-2 token-level compression for chat requests' },
       { name: 'JSON Repair', support: 'supported', notes: 'Automatic fix of malformed JSON responses' },
-      { name: 'RouteLLM Routing', support: 'supported', notes: 'Strong/weak model routing based on request complexity' },
+      { name: 'Decision Routing', support: 'supported', notes: 'Strong/weak model routing based on request complexity' },
       { name: 'Secret Scanning', support: 'supported', notes: 'Detect potential secrets in outbound requests' },
       { name: 'Rate Limiting', support: 'supported', notes: 'Available for all endpoints' },
       { name: 'Model Firewall', support: 'supported', notes: 'Available for all LLM endpoints' },
@@ -884,7 +884,7 @@ function llamaProcessKey(instanceName: string, model: string) {
  * src/types/tauri-commands.ts
  *
  * When adding/modifying handlers, ensure the return value structure
- * matches the corresponding type (e.g., RouteLLMTestResult, ClientInfo, etc.)
+ * matches the corresponding type (e.g., RoutingPolicyPreview, ClientInfo, etc.)
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const mockHandlers: Record<string, (args?: any) => unknown> = {
@@ -2704,7 +2704,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
         model_name: 'localrouter/auto',
         prioritized_models: [],
         available_models: [],
-        routellm_config: null,
+        routing_policy: null,
       },
       rate_limits: args?.rateLimits || [],
       free_tier_only: args?.freeTierOnly ?? false,
@@ -2914,7 +2914,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       { feature_name: 'JSON Repair', cells: [
         { support: 'supported', notes: null }, { support: 'supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'translated', notes: 'Via translation to chat completions' }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null },
       ]},
-      { feature_name: 'RouteLLM Routing', cells: [
+      { feature_name: 'Decision Routing', cells: [
         { support: 'supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null },
       ]},
       { feature_name: 'Secret Scanning', cells: [
@@ -2942,7 +2942,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       { name: 'MCP Gateway', cells: [{ support: 'not_supported', notes: null }, { support: 'supported', notes: null }, { support: 'supported', notes: null }, { support: 'not_supported', notes: null }] },
       { name: 'MCP \u2192 LLM Tools', cells: [{ support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'supported', notes: null }] },
       { name: 'Guardrails', cells: [{ support: 'supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'supported', notes: null }, { support: 'supported', notes: null }] },
-      { name: 'RouteLLM', cells: [{ support: 'supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'supported', notes: null }, { support: 'supported', notes: null }] },
+      { name: 'Decision Routing', cells: [{ support: 'supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'supported', notes: null }, { support: 'supported', notes: null }] },
       { name: 'Secret Scanning', cells: [{ support: 'supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'supported', notes: null }, { support: 'supported', notes: null }] },
       { name: 'Context Management', cells: [{ support: 'not_supported', notes: null }, { support: 'supported', notes: null }, { support: 'supported', notes: null }, { support: 'supported', notes: null }] },
     ],
@@ -3644,47 +3644,14 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     return null
   },
 
-  // ============================================================================
-  // RouteLLM
-  // ============================================================================
-  'routellm_get_status': () => mockData.routellmStatus,
-  'get_routellm_status': () => mockData.routellmStatus,
-  'routellm_update_settings': (args) => {
-    if (args?.settings) {
-      Object.assign(mockData.routellmStatus, args.settings)
-    }
-    return null
-  },
-  'routellm_download_models': () => {
-    toast.info('Downloading RouteLLM models (demo - not actually downloading)')
-    return null
-  },
-  'routellm_unload': () => {
-    mockData.routellmStatus.state = 'downloaded_not_running'
-    toast.success('RouteLLM model unloaded (demo)')
-    return null
-  },
-  // Returns: RouteLLMTestResult (src/types/tauri-commands.ts)
-  'routellm_test_prediction': (args): RouteLLMTestResult => {
-    // Simulate a realistic prediction based on prompt complexity
-    const prompt = args?.prompt || ''
-    const threshold = args?.threshold ?? 0.3
-    // Generate a score that varies based on prompt characteristics
-    const baseScore = prompt.length > 200 || prompt.includes('code') || prompt.includes('analyze') ? 0.7 : 0.2
-    const winRate = Math.min(1, Math.max(0, baseScore + (Math.random() * 0.3 - 0.15)))
-    return {
-      win_rate: winRate,
-      is_strong: winRate >= threshold,
-      latency_ms: Math.floor(Math.random() * 50) + 20,
-    }
-  },
-  'routellm_delete_model': () => {
-    toast.success('Strong/Weak model deleted (demo)')
-    return null
-  },
-  'open_routellm_folder': () => {
-    toast.info('Opening RouteLLM folder (demo)')
-    return null
+  // Draft preview is explicitly simulated in the demo; no model is called.
+  'preview_routing_policy': (args): RoutingPolicyPreview => {
+    const policy = args.policy
+    const rule = policy.mode_rules.find((r: { mode: string }) => r.mode === args.mode)
+    return { decision: { route: rule?.route ?? policy.default_route,
+      source: rule ? 'client_mode' : 'fallback', reason: rule ? 'client_mode_match' : 'demo_simulation_default',
+      probabilities: {}, latency_ms: 0, policy_version: policy.version, context_omitted: 0 },
+      context: { latest_user_request: args.prompt, request_context: { mode: args.mode, mode_source: 'demo' }, conversation: [] } }
   },
 
   // ============================================================================

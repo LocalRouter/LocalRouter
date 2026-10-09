@@ -187,8 +187,8 @@ export function ClientInfoTab({ client, onUpdate }: InfoTabProps) {
   // Strategy model info
   const autoConfig = strategy?.auto_config
   const strongModels = autoConfig?.prioritized_models || []
-  const weakModels = autoConfig?.routellm_config?.weak_models || []
-  const hasRouteLLM = autoConfig?.routellm_config?.enabled === true
+  const weakModels = autoConfig?.routing_policy?.options.flatMap(o => o.models) || []
+  const hasRoutingPolicy = autoConfig?.routing_policy?.enabled === true
 
   // Feature pills
   const pills: { label: string; detail?: string; source?: string }[] = []
@@ -196,20 +196,20 @@ export function ClientInfoTab({ client, onUpdate }: InfoTabProps) {
   if (showLlm) {
     if (strongModels.length > 0) {
       pills.push({
-        label: "Strong Models",
+        label: "Default Models",
         detail: strongModels.map(([, m]) => formatModelName(m)).join(", "),
       })
     }
     if (weakModels.length > 0) {
       pills.push({
-        label: "Weak Models",
+        label: "Policy Models",
         detail: weakModels.map(([, m]) => formatModelName(m)).join(", "),
       })
     }
-    if (hasRouteLLM) {
+    if (hasRoutingPolicy) {
       pills.push({
-        label: "RouteLLM",
-        detail: `threshold ${autoConfig?.routellm_config?.threshold}`,
+        label: "Decision Routing",
+        detail: autoConfig?.routing_policy?.mode === "client_mode" ? "Client mode rules" : autoConfig?.routing_policy?.decision_model?.join("/") ?? "Choose a decision model",
       })
     }
     if (client.guardrails_active) {

@@ -121,8 +121,8 @@ const sections: DocSection[] = [
     icon: <Route className="h-4 w-4" />,
     subsections: [
       { id: 'auto-routing', title: 'Auto Routing (model: "auto")' },
-      { id: 'routellm-classifier', title: 'RouteLLM Classifier', children: [
-        { id: 'strong-weak-classification', title: 'Strong / Weak Classification' },
+      { id: 'decision-routing', title: 'Decision Routing', children: [
+        { id: 'routing-policy-options', title: 'Questions, Options and Client Mode' },
       ]},
       { id: 'fallback-chains', title: 'Fallback Chains', children: [
         { id: 'provider-failover', title: 'Provider Failover' },

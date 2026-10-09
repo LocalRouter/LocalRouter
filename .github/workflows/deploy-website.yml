@@ -58,8 +58,8 @@ jobs:
         working-directory: ./website/dist
         run: |
           cp index.html 404.html
-          mkdir -p demo docs research download
-          for dir in demo docs research download; do
+          mkdir -p demo docs research download research/decision-model-routing
+          for dir in demo docs research download research/decision-model-routing; do
             cp index.html "$dir/index.html"
           done
 

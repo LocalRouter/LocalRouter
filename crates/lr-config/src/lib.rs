@@ -18,8 +18,10 @@ use uuid::Uuid;
 
 pub mod known_client_tools;
 mod migration;
+mod routing_policy;
 mod storage;
 pub mod types;
+pub use routing_policy::*;
 mod validation;
 
 pub use storage::{load_config, save_config};

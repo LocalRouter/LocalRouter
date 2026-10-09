@@ -260,6 +260,9 @@ fn validate_strategies(config: &AppConfig) -> AppResult<()> {
 
         // Validate auto config if present
         if let Some(auto_config) = &strategy.auto_config {
+            if let Some(policy) = &auto_config.routing_policy {
+                policy.validate().map_err(AppError::Config)?;
+            }
             // Allow empty prioritized_models - router will handle error at runtime
 
             // Check no overlap between prioritized and available

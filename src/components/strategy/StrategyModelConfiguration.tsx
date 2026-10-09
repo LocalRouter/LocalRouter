@@ -7,7 +7,7 @@
  * 1. Allowed Models mode - Client sees and can choose from selected models
  * 2. Auto Route mode - Client sees only the auto router model; LocalRouter
  *    selects the best model automatically based on prioritization and optional
- *    Strong/Weak routing
+ *    custom routing policies
  *
  * Used in:
  * - Client -> Models tab
@@ -16,16 +16,11 @@
 
 import {useCallback, useEffect, useRef, useState} from "react"
 import {invoke} from "@tauri-apps/api/core"
-import {listenSafe} from "@/hooks/useTauriListener"
-import {toast} from "sonner"
-import {Bot, Brain, Download, ExternalLink, Info, List, Loader2, MessageSquareWarning} from "lucide-react"
+import {Bot, Info, List, Loader2} from "lucide-react"
 import {useIncrementalModels} from "@/hooks/useIncrementalModels"
 import {Card, CardContent, CardDescription, CardHeader, CardTitle,} from "@/components/ui/Card"
 
-import {Switch} from "@/components/ui/Toggle"
 import {Input} from "@/components/ui/Input"
-import {Button} from "@/components/ui/Button"
-import {Progress} from "@/components/ui/progress"
 import {Label} from "@/components/ui/label"
 import {cn} from "@/lib/utils"
 import {SamplePopupButton} from "@/components/shared/SamplePopupButton"
@@ -35,34 +30,20 @@ import type { ModelPermissions } from "@/components/permissions"
 import { PermissionStateButton } from "@/components/permissions"
 import {DragThresholdModelSelector, ModelPricingInfo} from "./DragThresholdModelSelector"
 import type { FreeTierKind, ProviderFreeTierStatus } from "@/types/tauri-commands"
-import {ThresholdSelector} from "@/components/routellm/ThresholdSelector"
-import {ExperimentalBadge} from "@/components/shared/ExperimentalBadge"
-import {ROUTELLM_REQUIREMENTS, RouteLLMStatus} from "@/components/routellm/types"
 
 // Strategy configuration types
+import { RoutingPolicyEditor, persistRoutingPolicy } from "./RoutingPolicyEditor"
+import type { AutoModelConfig } from "@/types/tauri-commands"
+export type { AutoModelConfig } from "@/types/tauri-commands"
 import type { PermissionState } from "@/types/tauri-commands"
 
-export interface AutoModelConfig {
-    permission: PermissionState
-    model_name: string
-    prioritized_models: [string, string][]
-    available_models: [string, string][]
-    routellm_config?: RouteLLMConfig
-}
-
-// Routing mode type
 type RoutingMode = 'allowed' | 'auto'
-
-export interface RouteLLMConfig {
-    enabled: boolean
-    threshold: number
-    weak_models: [string, string][]
-}
 
 export interface StrategyConfig {
     id: string
     name: string
     parent: string | null
+    model_permissions?: ModelPermissions
     allowed_models: AllowedModelsSelection
     auto_config: AutoModelConfig | null
     rate_limits: any[]
@@ -112,7 +93,7 @@ export function StrategyModelConfiguration({
                                                onSave,
                                                className,
                                                clientContext,
-                                               onTabChange,
+                                               onTabChange: _onTabChange,
                                                inDialog = false,
                                            }: StrategyModelConfigurationProps) {
     const [strategy, setStrategy] = useState<StrategyConfig | null>(null)
@@ -125,13 +106,6 @@ export function StrategyModelConfiguration({
 
     // Routing mode: 'allowed' shows only selected models, 'auto' shows only the auto router model
     const [routingMode, setRoutingMode] = useState<RoutingMode>('allowed')
-
-    // RouteLLM state
-    const [routellmStatus, setRoutellmStatus] = useState<RouteLLMStatus | null>(null)
-
-    // RouteLLM download state
-    const [isDownloading, setIsDownloading] = useState(false)
-    const [downloadProgress, setDownloadProgress] = useState(0)
 
     // Debounce refs for update operations
     const updateTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -150,58 +124,6 @@ export function StrategyModelConfiguration({
             }
         }
     }, [])
-
-    // Load RouteLLM status and listen for updates
-    useEffect(() => {
-        const loadRouteLLMStatus = async () => {
-            try {
-                const status = await invoke<RouteLLMStatus>("routellm_get_status")
-                setRoutellmStatus(status)
-                // Sync downloading state
-                if (status.state === 'downloading') {
-                    setIsDownloading(true)
-                }
-            } catch (error) {
-                console.error("Failed to load RouteLLM status:", error)
-            }
-        }
-
-        loadRouteLLMStatus()
-
-        // Listen for download progress events
-        const lProgress = listenSafe("routellm-download-progress", (event: any) => {
-            const { progress } = event.payload
-            setDownloadProgress(progress * 100)
-        })
-
-        // Listen for download events to update status
-        const lComplete = listenSafe("routellm-download-complete", () => {
-            setIsDownloading(false)
-            setDownloadProgress(100)
-            loadRouteLLMStatus()
-            toast.success("Strong/Weak model downloaded successfully!")
-        })
-
-        // Listen for download failures
-        const lFailed = listenSafe("routellm-download-failed", (event: any) => {
-            setIsDownloading(false)
-            toast.error(`Download failed: ${event.payload.error}`)
-        })
-
-        // Poll status while testing or initializing
-        const interval = setInterval(() => {
-            if (routellmStatus?.state === 'initializing' || routellmStatus?.state === 'downloading') {
-                loadRouteLLMStatus()
-            }
-        }, 1000)
-
-        return () => {
-            lProgress.cleanup()
-            lComplete.cleanup()
-            lFailed.cleanup()
-            clearInterval(interval)
-        }
-    }, [routellmStatus?.state])
 
     interface DetailedModelInfo {
         model_id: string
@@ -316,7 +238,7 @@ export function StrategyModelConfiguration({
                 model_name: strategy?.auto_config?.model_name || 'localrouter/auto',
                 prioritized_models: strategy?.auto_config?.prioritized_models || [],
                 available_models: strategy?.auto_config?.available_models || [],
-                routellm_config: strategy?.auto_config?.routellm_config,
+                routing_policy: strategy?.auto_config?.routing_policy,
             }
             updateStrategy({auto_config: newConfig})
 
@@ -382,69 +304,6 @@ export function StrategyModelConfiguration({
         })
     }
 
-    // Handler for RouteLLM toggle
-    const handleRouteLLMToggle = (enabled: boolean) => {
-        if (!strategy?.auto_config) return
-
-        const newRouteLLMConfig: RouteLLMConfig = {
-            enabled,
-            threshold: strategy.auto_config.routellm_config?.threshold ?? 0.3,
-            weak_models: strategy.auto_config.routellm_config?.weak_models ?? [],
-        }
-
-        updateStrategy({
-            auto_config: {
-                ...strategy.auto_config,
-                routellm_config: newRouteLLMConfig,
-            },
-        })
-    }
-
-    // Handler for threshold change
-    const handleThresholdChange = (threshold: number) => {
-        if (!strategy?.auto_config?.routellm_config) return
-        updateStrategy({
-            auto_config: {
-                ...strategy.auto_config,
-                routellm_config: {
-                    ...strategy.auto_config.routellm_config,
-                    threshold,
-                },
-            },
-        })
-    }
-
-    // Handler for weak models change
-    const handleWeakModelsChange = (models: [string, string][]) => {
-        if (!strategy?.auto_config?.routellm_config) return
-        updateStrategy({
-            auto_config: {
-                ...strategy.auto_config,
-                routellm_config: {
-                    ...strategy.auto_config.routellm_config,
-                    weak_models: models,
-                },
-            },
-        })
-    }
-
-    // Handler for downloading RouteLLM model
-    const handleDownload = async () => {
-        setIsDownloading(true)
-        setDownloadProgress(0)
-
-        try {
-            await invoke("routellm_download_models")
-        } catch (error: any) {
-            console.error("Failed to start download:", error)
-            toast.error(`Download failed: ${error.message || error}`)
-            setIsDownloading(false)
-        }
-    }
-
-    // Check if RouteLLM model is downloaded
-    const isRouteLLMDownloaded = routellmStatus?.state !== 'not_downloaded' && routellmStatus?.state !== 'downloading' && !isDownloading
-
     if (loading) {
         return (
             <div className={cn("space-y-4", className)}>
@@ -474,7 +333,6 @@ export function StrategyModelConfiguration({
     }
 
     const autoConfig = strategy.auto_config
-    const routellmConfig = autoConfig?.routellm_config
 
     return (
         <div className={cn("space-y-4", className)}>
@@ -672,119 +530,19 @@ export function StrategyModelConfiguration({
                                         </Card>
                         </div>
 
-                        {/* Weak Model */}
-                        <div className="pt-4">
-                                        <Card>
-                                            <CardHeader>
-                                                <div className="flex items-center justify-between">
-                                                    <div className="flex items-center gap-3">
-                                                        <div className="p-2 rounded-lg bg-purple-500/10">
-                                                            <Brain className="h-4 w-4 text-purple-500"/>
-                                                        </div>
-                                                        <div>
-                                                            <CardTitle className="text-base flex items-center gap-2">
-                                                                Weak Model
-                                                                <ExperimentalBadge />
-                                                            </CardTitle>
-                                                            <CardDescription>
-                                                                Use weaker models for simpler prompts for faster and cheaper results.
-                                                            </CardDescription>
-                                                        </div>
-                                                    </div>
-                                                    <Switch
-                                                        checked={routellmConfig?.enabled ?? false}
-                                                        onCheckedChange={handleRouteLLMToggle}
-                                                        disabled={readOnly || saving || !isRouteLLMDownloaded}
-                                                    />
-                                                </div>
-                                            </CardHeader>
-                                            <CardContent className="space-y-4">
-                                                {!routellmConfig?.enabled ? (
-                                                    <div className="space-y-4">
-                                                        {/* Resource Requirements - shown when disabled */}
-                                                        <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-600/50">
-                                                            <div className="flex items-start gap-2">
-                                                                <MessageSquareWarning
-                                                                    className="h-4 w-4 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0"/>
-                                                                <div className="text-xs text-amber-900 dark:text-amber-300">
-                                                                    <p className="font-medium mb-2">Resource Requirements</p>
-                                                                    <div className="grid grid-cols-2 gap-x-4 gap-y-1">
-                                                                        <span>Disk Space:</span>
-                                                                        <span>{ROUTELLM_REQUIREMENTS.DISK_GB} GB</span>
-                                                                        <span>Memory:</span>
-                                                                        <span>{ROUTELLM_REQUIREMENTS.MEMORY_GB} GB</span>
-                                                                        <span>Cold Start:</span>
-                                                                        <span>{ROUTELLM_REQUIREMENTS.COLD_START_SECS}s</span>
-                                                                        <span>Per-request:</span>
-                                                                        <span>{ROUTELLM_REQUIREMENTS.PER_REQUEST_MS}ms</span>
-                                                                    </div>
-                                                                </div>
-                                                            </div>
-                                                        </div>
-
-                                                        {/* Download section - shown when model not downloaded */}
-                                                        {!isRouteLLMDownloaded && (
-                                                            <div className="space-y-3">
-                                                                {isDownloading ? (
-                                                                    <div className="space-y-2">
-                                                                        <div className="flex justify-between text-xs text-muted-foreground">
-                                                                            <span>Downloading Strong/Weak model...</span>
-                                                                            <span>{downloadProgress.toFixed(0)}%</span>
-                                                                        </div>
-                                                                        <Progress value={downloadProgress} className="h-1.5" />
-                                                                    </div>
-                                                                ) : (
-                                                                    <>
-                                                                        <p className="text-xs text-muted-foreground">
-                                                                            Download the Strong/Weak model to enable intelligent selection between strong and weak models.
-                                                                        </p>
-                                                                        <Button
-                                                                            onClick={handleDownload}
-                                                                            size="sm"
-                                                                            variant="outline"
-                                                                            className="w-full"
-                                                                        >
-                                                                            <Download className="h-3 w-3 mr-2" />
-                                                                            Download Model ({ROUTELLM_REQUIREMENTS.DISK_GB} GB)
-                                                                        </Button>
-                                                                    </>
-                                                                )}
-                                                            </div>
-                                                        )}
-                                                    </div>
-                                                ) : (
-                                                    <>
-                                                        <DragThresholdModelSelector
-                                                            availableModels={models}
-                                                            enabledModels={routellmConfig.weak_models}
-                                                            onChange={handleWeakModelsChange}
-                                                            disabled={readOnly || saving}
-                                                            modelPricing={modelPricing}
-                                                            modelParamCounts={modelParamCounts}
-                                                            freeTierKinds={freeTierKinds}
-                                                            disableDragOverlay={inDialog}
-                                                        />
-
-                                                        {/* Threshold Selector */}
-                                                        <ThresholdSelector
-                                                            value={routellmConfig.threshold}
-                                                            onChange={handleThresholdChange}
-                                                        />
-
-                                                        {/* Try It Out link */}
-                                                        <Button
-                                                            variant="outline"
-                                                            size="sm"
-                                                            onClick={() => onTabChange?.("strong-weak", "try-it-out")}
-                                                        >
-                                                            <ExternalLink className="h-3 w-3 mr-1" />
-                                                            Try It Out
-                                                        </Button>
-                                                    </>
-                                                )}
-                                            </CardContent>
-                                        </Card>
-                        </div>
+                        {autoConfig && <RoutingPolicyEditor strategyId={strategyId} value={autoConfig.routing_policy} readOnly={readOnly || saving}
+                          onSave={async policy => {
+                            if (updateTimeoutRef.current) clearTimeout(updateTimeoutRef.current)
+                            const pending = pendingUpdatesRef.current
+                            pendingUpdatesRef.current = null
+                            setSaving(true)
+                            try {
+                              if (pending) await invoke('update_strategy', { strategyId, autoConfig: pending.auto_config, allowedModels: pending.allowed_models, name: pending.name })
+                              await persistRoutingPolicy(strategyId, policy, autoConfig, strategy.model_permissions)
+                              await loadData()
+                              onSave?.()
+                            } finally { setSaving(false) }
+                          }} />}
                             </>
                         )}
                     </div>

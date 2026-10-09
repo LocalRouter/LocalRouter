@@ -1176,6 +1176,9 @@ pub async fn update_strategy(
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     tracing::info!("Updating strategy: {}", strategy_id);
+    if let Some(policy) = auto_config.as_ref().and_then(|a| a.routing_policy.as_ref()) {
+        policy.validate()?;
+    }
 
     let mut found = false;
     config_manager
@@ -1423,11 +1426,11 @@ pub async fn get_feature_clients_status(
                         Some(value.to_string()),
                     )
                 }
-                "strong_weak" => {
+                "decision_routing" | "strong_weak" => {
                     let strategy = config.strategies.iter().find(|s| s.id == c.strategy_id);
                     let active = strategy
                         .and_then(|s| s.auto_config.as_ref())
-                        .and_then(|ac| ac.routellm_config.as_ref())
+                        .and_then(|ac| ac.routing_policy.as_ref())
                         .map(|rc| rc.enabled)
                         .unwrap_or(false);
                     (active, "global", None)
@@ -3918,6 +3921,14 @@ pub async fn sync_client_config_inner(
             }
             for (provider, model) in &auto_config.available_models {
                 models.push(format!("{}/{}", provider, model));
+            }
+            if let Some(policy) = &auto_config.routing_policy {
+                for (provider, model) in policy.options.iter().flat_map(|option| &option.models) {
+                    let name = format!("{provider}/{model}");
+                    if !models.contains(&name) {
+                        models.push(name);
+                    }
+                }
             }
             models
         } else {

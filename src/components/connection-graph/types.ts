@@ -152,7 +152,7 @@ export interface GraphStrategy {
   auto_config?: {
     prioritized_models: [string, string][]
     available_models: [string, string][]
-    routellm_config?: { enabled: boolean; weak_models: [string, string][] } | null
+    routing_policy?: import('@/types/tauri-commands').RoutingPolicy | null
   } | null
 }
 

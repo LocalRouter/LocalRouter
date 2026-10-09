@@ -12,7 +12,6 @@ lr-types = { workspace = true }
 lr-config = { workspace = true }
 lr-providers = { workspace = true }
 lr-monitoring = { workspace = true }
-lr-routellm = { workspace = true }
 lr-json-repair = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

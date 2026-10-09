@@ -737,6 +737,9 @@ pub struct RoutingAttempt {
 /// Auto-routing metadata for LLM call monitor events.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AutoRoutingInfo {
+    /// User-defined policy decision. Older events do not contain this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_routing: Option<serde_json::Value>,
     /// Whether RouteLLM classification was used
     #[serde(skip_serializing_if = "Option::is_none")]
     pub routellm_tier: Option<String>,

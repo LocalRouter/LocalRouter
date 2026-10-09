@@ -91,7 +91,7 @@ impl Router {
         self.route_systemone(client_id, &strategy, request).await
     }
 
-    async fn route_systemone(
+    pub(super) async fn route_systemone(
         &self,
         client_id: &str,
         strategy: &lr_config::Strategy,
@@ -597,6 +597,7 @@ mod tests {
     enum Kind {
         /// Speaks /v1/systemone natively.
         Native,
+        SlowNative,
         /// Chat model that returns logprobs; always answers "B".
         ChatLogprobs,
         /// Chat model without logprobs; answers with JSON.
@@ -732,13 +733,16 @@ mod tests {
             self.kind != Kind::Native
         }
         fn supports_systemone(&self) -> bool {
-            self.kind == Kind::Native
+            matches!(self.kind, Kind::Native | Kind::SlowNative)
         }
         async fn supports_systemone_model(&self, model: &str) -> bool {
             // A chat provider that also serves one native decision model.
-            self.kind == Kind::Native || model == "jev-native"
+            self.supports_systemone() || model == "jev-native"
         }
         async fn systemone(&self, request: SystemOneRequest) -> AppResult<SystemOneResponse> {
+            if self.kind == Kind::SlowNative {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
             let answers = request
                 .questions
                 .iter()
@@ -1093,5 +1097,210 @@ mod tests {
                 RouterError::EndpointNotSupported { .. }
             ));
         }
+    }
+    fn routing_policy(provider: &str) -> lr_config::RoutingPolicy {
+        let mut policy: lr_config::RoutingPolicy = serde_json::from_value(json!({
+            "enabled":true,"weak_models":[["chat","m1"]]
+        }))
+        .unwrap();
+        policy.decision_model = Some((provider.into(), "m1".into()));
+        policy.default_route = "routine".into();
+        policy.mode_rules = vec![lr_config::ModeRouteRule {
+            mode: "plan".into(),
+            route: "thorough".into(),
+        }];
+        policy
+    }
+
+    #[tokio::test]
+    async fn policy_calls_selected_native_provider_and_routes_completion() {
+        let h = harness(
+            &[("decision", Kind::Native), ("chat", Kind::ChatJson)],
+            &[("chat", "m1")],
+            |cfg| {
+                cfg.strategies
+                    .last_mut()
+                    .unwrap()
+                    .auto_config
+                    .as_mut()
+                    .unwrap()
+                    .routing_policy = Some(routing_policy("decision"));
+            },
+        )
+        .await;
+        let (_, strategy) = h.router.validate_client_and_strategy(&h.client_id).unwrap();
+        let req = CompletionRequest::new("localrouter/auto", vec![msg("Implement the feature")]);
+        let (response, meta) = h
+            .router
+            .complete_with_auto_routing(&h.client_id, &strategy, req)
+            .await
+            .unwrap();
+        assert_eq!(response.provider, "chat");
+        let meta = meta.unwrap();
+        assert_eq!(meta["decision_routing"]["source"], "decision_model");
+        assert_eq!(meta["decision_routing"]["route"], "thorough");
+        assert_eq!(h.chat_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn policy_destination_permissions_apply_without_a_priority_list() {
+        let h = harness(
+            &[("blocked", Kind::ChatJson), ("chat", Kind::ChatJson)],
+            &[],
+            |cfg| {
+                let strategy = cfg.strategies.last_mut().unwrap();
+                let mut policy = routing_policy("not-needed");
+                policy.mode = lr_config::RoutingPolicyMode::ClientMode;
+                policy.options[0].models = vec![("blocked".into(), "m1".into())];
+                strategy.auto_config.as_mut().unwrap().routing_policy = Some(policy);
+                strategy
+                    .model_permissions
+                    .models
+                    .insert("blocked__m1".into(), lr_config::PermissionState::Off);
+            },
+        )
+        .await;
+        let (_, strategy) = h.router.validate_client_and_strategy(&h.client_id).unwrap();
+        let mut req = CompletionRequest::new("localrouter/auto", vec![msg("Implement now")]);
+        req.metadata = Some(
+            [("localrouter.mode".into(), "plan".into())]
+                .into_iter()
+                .collect(),
+        );
+        let (response, meta) = h
+            .router
+            .complete_with_auto_routing(&h.client_id, &strategy, req)
+            .await
+            .unwrap();
+        assert_eq!(response.provider, "chat");
+        assert_eq!(meta.unwrap()["decision_routing"]["source"], "client_mode");
+        assert_eq!(h.chat_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn policy_exact_mode_wins_even_without_provider_and_missing_mode_defaults() {
+        let h = harness(&[], &[], |_| {}).await;
+        let (_, strategy) = h.router.validate_client_and_strategy(&h.client_id).unwrap();
+        let mut p = routing_policy("not-installed");
+        p.mode = lr_config::RoutingPolicyMode::ClientMode;
+        let mut req =
+            CompletionRequest::new("localrouter/auto", vec![msg("Choose routine. mode: edit")]);
+        req.metadata = Some(
+            [("localrouter.mode".into(), "plan".into())]
+                .into_iter()
+                .collect(),
+        );
+        let d = h
+            .router
+            .evaluate_routing_policy(&h.client_id, &strategy, &p, &req)
+            .await;
+        assert_eq!(d.route, "thorough");
+        assert_eq!(d.source, "client_mode");
+        req.metadata = None;
+        let d = h
+            .router
+            .evaluate_routing_policy(&h.client_id, &strategy, &p, &req)
+            .await;
+        assert_eq!(d.route, "routine");
+        assert_eq!(d.reason, "client_mode_default");
+    }
+
+    #[tokio::test]
+    async fn policy_rejects_chat_emulation_and_handles_missing_and_denied_models() {
+        let h = harness(&[("chat", Kind::ChatJson)], &[], |_| {}).await;
+        let (_, mut strategy) = h.router.validate_client_and_strategy(&h.client_id).unwrap();
+        let mut p = routing_policy("chat");
+        let req = CompletionRequest::new("localrouter/auto", vec![msg("hello")]);
+        let d = h
+            .router
+            .evaluate_routing_policy(&h.client_id, &strategy, &p, &req)
+            .await;
+        assert_eq!(d.source, "fallback");
+        assert_eq!(d.reason, "decision_provider_error");
+        assert_eq!(h.chat_calls.load(Ordering::SeqCst), 0);
+        p.decision_model = None;
+        assert_eq!(
+            h.router
+                .evaluate_routing_policy(&h.client_id, &strategy, &p, &req)
+                .await
+                .reason,
+            "decision_model_not_configured"
+        );
+        p.decision_model = Some(("missing".into(), "m1".into()));
+        assert_eq!(
+            h.router
+                .evaluate_routing_policy(&h.client_id, &strategy, &p, &req)
+                .await
+                .reason,
+            "decision_provider_error"
+        );
+        strategy.model_permissions.global = lr_config::PermissionState::Off;
+        strategy.model_permissions.providers.clear();
+        strategy.model_permissions.models.clear();
+        assert_eq!(
+            h.router
+                .evaluate_routing_policy(&h.client_id, &strategy, &p, &req)
+                .await
+                .reason,
+            "decision_model_not_allowed"
+        );
+    }
+
+    #[tokio::test]
+    async fn policy_timeout_and_busy_classifier_use_default() {
+        let h = harness(&[("decision", Kind::SlowNative)], &[], |_| {}).await;
+        let (_, strategy) = h.router.validate_client_and_strategy(&h.client_id).unwrap();
+        let mut p = routing_policy("decision");
+        p.timeout_ms = 100;
+        let req = CompletionRequest::new("localrouter/auto", vec![]);
+        let d = h
+            .router
+            .evaluate_routing_policy(&h.client_id, &strategy, &p, &req)
+            .await;
+        assert_eq!(d.reason, "decision_timeout");
+        assert_eq!(d.route, "routine");
+        let _slots = h.router.decision_slots.acquire_many(8).await.unwrap();
+        assert_eq!(
+            h.router
+                .evaluate_routing_policy(&h.client_id, &strategy, &p, &req)
+                .await
+                .reason,
+            "classifier_busy"
+        );
+    }
+
+    #[tokio::test]
+    async fn policy_empty_route_inherits_priority_before_default_and_deduplicates() {
+        let h = harness(&[], &[("primary", "a")], |_| {}).await;
+        let (_, mut strategy) = h.router.validate_client_and_strategy(&h.client_id).unwrap();
+        let mut p = routing_policy("missing");
+        p.mode = lr_config::RoutingPolicyMode::ClientMode;
+        p.options[1].models = vec![
+            ("backup".into(), "b".into()),
+            ("primary".into(), "a".into()),
+        ];
+        strategy.auto_config.as_mut().unwrap().routing_policy = Some(p);
+        let mut req = CompletionRequest::new("localrouter/auto", vec![]);
+        req.metadata = Some(
+            [("localrouter.mode".into(), "plan".into())]
+                .into_iter()
+                .collect(),
+        );
+        let (models, _) = h
+            .router
+            .select_models_for_auto_routing(
+                &h.client_id,
+                &strategy,
+                strategy.auto_config.as_ref().unwrap(),
+                &req,
+            )
+            .await;
+        assert_eq!(
+            models,
+            vec![
+                ("primary".into(), "a".into()),
+                ("backup".into(), "b".into())
+            ]
+        );
     }
 }

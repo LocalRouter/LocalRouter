@@ -175,6 +175,9 @@ pub fn migrate_config(mut config: AppConfig) -> AppResult<AppConfig> {
         config = migrate_to_v29(config)?;
     }
 
+    // v30: routing_policy accepts/migrates legacy routellm_config during deserialization.
+    // Removed global classifier settings are ignored; existing weights are left on disk.
+
     // Update version to current
     config.version = CONFIG_VERSION;
 

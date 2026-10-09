@@ -272,7 +272,7 @@ async fn test_auto_routing_requires_enabled() {
         model_name: "localrouter/auto".to_string(),
         prioritized_models: vec![("ollama".to_string(), "llama2".to_string())],
         available_models: vec![],
-        routellm_config: None,
+        routing_policy: None,
         ..Default::default()
     };
 
@@ -302,13 +302,13 @@ async fn test_auto_routing_requires_enabled() {
 }
 
 #[tokio::test]
-async fn test_auto_routing_requires_prioritized_models() {
+async fn test_auto_routing_requires_destination_models() {
     let auto_config = AutoModelConfig {
         permission: lr_config::PermissionState::Allow,
         model_name: "localrouter/auto".to_string(),
         prioritized_models: vec![], // Empty list
         available_models: vec![],
-        routellm_config: None,
+        routing_policy: None,
         ..Default::default()
     };
 
@@ -327,16 +327,16 @@ async fn test_auto_routing_requires_prioritized_models() {
     match result {
         Err(AppError::Router(msg)) => {
             assert!(
-                msg.contains("No prioritized models"),
-                "Expected 'No prioritized models' error, got: {}",
+                msg.contains("No models available for auto-routing"),
+                "Expected 'No models available for auto-routing' error, got: {}",
                 msg
             );
         }
         Err(e) => panic!(
-            "Expected Router error with 'No prioritized models', got: {:?}",
+            "Expected Router error with 'No models available for auto-routing', got: {:?}",
             e
         ),
-        Ok(_) => panic!("Expected error for empty prioritized models"),
+        Ok(_) => panic!("Expected error when neither priority nor policy models are configured"),
     }
 }
 
@@ -670,7 +670,7 @@ async fn test_streaming_supports_auto_routing() {
         model_name: "localrouter/auto".to_string(),
         prioritized_models: vec![("ollama".to_string(), "llama2".to_string())],
         available_models: vec![],
-        routellm_config: None,
+        routing_policy: None,
         ..Default::default()
     };
 
@@ -1025,7 +1025,7 @@ async fn test_auto_routing_fallback_configuration() {
             ("ollama".to_string(), "model3".to_string()),
         ],
         available_models: vec![],
-        routellm_config: None,
+        routing_policy: None,
         ..Default::default()
     };
 
@@ -1081,7 +1081,7 @@ async fn test_auto_routing_strategy_rate_limits_checked_per_model() {
             ("ollama".to_string(), "model2".to_string()),
         ],
         available_models: vec![],
-        routellm_config: None,
+        routing_policy: None,
         ..Default::default()
     };
 

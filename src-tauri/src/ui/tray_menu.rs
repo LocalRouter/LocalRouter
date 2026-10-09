@@ -291,18 +291,18 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
                                 .text(format!("toggle_free_tier_{}", client.id), label);
                         }
 
-                        // Weak Model Routing toggle (only if auto_config enabled + routellm has weak_models)
+                        // Decision Routing toggle (only if auto_config enabled + a routing policy exists)
                         if let Some(ref auto_config) = strategy.auto_config {
                             if auto_config.permission.is_enabled() {
-                                if let Some(ref routellm) = auto_config.routellm_config {
-                                    if !routellm.weak_models.is_empty() {
-                                        let label = if routellm.enabled {
-                                            "✓  Weak Model Routing".to_string()
+                                if let Some(ref policy) = auto_config.routing_policy {
+                                    if !policy.options.is_empty() {
+                                        let label = if policy.enabled {
+                                            "✓  Decision Routing".to_string()
                                         } else {
-                                            format!("{}Weak Model Routing", TRAY_INDENT)
+                                            format!("{}Decision Routing", TRAY_INDENT)
                                         };
                                         client_submenu = client_submenu.text(
-                                            format!("toggle_weak_model_{}", client.id),
+                                            format!("toggle_decision_routing_{}", client.id),
                                             label,
                                         );
                                     }
@@ -1253,7 +1253,7 @@ pub(crate) async fn handle_toggle_free_tier<R: Runtime>(
 }
 
 /// Handle toggling weak model routing for a client's strategy
-pub(crate) async fn handle_toggle_weak_model<R: Runtime>(
+pub(crate) async fn handle_toggle_decision_routing<R: Runtime>(
     app: &AppHandle<R>,
     client_id: &str,
 ) -> tauri::Result<()> {
@@ -1270,8 +1270,8 @@ pub(crate) async fn handle_toggle_weak_model<R: Runtime>(
                     .find(|s| s.id == client.strategy_id)
                 {
                     if let Some(ref mut auto_config) = strategy.auto_config {
-                        if let Some(ref mut routellm) = auto_config.routellm_config {
-                            routellm.enabled = !routellm.enabled;
+                        if let Some(ref mut policy) = auto_config.routing_policy {
+                            policy.enabled = !policy.enabled;
                         }
                     }
                 }

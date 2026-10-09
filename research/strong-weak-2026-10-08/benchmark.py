@@ -64,20 +64,20 @@ def read_jsonl(path):
 def prepare(path):
     cases = []
     ui = "src/components/routellm/ThresholdSelector.tsx"
-    prompts = re.findall(r'onClick=\{\(\) => runTest\("([^"\n]+)"\)\}', (ROOT / ui).read_text())
+    prompts = re.findall(r'onClick=\{\(\) => runTest\("([^"\n]+)"\)\}', (HERE / "legacy-inputs/ThresholdSelector.tsx").read_text())
     assert len(prompts) == 6
     for i, prompt in enumerate(prompts):
         # The elementary induction proof is intentionally unlabelled: either model may handle it.
         cases.append(dict(id=f"ui-{i+1}", group="ui", source=ui, state=prompt,
                           policy_label=["weak", "weak", "weak", "strong", "strong", None][i]))
     src = "scripts/verify_routellm.py"
-    tree = ast.parse((ROOT / src).read_text())
+    tree = ast.parse((HERE / "legacy-inputs/verify_routellm.py").read_text())
     prompts = next(ast.literal_eval(n.value) for n in ast.walk(tree)
                    if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "prompts" for t in n.targets))
     for i, prompt in enumerate(prompts):
         cases.append(dict(id=f"verify-{i+1}", group="verify", source=src, state=prompt, policy_label=None))
     fixture = "crates/lr-routellm/tests/fixtures/gsm8k_sample.csv"
-    with (ROOT / fixture).open(newline="") as f:
+    with (HERE / "legacy-inputs/gsm8k_sample.csv").open(newline="") as f:
         for i, row in enumerate(csv.DictReader(f)):
             cases.append(dict(id=f"gsm8k-{i+1:03}", group="gsm8k", source=fixture, state=row["prompt"],
                               weak_correct=row["mistralai/Mixtral-8x7B-Instruct-v0.1"] == "True",

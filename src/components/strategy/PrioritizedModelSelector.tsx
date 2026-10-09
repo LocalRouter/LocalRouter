@@ -4,7 +4,7 @@
  * Allows selecting and reordering models for prioritization.
  * Used for:
  * - Auto-routing prioritized models (strong models)
- * - Strong/Weak weak models
+ * - Decision Routing weak models
  *
  * Features:
  * - Select models from available list

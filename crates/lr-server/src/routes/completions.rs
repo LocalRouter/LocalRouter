@@ -86,7 +86,7 @@ pub async fn completions(
     }
 
     // Run the shared pipeline (validate → access checks → rate
-    // limits → secret scan → guardrails → compression → RouteLLM →
+    // limits → secret scan → guardrails → compression → decision routing →
     // convert). Legacy `/v1/completions` inherits the same feature
     // set as `/v1/chat/completions` by routing through the canonical
     // entry point with a `CompletionRequest → ChatCompletionRequest`

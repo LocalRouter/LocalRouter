@@ -795,7 +795,7 @@ pub fn default_feature_support(
             notes: Some("Automatic fix of malformed JSON responses".into()),
         },
         FeatureSupport {
-            name: "RouteLLM Routing".into(),
+            name: "Decision Routing".into(),
             support: if has_chat {
                 SupportLevel::Supported
             } else {
@@ -1301,12 +1301,16 @@ pub enum HealthStatus {
     Unhealthy,
 }
 
-/// Pre-computed RouteLLM classification result.
-/// Set by the chat pipeline before routing, so the router can skip classification.
-#[derive(Debug, Clone)]
+/// Policy result computed before compression and retained through a tool cycle.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct PreComputedRouting {
-    pub is_strong: bool,
-    pub win_rate: f32,
+    pub route: String,
+    pub source: String,
+    pub reason: String,
+    pub probabilities: std::collections::BTreeMap<String, f64>,
+    pub latency_ms: u64,
+    pub policy_version: u32,
+    pub context_omitted: u64,
 }
 
 /// Chat completion request (OpenAI-compatible format)
@@ -1406,12 +1410,23 @@ pub struct CompletionRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
 
-    /// Pre-computed RouteLLM routing (set by chat pipeline, never serialized)
+    /// Pre-computed policy routing (set by chat pipeline, never serialized)
     #[serde(skip)]
     pub pre_computed_routing: Option<PreComputedRouting>,
 }
 
 impl CompletionRequest {
+    /// Consume LocalRouter-only control metadata before forwarding upstream.
+    pub fn without_routing_metadata(mut self) -> Self {
+        if let Some(metadata) = self.metadata.as_mut() {
+            metadata.remove("localrouter.mode");
+            if metadata.is_empty() {
+                self.metadata = None;
+            }
+        }
+        self
+    }
+
     /// A non-streaming request with only a model and messages set.
     pub fn new(model: impl Into<String>, messages: Vec<ChatMessage>) -> Self {
         Self {
@@ -1674,7 +1689,7 @@ pub struct CompletionResponse {
     /// Provider-specific extensions (Phase 3)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extensions: Option<std::collections::HashMap<String, serde_json::Value>>,
-    /// RouteLLM win rate (0.0-1.0) if RouteLLM routing was used
+    /// Legacy response field, retained for historical readers; no longer produced.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub routellm_win_rate: Option<f32>,
     /// Per-iteration token usage breakdown (only present when multiple LLM calls were made)
@@ -2343,7 +2358,7 @@ pub fn build_feature_endpoint_matrix() -> FeatureEndpointMatrix {
             ],
         },
         FeatureEndpointRow {
-            feature_name: "RouteLLM Routing".into(),
+            feature_name: "Decision Routing".into(),
             cells: vec![
                 cell(Supported, None),
                 cell(NotSupported, None),
@@ -2569,7 +2584,7 @@ pub fn build_feature_endpoint_matrix() -> FeatureEndpointMatrix {
             ],
         },
         FeatureModeRow {
-            name: "RouteLLM".into(),
+            name: "Decision Routing".into(),
             cells: vec![
                 cell(Supported, None),
                 cell(NotSupported, None),

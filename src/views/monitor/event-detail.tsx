@@ -647,7 +647,14 @@ function LlmCallDetail({ data, status }: { data: EventData; status: EventStatus 
       </Disclosure>
       {info && <Disclosure title="Routing" description={`${info.total_attempts ?? info.attempts?.length ?? 0} attempts`}>
         <div className="flex flex-wrap gap-3">
-          <Field label="RouteLLM tier" value={info.routellm_tier} />
+          {info.decision_routing && <>
+            <Field label="Routing option" value={info.decision_routing.route} />
+            <Field label="Decision source" value={info.decision_routing.source} />
+            <Field label="Decision reason" value={info.decision_routing.reason} />
+            <Field label="Decision time" value={`${info.decision_routing.latency_ms} ms`} />
+            <Field label="Omitted messages" value={String(info.decision_routing.context_omitted)} />
+          </>}
+          <Field label="Legacy routing tier" value={info.routellm_tier} />
           {info.routellm_win_rate != null && <Field label="Win rate" value={info.routellm_win_rate.toFixed(3)} />}
         </div>
         {info.attempts?.map((attempt: EventData, index: number) => <div key={index} className="border rounded-md p-2 space-y-1">

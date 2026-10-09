@@ -5140,7 +5140,6 @@ dependencies = [
  "lr-oauth",
  "lr-providers",
  "lr-proxy",
- "lr-routellm",
  "lr-router",
  "lr-secret-scanner",
  "lr-server",
@@ -5746,33 +5745,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lr-routellm"
-version = "0.0.153"
-dependencies = [
- "anyhow",
- "candle-core",
- "candle-nn",
- "candle-transformers",
- "csv",
- "dirs 5.0.1",
- "hf-hub",
- "lr-config",
- "lr-types",
- "lr-utils",
- "once_cell",
- "parking_lot",
- "reqwest 0.12.28",
- "safetensors",
- "serde",
- "serde_json",
- "tauri",
- "thiserror 2.0.18",
- "tokenizers",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "lr-router"
 version = "0.0.153"
 dependencies = [
@@ -5785,7 +5757,6 @@ dependencies = [
  "lr-json-repair",
  "lr-monitoring",
  "lr-providers",
- "lr-routellm",
  "lr-types",
  "parking_lot",
  "serde",
@@ -5843,7 +5814,6 @@ dependencies = [
  "lr-oauth",
  "lr-providers",
  "lr-responses-sessions",
- "lr-routellm",
  "lr-router",
  "lr-secret-scanner",
  "lr-skills",

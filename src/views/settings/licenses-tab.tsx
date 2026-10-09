@@ -10,8 +10,6 @@ interface Credit {
 
 const credits: Credit[] = [
   // Inspirations & runtime resources
-  { name: "RouteLLM", license: "Apache-2.0", url: "https://github.com/lm-sys/RouteLLM" },
-  { name: "routellm/mf_gpt4_augmented", license: "Apache-2.0", url: "https://github.com/lm-sys/RouteLLM" },
   { name: "Microsoft MCP Gateway", license: "MIT", url: "https://github.com/microsoft/mcp-gateway" },
   { name: "Microsoft Presidio", license: "MIT", url: "https://github.com/microsoft/presidio" },
   { name: "LLM Guard (ProtectAI)", license: "MIT", url: "https://github.com/protectai/llm-guard" },

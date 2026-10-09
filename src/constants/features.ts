@@ -25,7 +25,7 @@ export const FEATURES: Record<string, FeatureDefinition> & {
   secretScanning:     { icon: KeyRound,  color: "text-orange-500",  borderColor: "border-orange-500/30",  name: "Secret Scanning",            shortName: "Secret Scanning", viewId: "secret-scanning" },
   jsonRepair:         { icon: Wrench,    color: "text-amber-500",   borderColor: "border-amber-500/30",   name: "JSON Repair",                shortName: "JSON Repair",     viewId: "json-repair" },
   compression:        { icon: Minimize2, color: "text-blue-500",    borderColor: "border-blue-500/30",    name: "Prompt Compression",         shortName: "Compression",     viewId: "compression" },
-  routing:            { icon: Cpu,       color: "text-purple-500",  borderColor: "border-purple-500/30",  name: "Strong/Weak Routing",        shortName: "Strong/Weak",     viewId: "strong-weak" },
+  routing:            { icon: Cpu,       color: "text-purple-500",  borderColor: "border-purple-500/30",  name: "Decision Routing",        shortName: "Decision Routing",     viewId: "decision-routing" },
   catalogCompression: { icon: BookText,  color: "text-teal-500",    borderColor: "border-teal-500/30",    name: "MCP Catalog Indexing",       shortName: "Catalog",         viewId: "catalog-compression" },
   responseRag:        { icon: Database,  color: "text-emerald-500", borderColor: "border-emerald-500/30", name: "Tool Responses Indexing",    shortName: "Responses",       viewId: "response-rag" },
   memory:             { icon: Brain,     color: "text-pink-500",    borderColor: "border-pink-500/30",    name: "Indexed Conversation Memory", shortName: "Memory",         viewId: "memory", experimental: true },

@@ -123,7 +123,7 @@ function ClientSubmenu({ client }: { client: (typeof mockData.clients)[0] }) {
         if (!strategy) return null
         const hasRateLimits = strategy.rate_limits && strategy.rate_limits.length > 0
         const hasWeakModel = strategy.auto_config?.permission !== 'allow' ? false :
-          (strategy.auto_config?.routellm_config?.weak_models?.length ?? 0) > 0
+          (strategy.auto_config?.routing_policy?.options?.length ?? 0) > 0
 
         return (
           <>
@@ -161,9 +161,9 @@ function ClientSubmenu({ client }: { client: (typeof mockData.clients)[0] }) {
 
             {hasWeakModel && (
               <MenuItem
-                label={strategy.auto_config!.routellm_config!.enabled
-                  ? '✓  Weak Model Routing'
-                  : `${TRAY_INDENT}Weak Model Routing`}
+                label={strategy.auto_config!.routing_policy!.enabled
+                  ? '✓  Decision Routing'
+                  : `${TRAY_INDENT}Decision Routing`}
               />
             )}
 

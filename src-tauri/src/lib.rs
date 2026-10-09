@@ -20,7 +20,6 @@ pub use lr_monitoring as monitoring;
 pub use lr_oauth::browser as oauth_browser;
 pub use lr_oauth::clients as oauth_clients;
 pub use lr_providers as providers;
-pub use lr_routellm as routellm;
 pub use lr_router as router;
 pub use lr_server as server;
 pub use lr_skills as skills;

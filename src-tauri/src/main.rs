@@ -15,7 +15,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 // Re-exported crate aliases from lib.rs
 use localrouter::{
     api_keys, clients, config, marketplace, mcp, monitoring, oauth_browser, oauth_clients,
-    providers, routellm, router, server, skills, utils,
+    providers, router, server, skills, utils,
 };
 
 use lr_providers::factory::{
@@ -591,30 +591,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
     );
     let metrics_collector = Arc::new(monitoring::metrics::MetricsCollector::new(metrics_db));
 
-    // Initialize RouteLLM intelligent routing service
-    info!("Initializing RouteLLM service...");
-    let routellm_service = {
-        let config = config_manager.get();
-        let idle_timeout = config.routellm_settings.idle_timeout_secs;
-
-        match routellm::RouteLLMService::new_with_defaults(idle_timeout) {
-            Ok(service) => {
-                let service_arc = Arc::new(service);
-                // Start auto-unload background task
-                tokio::spawn(service_arc.clone().start_auto_unload_task());
-                info!(
-                    "RouteLLM service initialized with idle timeout: {}s",
-                    idle_timeout
-                );
-                Some(service_arc)
-            }
-            Err(e) => {
-                info!("RouteLLM service not initialized: {}", e);
-                None
-            }
-        }
-    };
-
     // Initialize free tier manager
     info!("Initializing free tier manager...");
     let free_tier_persist_path: Option<std::path::PathBuf> = lr_utils::paths::config_dir()
@@ -632,7 +608,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
     // Initialize router
     info!("Initializing router...");
     let config_manager_arc = Arc::new(config_manager.clone());
-    let mut app_router = router::Router::new(
+    let app_router = router::Router::new(
         config_manager_arc.clone(),
         provider_registry.clone(),
         rate_limiter.clone(),
@@ -641,8 +617,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
     )
     .with_health_cache(health_cache.clone());
 
-    // Add RouteLLM service to router
-    app_router = app_router.with_routellm(routellm_service);
     let app_router = Arc::new(app_router);
 
     // Initialize server manager and start server
@@ -2863,7 +2837,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::set_start_on_boot,
             ui::commands::get_request_dedupe_config,
             ui::commands::set_request_dedupe_enabled,
-            // RouteLLM intelligent routing commands
+            // Decision routing
+            ui::commands_decision_routing::preview_routing_policy,
             ui::commands_engines::engine_status,
             ui::commands_engines::engine_install,
             ui::commands_engines::engine_install_cancel,
@@ -2897,13 +2872,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands_local_models::local_models_hf_sign_in,
             ui::commands_local_models::local_models_hf_sign_in_poll,
             ui::commands_local_models::local_models_hf_sign_in_cancel,
-            ui::commands_routellm::routellm_get_status,
-            ui::commands_routellm::routellm_test_prediction,
-            ui::commands_routellm::routellm_unload,
-            ui::commands_routellm::routellm_download_models,
-            ui::commands_routellm::routellm_update_settings,
-            ui::commands_routellm::routellm_delete_model,
-            ui::commands_routellm::open_routellm_folder,
             // Debug commands (dev only)
             ui::commands::debug_trigger_firewall_popup,
             ui::commands::debug_trigger_sampling_approval_popup,

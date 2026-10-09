@@ -56,7 +56,7 @@ The compression pipeline is integrated into the chat request flow:
 ```
 Request arrives
     ├── Guardrails scan (original messages) ──┐
-    ├── Strong/Weak routing ──────────────────┤ parallel
+    ├── Decision routing    ──────────────────┤ parallel
     └── Prompt compression ───────────────────┘
                 │
                 ▼

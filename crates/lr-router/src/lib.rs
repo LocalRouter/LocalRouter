@@ -17,6 +17,7 @@ use lr_providers::{
 };
 use lr_types::{AppError, AppResult};
 
+pub mod decision_routing;
 pub mod endpoint_cache;
 pub mod free_tier;
 pub mod rate_limit;
@@ -456,7 +457,7 @@ pub struct Router {
     provider_registry: Arc<ProviderRegistry>,
     rate_limiter: Arc<RateLimiterManager>,
     metrics_collector: Arc<lr_monitoring::metrics::MetricsCollector>,
-    routellm_service: Option<Arc<lr_routellm::RouteLLMService>>,
+    decision_slots: tokio::sync::Semaphore,
     free_tier_manager: Arc<FreeTierManager>,
     health_cache: Option<Arc<lr_providers::health_cache::HealthCacheManager>>,
     endpoint_cache: Arc<EndpointCapabilityCache>,
@@ -485,8 +486,7 @@ fn summarize_attempt_outcomes(attempts: &[serde_json::Value]) -> String {
 
 /// Build routing metadata JSON for monitor events.
 fn build_routing_metadata(
-    routellm_win_rate: &Option<f32>,
-    routellm_tier: Option<&str>,
+    decision: Option<&lr_providers::PreComputedRouting>,
     candidate_models: &[String],
     attempts: Vec<serde_json::Value>,
     successful_idx: Option<usize>,
@@ -500,11 +500,8 @@ fn build_routing_metadata(
     if let Some(idx) = successful_idx {
         info["successful_attempt"] = serde_json::json!(idx);
     }
-    if let Some(wr) = routellm_win_rate {
-        info["routellm_win_rate"] = serde_json::json!(*wr as f64);
-    }
-    if let Some(tier) = routellm_tier {
-        info["routellm_tier"] = serde_json::json!(tier);
+    if let Some(decision) = decision {
+        info["decision_routing"] = serde_json::to_value(decision).unwrap_or_default();
     }
     info
 }
@@ -523,7 +520,7 @@ impl Router {
             provider_registry,
             rate_limiter,
             metrics_collector,
-            routellm_service: None,
+            decision_slots: tokio::sync::Semaphore::new(8),
             free_tier_manager: Arc::new(FreeTierManager::new(None)),
             health_cache: None,
             endpoint_cache: Arc::new(EndpointCapabilityCache::new(
@@ -545,7 +542,7 @@ impl Router {
             provider_registry,
             rate_limiter,
             metrics_collector,
-            routellm_service: None,
+            decision_slots: tokio::sync::Semaphore::new(8),
             free_tier_manager,
             health_cache: None,
             endpoint_cache: Arc::new(EndpointCapabilityCache::new(
@@ -660,20 +657,6 @@ impl Router {
         lr_config::FreeTierKind::None
     }
 
-    /// Set the RouteLLM service
-    pub fn with_routellm(
-        mut self,
-        routellm_service: Option<Arc<lr_routellm::RouteLLMService>>,
-    ) -> Self {
-        self.routellm_service = routellm_service;
-        self
-    }
-
-    /// Get the RouteLLM service
-    pub fn get_routellm_service(&self) -> Option<&Arc<lr_routellm::RouteLLMService>> {
-        self.routellm_service.as_ref()
-    }
-
     /// Build the appropriate error when free-tier models are exhausted.
     /// Returns `FreeTierFallbackAvailable` if fallback is Ask or Allow,
     /// otherwise returns `FreeTierExhausted`.
@@ -751,7 +734,7 @@ impl Router {
                 .await
                 .unwrap_or_else(|_| lr_providers::PricingInfo::free());
             let free_tier = self.get_effective_free_tier(&final_provider);
-            let mut modified_request = request;
+            let mut modified_request = request.without_routing_metadata();
             modified_request.model = final_model.clone();
             let prompt_estimate = lr_providers::usage_estimate::prompt_tokens(
                 &modified_request.messages,
@@ -1071,7 +1054,7 @@ impl Router {
             })?;
 
         // Modify the request to use just the model name (without provider prefix)
-        let mut modified_request = request.clone();
+        let mut modified_request = request.clone().without_routing_metadata();
         modified_request.model = model.to_string();
 
         // Apply feature adapters if extensions are present
@@ -1197,48 +1180,47 @@ impl Router {
         Ok(response)
     }
 
-    /// Select models for auto-routing using pre-computed RouteLLM classification.
-    ///
-    /// Returns a tuple of (selected_models, optional_win_rate).
-    /// Classification is performed in the chat pipeline as a parallel task;
-    /// this function only reads the pre-computed result from the request.
+    /// Select a policy route, then its configured fallback and ordinary priority list.
     async fn select_models_for_auto_routing(
         &self,
+        client_id: &str,
+        strategy: &lr_config::Strategy,
         auto_config: &lr_config::AutoModelConfig,
         request: &CompletionRequest,
-        context: &str, // "streaming" or empty for logging
-    ) -> (Vec<(String, String)>, Option<f32>) {
-        let log_prefix = if context.is_empty() {
-            "RouteLLM".to_string()
-        } else {
-            format!("RouteLLM ({})", context)
+    ) -> (
+        Vec<(String, String)>,
+        Option<lr_providers::PreComputedRouting>,
+    ) {
+        let Some(policy) = auto_config.routing_policy.as_ref().filter(|p| p.enabled) else {
+            return (auto_config.prioritized_models.clone(), None);
         };
-
-        // Use pre-computed classification from chat pipeline
-        if let Some(pre_computed) = &request.pre_computed_routing {
-            if let Some(routellm_config) = &auto_config.routellm_config {
-                let models = if pre_computed.is_strong {
+        let decision = match &request.pre_computed_routing {
+            Some(d) => d.clone(),
+            None => {
+                self.evaluate_routing_policy(client_id, strategy, policy, request)
+                    .await
+            }
+        };
+        let mut models = Vec::new();
+        for id in [&decision.route, &policy.default_route] {
+            if let Some(option) = policy.options.iter().find(|o| &o.id == id) {
+                for model in if option.models.is_empty() {
                     &auto_config.prioritized_models
                 } else {
-                    &routellm_config.weak_models
-                };
-                info!(
-                    "{}: win_rate={:.3}, threshold={:.3}, selected={}",
-                    log_prefix,
-                    pre_computed.win_rate,
-                    routellm_config.threshold,
-                    if pre_computed.is_strong {
-                        "strong"
-                    } else {
-                        "weak"
+                    &option.models
+                } {
+                    if !models.contains(model) {
+                        models.push(model.clone());
                     }
-                );
-                return (models.clone(), Some(pre_computed.win_rate));
+                }
             }
         }
-
-        // No pre-computed routing or RouteLLM not configured — use prioritized models
-        (auto_config.prioritized_models.clone(), None)
+        for model in &auto_config.prioritized_models {
+            if !models.contains(model) {
+                models.push(model.clone());
+            }
+        }
+        (models, Some(decision))
     }
 
     /// Complete with auto-routing (localrouter/auto virtual model)
@@ -1260,30 +1242,13 @@ impl Router {
             ));
         }
 
-        if auto_config.prioritized_models.is_empty() {
-            return Err(AppError::Router(
-                "No prioritized models configured for auto-routing".into(),
-            ));
-        }
-
-        // Select models using RouteLLM prediction (if configured)
-        let (selected_models, routellm_win_rate) = self
-            .select_models_for_auto_routing(auto_config, &request, "")
+        let (selected_models, routing_decision) = self
+            .select_models_for_auto_routing(client_id, strategy, auto_config, &request)
             .await;
-        let routellm_tier =
-            request.pre_computed_routing.as_ref().map(
-                |r| {
-                    if r.is_strong {
-                        "strong"
-                    } else {
-                        "weak"
-                    }
-                },
-            );
 
         if selected_models.is_empty() {
             return Err(AppError::Router(
-                "No models available for auto-routing (RouteLLM returned empty list)".into(),
+                "No models available for auto-routing".into(),
             ));
         }
 
@@ -1303,6 +1268,10 @@ impl Router {
         let request_has_tools = request.tools.as_ref().is_some_and(|t| !t.is_empty());
 
         for (idx, (provider, model)) in selected_models.iter().enumerate() {
+            if !strategy.is_model_allowed(provider, model) {
+                attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "model_not_allowed"}));
+                continue;
+            }
             debug!(
                 "Auto-routing attempt {}/{}: {}/{}",
                 idx + 1,
@@ -1415,17 +1384,13 @@ impl Router {
                 )
                 .await
             {
-                Ok(mut response) => {
+                Ok(response) => {
                     let attempt_ms = attempt_start.elapsed().as_millis() as u64;
                     info!("Auto-routing succeeded with {}/{}", provider, model);
                     self.free_tier_manager.clear_backoff(provider, model);
-                    if let Some(win_rate) = routellm_win_rate {
-                        response.routellm_win_rate = Some(win_rate);
-                    }
                     attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "success", "duration_ms": attempt_ms}));
                     let routing_meta = build_routing_metadata(
-                        &routellm_win_rate,
-                        routellm_tier,
+                        routing_decision.as_ref(),
                         &candidate_models,
                         attempts,
                         Some(idx),
@@ -1542,30 +1507,13 @@ impl Router {
             ));
         }
 
-        if auto_config.prioritized_models.is_empty() {
-            return Err(AppError::Router(
-                "No prioritized models configured for auto-routing".into(),
-            ));
-        }
-
-        // Select models using RouteLLM prediction (if configured)
-        let (selected_models, _routellm_win_rate) = self
-            .select_models_for_auto_routing(auto_config, &request, "streaming")
+        let (selected_models, routing_decision) = self
+            .select_models_for_auto_routing(client_id, strategy, auto_config, &request)
             .await;
-        let routellm_tier =
-            request.pre_computed_routing.as_ref().map(
-                |r| {
-                    if r.is_strong {
-                        "strong"
-                    } else {
-                        "weak"
-                    }
-                },
-            );
 
         if selected_models.is_empty() {
             return Err(AppError::Router(
-                "No models available for auto-routing (RouteLLM returned empty list)".into(),
+                "No models available for auto-routing".into(),
             ));
         }
 
@@ -1584,6 +1532,10 @@ impl Router {
         let request_has_tools = request.tools.as_ref().is_some_and(|t| !t.is_empty());
 
         for (idx, (provider, model)) in selected_models.iter().enumerate() {
+            if !strategy.is_model_allowed(provider, model) {
+                attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "model_not_allowed"}));
+                continue;
+            }
             debug!(
                 "Auto-routing streaming attempt {}/{}: {}/{}",
                 idx + 1,
@@ -1694,7 +1646,7 @@ impl Router {
             };
 
             // Execute streaming request
-            let mut modified_request = request.clone();
+            let mut modified_request = request.clone().without_routing_metadata();
             modified_request.model = model.clone();
 
             let prompt_estimate = lr_providers::usage_estimate::prompt_tokens(
@@ -1710,8 +1662,7 @@ impl Router {
                     self.free_tier_manager.clear_backoff(provider, model);
                     attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "success"}));
                     let routing_meta = build_routing_metadata(
-                        &_routellm_win_rate,
-                        routellm_tier,
+                        routing_decision.as_ref(),
                         &candidate_models,
                         attempts,
                         Some(idx),
@@ -2115,7 +2066,7 @@ impl Router {
                 .await
                 .unwrap_or_else(|_| lr_providers::PricingInfo::free());
             let free_tier = self.get_effective_free_tier(&provider);
-            let mut modified_request = request.clone();
+            let mut modified_request = request.clone().without_routing_metadata();
             modified_request.model = model.clone();
             let prompt_estimate = lr_providers::usage_estimate::prompt_tokens(
                 &modified_request.messages,
@@ -2223,7 +2174,7 @@ impl Router {
             .await
             .unwrap_or_else(|_| lr_providers::PricingInfo::free());
         let free_tier = self.get_effective_free_tier(&final_provider);
-        let mut modified_request = request.clone();
+        let mut modified_request = request.clone().without_routing_metadata();
         modified_request.model = final_model.clone();
         let prompt_estimate = lr_providers::usage_estimate::prompt_tokens(
             &modified_request.messages,
@@ -2353,7 +2304,7 @@ impl Router {
             ));
         }
 
-        // Note: RouteLLM is not applicable to embeddings (no strong/weak model selection)
+        // Decision policies apply to chat; embeddings use the priority list.
         // We just use the prioritized_models list directly
         let selected_models = &auto_config.prioritized_models;
 
@@ -2366,6 +2317,9 @@ impl Router {
         let mut last_error = None;
 
         for (idx, (provider, model)) in selected_models.iter().enumerate() {
+            if !strategy.is_model_allowed(provider, model) {
+                continue;
+            }
             debug!(
                 "Auto-routing embeddings attempt {}/{}: {}/{}",
                 idx + 1,
@@ -2923,7 +2877,7 @@ impl Router {
     }
 
     /// Auto-routing for audio transcription requests.
-    /// Tries prioritized models in order with fallback (no RouteLLM — not applicable to audio).
+    /// Tries prioritized models in order with fallback (decision policies apply to chat).
     async fn transcribe_with_auto_routing(
         &self,
         client_id: &str,

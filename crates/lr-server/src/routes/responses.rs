@@ -201,9 +201,8 @@ pub async fn create_response(
 
     // Single entry point for the 7-stage pipeline (validate → access
     // checks → rate limits → secret scan → guardrails → compression →
-    // convert). `PipelineCaps::responses()` runs guardrails
-    // sequentially and skips RouteLLM (responses.rs doesn't surface
-    // `localrouter/auto` as a model).
+    // decision routing → convert). Responses runs guardrails sequentially
+    // and preserves explicit mode metadata for auto routing.
     let turn = super::pipeline::run_turn_pipeline(
         &state,
         &auth,
@@ -569,7 +568,11 @@ fn build_chat_completion_request(
         logit_bias: None,
         service_tier: None,
         store: req.store,
-        metadata: None,
+        metadata: req.metadata.as_ref().and_then(|v| v.as_object()).map(|m| {
+            m.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect()
+        }),
         modalities: None,
         audio: None,
         prediction: None,
@@ -1307,6 +1310,25 @@ fn select_wire_body(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn response_metadata_reaches_routing_but_control_key_is_consumed_upstream() {
+        let req: super::CreateResponseRequest = serde_json::from_value(serde_json::json!({
+            "model":"localrouter/auto", "input":"Implement now",
+            "metadata":{"localrouter.mode":"plan", "project":"example"}
+        }))
+        .unwrap();
+        let chat = super::build_chat_completion_request(&req, vec![], None).unwrap();
+        assert_eq!(chat.metadata.as_ref().unwrap()["localrouter.mode"], "plan");
+        let provider = crate::routes::pipeline::convert_to_provider_request(&chat).unwrap();
+        let forwarded = provider.without_routing_metadata();
+        assert!(!forwarded
+            .metadata
+            .as_ref()
+            .unwrap()
+            .contains_key("localrouter.mode"));
+        assert_eq!(forwarded.metadata.as_ref().unwrap()["project"], "example");
+    }
+
     use super::*;
     use lr_providers::{
         ChatMessage as ProvMsg, ChatMessageContent as ProvContent, CompletionChoice,

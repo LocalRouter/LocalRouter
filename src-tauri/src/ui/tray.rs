@@ -9,9 +9,9 @@ use crate::ui::tray_menu::{
     handle_copy_mcp_url, handle_copy_proxy_ca_path, handle_copy_proxy_command,
     handle_copy_proxy_url, handle_copy_url, handle_create_and_copy_api_key,
     handle_open_client_settings, handle_prioritized_list, handle_toggle_catalog_compression,
-    handle_toggle_client_enabled, handle_toggle_coding_agent_access, handle_toggle_free_tier,
-    handle_toggle_mcp_access, handle_toggle_rate_limit, handle_toggle_skill_access,
-    handle_toggle_weak_model,
+    handle_toggle_client_enabled, handle_toggle_coding_agent_access,
+    handle_toggle_decision_routing, handle_toggle_free_tier, handle_toggle_mcp_access,
+    handle_toggle_rate_limit, handle_toggle_skill_access,
 };
 use lr_utils::test_mode::is_test_mode;
 use parking_lot::RwLock;
@@ -376,14 +376,16 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
                             }
                         });
                     }
-                    // Handle toggle weak model routing: toggle_weak_model_<client_id>
-                    else if let Some(client_id) = id.strip_prefix("toggle_weak_model_") {
-                        info!("Toggle weak model routing requested: {}", client_id);
+                    // Handle toggle decision routing: toggle_decision_routing_<client_id>
+                    else if let Some(client_id) = id.strip_prefix("toggle_decision_routing_") {
+                        info!("Toggle decision routing requested: {}", client_id);
                         let app_clone = app.clone();
                         let client_id = client_id.to_string();
                         tauri::async_runtime::spawn(async move {
-                            if let Err(e) = handle_toggle_weak_model(&app_clone, &client_id).await {
-                                error!("Failed to toggle weak model routing: {}", e);
+                            if let Err(e) =
+                                handle_toggle_decision_routing(&app_clone, &client_id).await
+                            {
+                                error!("Failed to toggle decision routing: {}", e);
                             }
                         });
                     }

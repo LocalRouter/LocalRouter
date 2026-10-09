@@ -15,6 +15,7 @@ import {
   ChevronLeft,
   ChevronRight,
   FlaskConical,
+  GitBranch,
 
 } from 'lucide-react'
 
@@ -35,6 +36,23 @@ interface Paper {
 }
 
 const papers: Paper[] = [
+  {
+    id: 'decision-model-routing',
+    title: 'Decision Models for Configurable Routing',
+    icon: <GitBranch className="h-4 w-4" />,
+    tagline: 'Local experiments with RouteLLM, Laya and Kev, and why explicit policies matter',
+    status: 'published',
+    subsections: [
+      { id: 'decision-routing-abstract', title: 'Abstract' },
+      { id: 'decision-routing-method', title: 'Experiment Design' },
+      { id: 'decision-routing-quality', title: 'Strong/Weak Results' },
+      { id: 'decision-routing-policies', title: 'User-Defined Policies' },
+      { id: 'decision-routing-failures', title: 'Failure Analysis' },
+      { id: 'decision-routing-mode', title: 'Explicit Client Mode' },
+      { id: 'decision-routing-design', title: 'Product Design' },
+      { id: 'decision-routing-limits', title: 'Limits and Reproduction' },
+    ],
+  },
   {
     id: 'unified-mcp-gateway',
     title: 'Unified MCP Gateway',

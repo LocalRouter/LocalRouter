@@ -12,7 +12,7 @@ import { McpServersView } from './views/mcp-servers'
 import { SkillsView } from './views/skills'
 import { SettingsView } from './views/settings'
 import { GuardrailsView } from './views/guardrails'
-import { StrongWeakView } from './views/strong-weak'
+import { DecisionRoutingView } from './views/decision-routing'
 import { CodingAgentsView } from './views/coding-agents'
 import { CatalogCompressionView } from './views/catalog-compression'
 import { ResponseRagView } from './views/response-rag'
@@ -313,9 +313,9 @@ function App() {
             onTabChange={handleChildViewChange}
           />
         )
-      case 'strong-weak':
+      case 'decision-routing':
         return (
-          <StrongWeakView
+          <DecisionRoutingView
             activeSubTab={activeSubTab}
             onTabChange={handleChildViewChange}
           />

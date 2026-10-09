@@ -914,8 +914,8 @@ export default function Home() {
 
                   {/* Decision Diamond */}
                   <polygon points="200,58 260,88 200,118 140,88" fill="rgba(139,92,246,0.2)" stroke="rgba(139,92,246,0.5)" strokeWidth="2" />
-                  <text x="200" y="85" textAnchor="middle" fill="#c4b5fd" fontSize="9" fontFamily="system-ui">Complex?</text>
-                  <text x="200" y="97" textAnchor="middle" fill="#a78bfa" fontSize="8" fontFamily="system-ui">(RouteLLM)</text>
+                  <text x="200" y="85" textAnchor="middle" fill="#c4b5fd" fontSize="9" fontFamily="system-ui">Planning?</text>
+                  <text x="200" y="97" textAnchor="middle" fill="#a78bfa" fontSize="8" fontFamily="system-ui">(Your policy)</text>
 
                   {/* Yes branch - to Strong */}
                   <line x1="140" y1="88" x2="80" y2="88" stroke="#10b981" strokeWidth="2" />
@@ -929,15 +929,15 @@ export default function Home() {
 
                   {/* Strong Models Box */}
                   <rect x="20" y="134" width="120" height="32" rx="6" fill="rgba(16,185,129,0.15)" stroke="rgba(16,185,129,0.4)" strokeWidth="1.5" />
-                  <text x="80" y="145" textAnchor="middle" fill="#34d399" fontSize="8" fontWeight="600" style={{ textTransform: 'uppercase' }}>STRONG</text>
-                  <text x="80" y="158" textAnchor="middle" fill="white" fontSize="10">GPT-5.2 / Opus</text>
+                  <text x="80" y="145" textAnchor="middle" fill="#34d399" fontSize="8" fontWeight="600" style={{ textTransform: 'uppercase' }}>PLANNING</text>
+                  <text x="80" y="158" textAnchor="middle" fill="white" fontSize="10">Your planning model</text>
 
                   {/* Weak Models Box */}
                   <rect x="260" y="134" width="120" height="32" rx="6" fill="rgba(245,158,11,0.15)" stroke="rgba(245,158,11,0.4)" strokeWidth="1.5" />
-                  <text x="320" y="145" textAnchor="middle" fill="#fbbf24" fontSize="8" fontWeight="600" style={{ textTransform: 'uppercase' }}>WEAK</text>
-                  <text x="320" y="158" textAnchor="middle" fill="white" fontSize="10">GPT-4o mini / Haiku</text>
+                  <text x="320" y="145" textAnchor="middle" fill="#fbbf24" fontSize="8" fontWeight="600" style={{ textTransform: 'uppercase' }}>OTHER WORK</text>
+                  <text x="320" y="158" textAnchor="middle" fill="white" fontSize="10">Your default model</text>
 
-                  {/* Fallback arrows from Strong/Weak to Secondary Provider */}
+                  {/* Fallback arrows from policy routes to Secondary Provider */}
                   {/* Strong fail arrow */}
                   <line x1="80" y1="166" x2="80" y2="194" stroke="#ef4444" strokeWidth="1.5" strokeDasharray="4,2" markerEnd="url(#arrowhead-red)" />
                   <text x="92" y="185" fill="#f87171" fontSize="7">fail</text>
@@ -999,11 +999,11 @@ export default function Home() {
                 <div className="mt-4 pt-3 border-t border-white/10 flex flex-wrap justify-center gap-3">
                   <div className="flex items-center gap-1.5">
                     <div className="h-2 w-2 rounded-full bg-emerald-500" />
-                    <span className="text-slate-400 text-[10px]">Strong Model</span>
+                    <span className="text-slate-400 text-[10px]">Planning Route</span>
                   </div>
                   <div className="flex items-center gap-1.5">
                     <div className="h-2 w-2 rounded-full bg-amber-500" />
-                    <span className="text-slate-400 text-[10px]">Weak Model</span>
+                    <span className="text-slate-400 text-[10px]">Default Route</span>
                   </div>
                   <div className="flex items-center gap-1.5">
                     <div className="h-2 w-2 rounded-full bg-blue-500" />
@@ -1025,14 +1025,14 @@ export default function Home() {
                 Automatic Model Routing
               </h2>
               <p className="mt-4 text-lg text-muted-foreground">
-                Request <code className="text-sm bg-muted px-1 rounded">model: &quot;auto&quot;</code> to route by prompt complexity. Automatic failover on rate limits, outages, or policy errors.
+                Request <code className="text-sm bg-muted px-1 rounded">model: &quot;auto&quot;</code> to apply your routing policy. Automatic failover on rate limits, outages, or policy errors.
               </p>
               <ul className="mt-8 space-y-4">
                 <li className="flex gap-3">
                   <Check className="h-5 w-5 shrink-0 text-violet-500 mt-0.5" />
                   <div>
-                    <span className="font-medium">Prompt complexity routing</span>
-                    <p className="text-sm text-muted-foreground">RouteLLM classifier routes complex prompts to capable models, simple ones to fast/cheap models</p>
+                    <span className="font-medium">User-defined routing policies</span>
+                    <p className="text-sm text-muted-foreground">Choose a decision provider, write your question, and map each answer to a model. Explicit client mode rules run without inference.</p>
                   </div>
                 </li>
                 <li className="flex gap-3">
@@ -1046,14 +1046,14 @@ export default function Home() {
                   <Check className="h-5 w-5 shrink-0 text-violet-500 mt-0.5" />
                   <div>
                     <span className="font-medium">Provider failover chain</span>
-                    <p className="text-sm text-muted-foreground">Configure primary → secondary → offline provider sequence per model tier</p>
+                    <p className="text-sm text-muted-foreground">Configure primary → secondary → offline provider sequence per route</p>
                   </div>
                 </li>
                 <li className="flex gap-3">
                   <FlaskConical className="h-5 w-5 shrink-0 text-amber-500 mt-0.5" />
                   <div>
-                    <span className="font-medium">Strong/Weak classification</span>
-                    <p className="text-sm text-muted-foreground">ML classifier determines prompt complexity to select strong vs weak model tier</p>
+                    <span className="font-medium">Decision-model routing</span>
+                    <p className="text-sm text-muted-foreground">Choose a decision model, define your question and map its answers to destination models</p>
                   </div>
                 </li>
               </ul>

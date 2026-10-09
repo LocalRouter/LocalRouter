@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use uuid::Uuid;
 
-pub(crate) const CONFIG_VERSION: u32 = 29;
+pub(crate) const CONFIG_VERSION: u32 = 30;
 
 /// Keyring service name for provider API keys
 pub const PROVIDER_KEYRING_SERVICE: &str = "LocalRouter-Providers";
@@ -172,27 +172,6 @@ impl AvailableModelsSelection {
     }
 }
 
-/// RouteLLM download state
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum RouteLLMDownloadState {
-    NotDownloaded,
-    Downloading,
-    Downloaded,
-    Failed,
-}
-
-/// RouteLLM download status
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct RouteLLMDownloadStatus {
-    pub state: RouteLLMDownloadState,
-    pub progress: f32,
-    pub current_file: Option<String>,
-    pub total_bytes: u64,
-    pub downloaded_bytes: u64,
-    pub error: Option<String>,
-}
-
 /// MCP filesystem root configuration
 ///
 /// Represents a directory boundary for MCP servers.
@@ -215,70 +194,6 @@ fn default_root_enabled() -> bool {
     true
 }
 
-/// Global RouteLLM settings (stored in AppConfig)
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct RouteLLMGlobalSettings {
-    /// Path to model directory (contains model.safetensors)
-    /// Default: ~/.localrouter/routellm/model/
-    /// Note: Field name kept as 'onnx_model_path' for backward compatibility
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub onnx_model_path: Option<PathBuf>,
-
-    /// Path to tokenizer directory (contains tokenizer.json)
-    /// Default: ~/.localrouter/routellm/tokenizer/
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tokenizer_path: Option<PathBuf>,
-
-    /// Idle time before auto-unload (seconds)
-    /// Default: 600 (10 minutes)
-    #[serde(default = "default_idle_timeout")]
-    pub idle_timeout_secs: u64,
-
-    /// Download status (internal)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub download_status: Option<RouteLLMDownloadStatus>,
-}
-
-fn default_idle_timeout() -> u64 {
-    600 // 10 minutes
-}
-
-impl Default for RouteLLMGlobalSettings {
-    fn default() -> Self {
-        Self {
-            onnx_model_path: None,
-            tokenizer_path: None,
-            idle_timeout_secs: default_idle_timeout(),
-            download_status: None,
-        }
-    }
-}
-
-/// RouteLLM intelligent routing configuration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct RouteLLMConfig {
-    /// Whether RouteLLM routing is enabled
-    pub enabled: bool,
-
-    /// Win rate threshold (0.0-1.0)
-    /// If win_rate >= threshold, route to strong model (uses prioritized_models from AutoModelConfig)
-    /// Recommended: 0.3 (balanced), 0.7 (cost-optimized), 0.2 (quality-prioritized)
-    pub threshold: f32,
-
-    /// Weak model selection (used when win_rate < threshold)
-    pub weak_models: Vec<(String, String)>,
-}
-
-impl Default for RouteLLMConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            threshold: 0.3, // Balanced profile
-            weak_models: Vec::new(),
-        }
-    }
-}
-
 /// Auto model configuration for localrouter/auto virtual model
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AutoModelConfig {
@@ -299,9 +214,13 @@ pub struct AutoModelConfig {
     /// Available models (out of rotation)
     #[serde(default)]
     pub available_models: Vec<(String, String)>,
-    /// RouteLLM intelligent routing configuration
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub routellm_config: Option<RouteLLMConfig>,
+    /// User-defined model routing policy (legacy strong/weak configs migrate on read).
+    #[serde(
+        default,
+        alias = "routellm_config",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub routing_policy: Option<crate::RoutingPolicy>,
 }
 
 impl Default for AutoModelConfig {
@@ -312,12 +231,24 @@ impl Default for AutoModelConfig {
             model_name: default_auto_model_name(),
             prioritized_models: Vec::new(),
             available_models: Vec::new(),
-            routellm_config: None,
+            routing_policy: None,
         }
     }
 }
 
 impl AutoModelConfig {
+    /// Chat can use an explicit policy destination even without a priority list.
+    pub fn has_chat_candidates(&self) -> bool {
+        !self.prioritized_models.is_empty()
+            || self.routing_policy.as_ref().is_some_and(|policy| {
+                policy.enabled
+                    && policy
+                        .options
+                        .iter()
+                        .any(|option| !option.models.is_empty())
+            })
+    }
+
     /// Migrate the old `enabled` bool field into `permission` if present.
     /// Called during config migration v18.
     pub fn migrate_enabled_field(&mut self) {
@@ -497,10 +428,6 @@ pub struct AppConfig {
     /// UI configuration
     #[serde(default)]
     pub ui: UiConfig,
-
-    /// Global RouteLLM settings
-    #[serde(default)]
-    pub routellm_settings: RouteLLMGlobalSettings,
 
     /// Update checking configuration
     #[serde(default)]
@@ -4411,7 +4338,6 @@ impl Default for AppConfig {
             strategies: Vec::new(),
             pricing_overrides: std::collections::HashMap::new(),
             ui: UiConfig::default(),
-            routellm_settings: RouteLLMGlobalSettings::default(),
             update: UpdateConfig::default(),
             model_cache: ModelCacheConfig::default(),
             roots: Vec::new(),

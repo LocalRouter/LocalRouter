@@ -3,7 +3,7 @@
 //! Runs a BERT token classifier locally to identify which tokens to keep/drop.
 //! Extractive compression — keeps exact original tokens, zero hallucination risk.
 //!
-//! Uses the same Candle framework as lr-routellm for consistency.
+//! Uses Candle for local transformer inference.
 
 pub mod downloader;
 pub mod engine;

@@ -81,6 +81,12 @@ rustup run stable cargo fmt --all -- --check
 rustup run stable cargo test --workspace
 ```
 
+If Homebrew comes first on `PATH`, Cargo or a compiler wrapper can still resolve
+its older `rustc` even when Cargo was launched through rustup. For these checks,
+prepend `$(rustup run stable rustc --print sysroot)/bin` to `PATH` and set
+`RUSTC` to `$(rustup which --toolchain stable rustc)`. Confirm the actual compiler
+path, not just `rustup run stable rustc --version`.
+
 Why this matters:
 - CI uses `dtolnay/rust-toolchain@stable` which installs the latest stable at
   run time (e.g. 1.95), so new clippy lints (`collapsible_match`,
@@ -118,10 +124,9 @@ crates/
 ├── lr-mcp/         # MCP proxy (bridge/, gateway/, transport/)
 ├── lr-monitoring/  # 4-tier metrics, logging
 ├── lr-config/      # YAML config, validation, migration
-├── lr-router/      # Rate limiting, routing engine
+├── lr-router/      # Rate limiting, routing engine, decision-model policies
 ├── lr-clients/     # Unified client system
 ├── lr-catalog/     # Model catalog and pricing
-├── lr-routellm/    # RouteLLM integration
 └── ...             # skills, memory, guardrails, oauth, types, utils, more
 
 src-tauri/src/

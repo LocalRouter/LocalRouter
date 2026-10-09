@@ -110,7 +110,9 @@ There is no reason to impose a generated explanation on each request. A typed ch
 
 ## Reproduction
 
-All raw files use public/test data. GSM8K fixture attribution follows the repository's [fixture license](../../crates/lr-routellm/tests/fixtures/LICENSE). The question text and result files are part of this experiment, not a new pretrained model.
+The original experiment is preserved at commit `6cc5abd0`, before the production RouteLLM crate was retired. To rerun the Rust baseline, check out that commit in a separate worktree and run its example there. Original fixture, UI prompt source, verification script and Rust helper are archived in `legacy-inputs/`; Python corpus preparation uses these snapshots. Reports describe the pre-replacement implementation as inspected on the research date.
+
+All raw files use public/test data. GSM8K fixture attribution follows the repository's [fixture license](legacy-inputs/LICENSE). The question text and result files are part of this experiment, not a new pretrained model.
 
 ```sh
 python3 research/strong-weak-2026-10-08/benchmark.py prepare

@@ -2,28 +2,29 @@
 
 When a client sends a request with the model set to `localrouter/auto`, the router activates auto-routing mode. Instead of targeting a specific provider/model pair, the router consults the strategy's auto-routing configuration to select from a prioritized list of models.
 
-If RouteLLM is enabled, the classifier first determines whether a strong or weak model tier is appropriate; otherwise, the prioritized models list is used directly. The router tries each model in order until a request succeeds or all options are exhausted.
+When a routing policy is enabled, exact client mode rules run first. Otherwise the selected native decision provider answers the user's question and chooses a route. Each route has an ordered destination list. On missing configuration, timeout, invalid output or low probability, LocalRouter uses the configured default route. Models still follow client permissions, capabilities and free-tier rules.
 
-`localrouter/auto` also works for System One decisions (`POST /systemone`). The router walks the same prioritized list. Native System One models answer directly, chat models answer through LocalRouter's translation layer, and models that can do neither are skipped. A decision-only model in the list is likewise skipped for chat requests.
+`localrouter/auto` also works for System One decisions (`POST /v1/systemone`) using the ordinary prioritized list. Internal routing decisions always target the specifically configured decision provider and model, avoiding recursive auto-routing.
 
-<!-- @entry routellm-classifier -->
+<!-- @entry decision-routing -->
 
-The RouteLLM classifier is a machine learning model that runs entirely on your machine — no external API calls required. It analyzes each prompt and predicts whether a strong (more capable, more expensive) or weak (faster, cheaper) model is needed.
+In **Clients → LLM → Routing policy**, select a decision model from your configured providers, such as TypeSafe Jev, Laya, Kev, or an Ollaya decision model. Hosted providers receive the routing context and may charge for inference. Local providers run on your machine. There is no separate RouteLLM download.
 
-**Performance.** Classification takes approximately 15-20ms per prediction, adding negligible latency to requests.
+Choose an editable template or write a custom question. Each option needs a unique ID, a description, and optionally an ordered list of destination models. An empty list uses the ordinary priority list. The selected route's models are tried first, then the default route, then the ordinary list; duplicates are removed.
 
-**Resource usage.** The model uses ~2.5-3 GB of memory when loaded and supports GPU acceleration via Metal (macOS) and CUDA (Linux/Windows) with automatic CPU fallback.
+Saving a policy allows its selected classifier and destination models for the client. The **Preview draft** action shows its choice, destination, probabilities, latency, fallback reason and bounded routing context. Preview may call the selected provider. Scores express classifier preference, not guaranteed answer correctness.
 
-<!-- @entry strong-weak-classification -->
+<!-- @entry routing-policy-options -->
 
-The classifier outputs a score between 0.0 and 1.0 representing the probability that a strong model is needed. This score is compared against a configurable threshold: if the score meets or exceeds the threshold, the request routes to the strong model tier; otherwise, it routes to the weak tier.
+Templates cover **Plan / implement / review**, **Code / writing / analysis**, **Quick / thorough**, **Client mode**, and a custom question. Adjust descriptions to resolve overlapping categories. The user chooses which model handles each route.
 
-Recommended thresholds:
-- **0.2** — Quality-prioritized: most requests go to the strong tier
-- **0.3** — Balanced (default): good mix of quality and cost savings
-- **0.7** — Cost-optimized: most requests go to the weak tier
+For an exact plan-mode rule, have your client send `metadata: {"localrouter.mode": "plan"}`. Map `plan` to your planning route and set the default to your other model. Missing or unrecognized mode uses the default. Prompt text cannot override this metadata. OpenAI does not provide a universal plan/edit inference field, so the client must supply this LocalRouter convention.
 
-This approach typically achieves 30-60% cost savings while retaining 85-95% quality compared to always using the strong tier.
+Semantic routing receives the latest user request and bounded recent history with roles preserved. Set a timeout, character budget, history count and optional minimum probability. If the latest request exceeds the budget or a provider rejects the input, use the default route. Character budgets are not exact tokenizer limits; preview with your selected model.
+
+Existing strong/weak configurations migrate their model lists without retaining the old threshold. Choose a decision provider to enable semantic classification; until then the previous strong/default list is used.
+
+See [our local experiments](/research/decision-model-routing) for measured behavior and limitations.
 
 <!-- @entry fallback-chains -->
 
@@ -50,18 +51,18 @@ If the strategy's prioritized model list includes local providers (Ollama, LM St
 A **Strategy** is the core routing configuration unit, referenced by each client. Each strategy defines:
 
 - **Allowed models** — Which provider/model pairs the client can access (all, specific providers, or specific models)
-- **Auto-routing config** — Prioritized model lists and RouteLLM settings for `localrouter/auto`
+- **Auto-routing config** — Prioritized model lists and routing policies for `localrouter/auto`
 - **Rate limits** — Request, token, and cost limits per time window
 
 Strategies are reusable — multiple clients can share the same strategy.
 
 <!-- @entry strategy-lowest-cost -->
 
-Order the prioritized models list from cheapest to most expensive. When a request hits `localrouter/auto`, the cheapest available model is always tried first. Combined with a cost-optimized RouteLLM threshold (e.g., 0.7), most requests route to the cheaper tier.
+Order the prioritized models list from cheapest to most expensive. When a request hits `localrouter/auto`, the cheapest available model is always tried first. A custom policy can assign routine tasks to a cheaper model, with your chosen default and fallback lists.
 
 <!-- @entry strategy-highest-performance -->
 
-Place the most capable models first in the prioritized list. The top-tier model handles every request unless it fails, in which case the router falls back to the next best model. Combined with a quality-prioritized RouteLLM threshold (e.g., 0.2), most requests go to the strong tier.
+Place the most capable models first in the prioritized list. The top-tier model handles every request unless it fails, in which case the router falls back to the next best model. A custom policy can reserve particular models for planning, review or other work you define.
 
 <!-- @entry strategy-local-first -->
 

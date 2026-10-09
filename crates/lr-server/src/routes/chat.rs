@@ -77,7 +77,7 @@ pub async fn chat_completions(
 
     // Canonical pre-LLM pipeline: validate → access checks → rate
     // limits → secret scan → guardrails (parallel) → compression +
-    // RouteLLM (parallel) → convert. All 7 stages live in
+    // Decision routing (parallel) → convert. All 7 stages live in
     // `routes/pipeline.rs::run_turn_pipeline` now; /v1/responses
     // drives the same entry point with different `PipelineCaps`.
     let turn = super::pipeline::run_turn_pipeline(
@@ -107,34 +107,31 @@ pub async fn chat_completions(
         let client_id_short = &auth.api_key_id[..8.min(auth.api_key_id.len())];
         let guardrails_active = guardrail_handle.is_some();
         let compression_active = compression_tokens_saved > 0;
-        let routellm_active = provider_request.pre_computed_routing.is_some();
-        let routellm_tier = provider_request.pre_computed_routing.as_ref().map(|r| {
-            if r.is_strong {
-                "strong"
-            } else {
-                "weak"
-            }
-        });
+        let routing_active = provider_request.pre_computed_routing.is_some();
+        let routing_route = provider_request
+            .pre_computed_routing
+            .as_ref()
+            .map(|r| r.route.as_str());
         let is_mcp_via_llm = client_auth
             .as_ref()
             .and_then(|ext| state.client_manager.get_client(&ext.0.client_id))
             .is_some_and(|c| c.is_mcp_via_llm());
 
         tracing::info!(
-            "LLM request: client={}, model={}, stream={}, guardrails={}, compression={}{}, routellm={}{}, mcp_via_llm={}",
+            "LLM request: client={}, model={}, stream={}, guardrails={}, compression={}{}, decision_routing={}{}, mcp_via_llm={}",
             client_id_short,
             request.model,
             request.stream,
             guardrails_active,
             compression_active,
             if compression_active { format!(" (saved {} tokens)", compression_tokens_saved) } else { String::new() },
-            routellm_active,
-            routellm_tier.map(|t| format!(" ({})", t)).unwrap_or_default(),
+            routing_active,
+            routing_route.map(|t| format!(" ({})", t)).unwrap_or_default(),
             is_mcp_via_llm,
         );
     }
 
-    // MCP via LLM: intercept after compression + RouteLLM are applied.
+    // MCP via LLM: intercept after compression + Decision routing are applied.
     // Guardrails run in parallel with the LLM call when possible; the orchestrator
     // awaits the guardrail gate before executing tools or returning a response.
     if let Ok((ref client, _)) = get_client_with_strategy(&state, &auth.api_key_id) {
@@ -169,9 +166,9 @@ pub async fn chat_completions(
             let tier = provider_request
                 .pre_computed_routing
                 .as_ref()
-                .map(|r| if r.is_strong { "strong" } else { "weak" })
+                .map(|r| r.route.as_str())
                 .unwrap_or("unknown");
-            transformations.push(format!("routellm ({})", tier));
+            transformations.push(format!("decision_routing ({})", tier));
         }
         if !transformations.is_empty() {
             let req_json = serde_json::to_value(&request).unwrap_or_default();
@@ -281,8 +278,8 @@ pub async fn chat_completions(
     }
 }
 
-// `spawn_routellm_classification` lives in `super::pipeline` now —
-// called from `run_turn_pipeline` when `caps.allow_routellm` is set.
+// `spawn_decision_classification` lives in `super::pipeline` now —
+// called from `run_turn_pipeline` when `caps.allow_decision_routing` is set.
 
 /// Check whether a request may cause side effects that require sequential guardrails.
 ///
@@ -307,7 +304,7 @@ fn has_side_effects(request: &ChatCompletionRequest) -> bool {
 /// executed server-side, and the conversation loops until the LLM produces a
 /// final response. The client speaks only the OpenAI protocol.
 ///
-/// Called after compression and RouteLLM are already applied to the request/provider_request.
+/// Called after compression and Decision routing are already applied to the request/provider_request.
 /// Guardrails run in parallel with the LLM call when possible (no side effects from the
 /// model itself). The orchestrator awaits the guardrail gate before executing any tools
 /// or returning a response. Falls back to sequential when the model has side effects.

@@ -1,13 +1,11 @@
 import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listenSafe } from "@/hooks/useTauriListener"
-import { Zap, ArrowRight, CheckCircle2, XCircle, Loader2, Download } from "lucide-react"
-import { Badge } from "@/components/ui/Badge"
+import { Zap, ArrowRight, CheckCircle2, XCircle, Download } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Switch } from "@/components/ui/Toggle"
-import type { JsonRepairConfig, PromptCompressionConfig, CompressionStatus, RouteLLMStatus, RouteLLMState } from "@/types/tauri-commands"
-import { ROUTELLM_REQUIREMENTS } from "@/components/routellm/types"
+import type { JsonRepairConfig, PromptCompressionConfig, CompressionStatus } from "@/types/tauri-commands"
 import { InfoTooltip } from "@/components/ui/info-tooltip"
 import { OptimizeDiagram } from "./OptimizeDiagram"
 import { FEATURES } from "@/constants/features"
@@ -17,29 +15,11 @@ interface OptimizeOverviewProps {
   onTabChange?: (view: string, subTab?: string | null) => void
 }
 
-const getRouteLLMStateInfo = (state: RouteLLMState) => {
-  switch (state) {
-    case "not_downloaded":
-      return { label: "Not Downloaded", variant: "secondary" as const }
-    case "downloading":
-      return { label: "Downloading...", variant: "default" as const }
-    case "downloaded_not_running":
-      return { label: "Downloaded", variant: "outline" as const }
-    case "initializing":
-      return { label: "Loading...", variant: "default" as const }
-    case "started":
-      return { label: "Ready", variant: "success" as const }
-    default:
-      return { label: "Unknown", variant: "secondary" as const }
-  }
-}
-
 export function OptimizeOverviewView({ onTabChange }: OptimizeOverviewProps) {
   // LLM optimization state
   const [jsonRepairConfig, setJsonRepairConfig] = useState<JsonRepairConfig | null>(null)
   const [compressionConfig, setCompressionConfig] = useState<PromptCompressionConfig | null>(null)
   const [compressionStatus, setCompressionStatus] = useState<CompressionStatus | null>(null)
-  const [routellmStatus, setRoutellmStatus] = useState<RouteLLMStatus | null>(null)
   const [savingJsonRepair, setSavingJsonRepair] = useState(false)
   const [savingCompression, setSavingCompression] = useState(false)
 
@@ -70,20 +50,10 @@ export function OptimizeOverviewView({ onTabChange }: OptimizeOverviewProps) {
     }
   }, [])
 
-  const loadRoutellmStatus = useCallback(async () => {
-    try {
-      const data = await invoke<RouteLLMStatus>("routellm_get_status")
-      setRoutellmStatus(data)
-    } catch (err) {
-      console.error("Failed to load RouteLLM status:", err)
-    }
-  }, [])
-
   useEffect(() => {
     loadJsonRepairConfig()
     loadCompressionConfig()
     loadCompressionStatus()
-    loadRoutellmStatus()
 
     const l = listenSafe('config-changed', () => {
       loadJsonRepairConfig()
@@ -93,7 +63,7 @@ export function OptimizeOverviewView({ onTabChange }: OptimizeOverviewProps) {
     return () => {
       l.cleanup()
     }
-  }, [loadJsonRepairConfig, loadCompressionConfig, loadCompressionStatus, loadRoutellmStatus])
+  }, [loadJsonRepairConfig, loadCompressionConfig, loadCompressionStatus])
 
   const updateJsonRepairEnabled = async (enabled: boolean) => {
     if (!jsonRepairConfig) return
@@ -268,37 +238,9 @@ export function OptimizeOverviewView({ onTabChange }: OptimizeOverviewProps) {
           </CardContent>
         </Card>
 
-        {/* Strong/Weak Section */}
-        <Card>
-          <CardHeader className="pb-3">
-            <div className="flex items-center gap-2">
-              <FEATURES.routing.icon className={`h-4 w-4 ${FEATURES.routing.color}`} />
-              <CardTitle className="text-base">Strong/Weak Routing</CardTitle>
-            </div>
-            <CardDescription>
-              Intelligent routing that analyzes complexity to select the most cost-effective model — typically
-              saving 30-60% on costs. Requires a {ROUTELLM_REQUIREMENTS.DISK_GB} GB model download.
-              Configured per-client in their strategy settings.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="pt-0">
-            <div className="flex items-center justify-between">
-              <Button variant="ghost" size="sm" className="gap-1.5 -ml-2" onClick={() => navigateTo("strong-weak")}>
-                Configure
-                <ArrowRight className="h-3 w-3" />
-              </Button>
-              {routellmStatus ? (
-                <div className="flex items-center gap-2 text-xs">
-                  <Badge variant={getRouteLLMStateInfo(routellmStatus.state).variant} className="text-[10px]">
-                    {getRouteLLMStateInfo(routellmStatus.state).label}
-                  </Badge>
-                </div>
-              ) : (
-                <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
-              )}
-            </div>
-          </CardContent>
-        </Card>
+        <Card><CardHeader className="pb-3"><CardTitle className="text-base">Decision Routing</CardTitle>
+          <CardDescription>Use your preferred decision provider to match requests to custom routing policies. Exact client mode rules run without inference.</CardDescription>
+        </CardHeader><CardContent><Button variant="ghost" size="sm" onClick={() => navigateTo('decision-routing')}>Configure<ArrowRight className="h-3 w-3 ml-2" /></Button></CardContent></Card>
 
         {/* Catalog Compression Section */}
         <Card>

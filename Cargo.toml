@@ -9,7 +9,6 @@ members = [
     "crates/lr-oauth",
     "crates/lr-clients",
     "crates/lr-providers",
-    "crates/lr-routellm",
     "crates/lr-monitoring",
     "crates/lr-mcp",
     "crates/lr-skills",
@@ -70,7 +69,6 @@ lr-api-keys = { path = "crates/lr-api-keys" }
 lr-oauth = { path = "crates/lr-oauth" }
 lr-clients = { path = "crates/lr-clients" }
 lr-providers = { path = "crates/lr-providers" }
-lr-routellm = { path = "crates/lr-routellm" }
 lr-monitoring = { path = "crates/lr-monitoring" }
 lr-mcp = { path = "crates/lr-mcp" }
 lr-skills = { path = "crates/lr-skills" }
@@ -216,7 +214,7 @@ jsonschema = "0.18"
 # Unicode normalization
 unicode-normalization = "0.1"
 
-# ML - RouteLLM
+# Shared ML dependencies
 tokenizers = "0.22"
 hf-hub = { version = "0.4", features = ["tokio"] }
 safetensors = "0.4"

@@ -354,6 +354,7 @@ fn data_size(data: &MonitorEventData) -> usize {
 fn routing_info_size(info: &AutoRoutingInfo) -> usize {
     std::mem::size_of::<AutoRoutingInfo>()
         + opt_str(&info.routellm_tier)
+        + info.decision_routing.as_ref().map(json_size).unwrap_or(0)
         + strs(&info.candidate_models)
         + info
             .attempts

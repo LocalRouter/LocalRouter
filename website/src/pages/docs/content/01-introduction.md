@@ -1,8 +1,8 @@
 <!-- @entry what-is-localrouter -->
 
-LocalRouter is a local, privacy-first API gateway that runs on your machine and provides a single OpenAI-compatible endpoint at `localhost:3625`. It routes requests across 19+ LLM providers (OpenAI, Anthropic, Gemini, Ollama, LM Studio, and more), proxies MCP servers through a unified gateway, and supports intelligent model selection with the built-in RouteLLM classifier.
+LocalRouter is a local, privacy-first API gateway that runs on your machine and provides a single OpenAI-compatible endpoint at `localhost:3625`. It routes requests across 19+ LLM providers (OpenAI, Anthropic, Gemini, Ollama, LM Studio, and more), proxies MCP servers through a unified gateway, and supports configurable model selection using decision providers and exact client mode rules.
 
-All data stays on your machine — zero telemetry, zero external assets, and secrets stored in your OS keychain.
+LocalRouter has zero telemetry, bundles its assets, and stores secrets in your OS keychain. Requests go only to the providers you configure; choose local providers to keep inference on your machine.
 
 <!-- @entry key-concepts -->
 

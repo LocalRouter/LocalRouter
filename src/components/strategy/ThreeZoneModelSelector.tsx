@@ -3,7 +3,7 @@
  *
  * Extends the DragThresholdModelSelector pattern to support three zones:
  * 1. Enabled (Strong) Models — priority-ordered, numbered 1..N
- * 2. Weak Models — only visible when showWeakZone prop is true
+ * 2. Secondary Models — only visible when showSecondaryZone prop is true
  * 3. Disabled Models — searchable, sortable, grouped by provider
  */
 
@@ -79,10 +79,10 @@ const parseParamCount = (s: string): number => {
 interface ThreeZoneModelSelectorProps {
   availableModels: Model[]
   enabledModels: [string, string][]      // strong models, priority ordered
-  weakModels: [string, string][]         // weak models, ordered
-  showWeakZone: boolean                  // controlled by RouteLLM toggle
+  secondaryModels: [string, string][]         // secondary models, ordered
+  showSecondaryZone: boolean                  // controlled by caller
   onEnabledModelsChange: (models: [string, string][]) => void
-  onWeakModelsChange: (models: [string, string][]) => void
+  onSecondaryModelsChange: (models: [string, string][]) => void
   disabled?: boolean
   className?: string
   disableDragOverlay?: boolean
@@ -117,7 +117,7 @@ function SortableRow({
   provider: string
   modelId: string
   index: number
-  zone: 'enabled' | 'weak' | 'disabled'
+  zone: 'enabled' | 'secondary' | 'disabled'
   disabled: boolean
   onToggle: () => void
   pricing?: ModelPricingInfo
@@ -176,7 +176,7 @@ function SortableRow({
         "flex items-center gap-3 px-3 py-2 border-b border-border/50 transition-colors",
         "cursor-grab active:cursor-grabbing touch-none select-none",
         zone === 'enabled' && "bg-background hover:bg-muted/30",
-        zone === 'weak' && "bg-purple-500/5 hover:bg-purple-500/10",
+        zone === 'secondary' && "bg-purple-500/5 hover:bg-purple-500/10",
         zone === 'disabled' && "bg-muted/20 hover:bg-muted/40 text-muted-foreground",
         isDragging && "opacity-50 bg-primary/10 z-50",
         disabled && "opacity-60 cursor-default"
@@ -190,11 +190,11 @@ function SortableRow({
         )}
       />
 
-      {/* Priority number for enabled/weak models, Ban icon for disabled */}
+      {/* Priority number for enabled/secondary models, Ban icon for disabled */}
       <div className="w-6 text-center">
         {zone === 'enabled' ? (
           <span className="text-xs font-mono font-medium text-primary">{index + 1}</span>
-        ) : zone === 'weak' ? (
+        ) : zone === 'secondary' ? (
           <span className="text-xs font-mono font-medium text-purple-500">{index + 1}</span>
         ) : accessible ? (
           <Check className="h-3.5 w-3.5 text-emerald-500/70 mx-auto" />
@@ -213,9 +213,9 @@ function SortableRow({
         >
           {modelId}
         </span>
-        {zone === 'weak' && (
+        {zone === 'secondary' && (
           <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-500 font-medium shrink-0">
-            weak
+            secondary
           </span>
         )}
         {showProvider && (
@@ -255,7 +255,7 @@ function DragOverlayItem({
 }: {
   provider: string
   modelId: string
-  zone: 'enabled' | 'weak' | 'disabled'
+  zone: 'enabled' | 'secondary' | 'disabled'
   index: number
   pricing?: ModelPricingInfo
   freeTierKind?: FreeTierKind
@@ -265,7 +265,7 @@ function DragOverlayItem({
       className={cn(
         "flex items-center gap-3 px-3 py-2 border rounded-lg shadow-lg",
         zone === 'enabled' && "bg-background border-primary",
-        zone === 'weak' && "bg-purple-500/5 border-purple-500",
+        zone === 'secondary' && "bg-purple-500/5 border-purple-500",
         zone === 'disabled' && "bg-muted/40 border-muted-foreground/30"
       )}
     >
@@ -273,16 +273,16 @@ function DragOverlayItem({
       <div className="w-6 text-center">
         {zone === 'enabled' ? (
           <span className="text-xs font-mono font-medium text-primary">{index + 1}</span>
-        ) : zone === 'weak' ? (
+        ) : zone === 'secondary' ? (
           <span className="text-xs font-mono font-medium text-purple-500">{index + 1}</span>
         ) : (
           <Ban className="h-3.5 w-3.5 text-muted-foreground/50 mx-auto" />
         )}
       </div>
       <span className="text-sm font-mono flex-1">{modelId}</span>
-      {zone === 'weak' && (
+      {zone === 'secondary' && (
         <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-500 font-medium shrink-0">
-          weak
+          secondary
         </span>
       )}
       <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
@@ -299,9 +299,9 @@ function DragOverlayItem({
   )
 }
 
-// Droppable zone for the weak threshold
-function WeakThresholdDropZone({ isOver }: { isOver: boolean }) {
-  const { setNodeRef } = useDroppable({ id: "weak-threshold-zone" })
+// Droppable zone for the secondary threshold
+function SecondaryThresholdDropZone({ isOver }: { isOver: boolean }) {
+  const { setNodeRef } = useDroppable({ id: "secondary-threshold-zone" })
 
   return (
     <div
@@ -324,7 +324,7 @@ function WeakThresholdDropZone({ isOver }: { isOver: boolean }) {
               : "bg-muted text-muted-foreground"
           )}
         >
-          {isOver ? "Drop to add as weak" : "Weak Models"}
+          {isOver ? "Drop to add as secondary" : "Secondary Models"}
         </span>
         <div className="h-px flex-1 bg-gradient-to-r from-transparent via-muted-foreground/30 to-transparent" />
       </div>
@@ -391,10 +391,10 @@ function DisabledDropZone({
 export function ThreeZoneModelSelector({
   availableModels,
   enabledModels,
-  weakModels,
-  showWeakZone,
+  secondaryModels,
+  showSecondaryZone,
   onEnabledModelsChange,
-  onWeakModelsChange,
+  onSecondaryModelsChange,
   disabled = false,
   className,
   disableDragOverlay = false,
@@ -440,26 +440,26 @@ export function ThreeZoneModelSelector({
     [allowAll, allowedProviderSet]
   )
 
-  // Create sets of enabled and weak models for quick lookup
+  // Create sets of enabled and secondary models for quick lookup
   const enabledSet = useMemo(
     () => new Set(enabledModels.map(([p, m]) => getModelKey(p, m))),
     [enabledModels]
   )
 
-  const weakSet = useMemo(
-    () => new Set(weakModels.map(([p, m]) => getModelKey(p, m))),
-    [weakModels]
+  const secondarySet = useMemo(
+    () => new Set(secondaryModels.map(([p, m]) => getModelKey(p, m))),
+    [secondaryModels]
   )
 
   // Build lists with stable IDs
-  const { enabledItems, weakItems, disabledItems, allItemsMap } = useMemo(() => {
+  const { enabledItems, secondaryItems, disabledItems, allItemsMap } = useMemo(() => {
     const enabled = enabledModels.map(([provider, modelId]) => ({
       id: getModelKey(provider, modelId),
       provider,
       modelId,
     }))
 
-    const weak = weakModels.map(([provider, modelId]) => ({
+    const secondary = secondaryModels.map(([provider, modelId]) => ({
       id: getModelKey(provider, modelId),
       provider,
       modelId,
@@ -468,7 +468,7 @@ export function ThreeZoneModelSelector({
     const disabledList = availableModels
       .filter((m) => {
         const key = getModelKey(m.provider, m.id)
-        return !enabledSet.has(key) && !weakSet.has(key)
+        return !enabledSet.has(key) && !secondarySet.has(key)
       })
       .map((m) => ({
         id: getModelKey(m.provider, m.id),
@@ -482,15 +482,15 @@ export function ThreeZoneModelSelector({
       })
 
     const map = new Map<string, { provider: string; modelId: string }>()
-    for (const item of [...enabled, ...weak, ...disabledList]) {
+    for (const item of [...enabled, ...secondary, ...disabledList]) {
       map.set(item.id, { provider: item.provider, modelId: item.modelId })
     }
 
-    return { enabledItems: enabled, weakItems: weak, disabledItems: disabledList, allItemsMap: map }
-  }, [availableModels, enabledModels, weakModels, enabledSet, weakSet])
+    return { enabledItems: enabled, secondaryItems: secondary, disabledItems: disabledList, allItemsMap: map }
+  }, [availableModels, enabledModels, secondaryModels, enabledSet, secondarySet])
 
   const enabledIds = enabledItems.map((item) => item.id)
-  const weakIds = weakItems.map((item) => item.id)
+  const secondaryIds = secondaryItems.map((item) => item.id)
 
   // Group disabled items by provider for collapsible rendering
   const disabledByProvider = useMemo(() => {
@@ -667,9 +667,9 @@ export function ThreeZoneModelSelector({
   }
 
   // Determine which zone the active item belongs to
-  const getItemZone = (itemId: string): 'enabled' | 'weak' | 'disabled' => {
+  const getItemZone = (itemId: string): 'enabled' | 'secondary' | 'disabled' => {
     if (enabledSet.has(itemId)) return 'enabled'
-    if (weakSet.has(itemId)) return 'weak'
+    if (secondarySet.has(itemId)) return 'secondary'
     return 'disabled'
   }
 
@@ -679,8 +679,8 @@ export function ThreeZoneModelSelector({
   const activeIndex = activeId
     ? activeZone === 'enabled'
       ? enabledIds.indexOf(activeId)
-      : activeZone === 'weak'
-        ? weakIds.indexOf(activeId)
+      : activeZone === 'secondary'
+        ? secondaryIds.indexOf(activeId)
         : -1
     : -1
 
@@ -693,7 +693,7 @@ export function ThreeZoneModelSelector({
     if (over) {
       const overId = over.id as string
       if (
-        overId === "weak-threshold-zone" ||
+        overId === "secondary-threshold-zone" ||
         overId === "disabled-threshold-zone" ||
         overId === "disabled-zone"
       ) {
@@ -718,15 +718,15 @@ export function ThreeZoneModelSelector({
     const [activeProvider, activeModelId] = parseModelKey(activeKey)
     const activeItemZone = getItemZone(activeKey)
 
-    // Drop on weak-threshold-zone: Move model to weak zone (at end)
-    if (overKey === "weak-threshold-zone") {
+    // Drop on secondary-threshold-zone: Move model to secondary zone (at end)
+    if (overKey === "secondary-threshold-zone") {
       if (activeItemZone === 'enabled') {
         onEnabledModelsChange(enabledModels.filter(([p, m]) => getModelKey(p, m) !== activeKey))
-        onWeakModelsChange([...weakModels, [activeProvider, activeModelId]])
+        onSecondaryModelsChange([...secondaryModels, [activeProvider, activeModelId]])
       } else if (activeItemZone === 'disabled') {
-        onWeakModelsChange([...weakModels, [activeProvider, activeModelId]])
+        onSecondaryModelsChange([...secondaryModels, [activeProvider, activeModelId]])
       }
-      // weak -> weak-threshold: no-op (already in weak)
+      // secondary -> secondary-threshold: no-op (already in secondary)
       return
     }
 
@@ -734,8 +734,8 @@ export function ThreeZoneModelSelector({
     if (overKey === "disabled-threshold-zone" || overKey === "disabled-zone") {
       if (activeItemZone === 'enabled') {
         onEnabledModelsChange(enabledModels.filter(([p, m]) => getModelKey(p, m) !== activeKey))
-      } else if (activeItemZone === 'weak') {
-        onWeakModelsChange(weakModels.filter(([p, m]) => getModelKey(p, m) !== activeKey))
+      } else if (activeItemZone === 'secondary') {
+        onSecondaryModelsChange(secondaryModels.filter(([p, m]) => getModelKey(p, m) !== activeKey))
       }
       // disabled -> disabled: no-op
       return
@@ -757,32 +757,32 @@ export function ThreeZoneModelSelector({
       return
     }
 
-    // Drag within weak: reorder
-    if (activeItemZone === 'weak' && overItemZone === 'weak') {
-      const oldIndex = weakIds.indexOf(activeKey)
-      const newIndex = weakIds.indexOf(overKey)
+    // Drag within secondary: reorder
+    if (activeItemZone === 'secondary' && overItemZone === 'secondary') {
+      const oldIndex = secondaryIds.indexOf(activeKey)
+      const newIndex = secondaryIds.indexOf(overKey)
       if (oldIndex !== newIndex) {
-        const newWeak = [...weakModels]
-        const [removed] = newWeak.splice(oldIndex, 1)
-        newWeak.splice(newIndex, 0, removed)
-        onWeakModelsChange(newWeak)
+        const newSecondary = [...secondaryModels]
+        const [removed] = newSecondary.splice(oldIndex, 1)
+        newSecondary.splice(newIndex, 0, removed)
+        onSecondaryModelsChange(newSecondary)
       }
       return
     }
 
-    // Drag from enabled to weak item: remove from enabled, insert in weak at position
-    if (activeItemZone === 'enabled' && overItemZone === 'weak') {
+    // Drag from enabled to secondary item: remove from enabled, insert in secondary at position
+    if (activeItemZone === 'enabled' && overItemZone === 'secondary') {
       onEnabledModelsChange(enabledModels.filter(([p, m]) => getModelKey(p, m) !== activeKey))
-      const newIndex = weakIds.indexOf(overKey)
-      const newWeak = [...weakModels]
-      newWeak.splice(newIndex, 0, [activeProvider, activeModelId])
-      onWeakModelsChange(newWeak)
+      const newIndex = secondaryIds.indexOf(overKey)
+      const newSecondary = [...secondaryModels]
+      newSecondary.splice(newIndex, 0, [activeProvider, activeModelId])
+      onSecondaryModelsChange(newSecondary)
       return
     }
 
-    // Drag from weak to enabled item: remove from weak, insert in enabled at position
-    if (activeItemZone === 'weak' && overItemZone === 'enabled') {
-      onWeakModelsChange(weakModels.filter(([p, m]) => getModelKey(p, m) !== activeKey))
+    // Drag from secondary to enabled item: remove from secondary, insert in enabled at position
+    if (activeItemZone === 'secondary' && overItemZone === 'enabled') {
+      onSecondaryModelsChange(secondaryModels.filter(([p, m]) => getModelKey(p, m) !== activeKey))
       const newIndex = enabledIds.indexOf(overKey)
       const newEnabled = [...enabledModels]
       newEnabled.splice(newIndex, 0, [activeProvider, activeModelId])
@@ -799,12 +799,12 @@ export function ThreeZoneModelSelector({
       return
     }
 
-    // Drag from disabled to weak item: add to weak at position (only if showWeakZone)
-    if (activeItemZone === 'disabled' && overItemZone === 'weak' && showWeakZone) {
-      const newIndex = weakIds.indexOf(overKey)
-      const newWeak = [...weakModels]
-      newWeak.splice(newIndex, 0, [activeProvider, activeModelId])
-      onWeakModelsChange(newWeak)
+    // Drag from disabled to secondary item: add to secondary at position (only if showSecondaryZone)
+    if (activeItemZone === 'disabled' && overItemZone === 'secondary' && showSecondaryZone) {
+      const newIndex = secondaryIds.indexOf(overKey)
+      const newSecondary = [...secondaryModels]
+      newSecondary.splice(newIndex, 0, [activeProvider, activeModelId])
+      onSecondaryModelsChange(newSecondary)
       return
     }
 
@@ -814,9 +814,9 @@ export function ThreeZoneModelSelector({
       return
     }
 
-    // Drag from weak to disabled item: remove from weak
-    if (activeItemZone === 'weak' && overItemZone === 'disabled') {
-      onWeakModelsChange(weakModels.filter(([p, m]) => getModelKey(p, m) !== activeKey))
+    // Drag from secondary to disabled item: remove from secondary
+    if (activeItemZone === 'secondary' && overItemZone === 'disabled') {
+      onSecondaryModelsChange(secondaryModels.filter(([p, m]) => getModelKey(p, m) !== activeKey))
       return
     }
 
@@ -829,9 +829,9 @@ export function ThreeZoneModelSelector({
     if (enabledSet.has(key)) {
       // Click on enabled model -> move to disabled
       onEnabledModelsChange(enabledModels.filter(([p, m]) => getModelKey(p, m) !== key))
-    } else if (weakSet.has(key)) {
-      // Click on weak model -> move to disabled
-      onWeakModelsChange(weakModels.filter(([p, m]) => getModelKey(p, m) !== key))
+    } else if (secondarySet.has(key)) {
+      // Click on secondary model -> move to disabled
+      onSecondaryModelsChange(secondaryModels.filter(([p, m]) => getModelKey(p, m) !== key))
     } else {
       // Click on disabled model -> add to enabled (at bottom)
       onEnabledModelsChange([...enabledModels, [provider, modelId]])
@@ -906,41 +906,41 @@ export function ThreeZoneModelSelector({
             </div>
           </SortableContext>
 
-          {/* Weak threshold drop zone - only when showWeakZone is true */}
-          {showWeakZone && (
-            <WeakThresholdDropZone isOver={overZone === "weak-threshold-zone"} />
+          {/* Secondary threshold drop zone - only when showSecondaryZone is true */}
+          {showSecondaryZone && (
+            <SecondaryThresholdDropZone isOver={overZone === "secondary-threshold-zone"} />
           )}
 
-          {/* Weak models header - only when showWeakZone is true */}
-          {showWeakZone && (
+          {/* Secondary models header - only when showSecondaryZone is true */}
+          {showSecondaryZone && (
             <div className="bg-purple-500/5 px-4 py-2 border-b flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Brain className="h-4 w-4 text-purple-500" />
-                <span className="text-xs font-medium">Weak Models</span>
+                <span className="text-xs font-medium">Secondary Models</span>
               </div>
               <span className="text-xs text-muted-foreground">
-                {weakItems.length} model{weakItems.length !== 1 ? "s" : ""}
+                {secondaryItems.length} model{secondaryItems.length !== 1 ? "s" : ""}
               </span>
             </div>
           )}
 
-          {/* Weak models */}
-          {showWeakZone && (
-            <SortableContext items={weakIds} strategy={verticalListSortingStrategy}>
+          {/* Secondary models */}
+          {showSecondaryZone && (
+            <SortableContext items={secondaryIds} strategy={verticalListSortingStrategy}>
               <div className="min-h-[40px]">
-                {weakItems.length === 0 ? (
+                {secondaryItems.length === 0 ? (
                   <div className="p-3 text-center text-sm text-muted-foreground">
-                    Drag models here to mark as weak
+                    Drag models here to mark as secondary
                   </div>
                 ) : (
-                  weakItems.map((item, index) => (
+                  secondaryItems.map((item, index) => (
                     <SortableRow
                       key={item.id}
                       id={item.id}
                       provider={item.provider}
                       modelId={item.modelId}
                       index={index}
-                      zone="weak"
+                      zone="secondary"
                       disabled={disabled}
                       onToggle={() => handleToggle(item.provider, item.modelId)}
                       pricing={modelPricing?.[`${item.provider}/${item.modelId}`]}

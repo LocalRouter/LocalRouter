@@ -5,20 +5,20 @@
  * Merges the previous "Allowed Models" and "Auto Router" modes into one:
  * - All enabled models appear in /v1/models for direct routing
  * - The auto router (localrouter/auto) routes through enabled models in priority order
- * - Weak models (RouteLLM) can route simpler queries to cheaper models
+ * - Routing policies map user-defined questions and exact mode rules to models
  *
  * Sections:
  * 1. Model Selection (three-zone: Enabled / Weak / Disabled)
  * 2. Rate Limits
  * 3. Free-Tier Mode
- * 4. Weak Models (RouteLLM toggle + threshold + download)
+ * 4. Routing policies
  */
 
 import { useState, useEffect, useCallback, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listenSafe } from "@/hooks/useTauriListener"
 import { toast } from "sonner"
-import { Bot, Brain, Coins, Download, Gauge, Loader2, MessageSquareWarning, ShieldCheck } from "lucide-react"
+import { Bot, Coins, Gauge, Loader2, ShieldCheck } from "lucide-react"
 import { useIncrementalModels } from "@/hooks/useIncrementalModels"
 import { SamplePopupButton } from "@/components/shared/SamplePopupButton"
 import { RefreshModelsButton } from "@/components/shared/RefreshModelsButton"
@@ -27,35 +27,20 @@ import {
 } from "@/components/ui/Card"
 import { Switch } from "@/components/ui/Toggle"
 import { Button } from "@/components/ui/Button"
-import { Progress } from "@/components/ui/progress"
 import RateLimitEditor, { StrategyRateLimit } from "@/components/strategies/RateLimitEditor"
 import { ThreeZoneModelSelector } from "@/components/strategy/ThreeZoneModelSelector"
 import { ProxyAllowedModels } from "@/components/client/ProxyAllowedModels"
-import { ThresholdSelector } from "@/components/routellm/ThresholdSelector"
-import { ExperimentalBadge } from "@/components/shared/ExperimentalBadge"
 import { InfoTooltip } from "@/components/ui/info-tooltip"
-import { ROUTELLM_REQUIREMENTS, RouteLLMStatus } from "@/components/routellm/types"
 import { PermissionStateButton } from "@/components/permissions"
 import type { ModelPricingInfo } from "@/components/strategy/DragThresholdModelSelector"
 import type { FreeTierKind, ProviderFreeTierStatus, PermissionState } from "@/types/tauri-commands"
 
+import { RoutingPolicyEditor, policyModelRefs, persistRoutingPolicy } from '@/components/strategy/RoutingPolicyEditor'
+import type { AutoModelConfig } from '@/types/tauri-commands'
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-interface AutoModelConfig {
-  permission: PermissionState
-  model_name: string
-  prioritized_models: [string, string][]
-  available_models: [string, string][]
-  routellm_config?: RouteLLMConfig | null
-}
-
-interface RouteLLMConfig {
-  enabled: boolean
-  threshold: number
-  weak_models: [string, string][]
-}
 
 interface StrategyModelPermissions {
   global: PermissionState
@@ -93,7 +78,7 @@ interface UnifiedModelsTabProps {
   /**
    * Restricted variant for HTTPS-proxy clients: keep Model Selection, Model
    * Permissions and Rate Limits (which drive proxy interception), but hide the
-   * gateway-only Free-Tier and Weak-Model routing features (they require us to
+   * gateway-only Free-Tier and policy routing features (they require us to
    * construct/route the request, which the proxy does not).
    */
   restricted?: boolean
@@ -142,7 +127,7 @@ const ensureAutoConfig = (s: StrategyConfig): StrategyConfig => {
         model_name: 'localrouter/auto',
         prioritized_models: [],
         available_models: [],
-        routellm_config: null,
+        routing_policy: null,
       },
     }
   }
@@ -150,7 +135,7 @@ const ensureAutoConfig = (s: StrategyConfig): StrategyConfig => {
   return result
 }
 
-/** Per-model 'allow' entries for every enabled (strong + weak) model */
+/** Per-model 'allow' entries for every enabled (priority + policy) model */
 const buildModelEntries = (
   strong: [string, string][],
   weak: [string, string][]
@@ -188,11 +173,6 @@ export function UnifiedModelsTab({
   const [freeTierKinds, setFreeTierKinds] = useState<Record<string, FreeTierKind>>({})
   const [modelCapabilities, setModelCapabilities] = useState<Record<string, string[]>>({})
   const [modelContextWindows, setModelContextWindows] = useState<Record<string, number>>({})
-
-  // RouteLLM state
-  const [routellmStatus, setRoutellmStatus] = useState<RouteLLMStatus | null>(null)
-  const [isDownloading, setIsDownloading] = useState(false)
-  const [downloadProgress, setDownloadProgress] = useState(0)
 
   // Incremental models
   const { models, loadingProviders, isFullyLoaded } = useIncrementalModels()
@@ -307,62 +287,6 @@ export function UnifiedModelsTab({
   }
 
   // -------------------------------------------------------------------------
-  // RouteLLM status + download events
-  // -------------------------------------------------------------------------
-
-  useEffect(() => {
-    const loadRouteLLMStatus = async () => {
-      try {
-        const status = await invoke<RouteLLMStatus>("routellm_get_status")
-        setRoutellmStatus(status)
-        if (status.state === 'downloading') {
-          setIsDownloading(true)
-        }
-      } catch (error) {
-        console.error("Failed to load RouteLLM status:", error)
-      }
-    }
-
-    loadRouteLLMStatus()
-
-    const lProgress = listenSafe("routellm-download-progress", (event: any) => {
-      const { progress } = event.payload
-      setDownloadProgress(progress * 100)
-    })
-
-    const lComplete = listenSafe("routellm-download-complete", () => {
-      setIsDownloading(false)
-      setDownloadProgress(100)
-      loadRouteLLMStatus()
-      toast.success("Strong/Weak model downloaded successfully!")
-    })
-
-    const lFailed = listenSafe("routellm-download-failed", (event: any) => {
-      setIsDownloading(false)
-      toast.error(`Download failed: ${event.payload.error}`)
-    })
-
-    // Poll status while initializing/downloading
-    const interval = setInterval(() => {
-      if (routellmStatus?.state === 'initializing' || routellmStatus?.state === 'downloading') {
-        loadRouteLLMStatus()
-      }
-    }, 1000)
-
-    return () => {
-      lProgress.cleanup()
-      lComplete.cleanup()
-      lFailed.cleanup()
-      clearInterval(interval)
-    }
-  }, [routellmStatus?.state])
-
-  const isRouteLLMDownloaded =
-    routellmStatus?.state !== 'not_downloaded' &&
-    routellmStatus?.state !== 'downloading' &&
-    !isDownloading
-
-  // -------------------------------------------------------------------------
   // Debounced strategy update
   // -------------------------------------------------------------------------
 
@@ -419,9 +343,6 @@ export function UnifiedModelsTab({
     const autoConfigUpdate = {
       ...strategy.auto_config,
       prioritized_models: strong,
-      routellm_config: strategy.auto_config.routellm_config
-        ? { ...strategy.auto_config.routellm_config, weak_models: weak }
-        : null,
     }
 
     if (strategy.model_permissions.global === 'allow') {
@@ -453,7 +374,7 @@ export function UnifiedModelsTab({
     } else {
       // Back to specific selection: rebuild from the current priority lists
       const strong = strategy.auto_config?.prioritized_models ?? []
-      const weak = strategy.auto_config?.routellm_config?.weak_models ?? []
+      const weak = policyModelRefs(strategy.auto_config?.routing_policy)
       updateStrategy({
         model_permissions: {
           global: 'off' as PermissionState,
@@ -473,7 +394,7 @@ export function UnifiedModelsTab({
       delete providers[provider]
     }
     const strong = strategy.auto_config?.prioritized_models ?? []
-    const weak = strategy.auto_config?.routellm_config?.weak_models ?? []
+    const weak = policyModelRefs(strategy.auto_config?.routing_policy)
     updateStrategy({
       model_permissions: {
         global: 'off' as PermissionState,
@@ -583,52 +504,6 @@ export function UnifiedModelsTab({
   }, [strategy, onUpdate])
 
   // -------------------------------------------------------------------------
-  // RouteLLM handlers
-  // -------------------------------------------------------------------------
-
-  const handleRouteLLMToggle = useCallback((enabled: boolean) => {
-    if (!strategy?.auto_config) return
-
-    const newRouteLLMConfig: RouteLLMConfig = {
-      enabled,
-      threshold: strategy.auto_config.routellm_config?.threshold ?? 0.3,
-      weak_models: strategy.auto_config.routellm_config?.weak_models ?? [],
-    }
-
-    updateStrategy({
-      auto_config: {
-        ...strategy.auto_config,
-        routellm_config: newRouteLLMConfig,
-      },
-    })
-  }, [strategy, updateStrategy])
-
-  const handleThresholdChange = useCallback((threshold: number) => {
-    if (!strategy?.auto_config?.routellm_config) return
-    updateStrategy({
-      auto_config: {
-        ...strategy.auto_config,
-        routellm_config: {
-          ...strategy.auto_config.routellm_config,
-          threshold,
-        },
-      },
-    })
-  }, [strategy, updateStrategy])
-
-  const handleDownload = async () => {
-    setIsDownloading(true)
-    setDownloadProgress(0)
-    try {
-      await invoke("routellm_download_models")
-    } catch (error: any) {
-      console.error("Failed to start download:", error)
-      toast.error(`Download failed: ${error.message || error}`)
-      setIsDownloading(false)
-    }
-  }
-
-  // -------------------------------------------------------------------------
   // Loading / error states
   // -------------------------------------------------------------------------
 
@@ -688,7 +563,6 @@ export function UnifiedModelsTab({
   // -------------------------------------------------------------------------
 
   const autoConfig = strategy.auto_config
-  const routellmConfig = autoConfig?.routellm_config
 
   // -------------------------------------------------------------------------
   // Render
@@ -733,10 +607,10 @@ export function UnifiedModelsTab({
           <ThreeZoneModelSelector
             availableModels={models}
             enabledModels={autoConfig?.prioritized_models || []}
-            weakModels={routellmConfig?.weak_models || []}
-            showWeakZone={routellmConfig?.enabled ?? false}
-            onEnabledModelsChange={(strong) => handleModelsChange(strong, routellmConfig?.weak_models || [])}
-            onWeakModelsChange={(weak) => handleModelsChange(autoConfig?.prioritized_models || [], weak)}
+            secondaryModels={[]}
+            showSecondaryZone={false}
+            onEnabledModelsChange={(strong) => handleModelsChange(strong, policyModelRefs(autoConfig?.routing_policy))}
+            onSecondaryModelsChange={() => {}}
             disabled={saving}
             modelPricing={modelPricing}
             modelParamCounts={modelParamCounts}
@@ -888,95 +762,23 @@ export function UnifiedModelsTab({
       </Card>
       )}
 
-      {/* Section 4: Weak Models (RouteLLM) — gateway-only */}
-      {!restricted && (
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="p-2 rounded-lg bg-purple-500/10">
-                <Brain className="h-4 w-4 text-purple-500" />
-              </div>
-              <div>
-                <CardTitle className="text-base flex items-center gap-2">
-                  Weak Models
-                  <ExperimentalBadge />
-                </CardTitle>
-                <CardDescription>
-                  Use weaker models for simpler prompts for faster and cheaper results.
-                </CardDescription>
-              </div>
-            </div>
-            <InfoTooltip content="Routes simple requests to cheaper models automatically. Uses a classifier to estimate request complexity and pick the appropriate tier.">
-              <Switch
-                checked={routellmConfig?.enabled ?? false}
-                onCheckedChange={handleRouteLLMToggle}
-                disabled={saving || !isRouteLLMDownloaded}
-              />
-            </InfoTooltip>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {!routellmConfig?.enabled ? (
-            <div className="space-y-4">
-              {/* Resource Requirements */}
-              <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-600/50">
-                <div className="flex items-start gap-2">
-                  <MessageSquareWarning className="h-4 w-4 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
-                  <div className="text-xs text-amber-900 dark:text-amber-300">
-                    <p className="font-medium mb-2">Resource Requirements</p>
-                    <div className="grid grid-cols-2 gap-x-4 gap-y-1">
-                      <span>Disk Space:</span><span>{ROUTELLM_REQUIREMENTS.DISK_GB} GB</span>
-                      <span>Memory:</span><span>{ROUTELLM_REQUIREMENTS.MEMORY_GB} GB</span>
-                      <span>Cold Start:</span><span>{ROUTELLM_REQUIREMENTS.COLD_START_SECS}s</span>
-                      <span>Per-request:</span><span>{ROUTELLM_REQUIREMENTS.PER_REQUEST_MS}ms</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              {/* Download section */}
-              {!isRouteLLMDownloaded && (
-                <div className="space-y-3">
-                  {isDownloading ? (
-                    <div className="space-y-2">
-                      <div className="flex justify-between text-xs text-muted-foreground">
-                        <span>Downloading Strong/Weak model...</span>
-                        <span>{downloadProgress.toFixed(0)}%</span>
-                      </div>
-                      <Progress value={downloadProgress} className="h-1.5" />
-                    </div>
-                  ) : (
-                    <>
-                      <p className="text-xs text-muted-foreground">
-                        Download the Strong/Weak model to enable intelligent selection between strong and weak models.
-                      </p>
-                      <Button onClick={handleDownload} size="sm" variant="outline" className="w-full">
-                        <Download className="h-3 w-3 mr-2" />
-                        Download Model ({ROUTELLM_REQUIREMENTS.DISK_GB} GB)
-                      </Button>
-                    </>
-                  )}
-                </div>
-              )}
-            </div>
-          ) : (
-            <>
-              {/* Threshold Selector */}
-              <div className="space-y-1">
-                <div className="flex items-center gap-1">
-                  <span className="text-sm font-medium">Routing Threshold</span>
-                  <InfoTooltip content="Lower values route more requests to weak models (saves cost, lower quality). Higher values route more to strong models (higher cost, better quality)." />
-                </div>
-                <ThresholdSelector
-                  value={routellmConfig.threshold}
-                  onChange={handleThresholdChange}
-                />
-              </div>
-            </>
-          )}
-        </CardContent>
-      </Card>
-      )}
+      {!restricted && autoConfig && <RoutingPolicyEditor strategyId={strategy.id} value={autoConfig.routing_policy} readOnly={saving}
+        onSave={async policy => {
+          // Flush prior auto-list edits before persisting the complete policy.
+          if (updateTimeoutRef.current) clearTimeout(updateTimeoutRef.current)
+          const pending = pendingUpdatesRef.current
+          pendingUpdatesRef.current = null
+          setSaving(true)
+          try {
+            if (pending) await invoke('update_strategy', { strategyId: strategy.id, name: pending.name,
+              allowedModels: pending.allowed_models, modelPermissions: pending.model_permissions,
+              autoConfig: pending.auto_config, rateLimits: pending.rate_limits,
+              freeTierOnly: pending.free_tier_only, freeTierFallback: pending.free_tier_fallback })
+            await persistRoutingPolicy(strategy.id, policy, autoConfig, strategy.model_permissions)
+            await loadData()
+            onUpdate()
+          } finally { setSaving(false) }
+        }} />}
     </div>
   )
 }

@@ -596,7 +596,7 @@ mod tests {
         assert_eq!(feature("Secret Scanning"), SupportLevel::Supported);
         assert_eq!(feature("Prompt Compression"), SupportLevel::Supported);
         assert_eq!(feature("JSON Repair"), SupportLevel::NotSupported);
-        assert_eq!(feature("RouteLLM Routing"), SupportLevel::NotSupported);
+        assert_eq!(feature("Decision Routing"), SupportLevel::NotSupported);
     }
 
     #[tokio::test]

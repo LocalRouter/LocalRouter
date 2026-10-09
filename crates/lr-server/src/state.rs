@@ -796,9 +796,6 @@ pub struct AppState {
     /// Used to allow the Tauri frontend to bypass API key restrictions when testing models
     pub internal_test_secret: Arc<String>,
 
-    /// RouteLLM intelligent routing service
-    pub routellm_service: Option<Arc<lr_routellm::RouteLLMService>>,
-
     /// Tray graph manager for real-time token visualization (optional, only in UI mode)
     /// Behind RwLock to allow setting it after AppState creation during Tauri setup
     pub tray_graph_manager: Arc<RwLock<Option<Arc<dyn TokenRecorder>>>>,
@@ -954,7 +951,6 @@ impl AppState {
             mcp_access_logger: Arc::new(mcp_access_logger),
             app_handle: Arc::new(RwLock::new(None)),
             internal_test_secret: Arc::new(internal_test_secret),
-            routellm_service: None,
             tray_graph_manager: Arc::new(RwLock::new(None)),
             mcp_notification_broadcast: notification_broadcast.clone(),
             client_notification_broadcast: Arc::new(client_notification_tx),
@@ -1138,15 +1134,6 @@ impl AppState {
     /// Set the tray graph manager (called after Tauri initialization when it's created)
     pub fn set_tray_graph_manager(&self, manager: Arc<dyn TokenRecorder>) {
         *self.tray_graph_manager.write() = Some(manager);
-    }
-
-    /// Initialize RouteLLM service with settings from config
-    pub fn with_routellm(
-        mut self,
-        routellm_service: Option<Arc<lr_routellm::RouteLLMService>>,
-    ) -> Self {
-        self.routellm_service = routellm_service;
-        self
     }
 
     /// Emit an event if the app handle is available

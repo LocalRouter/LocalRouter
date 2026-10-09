@@ -54,7 +54,7 @@ interface HealthCacheState {
 }
 
 export type View = 'dashboard' | 'clients' | 'resources' | 'mcp-servers' | 'catalog-compression' | 'response-rag' | 'skills'
-  | 'coding-agents' | 'marketplace' | 'guardrails' | 'strong-weak' | 'compression' | 'json-repair'
+  | 'coding-agents' | 'marketplace' | 'guardrails' | 'decision-routing' | 'compression' | 'json-repair'
   | 'secret-scanning' | 'memory' | 'optimize-overview' | 'settings' | 'debug'
 
 interface SidebarProps {

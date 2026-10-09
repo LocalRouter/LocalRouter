@@ -143,10 +143,10 @@ export function CommandPalette({
             <CommandShortcut>⌘7</CommandShortcut>
           </CommandItem>
           <CommandItem
-            onSelect={() => runCommand(() => onViewChange('strong-weak'))}
+            onSelect={() => runCommand(() => onViewChange('decision-routing'))}
           >
             <FEATURES.routing.icon className="mr-2 h-4 w-4" />
-            <span>Strong/Weak</span>
+            <span>Decision Routing</span>
             <CommandShortcut>⌘8</CommandShortcut>
           </CommandItem>
           <CommandItem

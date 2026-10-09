@@ -16,6 +16,5 @@ export { ThreeZoneModelSelector } from "./ThreeZoneModelSelector"
 export { StrategyModelConfiguration } from "./StrategyModelConfiguration"
 export type {
   AutoModelConfig,
-  RouteLLMConfig,
   StrategyConfig,
 } from "./StrategyModelConfiguration"
