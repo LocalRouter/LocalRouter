@@ -20,6 +20,12 @@ FROM debian:bookworm-slim AS downloader
 ARG TARGETARCH
 ARG APPIMAGE_URL_AMD64=https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter_amd64.AppImage
 ARG APPIMAGE_URL_ARM64=https://github.com/LocalRouter/LocalRouter/releases/latest/download/LocalRouter_aarch64.AppImage
+# Expected SHA-256 of the downloaded AppImage. CI passes the digest of the
+# release asset it just published; when set, a mismatch fails the build so a
+# swapped or truncated download can never become the image. Leave empty for a
+# plain local `docker build .` against the moving `latest` URL.
+ARG APPIMAGE_SHA256_AMD64=""
+ARG APPIMAGE_SHA256_ARM64=""
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl ca-certificates \
@@ -28,11 +34,16 @@ RUN apt-get update \
 WORKDIR /tmp/dl
 RUN set -eux; \
     case "$TARGETARCH" in \
-        amd64) APPIMAGE_URL="$APPIMAGE_URL_AMD64" ;; \
-        arm64) APPIMAGE_URL="$APPIMAGE_URL_ARM64" ;; \
+        amd64) APPIMAGE_URL="$APPIMAGE_URL_AMD64"; APPIMAGE_SHA256="$APPIMAGE_SHA256_AMD64" ;; \
+        arm64) APPIMAGE_URL="$APPIMAGE_URL_ARM64"; APPIMAGE_SHA256="$APPIMAGE_SHA256_ARM64" ;; \
         *) echo "Unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
     esac; \
     curl -fL --retry 5 --retry-delay 5 -o LocalRouter.AppImage "$APPIMAGE_URL"; \
+    if [ -n "$APPIMAGE_SHA256" ]; then \
+        echo "$APPIMAGE_SHA256  LocalRouter.AppImage" | sha256sum -c -; \
+    else \
+        echo "WARNING: APPIMAGE_SHA256_${TARGETARCH} not set; AppImage integrity not verified" >&2; \
+    fi; \
     chmod +x LocalRouter.AppImage
 
 # ---- Stage 2: runtime ----------------------------------------------------
