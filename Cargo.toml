@@ -153,7 +153,6 @@ dirs = "5.0"
 keyring = { version = "3.6", features = ["apple-native", "windows-native", "linux-native"] }
 
 # OAuth
-oauth2 = "4.4"
 urlencoding = "2.1"
 
 # Tauri
