@@ -32,6 +32,13 @@ pub struct SafetyModelConfigInput {
     pub enabled_categories: Option<Vec<SafetyCategory>>,
 }
 
+/// Pseudo-category reported when a configured safety model fails to run
+/// (provider error, timeout, oversized input, ...). Guardrails fail closed:
+/// the failure is flagged with the default `Ask` action so the user decides,
+/// and it can be tuned per client like any other category (for example
+/// `guardrail_error: allow` to fail open deliberately).
+pub const GUARDRAIL_ERROR_CATEGORY: &str = "guardrail_error";
+
 /// The main safety engine that coordinates all safety model checks
 pub struct SafetyEngine {
     models: Vec<Arc<dyn SafetyModel>>,
@@ -449,13 +456,30 @@ impl SafetyEngine {
                         .get(i)
                         .map(|m| m.id().to_string())
                         .unwrap_or_else(|| "unknown".to_string());
+                    let model_type = models_to_run
+                        .get(i)
+                        .map(|m| m.model_type_id().to_string())
+                        .unwrap_or_default();
                     warn!("Safety model '{}' check failed: {}", model_id, e);
+                    // Fail closed: a model that could not run has not cleared the
+                    // content. Surface it as a flagged pseudo-category so the request
+                    // goes through the normal Ask/Block/Allow policy instead of being
+                    // silently treated as safe (an attacker could otherwise bypass the
+                    // guardrail by making the model error, e.g. with an oversized prompt).
+                    all_actions.push(CategoryActionRequired {
+                        category: SafetyCategory::Custom(GUARDRAIL_ERROR_CATEGORY.to_string()),
+                        action: CategoryAction::Ask,
+                        model_id: model_id.clone(),
+                        model_type,
+                        confidence: None,
+                    });
                     errors.push(SafetyModelError { model_id, error: e });
                 }
             }
         }
 
-        let is_safe = verdicts.iter().all(|v| v.is_safe);
+        // A check is only "safe" when every model ran and none flagged anything.
+        let is_safe = errors.is_empty() && verdicts.iter().all(|v| v.is_safe);
 
         let total_duration_ms = start.elapsed().as_millis() as u64;
 
@@ -651,6 +675,33 @@ mod tests {
         }
     }
 
+    /// Mock safety model whose check always fails (provider down, 4xx, timeout...)
+    struct FailingSafetyModel {
+        id: String,
+    }
+
+    #[async_trait::async_trait]
+    impl SafetyModel for FailingSafetyModel {
+        fn id(&self) -> &str {
+            &self.id
+        }
+        fn model_type_id(&self) -> &str {
+            "failing_type"
+        }
+        fn display_name(&self) -> &str {
+            &self.id
+        }
+        fn supported_categories(&self) -> Vec<SafetyCategoryInfo> {
+            vec![]
+        }
+        fn inference_mode(&self) -> InferenceMode {
+            InferenceMode::MultiCategory
+        }
+        async fn check(&self, _input: &SafetyCheckInput) -> Result<SafetyVerdict, String> {
+            Err("Provider returned 400: context length exceeded".to_string())
+        }
+    }
+
     #[async_trait::async_trait]
     impl SafetyModel for MockSafetyModel {
         fn id(&self) -> &str {
@@ -671,6 +722,81 @@ mod tests {
         async fn check(&self, _input: &SafetyCheckInput) -> Result<SafetyVerdict, String> {
             Ok(self.verdict.clone())
         }
+    }
+
+    /// Security regression: a safety model that errors must not be treated as a
+    /// clean verdict. Before this test, `verdicts.iter().all(..)` on an empty
+    /// list made the request "safe" whenever every model failed.
+    #[tokio::test]
+    async fn test_engine_all_models_failing_fails_closed() {
+        let engine = SafetyEngine::new(
+            vec![Arc::new(FailingSafetyModel {
+                id: "broken".to_string(),
+            })],
+            0.5,
+        );
+
+        let result = engine.check_text("anything", ScanDirection::Input).await;
+        assert!(!result.is_safe, "errors must not yield a safe verdict");
+        assert!(result.verdicts.is_empty());
+        assert_eq!(result.errors.len(), 1);
+        assert_eq!(result.errors[0].model_id, "broken");
+        assert_eq!(result.actions_required.len(), 1);
+        let action = &result.actions_required[0];
+        assert!(matches!(action.action, CategoryAction::Ask));
+        assert_eq!(
+            action.category,
+            SafetyCategory::Custom(GUARDRAIL_ERROR_CATEGORY.to_string())
+        );
+        assert_eq!(action.model_id, "broken");
+        assert_eq!(action.model_type, "failing_type");
+        assert!(result.needs_approval());
+    }
+
+    /// A partial failure is also not safe: the failed model's categories were
+    /// never checked, even though the surviving model returned "safe".
+    #[tokio::test]
+    async fn test_engine_partial_failure_fails_closed() {
+        let engine = SafetyEngine::new(
+            vec![
+                Arc::new(MockSafetyModel::safe("ok")),
+                Arc::new(FailingSafetyModel {
+                    id: "broken".to_string(),
+                }),
+            ],
+            0.5,
+        );
+
+        let result = engine.check_text("anything", ScanDirection::Input).await;
+        assert!(!result.is_safe);
+        assert_eq!(result.verdicts.len(), 1);
+        assert_eq!(result.errors.len(), 1);
+        assert_eq!(result.actions_required.len(), 1);
+        assert_eq!(result.actions_required[0].model_id, "broken");
+    }
+
+    /// The error pseudo-category can be tuned like any other category, so a user
+    /// who prefers fail-open can configure `guardrail_error: allow` explicitly.
+    #[tokio::test]
+    async fn test_engine_failure_category_can_be_overridden_to_allow() {
+        let engine = SafetyEngine::new(
+            vec![Arc::new(FailingSafetyModel {
+                id: "broken".to_string(),
+            })],
+            0.5,
+        );
+
+        let result = engine
+            .check_text("anything", ScanDirection::Input)
+            .await
+            .apply_client_category_overrides(&[(
+                GUARDRAIL_ERROR_CATEGORY.to_string(),
+                CategoryAction::Allow,
+            )]);
+        assert!(result.is_safe);
+        assert!(result.actions_required.is_empty());
+        // The error is still reported for diagnostics.
+        assert_eq!(result.errors.len(), 1);
     }
 
     #[tokio::test]

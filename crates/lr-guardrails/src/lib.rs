@@ -17,6 +17,6 @@ pub mod safety_model;
 pub mod text_extractor;
 pub mod types;
 
-pub use engine::{ProviderInfo, SafetyEngine, SafetyModelConfigInput};
+pub use engine::{ProviderInfo, SafetyEngine, SafetyModelConfigInput, GUARDRAIL_ERROR_CATEGORY};
 pub use safety_model::*;
 pub use types::*;
