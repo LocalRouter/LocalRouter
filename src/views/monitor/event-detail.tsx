@@ -7,6 +7,7 @@ import { EventDuration } from './event-duration'
 import { useState, useCallback, type ReactNode } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import ReactMarkdown from 'react-markdown'
+import { markdownLinkComponents } from '@/components/shared/MarkdownLink'
 import remarkGfm from 'remark-gfm'
 import { capturedExcerpt, capturedRequestBody, capturedResponseMessages, contentText, requestMessages } from './message-content'
 import type { EventStatus, LlmProtocol, MonitorEvent, ReadMemoryArchiveFileParams } from '@/types/tauri-commands'
@@ -110,7 +111,7 @@ function SmartText({ text }: { text: string }) {
         <pre className="whitespace-pre-wrap font-mono text-[11px]">{formatJsonString(text)}</pre>
       ) : (
         <div className={MARKDOWN_STYLES}>
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownLinkComponents}>{text}</ReactMarkdown>
         </div>
       )}
     </div>

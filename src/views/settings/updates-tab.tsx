@@ -18,6 +18,7 @@ import {
   SelectValue,
 } from "@/components/ui/Select"
 import ReactMarkdown from "react-markdown"
+import { markdownLinkComponents } from "@/components/shared/MarkdownLink"
 import type { InstallSourceInfo } from "@/types/tauri-commands"
 
 
@@ -376,7 +377,7 @@ export function UpdatesTab() {
           <CardContent className="space-y-4">
             {updateAvailable.body && (
               <div className="prose prose-sm dark:prose-invert max-w-none p-3 bg-muted rounded-lg max-h-48 overflow-y-auto">
-                <ReactMarkdown>{updateAvailable.body}</ReactMarkdown>
+                <ReactMarkdown components={markdownLinkComponents}>{updateAvailable.body}</ReactMarkdown>
               </div>
             )}
 
@@ -415,7 +416,7 @@ export function UpdatesTab() {
           <CardContent className="space-y-4">
             {skippedUpdate.body && (
               <div className="prose prose-sm dark:prose-invert max-w-none p-3 bg-muted rounded-lg max-h-48 overflow-y-auto">
-                <ReactMarkdown>{skippedUpdate.body}</ReactMarkdown>
+                <ReactMarkdown components={markdownLinkComponents}>{skippedUpdate.body}</ReactMarkdown>
               </div>
             )}
 
