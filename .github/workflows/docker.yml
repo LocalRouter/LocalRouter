@@ -41,18 +41,29 @@ jobs:
 
       - name: Resolve version
         id: ver
+        # Event data is passed through `env` rather than interpolated into the
+        # script so a crafted input or tag name cannot inject shell commands.
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
         run: |
-          if [ -n "${{ github.event.inputs.version }}" ]; then
-            VERSION="${{ github.event.inputs.version }}"
+          if [ -n "$INPUT_VERSION" ]; then
+            VERSION="$INPUT_VERSION"
             IS_PRERELEASE="false"
           else
             # Strip the leading 'v' from the release tag (e.g. v0.1.0 -> 0.1.0)
-            VERSION="${{ github.event.release.tag_name }}"
+            VERSION="$RELEASE_TAG"
             VERSION="${VERSION#v}"
-            IS_PRERELEASE="${{ github.event.release.prerelease }}"
+            IS_PRERELEASE="$RELEASE_PRERELEASE"
           fi
           if [ -z "$VERSION" ]; then
             echo "Error: could not resolve version"
+            exit 1
+          fi
+          # Only a bare semver-style version may reach URLs, tags and build args.
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
+            echo "Error: invalid version '$VERSION' (expected e.g. 0.1.0 or 1.0.0-beta.1)"
             exit 1
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
