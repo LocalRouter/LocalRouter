@@ -1453,6 +1453,23 @@ pub async fn get_feature_clients_status(
 // Firewall Approval Commands
 // ============================================================================
 
+/// Config key for a flagged category from a guardrail approval request.
+///
+/// `SafetyCategory` serializes built-in variants as snake_case strings and
+/// `Custom(name)` (for example the `guardrail_error` pseudo-category) as
+/// `{"custom": name}`; the per-client `category_actions` list is keyed by the
+/// bare name in both cases.
+fn flagged_category_key(category: &serde_json::Value) -> Option<String> {
+    match category {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Object(obj) => obj
+            .get("custom")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        _ => None,
+    }
+}
+
 /// Submit a response to a pending firewall approval request
 #[tauri::command]
 pub async fn submit_firewall_approval(
@@ -1767,11 +1784,7 @@ pub async fn submit_firewall_approval(
                         let flagged_categories: Vec<String> = details
                             .actions_required
                             .iter()
-                            .filter_map(|a| {
-                                a.get("category")
-                                    .and_then(|c| c.as_str())
-                                    .map(|s| s.to_string())
-                            })
+                            .filter_map(|a| a.get("category").and_then(flagged_category_key))
                             .collect();
 
                         config_manager
@@ -1816,11 +1829,7 @@ pub async fn submit_firewall_approval(
                         let flagged_categories: Vec<String> = details
                             .actions_required
                             .iter()
-                            .filter_map(|a| {
-                                a.get("category")
-                                    .and_then(|c| c.as_str())
-                                    .map(|s| s.to_string())
-                            })
+                            .filter_map(|a| a.get("category").and_then(flagged_category_key))
                             .collect();
 
                         config_manager
@@ -4463,5 +4472,24 @@ mod tests {
                 .resolve_tool("srv-uuid", "write_file"),
             PermissionState::Ask,
         );
+    }
+
+    /// The popup's "allow/block these categories" must persist custom
+    /// categories (serialized as `{"custom": name}`), not only built-in ones,
+    /// so a user can turn the fail-closed `guardrail_error` flag into a
+    /// per-client policy from the UI.
+    #[test]
+    fn flagged_category_key_handles_builtin_and_custom_categories() {
+        use serde_json::json;
+        assert_eq!(
+            flagged_category_key(&json!("violent_crimes")).as_deref(),
+            Some("violent_crimes")
+        );
+        assert_eq!(
+            flagged_category_key(&json!({"custom": "guardrail_error"})).as_deref(),
+            Some("guardrail_error")
+        );
+        assert_eq!(flagged_category_key(&json!({"other": "x"})), None);
+        assert_eq!(flagged_category_key(&json!(42)), None);
     }
 }

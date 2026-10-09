@@ -611,7 +611,8 @@ impl SseTransport {
 
                 match chunk_result {
                     Ok(chunk) => {
-                        if buffer.len() + utf8_buffer.len() + chunk.len() > MAX_PENDING_EVENT_BYTES {
+                        if buffer.len() + utf8_buffer.len() + chunk.len() > MAX_PENDING_EVENT_BYTES
+                        {
                             tracing::error!(
                                 "MCP SSE event from {} exceeds {} MiB without a terminator; dropping stream",
                                 url,

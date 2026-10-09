@@ -1,0 +1,139 @@
+# LocalRouter 0.0.154 release: security review fixes
+
+Nine PRs (#23–#31) from the 2026-10-09 security review of the repository,
+merged into master with `--no-ff` merge commits, validated locally, run
+locally, and released.
+
+## Progress / todo
+- [x] Review each PR for user impact, compatibility with existing deployments
+  and how to verify it in production (notes below).
+- [x] Merge #23 ci-workflow-injection, #24 docker-appimage-checksum,
+  #25 markdown-link-navigation, #26 npm-audit-updates, #27 deps-rustsec,
+  #28 gemini-key-header, #29 guardrails-fail-closed,
+  #30 mcp-sse-endpoint-origin, #31 mcp-remote-buffer-caps.
+  All merged cleanly; #30/#31 both touch `transport/sse.rs` and #23/#24
+  both touch `docker.yml` in disjoint hunks.
+- [ ] Validate: stable clippy, fmt, full workspace tests, `npx tsc --noEmit`,
+  `npm run build`, `cargo audit`, `npm audit`.
+- [ ] Push master (closes the PRs as merged), confirm CI passes.
+- [ ] Build and run the app locally (`cargo tauri dev --no-watch`), exercise
+  the changed paths against the dev server on 33625.
+- [ ] Show the user the local run and wait for the go-ahead.
+- [ ] Trigger the Release workflow on master for 0.0.154 (non-prerelease).
+- [ ] Monitor the release run; verify the published release, assets, updater
+  manifest and the Docker image build (first run with the checksum step).
+- [ ] Sync local master with the release version bump.
+
+## Per-change impact, compatibility and production verification
+
+### #23 CI: no event data in `run:` scripts; pin free-disk-space action
+- Impact: none on users. Same inputs produce the same outputs; a malformed
+  `version` now fails the Docker workflow early instead of reaching URLs.
+- Compatibility: `release.yml` already enforced the semver regex; `docker.yml`
+  now enforces the same one. Pre-release tags like `v1.0.0-beta.1` still pass.
+- Verify in prod: the 0.0.154 release run and the dispatched Docker run both
+  resolve the version and complete.
+
+### #24 Docker: verify AppImage SHA-256
+- Impact: none on users of the image; the image content is unchanged.
+- Compatibility: build args default to empty, so local `docker build .`
+  still works (prints a warning). Asset names match the published pattern
+  (`LocalRouter_<ver>_amd64.AppImage`, `..._aarch64.AppImage`, checked on
+  v0.0.153). `contents: read` is enough for `gh release download`.
+- Verify in prod: the Docker run for 0.0.154 shows the "Compute AppImage
+  checksums" step with two 64-hex digests and the build passes `sha256sum -c`.
+
+### #25 UI: markdown links open in the OS browser
+- Impact: links in monitor event details and release notes now open in the
+  system browser instead of replacing the app window. `javascript:`,
+  `file:` etc. render as plain text.
+- Compatibility: `shell:allow-open` is already in `capabilities/default.json`;
+  the demo site renders the same component (no Tauri IPC needed to render).
+- Verify in prod: Settings → Updates release notes link opens the browser;
+  a monitor event whose content contains a URL opens the browser on click.
+
+### #26 npm lockfile updates
+- Impact: `@modelcontextprotocol/sdk` 1.27 → 1.32 is the only runtime
+  dependency the webview ships (`src/lib/mcp-client.ts`, Try It Out MCP
+  tab). Website: react-router 7.1 → 7.18.
+- Compatibility: no `package.json` range changes; `npm ci`, `tsc` and the
+  Vite build pass. `npm audit` drops from 1 critical / 16 high to 7
+  (build-only tooling).
+- Verify in prod: Try It Out → MCP tab lists tools from the local gateway and
+  can call one.
+
+### #27 Rust dependency updates; drop unused `oauth2`
+- Impact: none functional. Removes reqwest 0.11 / rustls 0.21 tree; bumps
+  `tar`, `rustls`, `rustls-webpki`, `h2`, `aws-lc-sys`, `quinn-proto`,
+  `crossbeam-epoch` within semver.
+- Compatibility: `tar` is used by `lr-engines` to unpack engine archives;
+  its unit tests cover extraction. `rustls`/`rcgen` back the HTTPS proxy and
+  every reqwest client.
+- Verify in prod: provider health checks (TLS) go green, an engine
+  download/extract succeeds, the HTTPS inspection proxy still serves.
+
+### #28 Gemini: API key in `x-goog-api-key` header
+- Impact: the key no longer appears in URLs, so transport errors returned
+  as 502 bodies / logs / monitor events cannot leak it.
+- Compatibility: `x-goog-api-key` is the documented alternative to `?key=`
+  for the Generative Language API; all six request sites switched. Config
+  shape unchanged, no migration.
+- Verify in prod: with a Gemini key configured, provider health is healthy,
+  model list loads, a chat and a streaming chat succeed. Point the base URL
+  at an unreachable host and confirm the 502 body has no `AIza` string.
+
+### #29 Guardrails fail closed (the one real behaviour change)
+- Before: when every safety model errored (provider down, 429, revoked key,
+  prompt longer than the guard model's context), the request was treated as
+  safe and passed through silently.
+- After: each failed model adds a flagged `guardrail_error` pseudo-category
+  with the default `Ask` action, so the request takes the normal approval
+  path. Partial failures are also not safe.
+- Who sees a difference: only clients that actually run guardrails, i.e. a
+  safety model is configured and the effective category policy (per-client
+  entries merged over the global list) is non-empty and not all-Allow.
+  The default install has no category actions, so it is unchanged.
+  Resolution order for the pseudo-category is the same as for any flag:
+  a `guardrail_error` entry, then `__model:<type>`, then `__global`. So a
+  deployment whose "All Categories" default is Notify or Allow keeps
+  passing requests (with a monitor notification for Notify); Ask or Block
+  defaults, or a policy with only specific categories, now get the popup or
+  a block when their guard model fails, instead of a silent pass.
+- Escape hatch: `guardrail_error: allow` (or `notify`) in that client's
+  category actions. The approval popup's "allow these categories" /
+  "block these categories" buttons now persist Custom categories too
+  (`flagged_category_key` in `src-tauri/src/ui/commands_clients.rs`
+  accepts the `{custom: name}` shape; before, those buttons silently
+  dropped every Custom category, so the popup would recur every request).
+  The popup labels the flag "guardrail error".
+- `/v1/moderations` is unchanged: `translate_to_moderation_result` only maps
+  known categories, so a failing guard still reports `flagged: false` there.
+- No config migration: the pseudo-category is matched by the existing
+  string-keyed `category_actions` entries.
+- Verify in prod: on a client with guardrails + a category policy, stop the
+  guard provider (or set a wrong key) and send a request: expect the
+  approval popup naming "guardrail error" and a monitor guardrail event.
+  Re-enable the provider: requests flow again without the popup.
+
+### #30 MCP SSE: same-origin `endpoint` event; no redirects
+- Impact: legacy SSE servers whose `endpoint` event names another scheme,
+  host or port are ignored (logged at warn, POSTs fall back to the configured
+  URL). Redirects are no longer followed by the MCP HTTP clients.
+- Compatibility risk: a server configured as `http://localhost:PORT/sse`
+  that advertises `http://127.0.0.1:PORT/messages` will stop working (host
+  string mismatch), as will a server configured over `http://` that 301s to
+  `https://`. The reference SDKs (Python, TypeScript, FastMCP, Supergateway)
+  all emit relative endpoints, so this is expected to be rare. The fix is to
+  configure the URL the server actually advertises/serves. OAuth discovery
+  already used `Policy::none()`.
+- Verify in prod: existing remote MCP servers (Streamable HTTP and legacy
+  SSE) connect and list tools after upgrade; check the log for
+  "Ignoring MCP endpoint event" or 3xx status errors.
+
+### #31 MCP buffer caps (16 MiB)
+- Impact: a single SSE event or a single stdio line larger than 16 MiB
+  closes the transport (reconnect logic takes over for SSE). The inline POST
+  path already had the same cap, so no well-behaved server changes
+  behaviour.
+- Verify in prod: large tool results (a few MiB) still arrive; nothing to
+  migrate.
