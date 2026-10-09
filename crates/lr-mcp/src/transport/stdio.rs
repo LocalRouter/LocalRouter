@@ -13,7 +13,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::{oneshot, Mutex};
 use tokio::task::JoinHandle;
@@ -43,6 +43,9 @@ pub type StdioRequestCallback = Arc<
         + Send
         + Sync,
 >;
+
+/// Largest single JSON-RPC line accepted from a child process (16 MiB).
+const MAX_STDIO_LINE_BYTES: usize = 16 * 1024 * 1024;
 
 /// STDIO transport implementation
 ///
@@ -254,7 +257,22 @@ impl StdioTransport {
             loop {
                 line.clear();
 
-                match reader.read_line(&mut line).await {
+                // Bound a single JSON-RPC line: the child process decides when
+                // to send a newline, so read through a `take` so one endless
+                // line cannot grow memory without bound.
+                let read = (&mut reader)
+                    .take(MAX_STDIO_LINE_BYTES as u64 + 1)
+                    .read_line(&mut line)
+                    .await;
+                match read {
+                    Ok(n) if n > MAX_STDIO_LINE_BYTES => {
+                        tracing::error!(
+                            "MCP STDIO message exceeds {} MiB; closing transport",
+                            MAX_STDIO_LINE_BYTES / (1024 * 1024)
+                        );
+                        *closed.write() = true;
+                        break;
+                    }
                     Ok(0) => {
                         // EOF - process terminated
                         tracing::debug!("MCP STDIO process stdout closed (EOF)");
