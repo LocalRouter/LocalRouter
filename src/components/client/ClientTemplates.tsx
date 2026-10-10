@@ -317,10 +317,10 @@ export const CLIENT_TEMPLATES: ClientTemplate[] = [
   {
     id: 'pi',
     name: 'Pi',
-    description: 'Minimal open-source coding agent with custom OpenAI-compatible providers.',
+    description: 'Minimal open-source coding agent with custom OpenAI-compatible providers and MCP support.',
     category: 'coding_assistants',
     icon: 'pi',
-    defaultMode: 'llm_only',
+    defaultMode: 'both',
     setupType: 'config_file',
     configFile: {
       path: '{{HOME_DIR}}/.pi/agent/models.json',
@@ -342,8 +342,22 @@ export const CLIENT_TEMPLATES: ClientTemplate[] = [
       },
       description: 'Adds LocalRouter as an OpenAI-compatible provider. Automatic configuration also makes LocalRouter the default in ~/.pi/agent/settings.json, but only when no default provider is set and no other custom provider is configured.',
     },
+    mcpConfigFile: {
+      path: '{{HOME_DIR}}/.pi/agent/mcp.json',
+      jsonSnippet: JSON.stringify({
+        mcpServers: {
+          localrouter: {
+            url: '{{BASE_URL}}',
+            headers: {
+              Authorization: 'Bearer {{CLIENT_SECRET}}',
+            },
+          },
+        },
+      }, null, 2),
+      description: 'Adds LocalRouter as a Streamable HTTP MCP server for Pi\'s built-in MCP support (Pi 0.99 or later). Run /reload in a running Pi session to pick up changes; /mcp shows the connection.',
+    },
     docsUrl: 'https://pi.dev/docs/latest/models',
-    supportsMcp: false,
+    supportsMcp: true,
     supportsProxy: false,
     supportsLlm: true,
     binaryNames: ['pi'],
