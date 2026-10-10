@@ -148,6 +148,7 @@ impl UsagePoller {
                 .list_providers()
                 .into_iter()
                 .filter(|i| i.enabled)
+                .filter(|i| !config.poll_excluded_providers.contains(&i.instance_name))
                 .collect();
             if instances
                 .iter()

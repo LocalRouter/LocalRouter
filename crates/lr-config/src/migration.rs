@@ -178,6 +178,11 @@ pub fn migrate_config(mut config: AppConfig) -> AppResult<AppConfig> {
     // v30: routing_policy accepts/migrates legacy routellm_config during deserialization.
     // Removed global classifier settings are ignored; existing weights are left on disk.
 
+    // Migrate to v31: Don't start polling usage endpoints of existing providers
+    if config.version < 31 {
+        config = migrate_to_v31(config)?;
+    }
+
     // Update version to current
     config.version = CONFIG_VERSION;
 
@@ -976,6 +981,24 @@ fn migrate_to_v29(mut config: AppConfig) -> AppResult<AppConfig> {
     Ok(config)
 }
 
+/// Migrate to version 31: usage tracking queries connected providers' usage
+/// endpoints in the background. Exclude every provider that already exists so
+/// upgrading makes no new background requests; providers added afterwards are
+/// queried, and the user can opt existing ones in under Settings → Usage.
+fn migrate_to_v31(mut config: AppConfig) -> AppResult<AppConfig> {
+    info!("Migrating to version 31: exclude existing providers from usage polling");
+
+    let excluded = &mut config.usage_tracking.poll_excluded_providers;
+    for provider in &config.providers {
+        if !excluded.contains(&provider.name) {
+            excluded.push(provider.name.clone());
+        }
+    }
+
+    config.version = 31;
+    Ok(config)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1191,6 +1214,33 @@ mod tests {
             section,
             "  catalog_compression: false\n  response_threshold_bytes: 1000"
         );
+    }
+
+    #[test]
+    fn test_migrate_to_v31_excludes_existing_providers_from_usage_polling() {
+        let provider = |name: &str| super::super::ProviderConfig {
+            name: name.to_string(),
+            ..super::super::ProviderConfig::default_ollama()
+        };
+        let mut config = AppConfig {
+            version: 30,
+            providers: vec![provider("ChatGPT"), provider("OpenRouter")],
+            ..Default::default()
+        };
+        config.usage_tracking.poll_excluded_providers = vec!["OpenRouter".to_string()];
+
+        let migrated = migrate_config(config).unwrap();
+
+        assert_eq!(migrated.version, CONFIG_VERSION);
+        assert_eq!(
+            migrated.usage_tracking.poll_excluded_providers,
+            ["OpenRouter", "ChatGPT"]
+        );
+        // A new install polls every provider it adds.
+        assert!(AppConfig::default()
+            .usage_tracking
+            .poll_excluded_providers
+            .is_empty());
     }
 
     #[test]

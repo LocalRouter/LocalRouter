@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use uuid::Uuid;
 
-pub(crate) const CONFIG_VERSION: u32 = 30;
+pub(crate) const CONFIG_VERSION: u32 = 31;
 
 /// Keyring service name for provider API keys
 pub const PROVIDER_KEYRING_SERVICE: &str = "LocalRouter-Providers";
@@ -1249,6 +1249,12 @@ pub struct UsageTrackingConfig {
     /// (ChatGPT Plus/Pro, GitHub Copilot, OpenRouter) in the background.
     #[serde(default = "default_true")]
     pub poll_provider_apis: bool,
+    /// Provider instances whose usage endpoints are not queried. Providers
+    /// that existed before usage tracking (config v31) start here, so an
+    /// upgrade makes no new background requests; providers added later are
+    /// queried unless the user turns them off.
+    #[serde(default)]
+    pub poll_excluded_providers: Vec<String>,
     /// Use the logins of the Claude Code and Codex CLIs on this machine to
     /// query their subscription usage. Off by default: it reads another
     /// app's saved credentials.
@@ -1287,6 +1293,7 @@ impl Default for UsageTrackingConfig {
         Self {
             enabled: true,
             poll_provider_apis: true,
+            poll_excluded_providers: Vec::new(),
             read_cli_logins: false,
             poll_interval_secs: default_usage_poll_interval_secs(),
             idle_poll_interval_secs: default_usage_idle_poll_interval_secs(),

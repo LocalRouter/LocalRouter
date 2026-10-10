@@ -28,6 +28,7 @@ import ProviderIcon from "@/components/ProviderIcon"
 import { useTauriListener } from "@/hooks/useTauriListener"
 import type {
   ForgetUsageAccountParams,
+  ProviderInstanceInfo,
   UpdateUsageTrackingConfigParams,
   UsageAccountView,
   UsagePollStatus,
@@ -35,6 +36,9 @@ import type {
   UsageTrackingConfig,
 } from "@/types/tauri-commands"
 import { formatAgo, formatUsd } from "@/views/dashboard/usage-format"
+
+/** Provider types whose usage or credits endpoint LocalRouter can query. */
+const POLLED_PROVIDER_TYPES = ["openai-chatgpt-plus", "github-copilot", "openrouter"]
 
 const ACTIVE_INTERVALS: { value: number; label: string }[] = [
   { value: 60, label: "1 min" },
@@ -53,19 +57,22 @@ export function UsageTab() {
   const [config, setConfigState] = useState<UsageTrackingConfig | null>(null)
   const [snapshot, setSnapshot] = useState<UsageSnapshot | null>(null)
   const [statuses, setStatuses] = useState<UsagePollStatus[]>([])
+  const [polledProviders, setPolledProviders] = useState<ProviderInstanceInfo[]>([])
   const [forgetting, setForgetting] = useState<UsageAccountView | null>(null)
   const [now, setNow] = useState(() => Date.now())
 
   const load = useCallback(async () => {
     try {
-      const [cfg, snap, st] = await Promise.all([
+      const [cfg, snap, st, providers] = await Promise.all([
         invoke<UsageTrackingConfig>("get_usage_tracking_config"),
         invoke<UsageSnapshot>("get_usage_limits"),
         invoke<UsagePollStatus[]>("get_usage_poll_status"),
+        invoke<ProviderInstanceInfo[]>("list_provider_instances"),
       ])
       setConfigState(cfg)
       setSnapshot(snap)
       setStatuses(st)
+      setPolledProviders(providers.filter((p) => POLLED_PROVIDER_TYPES.includes(p.provider_type)))
       setNow(Date.now())
     } catch (e) {
       console.error("Failed to load usage settings:", e)
@@ -137,6 +144,30 @@ export function UsageTab() {
             disabled={!config.enabled}
             onChange={(poll_provider_apis) => update({ poll_provider_apis })}
           />
+          {config.poll_provider_apis && polledProviders.length > 0 && (
+            <div className="ml-4 space-y-2 border-l pl-4">
+              {polledProviders.map((p) => {
+                const excluded = config.poll_excluded_providers
+                return (
+                  <SwitchRow
+                    key={p.instance_name}
+                    id={`usage-poll-${p.instance_name}`}
+                    label={p.instance_name}
+                    checked={!excluded.includes(p.instance_name)}
+                    disabled={!config.enabled}
+                    onChange={(on) =>
+                      update({
+                        poll_excluded_providers: on
+                          ? excluded.filter((name) => name !== p.instance_name)
+                          : [...excluded, p.instance_name],
+                      })
+                    }
+                    icon={<ProviderIcon providerId={p.provider_type} size={14} />}
+                  />
+                )
+              })}
+            </div>
+          )}
           <SwitchRow
             id="usage-cli-logins"
             label="Use Claude Code and Codex logins"
