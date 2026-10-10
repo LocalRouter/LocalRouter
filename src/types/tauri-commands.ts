@@ -3613,6 +3613,7 @@ export type InstallSource =
   | "flatpak"
   | "snap"
   | "docker"
+  | "nix"
 
 /** Rust: src-tauri/src/ui/commands.rs - InstallSourceInfo struct */
 export interface InstallSourceInfo {
