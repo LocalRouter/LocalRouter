@@ -172,6 +172,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "writes test credentials into the real home directory's client configs"]
     fn test_config_file_integrations_configure_permanent() {
         // Pi is tested through its injectable-path writer in pi.rs. Calling
         // configure_permanent here would write test credentials to the
@@ -206,6 +207,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "writes test credentials into the real home directory's client configs"]
     fn test_cursor_config_path_is_platform_specific() {
         let integration = get_integration("cursor").unwrap();
         let result =
