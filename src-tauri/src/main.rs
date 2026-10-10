@@ -907,13 +907,10 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                             // Handle bearer token — store in keychain if present
                             if install_config.auth_type == "bearer" {
                                 if let Some(token) = &install_config.bearer_token {
-                                    let keyring_entry = keyring::Entry::new(
-                                        lr_config::MCP_KEYRING_SERVICE,
-                                        &server_id,
-                                    )
-                                    .map_err(|e| format!("Failed to create keyring entry: {}", e))?;
-                                    keyring_entry
-                                        .set_password(token)
+                                    use lr_api_keys::KeychainStorage;
+                                    lr_api_keys::CachedKeychain::auto()
+                                        .map_err(|e| format!("Failed to access keychain: {}", e))?
+                                        .store(lr_config::MCP_KEYRING_SERVICE, &server_id, token)
                                         .map_err(|e| format!("Failed to store token: {}", e))?;
                                 }
                             }

@@ -6,6 +6,7 @@
 //! The CachedKeychain wrapper provides in-memory caching to prevent
 //! repeated password prompts for the same service:account combination.
 
+use crate::chunked::{self, RawEntryStore};
 use lr_types::errors::AppResult;
 use parking_lot::RwLock;
 use std::collections::HashMap;
@@ -30,19 +31,68 @@ pub trait KeychainStorage: Send + Sync {
 }
 
 /// Real keychain implementation using system keyring
+///
+/// Secrets longer than the platform's per-entry limit (Windows Credential
+/// Manager: 2560 bytes of UTF-16) are split across several entries; see
+/// [`crate::chunked`].
 pub struct SystemKeychain;
+
+/// Serializes system keyring access across every `SystemKeychain` user in the
+/// process: several `CachedKeychain` instances share the store, and a secret
+/// written in parts must not interleave with another write of the same secret.
+static SYSTEM_KEYRING_LOCK: RwLock<()> = RwLock::new(());
+
+/// Single `keyring::Entry` operations underneath the chunking layer.
+struct KeyringEntries;
+
+impl KeyringEntries {
+    fn entry(service: &str, account: &str) -> AppResult<keyring::Entry> {
+        keyring::Entry::new(service, account)
+            .map_err(|e| lr_types::AppError::Internal(format!("Failed to access keyring: {}", e)))
+    }
+}
+
+impl RawEntryStore for KeyringEntries {
+    fn set(&self, service: &str, account: &str, value: &str) -> AppResult<()> {
+        Self::entry(service, account)?
+            .set_password(value)
+            .map_err(|e| lr_types::AppError::Internal(format!("Failed to store key: {}", e)))
+    }
+
+    fn get(&self, service: &str, account: &str) -> AppResult<Option<String>> {
+        match Self::entry(service, account)?.get_password() {
+            Ok(secret) => Ok(Some(secret)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(lr_types::AppError::Internal(format!(
+                "Failed to retrieve key: {}",
+                e
+            ))),
+        }
+    }
+
+    fn remove(&self, service: &str, account: &str) -> AppResult<bool> {
+        match Self::entry(service, account)?.delete_credential() {
+            Ok(()) => Ok(true),
+            Err(keyring::Error::NoEntry) => Ok(false),
+            Err(e) => Err(lr_types::AppError::Internal(format!(
+                "Failed to delete key: {}",
+                e
+            ))),
+        }
+    }
+}
 
 impl KeychainStorage for SystemKeychain {
     fn store(&self, service: &str, account: &str, secret: &str) -> AppResult<()> {
         trace!("SystemKeychain: storing {}:{}", service, account);
-        let entry = keyring::Entry::new(service, account).map_err(|e| {
-            lr_types::AppError::Internal(format!("Failed to access keyring: {}", e))
-        })?;
-
-        entry
-            .set_password(secret)
-            .map_err(|e| lr_types::AppError::Internal(format!("Failed to store key: {}", e)))?;
-
+        let _guard = SYSTEM_KEYRING_LOCK.write();
+        chunked::store(
+            &KeyringEntries,
+            chunked::PLATFORM_LIMIT,
+            service,
+            account,
+            secret,
+        )?;
         debug!("SystemKeychain: stored {}:{}", service, account);
         Ok(())
     }
@@ -53,53 +103,25 @@ impl KeychainStorage for SystemKeychain {
             service,
             account
         );
-        let entry = keyring::Entry::new(service, account).map_err(|e| {
-            lr_types::AppError::Internal(format!("Failed to access keyring: {}", e))
-        })?;
-
-        match entry.get_password() {
-            Ok(secret) => {
-                debug!(
-                    "SystemKeychain: retrieved {}:{} from system keyring",
-                    service, account
-                );
-                Ok(Some(secret))
-            }
-            Err(keyring::Error::NoEntry) => {
-                trace!("SystemKeychain: no entry found for {}:{}", service, account);
-                Ok(None)
-            }
-            Err(e) => Err(lr_types::AppError::Internal(format!(
-                "Failed to retrieve key: {}",
-                e
-            ))),
+        let _guard = SYSTEM_KEYRING_LOCK.read();
+        let secret = chunked::load(&KeyringEntries, service, account)?;
+        if secret.is_some() {
+            debug!(
+                "SystemKeychain: retrieved {}:{} from system keyring",
+                service, account
+            );
+        } else {
+            trace!("SystemKeychain: no entry found for {}:{}", service, account);
         }
+        Ok(secret)
     }
 
     fn delete(&self, service: &str, account: &str) -> AppResult<()> {
         trace!("SystemKeychain: deleting {}:{}", service, account);
-        let entry = keyring::Entry::new(service, account).map_err(|e| {
-            lr_types::AppError::Internal(format!("Failed to access keyring: {}", e))
-        })?;
-
-        match entry.delete_credential() {
-            Ok(()) => {
-                debug!("SystemKeychain: deleted {}:{}", service, account);
-                Ok(())
-            }
-            Err(keyring::Error::NoEntry) => {
-                trace!(
-                    "SystemKeychain: no entry to delete for {}:{}",
-                    service,
-                    account
-                );
-                Ok(())
-            }
-            Err(e) => Err(lr_types::AppError::Internal(format!(
-                "Failed to delete key: {}",
-                e
-            ))),
-        }
+        let _guard = SYSTEM_KEYRING_LOCK.write();
+        chunked::delete(&KeyringEntries, service, account)?;
+        debug!("SystemKeychain: deleted {}:{}", service, account);
+        Ok(())
     }
 }
 
