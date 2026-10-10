@@ -31,6 +31,8 @@ pub struct PassiveInterceptor {
     pricing: Option<Arc<dyn PricingResolver>>,
     /// Resolves the client's display name so Monitor shows a name, not a UUID.
     client_names: Option<Arc<dyn ClientNameResolver>>,
+    /// Per-account usage ledger (subscription value, API spend).
+    usage: Option<Arc<lr_usage::UsageTracker>>,
 }
 
 impl PassiveInterceptor {
@@ -40,7 +42,14 @@ impl PassiveInterceptor {
             metrics: None,
             pricing: None,
             client_names: None,
+            usage: None,
         }
+    }
+
+    /// Attach the usage tracker so proxied calls feed the per-account ledger.
+    pub fn with_usage(mut self, usage: Arc<lr_usage::UsageTracker>) -> Self {
+        self.usage = Some(usage);
+        self
     }
 
     /// Attach the metrics collector so proxied calls feed the dashboards.
@@ -185,6 +194,22 @@ impl PassiveInterceptor {
         // A duplicate hop was counted by the first hop; recording it again
         // would double every tier.
         let metrics = self.metrics.as_ref().filter(|_| !ex.is_duplicate_hop());
+        let ledger = self.usage.as_ref().zip(ex.usage_account.as_ref());
+        if let Some((tracker, account)) =
+            ledger.filter(|_| status == EventStatus::Complete && !ex.is_duplicate_hop())
+        {
+            tracker.record_request(
+                account,
+                lr_usage::LedgerEntry {
+                    requests: 1,
+                    input_tokens: usage.input,
+                    output_tokens: usage.output,
+                    cache_read_tokens: usage.cache_read,
+                    cache_write_tokens: usage.cache_write,
+                    cost_usd: cost_usd.unwrap_or(0.0),
+                },
+            );
+        }
         if let Some(metrics) = metrics {
             if status == EventStatus::Complete {
                 metrics.record_success(&RequestMetrics {
@@ -549,6 +574,8 @@ fn observed_from_reverse(ex: &crate::reverse::ReverseExchange) -> ObservedExchan
         source: ExchangeSource::ReverseProxy,
         error: ex.error.clone(),
         trace: ex.trace.clone(),
+        // Local providers behind the reverse proxy have no usage limits.
+        usage_account: None,
     }
 }
 
@@ -1096,6 +1123,41 @@ mod tests {
         it.end_passthrough(Some(id.clone()), &ex);
 
         assert_eq!(store.get(&id).unwrap().status, EventStatus::Error);
+    }
+
+    #[tokio::test]
+    async fn usage_ledger_records_classified_calls_once() {
+        let store = Arc::new(MonitorEventStore::new(16));
+        let usage = Arc::new(lr_usage::UsageTracker::new(Default::default()));
+        let it = PassiveInterceptor::new(store).with_usage(usage.clone());
+        let requests = |t: &lr_usage::UsageTracker| -> u64 {
+            t.snapshot()
+                .accounts
+                .iter()
+                .map(|a| a.spend.requests_30d)
+                .sum()
+        };
+
+        // Unclassified (no auth seen): nothing to attribute.
+        it.on_response(&exchange()).await;
+        assert_eq!(requests(&usage), 0);
+
+        let mut ex = exchange();
+        ex.usage_account = Some(lr_usage::AccountRef::subscription("anthropic"));
+        it.on_response(&ex).await;
+        assert_eq!(requests(&usage), 1);
+
+        // A duplicate hop and a failed call are not counted.
+        let mut dup = ex.clone();
+        dup.trace = Some(lr_types::RequestTrace::parse("abc;hop=2").unwrap());
+        it.on_response(&dup).await;
+        let mut failed = ex.clone();
+        failed.status = Some(500);
+        it.on_response(&failed).await;
+        assert_eq!(requests(&usage), 1);
+        let snap = usage.snapshot();
+        assert_eq!(snap.accounts[0].id, "anthropic:subscription");
+        assert_eq!(snap.accounts[0].spend.tokens_30d, 8);
     }
 
     #[tokio::test]

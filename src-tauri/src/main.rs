@@ -602,6 +602,21 @@ async fn run_gui_mode() -> anyhow::Result<()> {
         lr_router::FreeTierManager::new(free_tier_persist_path.clone())
     });
 
+    // Subscription & usage-limit tracking. Installed globally so provider HTTP
+    // clients and the gateway's request finalization can feed it.
+    let usage_tracker = {
+        let usage_config = config_manager.get().usage_tracking.clone();
+        let tracker = match lr_utils::paths::config_dir() {
+            Ok(dir) => {
+                lr_usage::UsageTracker::load(dir.join("usage_limits_state.json"), usage_config)
+            }
+            Err(_) => lr_usage::UsageTracker::new(usage_config),
+        };
+        let tracker = Arc::new(tracker);
+        lr_usage::install_global(tracker.clone());
+        tracker
+    };
+
     // Initialize shared health cache (used by both router and server)
     let health_cache = Arc::new(providers::health_cache::HealthCacheManager::new());
 
@@ -679,6 +694,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                     app_state,
                     cfg.proxy.host.clone(),
                     request_dedupe_flag.clone(),
+                    usage_tracker.clone(),
                 ) {
                     Ok(svc) => {
                         // The listener is a cheap loopback socket that is idle until a
@@ -828,6 +844,14 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             app.manage(free_tier_manager.clone());
             app.manage(oauth_manager.clone());
             app.manage(metrics_collector.clone());
+
+            // Usage limits: tracker + background poller (also drives the tray
+            // title and the "Usage limits" tray menu section).
+            app.manage(usage_tracker.clone());
+            let usage_poller =
+                ui::usage_poller::UsagePoller::new(usage_tracker.clone(), provider_registry.clone());
+            usage_poller.start(app.handle().clone());
+            app.manage(usage_poller);
 
             // Initialize skill manager and script executor
             let mut skill_manager = skills::SkillManager::new();
@@ -2824,6 +2848,12 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::set_start_on_boot,
             ui::commands::get_request_dedupe_config,
             ui::commands::set_request_dedupe_enabled,
+            ui::commands_usage::get_usage_limits,
+            ui::commands_usage::refresh_usage_limits,
+            ui::commands_usage::get_usage_poll_status,
+            ui::commands_usage::get_usage_tracking_config,
+            ui::commands_usage::update_usage_tracking_config,
+            ui::commands_usage::forget_usage_account,
             // Decision routing
             ui::commands_decision_routing::preview_routing_policy,
             ui::commands_engines::engine_status,

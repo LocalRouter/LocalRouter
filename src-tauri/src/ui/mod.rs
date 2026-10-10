@@ -15,6 +15,7 @@ pub mod commands_metrics;
 pub mod commands_monitor;
 pub mod commands_providers;
 pub mod commands_reverse_proxy;
+pub mod commands_usage;
 mod input_validation;
 mod skill_paths;
 pub mod tray;
@@ -24,6 +25,8 @@ pub mod tray_graph;
 pub mod tray_graph_manager;
 pub mod tray_menu;
 pub mod tray_support;
+pub mod tray_usage;
+pub mod usage_poller;
 
 // TODO: Implement UI integration
 // - Tauri command handlers

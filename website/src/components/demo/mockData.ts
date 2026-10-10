@@ -1238,8 +1238,10 @@ export const mockData = {
       items: [
         { source: { kind: 'all' as const }, enabled: true, label: null },
         { source: { kind: 'client' as const, id: 'client-1' }, enabled: true, label: null },
+        { source: { kind: 'usage' as const, account: 'anthropic:subscription', window: 'seven_day' }, enabled: true, label: null },
+        { source: { kind: 'usage' as const, account: 'openai:subscription', window: 'seven_day' }, enabled: true, label: null },
       ],
-      labels: 'off' as const,
+      labels: 'beside' as const,
       display: 'graph' as const,
       metric: 'tokens' as const,
       usage_period: 'day' as const,

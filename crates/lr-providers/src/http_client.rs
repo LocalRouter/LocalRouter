@@ -32,10 +32,44 @@ impl Middleware for TraceHeaderMiddleware {
     }
 }
 
+/// Hands every upstream response's headers to the usage tracker, which reads
+/// subscription windows and rate limits off them. Requests are classified by
+/// host and how they authenticate; nothing is stored for unknown hosts.
+struct UsageObserverMiddleware;
+
+#[async_trait::async_trait]
+impl Middleware for UsageObserverMiddleware {
+    async fn handle(
+        &self,
+        req: reqwest::Request,
+        extensions: &mut http::Extensions,
+        next: Next<'_>,
+    ) -> reqwest_middleware::Result<reqwest::Response> {
+        let Some(tracker) = lr_usage::global().filter(|t| t.is_enabled()) else {
+            return next.run(req, extensions).await;
+        };
+        let host = req.url().host_str().unwrap_or_default().to_string();
+        let path = req.url().path().to_string();
+        let request_headers = req.headers().clone();
+        let result = next.run(req, extensions).await;
+        if let Ok(resp) = &result {
+            tracker.observe_response(
+                &host,
+                &path,
+                &request_headers,
+                resp.headers(),
+                lr_usage::DataSource::GatewayHeaders,
+            );
+        }
+        result
+    }
+}
+
 /// Wrap a plain reqwest client with the shared middleware stack.
 pub fn with_middleware(client: Client) -> ClientWithMiddleware {
     ClientBuilder::new(client)
         .with(TraceHeaderMiddleware)
+        .with(UsageObserverMiddleware)
         .build()
 }
 

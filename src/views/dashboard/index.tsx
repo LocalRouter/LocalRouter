@@ -2,10 +2,15 @@ import { useState } from 'react'
 import type { TimeRange } from '@/types/tauri-commands'
 import { RequestMonitor } from './request-monitor'
 import { RequestTraffic } from './request-traffic'
+import { UsageLimits } from './usage-limits'
 import { useHomeActivity } from './use-home-activity'
 import { useInFlightRequests } from './use-in-flight'
 
-export function DashboardView() {
+interface DashboardViewProps {
+  onTabChange?: (view: string, subTab?: string | null) => void
+}
+
+export function DashboardView({ onTabChange }: DashboardViewProps = {}) {
   const [range, setRange] = useState<TimeRange>('ten_minutes')
   const [monitorReload, setMonitorReload] = useState(0)
   const home = useHomeActivity(range)
@@ -31,6 +36,11 @@ export function DashboardView() {
           home.refresh()
           setMonitorReload((value) => value + 1)
         }}
+      />
+
+      <UsageLimits
+        className="mx-auto w-full max-w-[1440px] shrink-0"
+        onOpenSettings={onTabChange ? () => onTabChange('settings', 'usage') : undefined}
       />
 
       <RequestMonitor

@@ -13,6 +13,7 @@ lr-utils = { workspace = true }
 lr-monitor = { workspace = true }
 lr-monitoring = { workspace = true }
 lr-types = { workspace = true }
+lr-usage = { workspace = true }
 
 serde = { workspace = true }
 serde_json = { workspace = true }

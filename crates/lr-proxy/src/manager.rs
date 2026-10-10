@@ -54,6 +54,7 @@ impl ProxyManager {
                 resolver,
                 tls,
                 dedupe_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                usage: None,
             }),
         }
     }
@@ -67,6 +68,21 @@ impl ProxyManager {
                 resolver: self.ctx.resolver.clone(),
                 tls: self.ctx.tls.clone(),
                 dedupe_enabled: flag,
+                usage: self.ctx.usage.clone(),
+            }),
+        }
+    }
+
+    /// Feed rate-limit headers and usage responses of proxied traffic to the
+    /// usage tracker.
+    pub fn with_usage_tracker(self, usage: Arc<lr_usage::UsageTracker>) -> Self {
+        Self {
+            ctx: Arc::new(ProxyContext {
+                interceptor: self.ctx.interceptor.clone(),
+                resolver: self.ctx.resolver.clone(),
+                tls: self.ctx.tls.clone(),
+                dedupe_enabled: self.ctx.dedupe_enabled.clone(),
+                usage: Some(usage),
             }),
         }
     }

@@ -36,6 +36,7 @@ lr-guardrails = { workspace = true }
 lr-secret-scanner = { workspace = true }
 lr-monitor = { workspace = true }
 lr-proxy = { workspace = true }
+lr-usage = { workspace = true }
 lr-coding-agents = { workspace = true }
 lr-compression = { workspace = true }
 lr-embeddings = { workspace = true }

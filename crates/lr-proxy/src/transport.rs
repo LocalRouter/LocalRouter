@@ -47,6 +47,8 @@ pub struct ProxyContext {
     /// already-traced (duplicate-hop) requests through uncounted. Shared with
     /// the app so the setting can change without restarting the listener.
     pub dedupe_enabled: Arc<std::sync::atomic::AtomicBool>,
+    /// Usage-limit tracking: reads rate-limit headers and usage responses.
+    pub usage: Option<Arc<lr_usage::UsageTracker>>,
 }
 
 /// A parsed `CONNECT` request line + relevant headers.
@@ -364,14 +366,28 @@ async fn proxy_request(
             .load(std::sync::atomic::Ordering::Relaxed),
     );
 
+    // Request headers for usage tracking: how the request authenticated says
+    // which account (subscription vs API key) its rate-limit headers belong to.
+    let usage_request_headers = ctx.usage.as_ref().map(|_| parts.headers.clone());
+    let observe_usage = |headers: &hyper::HeaderMap| -> Option<lr_usage::AccountRef> {
+        let tracker = ctx.usage.as_ref()?;
+        tracker.observe_response(
+            &host,
+            &path,
+            usage_request_headers.as_ref()?,
+            headers,
+            lr_usage::DataSource::ProxyHeaders,
+        )
+    };
+
     // Base exchange (request half); response fields filled at stream end.
-    let base = ObservedExchange {
+    let mut base = ObservedExchange {
         client_id: (*client_id).clone(),
         strategy_id: (*strategy_id).clone(),
         host: (*host).clone(),
         port,
         method,
-        path,
+        path: path.clone(),
         request_body: (!req_bytes.is_empty()).then(|| req_bytes.to_vec()),
         trace,
         ..Default::default()
@@ -455,6 +471,7 @@ async fn proxy_request(
     // client with the upstream's 101 verbatim. A refused upgrade (non-101)
     // falls through to the normal response path below.
     if is_ws_upgrade && resp.status() == StatusCode::SWITCHING_PROTOCOLS {
+        base.usage_account = observe_usage(resp.headers());
         let upstream_upgrade = hyper::upgrade::on(&mut resp);
         let client_upgrade = client_upgrade.expect("present for websocket upgrades");
         // A websocket on a path we don't recognize carries no LLM traffic: it
@@ -472,11 +489,10 @@ async fn proxy_request(
             }),
         };
         let session = wire::detect(&base.path).map(|format| {
-            Arc::new(websocket::WsSession::new(
-                ctx.interceptor.clone(),
-                format,
-                base,
-            ))
+            Arc::new(
+                websocket::WsSession::new(ctx.interceptor.clone(), format, base)
+                    .with_usage(ctx.usage.clone()),
+            )
         });
         let passthrough = passthrough.map(|pt| (ctx.interceptor.begin_passthrough(&pt), pt));
         let ws_ctx = ctx.clone();
@@ -509,6 +525,14 @@ async fn proxy_request(
 
     let (rparts, rbody) = resp.into_parts();
     let status = rparts.status.as_u16();
+    base.usage_account = observe_usage(&rparts.headers);
+    // Usage responses (Claude Code's `/usage`, Codex's `/status`) passing
+    // through are read too, once complete.
+    let usage_body = ctx
+        .usage
+        .clone()
+        .filter(|_| (200..300).contains(&status))
+        .zip(lr_usage::usage_endpoint(&host, &path));
     let is_sse = rparts
         .headers
         .get(hyper::header::CONTENT_TYPE)
@@ -522,6 +546,9 @@ async fn proxy_request(
     recorded.status = Some(status);
     recorded.response_is_sse = is_sse;
     let on_end: Box<dyn FnOnce(Vec<u8>) + Send> = Box::new(move |bytes| {
+        if let Some((tracker, endpoint)) = usage_body {
+            tracker.observe_usage_body(endpoint, &bytes, lr_usage::DataSource::ProxyUsageResponse);
+        }
         let mut ex = recorded;
         ex.response_body = (!bytes.is_empty()).then_some(bytes);
         ex.latency_ms = Some(started.elapsed().as_millis() as u64);

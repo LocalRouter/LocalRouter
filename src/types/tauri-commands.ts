@@ -1643,6 +1643,8 @@ export type TraySource =
   | { kind: 'client'; id: string }
   | { kind: 'provider'; instance: string }
   | { kind: 'model'; id: string }
+  /** A usage-limit window, e.g. account `anthropic:subscription`, window `seven_day`. */
+  | { kind: 'usage'; account: string; window: string }
 
 /** Rust: crates/lr-config/src/types.rs - TrayStatsItem struct */
 export interface TrayStatsItem {
@@ -1653,7 +1655,8 @@ export interface TrayStatsItem {
 }
 
 export type TrayLabelMode = 'off' | 'beside' | 'above'
-export type TrayDisplay = 'graph' | 'usage_bar' | 'number'
+/** Graph: request sparkline, or a gauge for usage windows. Number: the figure as text. */
+export type TrayDisplay = 'graph' | 'number'
 export type TrayUsageMetric = 'tokens' | 'cost' | 'requests'
 export type TrayUsagePeriod = 'hour' | 'day' | 'week' | 'month'
 export type TrayLayout = 'auto' | 'extended' | 'compact'
@@ -3587,6 +3590,163 @@ export interface RequestDedupeConfig {
 /** Params for set_request_dedupe_enabled */
 export interface SetRequestDedupeEnabledParams {
   enabled: boolean
+}
+
+// ============================================================================
+// Usage limits (subscription & rate-limit tracking)
+// ============================================================================
+
+/** Rust: crates/lr-config/src/types.rs - UsagePlanOverride struct */
+export interface UsagePlanOverride {
+  plan: string | null
+  monthly_price_usd: number | null
+}
+
+/** Rust: crates/lr-config/src/types.rs - UsageTrackingConfig struct */
+export interface UsageTrackingConfig {
+  enabled: boolean
+  poll_provider_apis: boolean
+  read_cli_logins: boolean
+  /** Poll interval while requests for the account keep coming in. */
+  poll_interval_secs: number
+  /** Poll interval for accounts without recent traffic. */
+  idle_poll_interval_secs: number
+  plans: Record<string, UsagePlanOverride>
+  hidden_accounts: string[]
+  /** `account|window` keys already added to the tray stats automatically. */
+  tray_items_added: string[]
+}
+
+/** Rust: crates/lr-usage/src/types.rs - AccountKind enum */
+export type UsageAccountKind = 'subscription' | 'api'
+
+/** Rust: crates/lr-usage/src/types.rs - DataSource enum */
+export type UsageDataSource =
+  | 'proxy_headers'
+  | 'proxy_usage_response'
+  | 'gateway_headers'
+  | 'provider_api'
+  | 'cli_login'
+
+/** Rust: crates/lr-usage/src/view.rs - PaceStatus enum */
+export type UsagePaceStatus = 'ok' | 'warning' | 'over'
+
+/** Rust: crates/lr-usage/src/tracker.rs - PastWindow struct */
+export interface UsagePastWindow {
+  ended_at: number
+  peak_percent: number
+}
+
+/** Rust: crates/lr-usage/src/view.rs - UsageWindowView struct */
+export interface UsageWindowView {
+  id: string
+  label: string
+  used_percent: number
+  /** Unix seconds. */
+  resets_at: number | null
+  window_secs: number | null
+  updated_at: number
+  source: UsageDataSource
+  /** The window reset with no newer reading yet. */
+  stale: boolean
+  /** Share of the window elapsed (0–1): where even pace would be now. */
+  elapsed_fraction: number | null
+  projected_percent: number | null
+  /** When the limit is hit at the current pace (unix secs), if before reset. */
+  limit_eta: number | null
+  pace: UsagePaceStatus
+  /** Percentage points added per slot (hour or day). */
+  slots: number[]
+  current_slot: number
+  slot_secs: number | null
+  api_equivalent_usd: number | null
+  plan_share_usd: number | null
+  history: UsagePastWindow[]
+}
+
+/** Rust: crates/lr-usage/src/view.rs - UsageQuotaView struct */
+export interface UsageQuotaView {
+  id: string
+  label: string
+  limit: number | null
+  remaining: number | null
+  used_percent: number | null
+  resets_at: number | null
+  updated_at: number
+}
+
+/** Rust: crates/lr-usage/src/types.rs - CreditsReading struct */
+export interface UsageCredits {
+  label: string
+  balance_usd: number | null
+  limit_usd: number | null
+  used_usd: number | null
+  unlimited: boolean
+  currency: string | null
+}
+
+/** Rust: crates/lr-usage/src/view.rs - UsageSpendView struct */
+export interface UsageSpendView {
+  last_24h_usd: number
+  last_7d_usd: number
+  last_30d_usd: number
+  month_to_date_usd: number
+  requests_30d: number
+  tokens_30d: number
+  /** API-equivalent cost per day for the last 30 days, oldest first. */
+  daily_usd: number[]
+}
+
+/** Rust: crates/lr-usage/src/view.rs - UsageAccountView struct */
+export interface UsageAccountView {
+  /** e.g. `anthropic:subscription`. */
+  id: string
+  provider: string
+  provider_label: string
+  kind: UsageAccountKind
+  title: string
+  plan: string | null
+  plan_label: string | null
+  monthly_price_usd: number | null
+  plan_overridden: boolean
+  status: string | null
+  sources: UsageDataSource[]
+  first_seen: number
+  last_seen: number
+  hidden: boolean
+  windows: UsageWindowView[]
+  quotas: UsageQuotaView[]
+  credits: UsageCredits | null
+  spend: UsageSpendView
+  value_multiplier: number | null
+}
+
+/** Rust: crates/lr-usage/src/view.rs - UsageSnapshot struct */
+export interface UsageSnapshot {
+  enabled: boolean
+  generated_at: number
+  accounts: UsageAccountView[]
+}
+
+/** Rust: src-tauri/src/ui/usage_poller.rs - UsagePollStatus struct */
+export interface UsagePollStatus {
+  id: string
+  label: string
+  account_id: string
+  last_attempt: number | null
+  last_success: number | null
+  last_error: string | null
+  retry_after: number | null
+}
+
+/** Params for update_usage_tracking_config */
+export interface UpdateUsageTrackingConfigParams {
+  config: UsageTrackingConfig
+}
+
+/** Params for forget_usage_account */
+export interface ForgetUsageAccountParams {
+  accountId: string
 }
 
 /** Params for set_start_on_boot */
