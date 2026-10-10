@@ -28,7 +28,7 @@ config entry referenced it.
 - `storage::tests::legacy_pending_bearer_token_keeps_its_bare_id_secret`
   (secret references extracted into `referenced_secret_keys`).
 - Workspace clippy `-D warnings`, fmt; tests of lr-config, lr-marketplace,
-  lr-mcp and the app's MCP/marketplace commands.
+  lr-mcp (the app's MCP and marketplace command modules have no tests).
 
 ## Final steps
 
