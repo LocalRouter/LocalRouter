@@ -13,9 +13,6 @@ use std::collections::HashMap;
 use std::fs;
 use std::sync::{Arc, Mutex};
 use tracing::{debug, trace, warn};
-
-#[cfg(not(debug_assertions))]
-use tracing::info;
 use zeroize::Zeroizing;
 
 /// Trait for keychain operations
