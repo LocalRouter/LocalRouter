@@ -143,7 +143,7 @@ fn codex_window_reading(family: &str, slot: &str, w: &Value, now: i64) -> Option
     let resets_at = time_of(w.get("reset_at")).or_else(|| {
         f64_of(w.get("reset_after_seconds"))
             .or_else(|| f64_of(w.get("resets_in_seconds")))
-            .map(|s| now + s as i64)
+            .and_then(|s| crate::headers::after_secs(now, s))
     });
     let (id, label) = codex_window(family, slot, secs);
     Some(WindowReading {

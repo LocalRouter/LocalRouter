@@ -7,8 +7,9 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 
 use lr_config::UsageTrackingConfig;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
 
 use crate::types::{
     AccountKind, AccountRef, CreditsReading, DataSource, QuotaReading, UsageReport, WindowReading,
@@ -27,6 +28,17 @@ const MAX_HISTORY: usize = 12;
 const NOTIFY_SPACING_SECS: i64 = 1;
 /// Minimum gap between writes of the state file.
 const PERSIST_SPACING_SECS: i64 = 30;
+/// How often old data is pruned when nothing else triggers it.
+const PRUNE_SPACING_SECS: i64 = 3_600;
+/// A window is retired once this many of its periods have passed since it
+/// ended without a new reading.
+const RETIRE_AFTER_PERIODS: i64 = 2;
+/// Period assumed for windows of unknown length when retiring them.
+const DEFAULT_RETIRE_PERIOD_SECS: i64 = 86_400;
+/// Window lengths beyond this (a year) are nonsense and dropped.
+const MAX_WINDOW_SECS: i64 = 366 * 86_400;
+/// Reset times further ahead than this (two years) are nonsense and dropped.
+const MAX_RESET_AHEAD_SECS: i64 = 2 * 366 * 86_400;
 const STATE_VERSION: u32 = 1;
 
 pub(crate) fn now_secs() -> i64 {
@@ -161,6 +173,11 @@ pub struct UsageTracker {
     on_change: RwLock<Option<ChangeCallback>>,
     /// Account id → last time real traffic for it was seen (not polls).
     traffic: RwLock<HashMap<String, i64>>,
+    last_prune: AtomicI64,
+    /// Serializes writes of the state file (maintenance tick vs. exit).
+    persist_lock: Mutex<()>,
+    /// Stops the maintenance task.
+    shutdown: CancellationToken,
 }
 
 impl UsageTracker {
@@ -180,6 +197,9 @@ impl UsageTracker {
             last_notify: AtomicI64::new(0),
             on_change: RwLock::new(None),
             traffic: RwLock::new(HashMap::new()),
+            last_prune: AtomicI64::new(0),
+            persist_lock: Mutex::new(()),
+            shutdown: CancellationToken::new(),
         }
     }
 
@@ -250,15 +270,21 @@ impl UsageTracker {
                 }
             }
             for reading in &report.windows {
-                changed |= apply_window(acct, reading, source, now);
+                if let Some(reading) = sanitize_window(reading, now) {
+                    changed |= apply_window(acct, &reading, source, now);
+                }
             }
             for q in &report.quotas {
+                let q = QuotaReading {
+                    resets_at: sane_reset(q.resets_at, now),
+                    ..q.clone()
+                };
                 let prev = acct.quotas.get(&q.id).map(|s| &s.reading);
-                changed |= prev != Some(q);
+                changed |= prev != Some(&q);
                 acct.quotas.insert(
                     q.id.clone(),
                     StoredQuota {
-                        reading: q.clone(),
+                        reading: q,
                         updated_at: now,
                     },
                 );
@@ -378,21 +404,53 @@ impl UsageTracker {
     /// Periodic housekeeping: deliver throttled notifications, prune old
     /// data, and write the state file when it changed.
     pub fn tick(&self) {
-        let now = now_secs();
+        self.tick_at(now_secs());
+    }
+
+    pub(crate) fn tick_at(&self, now: i64) {
         self.flush_notify(now);
-        let last = self.last_persist.load(Ordering::Relaxed);
-        if self.dirty.load(Ordering::Relaxed) && now - last >= PERSIST_SPACING_SECS {
-            self.prune(now);
+        let persist_due = self.dirty.load(Ordering::Relaxed)
+            && now - self.last_persist.load(Ordering::Relaxed) >= PERSIST_SPACING_SECS;
+        if persist_due || now - self.last_prune.load(Ordering::Relaxed) >= PRUNE_SPACING_SECS {
+            self.last_prune.store(now, Ordering::Relaxed);
+            if self.prune(now) {
+                self.dirty.store(true, Ordering::Relaxed);
+                self.mark_changed();
+            }
+        }
+        if self.dirty.load(Ordering::Relaxed)
+            && now - self.last_persist.load(Ordering::Relaxed) >= PERSIST_SPACING_SECS
+        {
             self.persist_now();
         }
     }
 
-    fn prune(&self, now: i64) {
+    /// Drop idle accounts, old ledger buckets and retired windows. Returns
+    /// whether an account or window went away.
+    fn prune(&self, now: i64) -> bool {
         let cutoff = now - RETENTION_SECS;
         let mut state = self.state.write();
+        let accounts = state.accounts.len();
         state.accounts.retain(|_, a| a.last_seen >= cutoff);
+        let mut changed = state.accounts.len() != accounts;
         for acct in state.accounts.values_mut() {
             acct.ledger.retain(|b, _| *b >= cutoff);
+            let windows = acct.windows.len();
+            let sources = &acct.sources;
+            acct.windows
+                .retain(|_, w| !window_retired(w, sources.get(&w.source).copied(), now));
+            changed |= acct.windows.len() != windows;
+        }
+        changed
+    }
+
+    /// Stop the maintenance task and write unsaved changes. Called on app
+    /// exit; the tracker keeps recording in memory afterwards.
+    pub fn shutdown(&self) {
+        self.shutdown.cancel();
+        if self.dirty.load(Ordering::Relaxed) {
+            self.prune(now_secs());
+            self.persist_now();
         }
     }
 
@@ -401,6 +459,7 @@ impl UsageTracker {
         let Some(path) = &self.path else {
             return;
         };
+        let _write = self.persist_lock.lock();
         self.dirty.store(false, Ordering::Relaxed);
         self.last_persist.store(now_secs(), Ordering::Relaxed);
         let bytes = {
@@ -421,18 +480,64 @@ impl UsageTracker {
         }
     }
 
-    /// Run [`tick`](Self::tick) every few seconds on the tokio runtime.
-    pub fn spawn_maintenance(self: &Arc<Self>) {
+    /// Run [`tick`](Self::tick) every few seconds on the tokio runtime,
+    /// until [`shutdown`](Self::shutdown).
+    pub fn spawn_maintenance(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
         let tracker = Arc::downgrade(self);
+        let stop = self.shutdown.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
             loop {
-                interval.tick().await;
+                tokio::select! {
+                    _ = stop.cancelled() => break,
+                    _ = interval.tick() => {}
+                }
                 let Some(t) = tracker.upgrade() else { break };
                 t.tick();
             }
-        });
+        })
     }
+}
+
+/// `resets_at` when it is a plausible time: after the epoch and at most
+/// [`MAX_RESET_AHEAD_SECS`] ahead.
+fn sane_reset(resets_at: Option<i64>, now: i64) -> Option<i64> {
+    resets_at.filter(|t| *t > 0 && *t <= now.saturating_add(MAX_RESET_AHEAD_SECS))
+}
+
+/// A window reading with nonsense from the response dropped: a non-finite
+/// usage figure discards the reading; an implausible window length or reset
+/// time is treated as unknown.
+fn sanitize_window(reading: &WindowReading, now: i64) -> Option<WindowReading> {
+    if !reading.used_percent.is_finite() {
+        return None;
+    }
+    let mut r = reading.clone();
+    r.window_secs = r.window_secs.filter(|w| (1..=MAX_WINDOW_SECS).contains(w));
+    r.resets_at = sane_reset(r.resets_at, now);
+    Some(r)
+}
+
+/// Whether a window has been retired by its provider (e.g. a per-model
+/// weekly cap that went away): [`RETIRE_AFTER_PERIODS`] of its periods have
+/// passed since it ended (its reset, or its last reading when it has no
+/// reset time) and the source that fed it has reported since without it.
+/// Windows nothing has refreshed for the account retention period go too.
+/// An idle account's windows stay: no newer report means no evidence.
+fn window_retired(w: &StoredWindow, source_last_seen: Option<i64>, now: i64) -> bool {
+    let period = w
+        .reading
+        .window_secs
+        .filter(|s| *s > 0)
+        .or_else(|| crate::types::window_secs_for(&w.reading.id))
+        .unwrap_or(DEFAULT_RETIRE_PERIOD_SECS);
+    let ended = w.reading.resets_at.unwrap_or(w.updated_at);
+    let grace = period.saturating_mul(RETIRE_AFTER_PERIODS);
+    if now < ended.saturating_add(grace) {
+        return false;
+    }
+    let reported_without_it = source_last_seen.is_some_and(|t| t > w.updated_at && t > ended);
+    reported_without_it || now >= ended.saturating_add(grace.max(RETENTION_SECS))
 }
 
 /// Merge one window reading. Returns whether anything visible changed.
@@ -466,7 +571,7 @@ fn apply_window(
                 .or(stored.reading.window_secs)
                 .map(|w| w / 2)
                 .unwrap_or(3_600);
-            new > old + slack || (old <= now && new > old)
+            new > old.saturating_add(slack) || (old <= now && new > old)
         }
         _ => false,
     };
@@ -508,7 +613,7 @@ fn apply_window(
         _ => stored.samples.push((now, reading.used_percent)),
     }
     if let (Some(reset), Some(len)) = (stored.reading.resets_at, stored.reading.window_secs) {
-        let start = reset - len;
+        let start = reset.saturating_sub(len);
         stored.samples.retain(|(t, _)| *t >= start);
     }
     if stored.samples.len() > MAX_SAMPLES {
@@ -711,6 +816,203 @@ mod tests {
         assert_eq!(t.last_passive_reading("anthropic:subscription"), None);
         t.apply_at(&claude(), &week(2.0, 10), DataSource::ProxyHeaders, 70);
         assert_eq!(t.last_passive_reading("anthropic:subscription"), Some(70));
+    }
+
+    fn window(id: &str, used: f64, resets_at: Option<i64>, len: Option<i64>) -> UsageReport {
+        UsageReport {
+            windows: vec![WindowReading {
+                id: id.into(),
+                label: id.into(),
+                used_percent: used,
+                resets_at,
+                window_secs: len,
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn window_ids(t: &UsageTracker) -> Vec<String> {
+        t.state.read().accounts["anthropic:subscription"]
+            .windows
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn retired_window_is_pruned_once_its_source_reports_without_it() {
+        let t = UsageTracker::new(UsageTrackingConfig::default());
+        let week_secs = 604_800;
+        let reset = 10_000_000;
+        // A per-model cap seen once, alongside the weekly window.
+        let mut both = week(10.0, reset);
+        both.windows
+            .extend(window("seven_day_fable", 5.0, Some(reset), Some(week_secs)).windows);
+        t.apply_at(&claude(), &both, DataSource::CliLogin, reset - 1_000);
+
+        // The same source keeps reporting, without the per-model cap.
+        let mut now = reset;
+        while now < reset + 2 * week_secs {
+            now += 86_400;
+            let next_reset = reset + week_secs * ((now - reset) / week_secs + 1);
+            t.apply_at(&claude(), &week(1.0, next_reset), DataSource::CliLogin, now);
+        }
+        // Before two periods have passed since its reset it is kept.
+        assert!(!t.prune(reset + 2 * week_secs - 1));
+        assert!(window_ids(&t).contains(&"seven_day_fable".to_string()));
+        assert!(t.prune(reset + 2 * week_secs));
+        assert_eq!(window_ids(&t), vec!["seven_day".to_string()]);
+    }
+
+    #[test]
+    fn idle_account_keeps_its_ended_windows() {
+        let t = UsageTracker::new(UsageTrackingConfig::default());
+        let reset = 10_000_000;
+        t.apply_at(
+            &claude(),
+            &week(40.0, reset),
+            DataSource::ProxyHeaders,
+            reset - 1_000,
+        );
+        // Nothing has reported since: the account is idle, not retired.
+        assert!(!t.prune(reset + 3 * 604_800));
+        assert_eq!(window_ids(&t), vec!["seven_day".to_string()]);
+        // A different source reporting is no evidence either.
+        t.apply_at(
+            &claude(),
+            &window("five_hour", 1.0, Some(reset + 4 * 604_800), Some(18_000)),
+            DataSource::CliLogin,
+            reset + 3 * 604_800,
+        );
+        assert!(!t.prune(reset + 3 * 604_800 + 1));
+        assert!(window_ids(&t).contains(&"seven_day".to_string()));
+        // Unrefreshed for the whole retention period: dropped.
+        assert!(t.prune(reset + RETENTION_SECS));
+        assert_eq!(window_ids(&t), vec!["five_hour".to_string()]);
+    }
+
+    #[test]
+    fn window_without_reset_retires_from_its_last_reading() {
+        let t = UsageTracker::new(UsageTrackingConfig::default());
+        t.apply_at(
+            &claude(),
+            &window("credits_pool", 3.0, None, None),
+            DataSource::ProviderApi,
+            1_000,
+        );
+        t.apply_at(
+            &claude(),
+            &week(1.0, 10_000_000),
+            DataSource::ProviderApi,
+            2_000,
+        );
+        // Default period is a day.
+        assert!(!t.prune(1_000 + 2 * 86_400 - 1));
+        assert!(t.prune(1_000 + 2 * 86_400));
+        assert_eq!(window_ids(&t), vec!["seven_day".to_string()]);
+    }
+
+    #[test]
+    fn tick_prunes_even_without_new_data() {
+        let t = UsageTracker::new(UsageTrackingConfig::default());
+        t.apply_at(&claude(), &week(1.0, 10), DataSource::ProxyHeaders, 0);
+        let later = RETENTION_SECS + 10;
+        t.tick_at(later);
+        assert!(t.state.read().accounts.is_empty());
+    }
+
+    #[test]
+    fn nonsense_numbers_are_dropped_not_overflowed() {
+        let t = UsageTracker::new(UsageTrackingConfig::default());
+        let now = 1_000_000;
+        for (resets_at, len) in [
+            (Some(i64::MAX), Some(i64::MAX)),
+            (Some(i64::MIN), Some(i64::MIN)),
+            (Some(now + 3_600), Some(-5)),
+            (Some(now + 3_600), Some(i64::MAX)),
+            (Some(-1), Some(3_600)),
+        ] {
+            t.apply_at(
+                &claude(),
+                &window("five_hour", 10.0, resets_at, len),
+                DataSource::ProxyHeaders,
+                now,
+            );
+        }
+        t.apply_at(
+            &claude(),
+            &window("seven_day", f64::NAN, Some(now + 10), Some(604_800)),
+            DataSource::ProxyHeaders,
+            now,
+        );
+        t.apply_at(
+            &claude(),
+            &UsageReport {
+                quotas: vec![QuotaReading {
+                    id: "requests".into(),
+                    limit: Some(10.0),
+                    remaining: Some(5.0),
+                    resets_at: Some(i64::MAX),
+                }],
+                ..Default::default()
+            },
+            DataSource::ProxyHeaders,
+            now,
+        );
+        {
+            let state = t.state.read();
+            let acct = &state.accounts["anthropic:subscription"];
+            assert!(
+                !acct.windows.contains_key("seven_day"),
+                "NaN reading dropped"
+            );
+            // Only the plausible parts of the readings were kept.
+            let w = &acct.windows["five_hour"].reading;
+            assert_eq!(w.resets_at, Some(now + 3_600));
+            assert_eq!(w.window_secs, Some(3_600));
+            assert_eq!(acct.quotas["requests"].reading.resets_at, None);
+        }
+        // Still renders and prunes.
+        t.snapshot_at(now);
+        t.prune(now + RETENTION_SECS);
+    }
+
+    #[test]
+    fn shutdown_writes_unsaved_changes_and_stops_maintenance() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("usage.json");
+        let t = UsageTracker::load(path.clone(), UsageTrackingConfig::default());
+        t.persist_now();
+        // A change inside the persist spacing is not written by a tick…
+        t.apply(
+            &claude(),
+            &week(42.0, now_secs() + 3_600),
+            DataSource::CliLogin,
+        );
+        t.tick();
+        let reloaded = UsageTracker::load(path.clone(), UsageTrackingConfig::default());
+        assert!(reloaded.state.read().accounts.is_empty());
+        // …but is on shutdown.
+        t.shutdown();
+        assert!(t.shutdown.is_cancelled());
+        let reloaded = UsageTracker::load(path, UsageTrackingConfig::default());
+        assert_eq!(
+            reloaded.state.read().accounts["anthropic:subscription"].windows["seven_day"]
+                .reading
+                .used_percent,
+            42.0
+        );
+    }
+
+    #[tokio::test]
+    async fn maintenance_task_ends_on_shutdown() {
+        let t = Arc::new(UsageTracker::new(UsageTrackingConfig::default()));
+        let task = t.spawn_maintenance();
+        t.shutdown();
+        tokio::time::timeout(std::time::Duration::from_secs(5), task)
+            .await
+            .expect("maintenance task stops on shutdown")
+            .unwrap();
     }
 
     #[test]

@@ -636,6 +636,16 @@ impl ModelProvider for OpenAIProvider {
         }
     }
 
+    /// The ChatGPT backend bills the subscription; anything else (e.g. a
+    /// ChatGPT Plus/Pro instance that fell back to an API key) the API.
+    fn usage_account(&self) -> Option<lr_usage::AccountRef> {
+        Some(if self.is_chatgpt_backend() {
+            lr_usage::AccountRef::subscription("openai")
+        } else {
+            lr_usage::AccountRef::api("openai")
+        })
+    }
+
     fn name(&self) -> &str {
         "openai"
     }
@@ -1954,6 +1964,25 @@ mod tests {
         )
         .unwrap();
         assert_eq!(chatgpt.upstream_api(), lr_types::LlmApi::Responses);
+    }
+
+    #[test]
+    fn usage_account_follows_the_backend() {
+        // An API key (e.g. ChatGPT Plus/Pro falling back to one) bills the API.
+        let platform = OpenAIProvider::new("sk-test".to_string());
+        assert_eq!(
+            platform.usage_account(),
+            Some(lr_usage::AccountRef::api("openai"))
+        );
+        let chatgpt = OpenAIProvider::with_base_url(
+            "oauth-token".to_string(),
+            CHATGPT_BACKEND_API_BASE.to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            chatgpt.usage_account(),
+            Some(lr_usage::AccountRef::subscription("openai"))
+        );
     }
 
     #[test]

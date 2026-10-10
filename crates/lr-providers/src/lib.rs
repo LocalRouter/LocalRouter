@@ -417,6 +417,14 @@ pub trait ModelProvider: Send + Sync {
         lr_types::LlmApi::ChatCompletions
     }
 
+    /// The usage account this instance's traffic bills to, when its
+    /// credentials decide it (a subscription login vs. an API key). `None`
+    /// means the provider type's account
+    /// ([`lr_usage::account_for_provider_type`]).
+    fn usage_account(&self) -> Option<lr_usage::AccountRef> {
+        None
+    }
+
     /// Whether this provider supports pulling (downloading) models on demand.
     ///
     /// Providers that return true must also implement `pull_model()`.

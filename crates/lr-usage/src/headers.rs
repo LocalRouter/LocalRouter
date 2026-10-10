@@ -38,7 +38,7 @@ pub fn parse_headers(headers: &HeaderMap, now: i64) -> UsageReport {
 pub fn parse_header_map(map: &BTreeMap<String, String>, now: i64) -> UsageReport {
     let mut report = UsageReport::default();
     parse_anthropic_unified(map, &mut report);
-    parse_codex(map, &mut report);
+    parse_codex(map, &mut report, now);
     report.quotas = parse_quotas(map, now);
     report
 }
@@ -90,7 +90,7 @@ fn unified_window_id(abbrev: &str) -> String {
     }
 }
 
-fn parse_codex(map: &BTreeMap<String, String>, report: &mut UsageReport) {
+fn parse_codex(map: &BTreeMap<String, String>, report: &mut UsageReport, now: i64) {
     for (name, value) in map {
         let Some(body) = name.strip_prefix("x-") else {
             continue;
@@ -118,7 +118,7 @@ fn parse_codex(map: &BTreeMap<String, String>, report: &mut UsageReport) {
                     .get(&format!("{prefix}-reset-after-seconds"))?
                     .parse::<f64>()
                     .ok()?;
-                Some(chrono::Utc::now().timestamp() + after as i64)
+                after_secs(now, after)
             });
         let (id, label) = codex_window(limit, slot, minutes);
         report.windows.push(WindowReading {
@@ -249,13 +249,24 @@ pub(crate) fn parse_reset(value: &str, now: i64) -> Option<i64> {
         return if n > 1e9 {
             parse_epoch(v)
         } else {
-            Some(now + n.ceil() as i64)
+            after_secs(now, n)
         };
     }
     if let Some(secs) = parse_go_duration(v) {
-        return Some(now + secs.ceil() as i64);
+        return after_secs(now, secs);
     }
     parse_epoch(v)
+}
+
+/// `now` plus a delay in seconds read from a response, rounded up. A
+/// negative or non-finite delay gives `None`; a huge one saturates instead
+/// of overflowing.
+pub(crate) fn after_secs(now: i64, secs: f64) -> Option<i64> {
+    if !secs.is_finite() || secs < 0.0 {
+        return None;
+    }
+    // `as` saturates for out-of-range floats.
+    Some(now.saturating_add(secs.ceil() as i64))
 }
 
 /// Go-style duration (`1h2m3.5s`, `59ms`) in seconds.
@@ -323,6 +334,25 @@ mod tests {
         assert!((week.used_percent - 90.0).abs() < 1e-9);
         assert!(r.windows.iter().any(|w| w.id == "seven_day_opus"));
         assert!(r.quotas.is_empty(), "unified headers are not quotas");
+    }
+
+    #[test]
+    fn delays_saturate_instead_of_overflowing() {
+        assert_eq!(after_secs(100, 1.2), Some(102));
+        assert_eq!(after_secs(100, -1.0), None);
+        assert_eq!(after_secs(100, f64::NAN), None);
+        assert_eq!(after_secs(100, f64::INFINITY), None);
+        assert_eq!(after_secs(i64::MAX - 1, 1e300), Some(i64::MAX));
+        assert_eq!(
+            parse_reset("99999999999999999999h", i64::MAX - 5),
+            Some(i64::MAX)
+        );
+        let m = map(&[
+            ("x-codex-primary-used-percent", "1"),
+            ("x-codex-primary-reset-after-seconds", "1e308"),
+        ]);
+        let r = parse_header_map(&m, i64::MAX - 10);
+        assert_eq!(r.windows[0].resets_at, Some(i64::MAX));
     }
 
     #[test]

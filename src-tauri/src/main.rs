@@ -735,6 +735,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
     }
 
     let exit_supervisor = engine_supervisor.clone();
+    let exit_usage_tracker = usage_tracker.clone();
     tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -3035,11 +3036,17 @@ async fn run_gui_mode() -> anyhow::Result<()> {
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(move |_app, event| {
+        .run(move |app, event| {
             if let tauri::RunEvent::Exit = event {
                 // Engines are child processes; don't leave them running. This
                 // may run inside the async runtime, so it must not block on it.
                 exit_supervisor.stop_all_blocking();
+                // Stop usage polling and write the usage state, whose saves
+                // are otherwise spaced 30 s apart.
+                if let Some(poller) = app.try_state::<Arc<ui::usage_poller::UsagePoller>>() {
+                    poller.shutdown();
+                }
+                exit_usage_tracker.shutdown();
             }
         });
 

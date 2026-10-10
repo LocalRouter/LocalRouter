@@ -17,6 +17,7 @@ parking_lot = { workspace = true }
 chrono = { workspace = true }
 base64 = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 reqwest = { workspace = true }
 http = { workspace = true }
 dirs = { workspace = true }
