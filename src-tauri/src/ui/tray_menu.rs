@@ -139,12 +139,7 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
                 let label = format!(
                     "{}{}",
                     TRAY_INDENT,
-                    crate::ui::tray_format::usage_line(
-                        &entry.label,
-                        &entry.usage,
-                        stats.metric,
-                        stats.usage_period,
-                    )
+                    entry.line(stats.metric, stats.usage_period)
                 );
                 menu_builder =
                     menu_builder.text(format!("tray_stats_open__{}", entry.source.key()), label);

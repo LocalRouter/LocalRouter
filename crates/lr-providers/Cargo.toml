@@ -16,6 +16,7 @@ lr-config = { workspace = true }
 lr-oauth = { workspace = true }
 lr-engines = { workspace = true }
 lr-local-models = { workspace = true }
+lr-usage = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
 indexmap = { workspace = true }

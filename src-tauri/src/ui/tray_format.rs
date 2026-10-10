@@ -61,15 +61,6 @@ pub fn headline_value(usage: &UsageTotals, metric: TrayUsageMetric) -> String {
     }
 }
 
-/// Raw magnitude used for the relative usage bar.
-pub fn metric_magnitude(usage: &UsageTotals, metric: TrayUsageMetric) -> f64 {
-    match metric {
-        TrayUsageMetric::Tokens => usage.tokens as f64,
-        TrayUsageMetric::Cost => usage.cost_usd,
-        TrayUsageMetric::Requests => usage.requests as f64,
-    }
-}
-
 /// Full usage line for the tray menu / tooltip, e.g.
 /// `CLAU   24.1k tok · 31 req · $0.42 · 24h`. The configured usage metric
 /// leads; the period the figures cover closes the line.

@@ -25,6 +25,164 @@ import { mockData } from './mockData'
 // Types for mock return values - see src/types/tauri-commands.ts for full type definitions
 import type { RoutingPolicyPreview, GraphData, ProviderFeatureSupport, FeatureEndpointMatrix, InstallSourceInfo, RequestDedupeConfig } from '@app/types/tauri-commands'
 import type {
+  UsageAccountView,
+  UsagePollStatus,
+  UsageSnapshot,
+  UsageTrackingConfig,
+  UsageWindowView,
+} from '@app/types/tauri-commands'
+
+// ---------------------------------------------------------------------------
+// Usage limits demo data: a Claude Max and a ChatGPT Pro subscription plus an
+// OpenAI API key, with windows positioned relative to "now".
+// ---------------------------------------------------------------------------
+let mockUsageConfig: UsageTrackingConfig = {
+  enabled: true,
+  poll_provider_apis: true,
+  read_cli_logins: false,
+  poll_interval_secs: 300,
+  idle_poll_interval_secs: 3600,
+  plans: {},
+  hidden_accounts: [],
+  tray_items_added: ['anthropic:subscription|seven_day', 'openai:subscription|seven_day'],
+}
+
+function mockUsageWindow(
+  id: string,
+  label: string,
+  used: number,
+  windowSecs: number,
+  elapsed: number,
+  slots: number[],
+  apiUsd: number | null,
+  planShare: number | null,
+): UsageWindowView {
+  const now = Math.floor(Date.now() / 1000)
+  const start = now - Math.floor(windowSecs * elapsed)
+  const projected = used / elapsed
+  const pace = projected > 105 ? 'over' : projected >= 75 ? 'warning' : 'ok'
+  const rate = used / (now - start)
+  const eta = now + Math.round((100 - used) / rate)
+  const slotSecs = Math.floor(windowSecs / slots.length)
+  return {
+    id,
+    label,
+    used_percent: used,
+    resets_at: start + windowSecs,
+    window_secs: windowSecs,
+    updated_at: now - 40,
+    source: 'proxy_headers',
+    stale: false,
+    elapsed_fraction: elapsed,
+    projected_percent: projected,
+    limit_eta: eta < start + windowSecs ? eta : null,
+    pace,
+    slots,
+    current_slot: Math.min(slots.length - 1, Math.floor((now - start) / slotSecs)),
+    slot_secs: slotSecs,
+    api_equivalent_usd: apiUsd,
+    plan_share_usd: planShare,
+    history: [{ ended_at: start, peak_percent: 81 }],
+  }
+}
+
+function mockUsageAccount(partial: Partial<UsageAccountView> & Pick<UsageAccountView, 'id' | 'provider' | 'provider_label' | 'kind' | 'title'>): UsageAccountView {
+  const now = Math.floor(Date.now() / 1000)
+  const account: UsageAccountView = {
+    plan: null,
+    plan_label: null,
+    monthly_price_usd: null,
+    plan_overridden: false,
+    status: 'allowed',
+    sources: ['proxy_headers'],
+    first_seen: now - 20 * 86_400,
+    last_seen: now - 40,
+    hidden: false,
+    windows: [],
+    quotas: [],
+    credits: null,
+    spend: {
+      last_24h_usd: 0,
+      last_7d_usd: 0,
+      last_30d_usd: 0,
+      month_to_date_usd: 0,
+      requests_30d: 0,
+      tokens_30d: 0,
+      daily_usd: Array(30).fill(0),
+    },
+    value_multiplier: null,
+    ...partial,
+  }
+  account.hidden = mockUsageConfig.hidden_accounts.includes(account.id)
+  return account
+}
+
+function mockUsageSnapshot(): UsageSnapshot {
+  const now = Math.floor(Date.now() / 1000)
+  return {
+    enabled: mockUsageConfig.enabled,
+    generated_at: now,
+    accounts: [
+      mockUsageAccount({
+        id: 'anthropic:subscription',
+        provider: 'anthropic',
+        provider_label: 'Anthropic',
+        kind: 'subscription',
+        title: 'Claude Max 20x',
+        plan: 'default_claude_max_20x',
+        plan_label: 'Max 20x',
+        monthly_price_usd: 200,
+        sources: ['proxy_headers', 'proxy_usage_response'],
+        windows: [
+          mockUsageWindow('five_hour', '5-hour session', 37.5, 18_000, 0.6, [9, 14, 14.5, 0, 0], 41.2, null),
+          mockUsageWindow('seven_day', 'Weekly', 45.2, 604_800, 0.55, [8, 11, 6.2, 12, 8, 0, 0], 268.4, 41.7),
+          mockUsageWindow('seven_day_fable', 'Weekly · Fable', 18, 604_800, 0.55, [3, 4, 2, 5, 4, 0, 0], null, 16.6),
+        ],
+        credits: { label: 'Extra usage', balance_usd: null, limit_usd: 20.5, used_usd: 3.25, unlimited: false, currency: 'USD' },
+        spend: { last_24h_usd: 31.8, last_7d_usd: 268.4, last_30d_usd: 912.6, month_to_date_usd: 402.1, requests_30d: 18_420, tokens_30d: 912_000_000, daily_usd: Array.from({ length: 30 }, (_, i) => 15 + ((i * 7) % 23)) },
+        value_multiplier: 4.56,
+      }),
+      mockUsageAccount({
+        id: 'openai:subscription',
+        provider: 'openai',
+        provider_label: 'OpenAI',
+        kind: 'subscription',
+        title: 'ChatGPT Pro',
+        plan: 'pro',
+        plan_label: 'Pro',
+        monthly_price_usd: 200,
+        status: 'allowed',
+        windows: [
+          mockUsageWindow('five_hour', '5-hour session', 12, 18_000, 0.3, [7, 5, 0, 0, 0], 6.3, null),
+          mockUsageWindow('seven_day', 'Weekly', 61, 604_800, 0.55, [10, 14, 9, 16, 12, 0, 0], 141.9, 56.2),
+        ],
+        spend: { last_24h_usd: 18.1, last_7d_usd: 141.9, last_30d_usd: 488.0, month_to_date_usd: 210.4, requests_30d: 6_210, tokens_30d: 402_000_000, daily_usd: Array.from({ length: 30 }, (_, i) => 8 + ((i * 5) % 17)) },
+        value_multiplier: 2.44,
+      }),
+      mockUsageAccount({
+        id: 'openai:api',
+        provider: 'openai',
+        provider_label: 'OpenAI',
+        kind: 'api',
+        title: 'OpenAI API',
+        sources: ['gateway_headers'],
+        quotas: [
+          { id: 'requests', label: 'Requests', limit: 5000, remaining: 4987, used_percent: 0.26, resets_at: now + 1, updated_at: now - 12 },
+          { id: 'tokens', label: 'Tokens', limit: 800_000, remaining: 744_120, used_percent: 6.98, resets_at: now + 42, updated_at: now - 12 },
+        ],
+        spend: { last_24h_usd: 1.42, last_7d_usd: 9.8, last_30d_usd: 37.15, month_to_date_usd: 14.02, requests_30d: 2_140, tokens_30d: 18_400_000, daily_usd: Array.from({ length: 30 }, (_, i) => (i % 4) * 0.6) },
+      }),
+    ],
+  }
+}
+
+const mockUsagePollStatus = (): UsagePollStatus[] => {
+  const now = Math.floor(Date.now() / 1000)
+  return [
+    { id: 'chatgpt_oauth', label: 'ChatGPT Plus/Pro (LocalRouter login)', account_id: 'openai:subscription', last_attempt: now - 120, last_success: now - 120, last_error: null, retry_after: null },
+  ]
+}
+import type {
   EmbeddedCatalogModel,
   ListProviderModelsDetailedParams,
   LocalModelsEngineCatalogParams,
@@ -3535,6 +3693,21 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'set_max_coding_sessions': () => null,
   'get_request_dedupe_config': (): RequestDedupeConfig => ({ enabled: true }),
   'set_request_dedupe_enabled': () => null,
+
+  // Usage limits
+  'get_usage_limits': (): UsageSnapshot => mockUsageSnapshot(),
+  'refresh_usage_limits': () => {
+    setTimeout(() => emit('usage-limits-changed', null), 400)
+    return null
+  },
+  'get_usage_poll_status': (): UsagePollStatus[] => mockUsagePollStatus(),
+  'get_usage_tracking_config': (): UsageTrackingConfig => mockUsageConfig,
+  'update_usage_tracking_config': (args?: InvokeArgs) => {
+    const { config } = (args ?? {}) as { config: UsageTrackingConfig }
+    if (config) mockUsageConfig = config
+    return null
+  },
+  'forget_usage_account': () => true,
   'get_start_on_boot': () => true,
   'set_start_on_boot': () => null,
   'set_client_coding_agent_permission': (args) => {

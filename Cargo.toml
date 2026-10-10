@@ -29,6 +29,7 @@ members = [
     "crates/lr-monitor",
     "crates/lr-responses-sessions",
     "crates/lr-proxy",
+    "crates/lr-usage",
 ]
 resolver = "2"
 
@@ -89,6 +90,7 @@ lr-embeddings = { path = "crates/lr-embeddings" }
 lr-monitor = { path = "crates/lr-monitor" }
 lr-responses-sessions = { path = "crates/lr-responses-sessions" }
 lr-proxy = { path = "crates/lr-proxy" }
+lr-usage = { path = "crates/lr-usage" }
 
 # Async runtime
 tokio = { version = "1.42", features = ["full"] }

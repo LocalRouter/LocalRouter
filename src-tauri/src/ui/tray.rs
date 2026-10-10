@@ -315,6 +315,12 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
                                     error!("Failed to emit open-client-tab event: {}", e);
                                 }
                             }
+                            // Usage windows are shown on the Dashboard.
+                            Some(lr_config::TraySource::Usage { .. }) => {
+                                if let Err(e) = app.emit("open-usage-limits", ()) {
+                                    error!("Failed to emit open-usage-limits event: {}", e);
+                                }
+                            }
                             Some(lr_config::TraySource::Provider { .. })
                             | Some(lr_config::TraySource::Model { .. }) => {
                                 if let Err(e) = app.emit("open-resources-tab", ()) {

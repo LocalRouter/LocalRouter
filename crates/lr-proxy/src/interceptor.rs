@@ -117,6 +117,9 @@ pub struct ObservedExchange {
     /// earlier LocalRouter hop already handled this request: it is passed
     /// through (no firewall) and not counted in metrics.
     pub trace: Option<lr_types::RequestTrace>,
+    /// Usage account the request bills to (Claude subscription, OpenAI API,
+    /// …), classified from how it authenticated. Feeds the usage ledger.
+    pub usage_account: Option<lr_usage::AccountRef>,
 }
 
 impl ObservedExchange {

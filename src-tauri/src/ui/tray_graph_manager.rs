@@ -3,15 +3,16 @@
 #![allow(dead_code)]
 
 use crate::ui::tray::UpdateNotificationState;
-use crate::ui::tray_format::{headline_value, metric_magnitude, usage_line};
+use crate::ui::tray_format::{headline_value, usage_line};
 use crate::ui::tray_graph::{
     platform_graph_config, GraphConfig, LabelMode, MultiPaneOptions, PaneContent, PaneSpec,
     StatusDotColors, TrayOverlay, GRAPH_WIDTH,
 };
+use crate::ui::tray_usage::LimitReading;
 use chrono::{DateTime, Duration, Utc};
 use lr_config::{
     normalize_tray_label, ConfigManager, TrayDisplay, TrayLabelMode, TrayLayout, TraySource,
-    TrayStatsConfig, TrayStatsItem, TrayUsageMetric, UiConfig,
+    TrayStatsConfig, TrayStatsItem, TrayUsageMetric, TrayUsagePeriod, UiConfig,
 };
 use lr_monitoring::metrics::{MetricDataPoint, MetricsCollector, UsageTotals};
 use lr_providers::health_cache::AggregateHealthStatus;
@@ -137,6 +138,25 @@ pub struct UsageEntry {
     pub source: TraySource,
     pub label: String,
     pub usage: UsageTotals,
+    /// For usage-window items: the window's current reading.
+    pub limit: Option<LimitReading>,
+}
+
+impl UsageEntry {
+    /// Tray menu / tooltip line for this item.
+    pub fn line(&self, metric: TrayUsageMetric, period: TrayUsagePeriod) -> String {
+        if self.source.is_usage() {
+            crate::ui::tray_usage::usage_item_line(&self.label, self.limit.as_ref())
+        } else {
+            usage_line(&self.label, &self.usage, metric, period)
+        }
+    }
+}
+
+/// Current usage-tracker snapshot, when tracking is wired up.
+fn usage_snapshot(app: &AppHandle) -> Option<lr_usage::UsageSnapshot> {
+    app.try_state::<Arc<lr_usage::UsageTracker>>()
+        .map(|t| t.snapshot())
 }
 
 /// Install `png` as the status item's image, already scaled to `height`
@@ -355,6 +375,7 @@ fn metrics_for_source(
         TraySource::Client { id } => collector.get_key_range(id, start, end),
         TraySource::Provider { instance } => collector.get_provider_range(instance, start, end),
         TraySource::Model { id } => collector.get_model_range(id, start, end),
+        TraySource::Usage { .. } => Vec::new(),
     }
 }
 
@@ -365,6 +386,7 @@ fn source_matches(source: &TraySource, req: &RecordedRequest) -> bool {
         TraySource::Client { id } => id == &req.client_id,
         TraySource::Provider { instance } => instance == &req.provider,
         TraySource::Model { id } => id == &req.model,
+        TraySource::Usage { .. } => false,
     }
 }
 
@@ -410,7 +432,11 @@ pub fn resolve_label(item: &TrayStatsItem, client_name: Option<&str>) -> String 
             return normalized;
         }
     }
-    let derived = normalize_tray_label(item.source.default_label_seed(client_name));
+    let seed = item
+        .source
+        .usage_label_seed()
+        .unwrap_or_else(|| item.source.default_label_seed(client_name).to_string());
+    let derived = normalize_tray_label(&seed);
     if !derived.is_empty() {
         return derived;
     }
@@ -418,10 +444,12 @@ pub fn resolve_label(item: &TrayStatsItem, client_name: Option<&str>) -> String 
 }
 
 /// Enabled items that can currently be displayed (clients that no longer
-/// exist are skipped), with their resolved labels.
+/// exist, and usage windows while usage tracking is off or the account is
+/// hidden, are skipped), with their resolved labels.
 fn displayable_items(
     stats: &TrayStatsConfig,
     clients: &[lr_config::Client],
+    usage: Option<&lr_usage::UsageSnapshot>,
 ) -> Vec<(TrayStatsItem, String)> {
     stats
         .enabled_items()
@@ -429,6 +457,17 @@ fn displayable_items(
             let client_name = match &item.source {
                 TraySource::Client { id } => {
                     Some(clients.iter().find(|c| &c.id == id)?.name.as_str())
+                }
+                TraySource::Usage { account, .. } => {
+                    let snapshot = usage?;
+                    let hidden = snapshot
+                        .accounts
+                        .iter()
+                        .any(|a| &a.id == account && a.hidden);
+                    if !snapshot.enabled || hidden {
+                        return None;
+                    }
+                    None
                 }
                 _ => None,
             };
@@ -683,15 +722,24 @@ impl TrayGraphManager {
         let app_config = config_manager.get();
         let stats = &app_config.ui.tray_stats;
         let window = stats.usage_period.seconds();
+        let snapshot = usage_snapshot(&self.app_handle);
 
-        let entries: Vec<UsageEntry> = displayable_items(stats, &app_config.clients)
-            .into_iter()
-            .map(|(item, label)| UsageEntry {
-                usage: metrics_collector.get_usage_for_type(&item.source.metric_type(), window),
-                source: item.source,
-                label,
-            })
-            .collect();
+        let entries: Vec<UsageEntry> =
+            displayable_items(stats, &app_config.clients, snapshot.as_ref())
+                .into_iter()
+                .map(|(item, label)| UsageEntry {
+                    usage: if item.source.is_usage() {
+                        UsageTotals::default()
+                    } else {
+                        metrics_collector.get_usage_for_type(&item.source.metric_type(), window)
+                    },
+                    limit: snapshot
+                        .as_ref()
+                        .and_then(|s| crate::ui::tray_usage::reading_for(s, &item.source)),
+                    source: item.source,
+                    label,
+                })
+                .collect();
 
         *self.usage.write() = entries;
         *self.usage_refreshed_at.write() = Some(now);
@@ -895,33 +943,40 @@ impl TrayGraphManager {
     }
 
     /// Build the pane list for `display_items` under `stats`.
+    /// Request items show a sparkline (Graph) or their usage figure
+    /// (Number); usage windows show a gauge of the used share (Graph) or
+    /// the percentage (Number).
     fn build_panes(
         stats: &TrayStatsConfig,
         display_items: &[(TrayStatsItem, String)],
         bars: &[Vec<u64>],
         usage_for: &dyn Fn(&TraySource) -> UsageTotals,
+        limit_for: &dyn Fn(&TraySource) -> Option<(f32, String)>,
     ) -> Vec<PaneSpec> {
-        let max_magnitude = display_items
-            .iter()
-            .map(|(i, _)| metric_magnitude(&usage_for(&i.source), stats.metric))
-            .fold(0.0_f64, f64::max);
-
         display_items
             .iter()
             .enumerate()
             .map(|(idx, (item, label))| {
-                let usage = usage_for(&item.source);
-                let content = match stats.display {
-                    TrayDisplay::Graph => {
-                        PaneContent::Graph(bars.get(idx).cloned().unwrap_or_default())
+                let content = if item.source.is_usage() {
+                    let reading = limit_for(&item.source);
+                    match stats.display {
+                        TrayDisplay::Graph => {
+                            PaneContent::UsageBar(reading.map(|(fill, _)| fill).unwrap_or(0.0))
+                        }
+                        TrayDisplay::Number => PaneContent::Number(
+                            reading
+                                .map(|(_, number)| number)
+                                .unwrap_or_else(|| "--".to_string()),
+                        ),
                     }
-                    TrayDisplay::UsageBar => PaneContent::UsageBar(if max_magnitude > 0.0 {
-                        (metric_magnitude(&usage, stats.metric) / max_magnitude) as f32
-                    } else {
-                        0.0
-                    }),
-                    TrayDisplay::Number => {
-                        PaneContent::Number(headline_value(&usage, stats.metric).to_uppercase())
+                } else {
+                    match stats.display {
+                        TrayDisplay::Graph => {
+                            PaneContent::Graph(bars.get(idx).cloned().unwrap_or_default())
+                        }
+                        TrayDisplay::Number => PaneContent::Number(
+                            headline_value(&usage_for(&item.source), stats.metric).to_uppercase(),
+                        ),
                     }
                 };
                 PaneSpec {
@@ -964,7 +1019,8 @@ impl TrayGraphManager {
         let config_manager = self.app_handle.try_state::<ConfigManager>()?;
         let app_config = config_manager.get();
         let extended = effective_layout(stats) == TrayLayout::Extended;
-        let items = displayable_items(stats, &app_config.clients);
+        let snapshot = usage_snapshot(&self.app_handle);
+        let items = displayable_items(stats, &app_config.clients, snapshot.as_ref());
         let extended = extended && !items.is_empty();
         let display_items: Vec<(TrayStatsItem, String)> = if extended {
             items.into_iter().take(MAX_PANES).collect()
@@ -1019,8 +1075,18 @@ impl TrayGraphManager {
             })
             .collect();
         let usage_for = |s: &TraySource| usage_map.get(s).copied().unwrap_or_default();
+        // Usage windows: the real reading when there is one, else a sample.
+        let limit_for = |s: &TraySource| -> Option<(f32, String)> {
+            let real = snapshot
+                .as_ref()
+                .and_then(|snap| crate::ui::tray_usage::reading_for(snap, s));
+            Some(match real {
+                Some(r) => (r.fill(), r.number()),
+                None => (0.45, "45%".to_string()),
+            })
+        };
 
-        let panes = Self::build_panes(stats, &display_items, &bars, &usage_for);
+        let panes = Self::build_panes(stats, &display_items, &bars, &usage_for, &limit_for);
         let fg = if dark_ui { 255 } else { 0 };
         let config = GraphConfig {
             foreground: image::Rgba([fg, fg, fg, 255]),
@@ -1060,7 +1126,8 @@ impl TrayGraphManager {
 
         // Items to present. Extended layout shows every enabled item (icon
         // capped at MAX_PANES); Compact keeps the single global pane.
-        let items = displayable_items(stats, &app_config.clients);
+        let snapshot = usage_snapshot(app_handle);
+        let items = displayable_items(stats, &app_config.clients, snapshot.as_ref());
         // An Extended layout with every item unchecked falls back to the
         // single global pane rather than rendering nothing.
         let extended = extended && !items.is_empty();
@@ -1191,7 +1258,14 @@ impl TrayGraphManager {
                 .ok_or_else(|| anyhow::anyhow!("Failed to generate static icon with overlay"))?
             }
         } else {
-            let panes = Self::build_panes(stats, &display_items, &bars, &usage_for);
+            let limit_for = |source: &TraySource| -> Option<(f32, String)> {
+                usage_entries
+                    .iter()
+                    .find(|e| &e.source == source)
+                    .and_then(|e| e.limit.as_ref())
+                    .map(|r| (r.fill(), r.number()))
+            };
+            let panes = Self::build_panes(stats, &display_items, &bars, &usage_for, &limit_for);
             let graph_config = platform_graph_config(dark_mode);
             crate::ui::tray_graph::generate_multi_pane(
                 &panes,
@@ -1208,7 +1282,7 @@ impl TrayGraphManager {
         tooltip_lines.extend(
             usage_entries
                 .iter()
-                .map(|e| usage_line(&e.label, &e.usage, stats.metric, stats.usage_period)),
+                .map(|e| e.line(stats.metric, stats.usage_period)),
         );
         let tooltip = tooltip_lines.join("\n");
 
@@ -1267,6 +1341,12 @@ impl TrayGraphManager {
         );
 
         Ok(())
+    }
+
+    /// Usage-limit readings changed: re-read them and redraw now.
+    pub fn usage_limits_changed(&self) {
+        *self.usage_refreshed_at.write() = None;
+        self.notify_activity();
     }
 
     /// Update configuration and apply immediately
@@ -1516,7 +1596,7 @@ mod tests {
         stats.items[3].enabled = false;
         let mut client = lr_config::Client::new_with_strategy("Cursor".into(), "s".into());
         client.id = "here".into();
-        let items = displayable_items(&stats, &[client]);
+        let items = displayable_items(&stats, &[client], None);
         let labels: Vec<String> = items.iter().map(|(_, l)| l.clone()).collect();
         assert_eq!(labels, vec!["ALL", "CURS"]);
     }

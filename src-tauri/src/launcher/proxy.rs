@@ -312,6 +312,7 @@ pub struct ProxyService {
     interceptor: Arc<dyn lr_proxy::interceptor::ProxyInterceptor>,
     resolver: Arc<AppClientResolver>,
     dedupe: RequestDedupeFlag,
+    usage: Arc<lr_usage::UsageTracker>,
     running: Mutex<Option<RunningProxy>>,
 }
 
@@ -332,6 +333,7 @@ impl ProxyService {
         state: lr_server::state::AppState,
         host: String,
         dedupe: RequestDedupeFlag,
+        usage: Arc<lr_usage::UsageTracker>,
     ) -> AppResult<Self> {
         let dir = lr_utils::paths::config_dir()?.join("proxy");
         let ca = Arc::new(
@@ -343,6 +345,7 @@ impl ProxyService {
         let recorder = PassiveInterceptor::new(monitor_store)
             .with_metrics(metrics_collector.clone())
             .with_pricing(Arc::new(CatalogPricing))
+            .with_usage(usage.clone())
             .with_client_names(Arc::new(AppClientNames {
                 client_manager: client_manager.clone(),
             }));
@@ -360,6 +363,7 @@ impl ProxyService {
             interceptor: Arc::new(interceptor),
             resolver: Arc::new(AppClientResolver { client_manager }),
             dedupe,
+            usage,
             running: Mutex::new(None),
         })
     }
@@ -391,7 +395,8 @@ impl ProxyService {
             self.resolver.clone(),
         )
         .map_err(|e| AppError::Internal(format!("proxy manager: {e}")))?
-        .with_dedupe_flag(self.dedupe.0.clone());
+        .with_dedupe_flag(self.dedupe.0.clone())
+        .with_usage_tracker(self.usage.clone());
 
         let listener = ProxyManager::bind(&self.host, port)
             .await

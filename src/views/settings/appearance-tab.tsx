@@ -31,7 +31,10 @@ import type {
   RenderTrayStatsPreviewParams,
   ClientInfo,
   ProviderInstanceInfo,
+  UsageSnapshot,
 } from "@/types/tauri-commands"
+import { useTauriListener } from "@/hooks/useTauriListener"
+import { usageLabelSeed } from "@/views/dashboard/usage-format"
 import { useIncrementalModels } from "@/hooks/useIncrementalModels"
 import { InfoTooltip } from "@/components/ui/info-tooltip"
 
@@ -120,6 +123,8 @@ function sourceKey(s: TraySource): string {
       return `provider:${s.instance}`
     case "model":
       return `model:${s.id}`
+    case "usage":
+      return `usage:${s.account}|${s.window}`
   }
 }
 
@@ -187,6 +192,7 @@ function TrayStatsCard({ graphEnabled, refreshRateSecs }: { graphEnabled: boolea
   const [settings, setSettings] = useState<TrayStatsSettings | null>(null)
   const [clients, setClients] = useState<ClientInfo[]>([])
   const [providers, setProviders] = useState<ProviderInstanceInfo[]>([])
+  const [usage, setUsage] = useState<UsageSnapshot | null>(null)
   const { models } = useIncrementalModels({ refreshOnMount: false })
   const loaded = useRef(false)
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -194,14 +200,16 @@ function TrayStatsCard({ graphEnabled, refreshRateSecs }: { graphEnabled: boolea
   useEffect(() => {
     ;(async () => {
       try {
-        const [s, c, p] = await Promise.all([
+        const [s, c, p, u] = await Promise.all([
           invoke<TrayStatsSettings>("get_tray_stats_settings"),
           invoke<ClientInfo[]>("list_clients").catch(() => [] as ClientInfo[]),
           invoke<ProviderInstanceInfo[]>("list_provider_instances").catch(() => [] as ProviderInstanceInfo[]),
+          invoke<UsageSnapshot>("get_usage_limits").catch(() => null),
         ])
         setSettings(s)
         setClients(c)
         setProviders(p)
+        setUsage(u)
         setTimeout(() => {
           loaded.current = true
         }, 0)
@@ -210,6 +218,24 @@ function TrayStatsCard({ graphEnabled, refreshRateSecs }: { graphEnabled: boolea
       }
     })()
   }, [])
+
+  // Newly seen usage windows, and the tray items the backend added for them
+  // (merged in so a later save here does not drop them).
+  useTauriListener("usage-limits-changed", () => {
+    invoke<UsageSnapshot>("get_usage_limits").then(setUsage).catch(() => {})
+    invoke<TrayStatsSettings>("get_tray_stats_settings")
+      .then((server) =>
+        setSettings((prev) => {
+          if (!prev) return prev
+          const added = server.config.items.filter(
+            (i) => !prev.config.items.some((p) => sameSource(p.source, i.source)),
+          )
+          if (added.length === 0) return prev
+          return { ...prev, config: { ...prev.config, items: [...prev.config.items, ...added] } }
+        }),
+      )
+      .catch(() => {})
+  })
 
   const config = settings?.config
   const platform = settings?.platform
@@ -242,6 +268,10 @@ function TrayStatsCard({ graphEnabled, refreshRateSecs }: { graphEnabled: boolea
   if (!config || !platform) return null
 
   const clientName = (id: string) => clients.find((c) => c.client_id === id)?.name
+  const usageWindow = (account: string, window: string) => {
+    const a = usage?.accounts.find((x) => x.id === account)
+    return { account: a, window: a?.windows.find((w) => w.id === window) }
+  }
   const sourceName = (s: TraySource): string => {
     switch (s.kind) {
       case "all":
@@ -252,6 +282,10 @@ function TrayStatsCard({ graphEnabled, refreshRateSecs }: { graphEnabled: boolea
         return s.instance
       case "model":
         return s.id
+      case "usage": {
+        const { account, window } = usageWindow(s.account, s.window)
+        return `${account?.title ?? s.account} · ${window?.label ?? s.window}`
+      }
     }
   }
   const sourceExists = (s: TraySource): boolean =>
@@ -266,6 +300,8 @@ function TrayStatsCard({ graphEnabled, refreshRateSecs }: { graphEnabled: boolea
         return normalizeLabel(s.instance)
       case "model":
         return normalizeLabel(s.id.split("/").pop() ?? s.id)
+      case "usage":
+        return usageLabelSeed(s.account, s.window)
     }
   }
 
@@ -281,12 +317,24 @@ function TrayStatsCard({ graphEnabled, refreshRateSecs }: { graphEnabled: boolea
         source: { kind: "provider", instance: p.instance_name } as TraySource,
         name: p.instance_name,
       })),
+    ...(usage?.accounts ?? [])
+      .filter((a) => !a.hidden)
+      .flatMap((a) =>
+        a.windows.map((w) => ({
+          group: "Usage limits",
+          source: { kind: "usage", account: a.id, window: w.id } as TraySource,
+          name: `${a.title} · ${w.label}`,
+        })),
+      )
+      .filter((x) => !has(x.source)),
     ...models
       .map((m) => `${m.provider}/${m.id}`)
       .filter((id, i, arr) => arr.indexOf(id) === i && !has({ kind: "model", id }))
       .map((id) => ({ group: "Models", source: { kind: "model", id } as TraySource, name: id })),
   ]
-  const groups = ["Clients", "Providers", "Models"].filter((g) => addable.some((a) => a.group === g))
+  const groups = ["Usage limits", "Clients", "Providers", "Models"].filter((g) =>
+    addable.some((a) => a.group === g),
+  )
 
   const move = (index: number, dir: -1 | 1) =>
     updateConfig((c) => {
@@ -307,7 +355,7 @@ function TrayStatsCard({ graphEnabled, refreshRateSecs }: { graphEnabled: boolea
           Tray Stats
         </CardTitle>
         <CardDescription>
-          Which clients and LLMs the tray icon and tray menu report on, and how
+          Which clients, LLMs and usage limits the tray icon and tray menu report on, and how
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
@@ -329,7 +377,7 @@ function TrayStatsCard({ graphEnabled, refreshRateSecs }: { graphEnabled: boolea
         <div className="space-y-2">
           <Label className="flex items-center gap-1">
             Items
-            <InfoTooltip content="Each enabled item becomes one panel in the tray icon (up to 6) and one line in the tray menu. Labels are up to 4 letters, stacked vertically beside the panel." />
+            <InfoTooltip content="Each enabled item becomes one panel in the tray icon (up to 6) and one line in the tray menu. Request items (all, clients, providers, models) show traffic; usage limits show how much of a subscription window is used. Labels are up to 4 letters." />
           </Label>
           <div className="rounded-md border divide-y">
             {config.items.map((item, index) => {
@@ -371,7 +419,9 @@ function TrayStatsCard({ graphEnabled, refreshRateSecs }: { graphEnabled: boolea
                         ? ""
                         : item.source.kind === "client"
                           ? "client"
-                          : item.source.kind}
+                          : item.source.kind === "usage"
+                            ? "usage"
+                            : item.source.kind}
                     </span>
                     {sourceName(item.source)}
                   </span>
@@ -410,8 +460,8 @@ function TrayStatsCard({ graphEnabled, refreshRateSecs }: { graphEnabled: boolea
                 if (entry) updateConfig((c) => ({ ...c, items: [...c.items, { source: entry.source, enabled: true, label: null }] }))
               }}
             >
-              <SelectTrigger className="w-64">
-                <SelectValue placeholder="Add client, provider or model…" />
+              <SelectTrigger className="w-96 max-w-full">
+                <SelectValue placeholder="Add new…" />
               </SelectTrigger>
               <SelectContent>
                 {groups.map((g, gi) => (
@@ -437,7 +487,6 @@ function TrayStatsCard({ graphEnabled, refreshRateSecs }: { graphEnabled: boolea
                 )}
               </SelectContent>
             </Select>
-            <p className="text-xs text-muted-foreground">New clients are added automatically.</p>
           </div>
         </div>
 
@@ -446,7 +495,7 @@ function TrayStatsCard({ graphEnabled, refreshRateSecs }: { graphEnabled: boolea
           <div className="space-y-1.5">
             <Label className="text-xs flex items-center gap-1">
               Display
-              <InfoTooltip content="What each item's panel shows: a sparkline of recent throughput, an outlined gauge of its usage relative to the largest item, or the usage figure as a number." />
+              <InfoTooltip content="Graph: request items draw a sparkline of recent traffic; usage limits draw a gauge of the window's used share. Number: the figure as text (usage over the period, or the window's %)." />
             </Label>
             <Select
               value={config.display}
@@ -458,7 +507,6 @@ function TrayStatsCard({ graphEnabled, refreshRateSecs }: { graphEnabled: boolea
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="graph">Graph</SelectItem>
-                <SelectItem value="usage_bar">Usage bar</SelectItem>
                 <SelectItem value="number">Number</SelectItem>
               </SelectContent>
             </Select>
@@ -497,7 +545,7 @@ function TrayStatsCard({ graphEnabled, refreshRateSecs }: { graphEnabled: boolea
           <div className="space-y-1.5">
             <Label className="text-xs flex items-center gap-1">
               Metric
-              <InfoTooltip content="What every panel shows: the graph plots it over the recent window, the usage bar and number use its total over the period below, and the menu lines lead with it." />
+              <InfoTooltip content="What request panels show: the graph plots it over the recent window, the number is its total over the period below, and the menu lines lead with it. Usage limits always show the window's used share." />
             </Label>
             <Select value={config.metric} onValueChange={(v) => updateConfig({ metric: v as TrayUsageMetric })}>
               <SelectTrigger>
@@ -513,7 +561,7 @@ function TrayStatsCard({ graphEnabled, refreshRateSecs }: { graphEnabled: boolea
           <div className="space-y-1.5">
             <Label className="text-xs flex items-center gap-1">
               Usage period
-              <InfoTooltip content="Rolling window the usage bar, number and menu figures are summed over. The graph always shows the recent window set by the refresh rate above." />
+              <InfoTooltip content="Rolling window the request numbers and menu figures are summed over. The graph always shows the recent window set by the refresh rate above." />
             </Label>
             <Select value={config.usage_period} onValueChange={(v) => updateConfig({ usage_period: v as TrayUsagePeriod })}>
               <SelectTrigger>

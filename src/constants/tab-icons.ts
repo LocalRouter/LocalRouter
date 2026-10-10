@@ -3,7 +3,7 @@ import {
   Info, PlayCircle, Settings, LayoutDashboard, Plug, MessageSquare,
   Cable, Blocks, Sparkles, Palette, HeartPulse,
   ScrollText, Download, FileCheck, Server, Cpu, GitCompare,
-  Search, Bot, History, Wand2, Store, Users, Coins, Brain,
+  Search, Bot, History, Wand2, Store, Users, Coins, Brain, Gauge,
 } from "lucide-react"
 import { FEATURES } from "./features"
 
@@ -22,6 +22,7 @@ export const TAB_ICONS = {
   guardrails: FEATURES.guardrails.icon,
   optimize: Sparkles,
   appearance: Palette,
+  usage: Gauge,
   healthChecks: HeartPulse,
   logs: ScrollText,
   updates: Download,

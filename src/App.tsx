@@ -124,6 +124,12 @@ function App() {
         setActiveSubTab('updates')
       }),
 
+      // Subscribe to open-usage-limits event from tray menu (usage limit lines)
+      listenSafe('open-usage-limits', () => {
+        setActiveView('dashboard')
+        setActiveSubTab(null)
+      }),
+
       // Subscribe to open-resources-tab event from tray menu (for provider health issues)
       listenSafe('open-resources-tab', () => {
         console.log('Opening Resources tab from tray menu')
@@ -242,7 +248,7 @@ function App() {
   const renderView = () => {
     switch (activeView) {
       case 'dashboard':
-        return <DashboardView />
+        return <DashboardView onTabChange={handleChildViewChange} />
       case 'clients':
         return (
           <ClientsView
@@ -365,7 +371,7 @@ function App() {
           </Suspense>
         ) : null
       default:
-        return <DashboardView />
+        return <DashboardView onTabChange={handleChildViewChange} />
     }
   }
 

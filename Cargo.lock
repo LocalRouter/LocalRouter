@@ -5088,6 +5088,7 @@ dependencies = [
  "lr-server",
  "lr-skills",
  "lr-types",
+ "lr-usage",
  "lr-utils",
  "objc2",
  "objc2-app-kit",
@@ -5617,6 +5618,7 @@ dependencies = [
  "lr-local-models",
  "lr-oauth",
  "lr-types",
+ "lr-usage",
  "lr-utils",
  "ollama-rs",
  "parking_lot",
@@ -5653,6 +5655,7 @@ dependencies = [
  "lr-monitor",
  "lr-monitoring",
  "lr-types",
+ "lr-usage",
  "lr-utils",
  "parking_lot",
  "rcgen",
@@ -5760,6 +5763,7 @@ dependencies = [
  "lr-secret-scanner",
  "lr-skills",
  "lr-types",
+ "lr-usage",
  "lr-utils",
  "parking_lot",
  "reqwest 0.12.28",
@@ -5817,6 +5821,24 @@ dependencies = [
  "tracing",
  "utoipa",
  "uuid",
+]
+
+[[package]]
+name = "lr-usage"
+version = "0.0.153"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "dirs 5.0.1",
+ "http",
+ "lr-config",
+ "parking_lot",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

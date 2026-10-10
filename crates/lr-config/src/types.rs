@@ -514,6 +514,10 @@ pub struct AppConfig {
     /// System One decision endpoint (`/v1/systemone`) settings.
     #[serde(default)]
     pub systemone: SystemOneConfig,
+
+    /// Subscription and usage-limit tracking (Dashboard + menu bar).
+    #[serde(default)]
+    pub usage_tracking: UsageTrackingConfig,
 }
 
 /// How `/v1/systemone` handles models whose provider does not speak the
@@ -645,6 +649,10 @@ pub enum TraySource {
     /// A single model in the dashboard's `{provider_instance}/{model_id}`
     /// form (`llm_model:{id}`).
     Model { id: String },
+    /// A subscription / rate-limit usage window from the usage tracker
+    /// (e.g. account `anthropic:subscription`, window `seven_day`). Not a
+    /// metrics tier: its panel shows the window's used share.
+    Usage { account: String, window: String },
 }
 
 impl TraySource {
@@ -655,7 +663,14 @@ impl TraySource {
             TraySource::Client { id } => format!("llm_key:{}", id),
             TraySource::Provider { instance } => format!("llm_provider:{}", instance),
             TraySource::Model { id } => format!("llm_model:{}", id),
+            // No metrics tier; reads as an empty series.
+            TraySource::Usage { account, window } => format!("usage:{}|{}", account, window),
         }
+    }
+
+    /// Whether this is a usage-limit window rather than request traffic.
+    pub fn is_usage(&self) -> bool {
+        matches!(self, TraySource::Usage { .. })
     }
 
     /// Stable string form used in tray menu item ids and the like.
@@ -665,6 +680,7 @@ impl TraySource {
             TraySource::Client { id } => format!("client:{}", id),
             TraySource::Provider { instance } => format!("provider:{}", instance),
             TraySource::Model { id } => format!("model:{}", id),
+            TraySource::Usage { account, window } => format!("usage:{}|{}", account, window),
         }
     }
 
@@ -684,6 +700,15 @@ impl TraySource {
         if let Some(id) = key.strip_prefix("model:") {
             return Some(TraySource::Model { id: id.to_string() });
         }
+        if let Some((account, window)) = key
+            .strip_prefix("usage:")
+            .and_then(|rest| rest.split_once('|'))
+        {
+            return Some(TraySource::Usage {
+                account: account.to_string(),
+                window: window.to_string(),
+            });
+        }
         None
     }
 
@@ -695,7 +720,35 @@ impl TraySource {
             TraySource::Client { id } => client_name.unwrap_or(id.as_str()),
             TraySource::Provider { instance } => instance.as_str(),
             TraySource::Model { id } => id.rsplit('/').next().unwrap_or(id.as_str()),
+            TraySource::Usage { window, .. } => window.as_str(),
         }
+    }
+
+    /// Default label for a usage window: provider initial plus the window,
+    /// e.g. `A7D` (Claude weekly), `O5H` (ChatGPT 5-hour), `AF7` (Claude's
+    /// weekly Fable cap), `GHM` (Copilot monthly).
+    pub fn usage_label_seed(&self) -> Option<String> {
+        let TraySource::Usage { account, window } = self else {
+            return None;
+        };
+        let provider = account.split(':').next().unwrap_or(account);
+        let prefix = match provider {
+            "github-copilot" => "GH".to_string(),
+            p => p.chars().take(1).collect::<String>().to_uppercase(),
+        };
+        let suffix = match window.as_str() {
+            "five_hour" => "5H".to_string(),
+            "seven_day" => "7D".to_string(),
+            "monthly" => "M".to_string(),
+            w => match w.strip_prefix("seven_day_") {
+                Some(model) => format!(
+                    "{}7",
+                    model.chars().next().unwrap_or('W').to_ascii_uppercase()
+                ),
+                None => w.chars().take(2).collect(),
+            },
+        };
+        Some(format!("{prefix}{suffix}"))
     }
 }
 
@@ -754,12 +807,13 @@ pub enum TrayLabelMode {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum TrayDisplay {
-    /// Sparkline of recent throughput.
+    /// Request items: sparkline of recent throughput. Usage windows: an
+    /// outlined gauge of the window's used share. (`usage_bar` was a
+    /// separate request-traffic gauge; it now reads as `graph`.)
     #[default]
+    #[serde(alias = "usage_bar")]
     Graph,
-    /// Outlined gauge: usage over the period relative to the largest item.
-    UsageBar,
-    /// The usage figure drawn as text.
+    /// The figure drawn as text (usage over the period, or a window's %).
     Number,
 }
 
@@ -902,6 +956,23 @@ impl TrayStatsConfig {
     pub fn on_client_created(&mut self, client_id: &str) {
         let source = TraySource::Client {
             id: client_id.to_string(),
+        };
+        if self.contains(&source) {
+            return;
+        }
+        let before = self.enabled_items().count();
+        self.items.push(TrayStatsItem::new(source));
+        if before == 1 && self.labels == TrayLabelMode::Off {
+            self.labels = TrayLabelMode::Beside;
+        }
+    }
+
+    /// Register a usage window seen for the first time: like a new client,
+    /// it gets an enabled row, and labels switch on at the 1 → 2 panel step.
+    pub fn on_usage_window_seen(&mut self, account: &str, window: &str) {
+        let source = TraySource::Usage {
+            account: account.to_string(),
+            window: window.to_string(),
         };
         if self.contains(&source) {
             return;
@@ -1162,6 +1233,79 @@ impl Default for RequestDedupeConfig {
     fn default() -> Self {
         Self { enabled: true }
     }
+}
+
+/// Subscription and usage-limit tracking.
+///
+/// LocalRouter reads usage limits from the traffic it already carries
+/// (rate-limit response headers, usage responses passing through the HTTPS
+/// proxy) and, when allowed, by asking providers' usage endpoints directly.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UsageTrackingConfig {
+    /// Master switch. When off nothing is recorded or polled.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Query the usage endpoints of providers connected in LocalRouter
+    /// (ChatGPT Plus/Pro, GitHub Copilot, OpenRouter) in the background.
+    #[serde(default = "default_true")]
+    pub poll_provider_apis: bool,
+    /// Use the logins of the Claude Code and Codex CLIs on this machine to
+    /// query their subscription usage. Off by default: it reads another
+    /// app's saved credentials.
+    #[serde(default)]
+    pub read_cli_logins: bool,
+    /// Seconds between usage polls of an account while requests for it keep
+    /// coming in.
+    #[serde(default = "default_usage_poll_interval_secs")]
+    pub poll_interval_secs: u64,
+    /// Seconds between usage polls of an account with no recent traffic.
+    #[serde(default = "default_usage_idle_poll_interval_secs")]
+    pub idle_poll_interval_secs: u64,
+    /// Per-account plan overrides, keyed by account id
+    /// (e.g. `anthropic:subscription`).
+    #[serde(default)]
+    pub plans: std::collections::BTreeMap<String, UsagePlanOverride>,
+    /// Account ids hidden from the Dashboard and the menu bar.
+    #[serde(default)]
+    pub hidden_accounts: Vec<String>,
+    /// Usage windows (`account|window`) already added to the tray stats
+    /// automatically, so one the user removed is not added back.
+    #[serde(default)]
+    pub tray_items_added: Vec<String>,
+}
+
+fn default_usage_poll_interval_secs() -> u64 {
+    300
+}
+
+fn default_usage_idle_poll_interval_secs() -> u64 {
+    3600
+}
+
+impl Default for UsageTrackingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            poll_provider_apis: true,
+            read_cli_logins: false,
+            poll_interval_secs: default_usage_poll_interval_secs(),
+            idle_poll_interval_secs: default_usage_idle_poll_interval_secs(),
+            plans: Default::default(),
+            hidden_accounts: Vec::new(),
+            tray_items_added: Vec::new(),
+        }
+    }
+}
+
+/// User override of an account's plan and monthly price.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct UsagePlanOverride {
+    /// Plan name shown in the UI (e.g. "Max 20x").
+    #[serde(default)]
+    pub plan: Option<String>,
+    /// Monthly price in USD, used for value estimates.
+    #[serde(default)]
+    pub monthly_price_usd: Option<f64>,
 }
 
 impl Default for ProxyConfig {
@@ -4358,6 +4502,7 @@ impl Default for AppConfig {
             mcp_gateway: McpGatewaySettings::default(),
             responses: ResponsesApiConfig::default(),
             systemone: SystemOneConfig::default(),
+            usage_tracking: UsageTrackingConfig::default(),
         }
     }
 }
@@ -4672,6 +4817,10 @@ mod tests {
             TraySource::Model {
                 id: "openai/gpt-5".into(),
             },
+            TraySource::Usage {
+                account: "anthropic:subscription".into(),
+                window: "seven_day".into(),
+            },
         ];
         for s in &sources {
             let yaml = serde_yaml::to_string(s).unwrap();
@@ -4687,6 +4836,66 @@ mod tests {
         assert_eq!(sources[2].metric_type(), "llm_provider:anthropic");
         assert_eq!(sources[3].metric_type(), "llm_model:openai/gpt-5");
         assert_eq!(TraySource::from_key("bogus"), None);
+    }
+
+    #[test]
+    fn tray_usage_sources_labels_and_display_alias() {
+        let usage = |account: &str, window: &str| TraySource::Usage {
+            account: account.into(),
+            window: window.into(),
+        };
+        assert!(usage("a:subscription", "seven_day").is_usage());
+        assert!(!TraySource::All.is_usage());
+        assert_eq!(
+            usage("anthropic:subscription", "seven_day")
+                .usage_label_seed()
+                .as_deref(),
+            Some("A7D")
+        );
+        assert_eq!(
+            normalize_tray_label(
+                &usage("openai:subscription", "five_hour")
+                    .usage_label_seed()
+                    .unwrap()
+            ),
+            "O5H"
+        );
+        assert_eq!(
+            normalize_tray_label(
+                &usage("anthropic:subscription", "seven_day_fable")
+                    .usage_label_seed()
+                    .unwrap()
+            ),
+            "AF7"
+        );
+        assert_eq!(
+            usage("github-copilot:subscription", "monthly")
+                .usage_label_seed()
+                .as_deref(),
+            Some("GHM")
+        );
+        assert_eq!(TraySource::All.usage_label_seed(), None);
+        // The retired request-traffic gauge reads as Graph.
+        let display: TrayDisplay = serde_yaml::from_str("usage_bar").unwrap();
+        assert_eq!(display, TrayDisplay::Graph);
+    }
+
+    #[test]
+    fn tray_stats_usage_window_seen_adds_once_and_turns_labels_on() {
+        let mut stats = TrayStatsConfig::default();
+        stats.on_usage_window_seen("anthropic:subscription", "seven_day");
+        assert_eq!(stats.items.len(), 2);
+        assert_eq!(stats.labels, TrayLabelMode::Beside);
+        stats.labels = TrayLabelMode::Off;
+        stats.on_usage_window_seen("anthropic:subscription", "seven_day");
+        assert_eq!(stats.items.len(), 2);
+        stats.on_usage_window_seen("openai:subscription", "seven_day");
+        assert_eq!(stats.items.len(), 3);
+        assert_eq!(
+            stats.labels,
+            TrayLabelMode::Off,
+            "only the 1 → 2 step flips labels"
+        );
     }
 
     #[test]

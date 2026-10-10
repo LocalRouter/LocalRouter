@@ -334,6 +334,26 @@ pub(crate) async fn finalize_metrics_and_monitor(
             latency_ms,
         });
 
+    // Per-account usage ledger: API-equivalent cost of subscription traffic
+    // and spend of API keys, for the Dashboard's usage view.
+    let usage_account = state
+        .provider_registry
+        .get_provider_type_for_instance(&response.provider)
+        .and_then(|t| lr_usage::account_for_provider_type(&t));
+    if let Some((tracker, account)) = lr_usage::global().zip(usage_account) {
+        tracker.record_request(
+            &account,
+            lr_usage::LedgerEntry {
+                requests: 1,
+                input_tokens: prompt_tokens as u64,
+                output_tokens: response.usage.completion_tokens as u64,
+                cache_read_tokens: cached_tokens.unwrap_or(0),
+                cache_write_tokens: 0,
+                cost_usd: cost,
+            },
+        );
+    }
+
     // Tray graph tokens flow through the metrics collector's
     // on_metrics_recorded callback (fed by record_success above) — no
     // direct record_tokens call here or it would double-count.

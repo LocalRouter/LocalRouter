@@ -310,6 +310,8 @@ pub struct WsSession {
     /// Exchange template: client identity, host, path — cloned per cycle.
     base: ObservedExchange,
     cycle: parking_lot::Mutex<Option<Cycle>>,
+    /// Reads `codex.rate_limits` events off the stream.
+    usage: Option<Arc<lr_usage::UsageTracker>>,
 }
 
 impl WsSession {
@@ -323,7 +325,14 @@ impl WsSession {
             format,
             base,
             cycle: parking_lot::Mutex::new(None),
+            usage: None,
         }
+    }
+
+    /// Report usage-limit events seen on the stream to the usage tracker.
+    pub fn with_usage(mut self, usage: Option<Arc<lr_usage::UsageTracker>>) -> Self {
+        self.usage = usage;
+        self
     }
 
     /// Run one client data message through the firewall and open a monitor
@@ -373,6 +382,10 @@ impl WsSession {
     /// is a terminal event for this wire format.
     async fn on_server_message(&self, text: &str) {
         let json = serde_json::from_str::<Value>(text).ok();
+        if let (Some(usage), Some(j)) = (&self.usage, &json) {
+            // Rate-limit events can arrive outside a request cycle.
+            usage.observe_stream_event(j, lr_usage::DataSource::ProxyHeaders);
+        }
         let terminal = json
             .as_ref()
             .is_some_and(|j| wire::is_terminal_event(self.format, j));

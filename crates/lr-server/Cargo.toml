@@ -55,6 +55,7 @@ lr-memory = { workspace = true }
 lr-secret-scanner = { workspace = true }
 lr-monitor = { workspace = true }
 lr-responses-sessions = { workspace = true }
+lr-usage = { workspace = true }
 dirs = { workspace = true }
 
 [features]
