@@ -24,3 +24,7 @@ Vercel starter mark, so it is not used as Kev branding.
 
 - `atlassian.svg`: official Atlassian logo, https://atlassian.github.io/atlassian-mcp-server/images/atlassian_logo_brand_RGB.svg (upstream https://github.com/atlassian/atlassian-mcp-server). Atlassian trademark; used solely to identify the service, subject to https://www.atlassian.com/legal/trademark .
 - `datadog.png`: official logo from Datadog documentation, https://docs.dd-static.net/img/dd-logo-n-200.png (linked by https://docs.datadoghq.com/mcp_server/setup/). Datadog trademark; used solely to identify the service, subject to https://www.datadoghq.com/legal/terms/ .
+
+## Pi client template
+
+- `pi.svg`: official Pi logo, https://pi.dev/logo.svg (byte-identical to https://pi.dev/logo-auto.svg, which the upstream README at https://github.com/earendil-works/pi embeds; retrieved 2026-10-10, SHA-256 `abd66e7868b2d24f0f0895f9237ee8a6dcb22337583b0dc54aeb595acecb4d6b`). Copied without modification. The Pi source code is MIT-licensed; the logo is not part of that repository and no separate logo license is published. Pi mark of its owners; used solely to identify the app.
