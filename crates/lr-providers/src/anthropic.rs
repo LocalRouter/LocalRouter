@@ -431,6 +431,10 @@ impl AnthropicProvider {
 #[async_trait]
 #[allow(dead_code)]
 impl ModelProvider for AnthropicProvider {
+    fn upstream_api(&self) -> lr_types::LlmApi {
+        lr_types::LlmApi::AnthropicMessages
+    }
+
     fn name(&self) -> &str {
         "anthropic"
     }

@@ -5539,6 +5539,7 @@ name = "lr-monitor"
 version = "0.0.153"
 dependencies = [
  "chrono",
+ "lr-types",
  "parking_lot",
  "serde",
  "serde_json",

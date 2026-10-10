@@ -284,11 +284,24 @@ pub(crate) async fn finalize_metrics_and_monitor(
 
     let completed_at = Instant::now();
 
-    let pricing = match state.provider_registry.get_provider(&response.provider) {
+    let provider_instance = state.provider_registry.get_provider(&response.provider);
+    let pricing = match &provider_instance {
         Some(p) => p.get_pricing(&response.model).await.ok(),
         None => None,
     }
     .unwrap_or_else(lr_providers::PricingInfo::free);
+    let cached_tokens = response
+        .usage
+        .prompt_tokens_details
+        .as_ref()
+        .and_then(|d| d.cache_read_tokens.or(d.cached_tokens))
+        .map(u64::from);
+    super::monitor_helpers::update_llm_call_upstream(
+        state,
+        llm_event_id,
+        provider_instance.as_ref().map(|p| p.upstream_api()),
+        cached_tokens,
+    );
 
     if compression_tokens_saved > 0 && pricing.input_cost_per_1k > 0.0 {
         let cost_saved = (compression_tokens_saved as f64 / 1000.0) * pricing.input_cost_per_1k;

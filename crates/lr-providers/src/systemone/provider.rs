@@ -322,6 +322,10 @@ pub fn map_systemone_error(status: u16, body: String) -> AppError {
 
 #[async_trait]
 impl ModelProvider for SystemOneProvider {
+    fn upstream_api(&self) -> lr_types::LlmApi {
+        lr_types::LlmApi::SystemOne
+    }
+
     fn name(&self) -> &str {
         self.flavor.provider_type()
     }

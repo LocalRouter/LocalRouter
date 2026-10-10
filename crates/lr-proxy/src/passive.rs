@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use lr_monitor::{
-    truncate_json_owned, EventStatus, LlmCallSource, LlmProtocol, MonitorEventData,
+    truncate_json_owned, EventStatus, LlmApi, LlmCallSource, LlmProtocol, MonitorEventData,
     MonitorEventStore, MonitorEventType, PassthroughMode,
 };
 use lr_monitoring::metrics::{MetricsCollector, RequestMetrics};
@@ -234,6 +234,11 @@ impl PassiveInterceptor {
             request_body: request_json.unwrap_or(serde_json::Value::Null),
             source: source_for(ex.source),
             protocol: protocol_for(format),
+            // The proxy forwards the call as-is: both sides speak one API.
+            client_api: Some(api_for(format)),
+            upstream_api: Some(api_for(format)),
+            requested_model: req_meta.model.clone(),
+            cached_input_tokens: None,
             transformed_body: None,
             transformations_applied: duplicate_label(ex),
             provider: Some(ex.host.clone()),
@@ -290,6 +295,7 @@ impl PassiveInterceptor {
                 output_tokens: ot,
                 total_tokens: tt,
                 reasoning_tokens: rt,
+                cached_input_tokens: ct,
                 cost_usd: cu,
                 latency_ms: lm,
                 finish_reason: fr,
@@ -301,6 +307,7 @@ impl PassiveInterceptor {
             } = &mut event.data
             {
                 *m = model;
+                *ct = resp_meta.cache_read_tokens;
                 *sc = ex.status;
                 *it = resp_meta.input_tokens;
                 *ot = resp_meta.output_tokens;
@@ -343,6 +350,11 @@ impl PassiveInterceptor {
             request_body: request_json.unwrap_or(serde_json::Value::Null),
             source: source_for(ex.source),
             protocol: protocol_for(format),
+            // The proxy forwards the call as-is: both sides speak one API.
+            client_api: Some(api_for(format)),
+            upstream_api: Some(api_for(format)),
+            requested_model: req_meta.model.clone(),
+            cached_input_tokens: resp_meta.cache_read_tokens,
             transformed_body: None,
             transformations_applied: duplicate_label(ex),
             provider: Some(ex.host.clone()),
@@ -591,6 +603,17 @@ fn protocol_for(format: WireFormat) -> LlmProtocol {
         // monitor's purposes (messages + content + token counts).
         WireFormat::Ollama(_) => LlmProtocol::Openai,
         WireFormat::SystemOne => LlmProtocol::SystemOne,
+    }
+}
+
+/// The API a recognized wire format belongs to.
+fn api_for(format: WireFormat) -> LlmApi {
+    match format {
+        WireFormat::AnthropicMessages => LlmApi::AnthropicMessages,
+        WireFormat::OpenAiChat => LlmApi::ChatCompletions,
+        WireFormat::OpenAiResponses => LlmApi::Responses,
+        WireFormat::Ollama(_) => LlmApi::OllamaChat,
+        WireFormat::SystemOne => LlmApi::SystemOne,
     }
 }
 

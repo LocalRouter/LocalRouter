@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { memo, useState, useEffect, useMemo, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { Button } from '@/components/ui/Button'
 import { PanelRight } from 'lucide-react'
@@ -11,7 +11,7 @@ import { EventDetail } from '@/views/monitor/event-detail'
 import { EventFilters } from '@/views/monitor/event-filters'
 import { TryItOutPanel } from '@/views/monitor/try-it-out-panel'
 import type { MonitorEventFilter, InterceptRule } from '@/types/tauri-commands'
-import { isRequest } from './activity-data'
+import { DetailDockControls, DockDropPreview, useDetailDock } from './detail-dock'
 
 // Persists the deliberate filter dimensions across app restarts. We do NOT
 // persist `session_id`/`client_id` — those are transient drill-downs (set by
@@ -50,7 +50,8 @@ interface RequestMonitorProps {
   className?: string
 }
 
-export function RequestMonitor({ reloadSignal, className }: RequestMonitorProps) {
+// Memoized: the traffic chart's live updates re-render the dashboard often.
+export const RequestMonitor = memo(function RequestMonitor({ reloadSignal, className }: RequestMonitorProps) {
   const [filter, setFilter] = useState<MonitorEventFilter>(loadPersistedFilter)
   const [tryItOutOpen, setTryItOutOpen] = useState(false)
   const [interceptRule, setInterceptRule] = useState<InterceptRule | null>(null)
@@ -107,7 +108,8 @@ export function RequestMonitor({ reloadSignal, className }: RequestMonitorProps)
     if (reloadSignal > 0) reload()
   }, [reloadSignal, reload])
 
-  const pending = events.filter(event => isRequest(event) && event.status === 'pending').length
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const { dock, setDock, drag, startDrag, detailSize, saveLayout } = useDetailDock(bodyRef)
 
   const filterBar = (
     <div className="flex items-center border-b">
@@ -120,12 +122,6 @@ export function RequestMonitor({ reloadSignal, className }: RequestMonitorProps)
         />
       </div>
       <div className="pr-2 flex items-center gap-2">
-        {pending > 0 && (
-          <span className="flex items-center gap-1.5 whitespace-nowrap rounded-full bg-teal-500/10 px-2 py-0.5 text-[10px] font-medium text-teal-700 dark:text-teal-300">
-            <span className="h-1.5 w-1.5 rounded-full bg-teal-500" />
-            {pending} in progress
-          </span>
-        )}
         <Button
           variant={tryItOutOpen ? 'secondary' : 'ghost'}
           size="sm"
@@ -164,35 +160,69 @@ export function RequestMonitor({ reloadSignal, className }: RequestMonitorProps)
     />
   )
 
-  // The dashboard page is the scroll container: the list scrolls within a
-  // capped height and the selected event's detail flows below it in full.
+  const detail = selectedId && (
+    <EventDetail
+      key={selectedId}
+      event={selectedEvent}
+      loading={isDetailLoading}
+      error={detailError}
+      onRetry={retryDetail}
+      toolbar={
+        <DetailDockControls
+          dock={dock}
+          onDockChange={setDock}
+          onDragStart={startDrag}
+          onClose={() => selectEvent(null)}
+        />
+      }
+    />
+  )
+
+  // The list and the selected event share the monitor's height in a split with
+  // a drag handle; the detail can be dragged (or toggled) to dock below or beside.
+  const body = (
+    <div ref={bodyRef} className="relative flex-1 min-h-0">
+      <ResizablePanelGroup
+        key={dock}
+        direction={dock === 'bottom' ? 'vertical' : 'horizontal'}
+        onLayoutChanged={saveLayout}
+      >
+        <ResizablePanel id="list" minSize="15%">
+          <div className="h-full" data-testid="monitor-event-list">{list}</div>
+        </ResizablePanel>
+        {detail && (
+          <>
+            <ResizableHandle withHandle orientation={dock === 'bottom' ? 'vertical' : 'horizontal'} />
+            <ResizablePanel id="detail" defaultSize={`${detailSize}%`} minSize="20%">
+              <div className="h-full" data-testid="monitor-event-detail">{detail}</div>
+            </ResizablePanel>
+          </>
+        )}
+      </ResizablePanelGroup>
+      {drag && <DockDropPreview target={drag.target} />}
+    </div>
+  )
+
   const monitor = (
-    <div className="flex flex-col">
-      <div className="flex max-h-[70vh] min-h-[320px] flex-col" data-testid="monitor-event-list">
-        {filterBar}
-        {errorBanner}
-        <div className="flex-1 min-h-0">{list}</div>
-      </div>
-      {selectedId && (
-        <div className="border-t" data-testid="monitor-event-detail">
-          <EventDetail key={selectedId} event={selectedEvent} loading={isDetailLoading} error={detailError} onRetry={retryDetail} />
-        </div>
-      )}
+    <div className="flex h-full flex-col">
+      {filterBar}
+      {errorBanner}
+      {body}
     </div>
   )
 
   return (
     <section
       aria-label="Request monitor"
-      className={cn('overflow-hidden rounded-2xl border bg-card', className)}
+      className={cn('flex flex-col overflow-hidden rounded-xl border bg-card', className)}
     >
       {tryItOutOpen ? (
-        <ResizablePanelGroup direction="horizontal" className="h-full">
-          <ResizablePanel defaultSize={60} minSize={30}>
+        <ResizablePanelGroup direction="horizontal" className="flex-1 min-h-0">
+          <ResizablePanel defaultSize="60%" minSize="30%">
             {monitor}
           </ResizablePanel>
           <ResizableHandle withHandle />
-          <ResizablePanel defaultSize={40} minSize={15}>
+          <ResizablePanel defaultSize="40%" minSize="15%">
             <TryItOutPanel onClose={() => setTryItOutOpen(false)} />
           </ResizablePanel>
         </ResizablePanelGroup>
@@ -201,4 +231,4 @@ export function RequestMonitor({ reloadSignal, className }: RequestMonitorProps)
       )}
     </section>
   )
-}
+})

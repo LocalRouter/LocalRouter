@@ -127,8 +127,10 @@ pub fn emit_llm_call(
     let message_count = if is_systemone {
         systemone_questions.map(|q| q.len()).unwrap_or(0)
     } else {
+        // Chat bodies carry `messages`; Responses bodies carry `input`.
         request_body
             .get("messages")
+            .or_else(|| request_body.get("input"))
             .and_then(|m| m.as_array())
             .map(|a| a.len())
             .unwrap_or(0)
@@ -160,6 +162,10 @@ pub fn emit_llm_call(
             } else {
                 lr_monitor::LlmProtocol::Openai
             },
+            client_api: lr_monitor::LlmApi::from_path(endpoint),
+            upstream_api: None,
+            requested_model: Some(model.to_string()),
+            cached_input_tokens: None,
             raw_request: None,
             raw_response: None,
             transformed_body: None,
@@ -211,6 +217,31 @@ pub fn update_llm_call_transformed(
         {
             *transformed_body = Some(body);
             *transformations_applied = Some(transformations);
+        }
+    });
+}
+
+/// Record how the provider that answered was reached: the API LocalRouter
+/// spoke upstream and the prompt tokens it served from cache.
+pub fn update_llm_call_upstream(
+    state: &AppState,
+    event_id: &str,
+    api: Option<lr_monitor::LlmApi>,
+    cached_tokens: Option<u64>,
+) {
+    state.monitor_store.update(event_id, |event| {
+        if let MonitorEventData::LlmCall {
+            upstream_api,
+            cached_input_tokens,
+            ..
+        } = &mut event.data
+        {
+            if api.is_some() {
+                *upstream_api = api;
+            }
+            if cached_tokens.is_some() {
+                *cached_input_tokens = cached_tokens;
+            }
         }
     });
 }

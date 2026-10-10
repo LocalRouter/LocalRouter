@@ -8,6 +8,7 @@ repository.workspace = true
 description = "In-memory event store for real-time traffic monitoring in LocalRouter"
 
 [dependencies]
+lr-types = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }

@@ -1099,6 +1099,10 @@ impl Drop for OllayaEmbeddedProvider {
 
 #[async_trait]
 impl ModelProvider for OllayaEmbeddedProvider {
+    fn upstream_api(&self) -> lr_types::LlmApi {
+        lr_types::LlmApi::SystemOne
+    }
+
     fn name(&self) -> &str {
         PROVIDER_TYPE
     }

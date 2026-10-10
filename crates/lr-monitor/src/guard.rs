@@ -125,6 +125,10 @@ mod tests {
             Some("Test Client".to_string()),
             None,
             MonitorEventData::LlmCall {
+                client_api: None,
+                upstream_api: None,
+                requested_model: None,
+                cached_input_tokens: None,
                 endpoint: "/v1/chat/completions".to_string(),
                 model: "gpt-4".to_string(),
                 stream: false,

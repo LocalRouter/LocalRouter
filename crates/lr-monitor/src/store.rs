@@ -322,6 +322,10 @@ mod tests {
             Some("Test Client".to_string()),
             Some(format!("sess-{}", Uuid::new_v4())),
             MonitorEventData::LlmCall {
+                client_api: None,
+                upstream_api: None,
+                requested_model: None,
+                cached_input_tokens: None,
                 endpoint: "/v1/chat/completions".to_string(),
                 model: model.to_string(),
                 stream: false,
@@ -519,6 +523,10 @@ mod tests {
             None,
             Some(session.clone()),
             MonitorEventData::LlmCall {
+                client_api: None,
+                upstream_api: None,
+                requested_model: None,
+                cached_input_tokens: None,
                 endpoint: "/v1/chat/completions".to_string(),
                 model: "gpt-4".to_string(),
                 stream: false,
@@ -609,6 +617,10 @@ mod tests {
             None,
             None,
             MonitorEventData::LlmCall {
+                client_api: None,
+                upstream_api: None,
+                requested_model: None,
+                cached_input_tokens: None,
                 endpoint: "/v1/chat/completions".to_string(),
                 model: "gpt-4".to_string(),
                 stream: false,

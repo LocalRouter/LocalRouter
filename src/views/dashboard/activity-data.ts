@@ -4,19 +4,54 @@ import type {
   TimeRange,
 } from '../../types/tauri-commands'
 
+const MINUTE = 60_000
+
 export const RANGES: Record<
   TimeRange,
-  { label: string; description: string; bucket: string }
+  {
+    label: string
+    description: string
+    bucket: string
+    bucketMs: number
+    /** How often the chart re-reads metrics while nothing else triggers it. */
+    pollMs: number
+  }
 > = {
   ten_minutes: {
     label: '10m',
     description: 'last 10 minutes',
     bucket: 'minute',
+    bucketMs: MINUTE,
+    pollMs: 5_000,
   },
-  hour: { label: '1h', description: 'last hour', bucket: '5 minutes' },
-  day: { label: '24h', description: 'last 24 hours', bucket: 'hour' },
-  week: { label: '7d', description: 'last 7 days', bucket: '6 hours' },
-  month: { label: '30d', description: 'last 30 days', bucket: 'day' },
+  hour: {
+    label: '1h',
+    description: 'last hour',
+    bucket: '5 minutes',
+    bucketMs: 5 * MINUTE,
+    pollMs: 10_000,
+  },
+  day: {
+    label: '24h',
+    description: 'last 24 hours',
+    bucket: 'hour',
+    bucketMs: 60 * MINUTE,
+    pollMs: 30_000,
+  },
+  week: {
+    label: '7d',
+    description: 'last 7 days',
+    bucket: '6 hours',
+    bucketMs: 360 * MINUTE,
+    pollMs: 60_000,
+  },
+  month: {
+    label: '30d',
+    description: 'last 30 days',
+    bucket: 'day',
+    bucketMs: 1440 * MINUTE,
+    pollMs: 60_000,
+  },
 }
 
 // Backend graph labels are UTC, without an explicit timezone. ISO labels are
@@ -58,6 +93,40 @@ export function requestTimeline(llm: GraphData | null, mcp: GraphData | null) {
     }))
 }
 
+export interface TrafficPoint {
+  timestamp: number
+  llm: number | null
+  mcp: number | null
+  /** Requests still running; only set on the bucket that contains "now". */
+  inFlight: number | null
+}
+
+/**
+ * Extend the timeline to the bucket containing `now` (the backend may not have
+ * emitted it yet) and place running requests on it, so the chart's right edge
+ * is always the live bucket.
+ */
+export function liveTimeline(
+  points: ReturnType<typeof requestTimeline>,
+  bucketMs: number,
+  now: number,
+  inFlight: number,
+): TrafficPoint[] {
+  const result: TrafficPoint[] = points.map((point) => ({ ...point, inFlight: null }))
+  const last = result[result.length - 1]
+  // Only bridge a minute rollover since the last read; an older series is
+  // stale data, not a run of empty buckets.
+  if (last && now - last.timestamp < 2 * bucketMs) {
+    // Align new buckets to the backend's own boundaries.
+    for (let next = last.timestamp + bucketMs; next <= now; next += bucketMs) {
+      result.push({ timestamp: next, llm: 0, mcp: 0, inFlight: null })
+    }
+  }
+  const live = result[result.length - 1]
+  if (live && inFlight > 0 && now - live.timestamp < bucketMs) live.inFlight = inFlight
+  return result
+}
+
 export function graphTotal(graph: GraphData | null): number | null {
   return graph
     ? [...graphValues(graph).values()].reduce((sum, value) => sum + value, 0)
@@ -85,4 +154,18 @@ export function isRequest(event: MonitorEventSummary): boolean {
     activityKind(event) !== 'System' &&
     !(event.duplicate_hop && event.duplicate_hop >= 2)
   )
+}
+
+/** Apply one live summary to the in-flight set; returns whether a request settled. */
+export function applyInFlight(
+  inFlight: Map<string, MonitorEventSummary>,
+  event: MonitorEventSummary,
+): boolean {
+  if (!isRequest(event)) return false
+  if (event.status === 'pending') {
+    inFlight.set(event.id, event)
+    return false
+  }
+  inFlight.delete(event.id)
+  return true
 }

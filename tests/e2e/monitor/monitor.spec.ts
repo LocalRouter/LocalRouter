@@ -25,13 +25,18 @@ test('content previews truncate, single-type filter hides Type, and both payload
   await row.click()
   await expect(page.getByRole('region', { name: 'Request', exact: true })).toBeVisible()
   await expect(page.getByRole('region', { name: 'Response', exact: true })).toBeVisible()
-  await expect(page.getByRole('tab')).toHaveCount(0)
+  await expect(page.getByRole('tab', { name: 'Request & response' })).toHaveAttribute('aria-selected', 'true')
   await expect(page.getByRole('region', { name: 'Response', exact: true })).toContainText('Return validation and authentication errors immediately.')
   await expect(page.getByRole('button', { name: 'Copy request', exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Copy response', exact: true })).toBeVisible()
   await page.screenshot({ path: 'test-results/monitor/monitor-llm.png' })
-  await page.locator('summary').filter({ hasText: 'Event metadata' }).click()
+  await page.getByRole('tab', { name: 'Details' }).click()
   await expect(page.getByText('mon-001', { exact: true })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Usage' })).toContainText('800 (67%)')
+  // The chosen tab carries over to the next event that has it.
+  await page.getByRole('row').filter({ hasText: 'Summarize the open pull requests.' }).click()
+  await expect(page.getByRole('tab', { name: 'Details' })).toHaveAttribute('aria-selected', 'true')
+  await page.getByRole('tab', { name: 'Request & response' }).click()
 })
 
 test('multiple types restore Type and errors are shown within Response', async ({ page }) => {
@@ -43,7 +48,6 @@ test('multiple types restore Type and errors are shown within Response', async (
   const response = page.getByRole('region', { name: 'Response', exact: true })
   await expect(response).toContainText('Connection refused')
   await expect(response).toContainText('Request failed')
-  await expect(page.getByRole('tab')).toHaveCount(0)
   await page.screenshot({ path: 'test-results/monitor/monitor-error.png' })
 })
 
@@ -161,7 +165,7 @@ test('Codex request and streamed answer display from truncated legacy captures',
 test('the selected event shows below the list and ignores late details', async ({ page }) => {
   await page.locator('tbody tr').first().click()
   await expect(page.getByRole('region', { name: 'Response', exact: true })).toBeVisible()
-  await expect(page.getByRole('separator')).toHaveCount(0)
+  await expect(page.getByRole('separator')).toHaveCount(1)
   const list = (await page.getByTestId('monitor-event-list').boundingBox())!
   const detail = page.getByTestId('monitor-event-detail')
   expect((await detail.boundingBox())!.y).toBeGreaterThanOrEqual(list.y + list.height - 1)
@@ -233,4 +237,58 @@ test('large captured bodies show labeled question and answer excerpts when raw c
   await expect(page.getByRole('region', { name: 'Request', exact: true })).toContainText('Question excerpt')
   await expect(page.getByRole('region', { name: 'Response', exact: true })).toContainText('Answer excerpt')
   await expect(page.getByText('Captured excerpt', { exact: true })).toHaveCount(2)
+})
+
+test('a translated call shows its client and upstream APIs in the list and detail tabs', async ({ page }) => {
+  const row = page.getByRole('row').filter({ hasText: 'Summarize the open pull requests.' })
+  await expect(row).toContainText('Responses')
+  await expect(row).toContainText('→ Messages')
+  await row.click()
+  await expect(page.getByTestId('api-flow')).toContainText('Responses')
+  await expect(page.getByTestId('api-flow')).toContainText('Anthropic Messages')
+  await expect(page.getByTestId('api-flow')).toContainText('translated')
+  await page.getByRole('tab', { name: 'Details' }).click()
+  await expect(page.getByTestId('api-path')).toContainText('Codex')
+  await expect(page.getByText('LocalRouter translated this request from Responses to Anthropic Messages', { exact: false })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Model' })).toContainText('localrouter/auto')
+  await page.screenshot({ path: 'test-results/monitor/monitor-details.png' })
+  await page.getByRole('tab', { name: /Routing/ }).click()
+  await expect(page.getByRole('region', { name: 'Decision' })).toContainText('Multi-step repository task')
+  await page.getByRole('tab', { name: /Parameters & tools/ }).click()
+  await expect(page.getByText('list_pull_requests')).toBeVisible()
+  await page.getByRole('tab', { name: /Transformations/ }).click()
+  await expect(page.getByRole('region', { name: 'Sent upstream' })).toBeVisible()
+  // Keyboard navigation moves between tabs.
+  await page.getByRole('tab', { name: /Transformations/ }).press('ArrowRight')
+  await expect(page.getByRole('tab', { name: 'Raw' })).toHaveAttribute('aria-selected', 'true')
+  await expect(page.getByRole('region', { name: 'Full event' })).toBeVisible()
+  await page.screenshot({ path: 'test-results/monitor/monitor-translated.png' })
+})
+
+test('the detail docks on the right by toggle or by dragging, and back below', async ({ page }) => {
+  await page.locator('tbody tr').first().click()
+  const list = page.getByTestId('monitor-event-list')
+  const detail = page.getByTestId('monitor-event-detail')
+  await page.getByRole('button', { name: 'Dock details on the right' }).click()
+  let l = (await list.boundingBox())!
+  let d = (await detail.boundingBox())!
+  expect(d.x).toBeGreaterThanOrEqual(l.x + l.width - 1)
+  expect(await page.evaluate(() => localStorage.getItem('monitor.detailDock'))).toBe('right')
+  await page.screenshot({ path: 'test-results/monitor/monitor-docked-right.png' })
+
+  // Drag the grip towards the bottom edge to dock below again.
+  const grip = page.getByRole('button', { name: 'Drag to move details' })
+  const box = (await grip.boundingBox())!
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+  await page.mouse.down()
+  const body = (await page.getByRole('region', { name: 'Request monitor' }).boundingBox())!
+  await page.mouse.move(body.x + body.width / 2, body.y + body.height - 10, { steps: 8 })
+  await expect(page.getByText('Dock below')).toBeVisible()
+  await page.mouse.up()
+  l = (await list.boundingBox())!
+  d = (await detail.boundingBox())!
+  expect(d.y).toBeGreaterThanOrEqual(l.y + l.height - 1)
+
+  await page.getByRole('button', { name: 'Close details' }).click()
+  await expect(detail).toHaveCount(0)
 })

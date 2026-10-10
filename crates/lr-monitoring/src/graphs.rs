@@ -38,10 +38,22 @@ impl TimeRange {
         }
     }
 
-    /// Get start and end timestamps for this range
+    /// Get start and end timestamps for this range, ending now.
     pub fn get_range(&self) -> (DateTime<Utc>, DateTime<Utc>) {
-        let end = Utc::now();
-        let start = end - self.duration();
+        self.range_ending_at(Utc::now())
+    }
+
+    /// The whole buckets that end with the bucket containing `end`.
+    ///
+    /// `start` is aligned to a bucket boundary so the oldest bucket's rows are
+    /// inside the queried range (an unaligned start drops the rows stamped at
+    /// the start of that bucket), and the current, partial bucket is the last.
+    pub fn range_ending_at(&self, end: DateTime<Utc>) -> (DateTime<Utc>, DateTime<Utc>) {
+        let interval_seconds = self.bucket_interval_minutes() * 60;
+        let buckets = self.duration().num_seconds() / interval_seconds;
+        let current = end.timestamp().div_euclid(interval_seconds) * interval_seconds;
+        let start = DateTime::from_timestamp(current - (buckets - 1) * interval_seconds, 0)
+            .unwrap_or(end - self.duration());
         (start, end)
     }
 
@@ -713,7 +725,36 @@ mod tests {
     fn test_time_range_get_range() {
         let (start, end) = TimeRange::Hour.get_range();
         let diff = end.signed_duration_since(start);
-        assert_eq!(diff, Duration::hours(1));
+        assert!(diff > Duration::minutes(55) && diff <= Duration::hours(1));
+        assert_eq!(start.timestamp() % 300, 0);
+    }
+
+    #[test]
+    fn test_ranges_end_with_the_current_bucket_and_keep_the_oldest() {
+        let now = DateTime::parse_from_rfc3339("2026-10-03T12:34:56Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        for (range, count) in [
+            (TimeRange::TenMinutes, 10),
+            (TimeRange::Hour, 12),
+            (TimeRange::Day, 24),
+            (TimeRange::Week, 28),
+            (TimeRange::Month, 30),
+        ] {
+            let (start, end) = range.range_ending_at(now);
+            let interval = range.bucket_interval_minutes() * 60;
+            let buckets = range.bucket_timestamps(start, end);
+            assert_eq!(buckets.len(), count, "{range:?}");
+            assert_eq!(buckets[0], start.timestamp(), "{range:?}");
+            assert_eq!(
+                *buckets.last().unwrap(),
+                now.timestamp().div_euclid(interval) * interval,
+                "{range:?}"
+            );
+        }
+        // A row stamped at the start of the oldest minute is inside the range.
+        let (start, _) = TimeRange::TenMinutes.range_ending_at(now);
+        assert_eq!(start.to_rfc3339(), "2026-10-03T12:25:00+00:00");
     }
 
     #[test]

@@ -4268,6 +4268,28 @@ export type EventStatus = 'pending' | 'complete' | 'error'
  */
 export type LlmProtocol = 'openai' | 'anthropic' | 'system_one'
 
+/**
+ * Wire API of one side of an `llm_call`: the client's (`data.client_api`) or
+ * the one LocalRouter spoke upstream (`data.upstream_api`). They differ when
+ * the request was translated. `llm_call` data also carries
+ * `requested_model` (the model the client asked for) and
+ * `cached_input_tokens` (prompt tokens served from the provider's cache).
+ * Rust: crates/lr-types/src/llm_api.rs - LlmApi
+ */
+export type LlmApi =
+  | 'chat_completions'
+  | 'completions'
+  | 'responses'
+  | 'anthropic_messages'
+  | 'gemini_generate_content'
+  | 'cohere_chat'
+  | 'ollama_chat'
+  | 'system_one'
+  | 'embeddings'
+  | 'moderations'
+  | 'images'
+  | 'audio'
+
 /** Rust: crates/lr-monitor/src/types.rs - MonitorEventSummary */
 export interface MonitorEventSummary {
   id: string
@@ -4289,6 +4311,10 @@ export interface MonitorEventSummary {
   duplicate_hop?: number | null
   /** For LLM calls: cross-hop trace id shared by every LocalRouter hop of one request. */
   trace_id?: string | null
+  /** For LLM calls: the API the client called. */
+  client_api?: LlmApi | null
+  /** For LLM calls: the API LocalRouter used upstream, once known. */
+  upstream_api?: LlmApi | null
 }
 
 /** Rust: crates/lr-monitor/src/types.rs - MonitorEvent */

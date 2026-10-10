@@ -8,7 +8,7 @@ test.beforeEach(async ({ page }) => {
   ).toBeEnabled()
 })
 
-test('time ranges use area charts and the merged Monitor opens request details in a pane', async ({
+test('time ranges use a compact bar chart and the merged Monitor opens request details in a pane', async ({
   page,
 }) => {
   const traffic = page.getByRole('region', { name: 'Request traffic' })
@@ -31,8 +31,9 @@ test('time ranges use area charts and the merged Monitor opens request details i
   expect(await traffic.getByRole('img').getAttribute('aria-label')).not.toBe(
     defaultLabel,
   )
-  await expect(traffic.locator('.recharts-area-curve')).toHaveCount(2)
-  await expect(traffic.locator('.recharts-bar')).toHaveCount(0)
+  await expect(traffic.locator('.recharts-bar-rectangle').first()).toBeVisible()
+  await expect(traffic.locator('.recharts-area-curve')).toHaveCount(0)
+  expect((await traffic.getByRole('img').boundingBox())!.height).toBeLessThanOrEqual(120)
   const monitor = page.getByRole('region', { name: 'Request monitor' })
   await expect(monitor.getByRole('table')).toBeVisible()
   await expect(
@@ -63,17 +64,65 @@ test('30-day traffic has one point per day', async ({ page }) => {
   )
 })
 
-test('the monitor list height is capped and Try It Out opens beside it', async ({
+test('the page fills the window and the detail splits the monitor without overlapping', async ({
   page,
 }) => {
   const monitor = page.getByRole('region', { name: 'Request monitor' })
-  const sizes = await monitor.getByTestId('monitor-event-list').evaluate((el) => ({
-    list: el.getBoundingClientRect().height,
-    viewport: window.innerHeight,
-  }))
-  expect(sizes.list).toBeLessThanOrEqual(sizes.viewport * 0.7 + 1)
+  const region = (await monitor.boundingBox())!
+  expect(region.y + region.height).toBeLessThanOrEqual(1080 + 1)
+  await monitor.locator('tbody tr').first().click()
+  const list = (await monitor.getByTestId('monitor-event-list').boundingBox())!
+  const detail = (await monitor.getByTestId('monitor-event-detail').boundingBox())!
+  expect(detail.y).toBeGreaterThanOrEqual(list.y + list.height - 1)
+  expect(detail.y + detail.height).toBeLessThanOrEqual(region.y + region.height + 1)
+  await expect(monitor.getByRole('separator')).toHaveCount(1)
   await monitor.getByRole('button', { name: 'Try It Out' }).click()
   await expect(monitor.getByText('Select a client to get started')).toBeVisible()
+})
+
+test('in-flight requests are shown live on the chart and clear when they finish', async ({
+  page,
+}) => {
+  const traffic = page.getByRole('region', { name: 'Request traffic' })
+  const request = {
+    id: 'in-flight-test',
+    sequence: 901,
+    timestamp: new Date().toISOString(),
+    event_type: 'llm_call',
+    client_id: 'test',
+    client_name: 'Live client',
+    session_id: null,
+    status: 'pending',
+    duration_ms: null,
+    summary: 'A live request',
+    question: 'A live question',
+    answer: '',
+  }
+  const publish = (name: string, payload: object) =>
+    page.evaluate(
+      async ({ name, payload }) => {
+        const { emit } = await import(
+          /* @vite-ignore */ '/src/stubs/tauri-api-event.ts'
+        )
+        await emit(name, JSON.stringify(payload))
+      },
+      { name, payload },
+    )
+  const baseline = Number(
+    (await traffic.getByText(/in progress|Idle/).textContent())?.match(/\d+/)?.[0] ?? 0,
+  )
+  await publish('monitor-event-created', request)
+  await expect(traffic).toContainText(`${baseline + 1} in progress`)
+  await expect(traffic.getByRole('img')).toHaveAttribute(
+    'aria-label',
+    new RegExp(`${baseline + 1} in progress`),
+  )
+  await publish('monitor-event-updated', {
+    ...request,
+    status: 'complete',
+    duration_ms: 500,
+  })
+  await expect(traffic).not.toContainText(`${baseline + 1} in progress`)
 })
 
 test('the monitor filter selection is remembered across reloads', async ({
@@ -186,6 +235,21 @@ test('empty traffic and failed loads are distinct and retry recovers', async ({
       if (command === 'get_monitor_events') return { events: [], total: 0 }
       return original(command, args)
     }
+  })
+  // Settle the demo's in-flight request: a running request is not "no traffic".
+  await page.evaluate(async () => {
+    const { emit } = await import(
+      /* @vite-ignore */ '/src/stubs/tauri-api-event.ts'
+    )
+    const mockModule: string = '/src/components/demo/mockData.ts'
+    const { mockData } = await import(/* @vite-ignore */ mockModule)
+    const live = mockData.monitorEvents.find(
+      (event: { id: string }) => event.id === 'mon-live',
+    )
+    await emit(
+      'monitor-event-updated',
+      JSON.stringify({ ...live, data: undefined, status: 'complete', duration_ms: 10 }),
+    )
   })
   await page.getByRole('button', { name: 'Refresh activity' }).click()
   await expect(page.getByText('No events captured yet')).toBeVisible()

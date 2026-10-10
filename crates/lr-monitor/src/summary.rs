@@ -431,6 +431,14 @@ pub fn to_summary(event: &MonitorEvent) -> MonitorEventSummary {
             MonitorEventData::LlmCall { trace_id, .. } => trace_id.clone(),
             _ => None,
         },
+        client_api: match &event.data {
+            MonitorEventData::LlmCall { client_api, .. } => *client_api,
+            _ => None,
+        },
+        upstream_api: match &event.data {
+            MonitorEventData::LlmCall { upstream_api, .. } => *upstream_api,
+            _ => None,
+        },
     }
 }
 
@@ -455,6 +463,10 @@ mod source_tests {
 
     fn llm_call(source: LlmCallSource) -> MonitorEventData {
         MonitorEventData::LlmCall {
+            client_api: None,
+            upstream_api: None,
+            requested_model: None,
+            cached_input_tokens: None,
             endpoint: "/v1/messages".into(),
             model: "claude".into(),
             stream: false,
@@ -501,6 +513,40 @@ mod source_tests {
         );
         let listed = store.list(0, 10, None);
         assert_eq!(listed.events[0].source, Some(LlmCallSource::Proxy));
+    }
+
+    #[test]
+    fn summary_carries_client_and_upstream_api() {
+        use lr_types::LlmApi;
+        let store = MonitorEventStore::new(8);
+        let mut data = llm_call(LlmCallSource::Api);
+        if let MonitorEventData::LlmCall {
+            client_api,
+            upstream_api,
+            ..
+        } = &mut data
+        {
+            *client_api = Some(LlmApi::Responses);
+            *upstream_api = Some(LlmApi::AnthropicMessages);
+        }
+        store.push(
+            MonitorEventType::LlmCall,
+            None,
+            None,
+            None,
+            data,
+            EventStatus::Complete,
+            None,
+        );
+        let listed = store.list(0, 10, None);
+        assert_eq!(listed.events[0].client_api, Some(LlmApi::Responses));
+        assert_eq!(
+            listed.events[0].upstream_api,
+            Some(LlmApi::AnthropicMessages)
+        );
+        let json = serde_json::to_value(&listed.events[0]).unwrap();
+        assert_eq!(json["client_api"], "responses");
+        assert_eq!(json["upstream_api"], "anthropic_messages");
     }
 
     #[test]

@@ -481,6 +481,10 @@ struct OllamaEmbedResponse {
 #[async_trait]
 #[allow(dead_code)]
 impl ModelProvider for OllamaProvider {
+    fn upstream_api(&self) -> lr_types::LlmApi {
+        lr_types::LlmApi::OllamaChat
+    }
+
     fn name(&self) -> &str {
         "ollama"
     }

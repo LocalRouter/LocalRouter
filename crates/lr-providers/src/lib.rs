@@ -410,6 +410,13 @@ pub trait ModelProvider: Send + Sync {
         }
     }
 
+    /// The wire API this provider instance speaks upstream for chat-style
+    /// requests (`complete` / `stream_complete`). Compared with the API the
+    /// client called, it shows whether LocalRouter translated a request.
+    fn upstream_api(&self) -> lr_types::LlmApi {
+        lr_types::LlmApi::ChatCompletions
+    }
+
     /// Whether this provider supports pulling (downloading) models on demand.
     ///
     /// Providers that return true must also implement `pull_model()`.

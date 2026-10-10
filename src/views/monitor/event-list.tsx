@@ -1,5 +1,6 @@
 import { singleLinePreview } from './monitor-events'
 import { EventDuration } from './event-duration'
+import { LLM_API_LABELS, LLM_API_SHORT, llmApiFlow } from './llm-api'
 import { cn } from '@/lib/utils'
 import { Wrench, Shield, GitBranch, Link, AlertTriangle, Loader2, CheckCircle2, XCircle, KeyRound, Gauge, AlertCircle, Server, Ban, Minimize2, Database, Forward } from 'lucide-react'
 import { ProvidersIcon } from '@/components/icons/category-icons'
@@ -87,6 +88,24 @@ function formatTime(timestamp: string): { short: string; full: string } {
   }
 }
 
+/** "Responses → Messages" when translated, otherwise the client's API. */
+function ApiCell({ event }: { event: MonitorEventSummary }) {
+  if (event.event_type !== 'llm_call') return null
+  const flow = llmApiFlow(event)
+  if (!flow.client) return null
+  const title = flow.translated
+    ? `${LLM_API_LABELS[flow.client]} translated to ${LLM_API_LABELS[flow.upstream!]}`
+    : LLM_API_LABELS[flow.client]
+  return (
+    <span className="flex min-w-0 items-center gap-1 truncate text-muted-foreground" title={title}>
+      <span className="truncate">{LLM_API_SHORT[flow.client]}</span>
+      {flow.translated && (
+        <span className="truncate text-amber-600 dark:text-amber-400">→ {LLM_API_SHORT[flow.upstream!]}</span>
+      )}
+    </span>
+  )
+}
+
 export function EventList({ events, showType, selectedId, onSelect }: EventListProps) {
   if (events.length === 0) {
     return (
@@ -101,16 +120,18 @@ export function EventList({ events, showType, selectedId, onSelect }: EventListP
   }
 
   return (
-    <div className="overflow-auto h-full">
+    // Columns drop out as the list narrows (e.g. with the detail docked beside it).
+    <div className="overflow-auto h-full [container-type:inline-size]">
       <table className="w-full table-fixed text-xs">
         <thead className="sticky top-0 bg-background border-b z-10">
           <tr className="text-left text-muted-foreground">
             <th className="px-2 py-1.5 w-[24px]"></th>
             <th className="px-2 py-1.5 w-[105px]">Time</th>
             {showType && <th className="px-2 py-1.5 w-[140px]">Type</th>}
-            <th className="px-2 py-1.5 w-[100px]">Client</th>
+            <th className={'px-2 py-1.5 w-[100px] hidden [@container(min-width:480px)]:table-cell'}>Client</th>
             <th className="px-2 py-1.5">Question</th>
-            <th className="px-2 py-1.5">Answer</th>
+            <th className={'px-2 py-1.5 hidden [@container(min-width:760px)]:table-cell'}>Answer</th>
+            <th className={'px-2 py-1.5 w-[176px] hidden [@container(min-width:760px)]:table-cell'}>API</th>
             <th className="px-2 py-1.5 w-[76px] text-right">Duration</th>
           </tr>
         </thead>
@@ -152,14 +173,17 @@ export function EventList({ events, showType, selectedId, onSelect }: EventListP
                     <span className="truncate">{getTypeLabel(event.event_type)}</span>
                   </div>
                 </td>}
-                <td className="px-2 py-1 truncate text-muted-foreground">
+                <td className={'px-2 py-1 truncate text-muted-foreground hidden [@container(min-width:480px)]:table-cell'}>
                   {event.client_name || event.client_id?.slice(0, 8) || '—'}
                 </td>
                 <td className="px-2 py-1 truncate" title={singleLinePreview(event.question)}>
                   {singleLinePreview(event.question)}
                 </td>
-                <td className={cn('px-2 py-1 truncate', event.status === 'error' ? 'text-red-600 dark:text-red-400' : 'text-muted-foreground')} title={singleLinePreview(event.answer)}>
+                <td className={cn('px-2 py-1 truncate hidden [@container(min-width:760px)]:table-cell', event.status === 'error' ? 'text-red-600 dark:text-red-400' : 'text-muted-foreground')} title={singleLinePreview(event.answer)}>
                   {singleLinePreview(event.answer)}
+                </td>
+                <td className={'px-2 py-1 hidden [@container(min-width:760px)]:table-cell'}>
+                  <ApiCell event={event} />
                 </td>
                 <td className="px-2 py-1 text-right font-mono text-muted-foreground">
                   <EventDuration event={event} />

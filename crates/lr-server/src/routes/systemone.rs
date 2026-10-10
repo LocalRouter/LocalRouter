@@ -521,6 +521,17 @@ fn finalize_success(
         false,
     );
     super::monitor_helpers::update_llm_call_response_body(state, &event_id, &response_json);
+    // Emulated decisions went upstream over the chat provider's own API.
+    let upstream_api = match response.backend {
+        lr_providers::systemone::types::SystemOneBackend::Native => {
+            Some(lr_monitor::LlmApi::SystemOne)
+        }
+        _ => state
+            .provider_registry
+            .get_provider(&provider)
+            .map(|p| p.upstream_api()),
+    };
+    super::monitor_helpers::update_llm_call_upstream(state, &event_id, upstream_api, None);
 
     state.generation_tracker.record(
         request_id.to_string(),

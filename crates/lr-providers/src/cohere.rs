@@ -739,6 +739,10 @@ struct CohereModel {
 #[async_trait]
 #[allow(dead_code)]
 impl ModelProvider for CohereProvider {
+    fn upstream_api(&self) -> lr_types::LlmApi {
+        lr_types::LlmApi::CohereChat
+    }
+
     fn name(&self) -> &str {
         "cohere"
     }

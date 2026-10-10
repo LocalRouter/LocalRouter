@@ -96,10 +96,12 @@ fn data_size(data: &MonitorEventData) -> usize {
             error,
             routing_info,
             trace_id,
+            requested_model,
             ..
         } => {
             str_size(endpoint)
                 + str_size(model)
+                + opt_str(requested_model)
                 + json_size(request_body)
                 + opt_json(transformed_body)
                 + opt_strs(transformations_applied)
@@ -383,6 +385,10 @@ mod tests {
             client_name: None,
             session_id: None,
             data: MonitorEventData::LlmCall {
+                client_api: None,
+                upstream_api: None,
+                requested_model: None,
+                cached_input_tokens: None,
                 endpoint: "/v1/chat/completions".to_string(),
                 model: "gpt-4".to_string(),
                 stream: false,

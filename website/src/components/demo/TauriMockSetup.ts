@@ -4571,7 +4571,11 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // Monitor
   // ============================================================================
   'get_monitor_events': (args) => ({
-    events: mockData.monitorEvents.slice(args?.offset ?? 0, (args?.offset ?? 0) + (args?.limit ?? 100)).map(({ data: _data, ...summary }) => summary),
+    // Summaries carry an LLM call's APIs, as the backend's to_summary does.
+    events: mockData.monitorEvents.slice(args?.offset ?? 0, (args?.offset ?? 0) + (args?.limit ?? 100)).map(({ data, ...summary }) => {
+      const llm = data as { client_api?: string; upstream_api?: string }
+      return { ...summary, client_api: llm.client_api ?? null, upstream_api: llm.upstream_api ?? null }
+    }),
     total: mockData.monitorEvents.length,
   }),
   'get_monitor_event_detail': (args) =>

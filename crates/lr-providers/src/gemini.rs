@@ -222,6 +222,10 @@ impl GeminiProvider {
 #[async_trait]
 #[allow(dead_code)]
 impl ModelProvider for GeminiProvider {
+    fn upstream_api(&self) -> lr_types::LlmApi {
+        lr_types::LlmApi::GeminiGenerateContent
+    }
+
     fn name(&self) -> &str {
         "gemini"
     }

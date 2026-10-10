@@ -627,6 +627,15 @@ fn audio_mime_type(file_name: &str) -> String {
 #[async_trait]
 #[allow(dead_code)]
 impl ModelProvider for OpenAIProvider {
+    fn upstream_api(&self) -> lr_types::LlmApi {
+        // The ChatGPT Plus/Pro backend only speaks the Responses API.
+        if self.is_chatgpt_backend() {
+            lr_types::LlmApi::Responses
+        } else {
+            lr_types::LlmApi::ChatCompletions
+        }
+    }
+
     fn name(&self) -> &str {
         "openai"
     }
@@ -1933,6 +1942,18 @@ mod tests {
             provider.api_path_support("completions"),
             SupportLevel::Translated
         );
+    }
+
+    #[test]
+    fn upstream_api_follows_the_backend() {
+        let platform = OpenAIProvider::new("sk-test".to_string());
+        assert_eq!(platform.upstream_api(), lr_types::LlmApi::ChatCompletions);
+        let chatgpt = OpenAIProvider::with_base_url(
+            "oauth-token".to_string(),
+            CHATGPT_BACKEND_API_BASE.to_string(),
+        )
+        .unwrap();
+        assert_eq!(chatgpt.upstream_api(), lr_types::LlmApi::Responses);
     }
 
     #[test]

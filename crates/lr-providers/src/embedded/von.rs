@@ -255,6 +255,10 @@ impl Drop for VonEmbeddedProvider {
 
 #[async_trait]
 impl ModelProvider for VonEmbeddedProvider {
+    fn upstream_api(&self) -> lr_types::LlmApi {
+        lr_types::LlmApi::SystemOne
+    }
+
     fn name(&self) -> &str {
         PROVIDER_TYPE
     }

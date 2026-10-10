@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use lr_types::LlmApi;
 use serde::{Deserialize, Serialize};
 
 /// A monitor event captured from the request pipeline.
@@ -74,6 +75,12 @@ pub struct MonitorEventSummary {
     /// For LLM calls: cross-hop trace id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<String>,
+    /// For LLM calls: the API the client called.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_api: Option<LlmApi>,
+    /// For LLM calls: the API LocalRouter used upstream, once known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream_api: Option<LlmApi>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -239,6 +246,17 @@ pub enum MonitorEventData {
         /// The wire protocol of the observed call.
         #[serde(default)]
         protocol: LlmProtocol,
+        /// The API the client called (from the request path).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client_api: Option<LlmApi>,
+        /// The API LocalRouter used upstream. Differs from `client_api` when
+        /// the request was translated; `None` until a provider answers.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        upstream_api: Option<LlmApi>,
+        /// The model the client asked for; `model` becomes the model that
+        /// answered once the call completes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        requested_model: Option<String>,
 
         // Transformation fields (filled via update when transformations applied)
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -259,6 +277,9 @@ pub enum MonitorEventData {
         total_tokens: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         reasoning_tokens: Option<u64>,
+        /// Prompt tokens served from the provider's cache.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cached_input_tokens: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         cost_usd: Option<f64>,
         #[serde(skip_serializing_if = "Option::is_none")]

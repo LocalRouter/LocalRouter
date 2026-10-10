@@ -1,15 +1,17 @@
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { McpToolDisplay, type McpToolDisplayItem } from '@/components/shared/McpToolDisplay'
+import { JsonTree } from '@/components/shared/JsonTree'
 import { cn } from '@/lib/utils'
-import { User, Server, Copy, Check, FileText, AlertTriangle, ChevronRight, ArrowUpRight, ArrowDownLeft, Loader2 } from 'lucide-react'
+import { User, Server, Copy, Check, FileText, AlertTriangle, ChevronRight, ArrowRight, ArrowUpRight, ArrowDownLeft, Loader2, Shuffle } from 'lucide-react'
 import { EventDuration } from './event-duration'
-import { useState, useCallback, type ReactNode } from 'react'
+import { useState, useCallback, useRef, type ReactNode, type KeyboardEvent } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import ReactMarkdown from 'react-markdown'
 import { markdownLinkComponents } from '@/components/shared/MarkdownLink'
 import remarkGfm from 'remark-gfm'
 import { capturedExcerpt, capturedRequestBody, capturedResponseMessages, contentText, requestMessages } from './message-content'
+import { LLM_API_LABELS, llmApiFlow, type ApiFlow } from './llm-api'
 import type { EventStatus, LlmProtocol, MonitorEvent, ReadMemoryArchiveFileParams } from '@/types/tauri-commands'
 import type { SystemOneAnswer, SystemOneQuestion } from '@/types/systemone'
 import { SystemOneAnswerView, SystemOneQuestionView } from '@/components/shared/SystemOneAnswers'
@@ -44,7 +46,7 @@ function RawBlock({ text, label }: { text: string | undefined; label?: string })
         {copied ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
         {copied ? 'Copied' : label ? `Copy ${label}` : 'Copy'}
       </button>
-      <pre className="p-2 bg-muted rounded text-[11px] font-mono whitespace-pre-wrap break-all">
+      <pre className="p-2 bg-muted rounded text-[11px] font-mono whitespace-pre-wrap break-all max-h-[480px] overflow-auto">
         {text}
       </pre>
     </div>
@@ -108,7 +110,7 @@ function SmartText({ text }: { text: string }) {
           {format === 'json' ? formatJsonString(text) : text}
         </pre>
       ) : format === 'json' ? (
-        <pre className="whitespace-pre-wrap font-mono text-[11px]">{formatJsonString(text)}</pre>
+        <JsonTree data={JSON.parse(text.trim())} />
       ) : (
         <div className={MARKDOWN_STYLES}>
           <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownLinkComponents}>{text}</ReactMarkdown>
@@ -123,13 +125,101 @@ interface EventDetailProps {
   loading?: boolean
   error?: string | null
   onRetry?: () => void
+  /** Controls rendered at the right of the header (dock, close). */
+  toolbar?: ReactNode
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type EventData = Record<string, any>
 
-export function EventDetail({ event, loading, error, onRetry }: EventDetailProps) {
+interface DetailTab {
+  id: string
+  label: string
+  badge?: string | number
+  content: ReactNode
+}
+
+/** The last tab the user picked; reopened for the next event when it has it. */
+let preferredTab = 'exchange'
+
+const STATUS_STYLES: Record<EventStatus, string> = {
+  pending: 'bg-amber-500/15 text-amber-700 dark:text-amber-300',
+  complete: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300',
+  error: 'bg-destructive/15 text-destructive',
+}
+
+function StatusPill({ status }: { status: EventStatus }) {
+  return (
+    <span className={cn('inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium', STATUS_STYLES[status])}>
+      {status === 'pending' && <Loader2 className="h-3 w-3 animate-spin" />}
+      {status === 'pending' ? 'In progress' : status === 'complete' ? 'Complete' : 'Error'}
+    </span>
+  )
+}
+
+/** "Responses → Anthropic Messages · translated" */
+export function ApiFlowBadge({ flow }: { flow: ApiFlow }) {
+  if (!flow.client) return null
+  const title = flow.translated
+    ? `The client called the ${LLM_API_LABELS[flow.client]} API; LocalRouter translated it to ${LLM_API_LABELS[flow.upstream!]} for the provider.`
+    : flow.upstream
+      ? `Sent upstream as ${LLM_API_LABELS[flow.upstream]} without translation.`
+      : `The client called the ${LLM_API_LABELS[flow.client]} API.`
+  return (
+    <span data-testid="api-flow" title={title} className="inline-flex items-center gap-1 rounded-md border bg-background px-1.5 py-0.5 text-[11px]">
+      {LLM_API_LABELS[flow.client]}
+      {flow.upstream && flow.translated && (
+        <>
+          <ArrowRight className="h-3 w-3 text-muted-foreground" />
+          {LLM_API_LABELS[flow.upstream]}
+          <span className="ml-0.5 rounded bg-amber-500/15 px-1 text-[10px] font-medium text-amber-700 dark:text-amber-300">translated</span>
+        </>
+      )}
+      {flow.upstream && !flow.translated && <span className="ml-0.5 text-[10px] text-muted-foreground">native</span>}
+    </span>
+  )
+}
+
+function DetailTabs({ tabs, active, onChange }: { tabs: DetailTab[]; active: string; onChange: (id: string) => void }) {
+  const refs = useRef<Record<string, HTMLButtonElement | null>>({})
+  const onKeyDown = (event: KeyboardEvent) => {
+    const index = tabs.findIndex(tab => tab.id === active)
+    const next = event.key === 'ArrowRight' ? index + 1 : event.key === 'ArrowLeft' ? index - 1 : event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : null
+    if (next === null) return
+    event.preventDefault()
+    const tab = tabs[(next + tabs.length) % tabs.length]
+    onChange(tab.id)
+    refs.current[tab.id]?.focus()
+  }
+  return (
+    <div role="tablist" aria-label="Event details" className="flex gap-1 overflow-x-auto px-2" onKeyDown={onKeyDown}>
+      {tabs.map(tab => (
+        <button
+          key={tab.id}
+          ref={el => { refs.current[tab.id] = el }}
+          type="button"
+          role="tab"
+          id={`event-tab-${tab.id}`}
+          aria-selected={tab.id === active}
+          aria-controls="event-tab-panel"
+          tabIndex={tab.id === active ? 0 : -1}
+          onClick={() => onChange(tab.id)}
+          className={cn(
+            '-mb-px flex shrink-0 items-center gap-1.5 border-b-2 px-2.5 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+            tab.id === active ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground',
+          )}
+        >
+          {tab.label}
+          {tab.badge != null && <span className="rounded-full bg-muted px-1.5 text-[10px] tabular-nums text-muted-foreground">{tab.badge}</span>}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+export function EventDetail({ event, loading, error, onRetry, toolbar }: EventDetailProps) {
   const [copied, setCopied] = useState(false)
+  const [tab, setTab] = useState(preferredTab)
   const handleCopyEvent = useCallback(() => {
     navigator.clipboard.writeText(JSON.stringify(event, null, 2)).then(() => {
       setCopied(true)
@@ -139,49 +229,53 @@ export function EventDetail({ event, loading, error, onRetry }: EventDetailProps
 
   if (!event) {
     return (
-      <div className="flex h-full flex-col gap-3 items-center justify-center text-muted-foreground text-sm" role="status">
-        {loading ? <><Loader2 className="h-4 w-4 animate-spin" />Loading event details…</> : error ?? 'Select an event to view details'}
-        {!loading && error && <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button>}
+      <div className="flex h-full flex-col">
+        {toolbar && <div className="flex shrink-0 justify-end border-b px-2 py-1">{toolbar}</div>}
+        <div className="flex flex-1 flex-col gap-3 items-center justify-center text-muted-foreground text-sm" role="status">
+          {loading ? <><Loader2 className="h-4 w-4 animate-spin" />Loading event details…</> : error ?? 'Select an event to view details'}
+          {!loading && error && <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button>}
+        </div>
       </div>
     )
   }
 
   const data = event.data as EventData
   const type = data.type as string
+  const tabs = eventTabs(event)
+  const active = tabs.find(t => t.id === tab) ?? tabs[0]
+  const title = String(data.model || data.tool_name || data.prompt_name || data.uri || type.replace(/_/g, ' '))
+
   return (
     <div className="flex h-full flex-col min-h-0">
       {error && <div className="flex items-center gap-3 px-4 py-2 text-sm text-destructive" role="status">{error}<Button variant="outline" size="sm" onClick={onRetry}>Retry</Button></div>}
-      {/* Fixed header (stays put while the detail below scrolls) */}
-      <div className="px-4 py-2.5 space-y-2 shrink-0 border-b bg-muted/20">
-        {/* Header */}
-        <div className="flex items-center gap-2 flex-wrap">
-          <Badge variant={event.status === 'error' ? 'destructive' : event.status === 'pending' ? 'secondary' : 'default'}>
-            {event.status}
-          </Badge>
-          <span className="text-xs font-medium truncate max-w-[240px]" title={String(data.model || data.tool_name || type.replace(/_/g, ' '))}>
-            {data.model || data.tool_name || type.replace(/_/g, ' ')}
-          </span>
+      <div className="shrink-0 border-b bg-muted/20">
+        <div className="flex flex-wrap items-center gap-2 px-3 pt-2 pb-1.5">
+          <StatusPill status={event.status} />
+          <span className="text-sm font-semibold truncate max-w-[280px]" title={title}>{title}</span>
+          {type === 'llm_call' && <ApiFlowBadge flow={llmApiFlow(data)} />}
           {(event.client_name || event.client_id) && (
             <span className="text-xs text-muted-foreground flex items-center gap-1">
               <User className="h-3 w-3" />{event.client_name || event.client_id}
             </span>
           )}
           <EventDuration event={event} showClock />
-          <Button
-            variant="outline"
-            size="sm"
-            className="ml-auto h-8 gap-1.5 px-2.5 text-xs"
-            onClick={handleCopyEvent}
-            title="Copy the entire event (request + response) as JSON"
-          >
-            {copied ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
-            {copied ? 'Copied' : 'Copy full event'}
-          </Button>
+          <div className="ml-auto flex items-center gap-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 gap-1.5 px-2 text-xs text-muted-foreground"
+              onClick={handleCopyEvent}
+              title="Copy the entire event (request + response) as JSON"
+            >
+              {copied ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
+              {copied ? 'Copied' : 'Copy event'}
+            </Button>
+            {toolbar}
+          </div>
         </div>
 
-        {/* Duplicate hop warning */}
         {type === 'llm_call' && data.duplicate_hop != null && (
-          <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-xs text-amber-700 dark:text-amber-300">
+          <div className="mx-3 mb-2 flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-xs text-amber-700 dark:text-amber-300">
             <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
             <div className="space-y-0.5">
               <p className="font-medium">
@@ -195,49 +289,145 @@ export function EventDetail({ event, loading, error, onRetry }: EventDetailProps
             </div>
           </div>
         )}
+
+        <DetailTabs tabs={tabs} active={active.id} onChange={id => { preferredTab = id; setTab(id) }} />
       </div>
 
-      {/* One scroll surface; the exchange is visible without changing tabs. */}
-      <div className="flex-1 min-h-0 overflow-auto p-4 space-y-3 [container-type:inline-size]" data-testid="event-detail-scroll">
-        {/* Type-specific rendering */}
-        {type === 'llm_call' && <LlmCallDetail data={data} status={event.status} />}
-        {type === 'mcp_tool_call' && <McpToolCallDetail data={data} />}
-        {type === 'mcp_resource_read' && <McpResourceReadDetail data={data} />}
-        {type === 'mcp_prompt_get' && <McpPromptGetDetail data={data} />}
-        {type === 'mcp_elicitation' && <McpElicitationDetail data={data} />}
-        {type === 'mcp_sampling' && <McpSamplingDetail data={data} />}
-        {type === 'guardrail_scan' && <GuardrailDetail data={data} />}
-        {type === 'guardrail_response_scan' && <GuardrailDetail data={data} />}
-        {type === 'secret_scan' && <SecretScanDetail data={data} />}
-        {type === 'route_llm_classify' && <RoutingDetail data={data} />}
-        {type === 'routing_decision' && <RoutingDetail data={data} />}
-        {(type === 'auth_error' || type === 'access_denied') && <AuthErrorDetail data={data} />}
-        {type === 'rate_limit_event' && <RateLimitDetail data={data} />}
-        {type === 'validation_error' && <ValidationErrorDetail data={data} />}
-        {type === 'mcp_server_event' && <McpServerEventDetail data={data} />}
-        {type === 'oauth_event' && <OAuthEventDetail data={data} />}
-        {type === 'internal_error' && <InternalErrorDetail data={data} />}
-        {type === 'moderation_event' && <ModerationEventDetail data={data} />}
-        {type === 'connection_error' && <ConnectionErrorDetail data={data} />}
-        {type === 'prompt_compression' && <PromptCompressionDetail data={data} />}
-        {type === 'json_repair' && <JsonRepairDetail data={data} />}
-        {type === 'memory_compaction' && <MemoryCompactionDetail data={data} status={event.status} />}
-        {type === 'firewall_decision' && <FirewallDecisionDetail data={data} />}
-        {type === 'sse_connection' && <SseConnectionDetail data={data} />}
-        {type === 'proxy_passthrough' && <ProxyPassthroughDetail data={data} />}
-        <Disclosure title="Event metadata" description="Timestamp, IDs, client and all captured fields">
-          <div className="grid grid-cols-2 gap-3 mb-3">
-            <Field label="Time" value={new Date(event.timestamp).toLocaleString()} />
-            <Field label="Event ID" value={event.id} />
-            <Field label="Session" value={event.session_id ?? undefined} />
-            <Field label="Client ID" value={event.client_id ?? undefined} />
-          </div>
-          <JsonBlock data={event} label="full event" />
-        </Disclosure>
+      <div
+        id="event-tab-panel"
+        role="tabpanel"
+        aria-labelledby={`event-tab-${active.id}`}
+        className="flex-1 min-h-0 overflow-auto p-4 space-y-4 [container-type:inline-size]"
+        data-testid="event-detail-scroll"
+      >
+        {active.content}
       </div>
     </div>
   )
 }
+
+// ---- Tabs per event type ----
+
+const EXCHANGE_TYPES = new Set([
+  'mcp_tool_call', 'mcp_resource_read', 'mcp_prompt_get', 'mcp_elicitation', 'mcp_sampling',
+  'guardrail_scan', 'guardrail_response_scan', 'secret_scan', 'route_llm_classify', 'routing_decision',
+  'memory_compaction',
+])
+
+function eventTabs(event: MonitorEvent): DetailTab[] {
+  const data = event.data as EventData
+  const type = data.type as string
+  if (type === 'llm_call') return llmTabs(event, data)
+  const primary = EXCHANGE_TYPES.has(type)
+    ? { id: 'exchange', label: 'Request & response' }
+    : { id: 'overview', label: 'Overview' }
+  return [
+    { ...primary, content: <TypeDetail data={data} status={event.status} /> },
+    { id: 'details', label: 'Details', content: <EventMetadata event={event} /> },
+    { id: 'raw', label: 'Raw', content: <RawSection title="Full event"><JsonTree data={event} label="event" /></RawSection> },
+  ]
+}
+
+function TypeDetail({ data, status }: { data: EventData; status: EventStatus }) {
+  switch (data.type as string) {
+    case 'mcp_tool_call': return <McpToolCallDetail data={data} />
+    case 'mcp_resource_read': return <McpResourceReadDetail data={data} />
+    case 'mcp_prompt_get': return <McpPromptGetDetail data={data} />
+    case 'mcp_elicitation': return <McpElicitationDetail data={data} />
+    case 'mcp_sampling': return <McpSamplingDetail data={data} />
+    case 'guardrail_scan':
+    case 'guardrail_response_scan': return <GuardrailDetail data={data} />
+    case 'secret_scan': return <SecretScanDetail data={data} />
+    case 'route_llm_classify':
+    case 'routing_decision': return <RoutingDetail data={data} />
+    case 'auth_error':
+    case 'access_denied': return <AuthErrorDetail data={data} />
+    case 'rate_limit_event': return <RateLimitDetail data={data} />
+    case 'validation_error': return <ValidationErrorDetail data={data} />
+    case 'mcp_server_event': return <McpServerEventDetail data={data} />
+    case 'oauth_event': return <OAuthEventDetail data={data} />
+    case 'internal_error': return <InternalErrorDetail data={data} />
+    case 'moderation_event': return <ModerationEventDetail data={data} />
+    case 'connection_error': return <ConnectionErrorDetail data={data} />
+    case 'prompt_compression': return <PromptCompressionDetail data={data} />
+    case 'json_repair': return <JsonRepairDetail data={data} />
+    case 'memory_compaction': return <MemoryCompactionDetail data={data} status={status} />
+    case 'firewall_decision': return <FirewallDecisionDetail data={data} />
+    case 'sse_connection': return <SseConnectionDetail data={data} />
+    case 'proxy_passthrough': return <ProxyPassthroughDetail data={data} />
+    default: return <JsonTree data={data} />
+  }
+}
+
+const TYPE_NAMES: Record<string, string> = { llm_call: 'LLM call', mcp_tool_call: 'MCP tool call', mcp_resource_read: 'MCP resource read', mcp_prompt_get: 'MCP prompt', mcp_elicitation: 'MCP elicitation', mcp_sampling: 'MCP sampling' }
+
+function formatTimestamp(timestamp: string | number): string {
+  const date = new Date(timestamp)
+  if (Number.isNaN(date.getTime())) return String(timestamp)
+  return `${date.toLocaleDateString()} ${date.toLocaleTimeString()}.${String(date.getMilliseconds()).padStart(3, '0')}`
+}
+
+function EventMetadata({ event }: { event: MonitorEvent }) {
+  const type = event.event_type
+  return (
+    <Section title="Event">
+      <Properties items={[
+        ['Type', TYPE_NAMES[type] ?? type.replace(/_/g, ' ')],
+        ['Status', <StatusPill key="s" status={event.status} />],
+        ['Started', formatTimestamp(event.timestamp)],
+        ['Duration', event.duration_ms != null || event.status === 'pending' ? <EventDuration key="d" event={event} /> : null],
+        ['Client', event.client_name],
+        ['Client ID', event.client_id && <Mono key="c">{event.client_id}</Mono>],
+        ['Session', event.session_id && <Mono key="se">{event.session_id}</Mono>],
+        ['Event ID', <Mono key="i">{event.id}</Mono>],
+      ]} />
+    </Section>
+  )
+}
+
+// ---- Layout primitives for readable property sheets ----
+
+function Section({ title, description, children }: { title: string; description?: ReactNode; children: ReactNode }) {
+  return (
+    <section aria-label={title} className="space-y-2">
+      <div>
+        <h3 className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{title}</h3>
+        {description && <p className="mt-0.5 text-xs text-muted-foreground">{description}</p>}
+      </div>
+      {children}
+    </section>
+  )
+}
+
+function Properties({ items }: { items: [string, ReactNode][] }) {
+  const visible = items.filter(([, value]) => value !== null && value !== undefined && value !== '' && value !== false)
+  if (visible.length === 0) return <p className="text-xs italic text-muted-foreground">Nothing recorded.</p>
+  return (
+    <dl className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-x-6 gap-y-3 rounded-lg border bg-muted/10 p-3">
+      {visible.map(([label, value]) => (
+        <div key={label} className="min-w-0">
+          <dt className="text-[11px] text-muted-foreground">{label}</dt>
+          <dd className="mt-0.5 text-xs font-medium break-words">{value}</dd>
+        </div>
+      ))}
+    </dl>
+  )
+}
+
+function Mono({ children }: { children: ReactNode }) {
+  return <code className="font-mono text-[11px] break-all">{children}</code>
+}
+
+function RawSection({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section aria-label={title} className="space-y-1.5">
+      <h3 className="text-xs font-semibold">{title}</h3>
+      {children}
+    </section>
+  )
+}
+
+const tokens = (value: unknown) => (typeof value === 'number' ? value.toLocaleString() : null)
 
 // ---- Utility Functions ----
 
@@ -335,53 +525,29 @@ function MessageItem({ message }: { message: Record<string, unknown> }) {
   )
 }
 
+/** A labelled value; renders nothing when the value was not recorded. */
 function Field({ label, value }: { label: string; value: string | undefined }) {
   if (!value || value === 'undefined' || value === 'null') return null
   return (
-    <div className="text-xs">
-      <span className="text-muted-foreground">{label}: </span>
-      <span className="font-medium">{value}</span>
+    <div className="min-w-0 text-xs">
+      <div className="text-[11px] text-muted-foreground">{label}</div>
+      <div className="font-medium break-words">{value}</div>
     </div>
   )
 }
 
 function ServerField({ data }: { data: EventData }) {
   return (
-    <div className="flex items-center gap-1 text-xs">
-      <Server className="h-3 w-3 text-muted-foreground" />
-      <span className="text-muted-foreground">Server:</span>
-      <span className="font-medium">{(data.server_name || data.server_id) as string}</span>
+    <div className="min-w-0 text-xs">
+      <div className="flex items-center gap-1 text-[11px] text-muted-foreground"><Server className="h-3 w-3" />Server</div>
+      <div className="font-medium break-words">{(data.server_name || data.server_id) as string}</div>
     </div>
   )
 }
 
 function JsonBlock({ data, label }: { data: unknown; label?: string }) {
-  const [copied, setCopied] = useState(false)
   if (data === null || data === undefined) return null
-
-  const text = JSON.stringify(data, null, 2)
-
-  return (
-    <div className="relative">
-      <button
-        type="button"
-        onClick={() => {
-          navigator.clipboard.writeText(text).then(() => {
-            setCopied(true)
-            setTimeout(() => setCopied(false), 1500)
-          })
-        }}
-        title={label ? `Copy ${label} JSON` : 'Copy JSON'}
-        className="absolute right-1 top-1 z-10 flex items-center gap-1 rounded border border-border/60 bg-background/80 px-1 text-[10px] text-muted-foreground hover:text-foreground"
-      >
-        {copied ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
-        {copied ? 'Copied' : label ? `Copy ${label}` : 'Copy'}
-      </button>
-      <pre className="p-2 bg-muted rounded text-xs whitespace-pre-wrap break-words max-h-[400px] overflow-auto">
-        {text}
-      </pre>
-    </div>
-  )
+  return <JsonTree data={data} label={label} className="max-h-[400px]" />
 }
 
 function ArgumentsBlock({ args }: { args: unknown }) {
@@ -396,18 +562,16 @@ function ArgumentsBlock({ args }: { args: unknown }) {
   }
 
   return (
-    <table className="text-xs w-full">
-      <tbody>
-        {entries.map(([key, value]) => (
-          <tr key={key} className="border-b border-border/20">
-            <td className="text-muted-foreground py-0.5 pr-4 whitespace-nowrap align-top">{key}</td>
-            <td className="py-0.5 font-mono whitespace-pre-wrap break-all">
-              {typeof value === 'string' ? value : JSON.stringify(value, null, 2)}
-            </td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <dl className="divide-y divide-border/40 rounded-md border text-xs">
+      {entries.map(([key, value]) => (
+        <div key={key} className="grid grid-cols-[minmax(90px,160px)_1fr] gap-3 px-2.5 py-1.5">
+          <dt className="text-muted-foreground font-mono text-[11px] break-all">{key}</dt>
+          <dd className="min-w-0 font-mono text-[11px] whitespace-pre-wrap break-words">
+            {value !== null && typeof value === 'object' ? <JsonTree data={value} /> : String(value)}
+          </dd>
+        </div>
+      ))}
+    </dl>
   )
 }
 
@@ -416,8 +580,8 @@ function McpResponseContent({ data }: { data: EventData }) {
   return <div className="space-y-3">
     <ResponseError error={data.error} />
     {raw && <SmartText text={extractMcpContent(raw)} />}
-    <div className="flex flex-wrap gap-3">
-      {data.success != null && <Field label="Success" value={String(data.success)} />}
+    <div className="flex flex-wrap gap-x-6 gap-y-2">
+      {data.success != null && <Field label="Success" value={data.success ? 'Yes' : 'No'} />}
       {data.latency_ms != null && <Field label="Latency" value={`${data.latency_ms}ms`} />}
     </div>
     {raw && <Disclosure title="Full response"><RawBlock text={formatJsonString(raw)} label="response" /></Disclosure>}
@@ -451,7 +615,7 @@ function SystemOneRequestView({ body }: { body: Record<string, unknown> }) {
         <div className="p-2 bg-muted rounded text-xs">
           {typeof state === 'string'
             ? <SmartText text={state} />
-            : <pre className="whitespace-pre-wrap font-mono text-[11px]">{JSON.stringify(state, null, 2)}</pre>}
+            : <JsonTree data={state} />}
         </div>
       </div>
       <div className="space-y-1">
@@ -481,13 +645,13 @@ function SystemOneAnswersList({ data }: { data: EventData }) {
   )
 }
 
-// ---- A single page for the exchange, with secondary information on demand ----
+// ---- Exchange building blocks ----
 
 function Disclosure({ title, description, children }: { title: string; description?: string; children: ReactNode }) {
   const [open, setOpen] = useState(false)
   return (
     <details onToggle={event => setOpen(event.currentTarget.open)} className="group/disclosure rounded-lg border bg-background text-xs">
-      <summary className="flex min-h-10 cursor-pointer list-none items-center gap-2 px-3 py-2 hover:bg-muted/40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring [&::-webkit-details-marker]:hidden">
+      <summary className="flex min-h-9 cursor-pointer list-none items-center gap-2 px-3 py-1.5 hover:bg-muted/40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring [&::-webkit-details-marker]:hidden">
         <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform group-open/disclosure:rotate-90" />
         <span className="font-medium">{title}</span>
         {description && <span className="ml-auto truncate text-muted-foreground">{description}</span>}
@@ -501,7 +665,7 @@ function CopyPayload({ value, label }: { value: unknown; label: string }) {
   const [copied, setCopied] = useState(false)
   if (value == null) return null
   return (
-    <Button variant="ghost" size="sm" className="h-8 gap-1.5 px-2 text-xs text-muted-foreground" aria-label={`Copy ${label}`} onClick={() => {
+    <Button variant="ghost" size="sm" className="h-7 gap-1.5 px-2 text-xs text-muted-foreground" aria-label={`Copy ${label}`} onClick={() => {
       navigator.clipboard.writeText(typeof value === 'string' ? value : JSON.stringify(value, null, 2)).then(() => {
         setCopied(true)
         setTimeout(() => setCopied(false), 1500)
@@ -517,15 +681,15 @@ function ExchangeGrid({ children }: { children: ReactNode }) {
   return <div className="grid grid-cols-1 gap-3 [@container(min-width:640px)]:grid-cols-2" data-testid="exchange-grid">{children}</div>
 }
 
-function ExchangeCard({ title, description, payload, children, error = false }: { title: 'Request' | 'Response'; description?: string; payload?: unknown; children: ReactNode; error?: boolean }) {
+function ExchangeCard({ title, description, payload, children, error = false }: { title: 'Request' | 'Response'; description?: ReactNode; payload?: unknown; children: ReactNode; error?: boolean }) {
   const isRequest = title === 'Request'
   const Icon = isRequest ? ArrowUpRight : ArrowDownLeft
   return (
     <section aria-label={title} className={cn('min-w-0 rounded-lg border overflow-hidden self-start', error && 'border-destructive/40')}>
-      <div className={cn('flex items-center gap-2 border-b px-3 py-1.5', isRequest ? 'bg-blue-500/5' : error ? 'bg-destructive/5' : 'bg-emerald-500/5')}>
-        <Icon className={cn('h-4 w-4', isRequest ? 'text-blue-500' : error ? 'text-destructive' : 'text-emerald-500')} />
+      <div className={cn('flex items-center gap-2 border-b px-3 py-1', isRequest ? 'bg-blue-500/5' : error ? 'bg-destructive/5' : 'bg-emerald-500/5')}>
+        <Icon className={cn('h-4 w-4 shrink-0', isRequest ? 'text-blue-500' : error ? 'text-destructive' : 'text-emerald-500')} />
         <h3 className="text-sm font-semibold">{title}</h3>
-        {description && <span className="text-[11px] text-muted-foreground truncate">{description}</span>}
+        {description && <span className="min-w-0 text-[11px] text-muted-foreground truncate">{description}</span>}
         <div className="ml-auto"><CopyPayload value={payload} label={title.toLowerCase()} /></div>
       </div>
       <div className="p-3 space-y-3 text-xs break-words">{children}</div>
@@ -595,90 +759,309 @@ function RequestContent({ body: capturedBody, raw }: { body: Record<string, unkn
   )
 }
 
-function LlmCallDetail({ data, status }: { data: EventData; status: EventStatus }) {
-  const body = data.request_body as Record<string, unknown> | undefined
-  const transformed = data.transformed_body as Record<string, unknown> | undefined
-  const [showTransformed, setShowTransformed] = useState(false)
-  const activeBody = showTransformed && transformed ? transformed : body
-  const tools = activeBody?.tools as Array<Record<string, unknown>> | undefined
-  const toolDisplayItems: McpToolDisplayItem[] = (tools || []).map(tool => {
+// ---- LLM call ----
+
+const BODY_CONTENT_KEYS = ['messages', 'input', 'prompt', 'system', 'instructions', 'tools', 'state', 'questions']
+
+function requestParameters(body: Record<string, unknown> | undefined): Record<string, unknown> {
+  if (!body) return {}
+  return Object.fromEntries(Object.entries(body).filter(([key, value]) => !BODY_CONTENT_KEYS.includes(key) && !key.startsWith('_') && value != null))
+}
+
+function requestTools(body: Record<string, unknown> | undefined): McpToolDisplayItem[] {
+  const tools = body?.tools as Array<Record<string, unknown>> | undefined
+  return (tools || []).map(tool => {
     const fn = tool.function as Record<string, unknown> | undefined
     return {
-      name: String(fn?.name || tool.name || 'unknown'),
+      name: String(fn?.name || tool.name || tool.type || 'unknown'),
       description: (fn?.description || tool.description || null) as string | null,
-      inputSchema: (fn?.parameters || tool.input_schema || null) as Record<string, unknown> | null,
+      inputSchema: (fn?.parameters || tool.input_schema || tool.parameters || null) as Record<string, unknown> | null,
     }
   })
-  const parameters = activeBody && Object.fromEntries(Object.entries(activeBody).filter(([key]) => !['messages', 'input', 'prompt', 'system', 'instructions', 'tools', 'state', 'questions'].includes(key)))
-  const requestCopy = activeBody ?? data.raw_request
-  const responseCopy = data.response_body ?? data.raw_response ?? data.content_preview ?? data.error
-  const info = data.routing_info
+}
 
+function llmTabs(event: MonitorEvent, data: EventData): DetailTab[] {
+  const body = data.request_body as Record<string, unknown> | undefined
+  const params = requestParameters(body)
+  const tools = requestTools(body)
+  const info = data.routing_info as EventData | undefined
+  const transformations = (data.transformations_applied as string[] | undefined) ?? []
+  const tabs: DetailTab[] = [
+    { id: 'exchange', label: 'Request & response', content: <LlmExchange data={data} status={event.status} /> },
+    { id: 'details', label: 'Details', content: <LlmOverview event={event} data={data} /> },
+  ]
+  if (Object.keys(params).length > 0 || tools.length > 0) {
+    tabs.push({ id: 'settings', label: 'Parameters & tools', badge: tools.length || undefined, content: <LlmSettings params={params} tools={tools} /> })
+  }
+  if (info) {
+    tabs.push({ id: 'routing', label: 'Routing', badge: info.total_attempts ?? info.attempts?.length, content: <RoutingInfoView info={info} /> })
+  }
+  if (data.transformed_body || transformations.length > 0) {
+    tabs.push({ id: 'transformations', label: 'Transformations', badge: transformations.length || undefined, content: <LlmTransformations data={data} /> })
+  }
+  tabs.push({ id: 'raw', label: 'Raw', content: <LlmRaw event={event} data={data} /> })
+  return tabs
+}
+
+function LlmExchange({ data, status }: { data: EventData; status: EventStatus }) {
+  const body = data.request_body as Record<string, unknown> | undefined
+  const flow = llmApiFlow(data)
+  const responseCopy = data.response_body ?? data.raw_response ?? data.content_preview ?? data.error
   return (
-    <div className="space-y-3">
+    <>
       <ExchangeGrid>
-        <ExchangeCard title="Request" description={data.endpoint} payload={requestCopy}>
-          {transformed && (
-            <div className="flex items-center gap-2 flex-wrap">
-              <div className="inline-flex rounded-md border p-0.5 gap-0.5">
-                {[false, true].map(value => <button key={String(value)} type="button" aria-pressed={showTransformed === value} onClick={() => setShowTransformed(value)} className={cn('rounded px-3 py-1.5 text-xs', showTransformed === value ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted')}>
-                  {value ? 'Transformed' : 'Original'}
-                </button>)}
-              </div>
-              {showTransformed && data.transformations_applied?.map((value: string) => <Badge key={value} variant="secondary" className="text-[10px]">{value}</Badge>)}
-            </div>
-          )}
-          {isSystemOneEvent(data) && activeBody?.questions ? <SystemOneRequestView body={activeBody} /> : <RequestContent body={activeBody} raw={showTransformed ? undefined : data.raw_request} />}
+        <ExchangeCard
+          title="Request"
+          description={flow.client ? `${LLM_API_LABELS[flow.client]} · ${data.endpoint}` : data.endpoint}
+          payload={body ?? data.raw_request}
+        >
+          {isSystemOneEvent(data) && body?.questions ? <SystemOneRequestView body={body} /> : <RequestContent body={body} raw={data.raw_request} />}
         </ExchangeCard>
-        <ExchangeCard title="Response" description={data.status_code != null ? `HTTP ${data.status_code}${data.streamed ? ' · streamed' : ''}` : status === 'pending' ? 'In progress' : undefined} payload={responseCopy} error={status === 'error'}>
+        <ExchangeCard
+          title="Response"
+          description={data.status_code != null ? `HTTP ${data.status_code}${data.streamed ? ' · streamed' : ''}` : status === 'pending' ? 'In progress' : undefined}
+          payload={responseCopy}
+          error={status === 'error'}
+        >
           <LlmResponseContent data={data} status={status} />
         </ExchangeCard>
       </ExchangeGrid>
-
-      <div className="flex flex-wrap items-center gap-x-5 gap-y-2 rounded-lg border bg-muted/20 px-3 py-2.5" aria-label="Usage">
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-lg border bg-muted/10 px-3 py-2" aria-label="Usage">
         <Field label="Provider" value={data.provider} />
-        {data.input_tokens != null && <Field label="Input" value={`${data.input_tokens.toLocaleString()} tokens`} />}
-        {data.output_tokens != null && <Field label="Output" value={`${data.output_tokens.toLocaleString()} tokens`} />}
-        {data.cost_usd != null && <Field label="Cost" value={`$${data.cost_usd.toFixed(6)}`} />}
+        <Field label="Model" value={data.model} />
+        <Field label="Input" value={data.input_tokens != null ? `${tokens(data.input_tokens)} tokens` : undefined} />
+        <Field label="Output" value={data.output_tokens != null ? `${tokens(data.output_tokens)} tokens` : undefined} />
+        <Field label="Cost" value={data.cost_usd != null ? `$${Number(data.cost_usd).toFixed(6)}` : undefined} />
         <Field label="Finish" value={data.finish_reason} />
       </div>
-      <Disclosure title="Request settings & tools" description={toolDisplayItems.length ? `${toolDisplayItems.length} tools` : 'Model and parameters'}>
-        <ArgumentsBlock args={parameters} />
-        {toolDisplayItems.length > 0 && <McpToolDisplay tools={toolDisplayItems} compact collapsible />}
-      </Disclosure>
-      {info && <Disclosure title="Routing" description={`${info.total_attempts ?? info.attempts?.length ?? 0} attempts`}>
-        <div className="flex flex-wrap gap-3">
-          {info.decision_routing && <>
-            <Field label="Routing option" value={info.decision_routing.route} />
-            <Field label="Decision source" value={info.decision_routing.source} />
-            <Field label="Decision reason" value={info.decision_routing.reason} />
-            <Field label="Decision time" value={`${info.decision_routing.latency_ms} ms`} />
-            <Field label="Omitted messages" value={String(info.decision_routing.context_omitted)} />
-          </>}
-          <Field label="Legacy routing tier" value={info.routellm_tier} />
-          {info.routellm_win_rate != null && <Field label="Win rate" value={info.routellm_win_rate.toFixed(3)} />}
-        </div>
-        {info.attempts?.map((attempt: EventData, index: number) => <div key={index} className="border rounded-md p-2 space-y-1">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="font-mono">{attempt.provider}/{attempt.model}</span>
-            <Badge variant={attempt.outcome === 'success' ? 'secondary' : 'outline'}>{attempt.outcome}</Badge>
-            {attempt.duration_ms != null && <span className="text-muted-foreground">{attempt.duration_ms}ms</span>}
-          </div>
-          {attempt.error && <p className="text-destructive break-words">{attempt.error}</p>}
-        </div>)}
-        <JsonBlock data={info} label="routing" />
-      </Disclosure>}
-      <Disclosure title="Payloads" description="Full JSON and raw request / response">
-        <ExchangeGrid>
-          <div className="min-w-0 space-y-2"><h4 className="font-medium">Request body</h4><JsonBlock data={activeBody} label="request body" />
-            {data.raw_request && <Disclosure title="Raw request"><RawBlock text={data.raw_request} label="raw request" /></Disclosure>}
-          </div>
-          <div className="min-w-0 space-y-2"><h4 className="font-medium">Response body</h4><JsonBlock data={data.response_body} label="response body" />
-            {data.raw_response && <Disclosure title="Raw response"><RawBlock text={data.raw_response} label="raw response" /></Disclosure>}
-          </div>
-        </ExchangeGrid>
-      </Disclosure>
+    </>
+  )
+}
+
+const SOURCE_LABELS: Record<string, string> = {
+  api: 'LocalRouter API',
+  proxy: 'HTTPS inspection proxy',
+  reverse_proxy: 'Reverse proxy',
+}
+
+/** Client → LocalRouter → provider, labelled with the API used on each hop. */
+function ApiPath({ event, data, flow }: { event: MonitorEvent; data: EventData; flow: ApiFlow }) {
+  const node = (label: string, value: ReactNode) => (
+    <div className="min-w-0 rounded-md border bg-background px-2.5 py-1.5">
+      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="truncate text-xs font-medium">{value}</div>
     </div>
+  )
+  const hop = (api: ReturnType<typeof llmApiFlow>['client'], pending: string) => (
+    <div className="flex min-w-[110px] flex-1 flex-col items-center px-1 text-center">
+      <span className={cn('text-[11px] font-medium', !api && 'text-muted-foreground italic font-normal')}>{api ? LLM_API_LABELS[api] : pending}</span>
+      <div className="mt-0.5 flex w-full items-center">
+        <div className={cn('h-px flex-1', flow.translated ? 'bg-amber-500/60' : 'bg-border')} />
+        <ArrowRight className={cn('h-3 w-3 shrink-0', flow.translated ? 'text-amber-500' : 'text-muted-foreground')} />
+      </div>
+    </div>
+  )
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center rounded-lg border bg-muted/10 p-3" data-testid="api-path">
+        {node('Client', event.client_name || event.client_id || 'Unknown')}
+        {hop(flow.client, 'unknown')}
+        {node('LocalRouter', SOURCE_LABELS[data.source as string] ?? 'LocalRouter API')}
+        {hop(flow.upstream, event.status === 'pending' ? 'pending…' : 'not recorded')}
+        {node('Provider', data.provider || '—')}
+      </div>
+      {flow.translated ? (
+        <p className="flex items-start gap-1.5 rounded-md bg-amber-500/10 px-2.5 py-1.5 text-xs text-amber-800 dark:text-amber-300">
+          <Shuffle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          LocalRouter translated this request from {LLM_API_LABELS[flow.client!]} to {LLM_API_LABELS[flow.upstream!]} for the provider, and the response back.
+        </p>
+      ) : data.source === 'proxy' || data.source === 'reverse_proxy' ? (
+        <p className="text-xs text-muted-foreground">Observed in transit and forwarded unchanged.</p>
+      ) : null}
+    </div>
+  )
+}
+
+function LlmOverview({ event, data }: { event: MonitorEvent; data: EventData }) {
+  const flow = llmApiFlow(data)
+  const input = data.input_tokens as number | undefined
+  const cached = data.cached_input_tokens as number | undefined
+  const requested = data.requested_model as string | undefined
+  const served = data.model as string | undefined
+  const started = Date.parse(event.timestamp)
+  const finished = event.duration_ms != null && Number.isFinite(started) ? started + event.duration_ms : null
+  return (
+    <>
+      <Section title="API">
+        <ApiPath event={event} data={data} flow={flow} />
+        <Properties items={[
+          ['Client API', flow.client && LLM_API_LABELS[flow.client]],
+          ['Upstream API', flow.upstream && LLM_API_LABELS[flow.upstream]],
+          ['Endpoint', data.endpoint && <Mono key="e">{data.endpoint}</Mono>],
+          ['Observed by', SOURCE_LABELS[data.source as string] ?? SOURCE_LABELS.api],
+          ['Streaming', data.stream ? 'Yes' : 'No'],
+          ['HTTP status', data.status_code != null ? String(data.status_code) : null],
+        ]} />
+      </Section>
+      <Section title="Model">
+        <Properties items={[
+          ['Requested', requested && <Mono key="r">{requested}</Mono>],
+          ['Answered by', served && <Mono key="s">{served}</Mono>],
+          ['Provider', data.provider],
+          ['Finish reason', data.finish_reason],
+          ['Messages', data.message_count ? String(data.message_count) : null],
+          ['Tools offered', data.tool_count ? String(data.tool_count) : null],
+        ]} />
+      </Section>
+      <Section title="Usage">
+        <Properties items={[
+          ['Input tokens', tokens(input)],
+          ['Cached input', cached != null ? `${tokens(cached)}${input ? ` (${Math.round((cached / input) * 100)}%)` : ''}` : null],
+          ['Output tokens', tokens(data.output_tokens)],
+          ['Reasoning tokens', data.reasoning_tokens ? tokens(data.reasoning_tokens) : null],
+          ['Total tokens', tokens(data.total_tokens)],
+          ['Cost', data.cost_usd != null ? `$${Number(data.cost_usd).toFixed(6)}` : null],
+        ]} />
+      </Section>
+      <Section title="Timing">
+        <Properties items={[
+          ['Started', formatTimestamp(event.timestamp)],
+          ['Finished', finished != null ? formatTimestamp(finished) : null],
+          ['Duration', <EventDuration key="d" event={event} />],
+        ]} />
+      </Section>
+      <Section title="Identifiers">
+        <Properties items={[
+          ['Client', event.client_name],
+          ['Client ID', event.client_id && <Mono key="c">{event.client_id}</Mono>],
+          ['Session', event.session_id && <Mono key="s">{event.session_id}</Mono>],
+          ['Trace', data.trace_id && <Mono key="t">{data.trace_id}</Mono>],
+          ['Duplicate hop', data.duplicate_hop != null ? String(data.duplicate_hop) : null],
+          ['Event ID', <Mono key="i">{event.id}</Mono>],
+        ]} />
+      </Section>
+    </>
+  )
+}
+
+function ParameterValue({ value }: { value: unknown }) {
+  if (value !== null && typeof value === 'object') return <JsonTree data={value} />
+  if (typeof value === 'boolean') return <>{value ? 'true' : 'false'}</>
+  return <Mono>{String(value)}</Mono>
+}
+
+function LlmSettings({ params, tools }: { params: Record<string, unknown>; tools: McpToolDisplayItem[] }) {
+  const scalars = Object.entries(params).filter(([, value]) => value === null || typeof value !== 'object')
+  const objects = Object.entries(params).filter(([, value]) => value !== null && typeof value === 'object')
+  return (
+    <>
+      {(scalars.length > 0 || objects.length > 0) && (
+        <Section title="Parameters">
+          {scalars.length > 0 && <Properties items={scalars.map(([key, value]) => [key, <ParameterValue key={key} value={value} />])} />}
+          {objects.map(([key, value]) => (
+            <div key={key} className="space-y-1">
+              <div className="text-[11px] text-muted-foreground font-mono">{key}</div>
+              <ParameterValue value={value} />
+            </div>
+          ))}
+        </Section>
+      )}
+      {tools.length > 0 && (
+        <Section title={`Tools (${tools.length})`}>
+          <McpToolDisplay tools={tools} compact collapsible />
+        </Section>
+      )}
+    </>
+  )
+}
+
+function RoutingInfoView({ info }: { info: EventData }) {
+  const decision = info.decision_routing as EventData | undefined
+  const attempts = (info.attempts as EventData[] | undefined) ?? []
+  const candidates = (info.candidate_models as string[] | undefined) ?? []
+  return (
+    <>
+      {decision && (
+        <Section title="Decision">
+          <Properties items={[
+            ['Route', decision.route],
+            ['Decided by', decision.source],
+            ['Reason', decision.reason],
+            ['Decision time', decision.latency_ms != null ? `${decision.latency_ms} ms` : null],
+            ['Omitted messages', decision.context_omitted ? String(decision.context_omitted) : null],
+          ]} />
+        </Section>
+      )}
+      {(info.routellm_tier || info.routellm_win_rate != null) && (
+        <Section title="Legacy routing">
+          <Properties items={[
+            ['Tier', info.routellm_tier],
+            ['Win rate', info.routellm_win_rate != null ? Number(info.routellm_win_rate).toFixed(3) : null],
+          ]} />
+        </Section>
+      )}
+      {candidates.length > 0 && (
+        <Section title="Candidates">
+          <div className="flex flex-wrap gap-1.5">
+            {candidates.map(model => <Badge key={model} variant="outline" className="font-mono text-[11px] font-normal">{model}</Badge>)}
+          </div>
+        </Section>
+      )}
+      <Section title={`Attempts (${attempts.length})`}>
+        {attempts.length === 0 ? <p className="text-xs italic text-muted-foreground">No attempts recorded.</p> : (
+          <ol className="space-y-1.5">
+            {attempts.map((attempt, index) => (
+              <li key={index} className="flex flex-wrap items-center gap-2 rounded-md border px-2.5 py-1.5 text-xs">
+                <span className="w-4 text-muted-foreground tabular-nums">{index + 1}</span>
+                <Mono>{attempt.provider}/{attempt.model}</Mono>
+                <span className={cn('rounded-full px-1.5 text-[10px] font-medium', attempt.outcome === 'success' ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300' : 'bg-destructive/15 text-destructive')}>{attempt.outcome}</span>
+                {attempt.duration_ms != null && <span className="ml-auto text-muted-foreground tabular-nums">{attempt.duration_ms} ms</span>}
+                {attempt.error && <p className="basis-full text-destructive break-words">{attempt.error}</p>}
+              </li>
+            ))}
+          </ol>
+        )}
+      </Section>
+    </>
+  )
+}
+
+function LlmTransformations({ data }: { data: EventData }) {
+  const transformations = (data.transformations_applied as string[] | undefined) ?? []
+  const original = data.request_body as Record<string, unknown> | undefined
+  const transformed = data.transformed_body as Record<string, unknown> | undefined
+  return (
+    <>
+      <Section title="Applied">
+        {transformations.length === 0 ? <p className="text-xs italic text-muted-foreground">No transformations were listed.</p> : (
+          <ul className="space-y-1">
+            {transformations.map(value => <li key={value} className="flex items-center gap-2 text-xs"><ChevronRight className="h-3 w-3 text-muted-foreground" />{value}</li>)}
+          </ul>
+        )}
+      </Section>
+      {transformed && (
+        <ExchangeGrid>
+          <RawSection title="Received from the client"><RequestContent body={original} /></RawSection>
+          <RawSection title="Sent upstream"><RequestContent body={transformed} /></RawSection>
+          <JsonBlock data={original} label="original" />
+          <JsonBlock data={transformed} label="transformed" />
+        </ExchangeGrid>
+      )}
+    </>
+  )
+}
+
+function LlmRaw({ event, data }: { event: MonitorEvent; data: EventData }) {
+  return (
+    <>
+      <ExchangeGrid>
+        <RawSection title="Request body">{data.request_body != null ? <JsonBlock data={data.request_body} label="request body" /> : <p className="text-xs italic text-muted-foreground">Not captured.</p>}</RawSection>
+        <RawSection title="Response body">{data.response_body != null ? <JsonBlock data={data.response_body} label="response body" /> : <p className="text-xs italic text-muted-foreground">Not captured.</p>}</RawSection>
+      </ExchangeGrid>
+      {data.raw_request && <Disclosure title="Raw request (wire bytes)"><RawBlock text={data.raw_request} label="raw request" /></Disclosure>}
+      {data.raw_response && <Disclosure title="Raw response (wire bytes)"><RawBlock text={data.raw_response} label="raw response" /></Disclosure>}
+      <RawSection title="Full event"><JsonTree data={event} label="event" className="max-h-[480px]" /></RawSection>
+    </>
   )
 }
 

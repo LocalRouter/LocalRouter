@@ -320,6 +320,10 @@ async fn streaming_loop(
                 Some(client_name.to_string()),
                 monitor_session_id.clone(),
                 lr_monitor::MonitorEventData::LlmCall {
+                    client_api: Some(lr_monitor::LlmApi::ChatCompletions),
+                    upstream_api: None,
+                    requested_model: Some(request.model.clone()),
+                    cached_input_tokens: None,
                     endpoint: "/v1/chat/completions".to_string(),
                     model: request.model.clone(),
                     stream: true,

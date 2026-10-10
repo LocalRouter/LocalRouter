@@ -371,6 +371,10 @@ impl Drop for SdCppEmbeddedProvider {
 
 #[async_trait]
 impl ModelProvider for SdCppEmbeddedProvider {
+    fn upstream_api(&self) -> lr_types::LlmApi {
+        lr_types::LlmApi::Images
+    }
+
     fn name(&self) -> &str {
         PROVIDER_TYPE
     }

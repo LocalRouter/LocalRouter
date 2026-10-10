@@ -2,10 +2,12 @@
 
 pub mod errors;
 pub mod fuzzy;
+pub mod llm_api;
 pub mod mcp_types;
 pub mod trace;
 
 pub use errors::{AppError, AppResult};
+pub use llm_api::LlmApi;
 pub use mcp_types::McpTool;
 pub use trace::{
     current_outbound_trace, is_duplicate_hop, spawn_traced, with_outbound_trace, RequestTrace,
