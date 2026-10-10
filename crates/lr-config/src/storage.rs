@@ -404,6 +404,74 @@ async fn cleanup_old_backups(dir: &Path) {
     }
 }
 
+#[cfg(any(not(debug_assertions), test))]
+/// Secret keys ("service:account", the secrets.json format) the config refers to.
+fn referenced_secret_keys(config: &super::AppConfig) -> std::collections::HashSet<String> {
+    use super::{
+        McpAuthConfig, CLIENT_KEYRING_SERVICE, MCP_KEYRING_SERVICE, OAUTH_CLIENT_KEYRING_SERVICE,
+        PROVIDER_KEYRING_SERVICE,
+    };
+    use std::collections::HashSet;
+
+    // Build the set of secret keys that are actually referenced by the config.
+    // Key format in secrets.json is "service:account".
+    let mut referenced_keys: HashSet<String> = HashSet::new();
+
+    // Providers: "LocalRouter-Providers:{provider_name}"
+    for provider in &config.providers {
+        referenced_keys.insert(format!("{}:{}", PROVIDER_KEYRING_SERVICE, provider.name));
+    }
+
+    // MCP servers: "LocalRouter-McpServers:{ref_uuid}"
+    for server in &config.mcp_servers {
+        if let Some(ref auth_config) = server.auth_config {
+            match auth_config {
+                McpAuthConfig::BearerToken { token_ref } => {
+                    referenced_keys.insert(format!("{}:{}", MCP_KEYRING_SERVICE, token_ref));
+                    if token_ref == crate::LEGACY_PENDING_BEARER_TOKEN_REF {
+                        referenced_keys.insert(format!("{}:{}", MCP_KEYRING_SERVICE, server.id));
+                    }
+                }
+                McpAuthConfig::CustomHeaders { header_refs } => {
+                    for ref_key in header_refs.values() {
+                        referenced_keys.insert(format!("{}:{}", MCP_KEYRING_SERVICE, ref_key));
+                    }
+                }
+                McpAuthConfig::EnvVars { env_refs } => {
+                    for ref_key in env_refs.values() {
+                        referenced_keys.insert(format!("{}:{}", MCP_KEYRING_SERVICE, ref_key));
+                    }
+                }
+                McpAuthConfig::OAuth {
+                    client_secret_ref, ..
+                }
+                | McpAuthConfig::OAuthBrowser {
+                    client_secret_ref, ..
+                } => {
+                    referenced_keys
+                        .insert(format!("{}:{}", MCP_KEYRING_SERVICE, client_secret_ref));
+                }
+                McpAuthConfig::None => {}
+            }
+        }
+    }
+
+    // Clients: "LocalRouter-Clients:{client_id}"
+    for client in &config.clients {
+        referenced_keys.insert(format!("{}:{}", CLIENT_KEYRING_SERVICE, client.id));
+    }
+
+    // OAuth clients: "LocalRouter-OAuthClients:{oauth_client_id}"
+    for oauth_client in &config.oauth_clients {
+        referenced_keys.insert(format!(
+            "{}:{}",
+            OAUTH_CLIENT_KEYRING_SERVICE, oauth_client.id
+        ));
+    }
+
+    referenced_keys
+}
+
 /// Migrate secrets from a plaintext secrets.json file to the system keychain.
 ///
 /// When the user copies their dev config directory to production, the file-based
@@ -419,12 +487,7 @@ async fn cleanup_old_backups(dir: &Path) {
 /// - The secrets file does not exist
 #[cfg(not(debug_assertions))]
 fn migrate_secrets_file_to_keychain(config: &super::AppConfig) {
-    use super::{
-        McpAuthConfig, CLIENT_KEYRING_SERVICE, MCP_KEYRING_SERVICE, OAUTH_CLIENT_KEYRING_SERVICE,
-        PROVIDER_KEYRING_SERVICE,
-    };
     use lr_api_keys::keychain_trait::{KeychainStorage, SystemKeychain};
-    use std::collections::HashSet;
 
     // If the user explicitly wants file-based storage, don't migrate
     if matches!(std::env::var("LOCALROUTER_KEYCHAIN").as_deref(), Ok("file")) {
@@ -477,58 +540,7 @@ fn migrate_secrets_file_to_keychain(config: &super::AppConfig) {
         return;
     }
 
-    // Build the set of secret keys that are actually referenced by the config.
-    // Key format in secrets.json is "service:account".
-    let mut referenced_keys: HashSet<String> = HashSet::new();
-
-    // Providers: "LocalRouter-Providers:{provider_name}"
-    for provider in &config.providers {
-        referenced_keys.insert(format!("{}:{}", PROVIDER_KEYRING_SERVICE, provider.name));
-    }
-
-    // MCP servers: "LocalRouter-McpServers:{ref_uuid}"
-    for server in &config.mcp_servers {
-        if let Some(ref auth_config) = server.auth_config {
-            match auth_config {
-                McpAuthConfig::BearerToken { token_ref } => {
-                    referenced_keys.insert(format!("{}:{}", MCP_KEYRING_SERVICE, token_ref));
-                }
-                McpAuthConfig::CustomHeaders { header_refs } => {
-                    for ref_key in header_refs.values() {
-                        referenced_keys.insert(format!("{}:{}", MCP_KEYRING_SERVICE, ref_key));
-                    }
-                }
-                McpAuthConfig::EnvVars { env_refs } => {
-                    for ref_key in env_refs.values() {
-                        referenced_keys.insert(format!("{}:{}", MCP_KEYRING_SERVICE, ref_key));
-                    }
-                }
-                McpAuthConfig::OAuth {
-                    client_secret_ref, ..
-                }
-                | McpAuthConfig::OAuthBrowser {
-                    client_secret_ref, ..
-                } => {
-                    referenced_keys
-                        .insert(format!("{}:{}", MCP_KEYRING_SERVICE, client_secret_ref));
-                }
-                McpAuthConfig::None => {}
-            }
-        }
-    }
-
-    // Clients: "LocalRouter-Clients:{client_id}"
-    for client in &config.clients {
-        referenced_keys.insert(format!("{}:{}", CLIENT_KEYRING_SERVICE, client.id));
-    }
-
-    // OAuth clients: "LocalRouter-OAuthClients:{oauth_client_id}"
-    for oauth_client in &config.oauth_clients {
-        referenced_keys.insert(format!(
-            "{}:{}",
-            OAUTH_CLIENT_KEYRING_SERVICE, oauth_client.id
-        ));
-    }
+    let referenced_keys = referenced_secret_keys(config);
 
     // Migrate referenced secrets to system keychain
     let system_keychain = SystemKeychain;
@@ -617,6 +629,39 @@ mod tests {
     use super::*;
     use crate::{LogLevel, LoggingConfig, ServerConfig};
     use tempfile::TempDir;
+
+    #[test]
+    fn legacy_pending_bearer_token_keeps_its_bare_id_secret() {
+        let server = |id: &str, token_ref: &str| crate::McpServerConfig {
+            id: id.to_string(),
+            name: id.to_string(),
+            transport: crate::McpTransportType::HttpSse,
+            transport_config: crate::McpTransportConfig::HttpSse {
+                url: "https://example.com/mcp".to_string(),
+                headers: Default::default(),
+            },
+            auth_config: Some(crate::McpAuthConfig::BearerToken {
+                token_ref: token_ref.to_string(),
+            }),
+            discovered_oauth: None,
+            oauth_config: None,
+            enabled: true,
+            created_at: chrono::Utc::now(),
+        };
+        let config = AppConfig {
+            mcp_servers: vec![
+                server("legacy", crate::LEGACY_PENDING_BEARER_TOKEN_REF),
+                server("current", &crate::mcp_bearer_token_account("current")),
+            ],
+            ..Default::default()
+        };
+
+        let keys = referenced_secret_keys(&config);
+
+        assert!(keys.contains("LocalRouter-McpServers:legacy"));
+        assert!(keys.contains("LocalRouter-McpServers:current_bearer_token"));
+        assert!(!keys.contains("LocalRouter-McpServers:current"));
+    }
 
     #[tokio::test]
     async fn shared_orphan_strategy_is_healed_once() {

@@ -144,7 +144,7 @@ fn process_auth_config(
             let keychain = lr_api_keys::CachedKeychain::auto()
                 .map_err(|e| format!("Failed to access keychain: {}", e))?;
 
-            let key = format!("{}_bearer_token", server_id);
+            let key = lr_config::mcp_bearer_token_account(server_id);
             keychain
                 .store(lr_config::MCP_KEYRING_SERVICE, &key, &token)
                 .map_err(|e| format!("Failed to store token in keychain: {}", e))?;
@@ -575,7 +575,7 @@ pub async fn clone_mcp_server(
 /// Clone MCP auth config, re-keying secrets to new keychain entries
 fn clone_mcp_auth_config(
     auth: &Option<McpAuthConfig>,
-    _old_server_id: &str,
+    old_server_id: &str,
     new_server_id: &str,
 ) -> Result<Option<McpAuthConfig>, String> {
     let auth = match auth {
@@ -590,8 +590,14 @@ fn clone_mcp_auth_config(
         McpAuthConfig::None => Ok(Some(McpAuthConfig::None)),
 
         McpAuthConfig::BearerToken { token_ref } => {
-            let new_ref = format!("{}_bearer_token", new_server_id);
-            if let Ok(Some(token)) = keychain.get(lr_config::MCP_KEYRING_SERVICE, token_ref) {
+            let new_ref = lr_config::mcp_bearer_token_account(new_server_id);
+            // Pre-0.0.155 marketplace installs: the token is under the bare id.
+            let old_ref = if token_ref == lr_config::LEGACY_PENDING_BEARER_TOKEN_REF {
+                old_server_id
+            } else {
+                token_ref.as_str()
+            };
+            if let Ok(Some(token)) = keychain.get(lr_config::MCP_KEYRING_SERVICE, old_ref) {
                 keychain
                     .store(lr_config::MCP_KEYRING_SERVICE, &new_ref, &token)
                     .map_err(|e| format!("Failed to store cloned bearer token: {}", e))?;

@@ -12,6 +12,16 @@ pub const PROVIDER_KEYRING_SERVICE: &str = "LocalRouter-Providers";
 /// Keyring service name for MCP server secrets
 pub const MCP_KEYRING_SERVICE: &str = "LocalRouter-McpServers";
 
+/// Keyring account holding an MCP server's bearer token.
+pub fn mcp_bearer_token_account(server_id: &str) -> String {
+    format!("{server_id}_bearer_token")
+}
+
+/// `token_ref` of bearer tokens from marketplace installs before 0.0.155,
+/// which stored the token under the bare server id instead of
+/// [`mcp_bearer_token_account`].
+pub const LEGACY_PENDING_BEARER_TOKEN_REF: &str = "pending";
+
 /// Keyring service name for client secrets
 pub const CLIENT_KEYRING_SERVICE: &str = "LocalRouter-Clients";
 
