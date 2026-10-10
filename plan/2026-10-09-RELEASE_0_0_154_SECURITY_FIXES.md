@@ -22,12 +22,29 @@ locally, and released.
 - [x] Build and run the app locally (`cargo tauri dev --no-watch`), exercise
   the changed paths against the dev server on 33625 (results below).
 - [x] Show the user the local run; CI passed on 363b4660 (run 37997438502).
-- [ ] Release on hold: the user asked to merge everything but not release
-  yet (2026-10-09). Trigger the Release workflow on master for 0.0.154
-  (non-prerelease) only on explicit go-ahead.
-- [ ] Monitor the release run; verify the published release, assets, updater
-  manifest and the Docker image build (first run with the checksum step).
-- [ ] Sync local master with the release version bump.
+- [x] Release went ahead on 2026-10-10 with everything on master at
+  4cce8f5b. Beyond the security fixes it includes: RouteLLM replaced by
+  decision routing policies (d661ab97), dashboard live traffic (f14f8895),
+  MCP gateway metrics (65cffbe4), catalog threshold default (cded9c01),
+  community PRs/issues #16, #19, #17, #18, #20, #21, #22 (see
+  2026-10-10-* plans), subscription usage tracking (12451826), the tray menu
+  use-after-free crash fix (2026-10-10-TRAY_MENU_USE_AFTER_FREE.md) and the
+  usage polling fixes (2026-10-10-USAGE_POLLING_DEFAULTS.md). Pre-release
+  reviews of the unreviewed commits found no config-compat problems; CI
+  passed on 4cce8f5b (run 38070102340).
+- [x] Release run 38071057465: version bump, all five platform builds,
+  GitHub release, snaps, Nix pin and post-release succeeded; v0.0.154 is
+  published (not draft/prerelease) and all five `latest.json` platform URLs
+  return 200. Docker run 38073290370 succeeded.
+- [x] Flatpak (both arches) failed: the AppIndicator modules added for #22
+  installed into `/app/lib64` (CMake GNUInstallDirs), so
+  libayatana-indicator's pkg-config check could not find ayatana-ido. Fixed
+  with `-DCMAKE_INSTALL_LIBDIR=lib` (645ef451); verified by building the
+  0.0.154 flatpak for both arches from the fixed manifest on the temporary
+  branch `ci/flatpak-verify` (run 38073643277), which also checks
+  `libayatana-appindicator3.so.1` is in `/app/lib`. The v0.0.154 release has
+  no `.flatpak` bundles; the verified bundles exist as that run's artifacts.
+- [x] Sync local master with the release version bump.
 
 ## Per-change impact, compatibility and production verification
 
