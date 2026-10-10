@@ -340,7 +340,7 @@ export const CLIENT_TEMPLATES: ClientTemplate[] = [
           },
         }, null, 2)
       },
-      description: 'Adds LocalRouter as an OpenAI-compatible provider. Configure permanently also sets defaultProvider/defaultModel in ~/.pi/agent/settings.json when LocalRouter is the sole provider.',
+      description: 'Adds LocalRouter as an OpenAI-compatible provider. Automatic configuration also makes LocalRouter the default in ~/.pi/agent/settings.json, but only when no default provider is set and no other custom provider is configured.',
     },
     docsUrl: 'https://pi.dev/docs/latest/models',
     supportsMcp: false,
