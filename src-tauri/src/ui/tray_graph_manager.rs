@@ -1041,6 +1041,13 @@ impl TrayGraphManager {
     async fn update_tray_graph_impl(&self) -> Result<(), anyhow::Error> {
         let app_handle = &self.app_handle;
 
+        // No tray (Linux without an AppIndicator library): skip rendering
+        // icons and menus nobody can see. The manager itself stays for the
+        // settings preview and the commands that hold it as state.
+        if app_handle.tray_by_id("main").is_none() {
+            return Ok(());
+        }
+
         // Get config and metrics collector from state
         let config_manager = app_handle
             .try_state::<ConfigManager>()

@@ -2318,37 +2318,27 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             let update_notification_state = Arc::new(ui::tray::UpdateNotificationState::new());
             app.manage(update_notification_state.clone());
 
-            // Setup system tray
-            // On Linux, the tray depends on libayatana-appindicator3 which may be
-            // missing or ABI-incompatible. The library panics rather than returning
-            // an error, so we catch both panics and errors to allow the app to
-            // continue without a tray icon.
-            #[cfg(target_os = "linux")]
-            {
-                use std::panic::{catch_unwind, AssertUnwindSafe};
-                match catch_unwind(AssertUnwindSafe(|| ui::tray::setup_tray(app))) {
-                    Ok(Ok(())) => {}
-                    Ok(Err(e)) => {
-                        error!(
-                            "Failed to initialize system tray (continuing without it): {e}"
-                        );
+            // Setup system tray. On Linux the tray backend panics (aborting
+            // the release build) when libayatana-appindicator3 cannot be
+            // loaded, so load it first and run without a tray if it fails.
+            // Everything else that touches the tray looks it up by id and
+            // does nothing when it is absent.
+            match ui::tray_support::check_tray_backend() {
+                Err(unavailable) => warn!("{unavailable}"),
+                Ok(()) => {
+                    #[cfg(target_os = "linux")]
+                    {
+                        if let Err(e) = ui::tray::setup_tray(app) {
+                            error!(
+                                "Failed to initialize system tray (continuing without it; \
+                                 closing the main window quits the app): {e}"
+                            );
+                        }
                     }
-                    Err(panic_info) => {
-                        let msg = panic_info
-                            .downcast_ref::<String>()
-                            .map(|s| s.as_str())
-                            .or_else(|| panic_info.downcast_ref::<&str>().copied())
-                            .unwrap_or("unknown panic");
-                        error!(
-                            "System tray panicked: {msg}. \
-                             Install libayatana-appindicator3 for tray support. \
-                             Continuing without system tray."
-                        );
-                    }
+                    #[cfg(not(target_os = "linux"))]
+                    ui::tray::setup_tray(app)?;
                 }
             }
-            #[cfg(not(target_os = "linux"))]
-            ui::tray::setup_tray(app)?;
 
             // Configure window for test mode
             if utils::test_mode::is_test_mode() {
@@ -2985,15 +2975,31 @@ async fn run_gui_mode() -> anyhow::Result<()> {
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                // Prevent the window from closing
-                api.prevent_close();
+                use ui::tray_support::{close_request_action, CloseRequestAction};
 
-                // Hide the window instead
-                if let Err(e) = window.hide() {
-                    tracing::error!("Failed to hide window: {}", e);
+                let tray_present = window.app_handle().tray_by_id("main").is_some();
+                match close_request_action(window.label(), tray_present) {
+                    CloseRequestAction::Hide => {
+                        // Keep running in the background; hide instead of closing.
+                        api.prevent_close();
+                        if let Err(e) = window.hide() {
+                            tracing::error!("Failed to hide window: {}", e);
+                        }
+                        if tray_present {
+                            tracing::info!(
+                                "Window close intercepted - app minimized to system tray"
+                            );
+                        }
+                    }
+                    CloseRequestAction::Quit => {
+                        // No tray to restore a hidden window from (or to quit
+                        // from), so closing the main window quits the app.
+                        // Exit explicitly: hidden popup windows would
+                        // otherwise keep the process alive.
+                        tracing::info!("Main window closed and no system tray - quitting");
+                        window.app_handle().exit(0);
+                    }
                 }
-
-                tracing::info!("Window close intercepted - app minimized to system tray");
             }
         })
         .build(tauri::generate_context!())

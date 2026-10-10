@@ -23,6 +23,7 @@ pub mod tray_format;
 pub mod tray_graph;
 pub mod tray_graph_manager;
 pub mod tray_menu;
+pub mod tray_support;
 
 // TODO: Implement UI integration
 // - Tauri command handlers

@@ -78,6 +78,9 @@ keyring = { workspace = true }
 tokio-util = { workspace = true }
 futures = { workspace = true }
 tempfile = "3.8"
+# Probing the Linux tray backend library before the tray is built
+# (see ui::tray_support).
+libloading = "0.8"
 
 # Talking to the NSStatusItem directly (see ui::tray_graph_manager) so the
 # menu bar icon can be sized before it is installed.

@@ -254,6 +254,11 @@ if wants flatpak; then
     "$OUT_DIR/flatpak/ai.localrouter.app.yml"
   render_template "$PACKAGING_DIR/flatpak/ai.localrouter.app.metainfo.xml" \
     "$OUT_DIR/flatpak/ai.localrouter.app.metainfo.xml"
+  # Source patches the manifest's `type: patch` entries point at (relative
+  # to the manifest). Copied verbatim: they are not templates, and patch
+  # text may legitimately contain `__NAME__`-like strings.
+  mkdir -p "$OUT_DIR/flatpak/patches"
+  cp "$PACKAGING_DIR"/flatpak/patches/*.patch "$OUT_DIR/flatpak/patches/"
 fi
 
 if wants snap; then
