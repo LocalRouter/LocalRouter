@@ -336,10 +336,15 @@ pub(crate) async fn finalize_metrics_and_monitor(
 
     // Per-account usage ledger: API-equivalent cost of subscription traffic
     // and spend of API keys, for the Dashboard's usage view.
-    let usage_account = state
-        .provider_registry
-        .get_provider_type_for_instance(&response.provider)
-        .and_then(|t| lr_usage::account_for_provider_type(&t));
+    let usage_account = provider_instance
+        .as_ref()
+        .and_then(|p| p.usage_account())
+        .or_else(|| {
+            state
+                .provider_registry
+                .get_provider_type_for_instance(&response.provider)
+                .and_then(|t| lr_usage::account_for_provider_type(&t))
+        });
     if let Some((tracker, account)) = lr_usage::global().zip(usage_account) {
         tracker.record_request(
             &account,

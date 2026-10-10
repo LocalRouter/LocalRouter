@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
 import { Gauge, KeyRound, RefreshCw, Trash2 } from "lucide-react"
@@ -46,6 +46,9 @@ const ACTIVE_INTERVALS: { value: number; label: string }[] = [
   { value: 900, label: "15 min" },
   { value: 1800, label: "30 min" },
 ]
+/** A settings change, computed from the settings as currently saved. */
+type ConfigChange = (current: UsageTrackingConfig) => Partial<UsageTrackingConfig>
+
 const IDLE_INTERVALS: { value: number; label: string }[] = [
   { value: 1800, label: "30 min" },
   { value: 3600, label: "1 hour" },
@@ -60,6 +63,7 @@ export function UsageTab() {
   const [polledProviders, setPolledProviders] = useState<ProviderInstanceInfo[]>([])
   const [forgetting, setForgetting] = useState<UsageAccountView | null>(null)
   const [now, setNow] = useState(() => Date.now())
+  const saving = useRef<Promise<void>>(Promise.resolve())
 
   const load = useCallback(async () => {
     try {
@@ -88,22 +92,41 @@ export function UsageTab() {
     invoke<UsagePollStatus[]>("get_usage_poll_status").then(setStatuses).catch(() => {})
   })
 
-  const save = async (next: UsageTrackingConfig) => {
-    const previous = config
-    setConfigState(next)
-    try {
-      await invoke("update_usage_tracking_config", {
-        config: next,
-      } satisfies UpdateUsageTrackingConfigParams)
-      setSnapshot(await invoke<UsageSnapshot>("get_usage_limits"))
-    } catch (e) {
-      setConfigState(previous)
-      toast.error(`Failed to save usage settings: ${e}`)
-    }
+  // The settings also change outside this tab (Dashboard, tray items added
+  // in the background).
+  useTauriListener("config-changed", () => {
+    invoke<UsageTrackingConfig>("get_usage_tracking_config").then(setConfigState).catch(() => {})
+  })
+
+  // Each change is merged into the settings as saved right now, not the copy
+  // this tab loaded, so changes made elsewhere meanwhile survive. Saves run
+  // one at a time for the same reason.
+  const save = (change: ConfigChange) => {
+    const shown = config
+    if (shown) setConfigState({ ...shown, ...change(shown) })
+    saving.current = saving.current.then(async () => {
+      try {
+        const current = await invoke<UsageTrackingConfig>("get_usage_tracking_config")
+        await invoke("update_usage_tracking_config", {
+          config: { ...current, ...change(current) },
+        } satisfies UpdateUsageTrackingConfigParams)
+        const [saved, snap] = await Promise.all([
+          invoke<UsageTrackingConfig>("get_usage_tracking_config"),
+          invoke<UsageSnapshot>("get_usage_limits"),
+        ])
+        setConfigState(saved)
+        setSnapshot(snap)
+      } catch (e) {
+        toast.error(`Failed to save usage settings: ${e}`)
+        invoke<UsageTrackingConfig>("get_usage_tracking_config")
+          .then(setConfigState)
+          .catch(() => {})
+      }
+    })
   }
 
   if (!config) return null
-  const update = (change: Partial<UsageTrackingConfig>) => save({ ...config, ...change })
+  const update = (change: Partial<UsageTrackingConfig>) => save(() => change)
   const accounts = snapshot?.accounts ?? []
   const refresh = async () => {
     try {
@@ -148,6 +171,7 @@ export function UsageTab() {
             <div className="ml-4 space-y-2 border-l pl-4">
               {polledProviders.map((p) => {
                 const excluded = config.poll_excluded_providers
+                const name = p.instance_name
                 return (
                   <SwitchRow
                     key={p.instance_name}
@@ -156,10 +180,9 @@ export function UsageTab() {
                     checked={!excluded.includes(p.instance_name)}
                     disabled={!config.enabled}
                     onChange={(on) =>
-                      update({
-                        poll_excluded_providers: on
-                          ? excluded.filter((name) => name !== p.instance_name)
-                          : [...excluded, p.instance_name],
+                      save((c) => {
+                        const others = c.poll_excluded_providers.filter((n) => n !== name)
+                        return { poll_excluded_providers: on ? others : [...others, name] }
                       })
                     }
                     icon={<ProviderIcon providerId={p.provider_type} size={14} />}
@@ -346,16 +369,17 @@ function AccountRow({
 }: {
   account: UsageAccountView
   config: UsageTrackingConfig
-  onChange: (next: UsageTrackingConfig) => void
+  onChange: (change: ConfigChange) => void
   onForget: () => void
 }) {
   const override = config.plans[a.id]
-  const setOverride = (plan: string | null, price: number | null) => {
-    const plans = { ...config.plans }
-    if (plan === null && price === null) delete plans[a.id]
-    else plans[a.id] = { plan, monthly_price_usd: price }
-    onChange({ ...config, plans })
-  }
+  const setOverride = (plan: string | null, price: number | null) =>
+    onChange((c) => {
+      const plans = { ...c.plans }
+      if (plan === null && price === null) delete plans[a.id]
+      else plans[a.id] = { plan, monthly_price_usd: price }
+      return { plans }
+    })
   const hidden = config.hidden_accounts.includes(a.id)
   return (
     <div className="flex flex-wrap items-center gap-3 px-3 py-2.5">
@@ -408,11 +432,9 @@ function AccountRow({
           id={`hide-${a.id}`}
           checked={!hidden}
           onCheckedChange={(show) =>
-            onChange({
-              ...config,
-              hidden_accounts: show
-                ? config.hidden_accounts.filter((h) => h !== a.id)
-                : [...config.hidden_accounts, a.id],
+            onChange((c) => {
+              const others = c.hidden_accounts.filter((h) => h !== a.id)
+              return { hidden_accounts: show ? others : [...others, a.id] }
             })
           }
         />

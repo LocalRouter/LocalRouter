@@ -15,20 +15,23 @@
 //!
 //! It also forwards tracker changes to the UI (`usage-limits-changed`) and
 //! the tray (usage items redraw; newly seen subscriptions are added to the
-//! tray stats items).
+//! tray stats items), and keeps the tracker's copy of the `usage_tracking`
+//! settings in step with the app config.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use lr_config::{ConfigManager, UsageTrackingConfig};
 use lr_providers::registry::ProviderRegistry;
 use lr_usage::fetch::{self, FetchError};
 use lr_usage::{AccountKind, AccountRef, CreditsReading, DataSource, UsageReport, UsageTracker};
 use parking_lot::{Mutex, RwLock};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Listener, Manager};
 use tokio::sync::Notify;
+use tokio_util::sync::CancellationToken;
 
 /// Requests for an account within this long make it "active".
 const ACTIVE_WINDOW_SECS: i64 = 10 * 60;
@@ -60,6 +63,8 @@ pub struct UsagePoller {
     statuses: RwLock<BTreeMap<String, UsagePollStatus>>,
     schedules: Mutex<HashMap<String, Schedule>>,
     tray_sync_running: AtomicBool,
+    /// Stops the poll loop.
+    shutdown: CancellationToken,
 }
 
 fn now() -> i64 {
@@ -76,6 +81,7 @@ impl UsagePoller {
             statuses: RwLock::new(BTreeMap::new()),
             schedules: Mutex::new(HashMap::new()),
             tray_sync_running: AtomicBool::new(false),
+            shutdown: CancellationToken::new(),
         })
     }
 
@@ -97,16 +103,59 @@ impl UsagePoller {
         self.tracker.spawn_maintenance();
         self.schedule_tray_sync(&app);
 
+        // Settings written anywhere (other commands, a reload) reach the
+        // tracker: right away through `config-changed`, and on every
+        // scheduler tick for writers that do not emit it.
+        let weak = Arc::downgrade(self);
+        let app_for_config = app.clone();
+        app.listen("config-changed", move |_| {
+            if let Some(poller) = weak.upgrade() {
+                poller.sync_config(&app_for_config);
+            }
+        });
+
         let poller = self.clone();
         tokio::spawn(async move {
             loop {
-                poller.poll_once().await;
+                poller.sync_config(&app);
                 tokio::select! {
+                    _ = poller.shutdown.cancelled() => break,
+                    _ = poller.poll_once() => {}
+                }
+                tokio::select! {
+                    _ = poller.shutdown.cancelled() => break,
                     _ = tokio::time::sleep(Duration::from_secs(SCHEDULER_TICK_SECS)) => {}
                     _ = poller.wake.notified() => {}
                 }
             }
         });
+    }
+
+    /// Stop the poll loop (app exit). An in-flight poll is abandoned.
+    pub fn shutdown(&self) {
+        self.shutdown.cancel();
+    }
+
+    /// Apply the app config's `usage_tracking` settings when they differ
+    /// from the tracker's.
+    fn sync_config(&self, app: &AppHandle) {
+        if let Some(config_manager) = app.try_state::<ConfigManager>() {
+            self.apply_config(config_manager.get().usage_tracking);
+        }
+    }
+
+    /// Hand changed settings to the tracker, polling again right away when
+    /// the allowed sources changed. Idempotent.
+    pub fn apply_config(&self, config: UsageTrackingConfig) {
+        let previous = self.tracker.config();
+        if previous == config {
+            return;
+        }
+        let refresh = sources_changed(&previous, &config);
+        self.tracker.set_config(config);
+        if refresh {
+            self.refresh_now();
+        }
     }
 
     /// Add newly seen subscriptions to the tray stats items (one sync at a
@@ -417,8 +466,13 @@ impl UsagePoller {
             return;
         }
         let mut result = fetch::fetch_claude_usage(&self.client, &login.access_token).await;
-        if let Ok(report) = &mut result {
-            report.plan = report.plan.take().or(login.plan.clone());
+        match &mut result {
+            Ok(report) => report.plan = report.plan.take().or(login.plan.clone()),
+            // Re-read the login next time: Claude Code may have replaced it.
+            Err(FetchError::Unauthorized) => {
+                lr_usage::cli_logins::forget_cached_claude_code_login()
+            }
+            Err(_) => {}
         }
         self.finish(id, label, &account, result, DataSource::CliLogin);
     }
@@ -458,6 +512,14 @@ impl UsagePoller {
         }
         self.finish(id, label, &account, result, DataSource::CliLogin);
     }
+}
+
+/// Whether a settings change alters what is polled.
+fn sources_changed(previous: &UsageTrackingConfig, next: &UsageTrackingConfig) -> bool {
+    previous.enabled != next.enabled
+        || previous.poll_provider_apis != next.poll_provider_apis
+        || previous.poll_excluded_providers != next.poll_excluded_providers
+        || previous.read_cli_logins != next.read_cli_logins
 }
 
 /// Poll bookkeeping for one source.
@@ -568,6 +630,62 @@ mod tests {
             last_poll: Some(t),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn only_source_settings_trigger_a_refresh() {
+        let base = UsageTrackingConfig::default();
+        let mut c = base.clone();
+        c.tray_items_added
+            .push("anthropic:subscription|seven_day".into());
+        c.hidden_accounts.push("openai:api".into());
+        c.poll_interval_secs = 60;
+        assert!(!sources_changed(&base, &c));
+        for change in [
+            |c: &mut UsageTrackingConfig| c.enabled = false,
+            |c: &mut UsageTrackingConfig| c.poll_provider_apis = false,
+            |c: &mut UsageTrackingConfig| c.read_cli_logins = true,
+            |c: &mut UsageTrackingConfig| c.poll_excluded_providers.push("x".into()),
+        ] {
+            let mut c = base.clone();
+            change(&mut c);
+            assert!(sources_changed(&base, &c));
+        }
+    }
+
+    #[test]
+    fn apply_config_reaches_the_tracker_and_repolls_on_source_changes() {
+        let tracker = Arc::new(UsageTracker::new(UsageTrackingConfig::default()));
+        let poller = UsagePoller::new(tracker.clone(), Arc::new(ProviderRegistry::new()));
+        let backed_off = || {
+            poller
+                .schedules
+                .lock()
+                .insert("chatgpt_oauth".into(), polled_at(1_000));
+        };
+        backed_off();
+
+        let mut config = UsageTrackingConfig::default();
+        config.hidden_accounts.push("openai:api".into());
+        poller.apply_config(config.clone());
+        assert_eq!(tracker.config(), config);
+        assert!(
+            !poller.schedules.lock().is_empty(),
+            "display-only change keeps the schedule"
+        );
+
+        config.read_cli_logins = true;
+        poller.apply_config(config.clone());
+        assert!(tracker.config().read_cli_logins);
+        assert!(
+            poller.schedules.lock().is_empty(),
+            "source change polls again now"
+        );
+
+        // Unchanged settings are a no-op.
+        backed_off();
+        poller.apply_config(config);
+        assert!(!poller.schedules.lock().is_empty());
     }
 
     #[test]

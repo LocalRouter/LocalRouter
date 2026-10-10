@@ -274,7 +274,7 @@ fn window_view(
     let used = r.used_percent;
     let stale = r.resets_at.is_some_and(|t| t <= now);
     let start = match (r.resets_at, r.window_secs) {
-        (Some(reset), Some(len)) if len > 0 => Some(reset - len),
+        (Some(reset), Some(len)) if len > 0 => reset.checked_sub(len),
         _ => None,
     };
 
@@ -287,8 +287,10 @@ fn window_view(
         PaceStatus::Ok
     };
     if let (Some(start), Some(reset), false) = (start, r.resets_at, stale) {
-        let len = (reset - start) as f64;
-        let elapsed = (now - start).clamp(0, reset - start) as f64;
+        let len = reset.saturating_sub(start) as f64;
+        let elapsed = now
+            .saturating_sub(start)
+            .clamp(0, reset.saturating_sub(start)) as f64;
         let frac = elapsed / len;
         elapsed_fraction = Some(frac);
         if frac >= MIN_PROJECTION_ELAPSED {
@@ -296,7 +298,8 @@ fn window_view(
             projected_percent = Some(projected);
             if used < 100.0 && used > 0.0 {
                 let rate = used / elapsed; // points per second
-                let eta = now + ((100.0 - used) / rate).round() as i64;
+                                           // `as` saturates; so does the add.
+                let eta = now.saturating_add(((100.0 - used) / rate).round() as i64);
                 if eta < reset {
                     limit_eta = Some(eta);
                 }
@@ -316,7 +319,7 @@ fn window_view(
     let (slots, current_slot, slot_secs) = match (start, r.window_secs) {
         (Some(start), Some(len)) if !stale => {
             let (n, slot_len) = slot_layout(len);
-            let current = (((now - start).max(0)) / slot_len).min(n as i64 - 1) as usize;
+            let current = (now.saturating_sub(start).max(0) / slot_len).min(n as i64 - 1) as usize;
             (
                 usage_slots(w, ledger, start, slot_len, n, used, now),
                 current,
@@ -328,7 +331,7 @@ fn window_view(
 
     let api_equivalent_usd = start.filter(|_| !stale).map(|s| {
         ledger
-            .range(s - s.rem_euclid(crate::tracker::LEDGER_BUCKET_SECS)..)
+            .range(s.saturating_sub(s.rem_euclid(crate::tracker::LEDGER_BUCKET_SECS))..)
             .filter(|(b, _)| **b + crate::tracker::LEDGER_BUCKET_SECS > s)
             .map(|(_, e)| e.cost_usd)
             .sum()
@@ -377,10 +380,14 @@ fn usage_slots(
     used: f64,
     now: i64,
 ) -> Vec<f64> {
-    let slot_of = |t: i64| (((t - start).max(0)) / slot_len).min(n as i64 - 1) as usize;
+    let slot_of = |t: i64| (t.saturating_sub(start).max(0) / slot_len).min(n as i64 - 1) as usize;
     let mut cost = vec![0.0; n];
-    for (bucket, e) in ledger.range(start..=now) {
-        cost[slot_of(*bucket)] += e.cost_usd;
+    // A reset further ahead than the window length (clock skew, bad data)
+    // puts the start in the future: no traffic belongs to it yet.
+    if start <= now {
+        for (bucket, e) in ledger.range(start..=now) {
+            cost[slot_of(*bucket)] += e.cost_usd;
+        }
     }
     let total: f64 = cost.iter().sum();
     if total > 0.0 {
@@ -499,6 +506,89 @@ mod tests {
         assert_eq!(w.pace, PaceStatus::Over);
         // 50 points in a quarter week → 100 at half a week.
         assert_eq!(w.limit_eta, Some(start + WEEK / 2));
+    }
+
+    fn stored(used: f64, resets_at: Option<i64>, window_secs: Option<i64>) -> StoredWindow {
+        StoredWindow {
+            reading: WindowReading {
+                id: "seven_day".into(),
+                label: "Weekly".into(),
+                used_percent: used,
+                resets_at,
+                window_secs,
+            },
+            updated_at: 0,
+            source: DataSource::ProxyHeaders,
+            samples: vec![(0, used), (i64::MAX, used), (i64::MIN, used)],
+            history: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn extreme_stored_numbers_do_not_overflow() {
+        // State files from before readings were sanitized can hold anything.
+        let mut ledger = std::collections::BTreeMap::new();
+        ledger.insert(0, LedgerEntry::default());
+        let now = 1_000_000;
+        for (reset, len) in [
+            (Some(i64::MIN), Some(i64::MAX)),
+            (Some(i64::MAX), Some(i64::MAX)),
+            (Some(i64::MAX), Some(1)),
+            (Some(now + 1), Some(i64::MAX)),
+            (Some(now + 1), Some(1)),
+        ] {
+            for used in [0.0, 1e-300, 50.0, 1e300] {
+                let v = window_view(&stored(used, reset, len), &ledger, Some(100.0), now);
+                if let (Some(eta), Some(reset)) = (v.limit_eta, reset) {
+                    assert!(eta >= now && eta < reset);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn eta_saturates_for_a_tiny_rate() {
+        // 1e-300 points so far: the limit is effectively never reached.
+        let start = 1_000 * 86_400;
+        let w = stored(1e-300, Some(start + WEEK), Some(WEEK));
+        let v = window_view(&w, &Default::default(), None, start + WEEK / 2);
+        assert_eq!(v.limit_eta, None);
+    }
+
+    #[test]
+    fn reset_beyond_the_window_length_does_not_panic() {
+        // A 5-hour window resetting in 10 hours (clock skew): its start is
+        // in the future, with traffic already in the ledger.
+        let t = UsageTracker::new(UsageTrackingConfig::default());
+        let claude = AccountRef::subscription("anthropic");
+        let now = 1_000 * 86_400;
+        t.record_request_at(
+            &claude,
+            LedgerEntry {
+                requests: 1,
+                cost_usd: 1.0,
+                ..Default::default()
+            },
+            now,
+        );
+        t.apply_at(
+            &claude,
+            &UsageReport {
+                windows: vec![WindowReading {
+                    id: "five_hour".into(),
+                    label: "5-hour session".into(),
+                    used_percent: 10.0,
+                    resets_at: Some(now + 36_000),
+                    window_secs: Some(18_000),
+                }],
+                ..Default::default()
+            },
+            DataSource::ProxyHeaders,
+            now,
+        );
+        let w = &t.snapshot_at(now).accounts[0].windows[0];
+        assert_eq!(w.current_slot, 0);
+        assert_eq!(w.slots.iter().sum::<f64>(), 0.0);
     }
 
     #[test]

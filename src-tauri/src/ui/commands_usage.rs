@@ -39,34 +39,43 @@ pub async fn get_usage_tracking_config(
 }
 
 /// Replace the `usage_tracking` settings; takes effect immediately.
+///
+/// `tray_items_added` is LocalRouter's own bookkeeping, appended to in the
+/// background: entries already recorded are kept even when `config` was
+/// read before they were added, so a stale copy cannot bring back a tray
+/// item the user removed.
 #[tauri::command]
 pub async fn update_usage_tracking_config(
     config: UsageTrackingConfig,
     app: AppHandle,
     config_manager: State<'_, ConfigManager>,
-    tracker: State<'_, Arc<UsageTracker>>,
     poller: State<'_, Arc<UsagePoller>>,
 ) -> Result<(), String> {
     let mut config = config;
     config.poll_interval_secs = config.poll_interval_secs.clamp(60, 3_600);
     config.idle_poll_interval_secs = config.idle_poll_interval_secs.clamp(300, 86_400);
-    let previous = config_manager.get().usage_tracking;
     config_manager
-        .update(|cfg| cfg.usage_tracking = config.clone())
+        .update(|cfg| cfg.usage_tracking = merge_usage_config(&cfg.usage_tracking, config))
         .map_err(|e| e.to_string())?;
     config_manager.save().await.map_err(|e| e.to_string())?;
-    let sources_changed = previous.enabled != config.enabled
-        || previous.poll_provider_apis != config.poll_provider_apis
-        || previous.poll_excluded_providers != config.poll_excluded_providers
-        || previous.read_cli_logins != config.read_cli_logins;
-    tracker.set_config(config);
-    if sources_changed {
-        poller.refresh_now();
-    }
+    poller.apply_config(config_manager.get().usage_tracking);
     if let Some(tray) = app.try_state::<Arc<crate::ui::tray_graph_manager::TrayGraphManager>>() {
         tray.usage_limits_changed();
     }
     Ok(())
+}
+
+/// `incoming` with every `tray_items_added` entry of `current` kept.
+fn merge_usage_config(
+    current: &UsageTrackingConfig,
+    mut incoming: UsageTrackingConfig,
+) -> UsageTrackingConfig {
+    for key in &current.tray_items_added {
+        if !incoming.tray_items_added.contains(key) {
+            incoming.tray_items_added.push(key.clone());
+        }
+    }
+    incoming
 }
 
 /// Forget everything recorded for one account.
@@ -76,4 +85,32 @@ pub async fn forget_usage_account(
     tracker: State<'_, Arc<UsageTracker>>,
 ) -> Result<bool, String> {
     Ok(tracker.forget(&account_id))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stale_save_keeps_tray_items_added_meanwhile() {
+        let loaded = UsageTrackingConfig::default();
+        let mut current = loaded.clone();
+        current
+            .tray_items_added
+            .push("anthropic:subscription|seven_day".into());
+        let mut incoming = loaded;
+        incoming.read_cli_logins = true;
+        incoming
+            .tray_items_added
+            .push("openai:subscription|seven_day".into());
+        let merged = merge_usage_config(&current, incoming);
+        assert!(merged.read_cli_logins);
+        assert_eq!(
+            merged.tray_items_added,
+            vec![
+                "openai:subscription|seven_day".to_string(),
+                "anthropic:subscription|seven_day".to_string(),
+            ]
+        );
+    }
 }
