@@ -314,6 +314,40 @@ export const CLIENT_TEMPLATES: ClientTemplate[] = [
     // See: https://docs.openclaw.ai/cli/models
     binaryNames: ['openclaw'],
   },
+  {
+    id: 'pi',
+    name: 'Pi',
+    description: 'Minimal open-source coding agent with custom OpenAI-compatible providers.',
+    category: 'coding_assistants',
+    icon: 'pi',
+    defaultMode: 'llm_only',
+    setupType: 'config_file',
+    configFile: {
+      path: '{{HOME_DIR}}/.pi/agent/models.json',
+      jsonSnippet: ({ models }) => {
+        const modelEntries = (models.length > 0 ? models : [{ id: 'localrouter/auto' }]).map((m) => ({
+          id: m.id,
+          name: m.id,
+        }))
+        return JSON.stringify({
+          providers: {
+            localrouter: {
+              baseUrl: '{{BASE_URL}}/v1',
+              api: 'openai-completions',
+              apiKey: '{{CLIENT_SECRET}}',
+              models: modelEntries,
+            },
+          },
+        }, null, 2)
+      },
+      description: 'Adds LocalRouter as an OpenAI-compatible provider. Automatic configuration also makes LocalRouter the default in ~/.pi/agent/settings.json, but only when no default provider is set and no other custom provider is configured.',
+    },
+    docsUrl: 'https://pi.dev/docs/latest/models',
+    supportsMcp: false,
+    supportsProxy: false,
+    supportsLlm: true,
+    binaryNames: ['pi'],
+  },
 
   // === IDE Extensions (VS Code) ===
   {

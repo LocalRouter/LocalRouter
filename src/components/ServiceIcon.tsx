@@ -121,6 +121,7 @@ const ICON_MAP: Record<string, string> = {
   lobechat: 'lobechat.png',
   goose: 'goose.png',
   openclaw: 'openclaw.png',
+  pi: 'pi.svg',
   cline: 'cline.png',
   'roo-code': 'roo-code.png',
   jetbrains: 'jetbrains.svg',
@@ -247,6 +248,12 @@ const EMOJI_MAP: Record<string, string> = {
 }
 
 /**
+ * Keys too short to match as a substring of another service name: "pi" would
+ * otherwise claim "pinecone", "openapi", "copilot" and similar names.
+ */
+const EXACT_MATCH_ONLY = new Set(['pi'])
+
+/**
  * Normalize and find a matching icon for a service name
  */
 function findMatch(service: string): { iconFile?: string; emoji?: string } {
@@ -259,14 +266,14 @@ function findMatch(service: string): { iconFile?: string; emoji?: string } {
 
   // Pattern match - check if the service name contains a known key
   for (const [key, iconFile] of Object.entries(ICON_MAP)) {
-    if (normalized.includes(key)) {
+    if (!EXACT_MATCH_ONLY.has(key) && normalized.includes(key)) {
       return { iconFile, emoji: EMOJI_MAP[key] }
     }
   }
 
   // Emoji-only match
   for (const [key, emoji] of Object.entries(EMOJI_MAP)) {
-    if (normalized.includes(key)) {
+    if (!EXACT_MATCH_ONLY.has(key) && normalized.includes(key)) {
       return { emoji }
     }
   }

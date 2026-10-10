@@ -8,13 +8,19 @@ use std::path::{Path, PathBuf};
 /// Write data to path via temp file + rename, backing up any existing file first.
 /// Returns the backup path if one was created.
 pub fn write_with_backup(path: &Path, data: &[u8]) -> Result<Option<PathBuf>, String> {
-    let backup_dir = dirs::data_local_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join("localrouter-backups");
-    write_with_backup_in(path, data, &backup_dir)
+    write_with_backup_in(path, data, &default_backup_dir())
 }
 
-fn write_with_backup_in(
+/// Shared directory for config backups. Only the newest backups in it are kept.
+pub fn default_backup_dir() -> PathBuf {
+    dirs::data_local_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("localrouter-backups")
+}
+
+/// [`write_with_backup`] with an explicit backup directory, so tests can keep
+/// their backups (and the pruning of old ones) out of the user's real directory.
+pub fn write_with_backup_in(
     path: &Path,
     data: &[u8],
     backup_dir: &Path,
