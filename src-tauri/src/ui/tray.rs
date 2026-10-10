@@ -575,14 +575,15 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
 
 /// Rebuild the system tray menu with updated API keys
 pub fn rebuild_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+    // No tray (Linux without an AppIndicator library): nothing to rebuild.
+    let Some(tray) = app.tray_by_id("main") else {
+        return Ok(());
+    };
     debug!("Rebuilding system tray menu");
 
     let menu = build_tray_menu(app)?;
-
-    if let Some(tray) = app.tray_by_id("main") {
-        tray.set_menu(Some(menu))?;
-        debug!("System tray menu updated");
-    }
+    tray.set_menu(Some(menu))?;
+    debug!("System tray menu updated");
 
     Ok(())
 }

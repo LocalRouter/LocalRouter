@@ -180,6 +180,7 @@ with AGPL-3.0-or-later distribution.
 | libappindicator | 0.9.0 | Apache-2.0 OR MIT | — |
 | libc | 0.2.180 | MIT OR Apache-2.0 | https://github.com/rust-lang/libc |
 | libloading | 0.7.4 | ISC | https://github.com/nagisa/rust_libloading/ |
+| libloading | 0.8.9 | ISC | https://github.com/nagisa/rust_libloading/ |
 | libsqlite3-sys | 0.30.1 | MIT | https://github.com/rusqlite/rusqlite |
 | linux-keyutils | 0.2.4 | Apache-2.0 OR MIT | https://github.com/landhb/linux-keyutils |
 | lock_api | 0.4.14 | MIT OR Apache-2.0 | https://github.com/Amanieu/parking_lot |
