@@ -57,6 +57,7 @@ pub async fn update_usage_tracking_config(
     config_manager.save().await.map_err(|e| e.to_string())?;
     let sources_changed = previous.enabled != config.enabled
         || previous.poll_provider_apis != config.poll_provider_apis
+        || previous.poll_excluded_providers != config.poll_excluded_providers
         || previous.read_cli_logins != config.read_cli_logins;
     tracker.set_config(config);
     if sources_changed {

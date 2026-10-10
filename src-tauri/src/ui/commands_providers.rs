@@ -8,7 +8,7 @@ use std::sync::Arc;
 use lr_config::ConfigManager;
 use lr_providers::registry::ProviderRegistry;
 use serde::{Deserialize, Serialize};
-use tauri::{Emitter, State};
+use tauri::{Emitter, Manager, State};
 
 // ============================================================================
 // Provider API Key Management Commands
@@ -427,11 +427,19 @@ pub async fn rename_provider_instance(
             if let Some(provider) = cfg.providers.iter_mut().find(|p| p.name == instance_name) {
                 provider.name = new_name.clone();
             }
+            for excluded in &mut cfg.usage_tracking.poll_excluded_providers {
+                if *excluded == instance_name {
+                    *excluded = new_name.clone();
+                }
+            }
         })
         .map_err(|e| e.to_string())?;
 
     // Persist to disk
     config_manager.save().await.map_err(|e| e.to_string())?;
+    if let Some(tracker) = app.try_state::<Arc<lr_usage::UsageTracker>>() {
+        tracker.set_config(config_manager.get().usage_tracking);
+    }
 
     // Update health cache
     app_state.health_cache.remove_provider(&instance_name);

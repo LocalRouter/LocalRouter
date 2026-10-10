@@ -37,6 +37,12 @@ impl Middleware for TraceHeaderMiddleware {
 /// host and how they authenticate; nothing is stored for unknown hosts.
 struct UsageObserverMiddleware;
 
+/// Request extension marking LocalRouter's own usage/credits polls, which the
+/// usage observer skips: a poll is not traffic, and counting it would keep
+/// the account on the active poll rate forever.
+#[derive(Clone, Copy, Debug)]
+pub struct UsagePoll;
+
 #[async_trait::async_trait]
 impl Middleware for UsageObserverMiddleware {
     async fn handle(
@@ -48,6 +54,9 @@ impl Middleware for UsageObserverMiddleware {
         let Some(tracker) = lr_usage::global().filter(|t| t.is_enabled()) else {
             return next.run(req, extensions).await;
         };
+        if extensions.get::<UsagePoll>().is_some() {
+            return next.run(req, extensions).await;
+        }
         let host = req.url().host_str().unwrap_or_default().to_string();
         let path = req.url().path().to_string();
         let request_headers = req.headers().clone();

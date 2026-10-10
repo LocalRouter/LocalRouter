@@ -39,6 +39,7 @@ import type {
 let mockUsageConfig: UsageTrackingConfig = {
   enabled: true,
   poll_provider_apis: true,
+  poll_excluded_providers: [],
   read_cli_logins: false,
   poll_interval_secs: 300,
   idle_poll_interval_secs: 3600,

@@ -3606,6 +3606,8 @@ export interface UsagePlanOverride {
 export interface UsageTrackingConfig {
   enabled: boolean
   poll_provider_apis: boolean
+  /** Provider instances whose usage endpoints are not queried. */
+  poll_excluded_providers: string[]
   read_cli_logins: boolean
   /** Poll interval while requests for the account keep coming in. */
   poll_interval_secs: number

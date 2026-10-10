@@ -567,7 +567,12 @@ impl ModelProvider for OpenRouterProvider {
 
     async fn check_credits(&self) -> Option<ProviderCreditsInfo> {
         let url = format!("{}/auth/key", self.base_url);
-        let response = self.build_request(&url).send().await.ok()?;
+        let response = self
+            .build_request(&url)
+            .with_extension(crate::http_client::UsagePoll)
+            .send()
+            .await
+            .ok()?;
         if !response.status().is_success() {
             return None;
         }
