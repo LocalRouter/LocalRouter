@@ -76,7 +76,7 @@ impl OpenAICompatibleProvider {
         Self {
             name,
             api_key,
-            base_url: base_url.trim_end_matches('/').to_string(),
+            base_url: base_url.trim().trim_end_matches('/').to_string(),
             extra_headers: HeaderMap::new(),
             client: crate::http_client::default_client(),
             systemone_gateway: None,
@@ -1036,5 +1036,25 @@ mod tests {
             .unwrap();
         assert_openai_stream(&collect(stream).await);
         assert!(asked_for_usage(&received_body(&server).await));
+    }
+
+    #[test]
+    fn test_base_url_trims_whitespace() {
+        let provider = OpenAICompatibleProvider::new(
+            "test".to_string(),
+            "  https://api.deepseek.com/v1  \n".to_string(),
+            None,
+        );
+        assert_eq!(provider.base_url, "https://api.deepseek.com/v1");
+    }
+
+    #[test]
+    fn test_base_url_trims_whitespace_and_trailing_slash() {
+        let provider = OpenAICompatibleProvider::new(
+            "test".to_string(),
+            "  http://localhost:4891/v1/  ".to_string(),
+            None,
+        );
+        assert_eq!(provider.base_url, "http://localhost:4891/v1");
     }
 }

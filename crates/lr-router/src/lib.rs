@@ -1590,6 +1590,7 @@ impl Router {
                     model: model.clone(),
                     retry_after_secs: backoff.retry_after_secs,
                 });
+                attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "backoff", "error": &backoff.reason}));
                 continue;
             }
 
@@ -1605,6 +1606,7 @@ impl Router {
                     | free_tier::ModelFreeStatus::FreeModel => { /* allow */ }
                     free_tier::ModelFreeStatus::NotFree => {
                         debug!("Skipping {}/{} in free-tier-only mode", provider, model);
+                        attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "not_free"}));
                         continue;
                     }
                 }
@@ -1620,6 +1622,7 @@ impl Router {
                         model: model.clone(),
                         retry_after_secs: retry_secs,
                     });
+                    attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "cost_backoff", "error": format!("Cost backoff ({}s)", retry_secs)}));
                     continue;
                 }
             }
@@ -1635,6 +1638,7 @@ impl Router {
                     model: model.clone(),
                     retry_after_secs: 60,
                 });
+                attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "rate_limited", "error": e.to_string()}));
                 continue;
             }
 
@@ -3156,6 +3160,52 @@ mod tests {
             serde_json::json!({"outcome": "no_tool_support"}),
         ];
         assert_eq!(summarize_attempt_outcomes(&attempts), "no_tool_support: 1");
+    }
+
+    #[test]
+    fn test_routing_metadata_records_all_skips_alongside_success() {
+        // Regression: the streaming auto-router used to silently skip
+        // backoff'd / not_free / cost_backoff / rate_limited candidates
+        // without pushing to `attempts`, making the routing UI claim
+        // "1 attempt across 2 candidate models" when in reality two
+        // candidates were evaluated. Both code paths (non-streaming +
+        // streaming) now push skip outcomes — `build_routing_metadata`
+        // reflects every entry in total_attempts and the attempts array.
+        let candidates = vec![
+            "Minimax Starter/MiniMax-M3".to_string(),
+            "MiniMax Max/MiniMax-M3".to_string(),
+        ];
+        let attempts = vec![
+            serde_json::json!({
+                "provider": "Minimax Starter",
+                "model": "MiniMax-M3",
+                "outcome": "backoff",
+                "error": "rate limited (available in 60s)",
+            }),
+            serde_json::json!({
+                "provider": "MiniMax Max",
+                "model": "MiniMax-M3",
+                "outcome": "success",
+                "duration_ms": 4165,
+            }),
+        ];
+
+        let meta = build_routing_metadata(&None, None, &candidates, attempts, Some(1));
+
+        assert_eq!(meta["candidate_models"].as_array().unwrap().len(), 2);
+        assert_eq!(meta["total_attempts"].as_u64().unwrap(), 2);
+        assert_eq!(meta["attempts"].as_array().unwrap().len(), 2);
+        assert_eq!(meta["successful_attempt"].as_u64().unwrap(), 1);
+        assert_eq!(
+            meta["attempts"][0]["provider"].as_str().unwrap(),
+            "Minimax Starter"
+        );
+        assert_eq!(meta["attempts"][0]["outcome"].as_str().unwrap(), "backoff");
+        assert_eq!(
+            meta["attempts"][1]["provider"].as_str().unwrap(),
+            "MiniMax Max"
+        );
+        assert_eq!(meta["attempts"][1]["outcome"].as_str().unwrap(), "success");
     }
 
     #[test]
