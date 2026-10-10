@@ -1,20 +1,23 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import type { GraphData, TimeRange } from '@/types/tauri-commands'
+import type {
+  GetTrafficTimelineParams,
+  TimeRange,
+  TrafficTimeline,
+} from '@/types/tauri-commands'
 import { RANGES } from './activity-data'
 
-/** Coalesces bursts of completed requests into one metrics read. */
+/** Coalesces bursts of completed requests into one traffic read. */
 const REFRESH_DEBOUNCE_MS = 400
 
 export function useHomeActivity(range: TimeRange) {
   const [revision, setRevision] = useState(0)
-  const [metrics, setMetrics] = useState<{
+  const [traffic, setTraffic] = useState<{
     range: TimeRange
-    llm: GraphData | null
-    mcp: GraphData | null
-    cost: GraphData | null
+    /** `null` when the read failed. */
+    timeline: TrafficTimeline | null
   } | null>(null)
-  const [metricsLoading, setMetricsLoading] = useState(true)
+  const [trafficLoading, setTrafficLoading] = useState(true)
   const debounceRef = useRef<ReturnType<typeof setTimeout>>()
 
   useEffect(() => {
@@ -28,30 +31,22 @@ export function useHomeActivity(range: TimeRange) {
 
   useEffect(() => {
     let cancelled = false
-    setMetricsLoading(true)
-    Promise.allSettled([
-      invoke<GraphData>('get_global_metrics', {
-        timeRange: range,
-        metricType: 'requests',
-      }),
-      invoke<GraphData>('get_global_mcp_metrics', {
-        timeRange: range,
-        metricType: 'requests',
-      }),
-      invoke<GraphData>('get_global_metrics', {
-        timeRange: range,
-        metricType: 'cost',
-      }),
-    ]).then(([llm, mcp, cost]) => {
-      if (cancelled) return
-      setMetrics({
-        range,
-        llm: llm.status === 'fulfilled' ? llm.value : null,
-        mcp: mcp.status === 'fulfilled' ? mcp.value : null,
-        cost: cost.status === 'fulfilled' ? cost.value : null,
+    setTrafficLoading(true)
+    invoke<TrafficTimeline>('get_traffic_timeline', {
+      timeRange: range,
+    } satisfies GetTrafficTimelineParams)
+      .then(
+        (timeline) => timeline,
+        (error) => {
+          console.error('Failed to load traffic:', error)
+          return null
+        },
+      )
+      .then((timeline) => {
+        if (cancelled) return
+        setTraffic({ range, timeline })
+        setTrafficLoading(false)
       })
-      setMetricsLoading(false)
-    })
     return () => {
       cancelled = true
     }
@@ -66,9 +61,11 @@ export function useHomeActivity(range: TimeRange) {
     debounceRef.current = setTimeout(refresh, REFRESH_DEBOUNCE_MS)
   }, [refresh])
 
+  const current = traffic?.range === range ? traffic : null
   return {
-    metrics: metrics?.range === range ? metrics : null,
-    metricsLoading,
+    /** `undefined` until the first read of this range; `null` if it failed. */
+    timeline: current ? current.timeline : undefined,
+    trafficLoading,
     refresh,
     /** Debounced refresh for live events. */
     refreshSoon,

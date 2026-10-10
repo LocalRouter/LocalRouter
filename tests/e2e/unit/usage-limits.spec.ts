@@ -5,6 +5,7 @@ import {
   formatUsd,
   headlineWindow,
   paceSummary,
+  routedSpend,
   slotHeights,
   usageLabelSeed,
   visibleAccounts,
@@ -117,4 +118,25 @@ test('usage tray labels mirror the backend seeds', () => {
   expect(usageLabelSeed('openai:subscription', 'five_hour')).toBe('O5H')
   expect(usageLabelSeed('anthropic:subscription', 'seven_day_fable')).toBe('AF7')
   expect(usageLabelSeed('github-copilot:subscription', 'monthly')).toBe('GHM')
+})
+
+test('routed spend names the periods, and compares a subscription with its plan', () => {
+  const spend = {
+    last_24h_usd: 0.12, last_7d_usd: 1.3, last_30d_usd: 4.95, month_to_date_usd: 2,
+    requests_30d: 312, tokens_30d: 1_200_000, daily_usd: [],
+  }
+  expect(routedSpend(account())).toBeNull()
+  const sub = routedSpend(account({ spend, value_multiplier: 4.95 / 200 }))!
+  expect(sub.periods).toEqual([['24h', 0.12], ['7d', 1.3], ['30d', 4.95]])
+  expect(sub.note).toBe('2% of plan')
+  expect(routedSpend(account({ spend, value_multiplier: 4.2 }))!.note).toBe('4.2× plan')
+  expect(sub.hint.join(' ')).toContain('$200.00/mo plan')
+  const noPrice = routedSpend(account({ spend, monthly_price_usd: null }))!
+  expect(noPrice.note).toBeNull()
+  expect(noPrice.hint.join(' ')).toContain('Settings')
+
+  const api = account({ kind: 'api', id: 'openai:api', spend, monthly_price_usd: null })
+  expect(routedSpend(api)!.note).toBe('312 req · 30d')
+  expect(routedSpend(api)!.label).toContain('Spend via LocalRouter')
+  expect(routedSpend({ ...api, spend: { ...spend, requests_30d: 0 } })).toBeNull()
 })

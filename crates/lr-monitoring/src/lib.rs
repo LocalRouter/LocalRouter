@@ -10,3 +10,4 @@ pub mod mcp_logger;
 pub mod mcp_metrics;
 pub mod metrics;
 pub mod storage;
+pub mod traffic;

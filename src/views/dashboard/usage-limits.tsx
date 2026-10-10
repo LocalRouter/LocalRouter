@@ -1,16 +1,7 @@
 import { useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { toast } from 'sonner'
-import {
-  AlertTriangle,
-  ChevronDown,
-  ChevronRight,
-  Gauge,
-  KeyRound,
-  OctagonAlert,
-  RefreshCw,
-  Settings2,
-} from 'lucide-react'
+import { Gauge, KeyRound, OctagonAlert, RefreshCw, Settings2 } from 'lucide-react'
 import ProviderIcon from '@/components/ProviderIcon'
 import { Button } from '@/components/ui/Button'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
@@ -32,11 +23,13 @@ import {
   formatUsd,
   PACE_LABEL,
   paceSummary,
+  routedSpend,
   slotHeights,
   SOURCE_LABEL,
   visibleAccounts,
 } from './usage-format'
 import { useUsageLimits } from './use-usage-limits'
+import { CollapsibleSection, useCollapsed } from './collapsible-section'
 
 const COLLAPSED_KEY = 'localrouter.dashboard.usage-limits.collapsed'
 
@@ -69,17 +62,8 @@ interface UsageLimitsProps {
 /** Dashboard strip: one compact card per subscription / API account. */
 export function UsageLimits({ className, onOpenSettings }: UsageLimitsProps) {
   const { snapshot, now, refresh, reload } = useUsageLimits()
-  const [collapsed, setCollapsed] = useState(
-    () => localStorage.getItem(COLLAPSED_KEY) === '1',
-  )
+  const [collapsed, toggle] = useCollapsed(COLLAPSED_KEY)
   const [refreshing, setRefreshing] = useState(false)
-
-  const toggle = () => {
-    setCollapsed((c) => {
-      localStorage.setItem(COLLAPSED_KEY, c ? '0' : '1')
-      return !c
-    })
-  }
 
   const accounts = snapshot ? visibleAccounts(snapshot.accounts) : []
   const subscriptions = accounts.filter((a) => a.kind === 'subscription')
@@ -96,30 +80,23 @@ export function UsageLimits({ className, onOpenSettings }: UsageLimitsProps) {
 
   return (
     <TooltipProvider delayDuration={150}>
-      <section
-        className={cn('overflow-hidden rounded-xl border bg-card', className)}
-        aria-label="Usage limits"
-      >
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2">
-          <button
-            type="button"
-            onClick={toggle}
-            className="flex items-center gap-1.5 text-sm font-semibold"
-            aria-expanded={!collapsed}
-          >
-            {collapsed ? (
-              <ChevronRight className="h-4 w-4 text-muted-foreground" />
-            ) : (
-              <ChevronDown className="h-4 w-4 text-muted-foreground" />
+      <CollapsibleSection
+        ariaLabel="Usage limits"
+        title="Usage limits"
+        icon={Gauge}
+        collapsed={collapsed}
+        onToggle={toggle}
+        className={className}
+        summary={
+          <>
+            {collapsed && <CollapsedSummary accounts={subscriptions} />}
+            {!collapsed && snapshot?.enabled && subscriptions.length === 0 && (
+              <CliLoginsButton onEnabled={reload} />
             )}
-            <Gauge className="h-4 w-4 text-muted-foreground" />
-            Usage limits
-          </button>
-          {collapsed && <CollapsedSummary accounts={subscriptions} />}
-          {!collapsed && snapshot?.enabled && subscriptions.length === 0 && (
-            <CliLoginsButton onEnabled={reload} />
-          )}
-          <div className="ml-auto flex items-center gap-1">
+          </>
+        }
+        actions={
+          <>
             {onOpenSettings && (
               <Button
                 variant="ghost"
@@ -141,10 +118,10 @@ export function UsageLimits({ className, onOpenSettings }: UsageLimitsProps) {
             >
               <RefreshCw className={cn('h-3.5 w-3.5', refreshing && 'animate-spin')} />
             </Button>
-          </div>
-        </div>
-
-        {!collapsed && snapshot !== null && (
+          </>
+        }
+      >
+        {snapshot !== null && (
           <div className="px-4 pb-3">
             {!snapshot.enabled ? (
               <DisabledState onEnabled={reload} />
@@ -159,7 +136,7 @@ export function UsageLimits({ className, onOpenSettings }: UsageLimitsProps) {
             )}
           </div>
         )}
-      </section>
+      </CollapsibleSection>
     </TooltipProvider>
   )
 }
@@ -251,27 +228,18 @@ function CliLoginsButton({ onEnabled }: { onEnabled: () => void }) {
   )
 }
 
+/** Shown while the provider is turning requests away. */
 function StatusBadge({ status }: { status: string | null }) {
-  if (status === 'rejected') {
-    return (
-      <span className="flex items-center gap-1 rounded-full bg-red-500/10 px-1.5 text-[11px] font-medium text-red-700 dark:text-red-300">
-        <OctagonAlert className="h-3 w-3" /> Limited
-      </span>
-    )
-  }
-  if (status === 'allowed_warning') {
-    return (
-      <span className="flex items-center gap-1 rounded-full bg-amber-500/10 px-1.5 text-[11px] font-medium text-amber-700 dark:text-amber-300">
-        <AlertTriangle className="h-3 w-3" /> Near limit
-      </span>
-    )
-  }
-  return null
+  if (status !== 'rejected') return null
+  return (
+    <span className="flex items-center gap-1 rounded-full bg-red-500/10 px-1.5 text-[11px] font-medium text-red-700 dark:text-red-300">
+      <OctagonAlert className="h-3 w-3" /> Limited
+    </span>
+  )
 }
 
 function AccountCard({ account: a, now }: { account: UsageAccountView; now: number }) {
   const updated = Math.max(a.last_seen, ...a.windows.map((w) => w.updated_at))
-  const footer = valueLine(a)
   return (
     <article className="flex flex-col gap-1.5 rounded-lg border bg-background/40 px-3 py-2">
       <header className="flex items-center gap-1.5">
@@ -305,14 +273,7 @@ function AccountCard({ account: a, now }: { account: UsageAccountView; now: numb
       ))}
       {a.credits && <CreditsRow credits={a.credits} />}
 
-      {footer && (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <p className="truncate text-[11px] text-muted-foreground">{footer.text}</p>
-          </TooltipTrigger>
-          <TooltipContent className="max-w-xs text-xs">{footer.hint}</TooltipContent>
-        </Tooltip>
-      )}
+      <RoutedSpend account={a} />
     </article>
   )
 }
@@ -384,7 +345,10 @@ function WindowRow({ window: w, now }: { window: UsageWindowView; now: number })
         {w.resets_at !== null && <p>Resets {formatClock(w.resets_at)}</p>}
         {w.slots.length > 1 && <SlotBars window={w} />}
         {w.api_equivalent_usd !== null && w.api_equivalent_usd > 0 && (
-          <p>API value of this window&apos;s traffic: {formatUsd(w.api_equivalent_usd)}</p>
+          <p>
+            Requests via LocalRouter in this window: {formatUsd(w.api_equivalent_usd)} at API
+            prices
+          </p>
         )}
         {w.history.length > 0 && (
           <p>
@@ -483,19 +447,38 @@ function CreditsRow({ credits: c }: { credits: NonNullable<UsageAccountView['cre
   )
 }
 
-/** Money line: API-equivalent value vs. the plan's price, or API spend. */
-function valueLine(a: UsageAccountView): { text: string; hint: string } | null {
-  if (a.kind === 'subscription') {
-    if (a.spend.last_30d_usd <= 0) return null
-    const multiple = a.value_multiplier !== null ? ` · ${a.value_multiplier.toFixed(1)}× plan` : ''
-    return {
-      text: `API value 30d ${formatUsd(a.spend.last_30d_usd)}${multiple}`,
-      hint: 'What the traffic LocalRouter saw would have cost at API list prices.',
-    }
-  }
-  if (a.spend.requests_30d <= 0) return null
-  return {
-    text: `${formatUsd(a.spend.last_24h_usd)} today · ${formatUsd(a.spend.month_to_date_usd)} this month`,
-    hint: `${formatCount(a.spend.requests_30d)} requests, ${formatCount(a.spend.tokens_30d)} tokens in 30 days, at list prices.`,
-  }
+/**
+ * What the requests LocalRouter routed to this account cost at API list
+ * prices, over the last 24 hours, 7 days and 30 days. For a subscription this
+ * is the value it delivered (compared with its price); for an API key it is
+ * the spend LocalRouter caused.
+ */
+function RoutedSpend({ account: a }: { account: UsageAccountView }) {
+  const spend = routedSpend(a)
+  if (!spend) return null
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <div className="mt-0.5 border-t pt-1.5 text-xs" tabIndex={0}>
+          <p className="flex items-baseline gap-2 text-[11px] text-muted-foreground">
+            <span className="truncate">{spend.label}</span>
+            {spend.note && <span className="ml-auto shrink-0 tabular-nums">{spend.note}</span>}
+          </p>
+          <dl className="mt-0.5 flex items-baseline gap-3">
+            {spend.periods.map(([period, value]) => (
+              <div key={period} className="flex items-baseline gap-1">
+                <dt className="text-[11px] text-muted-foreground">{period}</dt>
+                <dd className="font-medium tabular-nums">{formatUsd(value)}</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-xs space-y-1 text-xs">
+        {spend.hint.map((line) => (
+          <p key={line}>{line}</p>
+        ))}
+      </TooltipContent>
+    </Tooltip>
+  )
 }

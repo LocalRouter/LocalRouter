@@ -12,8 +12,10 @@ use lr_types::RecordedRequest;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+use super::graphs::TimeRange;
 use super::mcp_metrics::McpMetricsCollector;
 use super::storage::{MetricRow, MetricsDatabase};
+use super::traffic::{self, LiveTraffic, TrafficTimeline, LLM_GLOBAL, MCP_GLOBAL};
 
 /// Aggregated feature statistics from the metrics database
 #[derive(Debug, Clone, Default)]
@@ -171,6 +173,10 @@ pub struct MetricsCollector {
     /// MCP metrics collector (still in-memory for now)
     mcp_metrics: McpMetricsCollector,
 
+    /// Recent traffic in 10-second buckets and the requests in progress,
+    /// for the dashboard traffic chart.
+    live: Arc<LiveTraffic>,
+
     /// Optional callback to notify when metrics are recorded.
     ///
     /// Receives the recorded request (client, provider, model, tokens) so
@@ -184,11 +190,62 @@ pub struct MetricsCollector {
 impl MetricsCollector {
     /// Create a new metrics collector with database
     pub fn new(db: Arc<MetricsDatabase>) -> Self {
+        let live = Arc::new(LiveTraffic::new(Utc::now().timestamp()));
         Self {
+            // 24 hour retention for MCP
+            mcp_metrics: McpMetricsCollector::with_traffic(24, db.clone(), live.clone()),
             db,
-            mcp_metrics: McpMetricsCollector::new(24), // 24 hour retention for MCP
+            live,
             on_metrics_recorded: parking_lot::RwLock::new(None),
         }
+    }
+
+    /// The number of requests in progress changed (wired to the monitor
+    /// event store).
+    pub fn set_in_flight(&self, count: usize) {
+        self.live
+            .set_in_flight(Utc::now().timestamp(), count as u64);
+    }
+
+    /// Store the per-minute peaks of requests in progress that rose since the
+    /// last call. Called every few seconds, so a request running across
+    /// minutes is recorded in each.
+    pub fn persist_in_flight(&self) {
+        for (minute, peak) in self.live.take_peaks(Utc::now().timestamp()) {
+            if let Err(e) = self.db.record_in_flight_peak(minute, peak) {
+                tracing::warn!("Failed to record requests in progress: {}", e);
+            }
+        }
+    }
+
+    /// The dashboard traffic chart for `range`, ending now.
+    pub fn traffic_timeline(&self, range: TimeRange) -> anyhow::Result<TrafficTimeline> {
+        self.traffic_timeline_at(range, Utc::now().timestamp())
+    }
+
+    /// The dashboard traffic chart for `range`, ending at `now` (Unix seconds).
+    pub fn traffic_timeline_at(
+        &self,
+        range: TimeRange,
+        now: i64,
+    ) -> anyhow::Result<TrafficTimeline> {
+        let starts = range.traffic_bucket_starts(now);
+        let bucket_secs = range.traffic_bucket_secs();
+        if bucket_secs == traffic::LIVE_BUCKET_SECS {
+            return Ok(self.live.timeline(&starts, now));
+        }
+        let first = starts.first().copied().unwrap_or(now);
+        let end = starts.last().copied().unwrap_or(now) + bucket_secs;
+        let llm = self.db.query_all_granularities(LLM_GLOBAL, first, end)?;
+        let mcp = self.db.query_all_granularities(MCP_GLOBAL, first, end)?;
+        let peaks = self.db.query_in_flight_peaks(first, end)?;
+        Ok(traffic::timeline_from_rows(
+            &starts,
+            bucket_secs,
+            &llm,
+            &mcp,
+            &peaks,
+        ))
     }
 
     /// Set callback to be called when metrics are recorded.
@@ -231,7 +288,7 @@ impl MetricsCollector {
 
         // Write to all five tiers using atomic upsert
         let metric_types = vec![
-            "llm_global".to_string(),
+            LLM_GLOBAL.to_string(),
             format!("llm_key:{}", metrics.api_key_name),
             format!("llm_provider:{}", metrics.provider),
             format!("llm_model:{}", metrics.model),
@@ -248,6 +305,8 @@ impl MetricsCollector {
                 metrics.cost_usd,
             );
         }
+        self.live
+            .record_llm(timestamp.timestamp(), true, metrics.cost_usd);
 
         // Notify callback that metrics were recorded, passing the request's
         // dimensions and token count so real-time consumers (tray graph)
@@ -302,7 +361,7 @@ impl MetricsCollector {
 
         // Write to all five tiers using atomic upsert
         let metric_types = vec![
-            "llm_global".to_string(),
+            LLM_GLOBAL.to_string(),
             format!("llm_key:{}", api_key_name),
             format!("llm_provider:{}", provider),
             format!("llm_model:{}", model),
@@ -314,6 +373,7 @@ impl MetricsCollector {
                 .db
                 .atomic_record_failure(&metric_type, minute_timestamp, latency_ms);
         }
+        self.live.record_llm(timestamp.timestamp(), false, 0.0);
     }
 
     /// Get global metrics for a time range
@@ -887,5 +947,68 @@ mod tests {
             now + Duration::minutes(5),
         );
         assert_eq!(gpt4[0].requests, 2); // Both key1 and key2 used gpt-4
+    }
+
+    /// LLM and MCP requests, their failures and the requests in progress all
+    /// reach the traffic chart, at 10 seconds for the last 10 minutes and from
+    /// the database (surviving a restart) for longer ranges.
+    #[test]
+    fn test_traffic_timeline_counts_requests_errors_and_in_flight() {
+        let (collector, dir) = create_test_collector();
+        let request = RequestMetrics {
+            api_key_name: "key1",
+            provider: "openai",
+            model: "gpt-4",
+            input_tokens: 10,
+            output_tokens: 20,
+            cost_usd: 0.25,
+            latency_ms: 100,
+            strategy_id: "default",
+        };
+        collector.record_success(&request);
+        collector.record_failure("key1", "openai", "gpt-4", "default", 50);
+        collector
+            .mcp()
+            .record(&crate::mcp_metrics::McpRequestMetrics {
+                client_id: "c",
+                server_id: "s",
+                method: "tools/call",
+                latency_ms: 5,
+                success: false,
+                error_code: Some(-1),
+            });
+        collector.set_in_flight(3);
+        collector.persist_in_flight();
+        collector.set_in_flight(0);
+
+        let live = collector.traffic_timeline(TimeRange::TenMinutes).unwrap();
+        assert_eq!(live.bucket_secs, 10);
+        assert_eq!(live.buckets.len(), 60);
+        assert_eq!(live.totals.llm_requests, 2);
+        assert_eq!(live.totals.llm_errors, 1);
+        assert_eq!(live.totals.mcp_errors, 1);
+        assert!((live.totals.cost_usd - 0.25).abs() < 1e-9);
+        assert_eq!(
+            live.buckets.iter().filter_map(|b| b.in_flight).max(),
+            Some(3)
+        );
+
+        let hour = collector.traffic_timeline(TimeRange::Hour).unwrap();
+        assert_eq!(hour.bucket_secs, 60);
+        assert_eq!(hour.totals, live.totals);
+        assert_eq!(
+            hour.buckets.iter().filter_map(|b| b.in_flight).max(),
+            Some(3)
+        );
+
+        // A new collector on the same database (an app restart) keeps the
+        // longer ranges; the 10-second history starts over.
+        let db = Arc::new(MetricsDatabase::new(dir.path().join("test.db")).unwrap());
+        let restarted = MetricsCollector::new(db);
+        let day = restarted.traffic_timeline(TimeRange::Day).unwrap();
+        assert_eq!(day.totals.llm_requests, 2);
+        assert_eq!(day.totals.mcp_requests, 1);
+        let live = restarted.traffic_timeline(TimeRange::TenMinutes).unwrap();
+        assert_eq!(live.totals.llm_requests, 0);
     }
 }

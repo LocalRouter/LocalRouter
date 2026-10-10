@@ -12,6 +12,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::storage::MetricsDatabase;
+use crate::traffic::{LiveTraffic, MCP_GLOBAL};
+
 /// MCP request metrics for recording
 #[derive(Debug, Clone)]
 pub struct McpRequestMetrics<'a> {
@@ -242,6 +245,11 @@ pub struct McpMetricsCollector {
 
     /// Retention period in hours
     retention_hours: i64,
+
+    /// Where every request is also counted for the dashboard traffic chart:
+    /// the metrics database (`mcp_global`, kept like LLM metrics) and the
+    /// recent 10-second buckets.
+    traffic: Option<(Arc<MetricsDatabase>, Arc<LiveTraffic>)>,
 }
 
 impl McpMetricsCollector {
@@ -252,6 +260,19 @@ impl McpMetricsCollector {
             per_client: Arc::new(DashMap::new()),
             per_server: Arc::new(DashMap::new()),
             retention_hours,
+            traffic: None,
+        }
+    }
+
+    /// A collector that also feeds the dashboard traffic chart.
+    pub fn with_traffic(
+        retention_hours: i64,
+        db: Arc<MetricsDatabase>,
+        live: Arc<LiveTraffic>,
+    ) -> Self {
+        Self {
+            traffic: Some((db, live)),
+            ..Self::new(retention_hours)
         }
     }
 
@@ -267,6 +288,21 @@ impl McpMetricsCollector {
 
     /// Record an MCP request at a specific timestamp (for testing/repopulation)
     pub fn record_at(&self, metrics: &McpRequestMetrics, timestamp: DateTime<Utc>) {
+        if let Some((db, live)) = &self.traffic {
+            live.record_mcp(timestamp.timestamp(), metrics.success);
+            let minute =
+                DateTime::from_timestamp(McpTimeSeries::get_minute_timestamp(timestamp), 0)
+                    .unwrap_or(timestamp);
+            let result = if metrics.success {
+                db.atomic_record_success(MCP_GLOBAL, minute, metrics.latency_ms, 0, 0, 0.0)
+            } else {
+                db.atomic_record_failure(MCP_GLOBAL, minute, metrics.latency_ms)
+            };
+            if let Err(e) = result {
+                tracing::warn!("Failed to record MCP traffic: {}", e);
+            }
+        }
+
         // Record in global metrics
         self.global.record(
             timestamp,

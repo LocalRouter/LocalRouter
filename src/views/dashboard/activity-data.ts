@@ -1,136 +1,148 @@
 import type {
-  GraphData,
   MonitorEventSummary,
   TimeRange,
+  TrafficTimeline,
 } from '../../types/tauri-commands'
 
-const MINUTE = 60_000
-
+/** Ranges of the traffic chart; buckets mirror `TimeRange::traffic_bucket_secs`. */
 export const RANGES: Record<
   TimeRange,
   {
     label: string
     description: string
+    /** Bucket length, for screen-reader text. */
     bucket: string
-    bucketMs: number
-    /** How often the chart re-reads metrics while nothing else triggers it. */
+    /** How often the chart re-reads traffic while nothing else triggers it. */
     pollMs: number
   }
 > = {
   ten_minutes: {
     label: '10m',
     description: 'last 10 minutes',
-    bucket: 'minute',
-    bucketMs: MINUTE,
+    bucket: '10 seconds',
     pollMs: 5_000,
   },
   hour: {
     label: '1h',
     description: 'last hour',
-    bucket: '5 minutes',
-    bucketMs: 5 * MINUTE,
+    bucket: 'minute',
     pollMs: 10_000,
   },
   day: {
     label: '24h',
     description: 'last 24 hours',
-    bucket: 'hour',
-    bucketMs: 60 * MINUTE,
+    bucket: '15 minutes',
     pollMs: 30_000,
   },
   week: {
     label: '7d',
     description: 'last 7 days',
-    bucket: '6 hours',
-    bucketMs: 360 * MINUTE,
+    bucket: '2 hours',
     pollMs: 60_000,
   },
   month: {
     label: '30d',
     description: 'last 30 days',
-    bucket: 'day',
-    bucketMs: 1440 * MINUTE,
+    bucket: '8 hours',
     pollMs: 60_000,
   },
 }
 
-// Backend graph labels are UTC, without an explicit timezone. ISO labels are
-// also accepted for demo data. Normalize before joining independently loaded series.
-export function graphTimestamp(label: string): number {
-  return Date.parse(
-    /^\d{4}-\d\d-\d\d \d\d:\d\d$/.test(label)
-      ? `${label.replace(' ', 'T')}:00Z`
-      : label,
-  )
-}
-
-export function graphValues(graph: GraphData | null): Map<number, number> {
-  const values = new Map<number, number>()
-  graph?.labels.forEach((label, index) => {
-    const timestamp = graphTimestamp(label)
-    if (!Number.isFinite(timestamp)) return
-    values.set(
-      timestamp,
-      graph.datasets.reduce(
-        (sum, dataset) => sum + (dataset.data[index] ?? 0),
-        0,
-      ),
-    )
-  })
-  return values
-}
-
-export function requestTimeline(llm: GraphData | null, mcp: GraphData | null) {
-  const llmValues = graphValues(llm)
-  const mcpValues = graphValues(mcp)
-  return [...new Set([...llmValues.keys(), ...mcpValues.keys()])]
-    .sort((a, b) => a - b)
-    .map((timestamp) => ({
-      timestamp,
-      // A missing bucket is unknown, not evidence of zero requests.
-      llm: llmValues.get(timestamp) ?? null,
-      mcp: mcpValues.get(timestamp) ?? null,
-    }))
-}
-
 export interface TrafficPoint {
+  /** Bucket start, ms. */
   timestamp: number
+  /** Finished requests (LLM + MCP), failed ones included; `null` when unknown. */
+  completed: number | null
   llm: number | null
   mcp: number | null
-  /** Requests still running; only set on the bucket that contains "now". */
+  /** Failed requests (LLM + MCP). */
+  errors: number | null
+  /** Most requests in progress at once during the bucket. */
   inFlight: number | null
+  cost: number | null
 }
 
 /**
- * Extend the timeline to the bucket containing `now` (the backend may not have
- * emitted it yet) and place running requests on it, so the chart's right edge
- * is always the live bucket.
+ * Chart points for a timeline. The timeline is extended to the bucket that
+ * contains `now` (it may have rolled over since the last read), keeping the
+ * window length, and the requests running right now are placed on that live
+ * bucket so the chart reacts before the next read.
  */
-export function liveTimeline(
-  points: ReturnType<typeof requestTimeline>,
-  bucketMs: number,
+export function trafficPoints(
+  timeline: TrafficTimeline | null,
   now: number,
   inFlight: number,
 ): TrafficPoint[] {
-  const result: TrafficPoint[] = points.map((point) => ({ ...point, inFlight: null }))
-  const last = result[result.length - 1]
-  // Only bridge a minute rollover since the last read; an older series is
-  // stale data, not a run of empty buckets.
-  if (last && now - last.timestamp < 2 * bucketMs) {
-    // Align new buckets to the backend's own boundaries.
+  if (!timeline || timeline.buckets.length === 0) return []
+  const bucketMs = timeline.bucket_secs * 1000
+  const points: TrafficPoint[] = timeline.buckets.map(({ timestamp, counts, in_flight }) => ({
+    timestamp: timestamp * 1000,
+    completed: counts ? counts.llm_requests + counts.mcp_requests : null,
+    llm: counts?.llm_requests ?? null,
+    mcp: counts?.mcp_requests ?? null,
+    errors: counts ? counts.llm_errors + counts.mcp_errors : null,
+    inFlight: in_flight,
+    cost: counts?.cost_usd ?? null,
+  }))
+  const length = points.length
+  const last = points[length - 1]
+  // Only bridge rollovers since the last read; an older timeline is stale
+  // data, not a run of empty buckets.
+  if (now - last.timestamp < 2 * bucketMs) {
     for (let next = last.timestamp + bucketMs; next <= now; next += bucketMs) {
-      result.push({ timestamp: next, llm: 0, mcp: 0, inFlight: null })
+      points.push({
+        timestamp: next,
+        completed: 0,
+        llm: 0,
+        mcp: 0,
+        errors: 0,
+        inFlight: 0,
+        cost: 0,
+      })
     }
   }
-  const live = result[result.length - 1]
-  if (live && inFlight > 0 && now - live.timestamp < bucketMs) live.inFlight = inFlight
-  return result
+  const window = points.slice(-length)
+  const live = window[window.length - 1]
+  if (live.completed !== null && now - live.timestamp < bucketMs) {
+    live.inFlight = Math.max(live.inFlight ?? 0, inFlight)
+  }
+  return window
 }
 
-export function graphTotal(graph: GraphData | null): number | null {
-  return graph
-    ? [...graphValues(graph).values()].reduce((sum, value) => sum + value, 0)
-    : null
+/** Highest finished-request or in-progress value, for the shared y-axis. */
+export function trafficPeak(points: TrafficPoint[]): number {
+  return Math.max(0, ...points.map((p) => Math.max(p.completed ?? 0, p.inFlight ?? 0)))
+}
+
+/** Whole-number y-axis ticks from 0 to a round top of at least `peak`. */
+export function niceTicks(peak: number, min = 2): number[] {
+  const target = Math.max(min, Math.ceil(peak))
+  const magnitude = 10 ** Math.floor(Math.log10(target))
+  const top =
+    [1, 2, 4, 6, 8, 10].map((m) => m * magnitude).find((m) => m >= target) ?? 10 * magnitude
+  return top >= 2 ? [0, top / 2, top] : [0, top]
+}
+
+/** X-axis tick spacing per range: round local times. */
+const TICK_EVERY: Record<TimeRange, number> = {
+  ten_minutes: 2 * 60_000,
+  hour: 10 * 60_000,
+  day: 3 * 3_600_000,
+  week: 24 * 3_600_000,
+  month: 5 * 24 * 3_600_000,
+}
+
+/**
+ * Bucket starts to label: the first bucket at or after each round local time
+ * (every 2 minutes, 10 minutes, 3 hours, midnight, every 5th midnight), so
+ * ticks stay evenly spaced in any time zone.
+ */
+export function roundTicks(range: TimeRange, timestamps: number[], bucketMs: number): number[] {
+  const every = TICK_EVERY[range]
+  return timestamps.filter((t) => {
+    const local = t - new Date(t).getTimezoneOffset() * 60_000
+    return Math.floor(local / every) !== Math.floor((local - bucketMs) / every)
+  })
 }
 
 const MCP_REQUESTS = new Set([

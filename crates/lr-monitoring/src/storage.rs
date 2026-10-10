@@ -2,9 +2,12 @@
 //!
 //! Implements progressive aggregation:
 //! - Per-minute: Last 24 hours (1,440 points)
-//! - Per-hour: Last 7 days (168 points)
-#![allow(dead_code)]
+//! - Per-hour: Last 31 days (744 points), so a 30-day chart has sub-day detail
 //! - Per-day: Last 90 days (90 points)
+//!
+//! It also keeps the peak number of requests in progress per minute for the
+//! last 31 days (one row per minute that had any).
+#![allow(dead_code)]
 
 use anyhow::Result;
 #[allow(unused_imports)]
@@ -22,7 +25,22 @@ pub enum Granularity {
     Day,
 }
 
+/// How long hourly rows are kept.
+pub const HOUR_RETENTION_DAYS: i64 = 31;
+
+/// How long per-minute in-progress peaks are kept.
+pub const IN_FLIGHT_RETENTION_DAYS: i64 = 31;
+
 impl Granularity {
+    /// Seconds one row of this granularity covers.
+    pub fn span_secs(&self) -> i64 {
+        match self {
+            Granularity::Minute => 60,
+            Granularity::Hour => 3_600,
+            Granularity::Day => 86_400,
+        }
+    }
+
     fn as_str(&self) -> &'static str {
         match self {
             Granularity::Minute => "minute",
@@ -57,6 +75,33 @@ pub struct MetricRow {
     pub p50_latency_ms: Option<f64>,
     pub p95_latency_ms: Option<f64>,
     pub p99_latency_ms: Option<f64>,
+}
+
+/// Read one `metrics` row selected in table column order.
+fn metric_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MetricRow> {
+    let timestamp_i64: i64 = row.get(0)?;
+    let granularity_str: String = row.get(1)?;
+    let requests_i64: i64 = row.get(2)?;
+    let successful_i64: i64 = row.get(3)?;
+    let failed_i64: i64 = row.get(4)?;
+    let input_tokens_i64: Option<i64> = row.get(6)?;
+    let output_tokens_i64: Option<i64> = row.get(7)?;
+
+    Ok(MetricRow {
+        timestamp: DateTime::from_timestamp(timestamp_i64, 0).unwrap_or_else(Utc::now),
+        granularity: Granularity::from_str(&granularity_str).unwrap_or(Granularity::Minute),
+        requests: requests_i64 as u64,
+        successful_requests: successful_i64 as u64,
+        failed_requests: failed_i64 as u64,
+        avg_latency_ms: row.get(5)?,
+        input_tokens: input_tokens_i64.map(|v| v as u64),
+        output_tokens: output_tokens_i64.map(|v| v as u64),
+        cost_usd: row.get(8)?,
+        method_counts: row.get(9)?,
+        p50_latency_ms: row.get(10)?,
+        p95_latency_ms: row.get(11)?,
+        p99_latency_ms: row.get(12)?,
+    })
 }
 
 /// SQLite database for metrics storage
@@ -120,7 +165,44 @@ impl MetricsDatabase {
             [],
         )?;
 
+        // Peak number of requests in progress, per minute (Unix seconds at
+        // the start of the minute). Minutes without any are not stored.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS in_flight_peaks (
+                minute INTEGER PRIMARY KEY,
+                peak INTEGER NOT NULL
+            )",
+            [],
+        )?;
+
         Ok(())
+    }
+
+    /// Raise the stored in-progress peak of `minute` to at least `peak`.
+    pub fn record_in_flight_peak(&self, minute: i64, peak: u64) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO in_flight_peaks (minute, peak) VALUES (?1, ?2)
+             ON CONFLICT(minute) DO UPDATE SET peak = MAX(peak, excluded.peak)",
+            params![minute, peak as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Per-minute in-progress peaks with `start <= minute < end`, oldest first.
+    pub fn query_in_flight_peaks(&self, start: i64, end: i64) -> Result<Vec<(i64, u64)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT minute, peak FROM in_flight_peaks
+             WHERE minute >= ?1 AND minute < ?2
+             ORDER BY minute ASC",
+        )?;
+        let rows = stmt.query_map(params![start, end], |row| {
+            let minute: i64 = row.get(0)?;
+            let peak: i64 = row.get(1)?;
+            Ok((minute, peak.max(0) as u64))
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
     /// Insert or update a metric row
@@ -251,40 +333,34 @@ impl MetricsDatabase {
                 end.timestamp(),
                 granularity.as_str()
             ],
-            |row| {
-                let timestamp_i64: i64 = row.get(0)?;
-                let granularity_str: String = row.get(1)?;
-                let requests_i64: i64 = row.get(2)?;
-                let successful_i64: i64 = row.get(3)?;
-                let failed_i64: i64 = row.get(4)?;
-                let input_tokens_i64: Option<i64> = row.get(6)?;
-                let output_tokens_i64: Option<i64> = row.get(7)?;
-
-                Ok(MetricRow {
-                    timestamp: DateTime::from_timestamp(timestamp_i64, 0).unwrap_or_else(Utc::now),
-                    granularity: Granularity::from_str(&granularity_str)
-                        .unwrap_or(Granularity::Minute),
-                    requests: requests_i64 as u64,
-                    successful_requests: successful_i64 as u64,
-                    failed_requests: failed_i64 as u64,
-                    avg_latency_ms: row.get(5)?,
-                    input_tokens: input_tokens_i64.map(|v| v as u64),
-                    output_tokens: output_tokens_i64.map(|v| v as u64),
-                    cost_usd: row.get(8)?,
-                    method_counts: row.get(9)?,
-                    p50_latency_ms: row.get(10)?,
-                    p95_latency_ms: row.get(11)?,
-                    p99_latency_ms: row.get(12)?,
-                })
-            },
+            metric_row,
         )?;
 
-        let mut result = Vec::new();
-        for row in rows {
-            result.push(row?);
-        }
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
 
-        Ok(result)
+    /// Every row of `metric_type` with `start <= timestamp < end`, at any
+    /// granularity, oldest first. Rollups overlap the rows they were built
+    /// from; the caller picks one granularity per period.
+    pub fn query_all_granularities(
+        &self,
+        metric_type: &str,
+        start: i64,
+        end: i64,
+    ) -> Result<Vec<MetricRow>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT timestamp, granularity, requests, successful_requests,
+                    failed_requests, avg_latency_ms, input_tokens, output_tokens,
+                    cost_usd, method_counts, p50_latency_ms, p95_latency_ms, p99_latency_ms
+             FROM metrics
+             WHERE metric_type = ?1
+               AND timestamp >= ?2
+               AND timestamp < ?3
+             ORDER BY timestamp ASC",
+        )?;
+        let rows = stmt.query_map(params![metric_type, start, end], metric_row)?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
     /// Get all distinct metric types
@@ -374,8 +450,9 @@ impl MetricsDatabase {
 
     /// Cleanup old data based on retention policies
     /// - Minute data: older than 24 hours
-    /// - Hour data: older than 7 days
+    /// - Hour data: older than [`HOUR_RETENTION_DAYS`]
     /// - Day data: older than 90 days
+    /// - In-progress peaks: older than [`IN_FLIGHT_RETENTION_DAYS`]
     pub fn cleanup_old_data(&self) -> Result<()> {
         let now = Utc::now();
         let conn = self.conn.lock();
@@ -387,8 +464,8 @@ impl MetricsDatabase {
             params![minute_cutoff.timestamp()],
         )?;
 
-        // Delete hour data older than 7 days
-        let hour_cutoff = now - chrono::Duration::days(7);
+        // Delete hour data older than the hourly retention
+        let hour_cutoff = now - chrono::Duration::days(HOUR_RETENTION_DAYS);
         let hour_deleted = conn.execute(
             "DELETE FROM metrics WHERE granularity = 'hour' AND timestamp < ?",
             params![hour_cutoff.timestamp()],
@@ -401,11 +478,18 @@ impl MetricsDatabase {
             params![day_cutoff.timestamp()],
         )?;
 
+        let peak_cutoff = now - chrono::Duration::days(IN_FLIGHT_RETENTION_DAYS);
+        let peaks_deleted = conn.execute(
+            "DELETE FROM in_flight_peaks WHERE minute < ?",
+            params![peak_cutoff.timestamp()],
+        )?;
+
         tracing::debug!(
-            "Cleaned up old metrics: {} minutes, {} hours, {} days",
+            "Cleaned up old metrics: {} minutes, {} hours, {} days, {} in-progress peaks",
             minute_deleted,
             hour_deleted,
-            day_deleted
+            day_deleted,
+            peaks_deleted
         );
 
         // Reclaim space
@@ -815,5 +899,58 @@ mod tests {
         assert_eq!(results[0].requests, 30); // 3 * 10
         assert_eq!(results[0].successful_requests, 27); // 3 * 9
         assert_eq!(results[0].failed_requests, 3); // 3 * 1
+    }
+
+    /// Peaks only ever rise within a minute, and old peaks and hourly rows
+    /// follow their retention.
+    #[test]
+    fn in_flight_peaks_keep_the_maximum_and_expire_with_hourly_rows() {
+        let dir = tempdir().unwrap();
+        let db = MetricsDatabase::new(dir.path().join("test.db")).unwrap();
+        let now = Utc::now().timestamp();
+        let minute = now - now.rem_euclid(60);
+        db.record_in_flight_peak(minute, 3).unwrap();
+        db.record_in_flight_peak(minute, 2).unwrap();
+        db.record_in_flight_peak(minute - 60, 1).unwrap();
+        let old = minute - (IN_FLIGHT_RETENTION_DAYS + 1) * 86_400;
+        db.record_in_flight_peak(old, 9).unwrap();
+        assert_eq!(
+            db.query_in_flight_peaks(minute - 60, minute + 60).unwrap(),
+            vec![(minute - 60, 1), (minute, 3)]
+        );
+
+        let hour_row = |days: i64| MetricRow {
+            timestamp: DateTime::from_timestamp(now - days * 86_400, 0).unwrap(),
+            granularity: Granularity::Hour,
+            requests: 1,
+            successful_requests: 1,
+            failed_requests: 0,
+            avg_latency_ms: 0.0,
+            input_tokens: None,
+            output_tokens: None,
+            cost_usd: None,
+            method_counts: None,
+            p50_latency_ms: None,
+            p95_latency_ms: None,
+            p99_latency_ms: None,
+        };
+        db.upsert_metric("llm_global", &hour_row(20)).unwrap();
+        db.upsert_metric("llm_global", &hour_row(HOUR_RETENTION_DAYS + 1))
+            .unwrap();
+
+        db.cleanup_old_data().unwrap();
+        assert!(db.query_in_flight_peaks(old, old + 60).unwrap().is_empty());
+        assert_eq!(
+            db.query_in_flight_peaks(minute, minute + 60).unwrap().len(),
+            1
+        );
+        let rows = db
+            .query_all_granularities("llm_global", now - 40 * 86_400, now)
+            .unwrap();
+        assert_eq!(
+            rows.len(),
+            1,
+            "a 20-day-old hourly row is kept for the 30-day chart"
+        );
     }
 }

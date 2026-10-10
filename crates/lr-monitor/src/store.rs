@@ -13,6 +13,9 @@ use crate::types::*;
 /// Callback type for emitting Tauri events.
 pub type EventEmitter = Arc<dyn Fn(&str, String) + Send + Sync>;
 
+/// Callback told the number of requests in progress whenever it changes.
+pub type PendingListener = Arc<dyn Fn(usize) + Send + Sync>;
+
 /// Default ceiling on the memory the store may hold.
 ///
 /// Events keep whole request and response bodies, so the event count alone does
@@ -28,10 +31,37 @@ struct Stored {
     size: usize,
 }
 
-/// The buffer and its running byte total, under one lock so they cannot drift.
+/// The buffer and its running totals, under one lock so they cannot drift.
 struct Events {
     queue: VecDeque<Stored>,
     total_bytes: usize,
+    /// Stored events that are requests still in progress
+    /// (see [`is_pending_request`]).
+    pending_requests: usize,
+}
+
+/// A client request (LLM call or MCP request) that is still running.
+///
+/// Internal steps (routing, scans, …) are not requests, and a duplicate hop —
+/// a request an earlier LocalRouter hop already handled — is not counted
+/// twice. Mirrors the dashboard's `isRequest`.
+pub fn is_pending_request(event: &MonitorEvent) -> bool {
+    if event.status != EventStatus::Pending {
+        return false;
+    }
+    match &event.data {
+        MonitorEventData::LlmCall { duplicate_hop, .. } => {
+            !duplicate_hop.is_some_and(|hop| hop >= 2)
+        }
+        _ => matches!(
+            event.event_type,
+            MonitorEventType::McpToolCall
+                | MonitorEventType::McpResourceRead
+                | MonitorEventType::McpPromptGet
+                | MonitorEventType::McpSampling
+                | MonitorEventType::McpElicitation
+        ),
+    }
 }
 
 /// In-memory ring buffer for monitor events, bounded by both event count and
@@ -42,6 +72,7 @@ pub struct MonitorEventStore {
     max_bytes: AtomicUsize,
     next_sequence: AtomicU64,
     emitter: RwLock<Option<EventEmitter>>,
+    pending_listener: RwLock<Option<PendingListener>>,
 }
 
 impl MonitorEventStore {
@@ -56,11 +87,13 @@ impl MonitorEventStore {
             events: RwLock::new(Events {
                 queue: VecDeque::with_capacity(max_capacity.min(2048)),
                 total_bytes: 0,
+                pending_requests: 0,
             }),
             max_capacity: AtomicUsize::new(max_capacity.max(1)),
             max_bytes: AtomicUsize::new(max_bytes.max(1)),
             next_sequence: AtomicU64::new(1),
             emitter: RwLock::new(None),
+            pending_listener: RwLock::new(None),
         }
     }
 
@@ -78,7 +111,10 @@ impl MonitorEventStore {
         {
             match events.queue.pop_front() {
                 Some(evicted) => {
-                    events.total_bytes = events.total_bytes.saturating_sub(evicted.size)
+                    events.total_bytes = events.total_bytes.saturating_sub(evicted.size);
+                    if is_pending_request(&evicted.event) {
+                        events.pending_requests = events.pending_requests.saturating_sub(1);
+                    }
                 }
                 None => break,
             }
@@ -88,6 +124,32 @@ impl MonitorEventStore {
     /// Set the event emitter callback (typically wired to Tauri's emit).
     pub fn set_emitter<F: Fn(&str, String) + Send + Sync + 'static>(&self, emitter: F) {
         *self.emitter.write() = Some(Arc::new(emitter));
+    }
+
+    /// Set the callback told the number of requests in progress whenever it
+    /// changes. It runs under the store's lock, so successive counts arrive
+    /// in order; it must be quick and must not call back into the store.
+    pub fn set_pending_listener<F: Fn(usize) + Send + Sync + 'static>(&self, listener: F) {
+        let events = self.events.read();
+        let listener: PendingListener = Arc::new(listener);
+        listener(events.pending_requests);
+        *self.pending_listener.write() = Some(listener);
+    }
+
+    /// Requests (LLM calls and MCP requests) still in progress.
+    pub fn pending_requests(&self) -> usize {
+        self.events.read().pending_requests
+    }
+
+    /// Tell the listener the in-progress count if it moved from `before`.
+    /// Called with the events lock held.
+    fn notify_pending(&self, events: &Events, before: usize) {
+        if events.pending_requests == before {
+            return;
+        }
+        if let Some(listener) = self.pending_listener.read().as_ref() {
+            listener(events.pending_requests);
+        }
     }
 
     /// Push a new event into the store. Returns the assigned event ID.
@@ -125,9 +187,14 @@ impl MonitorEventStore {
 
         {
             let mut events = self.events.write();
+            let before = events.pending_requests;
+            if is_pending_request(&event) {
+                events.pending_requests += 1;
+            }
             events.total_bytes += size;
             events.queue.push_back(Stored { event, size });
             self.evict(&mut events);
+            self.notify_pending(&events, before);
         }
 
         // Callbacks may reconfigure the store; release the emitter lock first.
@@ -148,8 +215,11 @@ impl MonitorEventStore {
         F: FnOnce(&mut MonitorEvent),
     {
         let mut events = self.events.write();
+        let before = events.pending_requests;
         if let Some(stored) = events.queue.iter_mut().rev().find(|s| s.event.id == id) {
+            let was_pending = is_pending_request(&stored.event);
             updater(&mut stored.event);
+            let is_pending = is_pending_request(&stored.event);
             let updated_summary = to_summary(&stored.event);
 
             // The response half is usually where the bulk of an LLM event
@@ -158,7 +228,15 @@ impl MonitorEventStore {
             let new_size = event_size(&stored.event);
             stored.size = new_size;
             events.total_bytes = events.total_bytes + new_size - old_size;
+            match (was_pending, is_pending) {
+                (true, false) => {
+                    events.pending_requests = events.pending_requests.saturating_sub(1)
+                }
+                (false, true) => events.pending_requests += 1,
+                _ => {}
+            }
             self.evict(&mut events);
+            self.notify_pending(&events, before);
             drop(events);
 
             let emitter = self.emitter.read().clone();
@@ -219,8 +297,11 @@ impl MonitorEventStore {
     /// Clear all events.
     pub fn clear(&self) {
         let mut events = self.events.write();
+        let before = events.pending_requests;
         events.queue.clear();
         events.total_bytes = 0;
+        events.pending_requests = 0;
+        self.notify_pending(&events, before);
     }
 
     /// Update the maximum event count. If the new capacity is smaller,
@@ -228,7 +309,9 @@ impl MonitorEventStore {
     pub fn set_max_capacity(&self, cap: usize) {
         self.max_capacity.store(cap.max(1), Ordering::Relaxed);
         let mut events = self.events.write();
+        let before = events.pending_requests;
         self.evict(&mut events);
+        self.notify_pending(&events, before);
     }
 
     /// Update the memory budget. If the new budget is smaller, old events are
@@ -236,7 +319,9 @@ impl MonitorEventStore {
     pub fn set_max_bytes(&self, max_bytes: usize) {
         self.max_bytes.store(max_bytes.max(1), Ordering::Relaxed);
         let mut events = self.events.write();
+        let before = events.pending_requests;
         self.evict(&mut events);
+        self.notify_pending(&events, before);
     }
 
     /// Get current store statistics.
@@ -777,5 +862,69 @@ mod tests {
             stats.events_by_type.get(&MonitorEventType::McpToolCall),
             Some(&1)
         );
+    }
+
+    fn push_mcp_call(store: &MonitorEventStore, status: EventStatus) -> String {
+        store.push(
+            MonitorEventType::McpToolCall,
+            None,
+            None,
+            None,
+            MonitorEventData::McpToolCall {
+                tool_name: "search".to_string(),
+                server_id: "srv-1".to_string(),
+                server_name: None,
+                arguments: serde_json::json!({}),
+                firewall_action: None,
+                latency_ms: None,
+                success: None,
+                response_preview: None,
+                error: None,
+            },
+            status,
+            None,
+        )
+    }
+
+    /// The in-progress count follows pushes, completions, evictions and
+    /// clears, ignores internal steps and duplicate hops, and reaches the
+    /// listener in order.
+    #[test]
+    fn test_pending_request_count_and_listener() {
+        let store = make_store(3);
+        let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        store.set_pending_listener(move |n| sink.lock().push(n));
+
+        let llm = push_llm_call(&store, "gpt-4");
+        let mcp = push_mcp_call(&store, EventStatus::Pending);
+        push_mcp_call(&store, EventStatus::Complete);
+        assert_eq!(store.pending_requests(), 2);
+
+        // A duplicate hop is not a request of its own.
+        store.update(&llm, |event| {
+            if let MonitorEventData::LlmCall { duplicate_hop, .. } = &mut event.data {
+                *duplicate_hop = Some(2);
+            }
+        });
+        assert_eq!(store.pending_requests(), 1);
+        store.update(&llm, |event| {
+            if let MonitorEventData::LlmCall { duplicate_hop, .. } = &mut event.data {
+                *duplicate_hop = None;
+            }
+        });
+        store.update(&mcp, |event| event.status = EventStatus::Error);
+        assert_eq!(store.pending_requests(), 1);
+
+        // Evicting a running request drops it from the count.
+        push_mcp_call(&store, EventStatus::Complete);
+        push_mcp_call(&store, EventStatus::Complete);
+        assert_eq!(store.pending_requests(), 0);
+
+        push_mcp_call(&store, EventStatus::Pending);
+        store.clear();
+        assert_eq!(store.pending_requests(), 0);
+
+        assert_eq!(*seen.lock(), vec![0, 1, 2, 1, 2, 1, 0, 1, 0]);
     }
 }
