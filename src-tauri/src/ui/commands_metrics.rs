@@ -7,6 +7,8 @@ use tauri::State;
 
 use lr_config::{ConfigManager, RateLimitType};
 use lr_monitoring::graphs::{GraphData, GraphGenerator, MetricType, RateLimitInfo, TimeRange};
+use lr_monitoring::metrics::MetricsCollector;
+use lr_monitoring::traffic::TrafficTimeline;
 use lr_server::ServerManager;
 
 /// Helper function to get rate limits for a client based on metric type
@@ -96,6 +98,18 @@ pub async fn get_global_metrics(
         Some("Global"),
         time_range,
     ))
+}
+
+/// Dashboard traffic chart: finished LLM and MCP requests, errors and the
+/// peak number of requests in progress per bucket (60–96 buckets per range).
+#[tauri::command]
+pub async fn get_traffic_timeline(
+    time_range: TimeRange,
+    metrics_collector: State<'_, Arc<MetricsCollector>>,
+) -> Result<TrafficTimeline, String> {
+    metrics_collector
+        .traffic_timeline(time_range)
+        .map_err(|e| format!("Failed to read traffic: {e}"))
 }
 
 /// Get API key specific metrics

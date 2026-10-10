@@ -1459,6 +1459,46 @@ export interface RateLimitInfo {
 export type TimeRange = 'ten_minutes' | 'hour' | 'day' | 'week' | 'month'
 
 /**
+ * Requests that finished in a traffic bucket or range.
+ * Rust: crates/lr-monitoring/src/traffic.rs - TrafficCounts struct
+ */
+export interface TrafficCounts {
+  /** Finished LLM requests, failed ones included. */
+  llm_requests: number
+  llm_errors: number
+  /** Finished MCP requests, failed ones included. */
+  mcp_requests: number
+  mcp_errors: number
+  /** Estimated LLM cost in USD. */
+  cost_usd: number
+}
+
+/**
+ * One bucket of the dashboard traffic chart.
+ * Rust: crates/lr-monitoring/src/traffic.rs - TrafficBucket struct
+ */
+export interface TrafficBucket {
+  /** Bucket start, Unix seconds. */
+  timestamp: number
+  /** `null` when the period is not known at this resolution. */
+  counts: TrafficCounts | null
+  /** Most requests in progress at once during the bucket. */
+  in_flight: number | null
+}
+
+/**
+ * Dashboard traffic chart for one time range.
+ * Rust: crates/lr-monitoring/src/traffic.rs - TrafficTimeline struct
+ */
+export interface TrafficTimeline {
+  bucket_secs: number
+  /** Oldest first; the last bucket contains the current time. */
+  buckets: TrafficBucket[]
+  /** Over the whole range, including periods only known as daily totals. */
+  totals: TrafficCounts
+}
+
+/**
  * Metric type for LLM metrics.
  */
 export type MetricType = 'requests' | 'tokens' | 'cost' | 'latency'
@@ -2807,6 +2847,11 @@ export interface GetSkillFilesParams {
 export interface GetGlobalMetricsParams {
   timeRange: TimeRange
   metricType: MetricType
+}
+
+/** Params for get_traffic_timeline */
+export interface GetTrafficTimelineParams {
+  timeRange: TimeRange
 }
 
 /** Params for get_api_key_metrics */

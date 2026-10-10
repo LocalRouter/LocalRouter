@@ -1939,6 +1939,17 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                 });
                 info!("Spawned metrics aggregation task");
 
+                // Persist the per-minute peaks of requests in progress for the
+                // dashboard traffic chart.
+                let collector = state.metrics_collector.clone();
+                tokio::spawn(async move {
+                    let mut timer = tokio::time::interval(std::time::Duration::from_secs(5));
+                    loop {
+                        timer.tick().await;
+                        collector.persist_in_flight();
+                    }
+                });
+
                 // Initialize health cache with current providers and MCP servers
                 let health_cache = state.health_cache.clone();
                 {
@@ -2595,6 +2606,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::get_feature_stats,
             // Metrics commands
             ui::commands_metrics::get_global_metrics,
+            ui::commands_metrics::get_traffic_timeline,
             ui::commands_metrics::get_api_key_metrics,
             ui::commands_metrics::get_provider_metrics,
             ui::commands_metrics::get_model_metrics,

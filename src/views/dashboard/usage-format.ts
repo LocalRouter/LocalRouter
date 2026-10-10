@@ -149,3 +149,60 @@ export function usageLabelSeed(account: string, window: string): string {
   else suffix = window.slice(0, 2)
   return `${prefix}${suffix}`.replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 4)
 }
+
+export interface RoutedSpend {
+  label: string
+  /** `[period, USD]`, shortest first. */
+  periods: [string, number][]
+  /** Short context at the end of the row. */
+  note: string | null
+  /** Tooltip lines. */
+  hint: string[]
+}
+
+/** `4.2× plan` from one plan's worth, `35% of plan` below it. */
+export function planShare(multiplier: number): string {
+  return multiplier >= 1
+    ? `${multiplier.toFixed(1)}× plan`
+    : `${Math.round(multiplier * 100)}% of plan`
+}
+
+/**
+ * The cost of the requests LocalRouter routed to an account, at API list
+ * prices: spend for an API key, value delivered for a subscription.
+ */
+export function routedSpend(account: UsageAccountView): RoutedSpend | null {
+  const s = account.spend
+  const subscription = account.kind === 'subscription'
+  if (subscription ? s.last_30d_usd <= 0 : s.requests_30d <= 0) return null
+  const periods: [string, number][] = [
+    ['24h', s.last_24h_usd],
+    ['7d', s.last_7d_usd],
+    ['30d', s.last_30d_usd],
+  ]
+  const traffic = `${formatCount(s.requests_30d)} requests and ${formatCount(s.tokens_30d)} tokens in the last 30 days.`
+  if (subscription) {
+    return {
+      label: 'API-price value via LocalRouter',
+      periods,
+      note: account.value_multiplier !== null ? planShare(account.value_multiplier) : null,
+      hint: [
+        'What the requests LocalRouter sent with this subscription would have cost on the pay-as-you-go API.',
+        account.monthly_price_usd !== null
+          ? `Last 30 days: ${formatUsd(s.last_30d_usd)} against the ${formatUsd(account.monthly_price_usd)}/mo plan.`
+          : 'Set the plan price in Settings › Usage to compare it with the plan.',
+        traffic,
+        'Use outside LocalRouter, such as the provider’s own apps, is not included.',
+      ],
+    }
+  }
+  return {
+    label: 'Spend via LocalRouter',
+    periods,
+    note: `${formatCount(s.requests_30d)} req · 30d`,
+    hint: [
+      'Estimated cost of the requests LocalRouter sent with this API key, at list prices. The bill can differ: discounts, cached tokens and use outside LocalRouter are not reflected.',
+      traffic,
+    ],
+  }
+}

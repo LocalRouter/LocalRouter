@@ -8,7 +8,7 @@ test.beforeEach(async ({ page }) => {
   ).toBeEnabled()
 })
 
-test('time ranges use a compact bar chart and the merged Monitor opens request details in a pane', async ({
+test('time ranges use a compact line chart and the merged Monitor opens request details in a pane', async ({
   page,
 }) => {
   const traffic = page.getByRole('region', { name: 'Request traffic' })
@@ -17,13 +17,13 @@ test('time ranges use a compact bar chart and the merged Monitor opens request d
   ).toHaveAttribute('aria-pressed', 'true')
   await expect(traffic.getByRole('img')).toHaveAttribute(
     'aria-label',
-    /per minute/,
+    /per 10 seconds/,
   )
   const defaultLabel = await traffic.getByRole('img').getAttribute('aria-label')
   await page.getByRole('button', { name: 'last hour', exact: true }).click()
   await expect(traffic.getByRole('img')).toHaveAttribute(
     'aria-label',
-    /per 5 minutes/,
+    /per minute/,
   )
   await expect(
     page.getByRole('button', { name: 'Refresh activity' }),
@@ -31,9 +31,11 @@ test('time ranges use a compact bar chart and the merged Monitor opens request d
   expect(await traffic.getByRole('img').getAttribute('aria-label')).not.toBe(
     defaultLabel,
   )
-  await expect(traffic.locator('.recharts-bar-rectangle').first()).toBeVisible()
+  // Finished and in-progress lines, and errors on their own panel: nothing stacked.
+  await expect(traffic.locator('.recharts-line-curve')).toHaveCount(3)
+  await expect(traffic.locator('.recharts-bar-rectangle')).toHaveCount(0)
   await expect(traffic.locator('.recharts-area-curve')).toHaveCount(0)
-  expect((await traffic.getByRole('img').boundingBox())!.height).toBeLessThanOrEqual(120)
+  expect((await traffic.getByRole('img').boundingBox())!.height).toBeLessThanOrEqual(160)
   const monitor = page.getByRole('region', { name: 'Request monitor' })
   await expect(monitor.getByRole('table')).toBeVisible()
   await expect(
@@ -55,13 +57,36 @@ test('time ranges use a compact bar chart and the merged Monitor opens request d
   await expect(monitor).toContainText('filesystem__read_file')
 })
 
-test('30-day traffic has one point per day', async ({ page }) => {
+test('30-day traffic has 8-hour points', async ({ page }) => {
   const traffic = page.getByRole('region', { name: 'Request traffic' })
   await page.getByRole('button', { name: 'last 30 days', exact: true }).click()
   await expect(traffic.getByRole('img')).toHaveAttribute(
     'aria-label',
-    /per day/,
+    /per 8 hours/,
   )
+})
+
+test('traffic folds away like usage limits and remembers it', async ({ page }) => {
+  const traffic = page.getByRole('region', { name: 'Request traffic' })
+  const toggle = traffic.getByRole('button', { name: 'Traffic', exact: true })
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+  await toggle.click()
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+  await expect(traffic.getByRole('img')).toHaveCount(0)
+  // The totals stay in the header.
+  await expect(traffic).toContainText('requests')
+  await page.reload()
+  const reloaded = page.getByRole('region', { name: 'Request traffic' })
+  await expect(
+    reloaded.getByRole('button', { name: 'Traffic', exact: true }),
+  ).toHaveAttribute('aria-expanded', 'false')
+  await reloaded.getByRole('button', { name: 'Traffic', exact: true }).click()
+  await expect(reloaded.getByRole('img')).toBeVisible()
+  await expect(
+    page
+      .getByRole('region', { name: 'Usage limits' })
+      .getByRole('button', { name: 'Usage limits', exact: true }),
+  ).toHaveAttribute('aria-expanded', 'true')
 })
 
 test('the page fills the window and the detail splits the monitor without overlapping', async ({
@@ -219,19 +244,28 @@ test('empty traffic and failed loads are distinct and retry recovers', async ({
     w.homeFailure = false
     w.__TAURI_IPC_HANDLER__ = (command: string, args: unknown) => {
       if (
-        [
-          'get_global_metrics',
-          'get_global_mcp_metrics',
-          'get_monitor_events',
-        ].includes(command) &&
+        ['get_traffic_timeline', 'get_monitor_events'].includes(command) &&
         w.homeFailure
       )
         throw new Error('Test unavailable')
-      if (['get_global_metrics', 'get_global_mcp_metrics'].includes(command))
-        return {
-          labels: ['2026-10-02 12:00', '2026-10-02 13:00'],
-          datasets: [{ label: 'Requests', data: [0, 0] }],
+      if (command === 'get_traffic_timeline') {
+        const zero = {
+          llm_requests: 0,
+          llm_errors: 0,
+          mcp_requests: 0,
+          mcp_errors: 0,
+          cost_usd: 0,
         }
+        const now = Math.floor(Date.now() / 10_000) * 10
+        return {
+          bucket_secs: 10,
+          buckets: [
+            { timestamp: now - 10, counts: zero, in_flight: 0 },
+            { timestamp: now, counts: zero, in_flight: 0 },
+          ],
+          totals: zero,
+        }
+      }
       if (command === 'get_monitor_events') return { events: [], total: 0 }
       return original(command, args)
     }

@@ -29,8 +29,8 @@ export function DashboardView({ onTabChange }: DashboardViewProps = {}) {
         className="mx-auto w-full max-w-[1440px] shrink-0"
         range={range}
         onRangeChange={setRange}
-        metrics={home.metrics}
-        loading={home.metricsLoading}
+        timeline={home.timeline}
+        loading={home.trafficLoading}
         inFlight={inFlight.length}
         onRefresh={() => {
           home.refresh()

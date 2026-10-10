@@ -23,7 +23,7 @@ import type { McpConnectionDiscovery } from '@app/types/tauri-commands'
 import { toast } from 'sonner'
 import { mockData } from './mockData'
 // Types for mock return values - see src/types/tauri-commands.ts for full type definitions
-import type { RoutingPolicyPreview, GraphData, ProviderFeatureSupport, FeatureEndpointMatrix, InstallSourceInfo, RequestDedupeConfig } from '@app/types/tauri-commands'
+import type { RoutingPolicyPreview, GraphData, TrafficTimeline, ProviderFeatureSupport, FeatureEndpointMatrix, InstallSourceInfo, RequestDedupeConfig } from '@app/types/tauri-commands'
 import type {
   UsageAccountView,
   UsagePollStatus,
@@ -350,6 +350,52 @@ function generateMockGraphData(datasetLabel = "Requests", baseValue = 200, varia
     labels,
     datasets: [{ label: datasetLabel, data, border_color: "#3b82f6", background_color: "#3b82f6" }],
   }
+}
+
+// Dashboard traffic chart: the same bucket layout as the backend (60–96
+// buckets per range), with stable values so refreshes do not jump.
+// Returns: TrafficTimeline (src/types/tauri-commands.ts)
+function generateMockTrafficTimeline(args?: { timeRange?: string }): TrafficTimeline {
+  const layout: Record<string, [number, number]> = {
+    ten_minutes: [10, 60],
+    hour: [60, 60],
+    day: [900, 96],
+    week: [7_200, 84],
+    month: [28_800, 90],
+  }
+  const [bucketSecs, count] = layout[args?.timeRange ?? 'ten_minutes'] ?? layout.ten_minutes
+  const now = Math.floor(Date.now() / 1000)
+  const current = Math.floor(now / bucketSecs) * bucketSecs
+  // Requests per minute at a given time: busier in working hours, with bursts.
+  const perMinute = (t: number) => {
+    const hour = new Date(t * 1000).getHours()
+    const daily = hour >= 9 && hour <= 18 ? 1.5 : hour >= 6 && hour <= 21 ? 1 : 0.15
+    return Math.max(0, daily * (24 + 14 * Math.sin(t / 437) + 9 * Math.sin(t / 97)))
+  }
+  const totals = { llm_requests: 0, llm_errors: 0, mcp_requests: 0, mcp_errors: 0, cost_usd: 0 }
+  const buckets = Array.from({ length: count }, (_, i) => {
+    const timestamp = current - (count - 1 - i) * bucketSecs
+    const requests = Math.round(perMinute(timestamp) * (bucketSecs / 60))
+    const llm = Math.round(requests * 0.7)
+    const mcp = requests - llm
+    const llmErrors = Math.sin(timestamp / 211) > 0.93 ? Math.max(1, Math.round(llm * 0.08)) : 0
+    const mcpErrors = Math.sin(timestamp / 157) > 0.96 ? 1 : 0
+    const counts = {
+      llm_requests: llm,
+      llm_errors: Math.min(llm, llmErrors),
+      mcp_requests: mcp,
+      mcp_errors: Math.min(mcp, mcpErrors),
+      cost_usd: llm * 0.0018,
+    }
+    totals.llm_requests += counts.llm_requests
+    totals.llm_errors += counts.llm_errors
+    totals.mcp_requests += counts.mcp_requests
+    totals.mcp_errors += counts.mcp_errors
+    totals.cost_usd += counts.cost_usd
+    const inFlight = Math.max(0, Math.round(1.5 + 1.5 * Math.sin(timestamp / 173) + Math.min(3, requests / 400)))
+    return { timestamp, counts, in_flight: inFlight }
+  })
+  return { bucket_secs: bucketSecs, buckets, totals }
 }
 
 // Feature support for an OpenAI-like chat provider (base for the other mocks).
@@ -3153,6 +3199,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     context_mgmt_tokens_saved: 256800,
   }),
   'get_global_metrics': (args) => generateMockGraphData("Total Requests", 300, 200, args),
+  'get_traffic_timeline': (args): TrafficTimeline => generateMockTrafficTimeline(args as { timeRange?: string }),
   'get_api_key_metrics': (args) => generateMockGraphData("API Requests", 150, 100, args),
   'get_provider_metrics': (args) => generateMockGraphData("Provider Requests", 200, 150, args),
   'get_model_metrics': (args) => generateMockGraphData("Model Requests", 180, 120, args),

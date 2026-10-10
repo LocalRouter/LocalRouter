@@ -1,19 +1,30 @@
 import { expect, test } from '@playwright/test'
 import {
-  graphTimestamp,
-  graphTotal,
   isRequest,
-  requestTimeline,
+  niceTicks,
+  roundTicks,
+  trafficPeak,
+  trafficPoints,
 } from '../../../src/views/dashboard/activity-data'
 import type {
-  GraphData,
   MonitorEventSummary,
+  TrafficBucket,
+  TrafficTimeline,
 } from '../../../src/types/tauri-commands'
 
-function graph(labels: string[], ...data: number[][]): GraphData {
+const base = Date.parse('2026-10-02T12:00:00Z') / 1000
+const counts = (llm: number, mcp: number, errors = 0) => ({
+  llm_requests: llm,
+  llm_errors: errors,
+  mcp_requests: mcp,
+  mcp_errors: 0,
+  cost_usd: llm * 0.01,
+})
+function timeline(buckets: TrafficBucket[], bucketSecs = 10): TrafficTimeline {
   return {
-    labels,
-    datasets: data.map((values) => ({ label: 'Requests', data: values })),
+    bucket_secs: bucketSecs,
+    buckets,
+    totals: counts(0, 0),
   }
 }
 const event = (
@@ -34,27 +45,32 @@ const event = (
   ...changes,
 })
 
-test('joins UTC backend labels and ISO labels by timestamp, preserving gaps and totals', () => {
-  const llm = graph(['2026-10-02 12:00', '2026-10-02 13:00'], [4, 7], [1, 2])
-  const mcp = graph(['2026-10-02T13:00:00Z', '2026-10-02T14:00:00Z'], [3, 0])
-  expect(requestTimeline(llm, mcp)).toEqual([
-    { timestamp: Date.parse('2026-10-02T12:00:00Z'), llm: 5, mcp: null },
-    { timestamp: Date.parse('2026-10-02T13:00:00Z'), llm: 9, mcp: 3 },
-    { timestamp: Date.parse('2026-10-02T14:00:00Z'), llm: null, mcp: 0 },
-  ])
-  expect(graphTotal(llm)).toBe(14)
-  expect(graphTimestamp('2026-10-02 12:00')).toBe(
-    Date.parse('2026-10-02T12:00:00Z'),
+test('buckets become points with finished, errors and in-progress series; unknown stays unknown', () => {
+  const points = trafficPoints(
+    timeline([
+      { timestamp: base, counts: null, in_flight: null },
+      { timestamp: base + 10, counts: counts(4, 1, 2), in_flight: 3 },
+    ]),
+    (base + 15) * 1000,
+    0,
   )
+  expect(points).toEqual([
+    { timestamp: base * 1000, completed: null, llm: null, mcp: null, errors: null, inFlight: null, cost: null },
+    { timestamp: (base + 10) * 1000, completed: 5, llm: 4, mcp: 1, errors: 2, inFlight: 3, cost: 0.04 },
+  ])
+  expect(trafficPeak(points)).toBe(5)
+  expect(trafficPoints(null, base * 1000, 2)).toEqual([])
+  expect(trafficPoints(timeline([]), base * 1000, 2)).toEqual([])
 })
 
-test('unavailable metrics remain distinct from measured zero requests', () => {
-  expect(graphTotal(null)).toBeNull()
-  expect(graphTotal(graph([], []))).toBe(0)
-  expect(
-    requestTimeline(null, graph(['2026-10-02 12:00'], [0]))[0],
-  ).toMatchObject({ llm: null, mcp: 0 })
-  expect(requestTimeline(graph(['invalid'], [9]), null)).toEqual([])
+test('y-axis ticks are whole numbers from zero to a round top', () => {
+  expect(niceTicks(0)).toEqual([0, 1, 2])
+  expect(niceTicks(0, 1)).toEqual([0, 1])
+  expect(niceTicks(3)).toEqual([0, 2, 4])
+  expect(niceTicks(7)).toEqual([0, 4, 8])
+  expect(niceTicks(11)).toEqual([0, 10, 20])
+  expect(niceTicks(150)).toEqual([0, 100, 200])
+  expect(niceTicks(1000)).toEqual([0, 500, 1000])
 })
 
 test('in-flight request classification excludes internal steps and duplicate hops', () => {
@@ -67,4 +83,14 @@ test('in-flight request classification excludes internal steps and duplicate hop
   ]
   expect(items.filter(isRequest).map((item) => item.id)).toEqual(['a', 'mcp'])
   expect(isRequest(event({ event_type: 'mcp_sampling' }))).toBe(true)
+})
+
+test('x-axis ticks land on round local times at any bucket alignment', () => {
+  const start = Date.parse('2026-10-02T00:00:00Z')
+  const tenSeconds = Array.from({ length: 60 }, (_, i) => start + i * 10_000)
+  expect(roundTicks('ten_minutes', tenSeconds, 10_000)).toHaveLength(5)
+  const eightHours = Array.from({ length: 90 }, (_, i) => start + i * 8 * 3_600_000)
+  const ticks = roundTicks('month', eightHours, 8 * 3_600_000)
+  expect(ticks.length).toBeGreaterThanOrEqual(5)
+  expect(ticks.length).toBeLessThanOrEqual(7)
 })

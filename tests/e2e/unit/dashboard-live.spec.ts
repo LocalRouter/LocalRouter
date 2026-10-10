@@ -1,19 +1,18 @@
 import { expect, test } from '@playwright/test'
-import {
-  applyInFlight,
-  liveTimeline,
-  RANGES,
-  requestTimeline,
-} from '../../../src/views/dashboard/activity-data'
+import { applyInFlight, trafficPoints } from '../../../src/views/dashboard/activity-data'
 import { dockTarget } from '../../../src/views/dashboard/dock'
 import { apiFromPath, llmApiFlow } from '../../../src/views/monitor/llm-api'
-import type { GraphData, MonitorEventSummary } from '../../../src/types/tauri-commands'
+import type { MonitorEventSummary, TrafficTimeline } from '../../../src/types/tauri-commands'
 
-const MINUTE = 60_000
 const base = Date.parse('2026-10-09T12:00:00Z')
-const graph = (start: number, values: number[]): GraphData => ({
-  labels: values.map((_, i) => new Date(start + i * MINUTE).toISOString()),
-  datasets: [{ label: 'Requests', data: values }],
+const timeline = (values: number[], inFlight: number[] = []): TrafficTimeline => ({
+  bucket_secs: 10,
+  buckets: values.map((value, i) => ({
+    timestamp: base / 1000 + i * 10,
+    counts: { llm_requests: value, llm_errors: 0, mcp_requests: 0, mcp_errors: 0, cost_usd: 0 },
+    in_flight: inFlight[i] ?? 0,
+  })),
+  totals: { llm_requests: 0, llm_errors: 0, mcp_requests: 0, mcp_errors: 0, cost_usd: 0 },
 })
 const summary = (changes: Partial<MonitorEventSummary> = {}): MonitorEventSummary => ({
   id: 'a', sequence: 1, timestamp: new Date(base).toISOString(), event_type: 'llm_call',
@@ -21,29 +20,26 @@ const summary = (changes: Partial<MonitorEventSummary> = {}): MonitorEventSummar
   summary: '', question: '', answer: '', ...changes,
 })
 
-test('the live bucket holds in-flight requests and the current minute is the last bar', () => {
-  const points = requestTimeline(graph(base, [1, 2, 3]), graph(base, [0, 0, 1]))
-  const now = base + 2 * MINUTE + 30_000
-  const live = liveTimeline(points, RANGES.ten_minutes.bucketMs, now, 2)
+test('the live bucket shows requests running now, never less than the sampled peak', () => {
+  const now = base + 25_000
+  const live = trafficPoints(timeline([1, 2, 3], [0, 4, 1]), now, 2)
   expect(live).toHaveLength(3)
-  expect(live[2]).toMatchObject({ timestamp: base + 2 * MINUTE, llm: 3, mcp: 1, inFlight: 2 })
-  expect(live.slice(0, 2).every(point => point.inFlight === null)).toBe(true)
-  expect(liveTimeline(points, MINUTE, now, 0)[2].inFlight).toBeNull()
+  expect(live[2]).toMatchObject({ timestamp: base + 20_000, completed: 3, inFlight: 2 })
+  expect(live[1].inFlight).toBe(4)
+  expect(trafficPoints(timeline([1, 2, 3], [0, 0, 5]), now, 2)[2].inFlight).toBe(5)
+  expect(trafficPoints(timeline([1, 2, 3]), now, 0)[2].inFlight).toBe(0)
 })
 
-test('a minute rollover since the last read adds the new, empty live bucket', () => {
-  const points = requestTimeline(graph(base, [4]), graph(base, [0]))
-  const live = liveTimeline(points, MINUTE, base + MINUTE + 5_000, 1)
-  expect(live.map(point => point.timestamp)).toEqual([base, base + MINUTE])
-  expect(live[1]).toMatchObject({ llm: 0, mcp: 0, inFlight: 1 })
+test('a bucket rollover since the last read adds the new live bucket and keeps the window length', () => {
+  const live = trafficPoints(timeline([4, 5]), base + 21_000, 1)
+  expect(live.map((point) => point.timestamp)).toEqual([base + 10_000, base + 20_000])
+  expect(live[1]).toMatchObject({ completed: 0, errors: 0, inFlight: 1 })
 })
 
-test('stale series are not padded and do not place in-flight requests', () => {
-  const points = requestTimeline(graph(base, [4]), graph(base, [0]))
-  const live = liveTimeline(points, MINUTE, base + 7 * 24 * 60 * MINUTE, 3)
+test('stale timelines are not padded and do not place in-flight requests', () => {
+  const live = trafficPoints(timeline([4]), base + 7 * 24 * 3_600_000, 3)
   expect(live).toHaveLength(1)
-  expect(live[0].inFlight).toBeNull()
-  expect(liveTimeline([], MINUTE, base, 3)).toEqual([])
+  expect(live[0].inFlight).toBe(0)
 })
 
 test('in-flight tracking adds pending requests and reports when one settles', () => {
