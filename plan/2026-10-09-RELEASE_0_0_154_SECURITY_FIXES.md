@@ -21,8 +21,10 @@ locally, and released.
   37994584095.
 - [x] Build and run the app locally (`cargo tauri dev --no-watch`), exercise
   the changed paths against the dev server on 33625 (results below).
-- [ ] Show the user the local run and wait for the go-ahead.
-- [ ] Trigger the Release workflow on master for 0.0.154 (non-prerelease).
+- [x] Show the user the local run; CI passed on 363b4660 (run 37997438502).
+- [ ] Release on hold: the user asked to merge everything but not release
+  yet (2026-10-09). Trigger the Release workflow on master for 0.0.154
+  (non-prerelease) only on explicit go-ahead.
 - [ ] Monitor the release run; verify the published release, assets, updater
   manifest and the Docker image build (first run with the checksum step).
 - [ ] Sync local master with the release version bump.
