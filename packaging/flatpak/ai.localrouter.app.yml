@@ -72,6 +72,9 @@ modules:
       - /include
       - /lib/pkgconfig
     config-opts:
+      # CMake's GNUInstallDirs picks lib64 in the GNOME SDK, where neither
+      # pkg-config (for the modules below) nor the app's dlopen() look.
+      - -DCMAKE_INSTALL_LIBDIR=lib
       - -DENABLE_BINDINGS_MONO=NO
       - -DENABLE_BINDINGS_VALA=NO
       - -DENABLE_GTKDOC=NO
@@ -127,6 +130,7 @@ modules:
           - /include
           - /lib/pkgconfig
         config-opts:
+          - -DCMAKE_INSTALL_LIBDIR=lib
           - -DENABLE_INTROSPECTION=OFF
         sources:
           - type: git
@@ -143,6 +147,8 @@ modules:
           - /lib/pkgconfig
           - /libexec
           - /share
+        config-opts:
+          - -DCMAKE_INSTALL_LIBDIR=lib
         sources:
           - type: git
             url: https://github.com/AyatanaIndicators/libayatana-indicator.git
