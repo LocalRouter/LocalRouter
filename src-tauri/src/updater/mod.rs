@@ -215,6 +215,7 @@ mod tests {
             InstallSource::Flatpak,
             InstallSource::Snap,
             InstallSource::Docker,
+            InstallSource::Nix,
         ] {
             assert_eq!(
                 should_check_for_updates(&UpdateMode::Automatic, Some(last_check), 7, now, source,),

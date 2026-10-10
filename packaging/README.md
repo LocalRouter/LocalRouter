@@ -21,6 +21,7 @@ party reviews it afterwards.
 | Flatpak | Linux | our own flatpak repo, also in `LocalRouter/packages` | none |
 | WinGet | Windows x64 | **manual PR** to `microsoft/winget-pkgs` (CI renders the manifests) | MS validation + moderator merge |
 | Snap | Linux | GitHub release asset; Snap Store when credentialed | one-time classic review |
+| Nix | Linux (x86_64 + aarch64) | the flake in this repo (`flake.nix`), pinned on `master` | none |
 
 Everything is rendered by `scripts/publish-packages.sh`, which resolves the
 version, hashes the published release assets and substitutes the `__NAME__`
@@ -72,6 +73,67 @@ The store holds the **first** classic-confinement upload until a one-time
 [store request](https://forum.snapcraft.io/c/store-requests) is granted
 (precedent: VS Code). After that, uploads flow unattended.
 
+### Nix: a flake in this repository
+
+`flake.nix` at the repository root exposes `packages.<system>.default`
+(also `.localrouter`), `apps.<system>.default`, `checks` and
+`overlays.default` (adds `pkgs.localrouter`) for `x86_64-linux` and
+`aarch64-linux`. The derivation, `nix/package.nix`, repackages the released
+`.deb` like the AUR, Flatpak and Snap recipes do (`meta.sourceProvenance` is
+`binaryNativeCode`): `autoPatchelfHook` links it against nixpkgs' WebKitGTK
+4.1 / GTK 3 / libsoup 3, and `wrapGAppsHook3` wraps it with GIO modules
+(glib-networking), GSettings schemas and GStreamer plugins. The wrapper also:
+
+- prepends `libayatana-appindicator` to `LD_LIBRARY_PATH`, because the tray
+  `dlopen()`s `libayatana-appindicator3.so.1` and so never appears in the
+  binary's `NEEDED` entries;
+- sets `LOCALROUTER_INSTALL_SOURCE=nix` (default only), so the in-app updater
+  stands down and Settings → Updates shows `nix profile upgrade LocalRouter`.
+  A binary running from `/nix/store/` is recognised as Nix even without it.
+
+Releases reach Nix users by a commit, not a push to another repo:
+`nix/sources.json` pins the version and the per-architecture `.deb` sha256,
+and the `update-nix` job in `release.yml` re-renders it
+(`publish-packages.sh --only nix`, from `nix/sources.json.tmpl`) and commits
+it to `master` with `GITHUB_TOKEN`. The job skips prereleases, never moves
+the pin to an older version, and retries from the new tip if `master` moved.
+`flake.lock` pins nixpkgs; bumping it is a normal `nix flake update` commit.
+
+Usage:
+
+```bash
+nix run github:LocalRouter/LocalRouter                # run without installing
+nix profile install github:LocalRouter/LocalRouter    # install
+nix profile upgrade LocalRouter                       # upgrade
+```
+
+As a flake input (NixOS or home-manager):
+
+```nix
+{
+  inputs.localrouter.url = "github:LocalRouter/LocalRouter";
+  # Optional: build against your own nixpkgs instead of the pinned one.
+  inputs.localrouter.inputs.nixpkgs.follows = "nixpkgs";
+
+  outputs = { nixpkgs, localrouter, ... }: {
+    nixosConfigurations.myhost = nixpkgs.lib.nixosSystem {
+      modules = [
+        ({ pkgs, ... }: {
+          environment.systemPackages = [
+            localrouter.packages.${pkgs.stdenv.hostPlatform.system}.default
+          ];
+          # or: nixpkgs.overlays = [ localrouter.overlays.default ];
+          #     environment.systemPackages = [ pkgs.localrouter ];
+        })
+      ];
+    };
+  };
+}
+```
+
+Flake-input users upgrade with `nix flake update localrouter` and a rebuild.
+macOS is not offered through Nix; use the Homebrew cask there.
+
 ## Not used, and why
 
 - **Microsoft Store / Mac App Store / Google Play** — all charge a developer
@@ -83,8 +145,9 @@ The store holds the **first** classic-confinement upload until a one-time
 - **Flathub** — not *needed* (see above); optional later for discoverability.
 - **Chocolatey** — redundant with WinGet for the same audience, and adds
   another moderation queue.
-- **Nixpkgs** — worth doing eventually, but Nix users are well served by the
-  AppImage and the effort/reach ratio is poor compared to the above.
+- **Nixpkgs** — not needed for Nix users, who get the flake above with no
+  review queue. Upstreaming the same derivation to nixpkgs is optional extra
+  reach, like Flathub.
 
 [cask]: https://docs.brew.sh/Acceptable-Casks
 
@@ -190,6 +253,11 @@ after setup validates them end-to-end. Still never executed on a real target
 machine:
 
 - the Scoop manifest (needs a Windows box)
+- the Nix flake on `x86_64-linux`: only the `aarch64-linux` build was run
+  (in a `nixos/nix` container: build, `nix flake check --all-systems`, `ldd`,
+  `--version`, and a headless Xvfb launch with the tray up). The x86_64 pin's
+  hash was verified with `nix store prefetch-file`, and the derivation
+  evaluates, but it has not been built
 - the AUR PKGBUILD (needs `makepkg` on Arch)
 - *installing/running* the built flatpak and snap (CI only builds them; the
   snap's classic-confinement library setup in particular — WebKit helper

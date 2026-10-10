@@ -63,6 +63,10 @@ flatpak install --from https://packages.localrouter.ai/flatpak/localrouter.flatp
 # Snap
 sudo snap install localrouter --classic
 
+# Nix (flake, x86_64-linux / aarch64-linux)
+nix run github:LocalRouter/LocalRouter               # try it without installing
+nix profile install github:LocalRouter/LocalRouter
+
 # Docker
 docker pull ghcr.io/localrouter/localrouter:latest
 ```

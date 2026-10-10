@@ -6,7 +6,7 @@
 //! Homebrew records a version and a checksum for the bundle it placed, so an
 //! in-place self-update leaves the cask permanently "outdated" and the next
 //! `brew upgrade` happily overwrites whatever the app installed. The same
-//! applies to `apt`, `dnf`, `flatpak`, and `snap`.
+//! applies to `apt`, `dnf`, `flatpak`, `snap`, and Nix.
 //!
 //! So: whenever an external package manager owns the install, the self-updater
 //! must stand down and the UI must tell the user which command to run instead.
@@ -18,7 +18,8 @@
 //!    ([`crate::sandbox`])
 //! 3. the `install-source` marker file we write from deb/rpm/AUR packaging
 //! 4. `/.dockerenv`
-//! 5. executable-path heuristics (Scoop, Homebrew Caskroom, Linux `/usr`)
+//! 5. executable-path heuristics (Scoop, Homebrew Caskroom, the Nix store,
+//!    Linux `/usr`)
 //!
 //! Steps 2 and 3 are in that order deliberately. Tauri builds the AppImage
 //! from the deb tree, and the Flatpak and Snap recipes repack that same deb,
@@ -60,6 +61,8 @@ pub enum InstallSource {
     Snap,
     /// Running inside the GHCR container image.
     Docker,
+    /// The Nix flake (`packaging/nix`) or any other build from the Nix store.
+    Nix,
 }
 
 impl InstallSource {
@@ -85,6 +88,7 @@ impl InstallSource {
             InstallSource::Flatpak => "Flatpak",
             InstallSource::Snap => "Snap",
             InstallSource::Docker => "Docker",
+            InstallSource::Nix => "Nix",
         }
     }
 
@@ -107,6 +111,10 @@ impl InstallSource {
             InstallSource::Flatpak => Some("flatpak update ai.localrouter.app"),
             InstallSource::Snap => Some("sudo snap refresh localrouter"),
             InstallSource::Docker => Some("docker pull ghcr.io/localrouter/localrouter:latest"),
+            // `nix profile install github:LocalRouter/LocalRouter` names the
+            // profile element after the repository. NixOS / home-manager users
+            // update their flake input instead; packaging/README.md says so.
+            InstallSource::Nix => Some("nix profile upgrade LocalRouter"),
         }
     }
 
@@ -125,6 +133,7 @@ impl InstallSource {
             "flatpak" => Some(InstallSource::Flatpak),
             "snap" => Some(InstallSource::Snap),
             "docker" => Some(InstallSource::Docker),
+            "nix" => Some(InstallSource::Nix),
             _ => None,
         }
     }
@@ -229,6 +238,13 @@ where
     let normalised = exe_str.replace('\\', "/");
     if normalised.contains("/scoop/apps/") {
         return Some(InstallSource::Scoop);
+    }
+
+    // Everything Nix builds runs from the read-only store. Our flake's wrapper
+    // also sets LOCALROUTER_INSTALL_SOURCE=nix; this catches a third-party
+    // derivation (e.g. a future nixpkgs package) that does not.
+    if normalised.starts_with("/nix/store/") {
+        return Some(InstallSource::Nix);
     }
 
     // A Homebrew cask stages the bundle in the Caskroom and moves it to
@@ -404,6 +420,43 @@ mod tests {
     }
 
     #[test]
+    fn nix_store_binary_detected_from_exe_path() {
+        // wrapGAppsHook moves the real binary to `.localrouter-wrapped`, which
+        // is what current_exe() reports.
+        assert_eq!(
+            detect_install_source(
+                env_from(&[]),
+                Some(Path::new(
+                    "/nix/store/abc123-localrouter-0.0.153/bin/.localrouter-wrapped"
+                )),
+                Sandbox::None,
+                None,
+                no_paths,
+            ),
+            InstallSource::Nix
+        );
+    }
+
+    #[test]
+    fn nix_wrapper_override_beats_a_stray_deb_marker() {
+        // A non-NixOS host can have both the apt package (whose marker lives at
+        // the absolute /usr/share path) and the flake installed. The wrapper's
+        // override keeps the Nix copy from reporting itself as APT.
+        assert_eq!(
+            detect_install_source(
+                env_from(&[("LOCALROUTER_INSTALL_SOURCE", "nix")]),
+                Some(Path::new(
+                    "/nix/store/abc123-localrouter-0.0.153/bin/.localrouter-wrapped"
+                )),
+                Sandbox::None,
+                Some("deb"),
+                no_paths,
+            ),
+            InstallSource::Nix
+        );
+    }
+
+    #[test]
     fn docker_detected_from_dockerenv() {
         assert_eq!(
             detect_install_source(env_from(&[]), None, Sandbox::None, None, |p| p
@@ -540,6 +593,7 @@ mod tests {
             InstallSource::Flatpak,
             InstallSource::Snap,
             InstallSource::Docker,
+            InstallSource::Nix,
         ] {
             assert!(
                 !source.is_self_updatable(),
@@ -562,6 +616,7 @@ mod tests {
             InstallSource::Flatpak,
             InstallSource::Snap,
             InstallSource::Docker,
+            InstallSource::Nix,
         ] {
             assert!(
                 source.upgrade_command().is_some(),
@@ -581,6 +636,7 @@ mod tests {
             (InstallSource::AppImage, "\"appimage\""),
             (InstallSource::Homebrew, "\"homebrew\""),
             (InstallSource::SystemPackage, "\"system_package\""),
+            (InstallSource::Nix, "\"nix\""),
         ];
         for (source, expected) in cases {
             assert_eq!(serde_json::to_string(&source).unwrap(), expected);

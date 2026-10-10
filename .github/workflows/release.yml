@@ -608,6 +608,74 @@ jobs:
           fi
           snapcraft upload --release=stable ./*.snap
 
+  # The Nix flake lives in this repository (flake.nix -> packaging/nix), so
+  # `nix run github:LocalRouter/LocalRouter` always reads master. Publishing
+  # to Nix therefore means committing the new version + .deb hashes to
+  # packaging/nix/sources.json on master. Independent of publish-packages,
+  # which is gated on PACKAGING_PAT; this only needs GITHUB_TOKEN, like the
+  # version-bump commit. Prereleases are skipped so flake users stay on the
+  # same stable line as /releases/latest.
+  update-nix:
+    name: Update the Nix flake pin
+    needs: [version-bump, create-release]
+    if: ${{ github.event.inputs.prerelease != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout master
+        uses: actions/checkout@v4
+        with:
+          ref: master
+
+      - name: Render packaging/nix/sources.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Without --assets-dir the script downloads just the two .debs it
+          # hashes, via gh.
+          ./scripts/publish-packages.sh \
+            --version "${{ needs.version-bump.outputs.version }}" \
+            --only nix \
+            --out-dir /tmp/pkgout
+          cat /tmp/pkgout/nix/sources.json
+
+      - name: Commit the new pin to master
+        env:
+          VERSION: ${{ needs.version-bump.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # master can move while the release builds; start each attempt from
+          # the current tip so the push is always a fast-forward.
+          for attempt in 1 2 3 4 5; do
+            git fetch origin master
+            git checkout -B master origin/master
+            # Never move the pin backwards: a slower job for an older release
+            # must not overwrite a newer release's pin.
+            current="$(jq -r .version packaging/nix/sources.json)"
+            newest="$(printf '%s\n%s\n' "$current" "$VERSION" | sort -V | tail -n1)"
+            if [ "$current" != "$VERSION" ] && [ "$newest" = "$current" ]; then
+              echo "master already pins $current (newer than $VERSION); leaving it"
+              exit 0
+            fi
+            cp /tmp/pkgout/nix/sources.json packaging/nix/sources.json
+            git add packaging/nix/sources.json
+            if git diff --cached --quiet; then
+              echo "packaging/nix/sources.json already pins $VERSION"
+              exit 0
+            fi
+            git commit -m "chore(nix): pin the flake to v$VERSION"
+            if git push origin master; then
+              exit 0
+            fi
+            echo "push rejected (attempt $attempt); retrying from the new master"
+            sleep $((attempt * 5))
+          done
+          echo "::error::could not push the Nix pin to master"
+          exit 1
+
   publish-packages:
     name: Publish to Package Managers
     needs: [version-bump, create-release, build-flatpak]

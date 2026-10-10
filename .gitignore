@@ -78,3 +78,7 @@ crates/lr-catalog/catalog/.last_fetch
 .claude/settings.local.json
 .claude/worktrees/
 .claude/scheduled_tasks.lock
+
+# nix build output symlinks
+/result
+/result-*

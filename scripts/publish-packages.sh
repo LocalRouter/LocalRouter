@@ -12,7 +12,7 @@
 # Options:
 #   --version X.Y.Z     Released version, without a leading "v" (required)
 #   --only a,b,c        Channels to render. Default: all.
-#                       One or more of: homebrew scoop aur winget flatpak snap
+#                       One or more of: homebrew scoop aur winget flatpak snap nix
 #   --assets-dir DIR    Directory holding the release assets. When omitted the
 #                       assets are downloaded from the GitHub release, which
 #                       needs `gh` to be authenticated.
@@ -35,7 +35,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PACKAGING_DIR="$ROOT_DIR/packaging"
 
-ALL_CHANNELS="homebrew scoop aur winget flatpak snap"
+ALL_CHANNELS="homebrew scoop aur winget flatpak snap nix"
 
 VERSION=""
 CHANNELS="$ALL_CHANNELS"
@@ -104,7 +104,7 @@ needed_assets() {
       winget)   echo "LocalRouter_${VERSION}_x64-setup.exe" ;;
       # snapcraft downloads the deb itself at build time, but the recipe
       # pins its sha256, which is computed here from the same assets.
-      aur|flatpak|snap)
+      aur|flatpak|snap|nix)
                 echo "LocalRouter_${VERSION}_amd64.deb"
                 echo "LocalRouter_${VERSION}_arm64.deb" ;;
     esac
@@ -267,6 +267,14 @@ if wants snap; then
   render_template "$PACKAGING_DIR/snap/snapcraft.yaml" "$OUT_DIR/snap/snapcraft.yaml"
 fi
 
+# The flake at the repository root reads packaging/nix/sources.json; the
+# `update-nix` job in release.yml copies this rendering over it on master.
+if wants nix; then
+  SHA_DEB_AMD64="$(asset_sha256 "LocalRouter_${VERSION}_amd64.deb")"
+  SHA_DEB_ARM64="$(asset_sha256 "LocalRouter_${VERSION}_arm64.deb")"
+  render_template "$PACKAGING_DIR/nix/sources.json.tmpl" "$OUT_DIR/nix/sources.json"
+fi
+
 log "Rendered manifests are in $OUT_DIR"
 
 # ---------------------------------------------------------------------------
@@ -346,8 +354,8 @@ push_aur() {
 push_tap
 push_aur
 
-# Flatpak, Snap and WinGet are not pushed from here, but they ARE automated —
-# each has a dedicated consumer in .github/workflows/release.yml:
+# Flatpak, Snap, WinGet and Nix are not pushed from here, but they ARE
+# automated — each has a dedicated consumer in .github/workflows/release.yml:
 #   flatpak — the build-flatpak jobs run flatpak-builder on the rendered
 #             manifest, then publish-packages merges the result into the
 #             self-hosted repo via packaging/linux-repo/build-flatpak-repo.sh
@@ -355,6 +363,8 @@ push_aur
 #             upload to the release (and to the Snap Store when credentialed)
 #   winget  — rendered and uploaded as a CI artifact; submitted by hand
 #             (by decision: no bot PRs to microsoft/winget-pkgs)
-if wants flatpak || wants snap || wants winget; then
-  log "flatpak/snap/winget rendered — publishing happens in release.yml, see packaging/README.md"
+#   nix     — the update-nix job commits the rendered sources.json to master,
+#             which is what `nix run github:LocalRouter/LocalRouter` reads
+if wants flatpak || wants snap || wants winget || wants nix; then
+  log "flatpak/snap/winget/nix rendered — publishing happens in release.yml, see packaging/README.md"
 fi
