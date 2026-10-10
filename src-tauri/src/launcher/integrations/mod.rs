@@ -15,6 +15,7 @@ pub mod goose;
 pub mod jsonc;
 pub mod openclaw;
 pub mod opencode;
+pub mod pi;
 pub mod vscode;
 pub mod zed;
 
@@ -40,6 +41,7 @@ pub const KNOWN_TEMPLATE_IDS: &[&str] = &[
     "cursor",
     "openclaw",
     "goose",
+    "pi",
 ];
 
 /// Get an integration by template ID
@@ -53,6 +55,7 @@ pub fn get_integration(template_id: &str) -> Option<Box<dyn AppIntegration>> {
         "cursor" => Some(Box::new(cursor::CursorIntegration)),
         "openclaw" => Some(Box::new(openclaw::OpenClawIntegration)),
         "goose" => Some(Box::new(goose::GooseIntegration)),
+        "pi" => Some(Box::new(pi::PiIntegration)),
         _ => None,
     }
 }
@@ -91,6 +94,7 @@ mod tests {
             ("cursor", "Cursor"),
             ("openclaw", "OpenClaw"),
             ("goose", "Goose"),
+            ("pi", "Pi"),
         ];
 
         for (id, name) in expected {
@@ -117,7 +121,7 @@ mod tests {
         }
 
         // Apps that are permanent-config only
-        for id in &["opencode", "droid", "openclaw", "cursor"] {
+        for id in &["opencode", "droid", "openclaw", "cursor", "pi"] {
             let integration = get_integration(id).unwrap();
             assert!(
                 !integration.supports_try_it_out(),
@@ -155,7 +159,7 @@ mod tests {
 
     #[test]
     fn test_try_it_out_not_supported_returns_error() {
-        for id in &["opencode", "droid", "openclaw", "cursor"] {
+        for id in &["opencode", "droid", "openclaw", "cursor", "pi"] {
             let integration = get_integration(id).unwrap();
             let result =
                 integration.try_it_out("http://localhost:3625", "test-secret", "test-client");
@@ -169,6 +173,9 @@ mod tests {
 
     #[test]
     fn test_config_file_integrations_configure_permanent() {
+        // Pi is tested through its injectable-path writer in pi.rs. Calling
+        // configure_permanent here would write test credentials to the
+        // developer's real ~/.pi/agent directory.
         for id in &[
             "claude-code",
             "codex",

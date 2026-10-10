@@ -82,7 +82,7 @@ pub trait AppIntegration: Send + Sync {
     }
 
     /// Whether this integration needs the model list for sync_config.
-    /// Only OpenCode returns true.
+    /// OpenCode, OpenClaw, and Pi return true.
     fn needs_model_list(&self) -> bool {
         false
     }
