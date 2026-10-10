@@ -247,16 +247,18 @@ impl Default for AutoModelConfig {
 }
 
 impl AutoModelConfig {
-    /// Chat can use an explicit policy destination even without a priority list.
+    /// Whether every chat request has at least one candidate model, so the
+    /// auto model may be listed and accepted. Each request ends with the
+    /// policy's default route and then the priority list, so an enabled policy
+    /// stands in for an empty priority list only when its default route names
+    /// models of its own. Models on other routes are reached only when chosen,
+    /// so they cannot keep fallback requests from failing.
     pub fn has_chat_candidates(&self) -> bool {
         !self.prioritized_models.is_empty()
-            || self.routing_policy.as_ref().is_some_and(|policy| {
-                policy.enabled
-                    && policy
-                        .options
-                        .iter()
-                        .any(|option| !option.models.is_empty())
-            })
+            || self
+                .routing_policy
+                .as_ref()
+                .is_some_and(|policy| policy.enabled && !policy.default_route_models().is_empty())
     }
 
     /// Migrate the old `enabled` bool field into `permission` if present.

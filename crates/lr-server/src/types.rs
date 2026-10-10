@@ -129,8 +129,17 @@ pub struct ChatCompletionRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub store: Option<bool>,
 
-    /// Developer-defined tags
+    /// Developer-defined string tags.
+    ///
+    /// LocalRouter reads one reserved key, `localrouter.mode` (at most 64
+    /// characters), when `model` is the auto router: an exact match against
+    /// the strategy's routing-policy mode rules picks that rule's route (for
+    /// example `"plan"`), ahead of any decision model. LocalRouter never infers
+    /// the mode from prompt text. The key is removed before the request is
+    /// forwarded; other keys go to providers that accept metadata (OpenAI
+    /// only together with `store: true`, which it requires for metadata).
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = json!({"localrouter.mode": "plan"}))]
     pub metadata: Option<HashMap<String, String>>,
 
     /// Output modalities: ["text"], ["text", "audio"]

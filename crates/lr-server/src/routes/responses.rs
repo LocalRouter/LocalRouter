@@ -83,9 +83,10 @@ use crate::types::{
 /// chat-completions-backed implementation currently honors. Extra
 /// fields on the wire are preserved via `#[serde(deny_unknown_fields)]
 /// = false` (serde default) so adding support later is non-breaking.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct CreateResponseRequest {
+    #[schema(example = "localrouter/auto")]
     pub model: String,
     /// Either a single string (shorthand for one user message) or an
     /// array of typed `ResponseItem`s.
@@ -99,8 +100,10 @@ pub struct CreateResponseRequest {
     #[serde(default)]
     pub store: Option<bool>,
     #[serde(default)]
+    #[schema(value_type = Option<Vec<Object>>)]
     pub tools: Option<Vec<Value>>,
     #[serde(default)]
+    #[schema(value_type = Option<Object>)]
     pub tool_choice: Option<Value>,
     #[serde(default)]
     pub parallel_tool_calls: Option<bool>,
@@ -113,19 +116,27 @@ pub struct CreateResponseRequest {
     #[serde(default)]
     pub reasoning: Option<ReasoningRequest>,
     #[serde(default)]
+    #[schema(value_type = Option<Object>)]
     pub response_format: Option<Value>,
+    /// String tags. LocalRouter reads the reserved key `localrouter.mode`
+    /// (at most 64 characters) when `model` is the auto router: an exact
+    /// match against the strategy's routing-policy mode rules picks that
+    /// rule's route (for example `"plan"`), ahead of any decision model. The
+    /// key is removed before the request is forwarded; other string values
+    /// go to providers that accept metadata (OpenAI only with `store: true`).
     #[serde(default)]
+    #[schema(value_type = Option<std::collections::HashMap<String, String>>, example = json!({"localrouter.mode": "plan"}))]
     pub metadata: Option<Value>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
 #[serde(untagged)]
 pub enum ResponseInput {
     Text(String),
     Items(Vec<Value>),
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
 pub struct ReasoningRequest {
     #[serde(default)]
     pub effort: Option<String>,
@@ -135,6 +146,25 @@ pub struct ReasoningRequest {
 // Handler entry point
 // ============================================================================
 
+/// OpenAI Responses API, served through the same pipeline as chat
+/// completions (including `localrouter/auto` routing policies).
+#[utoipa::path(
+    post,
+    path = "/v1/responses",
+    tag = "chat",
+    request_body = CreateResponseRequest,
+    responses(
+        (status = 200, description = "Response object (non-streaming)", content_type = "application/json"),
+        (status = 200, description = "Response events (streaming)", content_type = "text/event-stream"),
+        (status = 400, description = "Bad request", body = crate::types::ErrorResponse),
+        (status = 401, description = "Unauthorized", body = crate::types::ErrorResponse),
+        (status = 429, description = "Rate limit exceeded", body = crate::types::ErrorResponse),
+        (status = 500, description = "Internal server error", body = crate::types::ErrorResponse)
+    ),
+    security(
+        ("bearer_auth" = [])
+    )
+)]
 pub async fn create_response(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,

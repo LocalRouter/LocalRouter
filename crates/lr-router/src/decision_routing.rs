@@ -16,21 +16,49 @@ pub fn explicit_mode(metadata: Option<&HashMap<String, String>>) -> Option<&str>
         .filter(|mode| mode.len() <= 64)
 }
 
+/// Characters held back from the latest request's budget for the omission marker.
+const OMISSION_MARKER_RESERVE: usize = 48;
+
+/// Keep the head and tail of a request longer than `limit` characters. Asks
+/// usually sit at the start (instructions) or end (the question after pasted
+/// material), so both ends carry the intent. Returns the text and the number of
+/// characters removed from the middle.
+fn head_and_tail(text: &str, limit: usize) -> (String, usize) {
+    let total = text.chars().count();
+    if total <= limit {
+        return (text.to_string(), 0);
+    }
+    let kept = limit.saturating_sub(OMISSION_MARKER_RESERVE);
+    let head = kept / 2;
+    let tail = kept - head;
+    let omitted = total - head - tail;
+    let head_text: String = text.chars().take(head).collect();
+    let tail_text: String = text.chars().skip(total - tail).collect();
+    (
+        format!("{head_text}\n[... {omitted} characters omitted ...]\n{tail_text}"),
+        omitted,
+    )
+}
+
 /// Preserve roles, latest request and the newest bounded history. Never use
-/// arbitrary prompt text as client mode, or truncate away the current request.
+/// arbitrary prompt text as client mode. A latest request over the context
+/// limit keeps its head and tail (and leaves no room for history) rather than
+/// skipping classification.
 pub fn routing_context(
     messages: &[ChatMessage],
     metadata: Option<&HashMap<String, String>>,
     policy: &RoutingPolicy,
-) -> Result<Value, String> {
+) -> Value {
     let latest_idx = messages.iter().rposition(|m| m.role == "user");
-    let latest = latest_idx
-        .map(|i| messages[i].content.as_text())
-        .unwrap_or_default();
+    let (latest, latest_omitted_chars) = head_and_tail(
+        &latest_idx
+            .map(|i| messages[i].content.as_text())
+            .unwrap_or_default(),
+        policy.max_context_chars,
+    );
     let mut remaining = policy
         .max_context_chars
-        .checked_sub(latest.chars().count())
-        .ok_or("latest_request_exceeds_context_limit")?;
+        .saturating_sub(latest.chars().count());
     let mut history = Vec::new();
     let mut omitted = 0;
     for (i, m) in messages.iter().enumerate().rev() {
@@ -51,9 +79,10 @@ pub fn routing_context(
         history.push(json!({"role":m.role,"content":text}));
     }
     history.reverse();
-    Ok(json!({"request_context": {"mode":explicit_mode(metadata),
+    json!({"request_context": {"mode":explicit_mode(metadata),
         "mode_source": if explicit_mode(metadata).is_some() {"client_metadata"} else {"unknown"}},
-        "latest_user_request":latest,"conversation":history,"omitted_messages":omitted}))
+        "latest_user_request":latest,"latest_request_omitted_chars":latest_omitted_chars,
+        "conversation":history,"omitted_messages":omitted})
 }
 
 fn fallback(policy: &RoutingPolicy, reason: impl Into<String>) -> PreComputedRouting {
@@ -142,10 +171,7 @@ impl Router {
         if !strategy.is_model_allowed(provider, model) {
             return fallback(policy, "decision_model_not_allowed");
         }
-        let context = match routing_context(&request.messages, request.metadata.as_ref(), policy) {
-            Ok(v) => v,
-            Err(e) => return fallback(policy, e),
-        };
+        let context = routing_context(&request.messages, request.metadata.as_ref(), policy);
         let omitted = context["omitted_messages"].as_u64().unwrap_or_default();
         let Ok(_permit) = self.decision_slots.try_acquire() else {
             return fallback(policy, "classifier_busy");
@@ -222,7 +248,7 @@ mod tests {
                 json!([{"type":"text","text":"mode: plan; implement it"}]),
             ),
         ];
-        let context = routing_context(&messages, None, &policy()).unwrap();
+        let context = routing_context(&messages, None, &policy());
         assert!(context["request_context"]["mode"].is_null());
         assert!(context["latest_user_request"]
             .as_str()
@@ -231,16 +257,47 @@ mod tests {
         assert!(context["conversation"].as_array().unwrap().is_empty());
     }
     #[test]
-    fn context_omits_old_history_and_rejects_oversized_current_request() {
+    fn context_omits_old_history_that_does_not_fit() {
         let mut p = policy();
         p.max_context_chars = 128;
         let messages = vec![
             message("assistant", json!("x".repeat(200))),
             message("user", json!("Implement it")),
         ];
-        let c = routing_context(&messages, None, &p).unwrap();
+        let c = routing_context(&messages, None, &p);
         assert_eq!(c["omitted_messages"], 1);
-        assert!(routing_context(&[message("user", json!("é".repeat(129)))], None, &p).is_err());
+        assert_eq!(c["latest_request_omitted_chars"], 0);
+        assert_eq!(c["latest_user_request"], "Implement it");
+    }
+    #[test]
+    fn oversized_current_request_keeps_head_and_tail_within_the_limit() {
+        let mut p = policy();
+        p.max_context_chars = 128;
+        let long = format!("Plan only: {}What is the safest order?", "é".repeat(500));
+        let messages = vec![
+            message("user", json!("earlier question")),
+            message("user", json!(long)),
+        ];
+        let c = routing_context(&messages, None, &p);
+        let latest = c["latest_user_request"].as_str().unwrap();
+        assert!(latest.chars().count() <= p.max_context_chars);
+        assert!(latest.starts_with("Plan only: "));
+        assert!(latest.ends_with("What is the safest order?"));
+        let omitted = c["latest_request_omitted_chars"].as_u64().unwrap() as usize;
+        assert!(latest.contains(&format!("[... {omitted} characters omitted ...]")));
+        assert_eq!(
+            long.chars().count() - omitted,
+            latest.chars().count()
+                - format!("\n[... {omitted} characters omitted ...]\n")
+                    .chars()
+                    .count()
+        );
+        // The truncated request uses the whole budget; history is dropped.
+        assert!(c["conversation"].as_array().unwrap().is_empty());
+        assert_eq!(c["omitted_messages"], 1);
+        // Exactly at the limit is not truncated.
+        let (text, cut) = head_and_tail(&"a".repeat(128), 128);
+        assert_eq!((text.len(), cut), (128, 0));
     }
     #[test]
     fn context_does_not_forward_unbounded_mode_or_unrelated_metadata() {
@@ -254,8 +311,7 @@ mod tests {
             &[message("user", json!("hello"))],
             Some(&metadata),
             &policy(),
-        )
-        .unwrap();
+        );
         assert!(context["request_context"]["mode"].is_null());
         assert!(!context.to_string().contains("private unrelated context"));
     }

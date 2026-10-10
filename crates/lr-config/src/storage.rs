@@ -663,6 +663,94 @@ mod tests {
         assert!(!keys.contains("LocalRouter-McpServers:current"));
     }
 
+    /// A settings file as written by 0.0.153 (config v28) with RouteLLM on.
+    const ROUTELLM_0_0_153_YAML: &str = r#"
+version: 28
+server:
+  host: 127.0.0.1
+  port: 3625
+  enable_cors: true
+providers:
+- name: OpenAI
+  provider_type: open_a_i
+  enabled: true
+- name: Ollama
+  provider_type: ollama
+  enabled: true
+  provider_config:
+    base_url: http://localhost:11434
+clients:
+- id: client-1
+  name: Coding agent
+  enabled: true
+  created_at: 2026-09-30T12:00:00Z
+  strategy_id: strategy-1
+strategies:
+- id: strategy-1
+  name: Coding agent
+  parent: client-1
+  auto_config:
+    permission: allow
+    model_name: auto
+    prioritized_models:
+    - - OpenAI
+      - gpt-5
+    available_models: []
+    routellm_config:
+      enabled: true
+      threshold: 0.3
+      weak_models:
+      - - Ollama
+        - qwen3:8b
+  rate_limits: []
+  free_tier_only: false
+routellm_settings:
+  onnx_model_path: /Users/example/.localrouter/routellm/model
+  tokenizer_path: /Users/example/.localrouter/routellm/tokenizer
+  idle_timeout_secs: 600
+  download_status:
+    state: downloaded
+    progress: 1.0
+    current_file: null
+    total_bytes: 440000000
+    downloaded_bytes: 440000000
+    error: null
+"#;
+
+    #[tokio::test]
+    async fn routellm_0_0_153_yaml_loads_validates_and_saves_routing_policy() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("settings.yaml");
+        fs::write(&path, ROUTELLM_0_0_153_YAML).await.unwrap();
+
+        let loaded = load_config(&path).await.unwrap();
+        validation::validate_config(&loaded).unwrap();
+        let auto = loaded.strategies[0].auto_config.as_ref().unwrap();
+        assert_eq!(
+            auto.prioritized_models,
+            vec![("OpenAI".into(), "gpt-5".into())]
+        );
+        let policy = auto.routing_policy.as_ref().unwrap();
+        assert!(policy.enabled);
+        assert!(policy.decision_model.is_none());
+        assert_eq!(policy.default_route, "thorough");
+        assert_eq!(
+            policy.options[1].models,
+            vec![("Ollama".into(), "qwen3:8b".into())]
+        );
+        assert_eq!(
+            policy.setup_issue(),
+            Some(crate::RoutingPolicyIssue::NeedsDecisionModel)
+        );
+
+        save_config(&loaded, &path).await.unwrap();
+        let saved = fs::read_to_string(&path).await.unwrap();
+        assert!(saved.contains("routing_policy:"), "{saved}");
+        assert!(!saved.contains("routellm"), "{saved}");
+        let reloaded = load_config(&path).await.unwrap();
+        assert_eq!(reloaded.strategies, loaded.strategies);
+    }
+
     #[tokio::test]
     async fn shared_orphan_strategy_is_healed_once() {
         let dir = TempDir::new().unwrap();

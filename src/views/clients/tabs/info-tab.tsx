@@ -33,6 +33,7 @@ import type {
   GetClientEffectiveConfigParams, Strategy, SetClientLlmModeParams, SetClientMcpModeParams,
 } from "@/types/tauri-commands"
 import { combineClientMode } from "@/components/client/ClientTemplates"
+import { ROUTING_POLICY_ISSUE_LABEL, routingPolicyIssue } from "@/components/strategy/routing-policy-status"
 import type { McpPermissions, SkillsPermissions, ModelPermissions, PermissionState } from "@/components/permissions"
 
 const nodeTypes: NodeTypes = {
@@ -189,9 +190,10 @@ export function ClientInfoTab({ client, onUpdate }: InfoTabProps) {
   const strongModels = autoConfig?.prioritized_models || []
   const weakModels = autoConfig?.routing_policy?.options.flatMap(o => o.models) || []
   const hasRoutingPolicy = autoConfig?.routing_policy?.enabled === true
+  const routingIssue = hasRoutingPolicy ? routingPolicyIssue(autoConfig?.routing_policy) : null
 
   // Feature pills
-  const pills: { label: string; detail?: string; source?: string }[] = []
+  const pills: { label: string; detail?: string; source?: string; warning?: boolean }[] = []
 
   if (showLlm) {
     if (strongModels.length > 0) {
@@ -207,9 +209,13 @@ export function ClientInfoTab({ client, onUpdate }: InfoTabProps) {
       })
     }
     if (hasRoutingPolicy) {
-      pills.push({
+      pills.push(routingIssue ? {
         label: "Decision Routing",
-        detail: autoConfig?.routing_policy?.mode === "client_mode" ? "Client mode rules" : autoConfig?.routing_policy?.decision_model?.join("/") ?? "Choose a decision model",
+        detail: `${ROUTING_POLICY_ISSUE_LABEL[routingIssue]}, using default route`,
+        warning: true,
+      } : {
+        label: "Decision Routing",
+        detail: autoConfig?.routing_policy?.mode === "client_mode" ? "Client mode rules" : autoConfig?.routing_policy?.decision_model?.join("/") ?? "Client mode rules",
       })
     }
     if (client.guardrails_active) {
@@ -302,7 +308,7 @@ export function ClientInfoTab({ client, onUpdate }: InfoTabProps) {
               className="inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium bg-muted/50"
               title={p.detail || undefined}
             >
-              <span className="h-1.5 w-1.5 rounded-full bg-green-500 shrink-0" />
+              <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${p.warning ? "bg-yellow-500" : "bg-green-500"}`} />
               {p.label}
               {p.detail && (
                 <span className="text-muted-foreground font-normal truncate max-w-[200px]">{p.detail}</span>

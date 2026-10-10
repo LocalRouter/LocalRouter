@@ -286,23 +286,22 @@ pub(crate) fn build_tray_menu<R: Runtime, M: Manager<R>>(
                                 .text(format!("toggle_free_tier_{}", client.id), label);
                         }
 
-                        // Decision Routing toggle (only if auto_config enabled + a routing policy exists)
-                        if let Some(ref auto_config) = strategy.auto_config {
-                            if auto_config.permission.is_enabled() {
-                                if let Some(ref policy) = auto_config.routing_policy {
-                                    if !policy.options.is_empty() {
-                                        let label = if policy.enabled {
-                                            "✓  Decision Routing".to_string()
-                                        } else {
-                                            format!("{}Decision Routing", TRAY_INDENT)
-                                        };
-                                        client_submenu = client_submenu.text(
-                                            format!("toggle_decision_routing_{}", client.id),
-                                            label,
-                                        );
-                                    }
-                                }
+                        match decision_routing_tray_entry(strategy.auto_config.as_ref()) {
+                            Some(DecisionRoutingTrayEntry::Toggle(label)) => {
+                                client_submenu = client_submenu
+                                    .text(format!("toggle_decision_routing_{}", client.id), label);
                             }
+                            Some(DecisionRoutingTrayEntry::NeedsSetup(label)) => {
+                                let item = MenuItem::with_id(
+                                    app,
+                                    format!("decision_routing_status_{}", client.id),
+                                    label,
+                                    false,
+                                    None::<&str>,
+                                )?;
+                                client_submenu = client_submenu.item(&item);
+                            }
+                            None => {}
                         }
 
                         client_submenu = client_submenu.separator();
@@ -1247,12 +1246,48 @@ pub(crate) async fn handle_toggle_free_tier<R: Runtime>(
     Ok(())
 }
 
-/// Handle toggling weak model routing for a client's strategy
+#[derive(Debug, PartialEq)]
+pub(crate) enum DecisionRoutingTrayEntry {
+    /// Clickable on/off item for a policy that can choose routes.
+    Toggle(String),
+    /// Disabled status line: the policy is on but every request takes its
+    /// default route until it is completed in the client's LLM tab.
+    NeedsSetup(String),
+}
+
+/// The tray offers the Decision Routing toggle only when switching it changes
+/// routing: auto routing is on and the policy has a way to choose (decision
+/// model or exact mode rule) and a route with its own models. An enabled policy
+/// that cannot route shows why instead of a checkmark; a disabled one that
+/// cannot route is not shown.
+pub(crate) fn decision_routing_tray_entry(
+    auto_config: Option<&lr_config::AutoModelConfig>,
+) -> Option<DecisionRoutingTrayEntry> {
+    let auto_config = auto_config.filter(|a| a.permission.is_enabled())?;
+    let policy = auto_config.routing_policy.as_ref()?;
+    match policy.setup_issue() {
+        None if policy.enabled => Some(DecisionRoutingTrayEntry::Toggle(
+            "✓  Decision Routing".to_string(),
+        )),
+        None => Some(DecisionRoutingTrayEntry::Toggle(format!(
+            "{}Decision Routing",
+            TRAY_INDENT
+        ))),
+        Some(issue) if policy.enabled => Some(DecisionRoutingTrayEntry::NeedsSetup(format!(
+            "{}Decision Routing: {}",
+            TRAY_INDENT,
+            issue.label()
+        ))),
+        Some(_) => None,
+    }
+}
+
+/// Handle toggling the routing policy for a client's strategy
 pub(crate) async fn handle_toggle_decision_routing<R: Runtime>(
     app: &AppHandle<R>,
     client_id: &str,
 ) -> tauri::Result<()> {
-    info!("Toggling weak model routing for client {}", client_id);
+    info!("Toggling decision routing for client {}", client_id);
 
     let config_manager = app.state::<ConfigManager>();
 
@@ -1558,4 +1593,81 @@ pub(crate) fn copy_to_clipboard(text: &str) -> Result<(), anyhow::Error> {
         .map_err(|e| anyhow::anyhow!("Failed to set clipboard text: {}", e))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn auto_with(policy: serde_json::Value) -> lr_config::AutoModelConfig {
+        lr_config::AutoModelConfig {
+            permission: lr_config::PermissionState::Allow,
+            prioritized_models: vec![("cloud".into(), "large".into())],
+            routing_policy: Some(serde_json::from_value(policy).unwrap()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn decision_routing_toggle_needs_a_policy_that_can_route() {
+        // Migrated strong/weak policy: on, but nothing chooses a route.
+        let mut auto = auto_with(serde_json::json!({
+            "enabled": true, "weak_models": [["local", "small"]]
+        }));
+        assert_eq!(
+            decision_routing_tray_entry(Some(&auto)),
+            Some(DecisionRoutingTrayEntry::NeedsSetup(format!(
+                "{TRAY_INDENT}Decision Routing: needs a decision model"
+            )))
+        );
+        let policy = auto.routing_policy.as_mut().unwrap();
+        policy.enabled = false;
+        assert_eq!(decision_routing_tray_entry(Some(&auto)), None);
+
+        let policy = auto.routing_policy.as_mut().unwrap();
+        policy.decision_model = Some(("decider".into(), "m".into()));
+        assert_eq!(
+            decision_routing_tray_entry(Some(&auto)),
+            Some(DecisionRoutingTrayEntry::Toggle(format!(
+                "{TRAY_INDENT}Decision Routing"
+            )))
+        );
+        auto.routing_policy.as_mut().unwrap().enabled = true;
+        assert_eq!(
+            decision_routing_tray_entry(Some(&auto)),
+            Some(DecisionRoutingTrayEntry::Toggle(
+                "✓  Decision Routing".to_string()
+            ))
+        );
+
+        // All routes inherit the priority list: switching changes nothing.
+        auto.routing_policy.as_mut().unwrap().options[1]
+            .models
+            .clear();
+        auto.routing_policy.as_mut().unwrap().enabled = false;
+        assert_eq!(decision_routing_tray_entry(Some(&auto)), None);
+
+        auto.routing_policy = None;
+        assert_eq!(decision_routing_tray_entry(Some(&auto)), None);
+        assert_eq!(decision_routing_tray_entry(None), None);
+    }
+
+    #[test]
+    fn decision_routing_entry_is_hidden_when_auto_routing_is_off() {
+        let mut auto = auto_with(serde_json::json!({
+            "enabled": true, "weak_models": [["local", "small"]]
+        }));
+        let policy = auto.routing_policy.as_mut().unwrap();
+        policy.mode = lr_config::RoutingPolicyMode::ClientMode;
+        policy.mode_rules = vec![lr_config::ModeRouteRule {
+            mode: "plan".into(),
+            route: "routine".into(),
+        }];
+        assert!(matches!(
+            decision_routing_tray_entry(Some(&auto)),
+            Some(DecisionRoutingTrayEntry::Toggle(_))
+        ));
+        auto.permission = lr_config::PermissionState::Off;
+        assert_eq!(decision_routing_tray_entry(Some(&auto)), None);
+    }
 }

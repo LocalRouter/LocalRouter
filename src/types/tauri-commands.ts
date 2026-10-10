@@ -329,6 +329,8 @@ export interface RoutingPolicy {
   max_context_chars: number
   history_messages: number
 }
+/** Rust: crates/lr-config/src/routing_policy.rs - RoutingPolicyIssue (RoutingPolicy::setup_issue) */
+export type RoutingPolicyIssue = 'needs_decision_model' | 'needs_mode_rule' | 'needs_destination_models'
 /** Rust: lr-providers::PreComputedRouting */
 export interface RoutingDecision {
   route: string
@@ -2407,7 +2409,10 @@ export interface ClientFeatureStatus {
   active: boolean
   /** "override" if per-client setting exists, "global" if inherited */
   source: 'override' | 'global'
-  /** Feature-specific effective value (e.g. "ask", "notify", "off" for secret_scanning) */
+  /**
+   * Feature-specific effective value (e.g. "ask", "notify", "off" for secret_scanning).
+   * decision_routing: "routing", or a RoutingPolicyIssue when the enabled policy cannot route.
+   */
   effective_value?: string
 }
 

@@ -960,7 +960,7 @@ impl ModelProvider for OpenAIProvider {
             parallel_tool_calls: request.parallel_tool_calls,
             service_tier: request.service_tier,
             store: request.store,
-            metadata: request.metadata,
+            metadata: stored_completion_metadata(request.store, request.metadata),
             modalities: request.modalities,
             audio: request.audio,
             prediction: request.prediction,
@@ -1089,7 +1089,7 @@ impl ModelProvider for OpenAIProvider {
             parallel_tool_calls: request.parallel_tool_calls,
             service_tier: request.service_tier,
             store: request.store,
-            metadata: request.metadata,
+            metadata: stored_completion_metadata(request.store, request.metadata),
             modalities: request.modalities,
             audio: request.audio,
             prediction: request.prediction,
@@ -1703,9 +1703,84 @@ impl ModelProvider for OpenAIProvider {
     }
 }
 
+/// Chat Completions accepts `metadata` only on stored completions; without
+/// `store: true` OpenAI rejects the request with "The 'metadata' parameter is
+/// only allowed when 'store' is enabled." Metadata only tags stored
+/// completions, so dropping it otherwise loses nothing. Clients reach this
+/// through /v1/chat/completions and through /v1/responses, whose own metadata
+/// does not depend on `store`.
+fn stored_completion_metadata(
+    store: Option<bool>,
+    metadata: Option<std::collections::HashMap<String, String>>,
+) -> Option<std::collections::HashMap<String, String>> {
+    metadata.filter(|m| store == Some(true) && !m.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn metadata_is_forwarded_only_for_stored_completions() {
+        let metadata: std::collections::HashMap<String, String> =
+            [("project".to_string(), "example".to_string())]
+                .into_iter()
+                .collect();
+        assert_eq!(
+            stored_completion_metadata(Some(true), Some(metadata.clone())),
+            Some(metadata.clone())
+        );
+        assert_eq!(
+            stored_completion_metadata(None, Some(metadata.clone())),
+            None
+        );
+        assert_eq!(
+            stored_completion_metadata(Some(false), Some(metadata)),
+            None
+        );
+        assert_eq!(
+            stored_completion_metadata(Some(true), Some(Default::default())),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_completions_body_carries_metadata_only_with_store() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "c1", "object": "chat.completion", "created": 0, "model": "gpt-test",
+                "choices": [{"index": 0, "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "ok"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+            })))
+            .mount(&server)
+            .await;
+        let provider = OpenAIProvider::with_base_url("k".into(), server.uri()).unwrap();
+        let message: ChatMessage =
+            serde_json::from_value(serde_json::json!({"role": "user", "content": "hi"})).unwrap();
+        for store in [None, Some(false), Some(true)] {
+            let mut request = CompletionRequest::new("gpt-test", vec![message.clone()]);
+            request.store = store;
+            request.metadata = Some([("project".into(), "example".into())].into_iter().collect());
+            provider.complete(request).await.unwrap();
+        }
+        let bodies: Vec<serde_json::Value> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| serde_json::from_slice(&r.body).unwrap())
+            .collect();
+        assert_eq!(bodies.len(), 3);
+        assert!(bodies[0].get("metadata").is_none());
+        assert!(bodies[1].get("metadata").is_none());
+        assert_eq!(bodies[2]["store"], true);
+        assert_eq!(bodies[2]["metadata"]["project"], "example");
+    }
 
     #[test]
     fn test_pricing_info_gpt4() {

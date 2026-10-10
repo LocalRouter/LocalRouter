@@ -24,6 +24,7 @@ use utoipa::OpenApi;
     paths(
         // Chat endpoints
         crate::routes::chat::chat_completions,
+        crate::routes::responses::create_response,
 
         // Completions endpoints
         crate::routes::completions::completions,
@@ -72,6 +73,9 @@ use utoipa::OpenApi;
         schemas(
             // Request types
             crate::types::ChatCompletionRequest,
+            crate::routes::responses::CreateResponseRequest,
+            crate::routes::responses::ResponseInput,
+            crate::routes::responses::ReasoningRequest,
             crate::types::CompletionRequest,
             crate::types::ImageGenerationRequest,
             crate::types::ImageGenerationResponse,
@@ -286,6 +290,7 @@ mod tests {
 
         // Validate paths exist
         assert!(spec.paths.paths.contains_key("/v1/chat/completions"));
+        assert!(spec.paths.paths.contains_key("/v1/responses"));
         assert!(spec.paths.paths.contains_key("/v1/completions"));
         assert!(spec.paths.paths.contains_key("/v1/embeddings"));
         assert!(spec.paths.paths.contains_key("/v1/moderations"));
@@ -310,6 +315,22 @@ mod tests {
         let components = spec.components.as_ref().unwrap();
         assert!(components.security_schemes.contains_key("bearer_auth"));
         assert!(components.security_schemes.contains_key("oauth2"));
+    }
+
+    #[test]
+    fn routing_mode_metadata_key_is_documented_on_chat_and_responses() {
+        let spec = serde_json::to_value(ApiDoc::openapi()).unwrap();
+        for schema in ["ChatCompletionRequest", "CreateResponseRequest"] {
+            let metadata = &spec["components"]["schemas"][schema]["properties"]["metadata"];
+            assert!(
+                metadata["description"]
+                    .as_str()
+                    .is_some_and(|d| d.contains("localrouter.mode")),
+                "{schema}: {metadata}"
+            );
+            assert_eq!(metadata["example"]["localrouter.mode"], "plan", "{schema}");
+        }
+        assert!(spec["paths"]["/v1/responses"]["post"].is_object());
     }
 
     #[test]
