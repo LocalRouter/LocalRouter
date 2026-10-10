@@ -2,7 +2,9 @@
 
 use chrono::{DurationRound, Utc};
 use localrouter::monitoring::metrics::{MetricsCollector, RequestMetrics};
-use localrouter::monitoring::storage::{Granularity, MetricRow, MetricsDatabase};
+use localrouter::monitoring::storage::{
+    Granularity, MetricRow, MetricsDatabase, HOUR_RETENTION_DAYS,
+};
 use std::sync::Arc;
 use tempfile::tempdir;
 
@@ -281,8 +283,8 @@ fn test_cleanup_retention() {
     };
     db.upsert_metric("llm_global", &recent_row).unwrap();
 
-    // Insert old hourly data (> 7 days old)
-    let old_hour = now - chrono::Duration::days(8);
+    // Insert old hourly data (past the hourly retention)
+    let old_hour = now - chrono::Duration::days(HOUR_RETENTION_DAYS + 1);
     let old_hour_row = MetricRow {
         timestamp: old_hour,
         granularity: Granularity::Hour,
@@ -344,8 +346,8 @@ fn test_cleanup_retention() {
     let hourly_results = db
         .query_metrics(
             "llm_global",
-            now - chrono::Duration::days(10),
-            now - chrono::Duration::days(5),
+            now - chrono::Duration::days(HOUR_RETENTION_DAYS + 3),
+            now - chrono::Duration::days(HOUR_RETENTION_DAYS - 2),
         )
         .unwrap();
     assert_eq!(hourly_results.len(), 0, "Old hourly data should be deleted");
