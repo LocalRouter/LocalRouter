@@ -4322,6 +4322,59 @@ mod tests {
     }
 
     #[test]
+    fn configured_auto_models_without_a_chat_route_omit_the_auto_model() {
+        let auto = lr_config::AutoModelConfig {
+            available_models: vec![("openai".into(), "gpt-5".into())],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            configured_auto_models(&auto),
+            Some(vec!["openai/gpt-5".to_string()])
+        );
+    }
+
+    #[test]
+    fn configured_auto_models_include_routing_policy_destinations_once() {
+        let policy = lr_config::RoutingPolicy {
+            enabled: true,
+            options: vec![
+                lr_config::RoutingOption {
+                    id: "code".into(),
+                    description: "Coding work".into(),
+                    models: vec![
+                        ("anthropic".into(), "claude-sonnet".into()),
+                        ("openai".into(), "gpt-5".into()),
+                    ],
+                },
+                lr_config::RoutingOption {
+                    id: "general".into(),
+                    description: "Everything else".into(),
+                    models: vec![],
+                },
+            ],
+            ..Default::default()
+        };
+        let auto = lr_config::AutoModelConfig {
+            prioritized_models: vec![],
+            available_models: vec![("openai".into(), "gpt-5".into())],
+            routing_policy: Some(policy),
+            ..Default::default()
+        };
+
+        // An enabled policy destination is a chat route, so auto is offered
+        // even without a prioritized list; duplicates are listed once.
+        assert_eq!(
+            configured_auto_models(&auto),
+            Some(vec![
+                "auto".to_string(),
+                "openai/gpt-5".to_string(),
+                "anthropic/claude-sonnet".to_string(),
+            ])
+        );
+    }
+
+    #[test]
     fn empty_integration_model_list_returns_actionable_error() {
         let error = require_integration_models(vec![]).unwrap_err();
         assert!(error.contains("No usable models"));
