@@ -20,6 +20,7 @@ use tauri::{tray::TrayIconBuilder, App, AppHandle, Emitter, Listener, Manager, R
 use tracing::{debug, error, info};
 
 pub use crate::ui::tray_graph_manager::TrayGraphManager;
+use crate::ui::tray_menu_keeper::TrayMenuKeeper;
 
 /// State to track if an update notification should be shown in the tray
 pub struct UpdateNotificationState {
@@ -564,6 +565,7 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
             }
         })
         .build(app)?;
+    app.manage(TrayMenuKeeper::new(menu));
 
     // Subscribe to health status changes to rebuild the tray menu
     // This ensures health issues appear in the menu when status changes
@@ -588,10 +590,20 @@ pub fn rebuild_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     debug!("Rebuilding system tray menu");
 
     let menu = build_tray_menu(app)?;
-    tray.set_menu(Some(menu))?;
-    debug!("System tray menu updated");
-
-    Ok(())
+    // Swap on the main thread: whether the old menu can still be on screen
+    // depends on AppKit's run loop mode there (see ui::tray_menu_keeper).
+    let app_handle = app.clone();
+    app.run_on_main_thread(move || {
+        let freed = app_handle
+            .try_state::<TrayMenuKeeper<R>>()
+            .map(|keeper| keeper.replace(menu.clone()));
+        if let Err(e) = tray.set_menu(Some(menu)) {
+            error!("Failed to set tray menu: {}", e);
+            return;
+        }
+        drop(freed);
+        debug!("System tray menu updated");
+    })
 }
 
 /// Update the tray icon based on server status

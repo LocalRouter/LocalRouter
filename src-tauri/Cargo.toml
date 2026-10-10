@@ -84,7 +84,8 @@ tempfile = "3.8"
 libloading = "0.8"
 
 # Talking to the NSStatusItem directly (see ui::tray_graph_manager) so the
-# menu bar icon can be sized before it is installed.
+# menu bar icon can be sized before it is installed, and reading the run loop
+# mode before freeing a replaced tray menu (see ui::tray_menu_keeper).
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = [
@@ -102,6 +103,9 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
     "std",
     "NSData",
     "NSGeometry",
+    "NSObjCRuntime",
+    "NSRunLoop",
+    "NSString",
 ] }
 
 [dev-dependencies]
