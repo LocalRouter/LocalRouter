@@ -1059,11 +1059,14 @@ impl AppState {
             mc.record_feature_event("feature_context_mgmt", tokens_saved, 0.0);
         });
 
-        // Wire MCP monitor events to the monitor store
+        // Wire MCP monitor events to the monitor store. Requests that finish
+        // (a pending event turning complete or error, or one emitted already
+        // finished) are also recorded in the MCP traffic metrics.
         let monitor = self.monitor_store.clone();
+        let metrics = self.metrics_collector.clone();
         mcp_gateway.set_on_monitor_event(
             move |event_type, client_id, client_name, session_id, data, status, duration_ms| {
-                monitor.push(
+                let id = monitor.push(
                     event_type,
                     client_id,
                     client_name,
@@ -1071,14 +1074,35 @@ impl AppState {
                     data,
                     status,
                     duration_ms,
-                )
+                );
+                if status != lr_monitor::EventStatus::Pending {
+                    if let Some(finished) = monitor
+                        .get(&id)
+                        .as_ref()
+                        .and_then(crate::mcp_request_metrics::finished_mcp_request)
+                    {
+                        metrics.mcp().record(&finished.as_metrics());
+                    }
+                }
+                id
             },
         );
 
         // Wire MCP gateway monitor update to the monitor store
         let monitor = self.monitor_store.clone();
+        let metrics = self.metrics_collector.clone();
         mcp_gateway.set_on_monitor_update(Arc::new(move |id, updater| {
-            monitor.update(id, updater);
+            let mut finished = None;
+            monitor.update(id, |event| {
+                let was_pending = event.status == lr_monitor::EventStatus::Pending;
+                updater(event);
+                if was_pending {
+                    finished = crate::mcp_request_metrics::finished_mcp_request(event);
+                }
+            });
+            if let Some(finished) = finished {
+                metrics.mcp().record(&finished.as_metrics());
+            }
         }));
 
         // Wire MCP server manager monitor events to the monitor store

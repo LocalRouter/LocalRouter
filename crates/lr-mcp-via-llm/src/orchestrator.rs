@@ -395,6 +395,7 @@ pub async fn run_agentic_loop(
                 let output_t = response.usage.completion_tokens as u64;
                 let model = response.model.clone();
                 let provider = response.provider.clone();
+                let upstream = router.upstream_api(&provider);
                 update_fn(
                     &iter_event_id,
                     Box::new(move |event| {
@@ -403,6 +404,7 @@ pub async fn run_agentic_loop(
                         if let lr_monitor::MonitorEventData::LlmCall {
                             model: ref mut m,
                             provider: ref mut p,
+                            upstream_api: ref mut ua,
                             status_code: ref mut sc,
                             input_tokens: ref mut it,
                             output_tokens: ref mut ot,
@@ -416,6 +418,7 @@ pub async fn run_agentic_loop(
                         {
                             *m = model;
                             *p = Some(provider);
+                            *ua = upstream;
                             *sc = Some(200);
                             *it = Some(input_t);
                             *ot = Some(output_t);

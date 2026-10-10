@@ -3,6 +3,7 @@
 //! Provides OpenAI-compatible HTTP API endpoints using Axum.
 
 pub mod manager;
+pub mod mcp_request_metrics;
 pub mod middleware;
 pub mod openapi;
 pub mod routes;

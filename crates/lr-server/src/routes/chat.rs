@@ -21,7 +21,7 @@ use super::helpers::get_client_with_strategy;
 use super::stream_usage::{finalize_stream, StreamTracker};
 use crate::middleware::client_auth::ClientAuthContext;
 use crate::middleware::error::{ApiErrorResponse, ApiResult};
-use crate::state::{AppState, AuthContext, GenerationDetails};
+use crate::state::{AppState, AuthContext};
 use crate::types::{
     ChatCompletionChoice, ChatCompletionChunk, ChatCompletionChunkChoice, ChatCompletionLogprobs,
     ChatCompletionRequest, ChatCompletionResponse, ChatCompletionTokenLogprob, ChatMessage,
@@ -645,52 +645,23 @@ async fn handle_mcp_via_llm(
         .await
         .map_err(|e| ApiErrorResponse::bad_gateway(format!("MCP via LLM error: {}", e)))?;
 
-    let completed_at = Instant::now();
-    let latency_ms = completed_at.duration_since(started_at).as_millis() as u64;
-
-    // Emit monitor response event
-    {
-        let content_preview = response
-            .choices
-            .first()
-            .map(|c| match &c.message.content {
-                lr_providers::ChatMessageContent::Text(t) => t.clone(),
-                lr_providers::ChatMessageContent::Parts(parts) => parts
-                    .iter()
-                    .filter_map(|p| match p {
-                        lr_providers::ContentPart::Text { text } => Some(text.as_str()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join(""),
-            })
-            .unwrap_or_default();
-        let finish_reason = response
-            .choices
-            .first()
-            .and_then(|c| c.finish_reason.as_deref());
-        let reasoning_tokens = response
-            .usage
-            .completion_tokens_details
-            .as_ref()
-            .and_then(|d| d.reasoning_tokens.or(d.thinking_tokens))
-            .map(|t| t as u64);
-        super::monitor_helpers::complete_llm_call(
-            &state,
-            &llm_event_id,
-            &response.provider,
-            &response.model,
-            200,
-            response.usage.prompt_tokens as u64,
-            response.usage.completion_tokens as u64,
-            reasoning_tokens,
-            None,
-            latency_ms,
-            finish_reason,
-            &content_preview,
-            false,
-        );
-    }
+    // Cost, metrics (which also feed the tray), access log and the monitor
+    // completion, as for every other non-streaming turn.
+    let finalize_inputs = super::finalize::FinalizeInputs {
+        state: &state,
+        auth: &auth,
+        llm_event_id: &llm_event_id,
+        generation_id: &generation_id,
+        started_at,
+        created_at,
+        prompt_tokens: response.usage.prompt_tokens,
+        compression_tokens_saved: _compression_tokens_saved,
+        routing_metadata: None,
+        user: request.user.clone(),
+        streamed: false,
+        skip_monitor_completion: false,
+    };
+    let metrics = super::finalize::finalize_metrics_and_monitor(&finalize_inputs, &response).await;
 
     // Convert provider response to server response
     let api_response = ChatCompletionResponse {
@@ -781,59 +752,18 @@ async fn handle_mcp_via_llm(
         }),
     };
 
-    // Store full response body in monitor event for inspection
-    if let Ok(response_json) = serde_json::to_value(&api_response) {
-        super::monitor_helpers::update_llm_call_response_body(
-            &state,
-            &llm_event_id,
-            &response_json,
-        );
-    }
-
-    // Keep the client id for the tray recorder below — `auth.api_key_id`
-    // moves into `generation_details`.
-    let tray_client_id = auth.api_key_id.clone();
-
-    // Track generation details
-    let generation_details = GenerationDetails {
-        id: generation_id,
-        model: response.model.clone(),
-        provider: response.provider.clone(),
-        created_at,
-        finish_reason: api_response
+    // Response body on the monitor event, and the generation record.
+    super::finalize::update_response_body_and_record_generation(
+        &finalize_inputs,
+        &response,
+        &metrics,
+        &serde_json::to_value(&api_response).unwrap_or_default(),
+        api_response
             .choices
             .first()
-            .and_then(|c| c.finish_reason.clone())
-            .unwrap_or_else(|| "unknown".to_string()),
-        tokens: api_response.usage.clone(),
-        cost: None,
-        started_at,
-        completed_at,
-        provider_health: None,
-        api_key_id: auth.api_key_id,
-        user: request.user,
-        stream: false,
-    };
-
-    state
-        .generation_tracker
-        .record(generation_details.id.clone(), generation_details);
-
-    // Record tokens for tray graph directly: the MCP-via-LLM non-streaming
-    // path never calls metrics_collector.record_success, so the
-    // on_metrics_recorded choke point (which feeds the tray for every other
-    // path) doesn't fire here.
-    if let Some(recorder) = state.tray_graph_manager.read().as_ref() {
-        recorder.record_request(&lr_types::RecordedRequest {
-            client_id: tray_client_id.clone(),
-            provider: response.provider.clone(),
-            model: response.model.clone(),
-            tokens: response.usage.total_tokens as u64,
-            // This path has no cost estimate; the Slow-mode metrics query
-            // still reports cost once the minute rolls over.
-            cost_micro_usd: 0,
-        });
-    }
+            .and_then(|c| c.finish_reason.clone()),
+        api_response.usage.clone(),
+    );
 
     Ok(Json(api_response).into_response())
 }

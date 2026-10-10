@@ -498,6 +498,7 @@ async fn streaming_loop(
                     .split_once('/')
                     .map(|(p, _)| p.to_string())
                     .unwrap_or_else(|| resolved.clone());
+                let upstream = router.upstream_api(&provider);
                 let model = resolved;
                 // Build synthetic response body so tool calls are visible in the monitor UI
                 let synthetic_response_body = {
@@ -539,6 +540,7 @@ async fn streaming_loop(
                         if let lr_monitor::MonitorEventData::LlmCall {
                             model: ref mut m,
                             provider: ref mut p,
+                            upstream_api: ref mut ua,
                             status_code: ref mut sc,
                             latency_ms: ref mut lm,
                             finish_reason: ref mut fr,
@@ -550,6 +552,7 @@ async fn streaming_loop(
                         {
                             *m = model;
                             *p = Some(provider);
+                            *ua = upstream;
                             *sc = Some(200);
                             *lm = Some(latency);
                             *fr = finish;

@@ -38,3 +38,15 @@
    and the bucket fix, browser specs for tabs and the split).
 3. Bug hunt.
 4. Commit and push.
+
+## Follow-ups (2026-10-10)
+1. MCP gateway traffic is recorded in the MCP metrics: when a gateway tool
+   call, resource read or prompt get finishes (its monitor event leaves
+   pending, or is emitted already finished), `lr-server` records an
+   `McpRequestMetrics` (`mcp_request_metrics.rs`, wired in `state.rs`).
+   UI-initiated MCP calls bypass the gateway and keep their own recording.
+2. The non-streaming MCP-via-LLM chat path runs the shared
+   `finalize_metrics_and_monitor` / `update_response_body_and_record_generation`,
+   so its turns count in LLM metrics with cost and appear in the access log.
+3. MCP-via-LLM follow-up turns record the provider's upstream API via
+   `Router::upstream_api`.

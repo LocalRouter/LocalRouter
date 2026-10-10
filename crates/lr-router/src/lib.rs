@@ -507,6 +507,13 @@ fn build_routing_metadata(
 }
 
 impl Router {
+    /// The wire API LocalRouter speaks to a provider instance, by name.
+    pub fn upstream_api(&self, provider: &str) -> Option<lr_types::LlmApi> {
+        self.provider_registry
+            .get_provider(provider)
+            .map(|p| p.upstream_api())
+    }
+
     /// Create a new router without free tier manager (for tests)
     #[cfg(test)]
     pub fn new_without_free_tier(
