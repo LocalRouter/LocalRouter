@@ -245,6 +245,17 @@ impl UsagePoller {
         }
     }
 
+    /// Push `id`'s next attempt back by the failure back-off without
+    /// recording a status row.
+    fn defer_after_failure(&self, id: &str) {
+        let mut schedules = self.schedules.lock();
+        defer(
+            schedules.entry(id.to_string()).or_default(),
+            now(),
+            jitter(),
+        );
+    }
+
     /// Apply a fetch result, recording status and back-off.
     fn finish(
         &self,
@@ -350,6 +361,10 @@ impl UsagePoller {
             return false;
         };
         let Some(info) = provider.check_credits().await else {
+            // Either the provider reports no credits (no request is made) or
+            // the request failed. Wait like a failed poll either way, so a
+            // failing endpoint is not asked again on every tick.
+            self.defer_after_failure(id);
             return false;
         };
         let has_limit = info.total_credits_usd.is_some_and(|t| t > 0.0);
@@ -454,6 +469,14 @@ struct Schedule {
     retry_at: Option<i64>,
 }
 
+/// Count a failed attempt at `now` and schedule the next one after the
+/// failure back-off.
+fn defer(schedule: &mut Schedule, now: i64, jitter: f64) {
+    schedule.failures += 1;
+    schedule.last_poll = Some(now);
+    schedule.retry_at = Some(now + backoff_secs(schedule.failures, None, jitter));
+}
+
 struct Timing {
     active_secs: i64,
     idle_secs: i64,
@@ -521,6 +544,23 @@ mod tests {
         active_secs: 300,
         idle_secs: 3_600,
     };
+
+    #[test]
+    fn missing_credits_back_off_instead_of_retrying_every_tick() {
+        let mut schedule = Schedule::default();
+        defer(&mut schedule, 1_000, 0.0);
+        assert_eq!(schedule.retry_at, Some(1_000 + 300));
+        // Not due on the next 30 s ticks, even for an account with traffic.
+        assert!(!is_due(&schedule, 1_030, Some(1_000), None, &T));
+        assert!(!is_due(&schedule, 1_299, Some(1_000), None, &T));
+
+        defer(&mut schedule, 1_300, 0.0);
+        assert_eq!(schedule.retry_at, Some(1_300 + 600));
+        for _ in 0..10 {
+            defer(&mut schedule, 2_000, 0.0);
+        }
+        assert_eq!(schedule.retry_at, Some(2_000 + 3_600));
+    }
 
     fn polled_at(t: i64) -> Schedule {
         Schedule {
