@@ -784,12 +784,23 @@ impl McpServerManager {
         };
 
         match auth_config {
-            lr_config::McpAuthConfig::BearerToken { token_ref: _ } => {
+            lr_config::McpAuthConfig::BearerToken { token_ref } => {
                 let keychain = lr_api_keys::CachedKeychain::auto()
                     .unwrap_or_else(|_| lr_api_keys::CachedKeychain::system());
-                let account_name = format!("{}_bearer_token", config.id);
-                if let Ok(Some(token)) = keychain.get(lr_config::MCP_KEYRING_SERVICE, &account_name)
-                {
+                let account_name = lr_config::mcp_bearer_token_account(&config.id);
+                let mut token = keychain
+                    .get(lr_config::MCP_KEYRING_SERVICE, &account_name)
+                    .ok()
+                    .flatten();
+                // Marketplace installs before 0.0.155 stored the token under
+                // the bare server id.
+                if token.is_none() && token_ref == lr_config::LEGACY_PENDING_BEARER_TOKEN_REF {
+                    token = keychain
+                        .get(lr_config::MCP_KEYRING_SERVICE, &config.id)
+                        .ok()
+                        .flatten();
+                }
+                if let Some(token) = token {
                     headers.insert("Authorization".to_string(), format!("Bearer {}", token));
                     tracing::debug!("Applied bearer token auth for server: {}", server_id);
                 } else {

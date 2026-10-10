@@ -934,7 +934,11 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                                     use lr_api_keys::KeychainStorage;
                                     lr_api_keys::CachedKeychain::auto()
                                         .map_err(|e| format!("Failed to access keychain: {}", e))?
-                                        .store(lr_config::MCP_KEYRING_SERVICE, &server_id, token)
+                                        .store(
+                                            lr_config::MCP_KEYRING_SERVICE,
+                                            &lr_config::mcp_bearer_token_account(&server_id),
+                                            token,
+                                        )
                                         .map_err(|e| format!("Failed to store token: {}", e))?;
                                 }
                             }

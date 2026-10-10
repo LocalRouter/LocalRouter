@@ -91,14 +91,10 @@ pub fn create_mcp_server_config(
     // For now, we create the config without auth - auth is configured separately
     let auth_config = match config.auth_type.as_str() {
         "none" | "" => None,
-        "bearer" => {
-            // The actual token will be stored in keychain by the Tauri command
-            // Here we just mark that bearer auth is intended
-            // token_ref will be set to the server ID by the installer
-            Some(McpAuthConfig::BearerToken {
-                token_ref: "pending".to_string(), // Placeholder - set by Tauri command
-            })
-        }
+        // The installer stores the token itself under this account.
+        "bearer" => Some(McpAuthConfig::BearerToken {
+            token_ref: lr_config::mcp_bearer_token_account(&id),
+        }),
         other => {
             return Err(MarketplaceError::InvalidArguments(format!(
                 "Unknown auth type: {}. OAuth must be configured after installation.",
@@ -285,8 +281,9 @@ mod tests {
 
         match result.auth_config {
             Some(McpAuthConfig::BearerToken { token_ref }) => {
-                // Token ref is "pending" as placeholder - real token stored in keychain
-                assert_eq!(token_ref, "pending");
+                // The account the installer stores the token under, and the
+                // one the MCP manager reads.
+                assert_eq!(token_ref, lr_config::mcp_bearer_token_account(&result.id));
             }
             _ => panic!("Expected BearerToken auth config"),
         }

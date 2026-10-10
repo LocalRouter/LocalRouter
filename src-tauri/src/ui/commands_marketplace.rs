@@ -429,7 +429,11 @@ pub async fn marketplace_install_mcp_server_direct(
             use lr_api_keys::KeychainStorage;
             lr_api_keys::CachedKeychain::auto()
                 .map_err(|e| format!("Failed to access keychain: {}", e))?
-                .store(MCP_KEYRING_SERVICE, &server_id, token)
+                .store(
+                    MCP_KEYRING_SERVICE,
+                    &lr_config::mcp_bearer_token_account(&server_id),
+                    token,
+                )
                 .map_err(|e| format!("Failed to store token in keychain: {}", e))?;
         }
     }
