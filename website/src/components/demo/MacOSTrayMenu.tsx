@@ -13,6 +13,15 @@
 import { useState } from 'react'
 import { ChevronRight, Copy, Settings, ExternalLink } from 'lucide-react'
 import { mockData } from './mockData'
+import { routingPolicyIssue } from '@app/components/strategy/routing-policy-status'
+import type { RoutingPolicyIssue } from '@app/types/tauri-commands'
+
+/** RoutingPolicyIssue::label in crates/lr-config/src/routing_policy.rs */
+const TRAY_ISSUE_LABEL: Record<RoutingPolicyIssue, string> = {
+  needs_decision_model: 'needs a decision model',
+  needs_mode_rule: 'needs a mode rule',
+  needs_destination_models: 'needs route models',
+}
 
 // Unicode spacing from tray_menu.rs (keep in sync!)
 // TRAY_INDENT = '\u{2003}\u{2009}\u{2009}' (em-space + 2 thin spaces)
@@ -122,8 +131,13 @@ function ClientSubmenu({ client }: { client: (typeof mockData.clients)[0] }) {
         const strategy = mockData.strategies.find(s => s.id === client.strategy_id)
         if (!strategy) return null
         const hasRateLimits = strategy.rate_limits && strategy.rate_limits.length > 0
-        const hasWeakModel = strategy.auto_config?.permission !== 'allow' ? false :
-          (strategy.auto_config?.routing_policy?.options?.length ?? 0) > 0
+        // Mirrors decision_routing_tray_entry in src-tauri/src/ui/tray_menu.rs.
+        const autoPermission: string = strategy.auto_config?.permission ?? 'off'
+        const policy = autoPermission !== 'off' ? strategy.auto_config?.routing_policy ?? null : null
+        const routingIssue = routingPolicyIssue(policy)
+        const decisionRoutingLabel = !policy ? null
+          : !routingIssue ? (policy.enabled ? '✓  Decision Routing' : `${TRAY_INDENT}Decision Routing`)
+          : policy.enabled ? `${TRAY_INDENT}Decision Routing: ${TRAY_ISSUE_LABEL[routingIssue]}` : null
 
         return (
           <>
@@ -159,12 +173,8 @@ function ClientSubmenu({ client }: { client: (typeof mockData.clients)[0] }) {
               label={strategy.free_tier_only ? '✓  Free Tier Mode' : `${TRAY_INDENT}Free Tier Mode`}
             />
 
-            {hasWeakModel && (
-              <MenuItem
-                label={strategy.auto_config!.routing_policy!.enabled
-                  ? '✓  Decision Routing'
-                  : `${TRAY_INDENT}Decision Routing`}
-              />
+            {decisionRoutingLabel && (
+              <MenuItem label={decisionRoutingLabel} disabled={!!routingIssue} />
             )}
 
 

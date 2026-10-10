@@ -37,8 +37,7 @@ pub async fn preview_routing_policy(
         &request.messages,
         request.metadata.as_ref(),
         &policy,
-    )
-    .unwrap_or_else(|e| json!({"error":e}));
+    );
     let decision = state
         .router
         .evaluate_routing_policy(client_id, strategy, &policy, &request)

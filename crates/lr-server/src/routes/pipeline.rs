@@ -297,7 +297,8 @@ pub(crate) async fn apply_model_access_checks(
             if let Some(auto_config) = &strategy.auto_config {
                 if !auto_config.has_chat_candidates() {
                     return Err(llm_guard.capture_err(ApiErrorResponse::bad_request(
-                        "Auto routing has no priority or policy destination models configured"
+                        "Auto routing has no models for requests that use the default route: \
+                         add models to the priority list or to the routing policy's default route"
                             .to_string(),
                     )));
                 }

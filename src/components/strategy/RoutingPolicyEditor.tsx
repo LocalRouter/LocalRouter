@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listenSafe } from '@/hooks/useTauriListener'
-import { ArrowDown, ArrowUp, Plus, Trash2, Loader2 } from 'lucide-react'
+import { AlertTriangle, ArrowDown, ArrowUp, Plus, Trash2, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/Input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/Toggle'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/Select'
+import { routingPolicyIssue, routingPolicyIssueMessage } from './routing-policy-status'
 import type { RoutingPolicy, RoutingOption, RoutingPolicyPreview, PreviewRoutingPolicyParams, AutoModelConfig, ModelPermissions, UpdateStrategyParams } from '@/types/tauri-commands'
 
 interface Model { provider_instance: string; model_id: string; capabilities: string[] }
@@ -120,12 +121,14 @@ export function RoutingPolicyEditor({ strategyId, value, onSave, readOnly = fals
     } catch (e) { if (requestId === previewRequest.current) setError(String(e)) } finally { if (requestId === previewRequest.current) setTesting(false) }
   }
   const disabled = readOnly || saving
+  const issue = draft.enabled ? routingPolicyIssue(draft) : null
   return <Card>
     <CardHeader>
       <div className="flex justify-between items-center gap-4"><CardTitle className="text-base">Routing policy</CardTitle><Switch aria-label="Enable routing policy" checked={draft.enabled} onCheckedChange={enabled => change({ enabled })} disabled={disabled} /></div>
       <CardDescription>Define when each model should be used. Explicit client rules run first; a decision model interprets your question for semantic routing.</CardDescription>
     </CardHeader>
     <CardContent className="space-y-5">
+      {issue && <div role="status" className="flex gap-2 rounded-md border border-yellow-500/40 bg-yellow-500/10 p-3 text-sm"><AlertTriangle className="h-4 w-4 mt-0.5 shrink-0 text-yellow-500" /><p>{routingPolicyIssueMessage(issue, draft.default_route)}</p></div>}
       <div className="grid sm:grid-cols-2 gap-3">
         <div className="space-y-2"><Label>Start from a template</Label><Select onValueChange={name => { const next = routingTemplate(name); change({ ...next, decision_model: draft.decision_model }) }} disabled={disabled}>
           <SelectTrigger aria-label="Routing template"><SelectValue placeholder="Choose a template" /></SelectTrigger><SelectContent>
@@ -164,7 +167,8 @@ export function RoutingPolicyEditor({ strategyId, value, onSave, readOnly = fals
       {draft.mode === 'semantic' && <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">{([
         ['min_probability', 'Minimum probability', 0, 1, 0.05], ['timeout_ms', 'Timeout (ms)', 100, 30000, 100],
         ['max_context_chars', 'Context characters', 128, 64000, 128], ['history_messages', 'History messages', 0, 20, 1],
-      ] as const).map(([key, label, min, max, step]) => <div key={key} className="space-y-2"><Label>{label}</Label><Input aria-label={label} type="number" min={min} max={max} step={step} value={draft[key]} onChange={e => change({ [key]: Number(e.target.value) })} disabled={disabled} /></div>)}</div>}
+      ] as const).map(([key, label, min, max, step]) => <div key={key} className="space-y-2"><Label>{label}</Label><Input aria-label={label} type="number" min={min} max={max} step={step} value={draft[key]} onChange={e => change({ [key]: Number(e.target.value) })} disabled={disabled} /></div>)}
+        <p className="text-xs text-muted-foreground col-span-full">Context characters bound what the decision model sees: the latest request, then as many recent history messages as fit. A longer request is shortened to its beginning and end, with the middle omitted, and leaves no room for history.</p></div>}
       <div className="border-t pt-4 space-y-3"><Label>Try this policy</Label><Input aria-label="Routing test prompt" value={prompt} onChange={e => setPrompt(e.target.value)} /><Input aria-label="Test client mode" placeholder="Client mode (optional), e.g. plan" value={mode} onChange={e => setMode(e.target.value)} />
         <Button variant="outline" disabled={testing || readOnly} onClick={preview}>{testing && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}Preview draft</Button>
         {result && <div className="rounded-md bg-muted p-3 space-y-2 text-sm"><p><strong>{result.decision.route}</strong> · {result.decision.source} · {result.decision.latency_ms} ms</p><p>{result.decision.reason.replace(/_/g, ' ')}</p><p>Destination: {draft.options.find(o => o.id === result.decision.route)?.models.map(m => m.join('/')).join(' → ') || 'Default priority list'}</p><details><summary>Scores and routing context</summary><pre className="text-xs overflow-auto max-h-72 whitespace-pre-wrap">{JSON.stringify(result, null, 2)}</pre></details></div>}

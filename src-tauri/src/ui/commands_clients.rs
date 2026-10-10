@@ -1315,6 +1315,14 @@ pub struct ClientFeatureStatus {
     pub effective_value: Option<String>,
 }
 
+/// `effective_value` of an enabled decision-routing policy: "routing" when it
+/// can choose routes, otherwise the `RoutingPolicyIssue` code (requests then
+/// all take the default route). `None` when no policy is enabled.
+fn decision_routing_status(policy: Option<&lr_config::RoutingPolicy>) -> Option<&'static str> {
+    let policy = policy.filter(|p| p.enabled)?;
+    Some(policy.setup_issue().map_or("routing", |issue| issue.code()))
+}
+
 /// Get effective feature status for all clients
 #[tauri::command]
 pub async fn get_feature_clients_status(
@@ -1427,13 +1435,17 @@ pub async fn get_feature_clients_status(
                     )
                 }
                 "decision_routing" | "strong_weak" => {
-                    let strategy = config.strategies.iter().find(|s| s.id == c.strategy_id);
-                    let active = strategy
+                    let policy = config
+                        .strategies
+                        .iter()
+                        .find(|s| s.id == c.strategy_id)
                         .and_then(|s| s.auto_config.as_ref())
-                        .and_then(|ac| ac.routing_policy.as_ref())
-                        .map(|rc| rc.enabled)
-                        .unwrap_or(false);
-                    (active, "global", None)
+                        .and_then(|ac| ac.routing_policy.as_ref());
+                    (
+                        policy.is_some_and(|p| p.enabled),
+                        "global",
+                        decision_routing_status(policy).map(str::to_string),
+                    )
                 }
                 _ => (false, "global", None),
             };
@@ -4350,20 +4362,21 @@ mod tests {
                 lr_config::RoutingOption {
                     id: "general".into(),
                     description: "Everything else".into(),
-                    models: vec![],
+                    models: vec![("openai".into(), "gpt-5".into())],
                 },
             ],
             ..Default::default()
         };
-        let auto = lr_config::AutoModelConfig {
+        let mut auto = lr_config::AutoModelConfig {
             prioritized_models: vec![],
             available_models: vec![("openai".into(), "gpt-5".into())],
             routing_policy: Some(policy),
             ..Default::default()
         };
 
-        // An enabled policy destination is a chat route, so auto is offered
-        // even without a prioritized list; duplicates are listed once.
+        // An enabled policy whose default route has models serves every
+        // request, so auto is offered even without a prioritized list;
+        // duplicates are listed once.
         assert_eq!(
             configured_auto_models(&auto),
             Some(vec![
@@ -4372,6 +4385,35 @@ mod tests {
                 "anthropic/claude-sonnet".to_string(),
             ])
         );
+
+        // With an empty default route, fallback requests would have no model.
+        auto.routing_policy.as_mut().unwrap().options[1]
+            .models
+            .clear();
+        assert_eq!(
+            configured_auto_models(&auto),
+            Some(vec![
+                "openai/gpt-5".to_string(),
+                "anthropic/claude-sonnet".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn decision_routing_status_flags_enabled_policies_that_cannot_route() {
+        let mut policy: lr_config::RoutingPolicy = serde_json::from_value(serde_json::json!({
+            "enabled": true, "weak_models": [["local", "small"]]
+        }))
+        .unwrap();
+        assert_eq!(
+            decision_routing_status(Some(&policy)),
+            Some("needs_decision_model")
+        );
+        policy.decision_model = Some(("decider".into(), "m".into()));
+        assert_eq!(decision_routing_status(Some(&policy)), Some("routing"));
+        policy.enabled = false;
+        assert_eq!(decision_routing_status(Some(&policy)), None);
+        assert_eq!(decision_routing_status(None), None);
     }
 
     #[test]

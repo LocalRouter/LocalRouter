@@ -3,7 +3,15 @@ import { invoke } from '@tauri-apps/api/core'
 import { listenSafe } from '@/hooks/useTauriListener'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
+import { AlertTriangle } from 'lucide-react'
+import { ROUTING_POLICY_ISSUE_LABEL, isRoutingPolicyIssue } from '@/components/strategy/routing-policy-status'
 import type { ClientFeatureStatus, GetFeatureClientsStatusParams } from '@/types/tauri-commands'
+
+function clientStatus(c: ClientFeatureStatus): { text: string; warning: boolean } {
+  if (!c.active) return { text: 'Uses default model order', warning: false }
+  if (isRoutingPolicyIssue(c.effective_value)) return { text: `Policy enabled, not routing: ${ROUTING_POLICY_ISSUE_LABEL[c.effective_value].toLowerCase()}. Requests use the default route.`, warning: true }
+  return { text: 'Policy enabled', warning: false }
+}
 
 export function DecisionRoutingView({ onTabChange }: { activeSubTab: string | null; onTabChange: (view: string, subTab?: string | null) => void }) {
   const [clients, setClients] = useState<ClientFeatureStatus[]>([])
@@ -27,7 +35,7 @@ export function DecisionRoutingView({ onTabChange }: { activeSubTab: string | nu
     <Card><CardHeader><CardTitle>Clients</CardTitle></CardHeader><CardContent className="space-y-2">
       {error && <p role="alert" className="text-destructive text-sm">{error}</p>}
       {!clients.length && !error && <p className="text-sm text-muted-foreground">Configure routing in a client's LLM tab.</p>}
-      {clients.map(c => <div key={c.client_id} className="flex items-center justify-between border rounded-md p-3"><div className="text-sm"><strong>{c.client_name}</strong><p className="text-muted-foreground">{c.active ? 'Policy enabled' : 'Uses default model order'}</p></div><Button variant="outline" size="sm" onClick={() => onTabChange('clients', `${c.client_id}|models`)}>Configure</Button></div>)}
+      {clients.map(c => { const status = clientStatus(c); return <div key={c.client_id} className="flex items-center justify-between gap-3 border rounded-md p-3"><div className="text-sm"><strong>{c.client_name}</strong><p className={`flex items-start gap-1.5 ${status.warning ? 'text-yellow-600 dark:text-yellow-500' : 'text-muted-foreground'}`}>{status.warning && <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />}{status.text}</p></div><Button variant="outline" size="sm" onClick={() => onTabChange('clients', `${c.client_id}|models`)}>Configure</Button></div> })}
     </CardContent></Card>
   </div>
 }

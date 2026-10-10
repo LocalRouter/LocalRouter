@@ -130,7 +130,68 @@ impl<'de> Deserialize<'de> for RoutingPolicy {
     }
 }
 
+/// Why an enabled policy cannot change where requests go. Serialized codes are
+/// shared with the UI (`routingPolicyIssue` in RoutingPolicyEditor.tsx).
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RoutingPolicyIssue {
+    /// Semantic policy without a decision model and without exact mode rules.
+    NeedsDecisionModel,
+    /// Client-mode policy without any mode rule.
+    NeedsModeRule,
+    /// Every option inherits the priority list, so all routes are identical.
+    NeedsDestinationModels,
+}
+
+impl RoutingPolicyIssue {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::NeedsDecisionModel => "needs_decision_model",
+            Self::NeedsModeRule => "needs_mode_rule",
+            Self::NeedsDestinationModels => "needs_destination_models",
+        }
+    }
+
+    /// Short status for menus, e.g. "Decision Routing: needs a decision model".
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::NeedsDecisionModel => "needs a decision model",
+            Self::NeedsModeRule => "needs a mode rule",
+            Self::NeedsDestinationModels => "needs route models",
+        }
+    }
+}
+
 impl RoutingPolicy {
+    /// `None` when the policy can send some request somewhere other than its
+    /// default route: it has a way to pick a route (a decision model in
+    /// semantic mode, or an exact mode rule) and at least one route with its
+    /// own destination models. Enablement is not considered.
+    pub fn setup_issue(&self) -> Option<RoutingPolicyIssue> {
+        let can_choose = !self.mode_rules.is_empty()
+            || (self.mode == RoutingPolicyMode::Semantic && self.decision_model.is_some());
+        if !can_choose {
+            return Some(match self.mode {
+                RoutingPolicyMode::Semantic => RoutingPolicyIssue::NeedsDecisionModel,
+                RoutingPolicyMode::ClientMode => RoutingPolicyIssue::NeedsModeRule,
+            });
+        }
+        if self.options.iter().all(|o| o.models.is_empty()) {
+            return Some(RoutingPolicyIssue::NeedsDestinationModels);
+        }
+        None
+    }
+
+    /// Models the default route resolves to on its own (empty means the
+    /// strategy's ordinary priority list). Every fallback lands here.
+    pub fn default_route_models(&self) -> &[(String, String)] {
+        self.options
+            .iter()
+            .find(|o| o.id == self.default_route)
+            .map(|o| o.models.as_slice())
+            .unwrap_or_default()
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         if self.version != 1 {
             return Err("Unsupported routing policy version".into());
@@ -200,19 +261,81 @@ impl RoutingPolicy {
 mod tests {
     use super::*;
     #[test]
-    fn auto_model_is_available_with_policy_destinations_and_no_priority_list() {
+    fn auto_model_without_priority_list_needs_a_default_route_destination() {
         let mut auto: crate::AutoModelConfig = serde_json::from_value(serde_json::json!({
             "prioritized_models": [],
-            "routing_policy": {"enabled": true, "weak_models": [["provider", "model"]]}
+            "routing_policy": {"enabled": true, "default_route": "general", "options": [
+                {"id": "planning", "description": "Plans", "models": [["provider", "planner"]]},
+                {"id": "general", "description": "Other", "models": [["provider", "general"]]}
+            ]}
         }))
         .unwrap();
-        assert!(auto.prioritized_models.is_empty());
         assert!(auto.has_chat_candidates());
-        auto.routing_policy.as_mut().unwrap().enabled = false;
+        let policy = auto.routing_policy.as_mut().unwrap();
+        policy.enabled = false;
+        assert!(!auto.has_chat_candidates());
+        let policy = auto.routing_policy.as_mut().unwrap();
+        policy.enabled = true;
+        // A chosen route can have models while fallbacks (default route, then
+        // the empty priority list) have none: requests would fail, so auto is
+        // not offered.
+        policy.options[1].models.clear();
         assert!(!auto.has_chat_candidates());
         auto.prioritized_models
             .push(("provider".into(), "default".into()));
         assert!(auto.has_chat_candidates());
+    }
+
+    #[test]
+    fn migrated_strong_weak_policy_without_priority_list_has_no_candidates() {
+        // 0.0.153 accepted this config but answered auto requests with a 400;
+        // the weak pool alone must not advertise an auto model whose default
+        // ("thorough" = the empty priority list) resolves to nothing.
+        let auto: crate::AutoModelConfig = serde_json::from_value(serde_json::json!({
+            "prioritized_models": [],
+            "routellm_config": {"enabled": true, "threshold": 0.3, "weak_models": [["local", "small"]]}
+        }))
+        .unwrap();
+        let policy = auto.routing_policy.as_ref().unwrap();
+        assert!(policy.enabled);
+        assert!(policy.default_route_models().is_empty());
+        assert!(!auto.has_chat_candidates());
+    }
+
+    #[test]
+    fn setup_issue_reports_what_keeps_a_policy_from_routing() {
+        let mut p: RoutingPolicy = serde_json::from_value(serde_json::json!({
+            "enabled": true, "weak_models": [["local", "small"]]
+        }))
+        .unwrap();
+        // The migrated strong/weak policy has destinations but nothing to choose.
+        assert_eq!(
+            p.setup_issue(),
+            Some(RoutingPolicyIssue::NeedsDecisionModel)
+        );
+        p.decision_model = Some(("decider".into(), "m".into()));
+        assert_eq!(p.setup_issue(), None);
+        // Client mode ignores the decision model and needs a rule.
+        p.mode = RoutingPolicyMode::ClientMode;
+        assert_eq!(p.setup_issue(), Some(RoutingPolicyIssue::NeedsModeRule));
+        p.mode_rules.push(ModeRouteRule {
+            mode: "plan".into(),
+            route: "routine".into(),
+        });
+        assert_eq!(p.setup_issue(), None);
+        // Mode rules alone also route a semantic policy without a decision model.
+        p.mode = RoutingPolicyMode::Semantic;
+        p.decision_model = None;
+        assert_eq!(p.setup_issue(), None);
+        p.options[1].models.clear();
+        assert_eq!(
+            p.setup_issue(),
+            Some(RoutingPolicyIssue::NeedsDestinationModels)
+        );
+        assert_eq!(
+            serde_json::to_value(RoutingPolicyIssue::NeedsDestinationModels).unwrap(),
+            RoutingPolicyIssue::NeedsDestinationModels.code()
+        );
     }
 
     #[test]

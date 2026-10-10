@@ -22,6 +22,7 @@ import type { InvokeArgs } from '@tauri-apps/api/core'
 import type { McpConnectionDiscovery } from '@app/types/tauri-commands'
 import { toast } from 'sonner'
 import { mockData } from './mockData'
+import { routingPolicyIssue } from '@app/components/strategy/routing-policy-status'
 // Types for mock return values - see src/types/tauri-commands.ts for full type definitions
 import type { RoutingPolicyPreview, GraphData, ProviderFeatureSupport, FeatureEndpointMatrix, InstallSourceInfo, RequestDedupeConfig } from '@app/types/tauri-commands'
 import type {
@@ -1088,13 +1089,26 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // Clients
   // ============================================================================
   'list_clients': () => mockData.clients,
-  'get_feature_clients_status': (args) => mockData.clients.map((c: { client_id: string; name: string }) => ({
-    client_id: c.client_id,
-    client_name: c.name,
-    active: true,
-    source: 'global' as const,
-    ...(args?.feature === 'secret_scanning' ? { effective_value: 'ask' } : {}),
-  })),
+  'get_feature_clients_status': (args) => mockData.clients.map((c: { client_id: string; name: string; strategy_id: string }) => {
+    if (args?.feature === 'decision_routing') {
+      const policy = mockData.strategies.find(s => s.id === c.strategy_id)?.auto_config?.routing_policy
+      const active = policy?.enabled === true
+      return {
+        client_id: c.client_id,
+        client_name: c.name,
+        active,
+        source: 'global' as const,
+        ...(active ? { effective_value: routingPolicyIssue(policy) ?? 'routing' } : {}),
+      }
+    }
+    return {
+      client_id: c.client_id,
+      client_name: c.name,
+      active: true,
+      source: 'global' as const,
+      ...(args?.feature === 'secret_scanning' ? { effective_value: 'ask' } : {}),
+    }
+  }),
   'get_client': (args) => mockData.clients.find(c => c.id === args?.id || c.client_id === args?.clientId),
   'create_client': (args) => {
     const newClient = {

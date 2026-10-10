@@ -1303,4 +1303,50 @@ mod tests {
             ]
         );
     }
+
+    /// `localrouter/auto` is listed and accepted exactly when
+    /// `has_chat_candidates()`; requests that fall back (here: no decision
+    /// model) must then still find a model, and a config without one must not
+    /// pretend otherwise.
+    #[tokio::test]
+    async fn listed_auto_model_always_selects_a_candidate_on_fallback() {
+        let h = harness(&[], &[], |_| {}).await;
+        let (_, mut strategy) = h.router.validate_client_and_strategy(&h.client_id).unwrap();
+        let req = CompletionRequest::new("localrouter/auto", vec![msg("Implement it")]);
+        let select = |strategy: lr_config::Strategy| {
+            let router = &h.router;
+            let client_id = h.client_id.clone();
+            let req = req.clone();
+            async move {
+                router
+                    .select_models_for_auto_routing(
+                        &client_id,
+                        &strategy,
+                        strategy.auto_config.as_ref().unwrap(),
+                        &req,
+                    )
+                    .await
+            }
+        };
+
+        // Migrated 0.0.153 strong/weak policy with an empty priority list.
+        let migrated: lr_config::RoutingPolicy = serde_json::from_value(json!({
+            "enabled": true, "weak_models": [["local", "small"]]
+        }))
+        .unwrap();
+        strategy.auto_config.as_mut().unwrap().routing_policy = Some(migrated.clone());
+        assert!(!strategy.auto_config.as_ref().unwrap().has_chat_candidates());
+        let (models, decision) = select(strategy.clone()).await;
+        assert!(models.is_empty());
+        assert_eq!(decision.unwrap().reason, "decision_model_not_configured");
+
+        // A policy-only strategy whose default route has its own models.
+        let mut policy = migrated;
+        policy.default_route = "routine".into();
+        strategy.auto_config.as_mut().unwrap().routing_policy = Some(policy);
+        assert!(strategy.auto_config.as_ref().unwrap().has_chat_candidates());
+        let (models, decision) = select(strategy).await;
+        assert_eq!(models, vec![("local".into(), "small".into())]);
+        assert_eq!(decision.unwrap().route, "routine");
+    }
 }
