@@ -24,6 +24,7 @@ pub mod tray_format;
 pub mod tray_graph;
 pub mod tray_graph_manager;
 pub mod tray_menu;
+pub mod tray_menu_keeper;
 pub mod tray_support;
 pub mod tray_usage;
 pub mod usage_poller;
