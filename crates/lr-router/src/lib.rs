@@ -3190,7 +3190,7 @@ mod tests {
             }),
         ];
 
-        let meta = build_routing_metadata(&None, None, &candidates, attempts, Some(1));
+        let meta = build_routing_metadata(None, &candidates, attempts, Some(1));
 
         assert_eq!(meta["candidate_models"].as_array().unwrap().len(), 2);
         assert_eq!(meta["total_attempts"].as_u64().unwrap(), 2);

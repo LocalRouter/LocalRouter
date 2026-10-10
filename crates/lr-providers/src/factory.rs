@@ -4408,7 +4408,7 @@ mod tests {
             "the generic factory must be openai_compatible so the Custom tab works"
         );
         // And the JSON shape must match what the frontend filters on.
-        let json = serde_json::to_value(&generic.category).unwrap();
+        let json = serde_json::to_value(generic.category).unwrap();
         assert_eq!(json, serde_json::json!("generic"));
     }
 }
