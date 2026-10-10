@@ -1382,8 +1382,8 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     if (templateId === 'pi') {
       return {
         success: true,
-        message: 'Configured Pi: LLM provider + defaults.',
-        modified_files: ['~/.pi/agent/models.json', '~/.pi/agent/settings.json'],
+        message: 'Configured Pi: LLM provider + defaults, MCP server.',
+        modified_files: ['~/.pi/agent/models.json', '~/.pi/agent/settings.json', '~/.pi/agent/mcp.json'],
         backup_files: [],
       }
     }
@@ -1405,7 +1405,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       const templateId = (client as unknown as Record<string, unknown> | undefined)?.template_id
       const modified =
         templateId === 'pi'
-          ? ['~/.pi/agent/models.json', '~/.pi/agent/settings.json']
+          ? ['~/.pi/agent/models.json', '~/.pi/agent/settings.json', '~/.pi/agent/mcp.json']
           : ['~/.config/opencode/opencode.json']
       return {
         success: true,
@@ -1423,7 +1423,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     const templateId = (client as unknown as Record<string, unknown> | undefined)?.template_id
     const modified =
       templateId === 'pi'
-        ? ['~/.pi/agent/models.json', '~/.pi/agent/settings.json']
+        ? ['~/.pi/agent/models.json', '~/.pi/agent/settings.json', '~/.pi/agent/mcp.json']
         : ['~/.config/opencode/opencode.json']
     return {
       success: true,

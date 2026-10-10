@@ -1,14 +1,19 @@
 //! Pi (pi.dev) coding agent integration
 //!
-//! Config-file only (no try-it-out). Writes two files in Pi's agent directory
+//! Config-file only (no try-it-out). Writes three files in Pi's agent directory
 //! (`$PI_CODING_AGENT_DIR`, default `~/.pi/agent`):
 //! - **LLM**: `providers.localrouter` in `models.json`
 //! - **Defaults**: `defaultProvider` / `defaultModel` in `settings.json`, only
 //!   while LocalRouter already owns them, or when no default provider is set
 //!   and LocalRouter is the only custom provider. A default the user chose for
 //!   another provider (including Pi's built-in ones) is never replaced.
+//! - **MCP**: `mcpServers.localrouter` in `mcp.json`, read by Pi's built-in
+//!   MCP extension (Streamable HTTP with an `Authorization` header).
+//!   LocalRouter owns the entry's URL and `Authorization` header; settings
+//!   the user changes in Pi's `/mcp` (enabled, exposure, ...) are kept.
 //!
 //! Docs: https://pi.dev/docs/latest/models · https://pi.dev/docs/latest/settings
+//! · https://pi.dev/docs/latest/mcp
 
 use crate::launcher::backup;
 use crate::launcher::{AppIntegration, ConfigSyncContext};
@@ -24,10 +29,16 @@ const PROVIDER_ID: &str = "localrouter";
 /// Model advertised when no model list is available (direct configure).
 const FALLBACK_MODEL: &str = "localrouter/auto";
 
+/// Keys of an `mcpServers` entry that select another transport or another
+/// way to authenticate. Removed from the LocalRouter entry so Pi connects
+/// over Streamable HTTP with LocalRouter's bearer token.
+const MCP_CONFLICTING_KEYS: [&str; 7] = ["type", "command", "args", "env", "cwd", "oauth", "auth"];
+
 /// Files the integration reads and writes.
 struct PiPaths {
     models: PathBuf,
     settings: PathBuf,
+    mcp: PathBuf,
     backups: PathBuf,
 }
 
@@ -37,6 +48,7 @@ impl PiPaths {
         Self {
             models: agent.join("models.json"),
             settings: agent.join("settings.json"),
+            mcp: agent.join("mcp.json"),
             backups: backup::default_backup_dir(),
         }
     }
@@ -110,7 +122,7 @@ impl AppIntegration for PiIntegration {
         client_secret: &str,
         _client_id: &str,
     ) -> Result<LaunchResult, String> {
-        write_config_at(&PiPaths::user(), base_url, client_secret, true, None)
+        write_config_at(&PiPaths::user(), base_url, client_secret, true, true, None)
     }
 
     fn sync_config(&self, ctx: &ConfigSyncContext) -> Result<LaunchResult, String> {
@@ -119,6 +131,7 @@ impl AppIntegration for PiIntegration {
             &ctx.base_url,
             &ctx.client_secret,
             ctx.should_sync_llm(),
+            ctx.should_sync_mcp(),
             Some(ctx.models.as_slice()),
         )
     }
@@ -158,6 +171,7 @@ fn write_config_at(
     base_url: &str,
     client_secret: &str,
     sync_llm: bool,
+    sync_mcp: bool,
     models: Option<&[String]>,
 ) -> Result<LaunchResult, String> {
     let no_changes = |message: &str| LaunchResult {
@@ -168,14 +182,25 @@ fn write_config_at(
         terminal_command: None,
     };
 
-    if !sync_llm && !paths.models.exists() && !paths.settings.exists() {
+    if !sync_llm
+        && !sync_mcp
+        && !paths.models.exists()
+        && !paths.settings.exists()
+        && !paths.mcp.exists()
+    {
         return Ok(no_changes("No config to sync for current client mode"));
     }
 
-    // Parse both files before writing either, so a malformed settings.json
-    // cannot leave models.json half-configured.
+    // Parse every file before writing any, so one malformed file cannot
+    // leave the others half-configured.
     let mut models_config = read_json(&paths.models)?;
     let mut settings = read_json(&paths.settings)?;
+    let mut mcp_config = read_json(&paths.mcp)?;
+    let mcp_changed = if sync_mcp {
+        set_mcp_entry(&mut mcp_config, base_url, client_secret, &paths.mcp)?
+    } else {
+        remove_mcp_entry(&mut mcp_config, &paths.mcp)?
+    };
     let mut written = Written::default();
 
     if sync_llm {
@@ -259,6 +284,15 @@ fn write_config_at(
         }
     }
 
+    if mcp_changed {
+        let part = if sync_mcp {
+            format!("MCP server at {}", paths.mcp.display())
+        } else {
+            format!("removed MCP server from {}", paths.mcp.display())
+        };
+        written.write(paths, &paths.mcp, &mcp_config, part)?;
+    }
+
     if written.modified_files.is_empty() {
         return Ok(no_changes("No config changes needed"));
     }
@@ -270,6 +304,88 @@ fn write_config_at(
         backup_files: written.backup_files,
         terminal_command: None,
     })
+}
+
+/// The `mcpServers` object of `mcp.json`, created when missing. A
+/// non-object value is an error so the user's file is never replaced.
+fn mcp_servers<'a>(
+    config: &'a mut Value,
+    path: &Path,
+) -> Result<&'a mut serde_json::Map<String, Value>, String> {
+    let invalid = || {
+        format!(
+            "Expected \"mcpServers\" to be an object in {}",
+            path.display()
+        )
+    };
+    config
+        .as_object_mut()
+        .ok_or_else(invalid)?
+        .entry("mcpServers")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or_else(invalid)
+}
+
+/// Point `mcpServers.localrouter` at LocalRouter's MCP gateway. An existing
+/// entry is merged: LocalRouter sets the URL and `Authorization` header and
+/// drops keys that would pick another transport or authentication, keeping
+/// everything else (enabled, exposure, toolExposure, timeout, description,
+/// other headers). Returns whether `config` changed.
+fn set_mcp_entry(
+    config: &mut Value,
+    base_url: &str,
+    client_secret: &str,
+    path: &Path,
+) -> Result<bool, String> {
+    let original = config.clone();
+    let servers = mcp_servers(config, path)?;
+    let entry = object_at(servers, PROVIDER_ID);
+    // `retain` (not `remove`) keeps the order of the user's keys.
+    entry.retain(|key, _| !MCP_CONFLICTING_KEYS.contains(&key.as_str()));
+    entry.insert("url".to_string(), json!(base_url));
+
+    let headers = object_at(entry, "headers");
+    headers
+        .retain(|name, _| name == "Authorization" || !name.eq_ignore_ascii_case("authorization"));
+    headers.insert(
+        "Authorization".to_string(),
+        json!(format!("Bearer {client_secret}")),
+    );
+    Ok(*config != original)
+}
+
+/// The object stored under `key`, replacing a missing or non-object value
+/// with an empty object in place (the key keeps its position).
+fn object_at<'a>(
+    map: &'a mut serde_json::Map<String, Value>,
+    key: &str,
+) -> &'a mut serde_json::Map<String, Value> {
+    let value = map.entry(key).or_insert_with(|| json!({}));
+    if !value.is_object() {
+        *value = json!({});
+    }
+    match value {
+        Value::Object(object) => object,
+        _ => unreachable!("value was just made an object"),
+    }
+}
+
+/// Remove `mcpServers.localrouter` if present. Returns whether `config`
+/// changed; a missing file (empty `config`) is left untouched.
+fn remove_mcp_entry(config: &mut Value, path: &Path) -> Result<bool, String> {
+    match config.get_mut("mcpServers") {
+        None => Ok(false),
+        Some(Value::Object(servers)) => {
+            let before = servers.len();
+            servers.retain(|name, _| name != PROVIDER_ID);
+            Ok(servers.len() != before)
+        }
+        Some(_) => Err(format!(
+            "Expected \"mcpServers\" to be an object in {}",
+            path.display()
+        )),
+    }
 }
 
 /// Who currently owns Pi's startup default provider.
@@ -345,6 +461,7 @@ mod tests {
         PiPaths {
             models: agent.join("models.json"),
             settings: agent.join("settings.json"),
+            mcp: agent.join("mcp.json"),
             backups: dir.path().join("backups"),
         }
     }
@@ -357,18 +474,29 @@ mod tests {
         ids.iter().map(|id| id.to_string()).collect()
     }
 
-    fn sync(paths: &PiPaths, ids: &[&str]) -> Result<LaunchResult, String> {
+    /// Sync in a mode; `sync` is LLM-only, as in the `llm_only` client mode.
+    fn sync_modes(
+        paths: &PiPaths,
+        sync_llm: bool,
+        sync_mcp: bool,
+        ids: &[&str],
+    ) -> Result<LaunchResult, String> {
         write_config_at(
             paths,
             "http://localhost:3625",
             "secret",
-            true,
+            sync_llm,
+            sync_mcp,
             Some(models(ids).as_slice()),
         )
     }
 
+    fn sync(paths: &PiPaths, ids: &[&str]) -> Result<LaunchResult, String> {
+        sync_modes(paths, true, false, ids)
+    }
+
     fn unsync(paths: &PiPaths) -> Result<LaunchResult, String> {
-        write_config_at(paths, "http://localhost:3625", "secret", false, None)
+        write_config_at(paths, "http://localhost:3625", "secret", false, false, None)
     }
 
     #[test]
@@ -563,7 +691,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let paths = paths(&dir);
 
-        write_config_at(&paths, "http://localhost:3625", "secret", true, None).unwrap();
+        write_config_at(&paths, "http://localhost:3625", "secret", true, false, None).unwrap();
         assert_eq!(
             read(&paths.models)["providers"]["localrouter"]["models"][0]["id"],
             FALLBACK_MODEL
@@ -697,5 +825,273 @@ mod tests {
             std::fs::read_to_string(&paths.models).unwrap(),
             "{ not json"
         );
+    }
+    fn localrouter_mcp(paths: &PiPaths) -> Value {
+        read(&paths.mcp)["mcpServers"]["localrouter"].clone()
+    }
+
+    #[test]
+    fn mcp_gateway_writes_http_server_with_bearer_header() {
+        let dir = tempdir().unwrap();
+        let paths = paths(&dir);
+
+        let result = sync_modes(&paths, true, true, &["auto"]).unwrap();
+        assert!(result
+            .modified_files
+            .contains(&paths.mcp.to_string_lossy().to_string()));
+        assert_eq!(
+            localrouter_mcp(&paths),
+            json!({
+                "url": "http://localhost:3625",
+                "headers": { "Authorization": "Bearer secret" }
+            })
+        );
+        assert!(read(&paths.models)["providers"]["localrouter"].is_object());
+    }
+
+    #[test]
+    fn configure_permanent_path_writes_llm_and_mcp() {
+        let dir = tempdir().unwrap();
+        let paths = paths(&dir);
+
+        write_config_at(&paths, "http://localhost:3625", "secret", true, true, None).unwrap();
+        assert_eq!(
+            localrouter_mcp(&paths)["headers"]["Authorization"],
+            "Bearer secret"
+        );
+        assert_eq!(
+            read(&paths.models)["providers"]["localrouter"]["models"][0]["id"],
+            FALLBACK_MODEL
+        );
+    }
+
+    #[test]
+    fn mcp_only_mode_writes_mcp_and_removes_llm_provider() {
+        let dir = tempdir().unwrap();
+        let paths = paths(&dir);
+        sync(&paths, &["auto"]).unwrap();
+
+        let result = sync_modes(&paths, false, true, &[]).unwrap();
+        assert_eq!(result.modified_files.len(), 3);
+        assert!(read(&paths.models)["providers"]
+            .get("localrouter")
+            .is_none());
+        assert!(read(&paths.settings).get("defaultProvider").is_none());
+        assert_eq!(localrouter_mcp(&paths)["url"], "http://localhost:3625");
+    }
+
+    #[test]
+    fn mcp_entry_keeps_other_servers_and_top_level_keys() {
+        let dir = tempdir().unwrap();
+        let paths = paths(&dir);
+        std::fs::write(
+            &paths.mcp,
+            r#"{
+  "autoEnableCodemode": false,
+  "mcpServers": {
+    "filesystem": { "command": "npx", "args": ["-y", "server-filesystem", "."] },
+    "docs": { "url": "https://example.com/mcp", "headers": { "Authorization": "Bearer ${DOCS_TOKEN}" } }
+  }
+}"#,
+        )
+        .unwrap();
+
+        sync_modes(&paths, false, true, &[]).unwrap();
+
+        let mcp = read(&paths.mcp);
+        assert_eq!(mcp["autoEnableCodemode"], false);
+        assert_eq!(mcp["mcpServers"]["filesystem"]["command"], "npx");
+        assert_eq!(
+            mcp["mcpServers"]["docs"]["headers"]["Authorization"],
+            "Bearer ${DOCS_TOKEN}"
+        );
+        assert_eq!(
+            mcp["mcpServers"]["localrouter"]["headers"]["Authorization"],
+            "Bearer secret"
+        );
+    }
+
+    /// Pi's `/mcp` saves enabled/exposure changes into the entry itself, so a
+    /// re-sync must keep them while correcting what LocalRouter owns.
+    #[test]
+    fn mcp_entry_keeps_user_settings_and_drops_conflicting_keys() {
+        let dir = tempdir().unwrap();
+        let paths = paths(&dir);
+        std::fs::write(
+            &paths.mcp,
+            r#"{
+  "mcpServers": {
+    "localrouter": {
+      "type": "stdio",
+      "command": "old-bridge",
+      "args": ["--stdio"],
+      "env": { "A": "1" },
+      "cwd": "~/x",
+      "oauth": { "clientId": "c" },
+      "auth": { "provider": "anthropic" },
+      "url": "http://localhost:9999",
+      "headers": { "authorization": "Bearer old", "X-Trace": "1" },
+      "enabled": false,
+      "exposure": "direct",
+      "toolExposure": { "skill_*": "hidden" },
+      "timeout": 120,
+      "description": "My LocalRouter"
+    }
+  }
+}"#,
+        )
+        .unwrap();
+
+        sync_modes(&paths, false, true, &[]).unwrap();
+
+        assert_eq!(
+            localrouter_mcp(&paths),
+            json!({
+                "url": "http://localhost:3625",
+                "headers": { "X-Trace": "1", "Authorization": "Bearer secret" },
+                "enabled": false,
+                "exposure": "direct",
+                "toolExposure": { "skill_*": "hidden" },
+                "timeout": 120,
+                "description": "My LocalRouter"
+            })
+        );
+    }
+
+    #[test]
+    fn mcp_entry_with_non_object_value_or_headers_is_rebuilt() {
+        for body in [
+            r#"{ "mcpServers": { "localrouter": "broken" } }"#,
+            r#"{ "mcpServers": { "localrouter": { "headers": [] } } }"#,
+        ] {
+            let dir = tempdir().unwrap();
+            let paths = paths(&dir);
+            std::fs::write(&paths.mcp, body).unwrap();
+
+            sync_modes(&paths, false, true, &[]).unwrap();
+            assert_eq!(
+                localrouter_mcp(&paths),
+                json!({
+                    "url": "http://localhost:3625",
+                    "headers": { "Authorization": "Bearer secret" }
+                }),
+                "from {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn identical_mcp_resync_reports_no_changes() {
+        let dir = tempdir().unwrap();
+        let paths = paths(&dir);
+
+        sync_modes(&paths, true, true, &["auto"]).unwrap();
+        let result = sync_modes(&paths, true, true, &["auto"]).unwrap();
+        assert!(result.modified_files.is_empty());
+        assert!(result.backup_files.is_empty());
+    }
+
+    #[test]
+    fn secret_rotation_updates_mcp_header() {
+        let dir = tempdir().unwrap();
+        let paths = paths(&dir);
+
+        sync_modes(&paths, false, true, &[]).unwrap();
+        let result = write_config_at(
+            &paths,
+            "http://localhost:3625",
+            "rotated",
+            false,
+            true,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            result.modified_files,
+            vec![paths.mcp.to_string_lossy().to_string()]
+        );
+        assert_eq!(result.backup_files.len(), 1);
+        assert_eq!(
+            localrouter_mcp(&paths)["headers"]["Authorization"],
+            "Bearer rotated"
+        );
+    }
+
+    #[test]
+    fn mcp_off_removes_only_localrouter_entry() {
+        let dir = tempdir().unwrap();
+        let paths = paths(&dir);
+        std::fs::write(
+            &paths.mcp,
+            r#"{ "mcpServers": { "docs": { "url": "https://example.com/mcp" } } }"#,
+        )
+        .unwrap();
+        sync_modes(&paths, true, true, &["auto"]).unwrap();
+
+        let result = sync(&paths, &["auto"]).unwrap();
+        assert_eq!(
+            result.modified_files,
+            vec![paths.mcp.to_string_lossy().to_string()]
+        );
+        let mcp = read(&paths.mcp);
+        assert!(mcp["mcpServers"].get("localrouter").is_none());
+        assert_eq!(mcp["mcpServers"]["docs"]["url"], "https://example.com/mcp");
+        assert!(read(&paths.models)["providers"]["localrouter"].is_object());
+    }
+
+    #[test]
+    fn unsync_removes_mcp_entry() {
+        let dir = tempdir().unwrap();
+        let paths = paths(&dir);
+        sync_modes(&paths, true, true, &["auto"]).unwrap();
+
+        let result = unsync(&paths).unwrap();
+        assert_eq!(result.modified_files.len(), 3);
+        assert_eq!(read(&paths.mcp), json!({ "mcpServers": {} }));
+    }
+
+    #[test]
+    fn mcp_off_never_creates_mcp_json() {
+        let dir = tempdir().unwrap();
+        let paths = paths(&dir);
+
+        sync(&paths, &["auto"]).unwrap();
+        unsync(&paths).unwrap();
+        assert!(!paths.mcp.exists());
+
+        // An mcp.json without mcpServers is left as it is.
+        std::fs::write(&paths.mcp, r#"{ "autoEnableCodemode": false }"#).unwrap();
+        let result = unsync(&paths).unwrap();
+        assert!(result.modified_files.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(&paths.mcp).unwrap(),
+            r#"{ "autoEnableCodemode": false }"#
+        );
+    }
+
+    #[test]
+    fn malformed_mcp_json_is_never_overwritten() {
+        for body in [
+            "{ not json",
+            "[]",
+            r#"{ "mcpServers": [] }"#,
+            r#"{ "mcpServers": "x" }"#,
+        ] {
+            for (sync_llm, sync_mcp) in [(true, true), (true, false), (false, true), (false, false)]
+            {
+                let dir = tempdir().unwrap();
+                let paths = paths(&dir);
+                std::fs::write(&paths.mcp, body).unwrap();
+
+                assert!(
+                    sync_modes(&paths, sync_llm, sync_mcp, &["auto"]).is_err(),
+                    "accepted mcp={body:?} llm={sync_llm} mcp_mode={sync_mcp}"
+                );
+                assert_eq!(std::fs::read_to_string(&paths.mcp).unwrap(), body);
+                assert!(!paths.models.exists());
+                assert!(!paths.settings.exists());
+                assert!(!paths.backups.exists());
+            }
+        }
     }
 }
