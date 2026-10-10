@@ -9,24 +9,22 @@
 
 #![allow(dead_code)]
 
-use lr_types::{AppError, AppResult};
+use crate::keychain_trait::{KeychainStorage, SystemKeychain};
+use lr_types::AppResult;
 use tracing::debug;
 
 const KEYRING_SERVICE: &str = "LocalRouter-APIKeys";
 
 /// Store an API key in the system keyring
 ///
+/// Goes through [`SystemKeychain`], which splits keys longer than the
+/// platform's per-entry limit across several entries.
+///
 /// # Arguments
 /// * `key_id` - The unique key identifier
 /// * `api_key` - The actual API key string
 pub fn store_api_key(key_id: &str, api_key: &str) -> AppResult<()> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, key_id)
-        .map_err(|e| AppError::Internal(format!("Failed to access keyring: {}", e)))?;
-
-    entry
-        .set_password(api_key)
-        .map_err(|e| AppError::Internal(format!("Failed to store API key: {}", e)))?;
-
+    SystemKeychain.store(KEYRING_SERVICE, key_id, api_key)?;
     debug!("Stored API key '{}' in system keyring", key_id);
     Ok(())
 }
@@ -40,23 +38,13 @@ pub fn store_api_key(key_id: &str, api_key: &str) -> AppResult<()> {
 /// * `Ok(Some(key))` if key exists
 /// * `Ok(None)` if key doesn't exist
 pub fn get_api_key(key_id: &str) -> AppResult<Option<String>> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, key_id)
-        .map_err(|e| AppError::Internal(format!("Failed to access keyring: {}", e)))?;
-
-    match entry.get_password() {
-        Ok(key) => {
-            debug!("Retrieved API key '{}' from system keyring", key_id);
-            Ok(Some(key))
-        }
-        Err(keyring::Error::NoEntry) => {
-            debug!("No API key found for '{}'", key_id);
-            Ok(None)
-        }
-        Err(e) => Err(AppError::Internal(format!(
-            "Failed to retrieve API key: {}",
-            e
-        ))),
+    let key = SystemKeychain.get(KEYRING_SERVICE, key_id)?;
+    if key.is_some() {
+        debug!("Retrieved API key '{}' from system keyring", key_id);
+    } else {
+        debug!("No API key found for '{}'", key_id);
     }
+    Ok(key)
 }
 
 /// Delete an API key from the system keyring
@@ -64,23 +52,9 @@ pub fn get_api_key(key_id: &str) -> AppResult<Option<String>> {
 /// # Arguments
 /// * `key_id` - The unique key identifier
 pub fn delete_api_key(key_id: &str) -> AppResult<()> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, key_id)
-        .map_err(|e| AppError::Internal(format!("Failed to access keyring: {}", e)))?;
-
-    match entry.delete_credential() {
-        Ok(()) => {
-            debug!("Deleted API key '{}' from system keyring", key_id);
-            Ok(())
-        }
-        Err(keyring::Error::NoEntry) => {
-            debug!("No API key to delete for '{}' (already absent)", key_id);
-            Ok(())
-        }
-        Err(e) => Err(AppError::Internal(format!(
-            "Failed to delete API key: {}",
-            e
-        ))),
-    }
+    SystemKeychain.delete(KEYRING_SERVICE, key_id)?;
+    debug!("Deleted API key '{}' from system keyring", key_id);
+    Ok(())
 }
 
 #[cfg(test)]

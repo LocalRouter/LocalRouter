@@ -426,10 +426,10 @@ pub async fn marketplace_install_mcp_server_direct(
     if config.auth_type == "bearer" {
         if let Some(token) = &config.bearer_token {
             // Store the token in the keychain
-            let keyring_entry = keyring::Entry::new(MCP_KEYRING_SERVICE, &server_id)
-                .map_err(|e| format!("Failed to create keyring entry: {}", e))?;
-            keyring_entry
-                .set_password(token)
+            use lr_api_keys::KeychainStorage;
+            lr_api_keys::CachedKeychain::auto()
+                .map_err(|e| format!("Failed to access keychain: {}", e))?
+                .store(MCP_KEYRING_SERVICE, &server_id, token)
                 .map_err(|e| format!("Failed to store token in keychain: {}", e))?;
         }
     }

@@ -3,6 +3,7 @@
 //! Provides keychain storage functionality for securely storing secrets.
 //! Used by the clients module to store client secrets.
 
+mod chunked;
 mod keychain;
 pub mod keychain_trait;
 
