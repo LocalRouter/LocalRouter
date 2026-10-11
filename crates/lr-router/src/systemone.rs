@@ -154,9 +154,9 @@ impl Router {
                     exhausted,
                 ));
             }
-            let free_tier = self.get_effective_free_tier(&final_provider);
             if matches!(
-                self.classify_model_free(&final_provider, &final_model, &free_tier),
+                self.classify_for_free_tier(&final_provider, &final_model)
+                    .await,
                 free_tier::ModelFreeStatus::NotFree
             ) {
                 return Err(Self::free_tier_exhausted_error(&strategy, 0, exhausted));
@@ -258,8 +258,16 @@ impl Router {
             let output = response.usage.output_tokens.unwrap_or(0);
             let cost = calculate_cost(input, output, None, &pricing);
             response.cost_usd = Some(cost);
-            self.record_systemone_usage(client_id, provider, input, output, cost, free_tier_only)
-                .await;
+            self.record_systemone_usage(
+                client_id,
+                provider,
+                &pricing_model,
+                input,
+                output,
+                cost,
+                free_tier_only,
+            )
+            .await;
             return Ok(response);
         }
 
@@ -286,10 +294,12 @@ impl Router {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn record_systemone_usage(
         &self,
         client_id: &str,
         provider: &str,
+        model: &str,
         input_tokens: u64,
         output_tokens: u64,
         cost: f64,
@@ -307,10 +317,11 @@ impl Router {
         {
             warn!("Failed to record usage for client '{}': {}", client_id, e);
         }
-        let free_tier = self.get_effective_free_tier(provider);
+        let free_tier = self.free_tier_usage(provider, model);
         self.free_tier_manager.record_usage(
             provider,
-            &free_tier,
+            &free_tier.kind,
+            free_tier.model_is_free,
             input_tokens + output_tokens,
             cost,
         );
@@ -486,9 +497,8 @@ impl Router {
                 continue;
             }
             if strategy.free_tier_only {
-                let free_tier = self.get_effective_free_tier(provider);
                 if matches!(
-                    self.classify_model_free(provider, model, &free_tier),
+                    self.classify_for_free_tier(provider, model).await,
                     free_tier::ModelFreeStatus::NotFree
                 ) {
                     continue;
@@ -651,6 +661,16 @@ mod tests {
                 capabilities: caps,
                 detailed_capabilities: None,
             }])
+        }
+        async fn list_model_listing(&self) -> AppResult<lr_providers::ModelListing> {
+            Ok(lr_providers::ModelListing {
+                models: self.list_models().await?,
+                new_models_hidden: false,
+                metadata: Arc::new(HashMap::from([(
+                    "m1".to_string(),
+                    json!({"id": "m1", "tier": "free", "pricing": {"prompt": "0", "completion": "0"}}),
+                )])),
+            })
         }
         async fn get_pricing(&self, _model: &str) -> AppResult<PricingInfo> {
             Ok(PricingInfo {
@@ -1489,7 +1509,9 @@ mod tests {
         let h = harness(&[("local", Kind::ChatJson)], &[], |_| {}).await;
         let always_free = lr_config::FreeTierKind::AlwaysFreeLocal;
         assert!(!matches!(
-            h.router.classify_model_free("local", "m1", &always_free),
+            h.router
+                .classify_with_free_tier("local", "m1", &always_free)
+                .await,
             free_tier::ModelFreeStatus::NotFree
         ));
         h.router
@@ -1510,13 +1532,111 @@ mod tests {
             )
             .unwrap();
         assert!(matches!(
-            h.router.classify_model_free("local", "m1", &always_free),
+            h.router
+                .classify_with_free_tier("local", "m1", &always_free)
+                .await,
             free_tier::ModelFreeStatus::NotFree
         ));
         // Other models of the provider stay free; a $0 price changes nothing.
         assert!(!matches!(
-            h.router.classify_model_free("local", "m2", &always_free),
+            h.router
+                .classify_with_free_tier("local", "m2", &always_free)
+                .await,
             free_tier::ModelFreeStatus::NotFree
         ));
+    }
+
+    fn free_models(rules: Vec<lr_config::FreeModelRule>) -> lr_config::FreeTierKind {
+        lr_config::FreeTierKind::FreeModelsOnly {
+            free_model_patterns: vec![],
+            excluded_models: vec![],
+            rules,
+            max_rpm: 0,
+        }
+    }
+
+    fn include(when: lr_config::FreeModelCondition) -> lr_config::FreeModelRule {
+        lr_config::FreeModelRule {
+            enabled: true,
+            effect: lr_config::FreeModelRuleEffect::Include,
+            when,
+            label: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn listing_rules_fetch_the_model_list_once() {
+        let h = harness(&[("p", Kind::ChatJson)], &[], |_| {}).await;
+        let kind = free_models(vec![include(lr_config::FreeModelCondition::Field {
+            pointer: "/tier".into(),
+            op: lr_config::FieldOp::Equals,
+            value: json!("free"),
+        })]);
+        assert!(!h.router.provider_registry.has_cached_models("p"));
+        assert_eq!(
+            h.router.classify_with_free_tier("p", "m1", &kind).await,
+            free_tier::ModelFreeStatus::FreeModel
+        );
+        assert!(h.router.provider_registry.has_cached_models("p"));
+        // Not listed: no data, so not free.
+        assert_eq!(
+            h.router.classify_with_free_tier("p", "m2", &kind).await,
+            free_tier::ModelFreeStatus::NotFree
+        );
+    }
+
+    #[tokio::test]
+    async fn zero_price_in_the_listing_makes_a_model_free() {
+        let h = harness(&[("p", Kind::ChatJson)], &[], |_| {}).await;
+        let kind = free_models(vec![include(lr_config::FreeModelCondition::ZeroPrice {
+            sources: vec![lr_config::PriceSource::ProviderListing],
+            input_pointer: None,
+            output_pointer: None,
+        })]);
+        let decision = h.router.free_model_decision("p", "m1", &kind).await;
+        assert!(decision.is_free);
+        assert_eq!(decision.rule_index, Some(0));
+        assert!(decision.reason.contains("$0"), "{}", decision.reason);
+        // A price set on the Models tab is not part of a listing-only rule.
+        assert!(
+            !h.router
+                .free_model_decision("p", "other", &kind)
+                .await
+                .is_free
+        );
+    }
+
+    #[tokio::test]
+    async fn free_only_strategy_refuses_models_the_rules_do_not_free() {
+        let kind = free_models(vec![include(lr_config::FreeModelCondition::ModelId {
+            pattern: "m1".into(),
+            syntax: lr_config::ModelIdPatternSyntax::Exact,
+            case_insensitive: false,
+        })]);
+        let h = harness(&[("p", Kind::ChatJson)], &[], |config| {
+            config.strategies[0].free_tier_only = true;
+            config.providers.push(lr_config::ProviderConfig {
+                name: "p".into(),
+                free_tier: Some(kind.clone()),
+                ..lr_config::ProviderConfig::default_ollama()
+            });
+        })
+        .await;
+        assert!(h
+            .router
+            .systemone(&h.client_id, request(Some("p/m1")))
+            .await
+            .is_ok());
+        let refused = h
+            .router
+            .systemone(&h.client_id, request(Some("p/m2")))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(refused, AppError::FreeTierExhausted { .. }),
+            "{refused:?}"
+        );
+        assert!(h.router.free_tier_usage("p", "m1").model_is_free);
+        assert!(!h.router.free_tier_usage("p", "m2").model_is_free);
     }
 }
