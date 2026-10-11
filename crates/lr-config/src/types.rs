@@ -4246,6 +4246,130 @@ pub struct ProviderConfig {
     /// If None, uses the provider type's default free tier.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub free_tier: Option<FreeTierKind>,
+
+    /// Which of this provider's models are offered and how they are described:
+    /// manual models, per-model visibility and per-model overrides. Omitted
+    /// from the file while it holds nothing.
+    #[serde(default, skip_serializing_if = "ProviderModelSettings::is_default")]
+    pub models: ProviderModelSettings,
+}
+
+/// Per-provider model list settings, applied on top of the models the
+/// provider lists (its "discovered" models).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ProviderModelSettings {
+    /// Whether discovered models that have no entry of their own are offered.
+    /// `None` uses the provider's default: on, except for a listing the
+    /// provider marks as not reflecting what is installed (FastFlowLM's full
+    /// catalog), where it is off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_new_models: Option<bool>,
+
+    /// Per-model entries: manual models, visibility and overrides.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entries: Vec<ModelEntry>,
+}
+
+impl ProviderModelSettings {
+    /// True when nothing is configured (the block is not written to disk).
+    pub fn is_default(&self) -> bool {
+        self.show_new_models.is_none() && self.entries.is_empty()
+    }
+
+    /// The entry for a model id, if any (exact match).
+    pub fn entry(&self, model_id: &str) -> Option<&ModelEntry> {
+        self.entries.iter().find(|e| e.id == model_id)
+    }
+
+    /// Drop entries that carry no information, and merge duplicate ids
+    /// (the last one wins), so the saved block stays minimal.
+    pub fn normalized(mut self) -> Self {
+        let mut seen = std::collections::HashSet::new();
+        let mut kept: Vec<ModelEntry> = Vec::new();
+        for entry in self.entries.into_iter().rev() {
+            let mut entry = entry;
+            entry.id = entry.id.trim().to_string();
+            if entry.id.is_empty() || entry.is_empty() || !seen.insert(entry.id.clone()) {
+                continue;
+            }
+            if entry
+                .display_name
+                .as_deref()
+                .is_some_and(|n| n.trim().is_empty())
+            {
+                entry.display_name = None;
+            }
+            kept.push(entry);
+        }
+        kept.reverse();
+        self.entries = kept;
+        self
+    }
+}
+
+/// One model's settings within a provider.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ModelEntry {
+    /// Model id as sent to the provider
+    pub id: String,
+
+    /// Added by hand: offered even when the provider does not list it
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub manual: bool,
+
+    /// Explicit visibility; `None` follows `show_new_models` (manual models
+    /// are shown)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+
+    /// Display name override
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+
+    /// Context window override, in tokens
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
+
+    /// Capabilities override; replaces the listed/derived set entirely
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<Vec<ModelCapabilityKind>>,
+
+    /// Price override for this model on this provider instance
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing: Option<ModelPricingOverride>,
+}
+
+impl ModelEntry {
+    /// Whether any override (beyond visibility) is set.
+    pub fn has_overrides(&self) -> bool {
+        self.display_name.is_some()
+            || self.context_window.is_some()
+            || self.capabilities.is_some()
+            || self.pricing.is_some()
+    }
+
+    /// An entry that changes nothing.
+    pub fn is_empty(&self) -> bool {
+        !self.manual && self.enabled.is_none() && !self.has_overrides()
+    }
+}
+
+/// A model capability, as stored in per-model capability overrides.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelCapabilityKind {
+    Chat,
+    Completion,
+    Embedding,
+    Vision,
+    FunctionCalling,
+    Audio,
+    TextToSpeech,
+    Decision,
+    ImageGeneration,
+    /// A capability written by a newer version; ignored
+    #[serde(other)]
+    Unknown,
 }
 
 /// Provider type
@@ -4369,6 +4493,9 @@ pub enum ProviderType {
     /// Vercel AI Gateway
     #[serde(rename = "vercel_ai_gateway")]
     VercelAiGateway,
+    /// FastFlowLM local server (AMD Ryzen AI NPU, OpenAI-compatible)
+    #[serde(rename = "fastflowlm")]
+    FastFlowLM,
     /// Custom provider
     Custom,
 }
@@ -4589,6 +4716,7 @@ impl ProviderConfig {
             })),
             api_key_ref: None,
             free_tier: None,
+            models: Default::default(),
         }
     }
 
@@ -4603,6 +4731,7 @@ impl ProviderConfig {
             })),
             api_key_ref: None,
             free_tier: None,
+            models: Default::default(),
         }
     }
 
@@ -4617,6 +4746,7 @@ impl ProviderConfig {
             })),
             api_key_ref: None,
             free_tier: None,
+            models: Default::default(),
         }
     }
 
@@ -4631,6 +4761,7 @@ impl ProviderConfig {
             })),
             api_key_ref: None,
             free_tier: None,
+            models: Default::default(),
         }
     }
 
@@ -4645,6 +4776,7 @@ impl ProviderConfig {
             })),
             api_key_ref: None,
             free_tier: None,
+            models: Default::default(),
         }
     }
 
@@ -4659,6 +4791,7 @@ impl ProviderConfig {
             })),
             api_key_ref: None,
             free_tier: None,
+            models: Default::default(),
         }
     }
 }
@@ -5879,6 +6012,7 @@ sampling_permission: "off"
             (ProviderType::SdCppEmbedded, "sdcpp_embedded"),
             (ProviderType::LlmGateway, "llmgateway"),
             (ProviderType::VercelAiGateway, "vercel_ai_gateway"),
+            (ProviderType::FastFlowLM, "fastflowlm"),
         ];
         for (variant, expected_str) in &variants {
             // Serialize to JSON string
@@ -5934,6 +6068,7 @@ sampling_permission: "off"
             ProviderType::SdCppEmbedded,
             ProviderType::LlmGateway,
             ProviderType::VercelAiGateway,
+            ProviderType::FastFlowLM,
         ];
         for variant in &variants {
             let yaml = serde_yaml::to_string(variant).unwrap();
@@ -5952,11 +6087,95 @@ sampling_permission: "off"
             provider_config: Some(serde_json::json!({"api_key": "ghp_test"})),
             api_key_ref: None,
             free_tier: None,
+            models: Default::default(),
         };
         let yaml = serde_yaml::to_string(&config).unwrap();
         assert!(yaml.contains("github_models"));
         let deserialized: ProviderConfig = serde_yaml::from_str(&yaml).unwrap();
         assert_eq!(deserialized.provider_type, ProviderType::GitHubModels);
+        // Nothing configured: no `models` block is written.
+        assert!(!yaml.lines().any(|l| l.starts_with("models:")));
+    }
+
+    #[test]
+    fn provider_model_settings_round_trip() {
+        let yaml = r#"
+name: Free.ai
+provider_type: custom
+models:
+  show_new_models: false
+  entries:
+    - id: llama-3.3-70b
+      enabled: true
+      display_name: Llama 3.3 70B
+      context_window: 131072
+      capabilities: [chat, function_calling, some_future_capability]
+      pricing:
+        input_per_million: 0.5
+        output_per_million: 1.5
+    - id: my-model
+      manual: true
+"#;
+        let config: ProviderConfig = serde_yaml::from_str(yaml).unwrap();
+        let models = &config.models;
+        assert_eq!(models.show_new_models, Some(false));
+        let first = models.entry("llama-3.3-70b").unwrap();
+        assert_eq!(
+            first.capabilities.as_deref(),
+            Some(
+                &[
+                    ModelCapabilityKind::Chat,
+                    ModelCapabilityKind::FunctionCalling,
+                    ModelCapabilityKind::Unknown
+                ][..]
+            )
+        );
+        assert!(first.has_overrides());
+        assert!(models.entry("my-model").unwrap().manual);
+        assert!(!models.entry("my-model").unwrap().has_overrides());
+
+        let again: ProviderConfig =
+            serde_yaml::from_str(&serde_yaml::to_string(&config).unwrap()).unwrap();
+        assert_eq!(again.models.entries.len(), 2);
+        assert_eq!(again.models.show_new_models, Some(false));
+        // Unset fields are not written.
+        let out = serde_yaml::to_string(&again.models.entries[1]).unwrap();
+        assert_eq!(out.trim(), "id: my-model\nmanual: true");
+    }
+
+    #[test]
+    fn provider_model_settings_normalize() {
+        let settings = ProviderModelSettings {
+            show_new_models: None,
+            entries: vec![
+                ModelEntry {
+                    id: " a ".into(),
+                    enabled: Some(false),
+                    ..Default::default()
+                },
+                ModelEntry {
+                    id: "empty".into(),
+                    ..Default::default()
+                },
+                ModelEntry {
+                    id: "a".into(),
+                    display_name: Some("  ".into()),
+                    enabled: Some(true),
+                    ..Default::default()
+                },
+                ModelEntry {
+                    id: "".into(),
+                    manual: true,
+                    ..Default::default()
+                },
+            ],
+        }
+        .normalized();
+        assert_eq!(settings.entries.len(), 1);
+        assert_eq!(settings.entries[0].id, "a");
+        assert_eq!(settings.entries[0].enabled, Some(true));
+        assert_eq!(settings.entries[0].display_name, None);
+        assert!(ProviderModelSettings::default().normalized().is_default());
     }
 
     #[test]

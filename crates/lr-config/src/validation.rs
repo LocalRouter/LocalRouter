@@ -618,6 +618,7 @@ mod tests {
             provider_config: None,
             api_key_ref: None,
             free_tier: None,
+            models: Default::default(),
         };
         let config = AppConfig {
             providers: vec![provider.clone(), provider],
@@ -636,6 +637,7 @@ mod tests {
                 provider_config: None,
                 api_key_ref: None,
                 free_tier: None,
+                models: Default::default(),
             }],
             ..Default::default()
         };
@@ -652,6 +654,7 @@ mod tests {
                 provider_config: None,
                 api_key_ref: None,
                 free_tier: None,
+                models: Default::default(),
             }],
             ..Default::default()
         };
@@ -971,6 +974,7 @@ mod tests {
                 provider_config: Some(serde_json::json!("not an object")),
                 api_key_ref: None,
                 free_tier: None,
+                models: Default::default(),
             }],
             ..Default::default()
         };
@@ -1001,6 +1005,7 @@ mod tests {
                     provider_config: None,
                     api_key_ref: None,
                     free_tier: None,
+                    models: Default::default(),
                 },
                 ProviderConfig {
                     name: "".to_string(),
@@ -1009,6 +1014,7 @@ mod tests {
                     provider_config: None,
                     api_key_ref: None,
                     free_tier: None,
+                    models: Default::default(),
                 },
             ],
             ..Default::default()
@@ -1110,6 +1116,7 @@ mod self_referential_tests {
                 })),
                 api_key_ref: None,
                 free_tier: None,
+                models: Default::default(),
             }],
             ..Default::default()
         };
@@ -1130,6 +1137,7 @@ mod self_referential_tests {
                 })),
                 api_key_ref: None,
                 free_tier: None,
+                models: Default::default(),
             }],
             ..Default::default()
         };
@@ -1148,6 +1156,7 @@ mod self_referential_tests {
                 provider_config: None,
                 api_key_ref: None,
                 free_tier: None,
+                models: Default::default(),
             }],
             ..Default::default()
         };
@@ -1170,6 +1179,7 @@ mod self_referential_tests {
                 })),
                 api_key_ref: None,
                 free_tier: None,
+                models: Default::default(),
             }],
             ..Default::default()
         };
