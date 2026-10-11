@@ -108,19 +108,37 @@ export function slotHeights(window: UsageWindowView): (number | null)[] {
 }
 
 /**
- * Accounts worth a card: not hidden, and with limits or traffic to show. An
- * API account known only from rate-limit headers (e.g. a provider health
- * check) without any requests is left to Settings.
+ * Accounts worth a card: not hidden, and with limits or traffic to show. A
+ * subscription gets a card as soon as it is seen (its limits may only come
+ * with the next request or poll); an API account known only from rate-limit
+ * headers (e.g. a provider health check) without any requests is left to
+ * Settings.
  */
 export function visibleAccounts(accounts: UsageAccountView[]): UsageAccountView[] {
   return accounts.filter(
     (a) =>
       !a.hidden &&
-      (a.windows.length > 0 ||
+      (a.kind === 'subscription' ||
+        a.windows.length > 0 ||
         a.credits !== null ||
-        a.spend.requests_30d > 0 ||
-        (a.kind === 'subscription' && a.quotas.length > 0)),
+        a.spend.requests_30d > 0),
   )
+}
+
+/** Whether an account has no limits, credits or quotas to show yet. */
+export function awaitingLimits(account: UsageAccountView): boolean {
+  return account.windows.length === 0 && account.quotas.length === 0 && account.credits === null
+}
+
+/**
+ * Card title: the account's title, plus who the login is when another shown
+ * account has the same title (two ChatGPT accounts on the same plan).
+ */
+export function displayTitle(account: UsageAccountView, shown: UsageAccountView[]): string {
+  const twin = shown.some((a) => a.id !== account.id && a.title === account.title)
+  if (!twin) return account.title
+  const who = account.login_label ?? account.id.split(':')[2] ?? null
+  return who ? `${account.title} · ${who}` : account.title
 }
 
 /** The headline window: weekly when present, else the first. */

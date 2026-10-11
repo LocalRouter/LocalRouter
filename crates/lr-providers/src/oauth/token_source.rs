@@ -100,6 +100,15 @@ impl OAuthTokenSource {
         self.resolve(None).await
     }
 
+    /// The token in memory, if any, without refreshing or reading the
+    /// keychain (e.g. to label which login a finished request used).
+    pub fn cached_access_token(&self) -> Option<String> {
+        self.cached
+            .read()
+            .as_ref()
+            .map(|token| token.access_token.clone())
+    }
+
     /// The upstream rejected `rejected` with a 401 — get a token to retry with.
     ///
     /// If the keychain already holds a different token (the user reconnected,
@@ -373,7 +382,11 @@ mod tests {
             .unwrap();
 
         let source = source_with(&keychain);
+        assert_eq!(source.cached_access_token(), None, "nothing read yet");
         assert_eq!(source.access_token().await.unwrap(), "live-token");
+        assert_eq!(source.cached_access_token().as_deref(), Some("live-token"));
+        source.invalidate();
+        assert_eq!(source.cached_access_token(), None);
     }
 
     #[tokio::test]

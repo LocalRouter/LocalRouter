@@ -9,6 +9,8 @@ import {
   slotHeights,
   usageLabelSeed,
   visibleAccounts,
+  awaitingLimits,
+  displayTitle,
 } from '../../../src/views/dashboard/usage-format'
 import type { UsageAccountView, UsageWindowView } from '../../../src/types/tauri-commands'
 
@@ -43,6 +45,7 @@ const account = (changes: Partial<UsageAccountView> = {}): UsageAccountView => (
   provider_label: 'Anthropic',
   kind: 'subscription',
   title: 'Claude Max 20x',
+  login_label: null,
   plan: 'default_claude_max_20x',
   plan_label: 'Max 20x',
   monthly_price_usd: 200,
@@ -104,9 +107,15 @@ test('visible accounts skip hidden and empty ones; headline prefers weekly', () 
   })
   const hidden = account({ id: 'openai:subscription', hidden: true })
   const shown = account()
-  expect(visibleAccounts([empty, quotasOnly, hidden, shown]).map((a) => a.id)).toEqual([
+  // A subscription seen without limits yet (no traffic carried them, its
+  // usage endpoint not asked) still gets a card.
+  const waiting = account({ id: 'openai:subscription:0a1b2c3d4e', windows: [] })
+  expect(visibleAccounts([empty, quotasOnly, hidden, shown, waiting]).map((a) => a.id)).toEqual([
     'anthropic:subscription',
+    'openai:subscription:0a1b2c3d4e',
   ])
+  expect(awaitingLimits(waiting)).toBe(true)
+  expect(awaitingLimits(shown)).toBe(false)
   const five = win({ id: 'five_hour' })
   expect(headlineWindow(account({ windows: [five, win()] }))?.id).toBe('seven_day')
   expect(headlineWindow(account({ windows: [five] }))?.id).toBe('five_hour')
@@ -139,4 +148,14 @@ test('routed spend names the periods, and compares a subscription with its plan'
   expect(routedSpend(api)!.note).toBe('312 req · 30d')
   expect(routedSpend(api)!.label).toContain('Spend via LocalRouter')
   expect(routedSpend({ ...api, spend: { ...spend, requests_30d: 0 } })).toBeNull()
+})
+
+test('two accounts with the same title are told apart by their login', () => {
+  const a = account({ id: 'openai:subscription', title: 'ChatGPT Pro', login_label: 'me@example.com' })
+  const b = account({ id: 'openai:subscription:0a1b2c3d4e', title: 'ChatGPT Pro' })
+  const c = account({ id: 'anthropic:subscription' })
+  expect(displayTitle(a, [a, b, c])).toBe('ChatGPT Pro · me@example.com')
+  expect(displayTitle(b, [a, b, c])).toBe('ChatGPT Pro · 0a1b2c3d4e')
+  expect(displayTitle(c, [a, b, c])).toBe('Claude Max 20x')
+  expect(displayTitle(a, [a, c])).toBe('ChatGPT Pro')
 })

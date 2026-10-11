@@ -636,13 +636,21 @@ impl ModelProvider for OpenAIProvider {
         }
     }
 
-    /// The ChatGPT backend bills the subscription; anything else (e.g. a
-    /// ChatGPT Plus/Pro instance that fell back to an API key) the API.
+    /// The ChatGPT backend bills the subscription of the signed-in ChatGPT
+    /// account (told apart by the token's account id, so it lines up with
+    /// Codex signed in to the same account); anything else (e.g. a ChatGPT
+    /// Plus/Pro instance that fell back to an API key) the API.
     fn usage_account(&self) -> Option<lr_usage::AccountRef> {
-        Some(if self.is_chatgpt_backend() {
-            lr_usage::AccountRef::subscription("openai")
-        } else {
-            lr_usage::AccountRef::api("openai")
+        if !self.is_chatgpt_backend() {
+            return Some(lr_usage::AccountRef::api("openai"));
+        }
+        let token = match &self.auth {
+            ProviderAuth::OAuth(source) => source.cached_access_token(),
+            ProviderAuth::ApiKey(token) => Some(token.clone()),
+        };
+        Some(match token {
+            Some(token) => lr_usage::classify::chatgpt_account_for_token(&token),
+            None => lr_usage::AccountRef::chatgpt(None),
         })
     }
 
@@ -2057,6 +2065,21 @@ mod tests {
         assert_eq!(
             chatgpt.usage_account(),
             Some(lr_usage::AccountRef::subscription("openai"))
+        );
+        // A ChatGPT access token names its account: the provider's traffic
+        // lands on the same account as Codex signed in to it.
+        use base64::Engine;
+        let claims = serde_json::json!({
+            "https://api.openai.com/auth": {"chatgpt_account_id": "acc-1"}
+        });
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&claims).unwrap());
+        let jwt = format!("eyJhbGciOiJSUzI1NiJ9.{payload}.sig");
+        let chatgpt =
+            OpenAIProvider::with_base_url(jwt, CHATGPT_BACKEND_API_BASE.to_string()).unwrap();
+        assert_eq!(
+            chatgpt.usage_account(),
+            Some(lr_usage::AccountRef::chatgpt(Some("acc-1")))
         );
     }
 
