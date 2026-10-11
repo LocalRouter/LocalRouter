@@ -188,6 +188,12 @@ pub fn migrate_config(mut config: AppConfig) -> AppResult<AppConfig> {
         config = migrate_to_v32(config)?;
     }
 
+    // Migrate to v33: Free tier defaults by factory type; keep existing
+    // credit-based providers at their current effective free tier
+    if config.version < 33 {
+        config = migrate_to_v33(config)?;
+    }
+
     // Update version to current
     config.version = CONFIG_VERSION;
 
@@ -1027,6 +1033,38 @@ fn migrate_to_v32(mut config: AppConfig) -> AppResult<AppConfig> {
     Ok(config)
 }
 
+/// v33: free tier defaults are looked up by the provider's factory type.
+///
+/// Before v33 the default of a provider without a `free_tier` of its own was
+/// looked up under the serialized config type (`open_router`, `deep_infra`,
+/// `x_a_i`, `custom`, ...), which matched no factory for several types, so
+/// those providers had no free tier at all. From v33 the lookup works, and
+/// a new OpenAI-compatible provider is "always free" only when its base URL
+/// is on this machine.
+///
+/// Existing DeepInfra and xAI instances would otherwise start counting as
+/// free (credit-based) without the user having seen that; they keep their
+/// current effective value ("no free tier") by having it written down.
+/// OpenRouter and Together AI get their free-model defaults, and local
+/// OpenAI-compatible servers become always free, as intended.
+fn migrate_to_v33(mut config: AppConfig) -> AppResult<AppConfig> {
+    use super::{FreeTierKind, ProviderType};
+    info!("Migrating to version 33: keep credit-based free tiers off for existing providers");
+
+    for provider in &mut config.providers {
+        let credit_default = matches!(
+            provider.provider_type,
+            ProviderType::DeepInfra | ProviderType::XAI
+        );
+        if credit_default && provider.free_tier.is_none() {
+            provider.free_tier = Some(FreeTierKind::None);
+        }
+    }
+
+    config.version = 33;
+    Ok(config)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1316,5 +1354,48 @@ mod tests {
                 "from {from}"
             );
         }
+    }
+
+    #[test]
+    fn test_migrate_to_v33_keeps_credit_based_defaults_off_for_existing_providers() {
+        use super::super::{FreeTierKind, ProviderConfig, ProviderType};
+        let provider = |name: &str, provider_type: ProviderType| ProviderConfig {
+            name: name.to_string(),
+            provider_type,
+            ..ProviderConfig::default_ollama()
+        };
+        let mut chosen = provider("xAI chosen", ProviderType::XAI);
+        chosen.free_tier = Some(FreeTierKind::Subscription);
+        let config = AppConfig {
+            version: 32,
+            providers: vec![
+                provider("DeepInfra", ProviderType::DeepInfra),
+                provider("xAI", ProviderType::XAI),
+                chosen,
+                provider("OpenRouter", ProviderType::OpenRouter),
+                provider("Custom", ProviderType::Custom),
+            ],
+            ..Default::default()
+        };
+
+        let migrated = migrate_config(config).unwrap();
+
+        assert_eq!(migrated.version, CONFIG_VERSION);
+        let tier = |name: &str| {
+            migrated
+                .providers
+                .iter()
+                .find(|p| p.name == name)
+                .unwrap()
+                .free_tier
+                .clone()
+        };
+        assert_eq!(tier("DeepInfra"), Some(FreeTierKind::None));
+        assert_eq!(tier("xAI"), Some(FreeTierKind::None));
+        // A choice of the user's own is kept.
+        assert_eq!(tier("xAI chosen"), Some(FreeTierKind::Subscription));
+        // These take their (now working) type defaults.
+        assert_eq!(tier("OpenRouter"), None);
+        assert_eq!(tier("Custom"), None);
     }
 }
