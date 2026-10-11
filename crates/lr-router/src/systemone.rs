@@ -156,8 +156,7 @@ impl Router {
             }
             let free_tier = self.get_effective_free_tier(&final_provider);
             if matches!(
-                self.free_tier_manager
-                    .classify_model(&final_provider, &final_model, &free_tier),
+                self.classify_model_free(&final_provider, &final_model, &free_tier),
                 free_tier::ModelFreeStatus::NotFree
             ) {
                 return Err(Self::free_tier_exhausted_error(&strategy, 0, exhausted));
@@ -215,6 +214,9 @@ impl Router {
         mut request: SystemOneRequest,
         free_tier_only: bool,
     ) -> AppResult<SystemOneResponse> {
+        if let Some(model) = model {
+            self.require_enabled_model(provider, model)?;
+        }
         let provider_instance = self
             .provider_registry
             .get_provider(provider)
@@ -248,10 +250,10 @@ impl Router {
             response.backend = SystemOneBackend::Native;
 
             let pricing_model = model.unwrap_or(response.model.as_str()).to_string();
-            let pricing = provider_instance
-                .get_pricing(&pricing_model)
-                .await
-                .unwrap_or_else(|_| PricingInfo::free());
+            let pricing = self
+                .provider_registry
+                .get_pricing(provider, &pricing_model)
+                .await;
             let input = response.usage.input_tokens.unwrap_or(0);
             let output = response.usage.output_tokens.unwrap_or(0);
             let cost = calculate_cost(input, output, None, &pricing);
@@ -340,10 +342,7 @@ impl Router {
         free_tier_only: bool,
     ) -> AppResult<SystemOneResponse> {
         let cfg = self.config_manager.get().systemone.clone();
-        let pricing = provider_instance
-            .get_pricing(model)
-            .await
-            .unwrap_or_else(|_| PricingInfo::free());
+        let pricing = self.provider_registry.get_pricing(provider, model).await;
 
         let mut usage = SystemOneUsage {
             input_tokens: Some(0),
@@ -472,7 +471,9 @@ impl Router {
 
         let mut last_error = None;
         for (provider, model) in selected_models {
-            if self.should_skip_for_endpoint(provider, model, EndpointType::SystemOne) {
+            if self.should_skip_for_endpoint(provider, model, EndpointType::SystemOne)
+                || self.provider_registry.is_model_disabled(provider, model)
+            {
                 continue;
             }
             if let Some(backoff) = self.free_tier_manager.is_in_backoff(provider, model) {
@@ -487,8 +488,7 @@ impl Router {
             if strategy.free_tier_only {
                 let free_tier = self.get_effective_free_tier(provider);
                 if matches!(
-                    self.free_tier_manager
-                        .classify_model(provider, model, &free_tier),
+                    self.classify_model_free(provider, model, &free_tier),
                     free_tier::ModelFreeStatus::NotFree
                 ) {
                     continue;
@@ -1348,5 +1348,175 @@ mod tests {
         let (models, decision) = select(strategy).await;
         assert_eq!(models, vec![("local".into(), "small".into())]);
         assert_eq!(decision.unwrap().route, "routine");
+    }
+
+    // ----- Per-model settings (manual models, visibility, overrides) -----
+
+    fn hide(router: &Router, provider: &str, model: &str) {
+        router
+            .provider_registry
+            .set_model_settings(
+                provider,
+                lr_config::ProviderModelSettings {
+                    show_new_models: None,
+                    entries: vec![lr_config::ModelEntry {
+                        id: model.into(),
+                        enabled: Some(false),
+                        ..Default::default()
+                    }],
+                },
+            )
+            .unwrap();
+    }
+
+    fn chat_request(model: &str) -> CompletionRequest {
+        serde_json::from_value(json!({
+            "model": model,
+            "messages": [{"role": "user", "content": "hi"}]
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn explicit_request_for_a_hidden_model_is_refused() {
+        let h = harness(&[("chat", Kind::ChatJson)], &[], |_| {}).await;
+        hide(&h.router, "chat", "m1");
+        let err = h
+            .router
+            .complete(&h.client_id, chat_request("chat/m1"))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::InvalidParams(_)), "{err:?}");
+        assert_eq!(h.chat_calls.load(Ordering::SeqCst), 0);
+        // Ids the provider does not list still pass through.
+        h.router
+            .complete(&h.client_id, chat_request("chat/unlisted"))
+            .await
+            .unwrap();
+        // So does the hidden model once the cache knows it is listed and
+        // the user shows it again.
+        h.router
+            .provider_registry
+            .set_model_settings("chat", Default::default())
+            .unwrap();
+        h.router
+            .complete(&h.client_id, chat_request("chat/m1"))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn unprefixed_requests_skip_providers_hiding_the_model() {
+        let h = harness(
+            &[("first", Kind::ChatJson), ("second", Kind::ChatJson)],
+            &[],
+            |_| {},
+        )
+        .await;
+        hide(&h.router, "first", "m1");
+        let strategy = lr_config::Strategy::new("s".into());
+        for _ in 0..3 {
+            let (provider, model) = h
+                .router
+                .find_provider_for_model("m1", &strategy)
+                .await
+                .unwrap();
+            assert_eq!((provider.as_str(), model.as_str()), ("second", "m1"));
+        }
+        // A pair the strategy selected by hand is skipped too.
+        let mut picked = lr_config::Strategy::new("p".into());
+        picked.allowed_models.selected_all = false;
+        picked.allowed_models.selected_models = vec![("first".into(), "m1".into())];
+        picked.allowed_models.selected_providers = vec!["second".into()];
+        let (provider, _) = h
+            .router
+            .find_provider_for_model("m1", &picked)
+            .await
+            .unwrap();
+        assert_eq!(provider, "second");
+    }
+
+    #[tokio::test]
+    async fn auto_routing_skips_hidden_models() {
+        let h = harness(
+            &[("first", Kind::ChatJson), ("second", Kind::ChatJson)],
+            &[("first", "m1"), ("second", "m1")],
+            |_| {},
+        )
+        .await;
+        hide(&h.router, "first", "m1");
+        let (resp, meta) = h
+            .router
+            .complete(&h.client_id, chat_request("localrouter/auto"))
+            .await
+            .unwrap();
+        assert_eq!(resp.provider, "second");
+        let attempts = meta.unwrap()["attempts"].clone();
+        assert_eq!(attempts[0]["outcome"], "model_disabled");
+    }
+
+    #[tokio::test]
+    async fn price_override_sets_the_cost() {
+        let h = harness(&[("laya", Kind::Native)], &[], |_| {}).await;
+        h.router
+            .provider_registry
+            .set_model_settings(
+                "laya",
+                lr_config::ProviderModelSettings {
+                    show_new_models: None,
+                    entries: vec![lr_config::ModelEntry {
+                        id: "english".into(),
+                        pricing: Some(lr_config::ModelPricingOverride {
+                            input_per_million: 5.0,
+                            output_per_million: 0.0,
+                        }),
+                        ..Default::default()
+                    }],
+                },
+            )
+            .unwrap();
+        let resp = h
+            .router
+            .systemone(&h.client_id, request(Some("laya/english")))
+            .await
+            .unwrap();
+        // 1000 input tokens at $5 per million.
+        assert!((resp.cost_usd.unwrap() - 0.005).abs() < 1e-12);
+    }
+
+    #[tokio::test]
+    async fn priced_model_on_a_local_provider_is_not_free() {
+        let h = harness(&[("local", Kind::ChatJson)], &[], |_| {}).await;
+        let always_free = lr_config::FreeTierKind::AlwaysFreeLocal;
+        assert!(!matches!(
+            h.router.classify_model_free("local", "m1", &always_free),
+            free_tier::ModelFreeStatus::NotFree
+        ));
+        h.router
+            .provider_registry
+            .set_model_settings(
+                "local",
+                lr_config::ProviderModelSettings {
+                    show_new_models: None,
+                    entries: vec![lr_config::ModelEntry {
+                        id: "m1".into(),
+                        pricing: Some(lr_config::ModelPricingOverride {
+                            input_per_million: 0.0,
+                            output_per_million: 0.5,
+                        }),
+                        ..Default::default()
+                    }],
+                },
+            )
+            .unwrap();
+        assert!(matches!(
+            h.router.classify_model_free("local", "m1", &always_free),
+            free_tier::ModelFreeStatus::NotFree
+        ));
+        // Other models of the provider stay free; a $0 price changes nothing.
+        assert!(!matches!(
+            h.router.classify_model_free("local", "m2", &always_free),
+            free_tier::ModelFreeStatus::NotFree
+        ));
     }
 }

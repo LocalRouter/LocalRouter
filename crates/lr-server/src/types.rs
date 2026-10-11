@@ -782,6 +782,8 @@ pub enum PricingSource {
     Provider,
     /// Pricing from hardcoded fallback
     Fallback,
+    /// Price set by the user for this model on this provider instance
+    Override,
 }
 
 // ==================== Generation Details ====================

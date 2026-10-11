@@ -664,6 +664,42 @@ impl Router {
         lr_config::FreeTierKind::None
     }
 
+    /// Whether a model counts as free under `free_tier`. A per-model price
+    /// above zero on a provider that is otherwise always free (local or
+    /// subscription) makes that model paid.
+    // TODO(#32): per-model free rules replace this with one classifier.
+    pub(crate) fn classify_model_free(
+        &self,
+        provider: &str,
+        model: &str,
+        free_tier: &lr_config::FreeTierKind,
+    ) -> free_tier::ModelFreeStatus {
+        if matches!(
+            free_tier,
+            lr_config::FreeTierKind::AlwaysFreeLocal | lr_config::FreeTierKind::Subscription
+        ) && self
+            .provider_registry
+            .pricing_override(provider, model)
+            .is_some_and(|p| p.input_per_million > 0.0 || p.output_per_million > 0.0)
+        {
+            return free_tier::ModelFreeStatus::NotFree;
+        }
+        self.free_tier_manager
+            .classify_model(provider, model, free_tier)
+    }
+
+    /// Refuse a model the user turned off on its provider. Models the
+    /// provider does not know of pass through.
+    pub(crate) fn require_enabled_model(&self, provider: &str, model: &str) -> AppResult<()> {
+        if self.provider_registry.is_model_disabled(provider, model) {
+            return Err(AppError::InvalidParams(format!(
+                "Model '{}/{}' is turned off in LocalRouter (provider '{}', Models tab)",
+                provider, model, provider
+            )));
+        }
+        Ok(())
+    }
+
     /// Build the appropriate error when free-tier models are exhausted.
     /// Returns `FreeTierFallbackAvailable` if fallback is Ask or Allow,
     /// otherwise returns `FreeTierExhausted`.
@@ -730,16 +766,17 @@ impl Router {
             } else {
                 (provider, model)
             };
+            self.require_enabled_model(&final_provider, &final_model)?;
             let provider_instance = self
                 .provider_registry
                 .get_provider(&final_provider)
                 .ok_or_else(|| {
                     AppError::Router(format!("Provider '{}' not found", final_provider))
                 })?;
-            let pricing = provider_instance
-                .get_pricing(&final_model)
-                .await
-                .unwrap_or_else(|_| lr_providers::PricingInfo::free());
+            let pricing = self
+                .provider_registry
+                .get_pricing(&final_provider, &final_model)
+                .await;
             let free_tier = self.get_effective_free_tier(&final_provider);
             let mut modified_request = request.without_routing_metadata();
             modified_request.model = final_model.clone();
@@ -870,6 +907,9 @@ impl Router {
 
         // selected_models: explicit (provider, model) pairs already chosen by the user.
         for (prov, mod_name) in &allowed.selected_models {
+            if self.provider_registry.is_model_disabled(prov, mod_name) {
+                continue;
+            }
             if mod_name.eq_ignore_ascii_case(model) {
                 if exact_match.is_none() {
                     exact_match = Some(prov.clone());
@@ -881,7 +921,7 @@ impl Router {
             }
         }
 
-        // Build the ordered list of provider instances to live-scan.
+        // Build the ordered list of provider instances to scan.
         let mut candidates: Vec<String> = allowed.selected_providers.clone();
         if allowed.selected_all {
             for inst in self.provider_registry.list_providers() {
@@ -895,10 +935,16 @@ impl Router {
             if exact_match.is_some() {
                 break;
             }
-            let Some(provider_instance) = self.provider_registry.get_provider(&prov) else {
+            if self.provider_registry.get_provider(&prov).is_none() {
                 continue;
-            };
-            let Ok(models) = provider_instance.list_models().await else {
+            }
+            // The offered models (hidden ones excluded), from the model
+            // cache: fetched only when it is empty or expired.
+            let Ok(models) = self
+                .provider_registry
+                .list_provider_models_cached(&prov)
+                .await
+            else {
                 continue;
             };
             let model_ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
@@ -1049,6 +1095,7 @@ impl Router {
         request: CompletionRequest,
         free_tier_only: bool,
     ) -> AppResult<CompletionResponse> {
+        self.require_enabled_model(provider, model)?;
         // Get provider instance from registry
         let provider_instance = self
             .provider_registry
@@ -1146,10 +1193,7 @@ impl Router {
         response.model = model.to_string();
 
         // Calculate cost and record usage for rate limiting
-        let pricing = provider_instance
-            .get_pricing(model)
-            .await
-            .unwrap_or_else(|_| lr_providers::PricingInfo::free());
+        let pricing = self.provider_registry.get_pricing(provider, model).await;
 
         let cost = pricing.cost(&response.usage);
 
@@ -1279,6 +1323,10 @@ impl Router {
                 attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "model_not_allowed"}));
                 continue;
             }
+            if self.provider_registry.is_model_disabled(provider, model) {
+                attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "model_disabled"}));
+                continue;
+            }
             debug!(
                 "Auto-routing attempt {}/{}: {}/{}",
                 idx + 1,
@@ -1335,9 +1383,7 @@ impl Router {
             // Check free tier constraints (when free_tier_only is enabled)
             if strategy.free_tier_only {
                 let free_tier = self.get_effective_free_tier(provider);
-                let status = self
-                    .free_tier_manager
-                    .classify_model(provider, model, &free_tier);
+                let status = self.classify_model_free(provider, model, &free_tier);
                 match status {
                     free_tier::ModelFreeStatus::AlwaysFree
                     | free_tier::ModelFreeStatus::FreeWithinLimits
@@ -1543,6 +1589,10 @@ impl Router {
                 attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "model_not_allowed"}));
                 continue;
             }
+            if self.provider_registry.is_model_disabled(provider, model) {
+                attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "model_disabled"}));
+                continue;
+            }
             debug!(
                 "Auto-routing streaming attempt {}/{}: {}/{}",
                 idx + 1,
@@ -1597,9 +1647,7 @@ impl Router {
             // Check free tier constraints (when free_tier_only is enabled)
             if strategy.free_tier_only {
                 let free_tier = self.get_effective_free_tier(provider);
-                let status = self
-                    .free_tier_manager
-                    .classify_model(provider, model, &free_tier);
+                let status = self.classify_model_free(provider, model, &free_tier);
                 match status {
                     free_tier::ModelFreeStatus::AlwaysFree
                     | free_tier::ModelFreeStatus::FreeWithinLimits
@@ -1679,10 +1727,7 @@ impl Router {
                         Some(idx),
                     );
                     let resolved_model = format!("{}/{}", provider, model);
-                    let pricing = provider_instance
-                        .get_pricing(model)
-                        .await
-                        .unwrap_or_else(|_| lr_providers::PricingInfo::free());
+                    let pricing = self.provider_registry.get_pricing(provider, model).await;
                     let free_tier = self.get_effective_free_tier(provider);
                     return Ok((
                         wrap_stream_with_usage_tracking(
@@ -1843,10 +1888,10 @@ impl Router {
                     );
 
                     // Calculate cost and record usage for rate limiting
-                    let pricing = provider_instance
-                        .get_pricing(model_name)
-                        .await
-                        .unwrap_or_else(|_| lr_providers::PricingInfo::free());
+                    let pricing = self
+                        .provider_registry
+                        .get_pricing(provider_name, model_name)
+                        .await;
 
                     let cost = pricing.cost(&response.usage);
 
@@ -2016,9 +2061,7 @@ impl Router {
             }
 
             let free_tier = self.get_effective_free_tier(&final_provider);
-            let status =
-                self.free_tier_manager
-                    .classify_model(&final_provider, &final_model, &free_tier);
+            let status = self.classify_model_free(&final_provider, &final_model, &free_tier);
             if matches!(status, free_tier::ModelFreeStatus::NotFree) {
                 debug!(
                     "Model {}/{} is not free, rejecting in free-tier-only mode",
@@ -2068,14 +2111,12 @@ impl Router {
                     "Internal test requires provider/model format".into(),
                 ));
             }
+            self.require_enabled_model(&provider, &model)?;
             let provider_instance = self
                 .provider_registry
                 .get_provider(&provider)
                 .ok_or_else(|| AppError::Router(format!("Provider '{}' not found", provider)))?;
-            let pricing = provider_instance
-                .get_pricing(&model)
-                .await
-                .unwrap_or_else(|_| lr_providers::PricingInfo::free());
+            let pricing = self.provider_registry.get_pricing(&provider, &model).await;
             let free_tier = self.get_effective_free_tier(&provider);
             let mut modified_request = request.clone().without_routing_metadata();
             modified_request.model = model.clone();
@@ -2162,9 +2203,7 @@ impl Router {
             }
 
             let free_tier = self.get_effective_free_tier(&final_provider);
-            let status =
-                self.free_tier_manager
-                    .classify_model(&final_provider, &final_model, &free_tier);
+            let status = self.classify_model_free(&final_provider, &final_model, &free_tier);
             if matches!(status, free_tier::ModelFreeStatus::NotFree) {
                 debug!(
                     "Model {}/{} is not free, rejecting in free-tier-only mode (streaming)",
@@ -2175,15 +2214,16 @@ impl Router {
         }
 
         // 7. Execute streaming request
+        self.require_enabled_model(&final_provider, &final_model)?;
         let provider_instance = self
             .provider_registry
             .get_provider(&final_provider)
             .ok_or_else(|| AppError::Router(format!("Provider '{}' not found", final_provider)))?;
 
-        let pricing = provider_instance
-            .get_pricing(&final_model)
-            .await
-            .unwrap_or_else(|_| lr_providers::PricingInfo::free());
+        let pricing = self
+            .provider_registry
+            .get_pricing(&final_provider, &final_model)
+            .await;
         let free_tier = self.get_effective_free_tier(&final_provider);
         let mut modified_request = request.clone().without_routing_metadata();
         modified_request.model = final_model.clone();
@@ -2227,6 +2267,7 @@ impl Router {
         model: &str,
         request: EmbeddingRequest,
     ) -> AppResult<EmbeddingResponse> {
+        self.require_enabled_model(provider, model)?;
         // Get provider instance from registry
         let provider_instance = self
             .provider_registry
@@ -2261,10 +2302,7 @@ impl Router {
 
         // Embeddings only consume input tokens
         let total_tokens = response.usage.prompt_tokens as u64;
-        let pricing = provider_instance
-            .get_pricing(model)
-            .await
-            .unwrap_or_else(|_| lr_providers::PricingInfo::free());
+        let pricing = self.provider_registry.get_pricing(provider, model).await;
         let cost = calculate_cost(total_tokens, 0, None, &pricing);
 
         // Record usage for rate limiting (embeddings have simpler usage)
@@ -2328,7 +2366,9 @@ impl Router {
         let mut last_error = None;
 
         for (idx, (provider, model)) in selected_models.iter().enumerate() {
-            if !strategy.is_model_allowed(provider, model) {
+            if !strategy.is_model_allowed(provider, model)
+                || self.provider_registry.is_model_disabled(provider, model)
+            {
                 continue;
             }
             debug!(
@@ -2359,9 +2399,7 @@ impl Router {
             // Check free tier constraints (when free_tier_only is enabled)
             if strategy.free_tier_only {
                 let free_tier = self.get_effective_free_tier(provider);
-                let status = self
-                    .free_tier_manager
-                    .classify_model(provider, model, &free_tier);
+                let status = self.classify_model_free(provider, model, &free_tier);
                 match status {
                     free_tier::ModelFreeStatus::AlwaysFree
                     | free_tier::ModelFreeStatus::FreeWithinLimits
@@ -2538,9 +2576,7 @@ impl Router {
             }
 
             let free_tier = self.get_effective_free_tier(&final_provider);
-            let status =
-                self.free_tier_manager
-                    .classify_model(&final_provider, &final_model, &free_tier);
+            let status = self.classify_model_free(&final_provider, &final_model, &free_tier);
             if matches!(status, free_tier::ModelFreeStatus::NotFree) {
                 debug!(
                     "Embedding model {}/{} is not free, rejecting in free-tier-only mode",
@@ -2570,6 +2606,7 @@ impl Router {
         model: &str,
         request: AudioTranscriptionRequest,
     ) -> AppResult<AudioTranscriptionResponse> {
+        self.require_enabled_model(provider, model)?;
         let provider_instance = self
             .provider_registry
             .get_provider(provider)
@@ -2679,6 +2716,7 @@ impl Router {
         model: &str,
         request: AudioTranslationRequest,
     ) -> AppResult<AudioTranslationResponse> {
+        self.require_enabled_model(provider, model)?;
         let provider_instance = self
             .provider_registry
             .get_provider(provider)
@@ -2787,6 +2825,7 @@ impl Router {
         model: &str,
         request: SpeechRequest,
     ) -> AppResult<SpeechResponse> {
+        self.require_enabled_model(provider, model)?;
         let provider_instance = self
             .provider_registry
             .get_provider(provider)
@@ -2911,6 +2950,9 @@ impl Router {
         let mut last_error = None;
 
         for (provider, model) in selected_models {
+            if self.provider_registry.is_model_disabled(provider, model) {
+                continue;
+            }
             if let Some(backoff) = self.free_tier_manager.is_in_backoff(provider, model) {
                 debug!("Skipping {}/{}: {}", provider, model, backoff.reason);
                 continue;
@@ -2963,6 +3005,9 @@ impl Router {
         let mut last_error = None;
 
         for (provider, model) in selected_models {
+            if self.provider_registry.is_model_disabled(provider, model) {
+                continue;
+            }
             if let Some(backoff) = self.free_tier_manager.is_in_backoff(provider, model) {
                 debug!("Skipping {}/{}: {}", provider, model, backoff.reason);
                 continue;
@@ -3015,6 +3060,9 @@ impl Router {
         let mut last_error = None;
 
         for (provider, model) in selected_models {
+            if self.provider_registry.is_model_disabled(provider, model) {
+                continue;
+            }
             if let Some(backoff) = self.free_tier_manager.is_in_backoff(provider, model) {
                 debug!("Skipping {}/{}: {}", provider, model, backoff.reason);
                 continue;

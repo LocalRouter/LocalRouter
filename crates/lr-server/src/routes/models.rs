@@ -35,6 +35,31 @@ fn apply_catalog_pricing(model_data: &mut ModelData, provider_type: &str, model_
     }
 }
 
+/// Apply the provider instance's per-model price override when it has one,
+/// else catalog pricing.
+fn apply_model_pricing(
+    model_data: &mut ModelData,
+    registry: &lr_providers::registry::ProviderRegistry,
+    instance: &str,
+    provider_type: &str,
+    model_id: &str,
+) {
+    if let Some(p) = registry.pricing_override(instance, model_id) {
+        model_data.pricing = Some(ModelPricing {
+            input_cost_per_1k: p.input_per_million / 1000.0,
+            output_cost_per_1k: p.output_per_million / 1000.0,
+            currency: "USD".to_string(),
+        });
+        model_data.catalog_info = Some(CatalogInfo {
+            pricing_source: PricingSource::Override,
+            catalog_date: None,
+            matched_via: None,
+        });
+        return;
+    }
+    apply_catalog_pricing(model_data, provider_type, model_id);
+}
+
 /// GET /v1/models
 /// List available models filtered by the authenticated API key's model selection
 #[utoipa::path(
@@ -123,7 +148,13 @@ pub async fn list_models<B>(
             .get_provider_type_for_instance(&model_info.provider)
             .unwrap_or_else(|| model_info.provider.clone());
 
-        apply_catalog_pricing(&mut model_data, &provider_type, &model_info.id);
+        apply_model_pricing(
+            &mut model_data,
+            &state.provider_registry,
+            &model_info.provider,
+            &provider_type,
+            &model_info.id,
+        );
 
         model_data_vec.push(model_data);
     }
@@ -257,7 +288,13 @@ pub async fn get_model<B>(
         .get_provider_type_for_instance(&model_info.provider)
         .unwrap_or_else(|| model_info.provider.clone());
 
-    apply_catalog_pricing(&mut model_data, &provider_type, &model_info.id);
+    apply_model_pricing(
+        &mut model_data,
+        &state.provider_registry,
+        &model_info.provider,
+        &provider_type,
+        &model_info.id,
+    );
 
     Ok(Json(model_data))
 }
@@ -319,18 +356,15 @@ pub async fn get_model_pricing<B>(
     }
 
     // Get provider instance
-    let provider_instance = state
-        .provider_registry
-        .get_provider(&provider)
-        .ok_or_else(|| ApiErrorResponse::not_found(format!("Provider '{}' not found", provider)))?;
+    if state.provider_registry.get_provider(&provider).is_none() {
+        return Err(ApiErrorResponse::not_found(format!(
+            "Provider '{}' not found",
+            provider
+        )));
+    }
 
-    // Get pricing information
-    let pricing_info = provider_instance.get_pricing(&model).await.map_err(|e| {
-        ApiErrorResponse::internal_error(format!(
-            "Failed to get pricing for model '{}': {}",
-            model, e
-        ))
-    })?;
+    // The instance's price override first, then what the provider reports
+    let pricing_info = state.provider_registry.get_pricing(&provider, &model).await;
 
     Ok(Json(ModelPricing {
         input_cost_per_1k: pricing_info.input_cost_per_1k,
@@ -380,6 +414,50 @@ mod tests {
         assert!(matches!(info.pricing_source, PricingSource::Catalog));
         assert!(info.matched_via.is_some());
         assert!(info.catalog_date.is_some());
+    }
+
+    #[tokio::test]
+    async fn instance_price_override_comes_before_the_catalog() {
+        let registry = lr_providers::registry::ProviderRegistry::new();
+        registry.register_factory(std::sync::Arc::new(
+            lr_providers::factory::OllamaProviderFactory,
+        ));
+        registry
+            .create_provider("o".into(), "ollama".into(), Default::default())
+            .await
+            .unwrap();
+        registry
+            .set_model_settings(
+                "o",
+                lr_config::ProviderModelSettings {
+                    show_new_models: None,
+                    entries: vec![lr_config::ModelEntry {
+                        id: "gpt-4o".into(),
+                        pricing: Some(lr_config::ModelPricingOverride {
+                            input_per_million: 2.0,
+                            output_per_million: 4.0,
+                        }),
+                        ..Default::default()
+                    }],
+                },
+            )
+            .unwrap();
+        let mut data = blank_model("gpt-4o");
+        apply_model_pricing(&mut data, &registry, "o", "ollama", "gpt-4o");
+        let pricing = data.pricing.unwrap();
+        assert!((pricing.input_cost_per_1k - 0.002).abs() < 1e-12);
+        assert!((pricing.output_cost_per_1k - 0.004).abs() < 1e-12);
+        assert!(matches!(
+            data.catalog_info.unwrap().pricing_source,
+            PricingSource::Override
+        ));
+        // Without an override: the catalog, as before.
+        let mut other = blank_model("gpt-4o");
+        apply_model_pricing(&mut other, &registry, "other", "openai", "gpt-4o");
+        assert!(matches!(
+            other.catalog_info.unwrap().pricing_source,
+            PricingSource::Catalog
+        ));
     }
 
     #[test]

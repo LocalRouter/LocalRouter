@@ -213,17 +213,12 @@ pub async fn embeddings(
     let latency_ms = completed_at.duration_since(started_at).as_millis() as u64;
 
     // Get pricing info for cost calculation
-    let provider = response
+    let (provider, model) = response
         .model
-        .split('/')
-        .next()
-        .unwrap_or("unknown")
-        .to_string();
-    let pricing = match state.provider_registry.get_provider(&provider) {
-        Some(p) => p.get_pricing(&response.model).await.ok(),
-        None => None,
-    }
-    .unwrap_or_else(lr_providers::PricingInfo::free);
+        .split_once('/')
+        .unwrap_or(("unknown", response.model.as_str()));
+    let provider = provider.to_string();
+    let pricing = state.provider_registry.get_pricing(&provider, model).await;
 
     let cost = (response.usage.prompt_tokens as f64 / 1000.0) * pricing.input_cost_per_1k;
 

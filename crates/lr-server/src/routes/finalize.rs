@@ -285,11 +285,11 @@ pub(crate) async fn finalize_metrics_and_monitor(
     let completed_at = Instant::now();
 
     let provider_instance = state.provider_registry.get_provider(&response.provider);
-    let pricing = match &provider_instance {
-        Some(p) => p.get_pricing(&response.model).await.ok(),
-        None => None,
-    }
-    .unwrap_or_else(lr_providers::PricingInfo::free);
+    // The instance's per-model price override first, then the provider's.
+    let pricing = state
+        .provider_registry
+        .get_pricing(&response.provider, &response.model)
+        .await;
     let cached_tokens = response
         .usage
         .prompt_tokens_details

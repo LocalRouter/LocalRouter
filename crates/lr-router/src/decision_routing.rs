@@ -171,6 +171,9 @@ impl Router {
         if !strategy.is_model_allowed(provider, model) {
             return fallback(policy, "decision_model_not_allowed");
         }
+        if self.provider_registry.is_model_disabled(provider, model) {
+            return fallback(policy, "decision_model_disabled");
+        }
         let context = routing_context(&request.messages, request.metadata.as_ref(), policy);
         let omitted = context["omitted_messages"].as_u64().unwrap_or_default();
         let Ok(_permit) = self.decision_slots.try_acquire() else {
