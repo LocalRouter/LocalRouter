@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { applyInFlight, livePoint, trafficPeak, trafficPoints } from '../../../src/views/dashboard/activity-data'
+import { applyInFlight, chartPoints, livePoint, trafficPeak, trafficPoints } from '../../../src/views/dashboard/activity-data'
 import { dockTarget } from '../../../src/views/dashboard/dock'
 import { apiFromPath, llmApiFlow } from '../../../src/views/monitor/llm-api'
 import type { MonitorEventSummary, TrafficTimeline } from '../../../src/types/tauri-commands'
@@ -25,10 +25,44 @@ test('only the bucket containing now is live, and the requests in progress count
   expect(points).toHaveLength(3)
   expect(points.map((point) => point.live)).toEqual([false, false, true])
   expect(livePoint(points)).toMatchObject({ timestamp: base + 20_000, completed: 3 })
-  // The in-progress count raises the axis only when it is drawn at the live bucket.
-  expect(trafficPeak(points, 7)).toBe(7)
-  expect(trafficPeak(points, 2)).toBe(3)
+  // The axis fits the live bucket's provisional value: finished so far plus in progress.
+  expect(trafficPeak(points, 7)).toBe(10)
+  expect(trafficPeak(points, 2)).toBe(5)
   expect(trafficPeak(points)).toBe(3)
+  expect(trafficPeak(trafficPoints(timeline([9, 2, 3]), now), 2)).toBe(9)
+})
+
+test('the requests line is provisional only at the live bucket', () => {
+  const rows = chartPoints(trafficPoints(timeline([1, 2, 3]), base + 25_000), 4)
+  expect(rows.map((row) => row.requests)).toEqual([1, 2, 7])
+  expect(rows.map((row) => row.completed)).toEqual([1, 2, 3])
+  // Nothing finished and nothing running: the open bucket is at zero.
+  const idle = chartPoints(trafficPoints(timeline([5, 0]), base + 15_000), 0)
+  expect(idle.map((row) => row.requests)).toEqual([5, 0])
+  // A stale timeline has no live bucket, so nothing is provisional.
+  const stale = chartPoints(trafficPoints(timeline([4]), base + 7 * 24 * 3_600_000), 9)
+  expect(stale.map((row) => row.requests)).toEqual([4])
+})
+
+test('the errors line rises from and falls back to zero around each run of errors only', () => {
+  const withErrors = (errors: (number | null)[]): TrafficTimeline => ({
+    ...timeline(errors.map(() => 5)),
+    buckets: errors.map((value, i) => ({
+      timestamp: base / 1000 + i * 10,
+      counts:
+        value === null
+          ? null
+          : { llm_requests: 5, llm_errors: value, mcp_requests: 0, mcp_errors: 0, cost_usd: 0 },
+    })),
+  })
+  const line = (errors: (number | null)[]) =>
+    chartPoints(trafficPoints(withErrors(errors), base), 0).map((row) => row.errorLine)
+  expect(line([0, 0, 2, 0, 0, 0, 1, 3, 0])).toEqual([null, 0, 2, 0, null, 0, 1, 3, 0])
+  // Runs one bucket apart share their zero.
+  expect(line([1, 0, 1])).toEqual([1, 0, 1])
+  expect(line([0, 0, 0])).toEqual([null, null, null])
+  // Unknown buckets stay unknown, even next to errors.
+  expect(line([null, 2, 0])).toEqual([null, 2, 0])
 })
 
 test('a bucket rollover since the last read adds the new live bucket and keeps the window length', () => {
