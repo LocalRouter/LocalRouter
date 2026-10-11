@@ -8,6 +8,7 @@ use super::{
     CompletionRequest, CompletionResponse, HealthStatus, ModelInfo, ModelListing, ModelProvider,
     PricingInfo, ProviderHealth, TokenUsage,
 };
+use crate::listing_metadata::ModelMetadata;
 use async_trait::async_trait;
 use chrono::Utc;
 use futures::stream::{Stream, StreamExt};
@@ -38,6 +39,8 @@ pub struct OpenAICompatibleProvider {
     model_discovery: bool,
     /// FastFlowLM: list only the models installed on this machine.
     installed_models: Option<crate::fastflowlm::InstalledModels>,
+    /// Each model's entry in the latest `GET {base}/models` (prices, tiers)
+    listing: crate::listing_metadata::ListingMetadataCache,
 }
 
 /// Parse a `custom_headers` config value into a header map.
@@ -88,6 +91,7 @@ impl OpenAICompatibleProvider {
             provider_type: None,
             model_discovery: true,
             installed_models: None,
+            listing: Default::default(),
         }
     }
 
@@ -152,8 +156,18 @@ impl OpenAICompatibleProvider {
 }
 
 impl OpenAICompatibleProvider {
-    /// `GET {base}/models`, parsed, plus the gateway's decision models.
-    async fn fetch_listed_models(&self) -> AppResult<Vec<ModelInfo>> {
+    /// `GET {base}/models`, parsed, plus the gateway's decision models, and
+    /// each listed model's raw entry (also kept for pricing).
+    async fn fetch_listed_models(&self) -> AppResult<(Vec<ModelInfo>, ModelMetadata)> {
+        let result = self.fetch_listed_models_uncached().await;
+        match &result {
+            Ok((_, metadata)) => self.listing.store(metadata.clone()),
+            Err(_) => self.listing.mark_failed(),
+        }
+        result
+    }
+
+    async fn fetch_listed_models_uncached(&self) -> AppResult<(Vec<ModelInfo>, ModelMetadata)> {
         let request = self.apply_headers(self.client.get(format!("{}/models", self.base_url)));
 
         let response = request
@@ -175,6 +189,9 @@ impl OpenAICompatibleProvider {
 
         let model_list: Vec<OpenAIModel> = parse_models_response(&body)
             .map_err(|e| AppError::Provider(format!("Failed to parse models response: {}", e)))?;
+        let metadata = serde_json::from_str::<serde_json::Value>(&body)
+            .map(|v| crate::listing_metadata::entries_by_id(&v))
+            .unwrap_or_default();
 
         let mut models: Vec<ModelInfo> = model_list
             .into_iter()
@@ -183,7 +200,19 @@ impl OpenAICompatibleProvider {
         if let Some(gateway) = &self.systemone_gateway {
             gateway.merge_into(&self.name, &mut models).await;
         }
-        Ok(models)
+        Ok((models, std::sync::Arc::new(metadata)))
+    }
+
+    /// The price a model has in the server's model listing, if it lists
+    /// one. Fetches the listing once when it was never fetched.
+    async fn listed_pricing(&self, model: &str) -> Option<PricingInfo> {
+        if self.listing.get().is_none() && self.model_discovery && self.listing.should_fetch() {
+            let _ = self.fetch_listed_models().await;
+        }
+        self.listing
+            .get()?
+            .get(model)
+            .and_then(crate::listing_metadata::listing_pricing)
     }
 }
 
@@ -512,19 +541,23 @@ impl ModelProvider for OpenAICompatibleProvider {
             if let Some(models) = installed.detect(&self.name, &self.base_url).await {
                 return Ok(ModelListing {
                     models,
-                    new_models_hidden: false,
+                    ..Default::default()
                 });
             }
             // The server lists every model it supports, installed or not;
             // offer them only once the user picks.
+            let (models, metadata) = self.fetch_listed_models().await?;
             return Ok(ModelListing {
-                models: self.fetch_listed_models().await?,
+                models,
                 new_models_hidden: true,
+                metadata,
             });
         }
+        let (models, metadata) = self.fetch_listed_models().await?;
         Ok(ModelListing {
-            models: self.fetch_listed_models().await?,
+            models,
             new_models_hidden: false,
+            metadata,
         })
     }
 
@@ -535,9 +568,13 @@ impl ModelProvider for OpenAICompatibleProvider {
                 return Ok(pricing);
             }
         }
-        // Generic providers don't have standard pricing
-        // Return free by default, can be overridden by configuration
-        Ok(PricingInfo::free())
+        // Prices the server lists for the model (per token, e.g. the
+        // OpenRouter-style `pricing` object); otherwise free unless a price
+        // is set for the model on its Models tab.
+        Ok(self
+            .listed_pricing(model)
+            .await
+            .unwrap_or_else(PricingInfo::free))
     }
 
     fn supports_systemone(&self) -> bool {
@@ -998,10 +1035,92 @@ mod tests {
             "test".to_string(),
             "http://localhost:8080/v1".to_string(),
             None,
-        );
+        )
+        .with_model_discovery(false);
         let pricing = provider.get_pricing("any-model").await.unwrap();
         assert_eq!(pricing.input_cost_per_1k, 0.0);
         assert_eq!(pricing.output_cost_per_1k, 0.0);
+    }
+
+    #[tokio::test]
+    async fn listing_entries_and_prices_come_from_the_model_list() {
+        use wiremock::{matchers, Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(matchers::path("/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"models":[
+                    {"id":"paid","tier":"pro","pricing":{"input":"0.000002","output":"0.000004"}},
+                    {"id":"free","tier":"free","pricing":{"input":0}},
+                    {"id":"plain"}
+                ]}"#,
+            ))
+            .mount(&server)
+            .await;
+        let provider = OpenAICompatibleProvider::new("x".into(), server.uri(), None);
+        // Pricing fetches the list once and keeps it.
+        let paid = provider.get_pricing("paid").await.unwrap();
+        assert!((paid.input_cost_per_1k - 0.002).abs() < 1e-12);
+        assert!((paid.output_cost_per_1k - 0.004).abs() < 1e-12);
+        assert_eq!(
+            provider
+                .get_pricing("free")
+                .await
+                .unwrap()
+                .input_cost_per_1k,
+            0.0
+        );
+        assert_eq!(
+            provider
+                .get_pricing("plain")
+                .await
+                .unwrap()
+                .input_cost_per_1k,
+            0.0
+        );
+        assert_eq!(
+            provider
+                .get_pricing("unknown")
+                .await
+                .unwrap()
+                .input_cost_per_1k,
+            0.0
+        );
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn listing_keeps_each_models_entry() {
+        use wiremock::{matchers, Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(matchers::path("/models"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(r#"{"data":[{"id":"a","tier":"free"},{"id":"b"}]}"#),
+            )
+            .mount(&server)
+            .await;
+        let provider = OpenAICompatibleProvider::new("x".into(), server.uri(), None);
+        let listing = provider.list_model_listing().await.unwrap();
+        assert_eq!(listing.metadata.len(), 2);
+        assert_eq!(listing.metadata["a"]["tier"], "free");
+    }
+
+    #[tokio::test]
+    async fn failed_listing_is_not_retried_for_every_price() {
+        use wiremock::{matchers, Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(matchers::path("/models"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let provider = OpenAICompatibleProvider::new("x".into(), server.uri(), None);
+        for _ in 0..3 {
+            assert_eq!(
+                provider.get_pricing("m").await.unwrap().input_cost_per_1k,
+                0.0
+            );
+        }
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
     }
 
     #[test]

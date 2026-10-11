@@ -130,6 +130,7 @@ pub mod embedded;
 pub mod factory;
 pub mod fastflowlm;
 pub mod features;
+pub mod free_models;
 pub mod gemini;
 pub mod gpt4all;
 pub mod groq;
@@ -138,6 +139,7 @@ pub mod health_cache;
 pub mod http_client;
 pub mod jan;
 pub mod key_storage;
+pub mod listing_metadata;
 pub mod llamacpp;
 pub mod lmstudio;
 pub mod localai;
@@ -187,7 +189,7 @@ pub trait ModelProvider: Send + Sync {
     async fn list_model_listing(&self) -> AppResult<ModelListing> {
         Ok(ModelListing {
             models: self.list_models().await?,
-            new_models_hidden: false,
+            ..Default::default()
         })
     }
 
@@ -1045,6 +1047,9 @@ pub struct ModelListing {
     /// cannot be determined). Discovered models without an entry of their own
     /// are then hidden unless the user turns "show new models" on.
     pub new_models_hidden: bool,
+    /// Each listed model's own entry in the provider's listing (raw JSON),
+    /// by model id, for providers that keep it. Free-model rules read it.
+    pub metadata: listing_metadata::ModelMetadata,
 }
 
 impl Capability {

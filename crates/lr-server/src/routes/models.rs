@@ -36,7 +36,7 @@ fn apply_catalog_pricing(model_data: &mut ModelData, provider_type: &str, model_
 }
 
 /// Apply the provider instance's per-model price override when it has one,
-/// else catalog pricing.
+/// else the price in the provider's own model listing, else catalog pricing.
 fn apply_model_pricing(
     model_data: &mut ModelData,
     registry: &lr_providers::registry::ProviderRegistry,
@@ -52,6 +52,22 @@ fn apply_model_pricing(
         });
         model_data.catalog_info = Some(CatalogInfo {
             pricing_source: PricingSource::Override,
+            catalog_date: None,
+            matched_via: None,
+        });
+        return;
+    }
+    if let Some(p) = registry
+        .model_metadata(instance, model_id)
+        .and_then(|entry| lr_providers::listing_metadata::listing_pricing(&entry))
+    {
+        model_data.pricing = Some(ModelPricing {
+            input_cost_per_1k: p.input_cost_per_1k,
+            output_cost_per_1k: p.output_cost_per_1k,
+            currency: p.currency,
+        });
+        model_data.catalog_info = Some(CatalogInfo {
+            pricing_source: PricingSource::Provider,
             catalog_date: None,
             matched_via: None,
         });

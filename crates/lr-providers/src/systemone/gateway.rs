@@ -425,17 +425,6 @@ fn has_output_modality(model: &Value, modality: &str) -> bool {
         .is_some_and(|mods| mods.iter().any(|m| m.as_str() == Some(modality)))
 }
 
-/// A price given per token, as a JSON string (`"0.000000042"`,
-/// `"0.042e-6"`) or number, converted to per 1K tokens.
-fn per_1k(v: Option<&Value>) -> Option<f64> {
-    let per_token = match v? {
-        Value::String(s) => s.trim().parse::<f64>().ok()?,
-        Value::Number(n) => n.as_f64()?,
-        _ => return None,
-    };
-    (per_token.is_finite() && per_token >= 0.0).then_some(per_token * 1000.0)
-}
-
 /// Parse an OpenAI-style `{"data": [...]}` listing (OpenRouter, LLM Gateway
 /// and Vercel all use it), marking entries `is_decision` accepts.
 pub fn parse_listing(body: &Value, is_decision: impl Fn(&Value) -> bool) -> Vec<ListedModel> {
@@ -465,21 +454,8 @@ pub fn parse_listing(body: &Value, is_decision: impl Fn(&Value) -> bool) -> Vec<
                 })
                 .and_then(|c| u32::try_from(c).ok())
                 .filter(|c| *c > 0);
-            let pricing = m.get("pricing").and_then(|p| {
-                // OpenRouter/LLM Gateway: prompt/completion; Vercel: input/output.
-                let input = per_1k(p.get("prompt")).or_else(|| per_1k(p.get("input")))?;
-                let output = per_1k(p.get("completion"))
-                    .or_else(|| per_1k(p.get("output")))
-                    .unwrap_or(0.0);
-                Some(PricingInfo {
-                    input_cost_per_1k: input,
-                    output_cost_per_1k: output,
-                    reasoning_cost_per_1k: None,
-                    cache_read_cost_per_1k: None,
-                    cache_write_cost_per_1k: None,
-                    currency: "USD".to_string(),
-                })
-            });
+            // OpenRouter/LLM Gateway: prompt/completion; Vercel: input/output.
+            let pricing = crate::listing_metadata::listing_pricing(m);
             Some(ListedModel {
                 decision: is_decision(m),
                 id,

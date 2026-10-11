@@ -152,26 +152,28 @@ pub fn free_tier_description_texts(kind: &FreeTierKind) -> (String, String) {
         FreeTierKind::FreeModelsOnly {
             max_rpm,
             free_model_patterns,
+            rules,
+            ..
         } => {
             let short = if *max_rpm > 0 {
                 format!("Free models: {} req/min", max_rpm)
             } else {
                 "Free models available".to_string()
             };
-            let model_count = free_model_patterns.len();
+            let which = match (free_model_patterns.len(), rules.len()) {
+                (0, 0) => "No models are marked free".to_string(),
+                (n, 0) => format!("{} free model{}", n, if n == 1 { "" } else { "s" }),
+                (0, _) => "Free models are picked by rules".to_string(),
+                (n, _) => format!(
+                    "{} free model{} plus rules",
+                    n,
+                    if n == 1 { "" } else { "s" }
+                ),
+            };
             let long = if *max_rpm > 0 {
-                format!(
-                    "{} free model{}. Rate-limited to {} req/min.",
-                    model_count,
-                    if model_count == 1 { "" } else { "s" },
-                    max_rpm
-                )
+                format!("{which}. Rate-limited to {max_rpm} req/min.")
             } else {
-                format!(
-                    "{} free model{} available.",
-                    model_count,
-                    if model_count == 1 { "" } else { "s" },
-                )
+                format!("{which}.")
             };
             (short, long)
         }
@@ -205,7 +207,7 @@ impl ModelCache {
         Self::from_listing(
             ModelListing {
                 models,
-                new_models_hidden: false,
+                ..Default::default()
             },
             None,
             &ProviderModelSettings::default(),
@@ -405,15 +407,41 @@ impl ProviderRegistry {
         &self,
         provider_type: &lr_config::ProviderType,
     ) -> lr_config::FreeTierKind {
-        let type_str = serde_json::to_string(provider_type)
-            .unwrap_or_default()
-            .trim_matches('"')
-            .to_string();
         self.factories
             .read()
-            .get(&type_str)
+            .get(provider_type.factory_id())
             .map(|f| f.default_free_tier())
             .unwrap_or(lr_config::FreeTierKind::None)
+    }
+
+    /// The default free tier of a provider instance: its factory's default
+    /// for the instance's configuration (an OpenAI-compatible provider is
+    /// always free only on this machine). Falls back to the type's default
+    /// for an instance that is not registered.
+    pub fn default_free_tier_for_instance(
+        &self,
+        instance_name: &str,
+        provider_type: &lr_config::ProviderType,
+    ) -> lr_config::FreeTierKind {
+        let instance = self
+            .instances
+            .read()
+            .get(instance_name)
+            .map(|i| (i.provider_type.clone(), i.config.clone()));
+        match instance {
+            Some((type_id, config)) => self
+                .factories
+                .read()
+                .get(&type_id)
+                .map(|f| f.default_free_tier_for(&config))
+                .unwrap_or(lr_config::FreeTierKind::None),
+            None => self
+                .factories
+                .read()
+                .get(provider_type.factory_id())
+                .map(|f| f.default_free_tier_for(&HashMap::new()))
+                .unwrap_or(lr_config::FreeTierKind::None),
+        }
     }
 
     /// Local and Local Embedded providers talk to the one engine on this
@@ -819,7 +847,7 @@ impl ProviderRegistry {
                 );
                 return ModelListing {
                     models: catalog_models,
-                    new_models_hidden: false,
+                    ..Default::default()
                 };
             }
         }
@@ -1004,6 +1032,89 @@ impl ProviderRegistry {
             .get(instance_name)
             .and_then(|inst| inst.model_settings.entry(model_id).and_then(|e| e.enabled))
             .is_some_and(|enabled| !enabled)
+    }
+
+    /// The model's own entry in the provider's listing (raw JSON), from the
+    /// cache, when the provider keeps listing entries and lists the model.
+    pub fn model_metadata(&self, instance_name: &str, model_id: &str) -> Option<serde_json::Value> {
+        self.model_cache
+            .read()
+            .get(instance_name)?
+            .listing
+            .metadata
+            .get(model_id)
+            .cloned()
+    }
+
+    /// Every listed model's entry (raw JSON) of a provider instance, from
+    /// the cache.
+    pub fn listing_metadata(
+        &self,
+        instance_name: &str,
+    ) -> Option<crate::listing_metadata::ModelMetadata> {
+        self.model_cache
+            .read()
+            .get(instance_name)
+            .map(|c| c.listing.metadata.clone())
+    }
+
+    /// Whether a model of this instance is free under `evaluator`, from the
+    /// cached listing entry and the model's price override (this
+    /// instance's, else the legacy one for the provider type in
+    /// `legacy_overrides`). Does not fetch.
+    pub fn decide_free_model(
+        &self,
+        instance_name: &str,
+        model_id: &str,
+        evaluator: &crate::free_models::FreeTierEvaluator,
+        legacy_overrides: &HashMap<String, HashMap<String, ModelPricingOverride>>,
+    ) -> crate::free_models::FreeModelDecision {
+        let metadata = self.model_metadata(instance_name, model_id);
+        let price_override =
+            self.effective_pricing_override(instance_name, model_id, legacy_overrides);
+        evaluator.decide(&crate::free_models::FreeModelInput {
+            model_id,
+            metadata: metadata.as_ref(),
+            price_override: price_override.as_ref(),
+        })
+    }
+
+    /// The model's price override: this instance's, else the legacy one for
+    /// its provider type.
+    pub fn effective_pricing_override(
+        &self,
+        instance_name: &str,
+        model_id: &str,
+        legacy_overrides: &HashMap<String, HashMap<String, ModelPricingOverride>>,
+    ) -> Option<ModelPricingOverride> {
+        self.pricing_override(instance_name, model_id).or_else(|| {
+            let provider_type = self.get_provider_type_for_instance(instance_name)?;
+            legacy_overrides.get(&provider_type)?.get(model_id).cloned()
+        })
+    }
+
+    /// Bring the aggregate model list (`get_cached_models`) in line with one
+    /// instance's cached list: its offered models while it is enabled,
+    /// none otherwise (also for an instance that no longer exists).
+    pub fn sync_cached_models(&self, instance_name: &str) {
+        let enabled = self.is_provider_enabled(instance_name).unwrap_or(false);
+        let offered = if enabled {
+            self.model_cache
+                .read()
+                .get(instance_name)
+                .map(|c| c.models.clone())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let mut all = self.cached_models.write();
+        all.retain(|m| m.provider != instance_name);
+        all.extend(offered);
+    }
+
+    /// Whether the instance's model list was fetched (or tried) at least once.
+    pub fn has_cached_models(&self, instance_name: &str) -> bool {
+        self.model_cache.read().contains_key(instance_name)
     }
 
     /// The per-instance price override of a model, if set.
@@ -1849,11 +1960,78 @@ mod tests {
     fn test_free_tier_texts_free_models_only() {
         let kind = FreeTierKind::FreeModelsOnly {
             free_model_patterns: vec!["model-a".to_string()],
+            excluded_models: vec![],
+            rules: vec![],
             max_rpm: 3,
         };
         let (short, long) = free_tier_description_texts(&kind);
         assert!(short.contains("3 req/min"));
         assert!(long.contains("1 free model"));
+        let rules_only = FreeTierKind::FreeModelsOnly {
+            free_model_patterns: vec![],
+            excluded_models: vec![],
+            rules: vec![lr_config::FreeModelRule {
+                enabled: true,
+                effect: lr_config::FreeModelRuleEffect::Include,
+                when: lr_config::FreeModelCondition::ZeroPrice {
+                    sources: vec![lr_config::PriceSource::ProviderListing],
+                    input_pointer: None,
+                    output_pointer: None,
+                },
+                label: None,
+            }],
+            max_rpm: 0,
+        };
+        let (_, long) = free_tier_description_texts(&rules_only);
+        assert_eq!(long, "Free models are picked by rules.");
+    }
+
+    #[tokio::test]
+    async fn instance_free_tier_defaults_use_the_factory_type() {
+        use crate::factory::{OpenAICompatibleProviderFactory, OpenRouterProviderFactory};
+        let registry = ProviderRegistry::new();
+        registry.register_factory(Arc::new(OpenRouterProviderFactory));
+        registry.register_factory(Arc::new(OpenAICompatibleProviderFactory));
+        let url = |u: &str| HashMap::from([("base_url".to_string(), u.to_string())]);
+        registry
+            .create_provider(
+                "local".into(),
+                "openai_compatible".into(),
+                url("http://localhost:8080/v1"),
+            )
+            .await
+            .unwrap();
+        registry
+            .create_provider(
+                "remote".into(),
+                "openai_compatible".into(),
+                url("https://api.example.com/v1"),
+            )
+            .await
+            .unwrap();
+        // Serialized as `open_router` / `custom` in the config file.
+        assert!(matches!(
+            registry.get_factory_default_free_tier(&lr_config::ProviderType::OpenRouter),
+            FreeTierKind::FreeModelsOnly { .. }
+        ));
+        assert!(matches!(
+            registry
+                .default_free_tier_for_instance("not-loaded", &lr_config::ProviderType::OpenRouter),
+            FreeTierKind::FreeModelsOnly { .. }
+        ));
+        assert_eq!(
+            registry.default_free_tier_for_instance("local", &lr_config::ProviderType::Custom),
+            FreeTierKind::AlwaysFreeLocal
+        );
+        assert_eq!(
+            registry.default_free_tier_for_instance("remote", &lr_config::ProviderType::Custom),
+            FreeTierKind::None
+        );
+        // Without an instance there is no base URL to tell.
+        assert_eq!(
+            registry.default_free_tier_for_instance("gone", &lr_config::ProviderType::Custom),
+            FreeTierKind::None
+        );
     }
 
     #[tokio::test]
@@ -2003,6 +2181,11 @@ mod tests {
                 self.calls.fetch_add(1, Ordering::SeqCst);
                 match self.listing.lock().clone() {
                     Listing::Models(ids, hidden) => Ok(ModelListing {
+                        metadata: Arc::new(
+                            ids.iter()
+                                .map(|id| (id.to_string(), serde_json::json!({"id": id})))
+                                .collect(),
+                        ),
                         models: ids
                             .into_iter()
                             .map(|id| ModelInfo {
@@ -2212,6 +2395,37 @@ mod tests {
                 .unwrap()
                 .discovery_error
                 .is_some());
+            // The listing entries are kept with the previous list.
+            assert_eq!(
+                f.registry.model_metadata("p", "a"),
+                Some(serde_json::json!({"id": "a"}))
+            );
+        }
+
+        #[tokio::test]
+        async fn listing_entries_are_cached_with_the_list() {
+            let f = fixture(Listing::Models(vec!["a", "b"], false)).await;
+            assert!(!f.registry.has_cached_models("p"));
+            assert_eq!(f.registry.model_metadata("p", "a"), None);
+            f.registry.list_provider_models_cached("p").await.unwrap();
+            assert!(f.registry.has_cached_models("p"));
+            assert_eq!(
+                f.registry.model_metadata("p", "b"),
+                Some(serde_json::json!({"id": "b"}))
+            );
+            assert_eq!(f.registry.model_metadata("p", "zzz"), None);
+            // Hiding a model keeps its entry (the listing is unchanged).
+            f.registry
+                .set_model_settings(
+                    "p",
+                    settings(vec![ModelEntry {
+                        enabled: Some(false),
+                        ..entry("b")
+                    }]),
+                )
+                .unwrap();
+            assert!(f.registry.model_metadata("p", "b").is_some());
+            assert_eq!(f.registry.listing_metadata("p").unwrap().len(), 2);
         }
 
         #[tokio::test]

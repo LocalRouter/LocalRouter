@@ -128,6 +128,13 @@ pub trait ProviderFactory: Send + Sync {
         FreeTierKind::None
     }
 
+    /// Default free tier of one instance with this configuration. Defaults
+    /// to [`Self::default_free_tier`]; types whose free tier depends on
+    /// where they point override it.
+    fn default_free_tier_for(&self, _config: &HashMap<String, String>) -> FreeTierKind {
+        self.default_free_tier()
+    }
+
     /// Optional provider-specific notes about free tier caveats.
     /// Appended to the auto-generated long description text.
     fn free_tier_notes(&self) -> Option<&str> {
@@ -613,13 +620,24 @@ impl ProviderFactory for OpenRouterProviderFactory {
 
     fn default_free_tier(&self) -> FreeTierKind {
         FreeTierKind::FreeModelsOnly {
-            free_model_patterns: vec![":free".to_string()],
+            free_model_patterns: vec![],
+            excluded_models: vec![],
+            rules: vec![lr_config::FreeModelRule {
+                enabled: true,
+                effect: lr_config::FreeModelRuleEffect::Include,
+                when: lr_config::FreeModelCondition::ZeroPrice {
+                    sources: vec![lr_config::PriceSource::ProviderListing],
+                    input_pointer: None,
+                    output_pointer: None,
+                },
+                label: Some("Priced at $0 in OpenRouter's model list".to_string()),
+            }],
             max_rpm: 20,
         }
     }
 
     fn free_tier_notes(&self) -> Option<&str> {
-        Some("Free tier provides access to 25+ free models (model IDs ending in ':free') at 20 RPM / 50 RPD. Purchasing $10+ in credits unlocks 1,000 RPD on free models. BYOK gives 1M free requests/month.")
+        Some("Free tier provides access to 25+ free models (model IDs ending in ':free', listed at $0) at 20 RPM / 50 RPD. Purchasing $10+ in credits unlocks 1,000 RPD on free models. BYOK gives 1M free requests/month.")
     }
 
     fn setup_parameters(&self) -> Vec<SetupParameter> {
@@ -709,6 +727,19 @@ impl ProviderFactory for OpenAICompatibleProviderFactory {
 
     fn default_free_tier(&self) -> FreeTierKind {
         FreeTierKind::AlwaysFreeLocal
+    }
+
+    /// Always free only when the server runs on this machine; a remote API
+    /// may bill for every request.
+    fn default_free_tier_for(&self, config: &HashMap<String, String>) -> FreeTierKind {
+        match config.get("base_url") {
+            Some(url) if crate::fastflowlm::is_loopback_url(url) => FreeTierKind::AlwaysFreeLocal,
+            _ => FreeTierKind::None,
+        }
+    }
+
+    fn free_tier_notes(&self) -> Option<&str> {
+        Some("Free when the base URL is on this machine (localhost). Remote APIs have no free tier until you set one on the provider's Free Tier tab.")
     }
 
     fn setup_parameters(&self) -> Vec<SetupParameter> {
@@ -1165,6 +1196,8 @@ impl ProviderFactory for TogetherAIProviderFactory {
     fn default_free_tier(&self) -> FreeTierKind {
         FreeTierKind::FreeModelsOnly {
             free_model_patterns: vec!["meta-llama/Llama-3.3-70B-Instruct-Turbo-Free".to_string()],
+            excluded_models: vec![],
+            rules: vec![],
             max_rpm: 3,
         }
     }
@@ -3600,13 +3633,53 @@ mod tests {
         match factory.default_free_tier() {
             FreeTierKind::FreeModelsOnly {
                 free_model_patterns,
+                rules,
                 max_rpm,
+                ..
             } => {
                 assert_eq!(max_rpm, 20);
-                assert_eq!(free_model_patterns, vec![":free".to_string()]);
+                assert!(free_model_patterns.is_empty());
+                assert_eq!(rules.len(), 1);
+                assert!(matches!(
+                    &rules[0].when,
+                    lr_config::FreeModelCondition::ZeroPrice { sources, .. }
+                        if sources == &[lr_config::PriceSource::ProviderListing]
+                ));
+                assert!(crate::free_models::validate(&factory.default_free_tier()).is_empty());
             }
             other => panic!("Expected FreeModelsOnly, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn openai_compatible_is_always_free_only_on_this_machine() {
+        let factory = OpenAICompatibleProviderFactory;
+        let config = |url: &str| HashMap::from([("base_url".to_string(), url.to_string())]);
+        assert_eq!(
+            factory.default_free_tier_for(&config("http://localhost:8080/v1")),
+            FreeTierKind::AlwaysFreeLocal
+        );
+        assert_eq!(
+            factory.default_free_tier_for(&config("http://127.0.0.1:1234/v1")),
+            FreeTierKind::AlwaysFreeLocal
+        );
+        assert_eq!(
+            factory.default_free_tier_for(&config("https://api.free.ai/v1")),
+            FreeTierKind::None
+        );
+        assert_eq!(
+            factory.default_free_tier_for(&config("http://192.168.1.10:8000/v1")),
+            FreeTierKind::None
+        );
+        assert_eq!(
+            factory.default_free_tier_for(&HashMap::new()),
+            FreeTierKind::None
+        );
+        // Other types ignore the config.
+        assert_eq!(
+            OllamaProviderFactory.default_free_tier_for(&config("http://10.0.0.2:11434")),
+            FreeTierKind::AlwaysFreeLocal
+        );
     }
 
     #[test]
