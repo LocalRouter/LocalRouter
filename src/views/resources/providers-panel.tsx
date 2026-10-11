@@ -6,8 +6,9 @@ import { listenSafe } from "@/hooks/useTauriListener"
 import { EmbeddedEngineTab, isEmbeddedProviderType } from "@/components/providers/EmbeddedEngineTab"
 import { LocalModelsTab } from "@/components/providers/LocalModelsTab"
 import { EngineModelsTab } from "@/components/providers/EngineModelsTab"
+import { ProviderModelsTab } from "@/components/providers/ProviderModelsTab"
 import { toast } from "sonner"
-import { CheckCircle, XCircle, AlertCircle, Plus, Loader2, RefreshCw, FlaskConical, Grid, Settings, ArrowLeft, Eye, EyeOff, Coins, Pencil, RotateCcw, Copy, Trash2, ExternalLink, Terminal, Boxes } from "lucide-react"
+import { CheckCircle, XCircle, AlertCircle, Plus, Loader2, RefreshCw, FlaskConical, Grid, Settings, ArrowLeft, Eye, EyeOff, Coins, Pencil, RotateCcw, Copy, Trash2, ExternalLink, Terminal, Boxes, Search } from "lucide-react"
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import {
   Tooltip,
@@ -55,7 +56,7 @@ import { useIncrementalModels } from "@/hooks/useIncrementalModels"
 import ProviderIcon from "@/components/ProviderIcon"
 import { LlmTab } from "@/views/try-it-out/llm-tab"
 import { cn } from "@/lib/utils"
-import type { FreeTierKind, ProviderFreeTierStatus, ProviderFeatureSupport, GetProviderFeatureSupportParams, ListProviderModelsDetailedParams } from "@/types/tauri-commands"
+import type { FreeTierKind, ProviderFreeTierStatus, ProviderFeatureSupport, GetProviderFeatureSupportParams, ListProviderModelsDetailedParams, ListProviderModelsManagedParams, ProviderManagedModels } from "@/types/tauri-commands"
 import { ModelPricingBadge } from "@/components/shared/model-pricing-badge"
 import { ProviderFeatureTable } from "@/components/shared/feature-support-matrix"
 
@@ -134,8 +135,13 @@ interface ProvidersPanelProps {
   onHealthInit: (providerNames: string[]) => void
   onRefreshHealth: (instanceName: string) => Promise<void>
   initialAddProviderType?: string | null
+  /** Open the provider filtered to this model (e.g. from the command palette) */
+  initialModelSearch?: string | null
   onViewChange?: (view: string, subTab?: string | null) => void
 }
+
+/** Config key of the "Discover models" switch (shown on the Models tab). */
+const MODEL_DISCOVERY_KEY = "model_discovery"
 
 export function ProvidersPanel({
   selectedId,
@@ -144,6 +150,7 @@ export function ProvidersPanel({
   onHealthInit,
   onRefreshHealth,
   initialAddProviderType,
+  initialModelSearch,
   onViewChange: _onViewChange,
 }: ProvidersPanelProps) {
   const [providers, setProviders] = useState<Provider[]>([])
@@ -164,6 +171,10 @@ export function ProvidersPanel({
   const [detailedModels, setDetailedModels] = useState<DetailedModel[]>([])
   const [detailedModelsLoading, setDetailedModelsLoading] = useState(false)
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null)
+  // Listing error and hidden count for the Info tab's model list
+  const [modelsSummary, setModelsSummary] = useState<ProviderManagedModels | null>(null)
+  // Filter for the Info tab's model list
+  const [modelSearch, setModelSearch] = useState("")
 
   // Detail tab state
   const [detailTab, setDetailTab] = useState("info")
@@ -229,7 +240,16 @@ export function ProvidersPanel({
     setDetailTab(nextTabRef.current ?? "info")
     nextTabRef.current = null
     setFeatureSupport(null)
+    setModelSearch("")
   }, [selectedId])
+
+  // Opened for one model (command palette): show the list filtered to it.
+  useEffect(() => {
+    if (initialModelSearch) {
+      setDetailTab("info")
+      setModelSearch(initialModelSearch)
+    }
+  }, [initialModelSearch, selectedId])
 
   // Load feature support and models when a provider is selected.
   // Uses a cancellation flag so a slow response for a previous provider cannot
@@ -246,6 +266,7 @@ export function ProvidersPanel({
 
     setDetailedModelsLoading(true)
     setSelectedModelId(null)
+    setModelsSummary(null)
     // Only this provider's models: other providers never hold it up.
     const loadModels = () =>
       invoke<DetailedModel[]>("list_provider_models_detailed", {
@@ -260,7 +281,16 @@ export function ProvidersPanel({
           setDetailedModels([])
         })
         .finally(() => {
-          if (!cancelled) setDetailedModelsLoading(false)
+          if (cancelled) return
+          setDetailedModelsLoading(false)
+          // From the cache the call above filled: no second fetch.
+          invoke<ProviderManagedModels>("list_provider_models_managed", {
+            instanceName: selectedId,
+          } satisfies ListProviderModelsManagedParams)
+            .then((summary) => {
+              if (!cancelled) setModelsSummary(summary)
+            })
+            .catch(() => {})
         })
     loadModels()
     // Downloads and refreshes change the list while the page is open.
@@ -545,6 +575,11 @@ export function ProvidersPanel({
     return `${displayName} (${i})`
   }
 
+  const modelQuery = modelSearch.trim().toLowerCase()
+  const visibleModels = modelQuery
+    ? detailedModels.filter((m) => m.model_id.toLowerCase().includes(modelQuery))
+    : detailedModels
+
   return (
     <>
       {selectedProvider ? (
@@ -577,9 +612,7 @@ export function ProvidersPanel({
                     {isEmbeddedProviderType(selectedProvider.provider_type) && (
                       <TabsTrigger value="engine"><Terminal className={TAB_ICON_CLASS} />Engine</TabsTrigger>
                     )}
-                    {isEmbeddedProviderType(selectedProvider.provider_type) && (
-                      <TabsTrigger value="models"><Boxes className={TAB_ICON_CLASS} />Models</TabsTrigger>
-                    )}
+                    <TabsTrigger value="models"><Boxes className={TAB_ICON_CLASS} />Models</TabsTrigger>
                     {selectedProvider.enabled && <TabsTrigger value="try-it-out"><TAB_ICONS.tryItOut className={TAB_ICON_CLASS} />Try It Out</TabsTrigger>}
                     <TabsTrigger value="compatibility"><TAB_ICONS.compatibility className={TAB_ICON_CLASS} />Compatibility</TabsTrigger>
                     <TabsTrigger value="free-tier" onClick={() => loadFreeTierStatus(selectedProvider.instance_name)}><TAB_ICONS.freeTier className={TAB_ICON_CLASS} />Free Tier</TabsTrigger>
@@ -605,6 +638,18 @@ export function ProvidersPanel({
                         providerType={selectedProvider.provider_type}
                         instanceName={selectedProvider.instance_name}
                         binaryPath={editConfig.binary_path}
+                      />
+                    </TabsContent>
+                  )}
+
+                  {!isEmbeddedProviderType(selectedProvider.provider_type) && (
+                    <TabsContent value="models">
+                      <ProviderModelsTab
+                        key={selectedProvider.instance_name}
+                        instanceName={selectedProvider.instance_name}
+                        discoveryValue={editConfig[MODEL_DISCOVERY_KEY]}
+                        initialSearch={initialModelSearch ?? undefined}
+                        onDiscoveryChange={(on) => handleConfigFieldChange(MODEL_DISCOVERY_KEY, on ? "true" : "false")}
                       />
                     </TabsContent>
                   )}
@@ -745,14 +790,44 @@ export function ProvidersPanel({
                       {/* Models */}
                       <Card>
                         <CardHeader className="pb-3">
-                          <CardTitle className="text-sm">
-                            Models
-                            {!detailedModelsLoading && detailedModels.length > 0 && (
-                              <span className="ml-2 text-xs font-normal text-muted-foreground">
-                                ({detailedModels.length})
-                              </span>
+                          <div className="flex items-center justify-between gap-3">
+                            <CardTitle className="text-sm">
+                              Models
+                              {!detailedModelsLoading && detailedModels.length > 0 && (
+                                <span className="ml-2 text-xs font-normal text-muted-foreground">
+                                  ({visibleModels.length === detailedModels.length
+                                    ? detailedModels.length
+                                    : `${visibleModels.length} of ${detailedModels.length}`})
+                                </span>
+                              )}
+                              {modelsSummary && modelsSummary.hidden_count > 0 && (
+                                <button
+                                  type="button"
+                                  className="ml-2 text-xs font-normal text-muted-foreground underline-offset-2 hover:underline"
+                                  onClick={() => setDetailTab("models")}
+                                >
+                                  {modelsSummary.hidden_count} hidden
+                                </button>
+                              )}
+                            </CardTitle>
+                            {!isEmbeddedProviderType(selectedProvider.provider_type) && (
+                              <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => setDetailTab("models")}>
+                                Manage models
+                              </Button>
                             )}
-                          </CardTitle>
+                          </div>
+                          {detailedModels.length > 0 && (
+                            <div className="relative mt-2">
+                              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+                              <Input
+                                value={modelSearch}
+                                onChange={(e) => setModelSearch(e.target.value)}
+                                placeholder="Filter models"
+                                className="pl-8 h-8 text-sm"
+                                aria-label="Filter models"
+                              />
+                            </div>
+                          )}
                         </CardHeader>
                         <CardContent>
                           {detailedModelsLoading ? (
@@ -761,10 +836,33 @@ export function ProvidersPanel({
                               <span>Loading models...</span>
                             </div>
                           ) : detailedModels.length === 0 ? (
-                            <p className="text-sm text-muted-foreground">No models available</p>
+                            modelsSummary?.discovery_error ? (
+                              <div className="space-y-1">
+                                <div className="flex items-center gap-2 text-sm text-red-600">
+                                  <XCircle className="h-4 w-4 shrink-0" />
+                                  <span>Listing models failed</span>
+                                </div>
+                                <pre className="text-xs text-muted-foreground overflow-auto max-h-32 whitespace-pre-wrap break-all bg-muted/50 rounded p-2">{modelsSummary.discovery_error}</pre>
+                              </div>
+                            ) : (
+                              <p className="text-sm text-muted-foreground">
+                                {modelsSummary && modelsSummary.hidden_count > 0
+                                  ? "All of this provider's models are hidden."
+                                  : modelsSummary && !modelsSummary.discovery_enabled
+                                    ? "Model discovery is off and no models were added."
+                                    : "No models available"}
+                              </p>
+                            )
+                          ) : visibleModels.length === 0 ? (
+                            <p className="text-sm text-muted-foreground">No models match &ldquo;{modelSearch}&rdquo;</p>
                           ) : (
                             <div className="space-y-1">
-                              {detailedModels.map((model) => {
+                              {modelsSummary?.discovery_error && (
+                                <p className="text-xs text-yellow-600 dark:text-yellow-500 pb-2 break-all">
+                                  Listing models failed; showing the last known list. {modelsSummary.discovery_error}
+                                </p>
+                              )}
+                              {visibleModels.map((model) => {
                                 const ftStatus = freeTierStatus[selectedProvider.instance_name]
                                 const isExpanded = selectedModelId === model.model_id
                                 return (
@@ -948,7 +1046,7 @@ export function ProvidersPanel({
 
                                 {/* Dynamic Parameter Fields */}
                                 {selectedTypeForEdit.setup_parameters
-                                  .filter((param) => param.param_type !== "oauth")
+                                  .filter((param) => param.param_type !== "oauth" && param.key !== MODEL_DISCOVERY_KEY)
                                   .map((param) => {
                                     const isSensitive = param.sensitive
                                     const isVisible = visibleFields.has(param.key)
@@ -959,7 +1057,7 @@ export function ProvidersPanel({
                                           <input
                                             type="checkbox"
                                             id={`edit-${param.key}`}
-                                            checked={editConfig[param.key] === "true"}
+                                            checked={(editConfig[param.key] ?? param.default_value) === "true"}
                                             onChange={(e) => handleConfigFieldChange(param.key, e.target.checked.toString())}
                                             className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
                                           />

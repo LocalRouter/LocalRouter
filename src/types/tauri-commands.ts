@@ -943,6 +943,106 @@ export interface ModelPricing {
 }
 
 // =============================================================================
+// Per-provider model settings (manual models, visibility, overrides)
+// Rust: crates/lr-config/src/types.rs, src-tauri/src/ui/commands_providers.rs
+// =============================================================================
+
+/**
+ * A model capability in a per-model capability override.
+ * Rust: crates/lr-config/src/types.rs - ModelCapabilityKind enum
+ */
+export type ModelCapabilityKind =
+  | 'chat'
+  | 'completion'
+  | 'embedding'
+  | 'vision'
+  | 'function_calling'
+  | 'audio'
+  | 'text_to_speech'
+  | 'decision'
+  | 'image_generation'
+  | 'unknown'
+
+/**
+ * Price override for one model, per million tokens.
+ * Rust: crates/lr-config/src/types.rs - ModelPricingOverride struct
+ */
+export interface ModelPricingOverride {
+  input_per_million: number
+  output_per_million: number
+}
+
+/**
+ * One model's settings within a provider instance.
+ * Rust: crates/lr-config/src/types.rs - ModelEntry struct
+ */
+export interface ModelEntry {
+  id: string
+  /** Added by hand: offered even when the provider does not list it */
+  manual?: boolean
+  /** Explicit visibility; absent follows show_new_models (manual models are shown) */
+  enabled?: boolean | null
+  display_name?: string | null
+  context_window?: number | null
+  /** Replaces the listed capabilities entirely */
+  capabilities?: ModelCapabilityKind[] | null
+  pricing?: ModelPricingOverride | null
+}
+
+/**
+ * Per-provider model settings.
+ * Rust: crates/lr-config/src/types.rs - ProviderModelSettings struct
+ */
+export interface ProviderModelSettings {
+  /** Absent: provider default (on, except a listing that names more than is installed) */
+  show_new_models?: boolean | null
+  entries?: ModelEntry[]
+}
+
+/**
+ * Where a managed model comes from.
+ * Rust: crates/lr-providers/src/model_settings.rs - ModelSource enum
+ */
+export type ManagedModelSource = 'discovered' | 'manual' | 'manual_and_discovered' | 'missing'
+
+/**
+ * One model of a provider instance with its settings applied.
+ * Rust: src-tauri/src/ui/commands_providers.rs - ManagedModelInfo struct
+ */
+export interface ManagedModelInfo {
+  id: string
+  /** Display name (override applied) */
+  name: string
+  source: ManagedModelSource
+  /** Offered in /v1/models, pickers and routing */
+  enabled: boolean
+  has_overrides: boolean
+  context_window: number
+  capabilities: ModelCapabilityKind[]
+  input_price_per_million: number | null
+  output_price_per_million: number | null
+}
+
+/**
+ * A provider instance's models, for its Models tab.
+ * Rust: src-tauri/src/ui/commands_providers.rs - ProviderManagedModels struct
+ */
+export interface ProviderManagedModels {
+  models: ManagedModelInfo[]
+  /** Why the last model listing failed, when it did */
+  discovery_error: string | null
+  /** Whether discovered models without an entry of their own are shown */
+  show_new_models: boolean
+  /** The listing names more than is installed (FastFlowLM could not tell) */
+  new_models_hidden_by_provider: boolean
+  /** The provider type has the "Discover models" switch */
+  has_discovery_switch: boolean
+  discovery_enabled: boolean
+  /** Models listed or added but not offered */
+  hidden_count: number
+}
+
+// =============================================================================
 // MCP Server Types
 // Rust: src-tauri/src/ui/commands_mcp.rs, crates/lr-mcp/src/manager.rs
 // =============================================================================
@@ -4222,6 +4322,24 @@ export interface FeatureEndpointMatrix {
 /** Params for list_provider_models_detailed */
 export interface ListProviderModelsDetailedParams {
   instanceName: string
+}
+
+/** Params for list_provider_models_managed */
+export interface ListProviderModelsManagedParams {
+  instanceName: string
+  /** Re-fetch the provider's model list first */
+  refresh?: boolean | null
+}
+
+/** Params for get_provider_model_settings */
+export interface GetProviderModelSettingsParams {
+  instanceName: string
+}
+
+/** Params for set_provider_model_settings */
+export interface SetProviderModelSettingsParams {
+  instanceName: string
+  settings: ProviderModelSettings
 }
 
 /** Params for get_provider_feature_support */

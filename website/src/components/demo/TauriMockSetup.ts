@@ -28,6 +28,99 @@ import type { MonitorEventFilter, MonitorEventSummary } from '@app/types/tauri-c
 // Types for mock return values - see src/types/tauri-commands.ts for full type definitions
 import type { RoutingPolicyPreview, GraphData, TrafficTimeline, ProviderFeatureSupport, FeatureEndpointMatrix, InstallSourceInfo, RequestDedupeConfig } from '@app/types/tauri-commands'
 import type {
+  GetProviderModelSettingsParams,
+  ListProviderModelsManagedParams,
+  ManagedModelInfo,
+  ModelCapabilityKind,
+  ProviderManagedModels,
+  ProviderModelSettings,
+  SetProviderModelSettingsParams,
+} from '@app/types/tauri-commands'
+
+// ---------------------------------------------------------------------------
+// Per-provider model settings (provider Models tab). The vLLM box shows a
+// hidden model, a model added by hand and one with overrides.
+// ---------------------------------------------------------------------------
+const mockModelSettings: Record<string, ProviderModelSettings> = {
+  'gpu-box-vllm': {
+    entries: [
+      {
+        id: 'meta-llama/Llama-3.3-70B-Instruct',
+        display_name: 'Llama 3.3 70B (team)',
+        pricing: { input_per_million: 0.2, output_per_million: 0.6 },
+      },
+      { id: 'Qwen/Qwen2.5-Coder-7B-Instruct', enabled: false },
+      { id: 'deepseek-ai/DeepSeek-R1-Distill-Llama-8B', enabled: false },
+      { id: 'my-org/support-finetune-v2', manual: true, context_window: 32768 },
+    ],
+  },
+}
+
+const MOCK_EMBEDDING_MODELS = new Set(['BAAI/bge-m3', 'intfloat/multilingual-e5-large-instruct'])
+const MOCK_VISION_MODELS = new Set([
+  'meta-llama/Llama-3.2-11B-Vision-Instruct',
+  'Qwen/Qwen2.5-VL-7B-Instruct',
+  'google/gemma-3-27b-it',
+  'google/gemma-3-12b-it',
+  'google/gemma-3-4b-it',
+  'gemma3:4b',
+])
+
+/** Capabilities of a demo model. */
+function mockModelCapabilities(id: string): ModelCapabilityKind[] {
+  if (MOCK_EMBEDDING_MODELS.has(id)) return ['embedding']
+  const caps: ModelCapabilityKind[] = ['chat', 'completion', 'function_calling']
+  if (MOCK_VISION_MODELS.has(id)) caps.push('vision')
+  return caps
+}
+
+/** The demo's port of `model_settings::apply` for one provider instance. */
+function mockManagedModels(instanceName: string): ProviderManagedModels {
+  const settings = mockModelSettings[instanceName] ?? {}
+  const entries = settings.entries ?? []
+  const provider = mockData.providers.find(p => p.instance_name === instanceName)
+  const discoveryOn = (provider as { config?: Record<string, string> } | undefined)?.config?.model_discovery !== 'false'
+  const showNew = settings.show_new_models ?? true
+  const listed = discoveryOn ? mockData.models.filter(m => m.provider === instanceName) : []
+  const seen = new Set<string>()
+  const models: ManagedModelInfo[] = []
+  const describe = (id: string, ctx: number, source: ManagedModelInfo['source'], enabled: boolean): ManagedModelInfo => {
+    const e = entries.find(x => x.id === id)
+    return {
+      id,
+      name: e?.display_name || id,
+      source,
+      enabled,
+      has_overrides: !!(e?.display_name || e?.context_window || e?.capabilities || e?.pricing),
+      context_window: e?.context_window || ctx,
+      capabilities: e?.capabilities ?? mockModelCapabilities(id),
+      input_price_per_million: e?.pricing?.input_per_million ?? null,
+      output_price_per_million: e?.pricing?.output_per_million ?? null,
+    }
+  }
+  for (const m of listed) {
+    seen.add(m.id)
+    const e = entries.find(x => x.id === m.id)
+    const source = e?.manual ? 'manual_and_discovered' : 'discovered'
+    models.push(describe(m.id, m.context_length, source, e?.enabled ?? (showNew || !!e?.manual)))
+  }
+  for (const e of entries) {
+    if (seen.has(e.id)) continue
+    seen.add(e.id)
+    models.push(describe(e.id, 4096, e.manual ? 'manual' : 'missing', e.enabled ?? !!e.manual))
+  }
+  const factoryHasSwitch = ['openai_compatible', 'fastflowlm'].includes(provider?.provider_type ?? '')
+  return {
+    models,
+    discovery_error: null,
+    show_new_models: showNew,
+    new_models_hidden_by_provider: false,
+    has_discovery_switch: factoryHasSwitch,
+    discovery_enabled: discoveryOn || !factoryHasSwitch,
+    hidden_count: models.filter(m => !m.enabled && m.source !== 'missing').length,
+  }
+}
+import type {
   UsageAccountView,
   UsagePollStatus,
   UsageSnapshot,
@@ -1736,6 +1829,9 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       llamacpp_embedded: { context: 'auto', gpu_layers: 'auto', flash_attention: 'auto', kv_cache: 'f16', max_loaded_models: '1', idle_unload_minutes: '15' },
     }
     if (embeddedConfigs[provider.provider_type]) return embeddedConfigs[provider.provider_type]
+    const saved = (provider as { config?: Record<string, string> }).config
+    if (provider.provider_type === 'openai_compatible') return { base_url: 'http://gpu-box.local:8000/v1', ...saved }
+    if (provider.provider_type === 'fastflowlm') return { base_url: 'http://127.0.0.1:52625/v1', ...saved }
     return { api_key: 'sk-demo-key-1234567890', base_url: 'https://api.openai.com/v1' }
   },
   'create_provider_instance': (args) => {
@@ -1755,6 +1851,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     if (provider && args?.config) {
       Object.assign(provider, { config: args.config })
     }
+    setTimeout(() => emit('providers-changed', {}), 10)
     return null
   },
   'rename_provider_instance': (args) => {
@@ -3036,6 +3133,20 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     (mockHandlers['list_all_models_detailed']() as Array<{ provider_instance: string }>).filter(
       (m) => m.provider_instance === args.instanceName,
     ),
+  'list_provider_models_managed': (args: ListProviderModelsManagedParams): ProviderManagedModels =>
+    mockManagedModels(args.instanceName),
+  'get_provider_model_settings': (args: GetProviderModelSettingsParams): ProviderModelSettings =>
+    mockModelSettings[args.instanceName] ?? {},
+  'set_provider_model_settings': (args: SetProviderModelSettingsParams): ProviderManagedModels => {
+    mockModelSettings[args.instanceName] = {
+      ...args.settings,
+      entries: (args.settings.entries ?? []).filter(
+        e => e.manual || e.enabled != null || e.display_name || e.context_window || e.capabilities || e.pricing,
+      ),
+    }
+    setTimeout(() => emit('models-changed', {}), 10)
+    return mockManagedModels(args.instanceName)
+  },
   'list_all_models_detailed': () => {
     const pricingMap: Record<string, { input: number; output: number; source: string }> = {
       'gpt-4o': { input: 2.50, output: 10.00, source: 'catalog' },
@@ -3059,6 +3170,8 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       'gemini-google': 'gemini',
       'groq-fast': 'groq',
       'openrouter-backup': 'openrouter',
+      'gpu-box-vllm': 'openai_compatible',
+      'fastflowlm-npu': 'fastflowlm',
     }
     const capabilitiesMap: Record<string, string[]> = {
       'gpt-4o': ['chat', 'completion', 'vision', 'functioncalling'],
@@ -3082,8 +3195,25 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       'qwen3-8b-q4_k_m': ['chat', 'completion', 'functioncalling'],
       'nomic-embed-text-v1.5-q8_0': ['embedding'],
     }
-    return mockData.models.map(m => {
-      const pricing = pricingMap[m.id]
+    // Models hidden on their provider's Models tab are not offered.
+    const offered = new Set(
+      Object.keys(mockModelSettings).flatMap(name =>
+        mockManagedModels(name).models.filter(m => m.enabled && m.source !== 'missing').map(m => `${name}/${m.id}`),
+      ),
+    )
+    const managedExtra = Object.keys(mockModelSettings).flatMap(name =>
+      mockManagedModels(name)
+        .models.filter(m => m.source === 'manual' && m.enabled)
+        .map(m => ({ id: m.id, provider: name, display_name: m.name, context_length: m.context_window })),
+    )
+    const shown = [...mockData.models, ...managedExtra].filter(
+      m => !mockModelSettings[m.provider] || offered.has(`${m.provider}/${m.id}`),
+    )
+    return shown.map(m => {
+      const priced = mockModelSettings[m.provider]?.entries?.find(e => e.id === m.id)?.pricing
+      const pricing = priced
+        ? { input: priced.input_per_million, output: priced.output_per_million, source: 'override' }
+        : pricingMap[m.id]
       return {
         model_id: m.id,
         provider_instance: m.provider,

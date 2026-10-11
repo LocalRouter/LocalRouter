@@ -85,21 +85,25 @@ export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewPro
   // Format: "providers" or "models"
   // Or: "providers/instance-name" or "models/provider/model-id"
   // Or: "providers/add/provider-type" for opening add dialog
+  // Or: "providers/instance-name?model=<id>" to open a provider filtered to one model
   const parseSubTab = (subTab: string | null) => {
-    if (!subTab) return { resourceType: "providers", itemId: null, addType: null }
-    const parts = subTab.split("/")
+    if (!subTab) return { resourceType: "providers", itemId: null, addType: null, modelSearch: null }
+    const marker = subTab.indexOf("?model=")
+    const modelSearch = marker >= 0 ? decodeURIComponent(subTab.slice(marker + "?model=".length)) : null
+    const path = marker >= 0 ? subTab.slice(0, marker) : subTab
+    const parts = path.split("/")
     const resourceType = parts[0] || "providers"
 
     // Check for add pattern: "providers/add/OpenAI"
     if (parts[1] === "add" && parts[2]) {
-      return { resourceType, itemId: null, addType: parts[2] }
+      return { resourceType, itemId: null, addType: parts[2], modelSearch: null }
     }
 
     const itemId = parts.slice(1).join("/") || null
-    return { resourceType, itemId, addType: null }
+    return { resourceType, itemId, addType: null, modelSearch }
   }
 
-  const { resourceType, itemId, addType } = parseSubTab(activeSubTab)
+  const { resourceType, itemId, addType, modelSearch } = parseSubTab(activeSubTab)
 
   const handleResourceChange = (type: string) => {
     onTabChange("resources", type)
@@ -151,6 +155,7 @@ export function ResourcesView({ activeSubTab, onTabChange }: LlmProvidersViewPro
             onHealthInit={() => {}}
             onRefreshHealth={refreshHealth}
             initialAddProviderType={resourceType === "providers" ? addType : null}
+            initialModelSearch={resourceType === "providers" ? modelSearch : null}
             onViewChange={onTabChange}
           />
         </TabsContent>

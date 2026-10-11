@@ -21,10 +21,11 @@ use localrouter::{
 use lr_providers::factory::{
     AnthropicProviderFactory, CerebrasProviderFactory, CloudflareAIProviderFactory,
     CohereProviderFactory, DeepInfraProviderFactory, DigitalOceanProviderFactory,
-    GPT4AllProviderFactory, GeminiProviderFactory, GitHubCopilotProviderFactory,
-    GitHubModelsProviderFactory, GroqProviderFactory, HuggingFaceProviderFactory,
-    JanProviderFactory, KlusterAIProviderFactory, LMStudioProviderFactory, LlamaCppProviderFactory,
-    Llm7ProviderFactory, LlmGatewayProviderFactory, LocalAIProviderFactory, MistralProviderFactory,
+    FastFlowLMProviderFactory, GPT4AllProviderFactory, GeminiProviderFactory,
+    GitHubCopilotProviderFactory, GitHubModelsProviderFactory, GroqProviderFactory,
+    HuggingFaceProviderFactory, JanProviderFactory, KlusterAIProviderFactory,
+    LMStudioProviderFactory, LlamaCppProviderFactory, Llm7ProviderFactory,
+    LlmGatewayProviderFactory, LocalAIProviderFactory, MistralProviderFactory,
     NvidiaNimProviderFactory, OllamaProviderFactory, OpenAICodexProviderFactory,
     OpenAICompatibleProviderFactory, OpenAIProviderFactory, OpenCodeGoProviderFactory,
     OpenCodeZenProviderFactory, OpenRouterProviderFactory, PerplexityProviderFactory,
@@ -331,6 +332,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
     provider_registry.register_factory(Arc::new(OpenCodeGoProviderFactory));
     provider_registry.register_factory(Arc::new(LlmGatewayProviderFactory));
     provider_registry.register_factory(Arc::new(VercelAiGatewayProviderFactory));
+    provider_registry.register_factory(Arc::new(FastFlowLMProviderFactory));
     // System One decision providers for servers the user runs or hosts
     for factory in SystemOneProviderFactory::all() {
         provider_registry.register_factory(Arc::new(factory));
@@ -466,6 +468,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             config::ProviderType::SdCppEmbedded => "sdcpp_embedded",
             config::ProviderType::LlmGateway => "llmgateway",
             config::ProviderType::VercelAiGateway => "vercel_ai_gateway",
+            config::ProviderType::FastFlowLM => "fastflowlm",
             config::ProviderType::Custom => "openai_compatible",
         };
 
@@ -531,6 +534,19 @@ async fn run_gui_mode() -> anyhow::Result<()> {
         {
             tracing::warn!("Failed to load provider '{}': {}", provider_config.name, e);
             continue;
+        }
+
+        // Manual models, per-model visibility and overrides
+        if !provider_config.models.is_default() {
+            if let Err(e) = provider_registry
+                .set_model_settings(&provider_config.name, provider_config.models.clone())
+            {
+                tracing::warn!(
+                    "Failed to apply model settings for provider '{}': {}",
+                    provider_config.name,
+                    e
+                );
+            }
         }
 
         // Set enabled state
@@ -2578,6 +2594,9 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::list_all_models,
             ui::commands::list_all_models_detailed,
             ui::commands::list_provider_models_detailed,
+            ui::commands::list_provider_models_managed,
+            ui::commands::get_provider_model_settings,
+            ui::commands::set_provider_model_settings,
             ui::commands::get_cached_models,
             ui::commands::refresh_models_incremental,
             ui::commands::get_catalog_stats,
