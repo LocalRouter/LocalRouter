@@ -313,6 +313,39 @@ impl ModelProvider for OpenAICompatibleProvider {
         &self.name
     }
 
+    /// The generic provider bills to whichever known API its base URL points
+    /// at (an OpenAI-compatible provider on `api.groq.com` is Groq API
+    /// usage). Typed providers bill to their type's account.
+    fn usage_account(&self) -> Option<lr_usage::AccountRef> {
+        match self.provider_type.as_deref() {
+            None | Some("openai_compatible") => {
+                lr_usage::providers::account_for_base_url(&self.base_url)
+            }
+            Some(_) => None,
+        }
+    }
+
+    /// LLM Gateway `GET /v1/key` and Vercel AI Gateway `GET /v1/credits`
+    /// (both documented, with the inference key) — only while the base URL
+    /// is the provider's own API, so a key is never sent elsewhere.
+    async fn fetch_usage(
+        &self,
+    ) -> Option<Result<lr_usage::UsageReport, lr_usage::fetch::FetchError>> {
+        type Parse = fn(&serde_json::Value) -> Option<lr_usage::UsageReport>;
+        let family = self.provider_type.as_deref()?;
+        let (path, parse): (&str, Parse) = match family {
+            "llmgateway" => ("key", lr_usage::bodies::parse_llmgateway_key),
+            "vercel_ai_gateway" => ("credits", lr_usage::bodies::parse_vercel_credits),
+            _ => return None,
+        };
+        let points_home = lr_usage::providers::account_for_base_url(&self.base_url)
+            .is_some_and(|a| a.provider == family);
+        let key = self.api_key.as_deref().filter(|_| points_home)?;
+        let url = format!("{}/{path}", self.base_url.trim_end_matches('/'));
+        let request = self.client.get(&url).bearer_auth(key);
+        Some(crate::http_client::fetch_usage_json(request, parse).await)
+    }
+
     async fn health_check(&self) -> ProviderHealth {
         let start = Instant::now();
 
@@ -786,6 +819,56 @@ impl ModelProvider for OpenAICompatibleProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generic_provider_bills_to_the_api_its_base_url_points_at() {
+        let generic = |url: &str| {
+            OpenAICompatibleProvider::new("x".into(), url.into(), None)
+                .with_provider_type("openai_compatible")
+                .usage_account()
+                .map(|a| a.id())
+        };
+        assert_eq!(
+            generic("https://api.groq.com/openai/v1").as_deref(),
+            Some("groq:api")
+        );
+        assert_eq!(generic("http://localhost:8080/v1"), None);
+        // Typed providers bill to their type's account (decided elsewhere).
+        let typed = OpenAICompatibleProvider::new(
+            "x".into(),
+            "https://api.groq.com/openai/v1".into(),
+            None,
+        )
+        .with_provider_type("huggingface");
+        assert_eq!(typed.usage_account(), None);
+    }
+
+    #[tokio::test]
+    async fn usage_endpoints_only_for_their_own_host() {
+        let gateway = |kind: &str, url: &str, key: Option<&str>| {
+            OpenAICompatibleProvider::new("x".into(), url.into(), key.map(str::to_string))
+                .with_provider_type(kind)
+        };
+        // A gateway pointed elsewhere never sends its key there.
+        assert!(gateway("llmgateway", "https://example.com/v1", Some("k"))
+            .fetch_usage()
+            .await
+            .is_none());
+        // No key, no request.
+        assert!(
+            gateway("vercel_ai_gateway", "https://ai-gateway.vercel.sh/v1", None)
+                .fetch_usage()
+                .await
+                .is_none()
+        );
+        // Providers without a documented endpoint.
+        assert!(
+            gateway("huggingface", "https://router.huggingface.co/v1", Some("k"))
+                .fetch_usage()
+                .await
+                .is_none()
+        );
+    }
 
     #[test]
     fn test_provider_name() {

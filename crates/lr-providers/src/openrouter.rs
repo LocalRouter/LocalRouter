@@ -595,6 +595,21 @@ impl ModelProvider for OpenRouterProvider {
         })
     }
 
+    /// `GET /key` (documented; the inference key): the key's spend limit or
+    /// this month's spend, and the free-model daily allowance.
+    async fn fetch_usage(
+        &self,
+    ) -> Option<Result<lr_usage::UsageReport, lr_usage::fetch::FetchError>> {
+        let url = format!("{}/key", self.base_url);
+        let now = chrono::Utc::now().timestamp();
+        Some(
+            crate::http_client::fetch_usage_json(self.build_request(&url), |body| {
+                lr_usage::bodies::parse_openrouter_key(body, now)
+            })
+            .await,
+        )
+    }
+
     fn supports_systemone(&self) -> bool {
         self.systemone.is_some()
     }

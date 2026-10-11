@@ -11,8 +11,15 @@ import {
   visibleAccounts,
   awaitingLimits,
   displayTitle,
+  limitsUnreported,
+  quotaDetails,
+  quotaShortLabel,
 } from '../../../src/views/dashboard/usage-format'
-import type { UsageAccountView, UsageWindowView } from '../../../src/types/tauri-commands'
+import type {
+  UsageAccountView,
+  UsageQuotaView,
+  UsageWindowView,
+} from '../../../src/types/tauri-commands'
 
 const NOW = Date.parse('2026-10-10T12:00:00Z')
 const nowSecs = NOW / 1000
@@ -58,6 +65,7 @@ const account = (changes: Partial<UsageAccountView> = {}): UsageAccountView => (
   windows: [win()],
   quotas: [],
   credits: null,
+  reports_limits: true,
   spend: {
     last_24h_usd: 0, last_7d_usd: 0, last_30d_usd: 0, month_to_date_usd: 0,
     requests_30d: 0, tokens_30d: 0, daily_usd: [],
@@ -103,7 +111,7 @@ test('visible accounts skip hidden and empty ones; headline prefers weekly', () 
     id: 'cerebras:api',
     windows: [],
     kind: 'api',
-    quotas: [{ id: 'requests', label: 'Requests', limit: 30, remaining: 30, used_percent: 0, resets_at: null, updated_at: 0 }],
+    quotas: [{ id: 'requests', label: 'Requests', limit: 30, remaining: 30, used_percent: 0, resets_at: null, window_secs: null, updated_at: 0 }],
   })
   const hidden = account({ id: 'openai:subscription', hidden: true })
   const shown = account()
@@ -158,4 +166,66 @@ test('two accounts with the same title are told apart by their login', () => {
   expect(displayTitle(b, [a, b, c])).toBe('ChatGPT Pro · 0a1b2c3d4e')
   expect(displayTitle(c, [a, b, c])).toBe('Claude Max 20x')
   expect(displayTitle(a, [a, c])).toBe('ChatGPT Pro')
+})
+
+const quota = (changes: Partial<UsageQuotaView> = {}): UsageQuotaView => ({
+  id: 'requests_day',
+  label: 'Requests / day',
+  limit: 14_400,
+  remaining: 13_212,
+  used_percent: 8.25,
+  resets_at: nowSecs + 3 * 3600,
+  window_secs: 86_400,
+  updated_at: nowSecs - 30,
+  ...changes,
+})
+
+test('rate limits get short row labels and spelled-out tooltips', () => {
+  expect(quotaShortLabel(quota())).toBe('Req/day')
+  expect(
+    quotaShortLabel(quota({ id: 'tokens_minute', label: 'Tokens / minute', window_secs: 60 })),
+  ).toBe('Tokens/min')
+  expect(
+    quotaShortLabel(
+      quota({ id: 'free_requests_day', label: 'Free-model requests / day', window_secs: 86_400 }),
+    ),
+  ).toBe('Free req/day')
+  // Limits without a period, and metrics without a short form, keep their label.
+  expect(quotaShortLabel(quota({ id: 'requests', label: 'Requests', window_secs: null }))).toBe(
+    'Requests',
+  )
+  expect(
+    quotaShortLabel(
+      quota({ id: 'priority_input_tokens', label: 'Priority Input Tokens', window_secs: null }),
+    ),
+  ).toBe('Priority Input Tokens')
+
+  expect(quotaDetails(quota(), NOW)).toEqual([
+    'Requests per day',
+    '13,212 of 14,400 left (8% used)',
+    'Full again in 3h',
+    'Updated just now',
+  ])
+  const bare = quotaDetails(
+    quota({ id: 'rate', label: 'Rate limit', window_secs: null, limit: null, resets_at: null }),
+    NOW,
+  )
+  expect(bare).toEqual(['Rate limit', '13,212 left', 'Updated just now'])
+})
+
+test('providers that report no limits get a spend-only card, not a wait message', () => {
+  const spend = {
+    last_24h_usd: 0.5, last_7d_usd: 1, last_30d_usd: 2, month_to_date_usd: 1,
+    requests_30d: 12, tokens_30d: 9_000, daily_usd: [],
+  }
+  const gemini = account({
+    id: 'gemini:api', kind: 'api', windows: [], reports_limits: false, spend,
+  })
+  expect(visibleAccounts([gemini]).map((a) => a.id)).toEqual(['gemini:api'])
+  expect(awaitingLimits(gemini)).toBe(false)
+  expect(limitsUnreported(gemini)).toBe(true)
+  const groq = account({ id: 'groq:api', kind: 'api', windows: [], spend })
+  expect(awaitingLimits(groq)).toBe(true)
+  expect(limitsUnreported(groq)).toBe(false)
+  expect(limitsUnreported({ ...gemini, quotas: [quota()] })).toBe(false)
 })

@@ -35,6 +35,10 @@ const PRUNE_SPACING_SECS: i64 = 3_600;
 const RETIRE_AFTER_PERIODS: i64 = 2;
 /// Period assumed for windows of unknown length when retiring them.
 const DEFAULT_RETIRE_PERIOD_SECS: i64 = 86_400;
+/// A rate limit not reported for this long while the account's other rate
+/// limits were is gone (the provider stopped sending it, or LocalRouter now
+/// files it under another id) and is dropped.
+const QUOTA_SUPERSEDED_SECS: i64 = 86_400;
 /// Window lengths beyond this (a year) are nonsense and dropped.
 const MAX_WINDOW_SECS: i64 = 366 * 86_400;
 /// Reset times further ahead than this (two years) are nonsense and dropped.
@@ -343,10 +347,16 @@ impl UsageTracker {
                 }
             }
             for q in &report.quotas {
+                let count = |v: Option<f64>| v.filter(|v| v.is_finite() && *v >= 0.0);
                 let q = QuotaReading {
                     resets_at: sane_reset(q.resets_at, now),
+                    limit: count(q.limit),
+                    remaining: count(q.remaining),
                     ..q.clone()
                 };
+                if q.limit.is_none() && q.remaining.is_none() {
+                    continue;
+                }
                 let prev = acct.quotas.get(&q.id).map(|s| &s.reading);
                 changed |= prev != Some(&q);
                 acct.quotas.insert(
@@ -521,6 +531,12 @@ impl UsageTracker {
             acct.windows
                 .retain(|_, w| !window_retired(w, sources.get(&w.source).copied(), now));
             changed |= acct.windows.len() != windows;
+            let quotas = acct.quotas.len();
+            if let Some(latest) = acct.quotas.values().map(|q| q.updated_at).max() {
+                let cutoff = latest.saturating_sub(QUOTA_SUPERSEDED_SECS);
+                acct.quotas.retain(|_, q| q.updated_at >= cutoff);
+            }
+            changed |= acct.quotas.len() != quotas;
         }
         changed
     }
@@ -991,6 +1007,78 @@ mod tests {
         assert!(!t.prune(1_000 + 2 * 86_400 - 1));
         assert!(t.prune(1_000 + 2 * 86_400));
         assert_eq!(window_ids(&t), vec!["seven_day".to_string()]);
+    }
+
+    #[test]
+    fn quotas_no_longer_reported_are_dropped_after_a_day() {
+        let t = UsageTracker::new(UsageTrackingConfig::default());
+        let groq = AccountRef::api("groq");
+        let quota = |id: &str| UsageReport {
+            quotas: vec![QuotaReading {
+                id: id.into(),
+                limit: Some(10.0),
+                remaining: Some(5.0),
+                resets_at: None,
+            }],
+            ..Default::default()
+        };
+        // An id from an older release, then the current ones.
+        t.apply_at(&groq, &quota("requests"), DataSource::GatewayHeaders, 1_000);
+        t.apply_at(
+            &groq,
+            &quota("requests_day"),
+            DataSource::GatewayHeaders,
+            2_000,
+        );
+        t.prune(2_000);
+        assert_eq!(t.state.read().accounts["groq:api"].quotas.len(), 2);
+        let later = 1_000 + QUOTA_SUPERSEDED_SECS + 1;
+        t.apply_at(
+            &groq,
+            &quota("requests_day"),
+            DataSource::GatewayHeaders,
+            later,
+        );
+        assert!(t.prune(later));
+        let ids: Vec<_> = t.state.read().accounts["groq:api"]
+            .quotas
+            .keys()
+            .cloned()
+            .collect();
+        assert_eq!(ids, ["requests_day"]);
+        // An idle account keeps what it has.
+        assert!(!t.prune(later + 10 * 86_400));
+        assert_eq!(t.state.read().accounts["groq:api"].quotas.len(), 1);
+    }
+
+    #[test]
+    fn nonsense_quota_counts_are_dropped() {
+        let t = UsageTracker::new(UsageTrackingConfig::default());
+        let quota = |id: &str, limit: f64, remaining: f64| QuotaReading {
+            id: id.into(),
+            limit: Some(limit),
+            remaining: Some(remaining),
+            resets_at: None,
+        };
+        t.apply_at(
+            &AccountRef::api("groq"),
+            &UsageReport {
+                quotas: vec![
+                    quota("a", f64::NAN, f64::INFINITY),
+                    quota("b", -5.0, 3.0),
+                    quota("c", 10.0, 4.0),
+                ],
+                ..Default::default()
+            },
+            DataSource::GatewayHeaders,
+            1_000,
+        );
+        let state = t.state.read();
+        let quotas = &state.accounts["groq:api"].quotas;
+        assert!(!quotas.contains_key("a"));
+        assert_eq!(quotas["b"].reading.limit, None);
+        assert_eq!(quotas["b"].reading.remaining, Some(3.0));
+        assert_eq!(quotas["c"].reading.limit, Some(10.0));
     }
 
     #[test]

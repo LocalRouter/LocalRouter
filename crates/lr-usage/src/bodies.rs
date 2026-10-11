@@ -5,6 +5,8 @@
 //! - ChatGPT: `GET chatgpt.com/backend-api/wham/usage` (what Codex's
 //!   `/status` shows) and the in-stream `codex.rate_limits` event.
 //! - GitHub Copilot: `GET api.github.com/copilot_internal/user`.
+//! - API keys (documented, same key as inference): OpenRouter `GET /key`,
+//!   LLM Gateway `GET /v1/key`, Vercel AI Gateway `GET /v1/credits`.
 
 use serde_json::Value;
 
@@ -32,6 +34,161 @@ fn time_of(v: Option<&Value>) -> Option<i64> {
         Value::String(s) => parse_epoch(s),
         _ => None,
     }
+}
+
+/// A finite, non-negative amount (numbers or decimal strings).
+fn amount_of(v: Option<&Value>) -> Option<f64> {
+    f64_of(v).filter(|f| f.is_finite() && *f >= 0.0)
+}
+
+/// The next UTC midnight after `now`.
+fn next_utc_midnight(now: i64) -> i64 {
+    now.saturating_sub(now.rem_euclid(86_400))
+        .saturating_add(86_400)
+}
+
+/// OpenRouter `GET /api/v1/key`: the key's spend limit (with its reset
+/// period) or, without one, this month's spend; and the daily request
+/// allowance for free models.
+pub fn parse_openrouter_key(body: &Value, now: i64) -> Option<UsageReport> {
+    let d = body.get("data")?.as_object()?;
+    let mut report = UsageReport::default();
+    let usage = amount_of(d.get("usage"));
+    let limit = amount_of(d.get("limit")).filter(|l| *l > 0.0);
+    let limit_remaining = f64_of(d.get("limit_remaining")).filter(|f| f.is_finite());
+    let reset = d
+        .get("limit_reset")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|r| !r.is_empty());
+    report.credits = Some(match limit {
+        Some(limit) => {
+            let remaining = limit_remaining.or_else(|| Some(limit - usage?));
+            CreditsReading {
+                label: match reset {
+                    Some(r) => format!("Key limit ({})", r.to_ascii_lowercase()),
+                    None => "Key limit".to_string(),
+                },
+                balance_usd: remaining,
+                limit_usd: Some(limit),
+                used_usd: remaining.map(|r| (limit - r).max(0.0)).or(usage),
+                unlimited: false,
+                currency: Some("USD".to_string()),
+            }
+        }
+        None => match amount_of(d.get("usage_monthly")) {
+            Some(month) => CreditsReading {
+                label: "Spent this month".to_string(),
+                used_usd: Some(month),
+                unlimited: true,
+                currency: Some("USD".to_string()),
+                ..Default::default()
+            },
+            None => CreditsReading {
+                label: "Spend".to_string(),
+                used_usd: usage,
+                unlimited: true,
+                currency: Some("USD".to_string()),
+                ..Default::default()
+            },
+        },
+    });
+    if let Some(free) = d.get("free_model_daily_requests") {
+        let limit = amount_of(free.get("limit"));
+        let remaining = amount_of(free.get("remaining")).or_else(|| {
+            let used = amount_of(free.get("used"))?;
+            Some((limit? - used).max(0.0))
+        });
+        if limit.is_some() || remaining.is_some() {
+            report.quotas.push(QuotaReading {
+                id: "free_requests_day".to_string(),
+                limit,
+                remaining,
+                resets_at: Some(next_utc_midnight(now)),
+            });
+        }
+    }
+    (!report.is_empty()).then_some(report)
+}
+
+/// LLM Gateway `GET /v1/key`: the key's spend and limit, and — on a DevPass
+/// plan — its plan credits and weekly premium allowance.
+pub fn parse_llmgateway_key(body: &Value) -> Option<UsageReport> {
+    let d = body.get("data")?.as_object()?;
+    let mut report = UsageReport::default();
+    let usage = amount_of(d.get("usage"));
+    let limit = amount_of(d.get("limit")).filter(|l| *l > 0.0);
+    if usage.is_some() || limit.is_some() {
+        report.credits = Some(CreditsReading {
+            label: if limit.is_some() {
+                "Key limit"
+            } else {
+                "Spend"
+            }
+            .to_string(),
+            balance_usd: limit.zip(usage).map(|(l, u)| (l - u).max(0.0)),
+            limit_usd: limit,
+            used_usd: usage,
+            unlimited: limit.is_none(),
+            currency: Some("USD".to_string()),
+        });
+    }
+    let plan = d
+        .get("devPlan")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|p| !p.is_empty() && !p.eq_ignore_ascii_case("none"));
+    if let Some(plan) = plan {
+        report.plan = Some(plan.to_string());
+        let share = |used: Option<f64>, limit: Option<f64>| match (used, limit) {
+            (Some(u), Some(l)) if l > 0.0 => Some(u / l * 100.0),
+            _ => None,
+        };
+        if let Some(used) = share(
+            amount_of(d.get("devPlanCreditsUsed")),
+            amount_of(d.get("devPlanCreditsLimit")),
+        ) {
+            report.windows.push(WindowReading {
+                id: "dev_plan_credits".to_string(),
+                label: "DevPass credits".to_string(),
+                used_percent: used,
+                resets_at: None,
+                window_secs: None,
+            });
+        }
+        if let Some(used) = share(
+            amount_of(d.get("devPlanPremiumCreditsUsed")),
+            amount_of(d.get("devPlanPremiumWeeklyLimit")),
+        ) {
+            report.windows.push(WindowReading {
+                id: "seven_day_premium".to_string(),
+                label: window_label("seven_day_premium"),
+                used_percent: used,
+                resets_at: time_of(d.get("devPlanPremiumWeekResetsAt")),
+                window_secs: Some(7 * 86_400),
+            });
+        }
+    }
+    (!report.is_empty()).then_some(report)
+}
+
+/// Vercel AI Gateway `GET /v1/credits`: `{"balance":"95.50","total_used":"4.50"}`.
+pub fn parse_vercel_credits(body: &Value) -> Option<UsageReport> {
+    let balance = f64_of(body.get("balance")).filter(|f| f.is_finite());
+    let used = amount_of(body.get("total_used"));
+    if balance.is_none() && used.is_none() {
+        return None;
+    }
+    Some(UsageReport {
+        credits: Some(CreditsReading {
+            label: "Credits".to_string(),
+            balance_usd: balance,
+            used_usd: used,
+            currency: Some("USD".to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    })
 }
 
 /// Claude `/api/oauth/usage`.
@@ -451,5 +608,118 @@ mod tests {
         assert!((w.used_percent - 16.7).abs() < 1e-6);
         assert!(w.resets_at.is_some());
         assert_eq!(r.quotas[0].limit, Some(300.0));
+    }
+
+    /// The documented example of OpenRouter's `GET /api/v1/key`, with a
+    /// monthly reset and the free-model allowance.
+    #[test]
+    fn openrouter_key_with_limit_and_free_requests() {
+        let now = 1_791_720_000; // 2026-10-11T12:00:00Z
+        let body = json!({"data": {
+            "label": "sk-or-v1-0e6...1c96",
+            "limit": 100, "limit_remaining": 74.5, "limit_reset": "monthly",
+            "include_byok_in_limit": false,
+            "usage": 25.5, "usage_daily": 25.5, "usage_weekly": 25.5, "usage_monthly": 25.5,
+            "byok_usage": 17.38, "is_free_tier": false,
+            "free_model_daily_requests": {"used": 12, "limit": 1000, "remaining": 988},
+            "rate_limit": {"requests": 20, "interval": "10s"}
+        }});
+        let r = parse_openrouter_key(&body, now).unwrap();
+        let c = r.credits.unwrap();
+        assert_eq!(c.label, "Key limit (monthly)");
+        assert_eq!(c.limit_usd, Some(100.0));
+        assert_eq!(c.balance_usd, Some(74.5));
+        assert_eq!(c.used_usd, Some(25.5));
+        assert_eq!(c.currency.as_deref(), Some("USD"));
+        let q = &r.quotas[0];
+        assert_eq!(q.id, "free_requests_day");
+        assert_eq!((q.limit, q.remaining), (Some(1000.0), Some(988.0)));
+        assert_eq!(q.resets_at, Some(1_791_763_200)); // next UTC midnight
+    }
+
+    #[test]
+    fn openrouter_key_without_limit_shows_this_months_spend() {
+        let body = json!({"data": {"limit": null, "usage": 310.2, "usage_monthly": 12.75,
+            "limit_remaining": null, "is_free_tier": false}});
+        let c = parse_openrouter_key(&body, 0).unwrap().credits.unwrap();
+        assert_eq!(c.label, "Spent this month");
+        assert_eq!(c.used_usd, Some(12.75));
+        assert!(c.unlimited);
+        // Older responses without the period fields: lifetime spend.
+        let c = parse_openrouter_key(&json!({"data": {"usage": 3.0, "limit": null}}), 0)
+            .unwrap()
+            .credits
+            .unwrap();
+        assert_eq!((c.label.as_str(), c.used_usd), ("Spend", Some(3.0)));
+        // Used but no remaining given: derived from the limit.
+        let c = parse_openrouter_key(&json!({"data": {"usage": 3.0, "limit": 10}}), 0)
+            .unwrap()
+            .credits
+            .unwrap();
+        assert_eq!(c.balance_usd, Some(7.0));
+        assert!(parse_openrouter_key(&json!({"error": "nope"}), 0).is_none());
+    }
+
+    /// The documented example of LLM Gateway's `GET /v1/key` on DevPass Pro.
+    #[test]
+    fn llmgateway_key_devpass() {
+        let body = json!({"data":{"label":"My coding tool","usage":"31.42","limit":null,
+            "devPlan":"pro","devPlanCreditsUsed":"25","devPlanCreditsLimit":"237",
+            "devPlanCreditsRemaining":"212.00","devPlanPremiumWeeklyLimit":"35.55",
+            "devPlanPremiumCreditsUsed":"5.00","devPlanPremiumWeekResetsAt":"2026-08-28T12:00:00.000Z"}});
+        let r = parse_llmgateway_key(&body).unwrap();
+        assert_eq!(r.plan.as_deref(), Some("pro"));
+        let c = r.credits.unwrap();
+        assert_eq!(
+            (c.label.as_str(), c.used_usd, c.unlimited),
+            ("Spend", Some(31.42), true)
+        );
+        let credits = r
+            .windows
+            .iter()
+            .find(|w| w.id == "dev_plan_credits")
+            .unwrap();
+        assert!((credits.used_percent - 25.0 / 237.0 * 100.0).abs() < 1e-9);
+        let premium = r
+            .windows
+            .iter()
+            .find(|w| w.id == "seven_day_premium")
+            .unwrap();
+        assert_eq!(premium.label, "Weekly · Premium");
+        assert!((premium.used_percent - 5.0 / 35.55 * 100.0).abs() < 1e-9);
+        assert_eq!(premium.window_secs, Some(604_800));
+        assert_eq!(
+            premium.resets_at,
+            Some(
+                chrono::DateTime::parse_from_rfc3339("2026-08-28T12:00:00Z")
+                    .unwrap()
+                    .timestamp()
+            )
+        );
+    }
+
+    #[test]
+    fn llmgateway_key_pay_as_you_go_with_limit() {
+        let body = json!({"data":{"usage":"40","limit":"50","devPlan":"none",
+            "devPlanCreditsUsed":"0","devPlanCreditsLimit":"0"}});
+        let r = parse_llmgateway_key(&body).unwrap();
+        assert!(r.plan.is_none());
+        assert!(r.windows.is_empty(), "no DevPass, no plan windows");
+        let c = r.credits.unwrap();
+        assert_eq!(c.label, "Key limit");
+        assert_eq!(
+            (c.used_usd, c.limit_usd, c.balance_usd),
+            (Some(40.0), Some(50.0), Some(10.0))
+        );
+    }
+
+    #[test]
+    fn vercel_credits() {
+        let r = parse_vercel_credits(&json!({"balance":"95.50","total_used":"4.50"})).unwrap();
+        let c = r.credits.unwrap();
+        assert_eq!((c.balance_usd, c.used_usd), (Some(95.5), Some(4.5)));
+        assert_eq!(c.label, "Credits");
+        assert!(parse_vercel_credits(&json!({"balance":"NaN"})).is_none());
+        assert!(parse_vercel_credits(&json!({})).is_none());
     }
 }

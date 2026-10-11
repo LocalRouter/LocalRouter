@@ -4072,6 +4072,34 @@ mod tests {
     /// Every factory the app registers, for invariants that must hold across
     /// all of them. Keep in sync with the `register_factory` calls in
     /// `src-tauri/src/main.rs`.
+    /// Every remote provider type bills to a usage account, and every type
+    /// Settings → Usage offers to poll is a real provider type.
+    #[test]
+    fn remote_provider_types_have_usage_accounts() {
+        let mut factories = all_factories();
+        factories.push(Box::new(LlmGatewayProviderFactory));
+        factories.push(Box::new(VercelAiGatewayProviderFactory));
+        for f in &factories {
+            let remote = matches!(
+                f.category(),
+                ProviderCategory::FirstParty
+                    | ProviderCategory::ThirdParty
+                    | ProviderCategory::Subscription
+            );
+            if remote {
+                assert!(
+                    lr_usage::account_for_provider_type(f.provider_type()).is_some(),
+                    "{} has no usage account",
+                    f.provider_type()
+                );
+            }
+        }
+        let types: Vec<_> = factories.iter().map(|f| f.provider_type()).collect();
+        for polled in lr_usage::providers::polled_provider_types() {
+            assert!(types.contains(&polled), "{polled} is not a provider type");
+        }
+    }
+
     fn all_factories() -> Vec<Box<dyn ProviderFactory>> {
         vec![
             Box::new(OllamaProviderFactory),

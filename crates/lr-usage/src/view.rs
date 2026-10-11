@@ -69,12 +69,18 @@ pub struct UsageWindowView {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UsageQuotaView {
+    /// `<metric>[_<period>]`, e.g. `requests`, `tokens_minute`,
+    /// `requests_day`, `input_tokens`.
     pub id: String,
+    /// e.g. "Requests / day".
     pub label: String,
     pub limit: Option<f64>,
     pub remaining: Option<f64>,
     pub used_percent: Option<f64>,
     pub resets_at: Option<i64>,
+    /// The period the limit applies to (60 for a per-minute limit), when the
+    /// provider says.
+    pub window_secs: Option<i64>,
     pub updated_at: i64,
 }
 
@@ -114,6 +120,10 @@ pub struct UsageAccountView {
     pub windows: Vec<UsageWindowView>,
     pub quotas: Vec<UsageQuotaView>,
     pub credits: Option<CreditsReading>,
+    /// Whether the provider reports limits at all (rate-limit headers or a
+    /// usage endpoint). `false` for API providers that document neither:
+    /// their card shows spend only.
+    pub reports_limits: bool,
     pub spend: UsageSpendView,
     /// API-equivalent cost of the last 30 days divided by the monthly price.
     pub value_multiplier: Option<f64>,
@@ -182,25 +192,12 @@ fn account_view(
         .map(|w| window_view(w, &acct.ledger, monthly_price_usd, now))
         .collect();
     let windows = order_windows(windows);
-    let quotas = acct
+    let mut quotas: Vec<UsageQuotaView> = acct
         .quotas
         .values()
-        .map(|q| {
-            let r = &q.reading;
-            UsageQuotaView {
-                id: r.id.clone(),
-                label: quota_label(&r.id),
-                limit: r.limit,
-                remaining: r.remaining,
-                used_percent: match (r.limit, r.remaining) {
-                    (Some(l), Some(rem)) if l > 0.0 => Some(((l - rem) / l * 100.0).max(0.0)),
-                    _ => None,
-                },
-                resets_at: r.resets_at,
-                updated_at: q.updated_at,
-            }
-        })
+        .map(|q| quota_view(&q.reading, q.updated_at, now))
         .collect();
+    quotas.sort_by_key(|q| quota_rank(&q.id));
     let value_multiplier = monthly_price_usd
         .filter(|p| *p > 0.0 && acct.kind == AccountKind::Subscription)
         .map(|p| spend.last_30d_usd / p);
@@ -224,6 +221,10 @@ fn account_view(
         windows,
         quotas,
         credits: acct.credits.as_ref().map(|(c, _)| c.clone()),
+        reports_limits: match crate::providers::spec_for(&acct.provider) {
+            Some(s) if s.kind == acct.kind => s.reports_limits(),
+            _ => true,
+        },
         spend,
         value_multiplier,
     }
@@ -242,18 +243,59 @@ fn order_windows(mut windows: Vec<UsageWindowView>) -> Vec<UsageWindowView> {
     windows
 }
 
-fn quota_label(id: &str) -> String {
-    match id {
+/// One rate limit as shown. Once its reset time has passed with no newer
+/// reading, the limit has refilled: it shows as unused, not as the stale
+/// remaining count.
+fn quota_view(r: &crate::types::QuotaReading, updated_at: i64, now: i64) -> UsageQuotaView {
+    let (metric, window_secs) = crate::types::split_quota_id(&r.id);
+    // A limit read a whole period ago has refilled too, reset time or not.
+    let period_passed =
+        window_secs.is_some_and(|w| now >= updated_at.saturating_add(w)) && r.resets_at.is_none();
+    let refilled = (r.resets_at.is_some_and(|t| t <= now) || period_passed) && r.limit.is_some();
+    let remaining = if refilled { r.limit } else { r.remaining };
+    UsageQuotaView {
+        id: r.id.clone(),
+        label: quota_label(metric, window_secs),
+        limit: r.limit,
+        remaining,
+        used_percent: match (r.limit, remaining) {
+            (Some(l), Some(rem)) if l > 0.0 => Some(((l - rem) / l * 100.0).clamp(0.0, 100.0)),
+            _ => None,
+        },
+        resets_at: r.resets_at.filter(|_| !refilled),
+        window_secs,
+        updated_at,
+    }
+}
+
+/// Requests before tokens before the rest; shorter periods first.
+fn quota_rank(id: &str) -> (u8, i64, String) {
+    let (metric, window_secs) = crate::types::split_quota_id(id);
+    let metric_rank = match metric {
+        "requests" => 0,
+        "tokens" => 1,
+        "input_tokens" => 2,
+        "output_tokens" => 3,
+        _ => 4,
+    };
+    (metric_rank, window_secs.unwrap_or(0), id.to_string())
+}
+
+fn quota_label(metric: &str, window_secs: Option<i64>) -> String {
+    let base = match metric {
         "requests" => "Requests".to_string(),
         "tokens" => "Tokens".to_string(),
         "input_tokens" => "Input tokens".to_string(),
         "output_tokens" => "Output tokens".to_string(),
-        "requests_day" => "Requests / day".to_string(),
-        "tokens_minute" => "Tokens / minute".to_string(),
         "project_tokens" => "Project tokens".to_string(),
         "premium_interactions" => "Premium requests".to_string(),
+        "free_requests" => "Free-model requests".to_string(),
         "rate" => "Rate limit".to_string(),
         other => crate::types::window_label(other),
+    };
+    match window_secs.and_then(crate::types::period_name) {
+        Some(period) => format!("{base} / {period}"),
+        None => base,
     }
 }
 
@@ -743,5 +785,111 @@ mod tests {
         assert_eq!(a.title, "Groq API");
         assert_eq!(a.quotas[0].used_percent, Some(25.0));
         assert_eq!(a.quotas[0].label, "Requests / day");
+    }
+
+    fn q(
+        id: &str,
+        limit: f64,
+        remaining: f64,
+        resets_at: Option<i64>,
+    ) -> crate::types::QuotaReading {
+        crate::types::QuotaReading {
+            id: id.into(),
+            limit: Some(limit),
+            remaining: Some(remaining),
+            resets_at,
+        }
+    }
+
+    #[test]
+    fn quotas_are_labelled_by_period_and_ordered() {
+        let t = UsageTracker::new(UsageTrackingConfig::default());
+        let now = 1_000_000;
+        t.apply_at(
+            &AccountRef::api("groq"),
+            &UsageReport {
+                quotas: vec![
+                    q("tokens_minute", 18_000.0, 4_000.0, Some(now + 8)),
+                    q("requests_day", 14_400.0, 14_000.0, Some(now + 600)),
+                    q("free_requests_day", 50.0, 10.0, None),
+                ],
+                ..Default::default()
+            },
+            DataSource::GatewayHeaders,
+            now,
+        );
+        let a = &t.snapshot_at(now).accounts[0];
+        let ids: Vec<_> = a.quotas.iter().map(|q| q.id.as_str()).collect();
+        assert_eq!(ids, ["requests_day", "tokens_minute", "free_requests_day"]);
+        assert_eq!(a.quotas[0].label, "Requests / day");
+        assert_eq!(a.quotas[0].window_secs, Some(86_400));
+        assert_eq!(a.quotas[1].label, "Tokens / minute");
+        assert_eq!(a.quotas[1].window_secs, Some(60));
+        assert_eq!(a.quotas[2].label, "Free-model requests / day");
+        assert!(a.reports_limits);
+    }
+
+    #[test]
+    fn quotas_refill_after_their_reset_or_a_whole_period() {
+        let now = 1_000_000;
+        // Reset passed: full again, no reset shown.
+        let v = quota_view(
+            &q("tokens_minute", 100.0, 10.0, Some(now - 1)),
+            now - 30,
+            now,
+        );
+        assert_eq!(
+            (v.remaining, v.used_percent, v.resets_at),
+            (Some(100.0), Some(0.0), None)
+        );
+        // Reset ahead: as read.
+        let v = quota_view(
+            &q("tokens_minute", 100.0, 10.0, Some(now + 5)),
+            now - 30,
+            now,
+        );
+        assert_eq!((v.remaining, v.used_percent), (Some(10.0), Some(90.0)));
+        // No reset, read more than a period ago: full again.
+        let v = quota_view(&q("requests_second", 10.0, 0.0, None), now - 2, now);
+        assert_eq!(v.remaining, Some(10.0));
+        // No reset, no period: as read.
+        let v = quota_view(&q("requests", 10.0, 0.0, None), now - 86_400, now);
+        assert_eq!(v.remaining, Some(0.0));
+        // Remaining above the limit never shows negative use.
+        let v = quota_view(&q("requests", 10.0, 12.0, None), now, now);
+        assert_eq!(v.used_percent, Some(0.0));
+    }
+
+    #[test]
+    fn spend_only_providers_say_so() {
+        let t = UsageTracker::new(UsageTrackingConfig::default());
+        let now = 1_000_000;
+        let entry = LedgerEntry {
+            requests: 1,
+            cost_usd: 0.5,
+            ..Default::default()
+        };
+        t.record_request_at(&AccountRef::api("gemini"), entry, now);
+        t.record_request_at(&AccountRef::api("groq"), entry, now);
+        t.record_request_at(&AccountRef::subscription("opencode_go"), entry, now);
+        t.record_request_at(&AccountRef::subscription("openai"), entry, now);
+        let snap = t.snapshot_at(now);
+        let reports = |id: &str| {
+            snap.accounts
+                .iter()
+                .find(|a| a.id == id)
+                .unwrap()
+                .reports_limits
+        };
+        assert!(!reports("gemini:api"));
+        assert!(reports("groq:api"));
+        assert!(!reports("opencode_go:subscription"));
+        assert!(
+            reports("openai:subscription"),
+            "ChatGPT is not the OpenAI API"
+        );
+        let gemini = snap.accounts.iter().find(|a| a.id == "gemini:api").unwrap();
+        assert_eq!(gemini.title, "Gemini API");
+        assert_eq!(gemini.spend.requests_30d, 1);
     }
 }

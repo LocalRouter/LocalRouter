@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use uuid::Uuid;
 
-pub(crate) const CONFIG_VERSION: u32 = 31;
+pub(crate) const CONFIG_VERSION: u32 = 32;
 
 /// Keyring service name for provider API keys
 pub const PROVIDER_KEYRING_SERVICE: &str = "LocalRouter-Providers";
@@ -1258,7 +1258,8 @@ pub struct UsageTrackingConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
     /// Query the usage endpoints of providers connected in LocalRouter
-    /// (ChatGPT Plus/Pro, GitHub Copilot, OpenRouter) in the background.
+    /// (ChatGPT Plus/Pro, GitHub Copilot, OpenRouter, LLM Gateway, Vercel AI
+    /// Gateway) in the background.
     #[serde(default = "default_true")]
     pub poll_provider_apis: bool,
     /// Provider instances whose usage endpoints are not queried. Providers

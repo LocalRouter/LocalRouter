@@ -106,6 +106,7 @@ function mockUsageAccount(partial: Partial<UsageAccountView> & Pick<UsageAccount
     windows: [],
     quotas: [],
     credits: null,
+    reports_limits: true,
     spend: {
       last_24h_usd: 0,
       last_7d_usd: 0,
@@ -172,10 +173,46 @@ function mockUsageSnapshot(): UsageSnapshot {
         title: 'OpenAI API',
         sources: ['gateway_headers'],
         quotas: [
-          { id: 'requests', label: 'Requests', limit: 5000, remaining: 4987, used_percent: 0.26, resets_at: now + 1, updated_at: now - 12 },
-          { id: 'tokens', label: 'Tokens', limit: 800_000, remaining: 744_120, used_percent: 6.98, resets_at: now + 42, updated_at: now - 12 },
+          { id: 'requests', label: 'Requests', limit: 5000, remaining: 4987, used_percent: 0.26, resets_at: now + 1, window_secs: null, updated_at: now - 12 },
+          { id: 'tokens', label: 'Tokens', limit: 800_000, remaining: 744_120, used_percent: 6.98, resets_at: now + 42, window_secs: null, updated_at: now - 12 },
         ],
         spend: { last_24h_usd: 1.42, last_7d_usd: 9.8, last_30d_usd: 37.15, month_to_date_usd: 14.02, requests_30d: 2_140, tokens_30d: 18_400_000, daily_usd: Array.from({ length: 30 }, (_, i) => (i % 4) * 0.6) },
+      }),
+      mockUsageAccount({
+        id: 'openrouter:api',
+        provider: 'openrouter',
+        provider_label: 'OpenRouter',
+        kind: 'api',
+        title: 'OpenRouter API',
+        sources: ['gateway_headers', 'provider_api'],
+        quotas: [
+          { id: 'free_requests_day', label: 'Free-model requests / day', limit: 1000, remaining: 912, used_percent: 8.8, resets_at: now + 9 * 3600 + 1200, window_secs: 86_400, updated_at: now - 240 },
+        ],
+        credits: { label: 'Key limit (monthly)', balance_usd: 61.2, limit_usd: 100, used_usd: 38.8, unlimited: false, currency: 'USD' },
+        spend: { last_24h_usd: 2.94, last_7d_usd: 14.6, last_30d_usd: 38.8, month_to_date_usd: 17.3, requests_30d: 3_480, tokens_30d: 41_200_000, daily_usd: Array.from({ length: 30 }, (_, i) => 0.6 + (i % 5) * 0.4) },
+      }),
+      mockUsageAccount({
+        id: 'groq:api',
+        provider: 'groq',
+        provider_label: 'Groq',
+        kind: 'api',
+        title: 'Groq API',
+        sources: ['gateway_headers'],
+        quotas: [
+          { id: 'requests_day', label: 'Requests / day', limit: 14_400, remaining: 13_212, used_percent: 8.25, resets_at: now + 3 * 3600 + 1500, window_secs: 86_400, updated_at: now - 30 },
+          { id: 'tokens_minute', label: 'Tokens / minute', limit: 18_000, remaining: 4_120, used_percent: 77.1, resets_at: now + 8, window_secs: 60, updated_at: now - 30 },
+        ],
+        spend: { last_24h_usd: 0.31, last_7d_usd: 1.84, last_30d_usd: 6.02, month_to_date_usd: 2.2, requests_30d: 1_188, tokens_30d: 9_600_000, daily_usd: Array.from({ length: 30 }, (_, i) => (i % 3) * 0.1) },
+      }),
+      mockUsageAccount({
+        id: 'gemini:api',
+        provider: 'gemini',
+        provider_label: 'Gemini',
+        kind: 'api',
+        title: 'Gemini API',
+        sources: [],
+        reports_limits: false,
+        spend: { last_24h_usd: 0.88, last_7d_usd: 4.1, last_30d_usd: 12.47, month_to_date_usd: 5.6, requests_30d: 640, tokens_30d: 21_000_000, daily_usd: Array.from({ length: 30 }, (_, i) => (i % 6) * 0.15) },
       }),
     ],
   }
@@ -185,6 +222,7 @@ const mockUsagePollStatus = (): UsagePollStatus[] => {
   const now = Math.floor(Date.now() / 1000)
   return [
     { id: 'chatgpt_oauth', label: 'ChatGPT Plus/Pro (LocalRouter login)', account_id: 'openai:subscription', last_attempt: now - 120, last_success: now - 120, last_error: null, retry_after: null },
+    { id: 'credits:openrouter', label: 'OpenRouter usage', account_id: 'openrouter:api', last_attempt: now - 240, last_success: now - 240, last_error: null, retry_after: null },
   ]
 }
 import type {
@@ -3798,6 +3836,13 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     return null
   },
   'get_usage_poll_status': (): UsagePollStatus[] => mockUsagePollStatus(),
+  'get_usage_polled_provider_types': (): string[] => [
+    'openai-chatgpt-plus',
+    'github-copilot',
+    'openrouter',
+    'llmgateway',
+    'vercel_ai_gateway',
+  ],
   'get_usage_tracking_config': (): UsageTrackingConfig => mockUsageConfig,
   'update_usage_tracking_config': (args?: InvokeArgs) => {
     const { config } = (args ?? {}) as { config: UsageTrackingConfig }

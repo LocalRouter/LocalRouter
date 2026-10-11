@@ -37,9 +37,6 @@ import type {
 } from "@/types/tauri-commands"
 import { formatAgo, formatUsd } from "@/views/dashboard/usage-format"
 
-/** Provider types whose usage or credits endpoint LocalRouter can query. */
-const POLLED_PROVIDER_TYPES = ["openai-chatgpt-plus", "github-copilot", "openrouter"]
-
 const ACTIVE_INTERVALS: { value: number; label: string }[] = [
   { value: 60, label: "1 min" },
   { value: 300, label: "5 min" },
@@ -67,16 +64,17 @@ export function UsageTab() {
 
   const load = useCallback(async () => {
     try {
-      const [cfg, snap, st, providers] = await Promise.all([
+      const [cfg, snap, st, providers, polledTypes] = await Promise.all([
         invoke<UsageTrackingConfig>("get_usage_tracking_config"),
         invoke<UsageSnapshot>("get_usage_limits"),
         invoke<UsagePollStatus[]>("get_usage_poll_status"),
         invoke<ProviderInstanceInfo[]>("list_provider_instances"),
+        invoke<string[]>("get_usage_polled_provider_types"),
       ])
       setConfigState(cfg)
       setSnapshot(snap)
       setStatuses(st)
-      setPolledProviders(providers.filter((p) => POLLED_PROVIDER_TYPES.includes(p.provider_type)))
+      setPolledProviders(providers.filter((p) => polledTypes.includes(p.provider_type)))
       setNow(Date.now())
     } catch (e) {
       console.error("Failed to load usage settings:", e)
@@ -162,7 +160,7 @@ export function UsageTab() {
           <SwitchRow
             id="usage-poll-providers"
             label="Ask connected providers"
-            description="ChatGPT Plus/Pro, GitHub Copilot and OpenRouter usage endpoints."
+            description="Usage and credits endpoints of ChatGPT Plus/Pro, GitHub Copilot, OpenRouter, LLM Gateway and Vercel AI Gateway, with their own logins and keys."
             checked={config.poll_provider_apis}
             disabled={!config.enabled}
             onChange={(poll_provider_apis) => update({ poll_provider_apis })}

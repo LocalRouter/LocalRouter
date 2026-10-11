@@ -227,6 +227,45 @@ pub fn window_secs_for(id: &str) -> Option<i64> {
     }
 }
 
+/// Rate-limit periods a quota id can end in, with their length.
+const QUOTA_PERIODS: &[(&str, i64)] = &[
+    ("second", 1),
+    ("minute", 60),
+    ("hour", 3_600),
+    ("day", 86_400),
+    ("month", 30 * 86_400),
+];
+
+/// A quota id (`<metric>[_<period>]`, e.g. `tokens_minute`) as its metric
+/// and period length: `("tokens", Some(60))`. Ids without a period suffix
+/// (`requests`) have no known period.
+pub fn split_quota_id(id: &str) -> (&str, Option<i64>) {
+    for (name, secs) in QUOTA_PERIODS {
+        if let Some(metric) = id
+            .strip_suffix(name)
+            .and_then(|m| m.strip_suffix('_'))
+            .filter(|m| !m.is_empty())
+        {
+            return (metric, Some(*secs));
+        }
+    }
+    (id, None)
+}
+
+/// The name of a quota period (`minute` for 60 s), for labels.
+pub fn period_name(secs: i64) -> Option<&'static str> {
+    QUOTA_PERIODS
+        .iter()
+        .find(|(_, s)| *s == secs)
+        .map(|(name, _)| *name)
+}
+
+/// The quota id for `metric` limited per `period` (`second`, `minute`,
+/// `hour`, `day`, `month`).
+pub fn quota_id(metric: &str, period: &str) -> String {
+    format!("{metric}_{period}")
+}
+
 fn title_case(s: &str) -> String {
     s.split(['_', '-', ' '])
         .filter(|w| !w.is_empty())
@@ -307,6 +346,23 @@ mod tests {
         assert_eq!(window_label("codex_other_primary"), "Codex Other Primary");
         assert_eq!(window_secs_for("seven_day_opus"), Some(604_800));
         assert_eq!(window_secs_for("monthly"), None);
+    }
+
+    #[test]
+    fn quota_ids_split_into_metric_and_period() {
+        assert_eq!(split_quota_id("tokens_minute"), ("tokens", Some(60)));
+        assert_eq!(split_quota_id("requests_day"), ("requests", Some(86_400)));
+        assert_eq!(
+            split_quota_id("input_tokens_second"),
+            ("input_tokens", Some(1))
+        );
+        assert_eq!(split_quota_id("requests"), ("requests", None));
+        assert_eq!(split_quota_id("input_tokens"), ("input_tokens", None));
+        assert_eq!(split_quota_id("_day"), ("_day", None));
+        assert_eq!(split_quota_id("day"), ("day", None));
+        assert_eq!(period_name(3_600), Some("hour"));
+        assert_eq!(period_name(7), None);
+        assert_eq!(quota_id("tokens", "day"), "tokens_day");
     }
 
     #[test]

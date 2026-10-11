@@ -29,25 +29,6 @@ pub enum UsageEndpoint {
     CopilotUser,
 }
 
-/// Remote API hosts → provider family. Local providers are not tracked.
-const API_HOSTS: &[(&str, &str)] = &[
-    ("api.openai.com", "openai"),
-    ("openrouter.ai", "openrouter"),
-    ("api.groq.com", "groq"),
-    ("api.cerebras.ai", "cerebras"),
-    ("api.mistral.ai", "mistral"),
-    ("api.x.ai", "xai"),
-    ("api.together.xyz", "togetherai"),
-    ("api.together.ai", "togetherai"),
-    ("api.deepinfra.com", "deepinfra"),
-    ("generativelanguage.googleapis.com", "gemini"),
-    ("api.perplexity.ai", "perplexity"),
-    ("api.cohere.com", "cohere"),
-    ("api.cohere.ai", "cohere"),
-    ("api.deepseek.com", "deepseek"),
-    ("api.moonshot.ai", "moonshot"),
-];
-
 fn bearer(headers: &HeaderMap) -> Option<&str> {
     let v = headers.get(http::header::AUTHORIZATION)?.to_str().ok()?;
     let (scheme, token) = v.split_once(' ')?;
@@ -56,8 +37,8 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
 
 /// Classify a request to `host` + `path` by its headers.
 pub fn classify(host: &str, path: &str, headers: &HeaderMap) -> Option<Classified> {
-    let host = host.trim_end_matches('.').to_ascii_lowercase();
-    let host = host.split(':').next().unwrap_or(&host);
+    let host = crate::providers::normalize_host(host);
+    let host = host.as_str();
     if host == "api.anthropic.com" {
         let oauth = bearer(headers).is_some_and(|t| t.starts_with("sk-ant-oat"))
             || headers
@@ -104,14 +85,11 @@ pub fn classify(host: &str, path: &str, headers: &HeaderMap) -> Option<Classifie
             login_label: None,
         });
     }
-    API_HOSTS
-        .iter()
-        .find(|(h, _)| *h == host)
-        .map(|(_, provider)| Classified {
-            account: AccountRef::api(*provider),
-            plan_hint: None,
-            login_label: None,
-        })
+    crate::providers::spec_for_request(host, path).map(|s| Classified {
+        account: s.account(),
+        plan_hint: None,
+        login_label: None,
+    })
 }
 
 /// Which usage endpoint, if any, a request path is.
@@ -173,11 +151,7 @@ pub fn account_for_provider_type(provider_type: &str) -> Option<AccountRef> {
     match provider_type {
         "openai-chatgpt-plus" => Some(AccountRef::subscription("openai")),
         "github-copilot" => Some(AccountRef::subscription("github-copilot")),
-        "anthropic" | "openai" | "openrouter" | "groq" | "cerebras" | "mistral" | "xai"
-        | "togetherai" | "deepinfra" | "gemini" | "perplexity" | "cohere" => {
-            Some(AccountRef::api(provider_type))
-        }
-        _ => None,
+        other => crate::providers::spec_for(other).map(|s| s.account()),
     }
 }
 
@@ -324,11 +298,57 @@ mod tests {
     }
 
     #[test]
+    fn every_api_family_is_classified_by_host() {
+        for (host, path, id) in [
+            ("api.groq.com", "/openai/v1/chat/completions", "groq:api"),
+            ("api.cerebras.ai", "/v1/chat/completions", "cerebras:api"),
+            (
+                "inference.do-ai.run",
+                "/v1/chat/completions",
+                "digitalocean:api",
+            ),
+            (
+                "api.llmgateway.io",
+                "/v1/chat/completions",
+                "llmgateway:api",
+            ),
+            (
+                "ai-gateway.vercel.sh",
+                "/v1/chat/completions",
+                "vercel_ai_gateway:api",
+            ),
+            (
+                "router.huggingface.co",
+                "/v1/chat/completions",
+                "huggingface:api",
+            ),
+            (
+                "opencode.ai",
+                "/zen/go/v1/chat/completions",
+                "opencode_go:subscription",
+            ),
+        ] {
+            let c = classify(host, path, &HeaderMap::new()).unwrap();
+            assert_eq!(c.account.id(), id, "{host}{path}");
+        }
+    }
+
+    #[test]
     fn provider_types() {
         assert_eq!(
             account_for_provider_type("openai-chatgpt-plus"),
             Some(AccountRef::subscription("openai"))
         );
         assert_eq!(account_for_provider_type("ollama"), None);
+        assert_eq!(account_for_provider_type("openai_compatible"), None);
+        for (t, id) in [
+            ("groq", "groq:api"),
+            ("digitalocean", "digitalocean:api"),
+            ("vercel_ai_gateway", "vercel_ai_gateway:api"),
+            ("opencode_go", "opencode_go:subscription"),
+            ("typesafe", "typesafe:api"),
+        ] {
+            assert_eq!(account_for_provider_type(t).unwrap().id(), id);
+        }
     }
 }

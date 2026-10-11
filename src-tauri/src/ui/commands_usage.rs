@@ -31,6 +31,16 @@ pub async fn get_usage_poll_status(
     Ok(poller.statuses())
 }
 
+/// Provider types whose usage endpoint LocalRouter can ask; Settings → Usage
+/// shows a switch for each of their instances.
+#[tauri::command]
+pub async fn get_usage_polled_provider_types() -> Result<Vec<String>, String> {
+    Ok(lr_usage::providers::polled_provider_types()
+        .into_iter()
+        .map(str::to_string)
+        .collect())
+}
+
 #[tauri::command]
 pub async fn get_usage_tracking_config(
     config_manager: State<'_, ConfigManager>,

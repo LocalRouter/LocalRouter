@@ -23,8 +23,11 @@ import {
   formatDuration,
   formatPercent,
   formatUsd,
+  limitsUnreported,
   PACE_LABEL,
   paceSummary,
+  quotaDetails,
+  quotaShortLabel,
   routedSpend,
   slotHeights,
   SOURCE_LABEL,
@@ -284,7 +287,7 @@ function AccountCard({
       {a.windows.map((w) => (
         <WindowRow key={w.id} window={w} now={now} />
       ))}
-      {a.quotas.slice(0, 3).map((q) => (
+      {a.quotas.slice(0, MAX_QUOTA_ROWS).map((q) => (
         <QuotaRow key={q.id} quota={q} now={now} />
       ))}
       {a.credits && <CreditsRow credits={a.credits} />}
@@ -294,6 +297,11 @@ function AccountCard({
           the provider (Usage settings).
         </p>
       )}
+      {limitsUnreported(a) && (
+        <p className="text-xs text-muted-foreground">
+          {a.provider_label} does not report rate limits or balance to API clients.
+        </p>
+      )}
 
       <RoutedSpend account={a} />
     </article>
@@ -301,6 +309,8 @@ function AccountCard({
 }
 
 const ROW = 'grid grid-cols-[4.5rem_1fr_2.75rem_3.5rem] items-center gap-2 text-xs'
+/** Rate limits shown per card (requests first, then tokens). */
+const MAX_QUOTA_ROWS = 4
 
 /** One line: label · meter (even-pace tick, projection shade) · % · reset. */
 function WindowRow({ window: w, now }: { window: UsageWindowView; now: number }) {
@@ -425,26 +435,48 @@ function SlotBars({ window: w }: { window: UsageWindowView }) {
   )
 }
 
+/** One rate limit: label · used share · remaining count · time to full. */
 function QuotaRow({ quota: q, now }: { quota: UsageQuotaView; now: number }) {
   const used = q.used_percent
   return (
-    <div className={ROW}>
-      <span className="truncate text-muted-foreground">{q.label}</span>
-      <div className="h-1.5 overflow-hidden rounded-full bg-muted">
-        {used !== null && (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <div className={ROW} tabIndex={0}>
+          <span className="truncate text-muted-foreground">{quotaShortLabel(q)}</span>
           <div
-            className={cn('h-full rounded-full', used >= 90 ? 'bg-amber-500' : 'bg-foreground/40')}
-            style={{ width: `${Math.min(100, used)}%` }}
-          />
-        )}
-      </div>
-      <span className="text-right tabular-nums">{formatCount(q.remaining)}</span>
-      <span className="text-right text-[11px] text-muted-foreground tabular-nums">
-        {q.resets_at !== null && q.resets_at > now / 1000
-          ? formatDuration(q.resets_at - now / 1000)
-          : ''}
-      </span>
-    </div>
+            className="h-1.5 overflow-hidden rounded-full bg-muted"
+            role="meter"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={used !== null ? Math.round(used) : undefined}
+            aria-label={`${q.label} used`}
+          >
+            {used !== null && (
+              <div
+                className={cn(
+                  'h-full rounded-full',
+                  used >= 90 ? 'bg-amber-500' : 'bg-foreground/40',
+                )}
+                style={{ width: `${Math.min(100, used)}%` }}
+              />
+            )}
+          </div>
+          <span className="text-right tabular-nums">{formatCount(q.remaining)}</span>
+          <span className="text-right text-[11px] text-muted-foreground tabular-nums">
+            {q.resets_at !== null && q.resets_at > now / 1000
+              ? formatDuration(q.resets_at - now / 1000)
+              : ''}
+          </span>
+        </div>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-xs space-y-1 text-xs">
+        {quotaDetails(q, now).map((line, i) => (
+          <p key={line} className={i === 0 ? 'font-medium' : undefined}>
+            {line}
+          </p>
+        ))}
+      </TooltipContent>
+    </Tooltip>
   )
 }
 
