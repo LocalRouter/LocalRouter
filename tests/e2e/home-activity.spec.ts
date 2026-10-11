@@ -31,10 +31,15 @@ test('time ranges use a compact line chart and the merged Monitor opens request 
   expect(await traffic.getByRole('img').getAttribute('aria-label')).not.toBe(
     defaultLabel,
   )
-  // Finished and in-progress lines, and errors on their own panel: nothing stacked.
-  await expect(traffic.locator('.recharts-line-curve')).toHaveCount(3)
-  await expect(traffic.locator('.recharts-bar-rectangle')).toHaveCount(0)
+  // One line of finished requests, error marks only where errors happened,
+  // and the requests in progress once, at the live edge: nothing stacked.
+  await expect(traffic.locator('.recharts-line-curve')).toHaveCount(1)
   await expect(traffic.locator('.recharts-area-curve')).toHaveCount(0)
+  await expect(traffic.locator('.recharts-bar-rectangle').first()).toBeVisible()
+  await expect(traffic.getByTestId('traffic-legend').getByText('Errors', { exact: true })).toBeVisible()
+  await expect(traffic.getByTestId('traffic-now')).toHaveCount(1)
+  await expect(traffic.getByTestId('traffic-now')).toContainText(/^\d+ in progress now$/)
+  await expect(traffic.getByText('Most in progress')).toHaveCount(0)
   expect((await traffic.getByRole('img').boundingBox())!.height).toBeLessThanOrEqual(160)
   const monitor = page.getByRole('region', { name: 'Request monitor' })
   await expect(monitor.getByRole('table')).toBeVisible()
@@ -134,13 +139,16 @@ test('in-flight requests are shown live on the chart and clear when they finish'
       { name, payload },
     )
   const baseline = Number(
-    (await traffic.getByText(/in progress|Idle/).textContent())?.match(/\d+/)?.[0] ?? 0,
+    (await traffic.getByText(/^(\d+ in progress|Idle)$/).textContent())?.match(/\d+/)?.[0] ?? 0,
   )
   await publish('monitor-event-created', request)
   await expect(traffic).toContainText(`${baseline + 1} in progress`)
+  await expect(traffic.getByTestId('traffic-now')).toHaveText(
+    `${baseline + 1} in progress now`,
+  )
   await expect(traffic.getByRole('img')).toHaveAttribute(
     'aria-label',
-    new RegExp(`${baseline + 1} in progress`),
+    new RegExp(`${baseline + 1} in progress now`),
   )
   await publish('monitor-event-updated', {
     ...request,
@@ -148,6 +156,31 @@ test('in-flight requests are shown live on the chart and clear when they finish'
     duration_ms: 500,
   })
   await expect(traffic).not.toContainText(`${baseline + 1} in progress`)
+  await expect(traffic.getByTestId('traffic-now')).toHaveText(
+    baseline ? `${baseline} in progress now` : 'Idle now',
+  )
+})
+
+test('a range without errors draws no error marks', async ({ page }) => {
+  await page.evaluate(() => {
+    const w = window as any
+    const original = w.__TAURI_IPC_HANDLER__
+    w.__TAURI_IPC_HANDLER__ = async (command: string, args: unknown) => {
+      const result = await original(command, args)
+      if (command !== 'get_traffic_timeline') return result
+      for (const bucket of result.buckets) {
+        if (bucket.counts) Object.assign(bucket.counts, { llm_errors: 0, mcp_errors: 0 })
+      }
+      Object.assign(result.totals, { llm_errors: 0, mcp_errors: 0 })
+      return result
+    }
+  })
+  await page.getByRole('button', { name: 'Refresh activity' }).click()
+  const traffic = page.getByRole('region', { name: 'Request traffic' })
+  await expect(traffic).toContainText('0 errors')
+  await expect(traffic.locator('.recharts-bar-rectangle')).toHaveCount(0)
+  await expect(traffic.getByTestId('traffic-legend').getByText('Errors', { exact: true })).toHaveCount(0)
+  await expect(traffic.locator('.recharts-line-curve')).toHaveCount(1)
 })
 
 test('the monitor filter selection is remembered across reloads', async ({
@@ -260,8 +293,8 @@ test('empty traffic and failed loads are distinct and retry recovers', async ({
         return {
           bucket_secs: 10,
           buckets: [
-            { timestamp: now - 10, counts: zero, in_flight: 0 },
-            { timestamp: now, counts: zero, in_flight: 0 },
+            { timestamp: now - 10, counts: zero },
+            { timestamp: now, counts: zero },
           ],
           totals: zero,
         }
@@ -270,20 +303,22 @@ test('empty traffic and failed loads are distinct and retry recovers', async ({
       return original(command, args)
     }
   })
-  // Settle the demo's in-flight request: a running request is not "no traffic".
+  // Settle the demo's in-flight requests: running requests are not "no traffic".
   await page.evaluate(async () => {
     const { emit } = await import(
       /* @vite-ignore */ '/src/stubs/tauri-api-event.ts'
     )
     const mockModule: string = '/src/components/demo/mockData.ts'
     const { mockData } = await import(/* @vite-ignore */ mockModule)
-    const live = mockData.monitorEvents.find(
-      (event: { id: string }) => event.id === 'mon-live',
+    const live = mockData.monitorEvents.filter(
+      (event: { status: string }) => event.status === 'pending',
     )
-    await emit(
-      'monitor-event-updated',
-      JSON.stringify({ ...live, data: undefined, status: 'complete', duration_ms: 10 }),
-    )
+    for (const event of live) {
+      await emit(
+        'monitor-event-updated',
+        JSON.stringify({ ...event, data: undefined, status: 'complete', duration_ms: 10 }),
+      )
+    }
   })
   await page.getByRole('button', { name: 'Refresh activity' }).click()
   await expect(page.getByText('No events captured yet')).toBeVisible()

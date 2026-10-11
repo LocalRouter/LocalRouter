@@ -1,11 +1,11 @@
-//! Request traffic for the dashboard chart: finished requests, errors and the
-//! peak number of requests in progress, per time bucket.
+//! Request traffic for the dashboard chart: finished requests, errors and
+//! cost per time bucket. (Requests in progress right now come from the
+//! monitor event store, not from here.)
 //!
 //! Every range is split into 60–96 buckets. Persisted metrics are per minute
 //! at best, so the 10-minute range reads [`LiveTraffic`], which keeps the last
 //! 15 minutes in 10-second buckets in memory. Longer ranges read the metrics
-//! database: the `llm_global` and `mcp_global` rows, and the per-minute peaks
-//! of requests in progress that [`LiveTraffic`] hands over for persistence.
+//! database: the `llm_global` and `mcp_global` rows.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -82,9 +82,6 @@ pub struct TrafficBucket {
     /// `None` when this period is not known at this resolution: before the
     /// app started (10-minute range), or history kept only as daily totals.
     pub counts: Option<TrafficCounts>,
-    /// Most requests in progress at once during the bucket; `None` when the
-    /// counts are.
-    pub in_flight: Option<u64>,
 }
 
 /// The dashboard traffic chart for one time range.
@@ -232,34 +229,15 @@ fn bucket_rows(rows: &[MetricRow], starts: &[i64], bucket_secs: i64) -> (Vec<Opt
     (buckets, total)
 }
 
-/// Peak of the per-minute in-progress maxima within each bucket.
-fn bucket_peaks(peaks: &[(i64, u64)], starts: &[i64], bucket_secs: i64) -> Vec<u64> {
-    let mut result = vec![0; starts.len()];
-    let Some(&first) = starts.first() else {
-        return result;
-    };
-    for &(minute, peak) in peaks {
-        if minute < first {
-            continue;
-        }
-        if let Some(slot) = result.get_mut(((minute - first) / bucket_secs) as usize) {
-            *slot = (*slot).max(peak);
-        }
-    }
-    result
-}
-
 /// The traffic chart of a database-backed range.
 pub fn timeline_from_rows(
     starts: &[i64],
     bucket_secs: i64,
     llm: &[MetricRow],
     mcp: &[MetricRow],
-    peaks: &[(i64, u64)],
 ) -> TrafficTimeline {
     let (llm_buckets, llm_total) = bucket_rows(llm, starts, bucket_secs);
     let (mcp_buckets, mcp_total) = bucket_rows(mcp, starts, bucket_secs);
-    let peaks = bucket_peaks(peaks, starts, bucket_secs);
     let buckets = starts
         .iter()
         .enumerate()
@@ -274,11 +252,7 @@ pub fn timeline_from_rows(
                 }),
                 _ => None,
             };
-            TrafficBucket {
-                timestamp,
-                in_flight: counts.map(|_| peaks[i]),
-                counts,
-            }
+            TrafficBucket { timestamp, counts }
         })
         .collect();
     TrafficTimeline {
@@ -294,22 +268,11 @@ pub fn timeline_from_rows(
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-struct LiveBucket {
-    counts: TrafficCounts,
-    in_flight: u64,
-}
-
 #[derive(Debug)]
 struct LiveState {
     /// When recording began (Unix seconds); earlier buckets are unknown.
     started_at: i64,
-    buckets: BTreeMap<i64, LiveBucket>,
-    /// Requests in progress now, and the time it was last carried forward.
-    in_flight: u64,
-    in_flight_since: i64,
-    /// In-progress peaks already handed over for persistence, by minute.
-    persisted: BTreeMap<i64, u64>,
+    buckets: BTreeMap<i64, TrafficCounts>,
 }
 
 fn live_bucket(ts: i64) -> i64 {
@@ -317,22 +280,6 @@ fn live_bucket(ts: i64) -> i64 {
 }
 
 impl LiveState {
-    /// Hold the current in-progress level through `now`, so a request that
-    /// runs across buckets shows in each of them.
-    fn carry(&mut self, now: i64) {
-        if self.in_flight > 0 {
-            let mut bucket = live_bucket(self.in_flight_since.max(now - LIVE_RETENTION_SECS));
-            let last = live_bucket(now);
-            while bucket <= last {
-                let entry = self.buckets.entry(bucket).or_default();
-                entry.in_flight = entry.in_flight.max(self.in_flight);
-                bucket += LIVE_BUCKET_SECS;
-            }
-        }
-        self.in_flight_since = self.in_flight_since.max(now);
-        self.prune(now);
-    }
-
     /// Drop buckets older than the retention, relative to `now`.
     fn prune(&mut self, now: i64) {
         let cutoff = live_bucket(now - LIVE_RETENTION_SECS);
@@ -345,15 +292,15 @@ impl LiveState {
         }
     }
 
-    fn bucket(&mut self, at: i64) -> &mut LiveBucket {
+    fn bucket(&mut self, at: i64) -> &mut TrafficCounts {
         self.prune(at);
         self.buckets.entry(live_bucket(at)).or_default()
     }
 }
 
-/// Recent traffic in 10-second buckets, and the number of requests in
-/// progress. Memory is bounded: buckets older than [`LIVE_RETENTION_SECS`]
-/// are dropped (at most 91 buckets of a few integers each).
+/// Recent traffic in 10-second buckets. Memory is bounded: buckets older
+/// than [`LIVE_RETENTION_SECS`] are dropped (at most 91 buckets of a few
+/// numbers each).
 #[derive(Debug)]
 pub struct LiveTraffic {
     state: Mutex<LiveState>,
@@ -366,9 +313,6 @@ impl LiveTraffic {
             state: Mutex::new(LiveState {
                 started_at: now,
                 buckets: BTreeMap::new(),
-                in_flight: 0,
-                in_flight_since: now,
-                persisted: BTreeMap::new(),
             }),
         }
     }
@@ -376,7 +320,7 @@ impl LiveTraffic {
     /// A finished LLM request.
     pub fn record_llm(&self, at: i64, success: bool, cost_usd: f64) {
         let mut state = self.state.lock();
-        let counts = &mut state.bucket(at).counts;
+        let counts = state.bucket(at);
         counts.llm_requests += 1;
         counts.llm_errors += u64::from(!success);
         counts.cost_usd += cost_usd;
@@ -385,66 +329,23 @@ impl LiveTraffic {
     /// A finished MCP request.
     pub fn record_mcp(&self, at: i64, success: bool) {
         let mut state = self.state.lock();
-        let counts = &mut state.bucket(at).counts;
+        let counts = state.bucket(at);
         counts.mcp_requests += 1;
         counts.mcp_errors += u64::from(!success);
-    }
-
-    /// The number of requests in progress changed to `count` at `at`.
-    pub fn set_in_flight(&self, at: i64, count: u64) {
-        let mut state = self.state.lock();
-        state.carry(at);
-        state.in_flight = count;
-        state.in_flight_since = at;
-        let bucket = state.bucket(at);
-        bucket.in_flight = bucket.in_flight.max(count);
-    }
-
-    /// Per-minute peaks of the previous and current minute that rose since
-    /// they were last taken, for persistence.
-    pub fn take_peaks(&self, now: i64) -> Vec<(i64, u64)> {
-        let mut state = self.state.lock();
-        state.carry(now);
-        let current = now.div_euclid(60) * 60;
-        let mut changed = Vec::new();
-        for minute in [current - 60, current] {
-            let peak = state
-                .buckets
-                .range(minute..minute + 60)
-                .map(|(_, b)| b.in_flight)
-                .max()
-                .unwrap_or(0);
-            if peak > state.persisted.get(&minute).copied().unwrap_or(0) {
-                state.persisted.insert(minute, peak);
-                changed.push((minute, peak));
-            }
-        }
-        state.persisted = state.persisted.split_off(&(current - 60));
-        changed
     }
 
     /// The 10-second buckets starting at `starts`. Buckets before recording
     /// began are unknown.
     pub fn timeline(&self, starts: &[i64], now: i64) -> TrafficTimeline {
         let mut state = self.state.lock();
-        state.carry(now);
+        state.prune(now);
         let known_from = live_bucket(state.started_at);
         let buckets = starts
             .iter()
             .map(|&timestamp| {
-                if timestamp < known_from {
-                    return TrafficBucket {
-                        timestamp,
-                        counts: None,
-                        in_flight: None,
-                    };
-                }
-                let bucket = state.buckets.get(&timestamp).copied().unwrap_or_default();
-                TrafficBucket {
-                    timestamp,
-                    counts: Some(bucket.counts),
-                    in_flight: Some(bucket.in_flight),
-                }
+                let counts = (timestamp >= known_from)
+                    .then(|| state.buckets.get(&timestamp).copied().unwrap_or_default());
+                TrafficBucket { timestamp, counts }
             })
             .collect();
         TrafficTimeline::from_buckets(LIVE_BUCKET_SECS, buckets)
@@ -597,20 +498,17 @@ mod tests {
     }
 
     #[test]
-    fn timeline_merges_llm_mcp_and_peaks() {
+    fn timeline_merges_llm_and_mcp() {
         let starts = TimeRange::Hour.traffic_bucket_starts(50 * DAY + 30);
         let now_bucket = *starts.last().unwrap();
         let llm = [row(now_bucket, Granularity::Minute, 3, 1, 0.3)];
         let mcp = [row(now_bucket - 60, Granularity::Minute, 2, 2, 0.0)];
-        let peaks = [(now_bucket - 60, 4), (now_bucket, 2), (starts[0] - 60, 9)];
-        let t = timeline_from_rows(&starts, 60, &llm, &mcp, &peaks);
+        let t = timeline_from_rows(&starts, 60, &llm, &mcp);
         assert_eq!(t.buckets.len(), 60);
         let last = &t.buckets[59];
-        assert_eq!(last.in_flight, Some(2));
         assert_eq!(last.counts.unwrap().llm_requests, 3);
         assert_eq!(t.buckets[58].counts.unwrap().mcp_errors, 2);
-        assert_eq!(t.buckets[58].in_flight, Some(4));
-        assert_eq!(t.buckets[0].in_flight, Some(0));
+        assert_eq!(t.buckets[0].counts, Some(TrafficCounts::default()));
         assert_eq!(t.totals.llm_errors, 1);
         assert_eq!(t.totals.mcp_requests, 2);
     }
@@ -626,46 +524,11 @@ mod tests {
         let t = live.timeline(&TimeRange::TenMinutes.traffic_bucket_starts(now), now);
         assert_eq!(t.buckets.len(), 60);
         assert_eq!(t.buckets[57].counts, None);
-        assert_eq!(t.buckets[57].in_flight, None);
         assert_eq!(t.buckets[58].counts.unwrap().llm_requests, 1);
         assert_eq!(t.buckets[59].counts.unwrap().llm_errors, 1);
         assert_eq!(t.buckets[59].counts.unwrap().mcp_requests, 1);
         assert_eq!(t.totals.llm_requests, 2);
         assert!((t.totals.cost_usd - 0.5).abs() < 1e-9);
-    }
-
-    /// A long request shows as in progress in every bucket it spans, not
-    /// only where it started or finished.
-    #[test]
-    fn in_flight_level_is_carried_across_buckets_until_it_changes() {
-        let start = 2_000_000;
-        let live = LiveTraffic::new(start);
-        live.set_in_flight(start + 1, 1);
-        live.set_in_flight(start + 2, 3);
-        live.set_in_flight(start + 3, 2);
-        live.set_in_flight(start + 41, 0);
-        let now = start + 70;
-        let t = live.timeline(&TimeRange::TenMinutes.traffic_bucket_starts(now), now);
-        let peaks: Vec<_> = t.buckets[52..]
-            .iter()
-            .map(|b| b.in_flight.unwrap())
-            .collect();
-        // start bucket … +40 bucket keep 2 (3 at the start), then nothing.
-        assert_eq!(peaks, vec![3, 2, 2, 2, 2, 0, 0, 0]);
-    }
-
-    #[test]
-    fn peaks_are_handed_over_once_per_rise_and_carry_into_new_minutes() {
-        let minute = 50_000 * 60;
-        let live = LiveTraffic::new(minute);
-        live.set_in_flight(minute + 5, 2);
-        assert_eq!(live.take_peaks(minute + 6), vec![(minute, 2)]);
-        assert_eq!(live.take_peaks(minute + 7), vec![]);
-        live.set_in_flight(minute + 8, 4);
-        live.set_in_flight(minute + 9, 1);
-        assert_eq!(live.take_peaks(minute + 10), vec![(minute, 4)]);
-        // Still one running in the next minute without any change.
-        assert_eq!(live.take_peaks(minute + 65), vec![(minute + 60, 1)]);
     }
 
     #[test]

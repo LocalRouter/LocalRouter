@@ -1312,6 +1312,22 @@ export const mockData = {
       data: { type: "llm_call", endpoint: "/v1/chat/completions", client_api: "chat_completions", requested_model: "claude-sonnet-4-6", model: "claude-sonnet-4-6", provider: "anthropic", stream: true, message_count: 8, has_tools: true, tool_count: 5, request_body: { model: "claude-sonnet-4-6", messages: [{ role: "user", content: "Review the changes in my working tree." }] } },
     },
     {
+      id: "mon-live-2", sequence: 7, timestamp: new Date(Date.now() - 400).toISOString(),
+      event_type: "mcp_tool_call", session_id: "sess-002", client_id: "client-2", client_name: "Cursor",
+      status: "pending", duration_ms: null,
+      summary: "tools/call → github__search_code",
+      question: "github__search_code({\"q\":\"retry backoff repo:demo/api\"})", answer: "",
+      data: { type: "mcp_tool_call", tool_name: "github__search_code", server_id: "srv-2", server_name: "GitHub", arguments: { q: "retry backoff repo:demo/api" }, firewall_action: null },
+    },
+    {
+      id: "mon-live-3", sequence: 7, timestamp: new Date(Date.now() - 800).toISOString(),
+      event_type: "llm_call", session_id: "sess-002", client_id: "client-2", client_name: "Cursor",
+      status: "pending", duration_ms: null,
+      summary: "openai/gpt-4o — streaming response",
+      question: "Write a unit test for the retry helper.", answer: "",
+      data: { type: "llm_call", endpoint: "/v1/chat/completions", client_api: "chat_completions", requested_model: "gpt-4o", model: "gpt-4o", provider: "openai", stream: true, message_count: 4, has_tools: false, tool_count: 0, request_body: { model: "gpt-4o", messages: [{ role: "user", content: "Write a unit test for the retry helper." }] } },
+    },
+    {
       id: "mon-001", sequence: 6, timestamp: new Date(Date.now() - 1000).toISOString(),
       event_type: "llm_call", session_id: "sess-001", client_id: "client-1", client_name: "Claude Code",
       status: "complete", duration_ms: 1250,

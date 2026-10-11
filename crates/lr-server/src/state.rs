@@ -1010,13 +1010,6 @@ impl AppState {
                 monitor.update(id, updater);
             }));
 
-        // The dashboard traffic chart plots the requests in progress; the
-        // monitor store is where every LLM and MCP request is tracked.
-        let metrics = result.metrics_collector.clone();
-        result
-            .monitor_store
-            .set_pending_listener(move |count| metrics.set_in_flight(count));
-
         result
     }
 

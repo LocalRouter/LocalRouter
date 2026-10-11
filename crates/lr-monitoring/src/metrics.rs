@@ -200,24 +200,6 @@ impl MetricsCollector {
         }
     }
 
-    /// The number of requests in progress changed (wired to the monitor
-    /// event store).
-    pub fn set_in_flight(&self, count: usize) {
-        self.live
-            .set_in_flight(Utc::now().timestamp(), count as u64);
-    }
-
-    /// Store the per-minute peaks of requests in progress that rose since the
-    /// last call. Called every few seconds, so a request running across
-    /// minutes is recorded in each.
-    pub fn persist_in_flight(&self) {
-        for (minute, peak) in self.live.take_peaks(Utc::now().timestamp()) {
-            if let Err(e) = self.db.record_in_flight_peak(minute, peak) {
-                tracing::warn!("Failed to record requests in progress: {}", e);
-            }
-        }
-    }
-
     /// The dashboard traffic chart for `range`, ending now.
     pub fn traffic_timeline(&self, range: TimeRange) -> anyhow::Result<TrafficTimeline> {
         self.traffic_timeline_at(range, Utc::now().timestamp())
@@ -238,13 +220,11 @@ impl MetricsCollector {
         let end = starts.last().copied().unwrap_or(now) + bucket_secs;
         let llm = self.db.query_all_granularities(LLM_GLOBAL, first, end)?;
         let mcp = self.db.query_all_granularities(MCP_GLOBAL, first, end)?;
-        let peaks = self.db.query_in_flight_peaks(first, end)?;
         Ok(traffic::timeline_from_rows(
             &starts,
             bucket_secs,
             &llm,
             &mcp,
-            &peaks,
         ))
     }
 
@@ -949,11 +929,10 @@ mod tests {
         assert_eq!(gpt4[0].requests, 2); // Both key1 and key2 used gpt-4
     }
 
-    /// LLM and MCP requests, their failures and the requests in progress all
-    /// reach the traffic chart, at 10 seconds for the last 10 minutes and from
+    /// LLM and MCP requests and their failures reach the traffic chart, at 10 seconds for the last 10 minutes and from
     /// the database (surviving a restart) for longer ranges.
     #[test]
-    fn test_traffic_timeline_counts_requests_errors_and_in_flight() {
+    fn test_traffic_timeline_counts_requests_and_errors() {
         let (collector, dir) = create_test_collector();
         let request = RequestMetrics {
             api_key_name: "key1",
@@ -977,9 +956,6 @@ mod tests {
                 success: false,
                 error_code: Some(-1),
             });
-        collector.set_in_flight(3);
-        collector.persist_in_flight();
-        collector.set_in_flight(0);
 
         let live = collector.traffic_timeline(TimeRange::TenMinutes).unwrap();
         assert_eq!(live.bucket_secs, 10);
@@ -988,18 +964,17 @@ mod tests {
         assert_eq!(live.totals.llm_errors, 1);
         assert_eq!(live.totals.mcp_errors, 1);
         assert!((live.totals.cost_usd - 0.25).abs() < 1e-9);
-        assert_eq!(
-            live.buckets.iter().filter_map(|b| b.in_flight).max(),
-            Some(3)
-        );
 
         let hour = collector.traffic_timeline(TimeRange::Hour).unwrap();
         assert_eq!(hour.bucket_secs, 60);
         assert_eq!(hour.totals, live.totals);
-        assert_eq!(
-            hour.buckets.iter().filter_map(|b| b.in_flight).max(),
-            Some(3)
-        );
+        let errors: u64 = hour
+            .buckets
+            .iter()
+            .filter_map(|b| b.counts)
+            .map(|c| c.llm_errors + c.mcp_errors)
+            .sum();
+        assert_eq!(errors, 2);
 
         // A new collector on the same database (an app restart) keeps the
         // longer ranges; the 10-second history starts over.

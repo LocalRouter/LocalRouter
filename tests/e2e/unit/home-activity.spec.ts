@@ -45,22 +45,21 @@ const event = (
   ...changes,
 })
 
-test('buckets become points with finished, errors and in-progress series; unknown stays unknown', () => {
+test('buckets become points with finished requests and errors; unknown stays unknown', () => {
   const points = trafficPoints(
     timeline([
-      { timestamp: base, counts: null, in_flight: null },
-      { timestamp: base + 10, counts: counts(4, 1, 2), in_flight: 3 },
+      { timestamp: base, counts: null },
+      { timestamp: base + 10, counts: counts(4, 1, 2) },
     ]),
     (base + 15) * 1000,
-    0,
   )
   expect(points).toEqual([
-    { timestamp: base * 1000, completed: null, llm: null, mcp: null, errors: null, inFlight: null, cost: null },
-    { timestamp: (base + 10) * 1000, completed: 5, llm: 4, mcp: 1, errors: 2, inFlight: 3, cost: 0.04 },
+    { timestamp: base * 1000, completed: null, llm: null, mcp: null, errors: null, cost: null, live: false },
+    { timestamp: (base + 10) * 1000, completed: 5, llm: 4, mcp: 1, errors: 2, cost: 0.04, live: true },
   ])
   expect(trafficPeak(points)).toBe(5)
-  expect(trafficPoints(null, base * 1000, 2)).toEqual([])
-  expect(trafficPoints(timeline([]), base * 1000, 2)).toEqual([])
+  expect(trafficPoints(null, base * 1000)).toEqual([])
+  expect(trafficPoints(timeline([]), base * 1000)).toEqual([])
 })
 
 test('y-axis ticks are whole numbers from zero to a round top', () => {

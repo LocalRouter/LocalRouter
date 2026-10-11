@@ -1484,8 +1484,6 @@ export interface TrafficBucket {
   timestamp: number
   /** `null` when the period is not known at this resolution. */
   counts: TrafficCounts | null
-  /** Most requests in progress at once during the bucket. */
-  in_flight: number | null
 }
 
 /**

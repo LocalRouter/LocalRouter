@@ -1,16 +1,15 @@
 import { expect, test } from '@playwright/test'
-import { applyInFlight, trafficPoints } from '../../../src/views/dashboard/activity-data'
+import { applyInFlight, livePoint, trafficPeak, trafficPoints } from '../../../src/views/dashboard/activity-data'
 import { dockTarget } from '../../../src/views/dashboard/dock'
 import { apiFromPath, llmApiFlow } from '../../../src/views/monitor/llm-api'
 import type { MonitorEventSummary, TrafficTimeline } from '../../../src/types/tauri-commands'
 
 const base = Date.parse('2026-10-09T12:00:00Z')
-const timeline = (values: number[], inFlight: number[] = []): TrafficTimeline => ({
+const timeline = (values: number[]): TrafficTimeline => ({
   bucket_secs: 10,
   buckets: values.map((value, i) => ({
     timestamp: base / 1000 + i * 10,
     counts: { llm_requests: value, llm_errors: 0, mcp_requests: 0, mcp_errors: 0, cost_usd: 0 },
-    in_flight: inFlight[i] ?? 0,
   })),
   totals: { llm_requests: 0, llm_errors: 0, mcp_requests: 0, mcp_errors: 0, cost_usd: 0 },
 })
@@ -20,26 +19,30 @@ const summary = (changes: Partial<MonitorEventSummary> = {}): MonitorEventSummar
   summary: '', question: '', answer: '', ...changes,
 })
 
-test('the live bucket shows requests running now, never less than the sampled peak', () => {
+test('only the bucket containing now is live, and the requests in progress count only there', () => {
   const now = base + 25_000
-  const live = trafficPoints(timeline([1, 2, 3], [0, 4, 1]), now, 2)
-  expect(live).toHaveLength(3)
-  expect(live[2]).toMatchObject({ timestamp: base + 20_000, completed: 3, inFlight: 2 })
-  expect(live[1].inFlight).toBe(4)
-  expect(trafficPoints(timeline([1, 2, 3], [0, 0, 5]), now, 2)[2].inFlight).toBe(5)
-  expect(trafficPoints(timeline([1, 2, 3]), now, 0)[2].inFlight).toBe(0)
+  const points = trafficPoints(timeline([1, 2, 3]), now)
+  expect(points).toHaveLength(3)
+  expect(points.map((point) => point.live)).toEqual([false, false, true])
+  expect(livePoint(points)).toMatchObject({ timestamp: base + 20_000, completed: 3 })
+  // The in-progress count raises the axis only when it is drawn at the live bucket.
+  expect(trafficPeak(points, 7)).toBe(7)
+  expect(trafficPeak(points, 2)).toBe(3)
+  expect(trafficPeak(points)).toBe(3)
 })
 
 test('a bucket rollover since the last read adds the new live bucket and keeps the window length', () => {
-  const live = trafficPoints(timeline([4, 5]), base + 21_000, 1)
+  const live = trafficPoints(timeline([4, 5]), base + 21_000)
   expect(live.map((point) => point.timestamp)).toEqual([base + 10_000, base + 20_000])
-  expect(live[1]).toMatchObject({ completed: 0, errors: 0, inFlight: 1 })
+  expect(live[1]).toMatchObject({ completed: 0, errors: 0, live: true })
+  expect(live[0].live).toBe(false)
 })
 
-test('stale timelines are not padded and do not place in-flight requests', () => {
-  const live = trafficPoints(timeline([4]), base + 7 * 24 * 3_600_000, 3)
-  expect(live).toHaveLength(1)
-  expect(live[0].inFlight).toBe(0)
+test('stale timelines are not padded and have no live bucket', () => {
+  const stale = trafficPoints(timeline([4]), base + 7 * 24 * 3_600_000)
+  expect(stale).toHaveLength(1)
+  expect(livePoint(stale)).toBeNull()
+  expect(trafficPeak(stale, 9)).toBe(4)
 })
 
 test('in-flight tracking adds pending requests and reports when one settles', () => {
