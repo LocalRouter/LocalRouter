@@ -419,7 +419,137 @@ export type FreeTierKind =
   | { kind: 'subscription' }
   | { kind: 'rate_limited_free'; max_rpm: number; max_rpd: number; max_tpm: number; max_tpd: number; max_monthly_calls: number; max_monthly_tokens: number }
   | { kind: 'credit_based'; budget_usd: number; reset_period: FreeTierResetPeriod; detection: CreditDetection }
-  | { kind: 'free_models_only'; free_model_patterns: string[]; max_rpm: number }
+  | {
+      kind: 'free_models_only'
+      /** Always free: exact ids or globs (`*` = any run of characters) */
+      free_model_patterns: string[]
+      /** Never free: exact ids or globs; checked first */
+      excluded_models?: string[]
+      /** Ordered rules; the first enabled rule that matches decides */
+      rules?: FreeModelRule[]
+      max_rpm: number
+    }
+
+/**
+ * What a matching free-model rule decides.
+ * Rust: crates/lr-config/src/types.rs - FreeModelRuleEffect enum
+ */
+export type FreeModelRuleEffect = 'include' | 'exclude' | 'unknown'
+
+/**
+ * How a model id pattern is read.
+ * Rust: crates/lr-config/src/types.rs - ModelIdPatternSyntax enum
+ */
+export type ModelIdPatternSyntax = 'exact' | 'glob' | 'regex' | 'unknown'
+
+/**
+ * Comparison of a listing field with a rule's value.
+ * Rust: crates/lr-config/src/types.rs - FieldOp enum
+ */
+export type FieldOp =
+  | 'exists'
+  | 'not_exists'
+  | 'equals'
+  | 'not_equals'
+  | 'contains'
+  | 'matches'
+  | 'lt'
+  | 'lte'
+  | 'gt'
+  | 'gte'
+  | 'unknown'
+
+/**
+ * Where a zero-price rule looks for a model's price.
+ * Rust: crates/lr-config/src/types.rs - PriceSource enum
+ */
+export type PriceSource = 'pricing_override' | 'provider_listing' | 'unknown'
+
+/**
+ * Condition of a free-model rule.
+ * Rust: crates/lr-config/src/types.rs - FreeModelCondition enum
+ */
+export type FreeModelCondition =
+  | { type: 'model_id'; pattern: string; syntax?: ModelIdPatternSyntax; case_insensitive?: boolean }
+  /** `pointer` is a JSON Pointer (RFC 6901) into the model's listing entry */
+  | { type: 'field'; pointer: string; op: FieldOp; value?: unknown }
+  /** RFC 9535 filter expression; `@` is the model's listing entry */
+  | { type: 'json_path'; expression: string }
+  | { type: 'zero_price'; sources?: PriceSource[]; input_pointer?: string | null; output_pointer?: string | null }
+  | { type: 'unsupported' }
+
+/**
+ * One free-model rule.
+ * Rust: crates/lr-config/src/types.rs - FreeModelRule struct
+ */
+export interface FreeModelRule {
+  enabled?: boolean
+  effect?: FreeModelRuleEffect
+  when: FreeModelCondition
+  label?: string | null
+}
+
+/**
+ * What decided whether a model is free.
+ * Rust: crates/lr-providers/src/free_models.rs - DecidedBy enum
+ */
+export type FreeModelDecidedBy =
+  | 'no_free_tier'
+  | 'provider'
+  | 'price_override'
+  | 'excluded_list'
+  | 'included_list'
+  | 'rule'
+  | 'no_rule'
+
+/**
+ * Whether a model is free for free-tier-only strategies, and why.
+ * Rust: crates/lr-providers/src/free_models.rs - FreeModelDecision struct
+ * (ModelFreeTierInfo in src-tauri/src/ui/commands_providers.rs)
+ */
+export interface ModelFreeTierInfo {
+  is_free: boolean
+  decided_by: FreeModelDecidedBy
+  rule_index: number | null
+  reason: string
+}
+
+/**
+ * A problem with a free-model rule or list entry.
+ * Rust: crates/lr-providers/src/free_models.rs - RuleError struct
+ */
+export interface FreeModelRuleError {
+  /** The rule, or null for the always-free / never-free lists */
+  rule_index: number | null
+  field: string
+  message: string
+}
+
+/**
+ * One model in the free-model rules preview.
+ * Rust: src-tauri/src/ui/commands_free_tier.rs - FreeModelPreviewRow struct
+ */
+export interface FreeModelPreviewRow {
+  model_id: string
+  name: string
+  enabled: boolean
+  has_metadata: boolean
+  free: ModelFreeTierInfo
+}
+
+/**
+ * Result of preview_free_model_rules.
+ * Rust: src-tauri/src/ui/commands_free_tier.rs - FreeModelRulesPreview struct
+ */
+export interface FreeModelRulesPreview {
+  models: FreeModelPreviewRow[]
+  errors: FreeModelRuleError[]
+  /** Per rule: how many models its condition matches */
+  rule_matches: number[]
+  free_count: number
+  discovery_error: string | null
+  metadata_available: boolean
+}
 
 /**
  * Provider free tier status for UI display.
@@ -924,11 +1054,23 @@ export interface ModelCapabilities {
 }
 
 /**
- * Detailed model info with pricing.
+ * Detailed model info with pricing and free-tier status.
  * Rust: src-tauri/src/ui/commands_providers.rs - DetailedModelInfo struct
  */
-export interface DetailedModelInfo extends ModelInfo {
-  pricing?: ModelPricing | null
+export interface DetailedModelInfo {
+  model_id: string
+  provider_instance: string
+  provider_type: string
+  capabilities: string[]
+  context_window: number
+  supports_streaming: boolean
+  input_price_per_million?: number | null
+  output_price_per_million?: number | null
+  parameter_count?: string | null
+  /** Rust: PricingSource enum */
+  pricing_source?: 'catalog' | 'override' | 'listing' | null
+  /** Whether the model counts as free under its provider's free tier */
+  free_tier_model?: ModelFreeTierInfo | null
 }
 
 /**
@@ -3570,6 +3712,18 @@ export interface PullProviderModelParams {
 export interface SetProviderFreeTierParams {
   providerInstance: string
   freeTier: FreeTierKind | null
+}
+
+/** Params for preview_free_model_rules */
+export interface PreviewFreeModelRulesParams {
+  instanceName: string
+  freeTier: FreeTierKind
+}
+
+/** Params for get_provider_model_metadata (returns the raw JSON entry or null) */
+export interface GetProviderModelMetadataParams {
+  instanceName: string
+  modelId: string
 }
 
 /** Params for reset_provider_free_tier_usage */

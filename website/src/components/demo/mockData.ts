@@ -190,6 +190,14 @@ export const mockData = {
       display_name: "FastFlowLM",
       api_key_set: false,
     },
+    {
+      instance_name: "free-ai",
+      provider_type: "openai_compatible",
+      enabled: true,
+      display_name: "Free.ai",
+      api_key_set: true,
+      base_url: "https://api.free.ai/v1",
+    },
   ],
 
   providerTypes: [
@@ -293,7 +301,7 @@ export const mockData = {
       setup_parameters: [
         { key: "api_key", param_type: "string", required: true, description: "OpenRouter API key", sensitive: true },
       ],
-      default_free_tier: { kind: "free_models_only", free_model_patterns: [":free"], max_rpm: 20 },
+      default_free_tier: { kind: "free_models_only", free_model_patterns: [], rules: [{ enabled: true, effect: "include", when: { type: "zero_price", sources: ["provider_listing"] } }], max_rpm: 20 },
       free_tier_short_text: "Free models: 20 req/min",
       free_tier_long_text: "1 free model. Rate-limited to 20 req/min.\n\nFree tier provides access to 25+ free models (model IDs ending in ':free') at 20 RPM / 50 RPD. Purchasing $10+ in credits unlocks 1,000 RPD on free models. BYOK gives 1M free requests/month.",
       free_tier_notes: "Free tier provides access to 25+ free models (model IDs ending in ':free') at 20 RPM / 50 RPD. Purchasing $10+ in credits unlocks 1,000 RPD on free models. BYOK gives 1M free requests/month.",
@@ -627,8 +635,8 @@ export const mockData = {
       ],
       default_free_tier: { kind: "always_free_local" },
       free_tier_short_text: "Free — runs locally",
-      free_tier_long_text: "Depends on the upstream service. Local services run entirely on your machine.",
-      free_tier_notes: null,
+      free_tier_long_text: "Local and self-hosted services. No external billing; always free with no limits.\n\nFree when the base URL is on this machine (localhost). Remote APIs have no free tier until you set one on the provider's Free Tier tab.",
+      free_tier_notes: "Free when the base URL is on this machine (localhost). Remote APIs have no free tier until you set one on the provider's Free Tier tab.",
     },
       {
       provider_type: "opencode_zen",
@@ -1058,6 +1066,18 @@ export const mockData = {
     { id: "llama3.2:3b", provider: "fastflowlm-npu", display_name: "llama3.2:3b", context_length: 65536 },
     { id: "qwen3:8b", provider: "fastflowlm-npu", display_name: "qwen3:8b", context_length: 16384 },
     { id: "gemma3:4b", provider: "fastflowlm-npu", display_name: "gemma3:4b", context_length: 65536 },
+    // Free.ai: a remote gateway whose model list marks tiers and prices
+    ...[
+      ["llama-3.3-70b", "Llama 3.3 70B", 131072],
+      ["qwen3-32b", "Qwen3 32B", 40960],
+      ["gemma-3-27b-preview", "Gemma 3 27B (preview)", 131072],
+      ["gpt-oss-120b", "gpt-oss 120B", 131072],
+      ["deepseek-r1", "DeepSeek R1", 163840],
+      ["mistral-large", "Mistral Large", 131072],
+      ["kimi-k2", "Kimi K2", 131072],
+      ["bge-m3", "BGE M3", 8192],
+      ["flux-schnell", "FLUX.1 schnell", 512],
+    ].map(([id, name, ctx]) => ({ id: id as string, provider: "free-ai", display_name: name as string, context_length: ctx as number })),
   ],
 
   stats: {
@@ -1109,6 +1129,7 @@ export const mockData = {
       "gemini-google": { status: "healthy" as const, name: "Gemini", latency_ms: 198, last_check: new Date().toISOString() },
       "groq-fast": { status: "healthy" as const, name: "Groq (Fast)", latency_ms: 89, last_check: new Date().toISOString() },
       "openrouter-backup": { status: "unknown" as const, name: "OpenRouter (Backup)", latency_ms: null, last_check: null },
+      "free-ai": { status: "healthy" as const, name: "Free.ai", latency_ms: 167, last_check: new Date().toISOString() },
     },
     mcp_servers: {
       "mcp-github": { status: "healthy" as const, name: "GitHub", latency_ms: 156, last_check: new Date().toISOString() },

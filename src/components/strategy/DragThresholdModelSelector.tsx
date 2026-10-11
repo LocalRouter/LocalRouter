@@ -32,7 +32,7 @@ import { CSS } from "@dnd-kit/utilities"
 import { GripVertical, Zap, Ban, Search, ChevronRight, ChevronDown, ArrowUpDown } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { ModelPricingBadge } from "@/components/shared/model-pricing-badge"
-import type { FreeTierKind } from "@/types/tauri-commands"
+import type { FreeTierKind, ModelFreeTierInfo } from "@/types/tauri-commands"
 
 export interface Model {
   id: string
@@ -66,6 +66,8 @@ const parseParamCount = (s: string): number => {
 export interface ModelPricingInfo {
   input?: number | null
   output?: number | null
+  /** Whether the model is free under its provider's free tier (per model) */
+  free?: ModelFreeTierInfo | null
 }
 
 interface DragThresholdModelSelectorProps {
@@ -220,6 +222,7 @@ function SortableRow({
           inputPricePerMillion={pricing.input}
           outputPricePerMillion={pricing.output}
           freeTierKind={freeTierKind}
+          freeModel={pricing.free}
         />
       )}
     </div>
@@ -268,6 +271,7 @@ function DragOverlayItem({
           inputPricePerMillion={pricing.input}
           outputPricePerMillion={pricing.output}
           freeTierKind={freeTierKind}
+          freeModel={pricing.free}
         />
       )}
     </div>

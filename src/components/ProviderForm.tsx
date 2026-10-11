@@ -27,6 +27,8 @@ export interface ProviderType {
   category: ProviderCategory
   description: string
   setup_parameters: SetupParameter[]
+  /** Rust: ProviderTypeInfo.default_free_tier */
+  default_free_tier?: { kind: string }
   free_tier_short_text?: string
   free_tier_long_text?: string
   docs_url?: string | null

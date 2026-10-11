@@ -8,7 +8,7 @@ import { LocalModelsTab } from "@/components/providers/LocalModelsTab"
 import { EngineModelsTab } from "@/components/providers/EngineModelsTab"
 import { ProviderModelsTab } from "@/components/providers/ProviderModelsTab"
 import { toast } from "sonner"
-import { CheckCircle, XCircle, AlertCircle, Plus, Loader2, RefreshCw, FlaskConical, Grid, Settings, ArrowLeft, Eye, EyeOff, Coins, Pencil, RotateCcw, Copy, Trash2, ExternalLink, Terminal, Boxes, Search } from "lucide-react"
+import { CheckCircle, XCircle, AlertCircle, Plus, Loader2, RefreshCw, FlaskConical, Grid, Settings, ArrowLeft, Eye, EyeOff, Copy, Trash2, ExternalLink, Terminal, Boxes, Search } from "lucide-react"
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import {
   Tooltip,
@@ -26,14 +26,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
 import { Input } from "@/components/ui/Input"
 import { Textarea } from "@/components/ui/textarea"
-import { Checkbox } from "@/components/ui/checkbox"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/Select"
 import {
   Dialog,
   DialogContent,
@@ -51,32 +43,14 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import ProviderForm, { ProviderType } from "@/components/ProviderForm"
+import { ProviderFreeTierTab } from "@/views/resources/provider-free-tier"
 import { OAuthSettingsControls, OAUTH_PROVIDER_MAP } from "@/components/OAuthSettingsControls"
-import { useIncrementalModels } from "@/hooks/useIncrementalModels"
 import ProviderIcon from "@/components/ProviderIcon"
 import { LlmTab } from "@/views/try-it-out/llm-tab"
 import { cn } from "@/lib/utils"
-import type { FreeTierKind, ProviderFreeTierStatus, ProviderFeatureSupport, GetProviderFeatureSupportParams, ListProviderModelsDetailedParams, ListProviderModelsManagedParams, ProviderManagedModels } from "@/types/tauri-commands"
-import { ModelPricingBadge } from "@/components/shared/model-pricing-badge"
+import type { DetailedModelInfo, ProviderFreeTierStatus, ProviderFeatureSupport, GetProviderFeatureSupportParams, ListProviderModelsDetailedParams, ListProviderModelsManagedParams, ProviderManagedModels } from "@/types/tauri-commands"
+import { ModelPricingBadge, FREE_TIER_LABELS, pricingSourceLabel } from "@/components/shared/model-pricing-badge"
 import { ProviderFeatureTable } from "@/components/shared/feature-support-matrix"
-
-const FREE_TIER_LABELS: Record<string, string> = {
-  none: 'No Free Tier',
-  always_free_local: 'Always Free (Local)',
-  subscription: 'Subscription',
-  rate_limited_free: 'Rate Limited',
-  credit_based: 'Credit Based',
-  free_models_only: 'Free Models Only',
-}
-
-const FREE_TIER_DESCRIPTIONS: Record<string, string> = {
-  none: 'This provider has no free tier. All requests are treated as paid. The provider is always skipped when a strategy has free-tier mode enabled.',
-  always_free_local: 'Local or self-hosted provider with no external billing. Always treated as free with no usage limits tracked. Use for Ollama, LM Studio, or other locally-running models.',
-  subscription: 'Included in an existing subscription (e.g. GitHub Copilot). Always treated as free. No usage counters are tracked.',
-  rate_limited_free: 'Free access within rate limits (requests per minute/day, tokens per minute/day, monthly caps). The router tracks usage against these limits and skips the provider when any limit is reached. Used by Gemini, Groq, Cerebras, Mistral, and Cohere.',
-  credit_based: 'Dollar-budget credits that are consumed per request. The router estimates cost from token usage and compares against the budget. When credits run out, the provider is skipped. Used by OpenRouter, xAI, DeepInfra, and Perplexity.',
-  free_models_only: 'Only specific models from this provider are free. The router checks each model ID against the configured patterns. Models that don\'t match are treated as paid and skipped in free-tier mode. Used by Together AI.',
-}
 
 const PROVIDER_STATUS_PAGES: Record<string, string> = {
   openai: "https://status.openai.com",
@@ -115,18 +89,7 @@ export interface HealthCheckEvent {
 }
 
 
-interface DetailedModel {
-  model_id: string
-  provider_instance: string
-  provider_type: string
-  capabilities: string[]
-  context_window: number
-  supports_streaming: boolean
-  input_price_per_million?: number
-  output_price_per_million?: number
-  parameter_count?: string
-  pricing_source?: string
-}
+type DetailedModel = DetailedModelInfo
 
 interface ProvidersPanelProps {
   selectedId: string | null
@@ -157,11 +120,6 @@ export function ProvidersPanel({
   const [providerTypes, setProviderTypes] = useState<ProviderType[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState("")
-  const { models: allIncrementalModels } = useIncrementalModels()
-  // Derive per-provider models from the incremental cache
-  const models = selectedId
-    ? allIncrementalModels.filter(m => m.provider === selectedId)
-    : []
 
   // Dialog states
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
@@ -184,16 +142,6 @@ export function ProvidersPanel({
 
   // Free tier state
   const [freeTierStatus, setFreeTierStatus] = useState<Record<string, ProviderFreeTierStatus>>({})
-  const [freeTierOverrideEditing, setFreeTierOverrideEditing] = useState(false)
-  const [freeTierOverrideKind, setFreeTierOverrideKind] = useState<FreeTierKind>({ kind: 'none' })
-  const [setUsageDialogOpen, setSetUsageDialogOpen] = useState(false)
-  const [setUsageValues, setSetUsageValues] = useState<{
-    creditUsedUsd: string
-    creditRemainingUsd: string
-    dailyRequests: string
-    monthlyRequests: string
-    monthlyTokens: string
-  }>({ creditUsedUsd: '', creditRemainingUsd: '', dailyRequests: '', monthlyRequests: '', monthlyTokens: '' })
 
   // Create form state
   const [dialogPage, setDialogPage] = useState<"select" | "configure">("select")
@@ -344,8 +292,8 @@ export function ProvidersPanel({
   // Load free tier status for a provider
   const loadFreeTierStatus = useCallback(async (instanceName: string) => {
     try {
-      const statuses = await invoke<any[]>("get_free_tier_status")
-      const status = statuses.find((s: any) => s.provider_instance === instanceName)
+      const statuses = await invoke<ProviderFreeTierStatus[]>("get_free_tier_status")
+      const status = statuses.find((s) => s.provider_instance === instanceName)
       if (status) {
         setFreeTierStatus(prev => ({ ...prev, [instanceName]: status }))
       }
@@ -353,47 +301,6 @@ export function ProvidersPanel({
       console.error("Failed to load free tier status:", error)
     }
   }, [])
-
-  const saveFreeTierOverride = useCallback(async (instanceName: string, freeTier: FreeTierKind | null) => {
-    try {
-      await invoke("set_provider_free_tier", {
-        providerInstance: instanceName,
-        freeTier,
-      })
-      toast.success(freeTier ? "Free tier override saved" : "Reset to provider default")
-      setFreeTierOverrideEditing(false)
-      loadFreeTierStatus(instanceName)
-    } catch (error) {
-      console.error("Failed to save free tier override:", error)
-      toast.error("Failed to save free tier override")
-    }
-  }, [loadFreeTierStatus])
-
-  const saveSetUsage = useCallback(async (instanceName: string, kind: string) => {
-    try {
-      const params: Record<string, unknown> = { providerInstance: instanceName }
-      if (kind === 'credit_based') {
-        params.creditUsedUsd = setUsageValues.creditUsedUsd ? parseFloat(setUsageValues.creditUsedUsd) : null
-        params.creditRemainingUsd = setUsageValues.creditRemainingUsd ? parseFloat(setUsageValues.creditRemainingUsd) : null
-        params.dailyRequests = null
-        params.monthlyRequests = null
-        params.monthlyTokens = null
-      } else {
-        params.creditUsedUsd = null
-        params.creditRemainingUsd = null
-        params.dailyRequests = setUsageValues.dailyRequests ? parseInt(setUsageValues.dailyRequests) : null
-        params.monthlyRequests = setUsageValues.monthlyRequests ? parseInt(setUsageValues.monthlyRequests) : null
-        params.monthlyTokens = setUsageValues.monthlyTokens ? parseInt(setUsageValues.monthlyTokens) : null
-      }
-      await invoke("set_provider_free_tier_usage", params)
-      toast.success("Usage updated")
-      setSetUsageDialogOpen(false)
-      loadFreeTierStatus(instanceName)
-    } catch (error) {
-      console.error("Failed to set usage:", error)
-      toast.error("Failed to set usage")
-    }
-  }, [setUsageValues, loadFreeTierStatus])
 
   const handleToggle = async (provider: Provider) => {
     try {
@@ -885,6 +792,7 @@ export function ProvidersPanel({
                                           inputPricePerMillion={model.input_price_per_million}
                                           outputPricePerMillion={model.output_price_per_million}
                                           freeTierKind={ftStatus?.free_tier}
+                                          freeModel={model.free_tier_model}
                                         />
                                         {model.context_window > 0 && (
                                           <Badge variant="secondary" className="text-xs whitespace-nowrap">
@@ -927,7 +835,7 @@ export function ProvidersPanel({
                                           {model.pricing_source && (
                                             <div>
                                               <p className="text-muted-foreground text-xs">Pricing Source</p>
-                                              <p className="font-medium capitalize">{model.pricing_source}</p>
+                                              <p className="font-medium">{pricingSourceLabel(model.pricing_source)}</p>
                                             </div>
                                           )}
                                         </div>
@@ -937,6 +845,7 @@ export function ProvidersPanel({
                                             inputPricePerMillion={model.input_price_per_million}
                                             outputPricePerMillion={model.output_price_per_million}
                                             freeTierKind={ftStatus?.free_tier}
+                                            freeModel={model.free_tier_model}
                                             variant="full"
                                           />
                                         </div>
@@ -957,9 +866,18 @@ export function ProvidersPanel({
                                             <p className="text-muted-foreground text-xs mb-1">Free Tier</p>
                                             <div className="text-sm space-y-1">
                                               <div className="flex items-center gap-2">
-                                                <span className="inline-block h-2 w-2 rounded-full bg-green-500" />
+                                                <span className={cn(
+                                                  "inline-block h-2 w-2 rounded-full",
+                                                  model.free_tier_model?.is_free === false ? "bg-muted-foreground/50" : "bg-green-500",
+                                                )} />
                                                 <span className="font-medium text-xs">{FREE_TIER_LABELS[ftStatus.free_tier.kind]}</span>
                                               </div>
+                                              {model.free_tier_model && (
+                                                <p className="text-xs text-muted-foreground">
+                                                  {model.free_tier_model.is_free ? "Free: " : "Not free: "}
+                                                  {model.free_tier_model.reason}
+                                                </p>
+                                              )}
                                               {ftStatus.free_tier.kind === "rate_limited_free" && (
                                                 <div className="flex gap-3 text-xs">
                                                   {ftStatus.rate_rpm_limit != null && (
@@ -1191,519 +1109,14 @@ export function ProvidersPanel({
                   </TabsContent>
 
                   <TabsContent value="free-tier">
-                    <div className="space-y-6">
-                      {/* Configuration Card */}
-                      <Card>
-                        <CardHeader>
-                          <CardTitle className="flex items-center gap-2">
-                            <Coins className="h-4 w-4" />
-                            Free Tier Configuration
-                          </CardTitle>
-                          <CardDescription>
-                            Configure how this provider's free tier is tracked
-                          </CardDescription>
-                          {(() => {
-                            const typeInfo = providerTypes.find(t => t.provider_type === selectedProvider.provider_type)
-                            return typeInfo?.free_tier_long_text ? (
-                              <p className="text-sm text-muted-foreground mt-1">{typeInfo.free_tier_long_text}</p>
-                            ) : null
-                          })()}
-                        </CardHeader>
-                        <CardContent>
-                          {(() => {
-                            const status = freeTierStatus[selectedProvider.instance_name]
-                            if (!status) {
-                              return (
-                                <div className="flex items-center gap-2 text-muted-foreground">
-                                  <Loader2 className="h-4 w-4 animate-spin" />
-                                  <span>Loading free tier status...</span>
-                                </div>
-                              )
-                            }
-
-                            const kind = status.free_tier?.kind
-
-                            return (
-                              <div className="space-y-4">
-                                {/* Type + Override Toggle */}
-                                <div className="flex items-center gap-2">
-                                  <span className="text-sm font-medium">Type</span>
-                                  <TooltipProvider delayDuration={300}>
-                                    <Tooltip>
-                                      <TooltipTrigger asChild>
-                                        <span>
-                                          <Badge variant={
-                                            kind === 'always_free_local' ? 'default' :
-                                            kind === 'subscription' ? 'default' :
-                                            kind === 'none' ? 'secondary' :
-                                            'outline'
-                                          } className="cursor-help">
-                                            {FREE_TIER_LABELS[kind ?? 'none'] ?? 'No Free Tier'}
-                                          </Badge>
-                                        </span>
-                                      </TooltipTrigger>
-                                      <TooltipContent side="bottom" className="max-w-xs text-xs">
-                                        {FREE_TIER_DESCRIPTIONS[kind ?? 'none']}
-                                      </TooltipContent>
-                                    </Tooltip>
-                                  </TooltipProvider>
-                                  {status.is_user_override && (
-                                    <Badge variant="outline" className="text-xs">Override</Badge>
-                                  )}
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    onClick={() => {
-                                      if (freeTierOverrideEditing) {
-                                        setFreeTierOverrideEditing(false)
-                                      } else {
-                                        setFreeTierOverrideKind(status.free_tier ?? { kind: 'none' })
-                                        setFreeTierOverrideEditing(true)
-                                      }
-                                    }}
-                                  >
-                                    <Pencil className="h-3.5 w-3.5 mr-1" />
-                                    {freeTierOverrideEditing ? 'Cancel' : 'Edit'}
-                                  </Button>
-                                </div>
-
-                                {/* Override Editor */}
-                                {freeTierOverrideEditing && (
-                                  <div className="space-y-3 p-3 rounded-md border bg-muted/30">
-                                    <div className="space-y-1.5">
-                                      <label className="text-xs font-medium text-muted-foreground">Free Tier Type</label>
-                                      <Select
-                                        value={freeTierOverrideKind.kind}
-                                        onValueChange={(value) => {
-                                          switch (value) {
-                                            case 'none': setFreeTierOverrideKind({ kind: 'none' }); break
-                                            case 'always_free_local': setFreeTierOverrideKind({ kind: 'always_free_local' }); break
-                                            case 'subscription': setFreeTierOverrideKind({ kind: 'subscription' }); break
-                                            case 'rate_limited_free': setFreeTierOverrideKind({ kind: 'rate_limited_free', max_rpm: 30, max_rpd: 14400, max_tpm: 6000, max_tpd: 0, max_monthly_calls: 0, max_monthly_tokens: 0 }); break
-                                            case 'credit_based': setFreeTierOverrideKind({ kind: 'credit_based', budget_usd: 5.0, reset_period: 'monthly', detection: { type: 'local_only' } }); break
-                                            case 'free_models_only': setFreeTierOverrideKind({ kind: 'free_models_only', free_model_patterns: [], max_rpm: 3 }); break
-                                          }
-                                        }}
-                                      >
-                                        <SelectTrigger className="h-8 text-xs">
-                                          <SelectValue />
-                                        </SelectTrigger>
-                                        <SelectContent>
-                                          {([
-                                            ['none', 'No Free Tier'],
-                                            ['always_free_local', 'Always Free (Local)'],
-                                            ['subscription', 'Subscription'],
-                                            ['rate_limited_free', 'Rate Limited'],
-                                            ['credit_based', 'Credit Based'],
-                                            ['free_models_only', 'Free Models Only'],
-                                          ] as const).map(([value, label]) => (
-                                            <SelectItem key={value} value={value} className="text-xs py-2">
-                                              <div>
-                                                <div className="font-medium">{label}</div>
-                                                <div className="text-[11px] text-muted-foreground font-normal mt-0.5 whitespace-normal break-words">{FREE_TIER_DESCRIPTIONS[value]}</div>
-                                              </div>
-                                            </SelectItem>
-                                          ))}
-                                        </SelectContent>
-                                      </Select>
-                                    </div>
-
-                                    {/* Rate Limited fields */}
-                                    {freeTierOverrideKind.kind === 'rate_limited_free' && (
-                                      <div className="space-y-3">
-                                        <div className="grid grid-cols-2 gap-2">
-                                          <div className="space-y-1">
-                                            <label className="text-xs text-muted-foreground">Requests per Minute (RPM)</label>
-                                            <Input type="number" className="h-7 text-xs" value={freeTierOverrideKind.max_rpm}
-                                              onChange={(e) => setFreeTierOverrideKind({ ...freeTierOverrideKind, max_rpm: parseInt(e.target.value) || 0 })} />
-                                          </div>
-                                          <div className="space-y-1">
-                                            <label className="text-xs text-muted-foreground">Requests per Day (RPD)</label>
-                                            <Input type="number" className="h-7 text-xs" value={freeTierOverrideKind.max_rpd}
-                                              onChange={(e) => setFreeTierOverrideKind({ ...freeTierOverrideKind, max_rpd: parseInt(e.target.value) || 0 })} />
-                                          </div>
-                                          <div className="space-y-1">
-                                            <label className="text-xs text-muted-foreground">Tokens per Minute (TPM)</label>
-                                            <Input type="number" className="h-7 text-xs" value={freeTierOverrideKind.max_tpm}
-                                              onChange={(e) => setFreeTierOverrideKind({ ...freeTierOverrideKind, max_tpm: parseInt(e.target.value) || 0 })} />
-                                          </div>
-                                          <div className="space-y-1">
-                                            <label className="text-xs text-muted-foreground">Tokens per Day (TPD)</label>
-                                            <Input type="number" className="h-7 text-xs" value={freeTierOverrideKind.max_tpd}
-                                              onChange={(e) => setFreeTierOverrideKind({ ...freeTierOverrideKind, max_tpd: parseInt(e.target.value) || 0 })} />
-                                          </div>
-                                          <div className="space-y-1">
-                                            <label className="text-xs text-muted-foreground">Monthly Call Limit</label>
-                                            <Input type="number" className="h-7 text-xs" value={freeTierOverrideKind.max_monthly_calls}
-                                              onChange={(e) => setFreeTierOverrideKind({ ...freeTierOverrideKind, max_monthly_calls: parseInt(e.target.value) || 0 })} />
-                                          </div>
-                                          <div className="space-y-1">
-                                            <label className="text-xs text-muted-foreground">Monthly Token Limit</label>
-                                            <Input type="number" className="h-7 text-xs" value={freeTierOverrideKind.max_monthly_tokens}
-                                              onChange={(e) => setFreeTierOverrideKind({ ...freeTierOverrideKind, max_monthly_tokens: parseInt(e.target.value) || 0 })} />
-                                          </div>
-                                        </div>
-                                        <p className="text-xs text-muted-foreground">Set to 0 to disable tracking for that limit. The router also reads rate limit headers from provider responses when available, which take precedence over these configured limits.</p>
-                                      </div>
-                                    )}
-
-                                    {/* Credit Based fields */}
-                                    {freeTierOverrideKind.kind === 'credit_based' && (
-                                      <div className="space-y-2">
-                                        <div className="grid grid-cols-2 gap-2">
-                                          <div className="space-y-1">
-                                            <label className="text-xs text-muted-foreground">Credit Budget (USD)</label>
-                                            <Input type="number" step="0.01" className="h-7 text-xs" value={freeTierOverrideKind.budget_usd}
-                                              onChange={(e) => setFreeTierOverrideKind({ ...freeTierOverrideKind, budget_usd: parseFloat(e.target.value) || 0 })} />
-                                          </div>
-                                          <div className="space-y-1">
-                                            <label className="text-xs text-muted-foreground">Reset Period</label>
-                                            <Select
-                                              value={freeTierOverrideKind.reset_period}
-                                              onValueChange={(value: 'daily' | 'monthly' | 'never') => setFreeTierOverrideKind({ ...freeTierOverrideKind, reset_period: value })}
-                                            >
-                                              <SelectTrigger className="h-7 text-xs">
-                                                <SelectValue />
-                                              </SelectTrigger>
-                                              <SelectContent>
-                                                <SelectItem value="daily" className="text-xs">Daily</SelectItem>
-                                                <SelectItem value="monthly" className="text-xs">Monthly</SelectItem>
-                                                <SelectItem value="never" className="text-xs">One-time (no reset)</SelectItem>
-                                              </SelectContent>
-                                            </Select>
-                                          </div>
-                                        </div>
-                                        <p className="text-xs text-muted-foreground">The router estimates cost from token usage and model pricing. When estimated spend reaches the budget, the provider is skipped. Use "Set Usage" below to sync with your actual balance from the provider dashboard.</p>
-                                      </div>
-                                    )}
-
-                                    {/* Free Models Only fields */}
-                                    {freeTierOverrideKind.kind === 'free_models_only' && (
-                                      <div className="space-y-3">
-                                        <div className="space-y-1.5">
-                                          <label className="text-xs text-muted-foreground">Free Models</label>
-                                          {models.length > 0 ? (
-                                            <div className="rounded-md border max-h-48 overflow-y-auto">
-                                              {models.map((model) => {
-                                                const isSelected = freeTierOverrideKind.free_model_patterns.includes(model.id)
-                                                return (
-                                                  <div
-                                                    key={model.id}
-                                                    className="flex items-center gap-2.5 px-3 py-1.5 cursor-pointer hover:bg-muted/50 border-b last:border-b-0"
-                                                    onClick={() => {
-                                                      const patterns = new Set(freeTierOverrideKind.free_model_patterns)
-                                                      if (isSelected) {
-                                                        patterns.delete(model.id)
-                                                      } else {
-                                                        patterns.add(model.id)
-                                                      }
-                                                      setFreeTierOverrideKind({
-                                                        ...freeTierOverrideKind,
-                                                        free_model_patterns: Array.from(patterns),
-                                                      })
-                                                    }}
-                                                  >
-                                                    <Checkbox checked={isSelected} onCheckedChange={() => {}} />
-                                                    <span className="text-xs truncate">{model.name || model.id}</span>
-                                                  </div>
-                                                )
-                                              })}
-                                            </div>
-                                          ) : (
-                                            <p className="text-xs text-muted-foreground italic py-2">No models loaded for this provider. Models will appear here once the provider is connected.</p>
-                                          )}
-                                          <p className="text-xs text-muted-foreground">
-                                            {freeTierOverrideKind.free_model_patterns.length > 0
-                                              ? `${freeTierOverrideKind.free_model_patterns.length} model${freeTierOverrideKind.free_model_patterns.length === 1 ? '' : 's'} selected as free. All other models from this provider will be skipped in free-tier mode.`
-                                              : 'Select which models are free. Unselected models will be skipped in free-tier mode.'}
-                                          </p>
-                                        </div>
-                                        <div className="space-y-1">
-                                          <label className="text-xs text-muted-foreground">Requests per Minute (RPM)</label>
-                                          <Input type="number" className="h-7 text-xs" value={freeTierOverrideKind.max_rpm}
-                                            onChange={(e) => setFreeTierOverrideKind({ ...freeTierOverrideKind, max_rpm: parseInt(e.target.value) || 0 })} />
-                                          <p className="text-xs text-muted-foreground">Rate limit applied to the free models. Set to 0 to disable.</p>
-                                        </div>
-                                      </div>
-                                    )}
-
-                                    {/* Save / Reset to Default buttons */}
-                                    <div className="flex gap-2 pt-2">
-                                      <Button
-                                        size="sm"
-                                        onClick={() => saveFreeTierOverride(selectedProvider.instance_name, freeTierOverrideKind)}
-                                      >
-                                        Save Override
-                                      </Button>
-                                      {status.is_user_override && (
-                                        <Button
-                                          variant="outline"
-                                          size="sm"
-                                          onClick={() => saveFreeTierOverride(selectedProvider.instance_name, null)}
-                                        >
-                                          <RotateCcw className="h-3.5 w-3.5 mr-1" />
-                                          Reset to Default
-                                        </Button>
-                                      )}
-                                    </div>
-                                  </div>
-                                )}
-                              </div>
-                            )
-                          })()}
-                        </CardContent>
-                      </Card>
-
-                      {/* Usage & Status Card */}
-                      <Card>
-                        <CardHeader>
-                          <CardTitle className="text-sm">Usage & Status</CardTitle>
-                        </CardHeader>
-                        <CardContent>
-                          {(() => {
-                            const status = freeTierStatus[selectedProvider.instance_name]
-                            if (!status) return null
-
-                            const kind = status.free_tier?.kind
-                            return (
-                              <div className="space-y-4">
-                                {/* Free tier status */}
-                                <div className="flex items-center justify-between">
-                                  <span className="text-sm font-medium">Free Tier</span>
-                                  <span className={`text-sm ${status.has_capacity ? 'text-green-600' : 'text-red-600'}`}>
-                                    {status.status_message || (status.has_capacity ? 'Available' : 'Exhausted')}
-                                  </span>
-                                </div>
-
-                                {/* Rate limit details */}
-                                {kind === 'rate_limited_free' && (
-                                  <div className="space-y-3 pt-2 border-t">
-                                    <span className="text-sm font-medium">Usage</span>
-                                    {status.rate_rpm_limit != null && (
-                                      <div>
-                                        <div className="flex justify-between text-xs mb-1">
-                                          <span className="text-muted-foreground">Requests/min</span>
-                                          <span>{status.rate_rpm_used ?? 0} / {status.rate_rpm_limit}</span>
-                                        </div>
-                                        <div className="h-1.5 rounded-full bg-muted overflow-hidden">
-                                          <div
-                                            className={`h-full rounded-full ${
-                                              (status.rate_rpm_used ?? 0) / status.rate_rpm_limit > 0.9 ? 'bg-red-500' :
-                                              (status.rate_rpm_used ?? 0) / status.rate_rpm_limit > 0.7 ? 'bg-amber-500' :
-                                              'bg-green-500'
-                                            }`}
-                                            style={{ width: `${Math.min(100, ((status.rate_rpm_used ?? 0) / status.rate_rpm_limit) * 100)}%` }}
-                                          />
-                                        </div>
-                                      </div>
-                                    )}
-                                    {status.rate_rpd_limit != null && (
-                                      <div>
-                                        <div className="flex justify-between text-xs mb-1">
-                                          <span className="text-muted-foreground">Requests/day</span>
-                                          <span>{status.rate_rpd_used ?? 0} / {status.rate_rpd_limit}</span>
-                                        </div>
-                                        <div className="h-1.5 rounded-full bg-muted overflow-hidden">
-                                          <div
-                                            className={`h-full rounded-full ${
-                                              (status.rate_rpd_used ?? 0) / status.rate_rpd_limit > 0.9 ? 'bg-red-500' :
-                                              (status.rate_rpd_used ?? 0) / status.rate_rpd_limit > 0.7 ? 'bg-amber-500' :
-                                              'bg-green-500'
-                                            }`}
-                                            style={{ width: `${Math.min(100, ((status.rate_rpd_used ?? 0) / status.rate_rpd_limit) * 100)}%` }}
-                                          />
-                                        </div>
-                                      </div>
-                                    )}
-                                    {status.rate_tpm_limit != null && (
-                                      <div>
-                                        <div className="flex justify-between text-xs mb-1">
-                                          <span className="text-muted-foreground">Tokens/min</span>
-                                          <span>{(status.rate_tpm_used ?? 0).toLocaleString()} / {status.rate_tpm_limit.toLocaleString()}</span>
-                                        </div>
-                                        <div className="h-1.5 rounded-full bg-muted overflow-hidden">
-                                          <div
-                                            className={`h-full rounded-full ${
-                                              (status.rate_tpm_used ?? 0) / status.rate_tpm_limit > 0.9 ? 'bg-red-500' :
-                                              (status.rate_tpm_used ?? 0) / status.rate_tpm_limit > 0.7 ? 'bg-amber-500' :
-                                              'bg-green-500'
-                                            }`}
-                                            style={{ width: `${Math.min(100, ((status.rate_tpm_used ?? 0) / status.rate_tpm_limit) * 100)}%` }}
-                                          />
-                                        </div>
-                                      </div>
-                                    )}
-                                    {status.rate_tpd_limit != null && (
-                                      <div>
-                                        <div className="flex justify-between text-xs mb-1">
-                                          <span className="text-muted-foreground">Tokens/day</span>
-                                          <span>{(status.rate_tpd_used ?? 0).toLocaleString()} / {status.rate_tpd_limit.toLocaleString()}</span>
-                                        </div>
-                                        <div className="h-1.5 rounded-full bg-muted overflow-hidden">
-                                          <div
-                                            className={`h-full rounded-full ${
-                                              (status.rate_tpd_used ?? 0) / status.rate_tpd_limit > 0.9 ? 'bg-red-500' :
-                                              (status.rate_tpd_used ?? 0) / status.rate_tpd_limit > 0.7 ? 'bg-amber-500' :
-                                              'bg-green-500'
-                                            }`}
-                                            style={{ width: `${Math.min(100, ((status.rate_tpd_used ?? 0) / status.rate_tpd_limit) * 100)}%` }}
-                                          />
-                                        </div>
-                                      </div>
-                                    )}
-                                    {status.rate_monthly_calls_limit != null && (
-                                      <div>
-                                        <div className="flex justify-between text-xs mb-1">
-                                          <span className="text-muted-foreground">Monthly calls</span>
-                                          <span>{status.rate_monthly_calls_used ?? 0} / {status.rate_monthly_calls_limit}</span>
-                                        </div>
-                                        <div className="h-1.5 rounded-full bg-muted overflow-hidden">
-                                          <div
-                                            className={`h-full rounded-full ${
-                                              (status.rate_monthly_calls_used ?? 0) / status.rate_monthly_calls_limit > 0.9 ? 'bg-red-500' :
-                                              (status.rate_monthly_calls_used ?? 0) / status.rate_monthly_calls_limit > 0.7 ? 'bg-amber-500' :
-                                              'bg-green-500'
-                                            }`}
-                                            style={{ width: `${Math.min(100, ((status.rate_monthly_calls_used ?? 0) / status.rate_monthly_calls_limit) * 100)}%` }}
-                                          />
-                                        </div>
-                                      </div>
-                                    )}
-                                    {status.rate_monthly_tokens_limit != null && (
-                                      <div>
-                                        <div className="flex justify-between text-xs mb-1">
-                                          <span className="text-muted-foreground">Monthly tokens</span>
-                                          <span>{(status.rate_monthly_tokens_used ?? 0).toLocaleString()} / {status.rate_monthly_tokens_limit.toLocaleString()}</span>
-                                        </div>
-                                        <div className="h-1.5 rounded-full bg-muted overflow-hidden">
-                                          <div
-                                            className={`h-full rounded-full ${
-                                              (status.rate_monthly_tokens_used ?? 0) / status.rate_monthly_tokens_limit > 0.9 ? 'bg-red-500' :
-                                              (status.rate_monthly_tokens_used ?? 0) / status.rate_monthly_tokens_limit > 0.7 ? 'bg-amber-500' :
-                                              'bg-green-500'
-                                            }`}
-                                            style={{ width: `${Math.min(100, ((status.rate_monthly_tokens_used ?? 0) / status.rate_monthly_tokens_limit) * 100)}%` }}
-                                          />
-                                        </div>
-                                      </div>
-                                    )}
-                                  </div>
-                                )}
-
-                                {/* Credit details */}
-                                {kind === 'credit_based' && (
-                                  <div className="space-y-3 pt-2 border-t">
-                                    <span className="text-sm font-medium">Credits</span>
-                                    <div>
-                                      <div className="flex justify-between text-xs mb-1">
-                                        <span className="text-muted-foreground">Used</span>
-                                        <span>${(status.credit_used_usd ?? 0).toFixed(4)} / ${(status.credit_budget_usd ?? 0).toFixed(2)}</span>
-                                      </div>
-                                      <div className="h-1.5 rounded-full bg-muted overflow-hidden">
-                                        <div
-                                          className={`h-full rounded-full ${
-                                            status.credit_remaining_usd != null && status.credit_budget_usd != null && status.credit_budget_usd > 0
-                                              ? (status.credit_remaining_usd / status.credit_budget_usd < 0.1 ? 'bg-red-500' :
-                                                 status.credit_remaining_usd / status.credit_budget_usd < 0.3 ? 'bg-amber-500' :
-                                                 'bg-green-500')
-                                              : 'bg-muted'
-                                          }`}
-                                          style={{
-                                            width: `${status.credit_budget_usd && status.credit_budget_usd > 0
-                                              ? Math.min(100, ((status.credit_used_usd ?? 0) / status.credit_budget_usd) * 100)
-                                              : 0}%`
-                                          }}
-                                        />
-                                      </div>
-                                    </div>
-                                    {status.credit_remaining_usd != null && (
-                                      <p className="text-xs text-muted-foreground">
-                                        ${status.credit_remaining_usd.toFixed(4)} remaining
-                                      </p>
-                                    )}
-                                  </div>
-                                )}
-
-                                {/* Backoff status */}
-                                {status.is_backed_off && (
-                                  <div className="flex items-center gap-2 pt-2 border-t text-amber-600">
-                                    <AlertCircle className="h-4 w-4" />
-                                    <span className="text-sm">
-                                      {status.backoff_reason ?? 'Rate limited'}
-                                      {status.backoff_retry_after_secs != null && ` (available in ${status.backoff_retry_after_secs}s)`}
-                                    </span>
-                                  </div>
-                                )}
-
-                                {/* Actions - only for kinds that track usage */}
-                                {(kind === 'rate_limited_free' || kind === 'credit_based') && (
-                                  <div className="flex gap-2 pt-2 border-t">
-                                    <Button
-                                      variant="outline"
-                                      size="sm"
-                                      onClick={async () => {
-                                        try {
-                                          await invoke("reset_provider_free_tier_usage", {
-                                            providerInstance: selectedProvider.instance_name,
-                                          })
-                                          toast.success("Free tier usage reset")
-                                          loadFreeTierStatus(selectedProvider.instance_name)
-                                        } catch (error) {
-                                          console.error("Failed to reset free tier usage:", error)
-                                          toast.error("Failed to reset free tier usage")
-                                        }
-                                      }}
-                                    >
-                                      Reset Usage
-                                    </Button>
-                                    <Button
-                                      variant="outline"
-                                      size="sm"
-                                      onClick={() => {
-                                        setSetUsageValues({
-                                          creditUsedUsd: status.credit_used_usd != null ? String(status.credit_used_usd) : '',
-                                          creditRemainingUsd: status.credit_remaining_usd != null ? String(status.credit_remaining_usd) : '',
-                                          dailyRequests: status.rate_rpd_used != null ? String(status.rate_rpd_used) : '',
-                                          monthlyRequests: status.rate_monthly_calls_used != null ? String(status.rate_monthly_calls_used) : '',
-                                          monthlyTokens: '',
-                                        })
-                                        setSetUsageDialogOpen(true)
-                                      }}
-                                    >
-                                      Set Usage
-                                    </Button>
-                                  </div>
-                                )}
-
-                                {/* Simple reset for free_models_only which has rate tracking but no editable usage */}
-                                {kind === 'free_models_only' && (
-                                  <div className="pt-2 border-t">
-                                    <Button
-                                      variant="outline"
-                                      size="sm"
-                                      onClick={async () => {
-                                        try {
-                                          await invoke("reset_provider_free_tier_usage", {
-                                            providerInstance: selectedProvider.instance_name,
-                                          })
-                                          toast.success("Free tier usage reset")
-                                          loadFreeTierStatus(selectedProvider.instance_name)
-                                        } catch (error) {
-                                          console.error("Failed to reset free tier usage:", error)
-                                          toast.error("Failed to reset free tier usage")
-                                        }
-                                      }}
-                                    >
-                                      Reset Usage
-                                    </Button>
-                                  </div>
-                                )}
-                              </div>
-                            )
-                          })()}
-                        </CardContent>
-                      </Card>
-                    </div>
+                    <ProviderFreeTierTab
+                      key={selectedProvider.instance_name}
+                      instanceName={selectedProvider.instance_name}
+                      typeDescription={selectedTypeForEdit?.free_tier_long_text}
+                      typeDefaultKind={selectedTypeForEdit?.default_free_tier?.kind}
+                      status={freeTierStatus[selectedProvider.instance_name]}
+                      onReload={() => loadFreeTierStatus(selectedProvider.instance_name)}
+                    />
                   </TabsContent>
                 </Tabs>
 
@@ -2103,80 +1516,6 @@ export function ProvidersPanel({
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Set Usage Dialog */}
-      <Dialog open={setUsageDialogOpen} onOpenChange={setSetUsageDialogOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Set Usage</DialogTitle>
-          </DialogHeader>
-          <p className="text-sm text-muted-foreground">
-            Manually adjust the tracked usage counters for this provider. This is useful when the router's local tracking has drifted from your actual usage, or to sync with the balance shown on your provider dashboard. Leave fields empty to keep them unchanged.
-          </p>
-          {(() => {
-            const provider = providers.find(p => p.instance_name === selectedId)
-            const status = provider ? freeTierStatus[provider.instance_name] : null
-            const kind = status?.free_tier?.kind
-
-            return (
-              <div className="space-y-4">
-                {kind === 'credit_based' && (
-                  <>
-                    <div className="space-y-1.5">
-                      <label className="text-sm font-medium">Credits Used (USD)</label>
-                      <Input type="number" step="0.01" placeholder="0.00"
-                        value={setUsageValues.creditUsedUsd}
-                        onChange={(e) => setSetUsageValues(prev => ({ ...prev, creditUsedUsd: e.target.value }))} />
-                      <p className="text-xs text-muted-foreground">How much of the credit budget has been consumed so far in the current period. The router uses this to calculate remaining capacity.</p>
-                    </div>
-                    <div className="space-y-1.5">
-                      <label className="text-sm font-medium">Credits Remaining (USD)</label>
-                      <Input type="number" step="0.01" placeholder="e.g. 4.50"
-                        value={setUsageValues.creditRemainingUsd}
-                        onChange={(e) => setSetUsageValues(prev => ({ ...prev, creditRemainingUsd: e.target.value }))} />
-                      <p className="text-xs text-muted-foreground">The actual remaining balance from your provider dashboard. This overrides the router's calculated estimate and is the most accurate way to sync usage.</p>
-                    </div>
-                  </>
-                )}
-                {kind === 'rate_limited_free' && (
-                  <>
-                    <div className="space-y-1.5">
-                      <label className="text-sm font-medium">Daily Requests Used</label>
-                      <Input type="number" placeholder="0"
-                        value={setUsageValues.dailyRequests}
-                        onChange={(e) => setSetUsageValues(prev => ({ ...prev, dailyRequests: e.target.value }))} />
-                      <p className="text-xs text-muted-foreground">Number of requests made today. Resets automatically at the start of each day (midnight UTC, or midnight PT for Gemini).</p>
-                    </div>
-                    <div className="space-y-1.5">
-                      <label className="text-sm font-medium">Monthly Requests Used</label>
-                      <Input type="number" placeholder="0"
-                        value={setUsageValues.monthlyRequests}
-                        onChange={(e) => setSetUsageValues(prev => ({ ...prev, monthlyRequests: e.target.value }))} />
-                      <p className="text-xs text-muted-foreground">Number of requests made this month. Only relevant for providers with monthly call caps (e.g. Cohere: 1,000/month). Resets on the 1st of each month.</p>
-                    </div>
-                    <div className="space-y-1.5">
-                      <label className="text-sm font-medium">Monthly Tokens Used</label>
-                      <Input type="number" placeholder="0"
-                        value={setUsageValues.monthlyTokens}
-                        onChange={(e) => setSetUsageValues(prev => ({ ...prev, monthlyTokens: e.target.value }))} />
-                      <p className="text-xs text-muted-foreground">Total tokens used this month. Only relevant for providers with monthly token caps (e.g. Mistral: 1B tokens/month). Resets on the 1st of each month.</p>
-                    </div>
-                  </>
-                )}
-                <div className="flex justify-end gap-2 pt-2">
-                  <Button variant="outline" onClick={() => setSetUsageDialogOpen(false)}>
-                    Cancel
-                  </Button>
-                  <Button onClick={() => {
-                    if (provider) saveSetUsage(provider.instance_name, kind ?? 'none')
-                  }}>
-                    Save
-                  </Button>
-                </div>
-              </div>
-            )
-          })()}
-        </DialogContent>
-      </Dialog>
     </>
   )
 }

@@ -33,7 +33,7 @@ import { ProxyAllowedModels } from "@/components/client/ProxyAllowedModels"
 import { InfoTooltip } from "@/components/ui/info-tooltip"
 import { PermissionStateButton } from "@/components/permissions"
 import type { ModelPricingInfo } from "@/components/strategy/DragThresholdModelSelector"
-import type { FreeTierKind, ProviderFreeTierStatus, PermissionState } from "@/types/tauri-commands"
+import type { FreeTierKind, ModelFreeTierInfo, ProviderFreeTierStatus, PermissionState } from "@/types/tauri-commands"
 
 import { RoutingPolicyEditor, policyModelRefs, persistRoutingPolicy } from '@/components/strategy/RoutingPolicyEditor'
 import type { AutoModelConfig } from '@/types/tauri-commands'
@@ -93,6 +93,7 @@ interface DetailedModelInfo {
   input_price_per_million?: number | null
   output_price_per_million?: number | null
   parameter_count?: string | null
+  free_tier_model?: ModelFreeTierInfo | null
 }
 
 // ---------------------------------------------------------------------------
@@ -259,6 +260,7 @@ export function UnifiedModelsTab({
         pricingMap[key] = {
           input: m.input_price_per_million,
           output: m.output_price_per_million,
+          free: m.free_tier_model,
         }
         if (m.parameter_count) {
           paramMap[key] = m.parameter_count

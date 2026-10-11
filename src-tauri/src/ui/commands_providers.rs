@@ -279,6 +279,7 @@ pub async fn create_provider_instance(
     // Notify frontend that providers and models changed
     let _ = app.emit("providers-changed", ());
     let _ = app.emit("models-changed", ());
+    refresh_instance_models(registry.inner().clone(), app, instance_name, None);
 
     Ok(())
 }
@@ -350,6 +351,7 @@ pub async fn update_provider_instance(
     // Notify frontend that providers and models changed
     let _ = app.emit("providers-changed", ());
     let _ = app.emit("models-changed", ());
+    refresh_instance_models(registry.inner().clone(), app, instance_name, None);
 
     Ok(())
 }
@@ -452,6 +454,7 @@ pub async fn rename_provider_instance(
     // Notify frontend that providers and models changed
     let _ = app.emit("providers-changed", ());
     let _ = app.emit("models-changed", ());
+    refresh_instance_models(registry.inner().clone(), app, new_name, Some(instance_name));
 
     Ok(())
 }
@@ -588,6 +591,7 @@ pub async fn remove_provider_instance(
     // Notify frontend that providers and models changed
     let _ = app.emit("providers-changed", ());
     let _ = app.emit("models-changed", ());
+    refresh_instance_models(registry.inner().clone(), app, instance_name, None);
 
     Ok(())
 }
@@ -713,6 +717,7 @@ pub async fn clone_provider_instance(
     // Notify frontend that providers and models changed
     let _ = app.emit("providers-changed", ());
     let _ = app.emit("models-changed", ());
+    refresh_instance_models(registry.inner().clone(), app, clone_name, None);
 
     Ok(())
 }
@@ -813,6 +818,7 @@ pub async fn set_provider_enabled(
     // Notify frontend that providers and models changed
     let _ = app.emit("providers-changed", ());
     let _ = app.emit("models-changed", ());
+    refresh_instance_models(registry.inner().clone(), app, instance_name, None);
 
     Ok(())
 }
@@ -1317,6 +1323,55 @@ fn run_model_refresh(registry: Arc<ProviderRegistry>, app: tauri::AppHandle) {
     });
 }
 
+/// Fetch one provider instance's model list in the background and tell the
+/// UI (`models-provider-loaded`, then `models-changed`), so a provider that
+/// was just added, changed, renamed or turned on appears in model lists
+/// (and the Free Tier tab) without waiting for a global refresh. A disabled
+/// instance reports no models. `removed` names an instance whose models are
+/// gone (the old name of a renamed provider).
+pub fn refresh_instance_models(
+    registry: Arc<ProviderRegistry>,
+    app: tauri::AppHandle,
+    instance_name: String,
+    removed: Option<String>,
+) {
+    tauri::async_runtime::spawn(async move {
+        if let Some(old) = removed {
+            registry.sync_cached_models(&old);
+            let _ = app.emit(
+                "models-provider-loaded",
+                ProviderModelsPayload {
+                    provider: old,
+                    models: Vec::new(),
+                },
+            );
+        }
+        let enabled = registry
+            .is_provider_enabled(&instance_name)
+            .unwrap_or(false);
+        let mut models = if enabled {
+            registry
+                .list_provider_models_cached(&instance_name)
+                .await
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        for model in &mut models {
+            model.provider = instance_name.clone();
+        }
+        registry.sync_cached_models(&instance_name);
+        let _ = app.emit(
+            "models-provider-loaded",
+            ProviderModelsPayload {
+                provider: instance_name,
+                models,
+            },
+        );
+        let _ = app.emit("models-changed", ());
+    });
+}
+
 /// A provider type's models changed (a download finished, a library model
 /// was added, renamed or removed): drop the cached lists of its instances
 /// and refresh, so open model pickers update. Waits for a running refresh
@@ -1353,7 +1408,12 @@ pub enum PricingSource {
     Catalog,
     /// User-provided pricing override
     Override,
+    /// The price in the provider's own model listing
+    Listing,
 }
+
+/// Whether a model is free for free-tier-only strategies, and why.
+pub type ModelFreeTierInfo = lr_providers::free_models::FreeModelDecision;
 
 /// Detailed model information for the frontend
 #[derive(Debug, Clone, serde::Serialize)]
@@ -1370,18 +1430,24 @@ pub struct DetailedModelInfo {
     pub output_price_per_million: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parameter_count: Option<String>,
-    /// Source of pricing data (catalog or user override)
+    /// Source of pricing data (catalog, provider listing or user override)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pricing_source: Option<PricingSource>,
+    /// Whether the model counts as free under its provider's free tier
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub free_tier_model: Option<ModelFreeTierInfo>,
 }
 
 /// Detailed info for one model of a provider instance: capabilities as
-/// strings and pricing (override, else catalog; local providers are free).
+/// strings, pricing (override, else the provider's listing, else catalog;
+/// local providers are free) and, given its provider's free tier, whether
+/// it is free.
 fn detailed_model(
     model: lr_providers::ModelInfo,
     provider_type: String,
     config: &lr_config::AppConfig,
     registry: &ProviderRegistry,
+    free_tier: Option<&lr_providers::free_models::FreeTierEvaluator>,
 ) -> DetailedModelInfo {
     use lr_catalog as catalog;
 
@@ -1430,6 +1496,10 @@ fn detailed_model(
             .and_then(|models| models.get(&model.id))
     });
 
+    let listed = registry
+        .model_metadata(&model.provider, &model.id)
+        .and_then(|entry| lr_providers::listing_metadata::listing_pricing(&entry));
+
     let (input_price_per_million, output_price_per_million, pricing_source) =
         if let Some(override_price) = override_pricing {
             // Use override pricing
@@ -1437,6 +1507,13 @@ fn detailed_model(
                 Some(override_price.input_per_million),
                 Some(override_price.output_per_million),
                 Some(PricingSource::Override),
+            )
+        } else if let Some(listed) = listed {
+            // The provider's own price, $0 included
+            (
+                Some(listed.input_cost_per_1k * 1000.0),
+                Some(listed.output_cost_per_1k * 1000.0),
+                Some(PricingSource::Listing),
             )
         } else if is_local_provider {
             // Local providers are free (unless overridden above)
@@ -1475,6 +1552,15 @@ fn detailed_model(
             }
         };
 
+    let free_tier_model = free_tier.map(|evaluator| {
+        registry.decide_free_model(
+            &model.provider,
+            &model.id,
+            evaluator,
+            &config.pricing_overrides,
+        )
+    });
+
     DetailedModelInfo {
         model_id: model.id,
         provider_instance: model.provider,
@@ -1486,7 +1572,26 @@ fn detailed_model(
         output_price_per_million,
         parameter_count,
         pricing_source,
+        free_tier_model,
     }
+}
+
+/// Free tier evaluators of every provider in the config, by instance name.
+fn free_tier_evaluators(
+    config: &lr_config::AppConfig,
+    registry: &ProviderRegistry,
+) -> HashMap<String, lr_providers::free_models::FreeTierEvaluator> {
+    config
+        .providers
+        .iter()
+        .map(|p| {
+            let kind = crate::ui::commands_free_tier::provider_free_tier(p, registry);
+            (
+                p.name.clone(),
+                lr_providers::free_models::FreeTierEvaluator::new(&kind),
+            )
+        })
+        .collect()
 }
 
 /// Provider type of each registered instance, by instance name.
@@ -1513,6 +1618,7 @@ pub async fn list_all_models_detailed(
         .map_err(|e| e.to_string())?;
     let types = instance_types(&registry);
     let config = config_manager.get();
+    let evaluators = free_tier_evaluators(&config, &registry);
     Ok(models
         .into_iter()
         .map(|model| {
@@ -1520,7 +1626,8 @@ pub async fn list_all_models_detailed(
                 .get(&model.provider)
                 .cloned()
                 .unwrap_or_else(|| model.provider.clone());
-            detailed_model(model, provider_type, &config, &registry)
+            let free_tier = evaluators.get(&model.provider);
+            detailed_model(model, provider_type, &config, &registry, free_tier)
         })
         .collect())
 }
@@ -1541,11 +1648,20 @@ pub async fn list_provider_models_detailed(
         .await
         .map_err(|e| e.to_string())?;
     let config = config_manager.get();
+    let evaluator =
+        crate::ui::commands_free_tier::instance_free_tier(&config, &registry, &instance_name)
+            .map(|kind| lr_providers::free_models::FreeTierEvaluator::new(&kind));
     Ok(models
         .into_iter()
         .map(|mut model| {
             model.provider = instance_name.clone();
-            detailed_model(model, provider_type.clone(), &config, &registry)
+            detailed_model(
+                model,
+                provider_type.clone(),
+                &config,
+                &registry,
+                evaluator.as_ref(),
+            )
         })
         .collect())
 }
@@ -1818,6 +1934,7 @@ mod detailed_model_tests {
             "laya".into(),
             &config,
             &ProviderRegistry::new(),
+            None,
         );
         assert_eq!(d.provider_type, "laya");
         assert_eq!(d.provider_instance, "Laya");
@@ -1846,6 +1963,7 @@ mod detailed_model_tests {
             "laya".into(),
             &config,
             &ProviderRegistry::new(),
+            None,
         );
         assert_eq!(d.input_price_per_million, Some(1.0));
         assert!(matches!(d.pricing_source, Some(PricingSource::Override)));
@@ -1893,9 +2011,76 @@ mod detailed_model_tests {
             "ollama".into(),
             &config,
             &registry,
+            None,
         );
         assert_eq!(d.input_price_per_million, Some(7.0));
         assert_eq!(d.output_price_per_million, Some(8.0));
         assert!(matches!(d.pricing_source, Some(PricingSource::Override)));
+    }
+
+    #[tokio::test]
+    async fn listed_prices_and_free_decisions_are_shown() {
+        use wiremock::{matchers, Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(matchers::path("/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"data":[
+                    {"id":"free-one","pricing":{"prompt":"0","completion":"0"}},
+                    {"id":"paid-one","pricing":{"prompt":"0.000001","completion":"0.000003"}}
+                ]}"#,
+            ))
+            .mount(&server)
+            .await;
+        let registry = ProviderRegistry::new();
+        registry.register_factory(Arc::new(
+            lr_providers::factory::OpenAICompatibleProviderFactory,
+        ));
+        registry
+            .create_provider(
+                "Remote".into(),
+                "openai_compatible".into(),
+                HashMap::from([("base_url".to_string(), server.uri())]),
+            )
+            .await
+            .unwrap();
+        let models = registry
+            .list_provider_models_cached("Remote")
+            .await
+            .unwrap();
+        let config = lr_config::AppConfig::default();
+        let kind = lr_config::FreeTierKind::FreeModelsOnly {
+            free_model_patterns: vec![],
+            excluded_models: vec![],
+            rules: vec![lr_config::FreeModelRule {
+                enabled: true,
+                effect: lr_config::FreeModelRuleEffect::Include,
+                when: lr_config::FreeModelCondition::ZeroPrice {
+                    sources: vec![lr_config::PriceSource::ProviderListing],
+                    input_pointer: None,
+                    output_pointer: None,
+                },
+                label: None,
+            }],
+            max_rpm: 0,
+        };
+        let evaluator = lr_providers::free_models::FreeTierEvaluator::new(&kind);
+        let detail = |id: &str| {
+            let model = models.iter().find(|m| m.id == id).unwrap().clone();
+            detailed_model(
+                model,
+                "openai_compatible".into(),
+                &config,
+                &registry,
+                Some(&evaluator),
+            )
+        };
+        let free = detail("free-one");
+        // A $0 listing price is shown, not hidden.
+        assert_eq!(free.input_price_per_million, Some(0.0));
+        assert!(matches!(free.pricing_source, Some(PricingSource::Listing)));
+        assert!(free.free_tier_model.as_ref().unwrap().is_free);
+        let paid = detail("paid-one");
+        assert!((paid.output_price_per_million.unwrap() - 3.0).abs() < 1e-9);
+        assert!(!paid.free_tier_model.as_ref().unwrap().is_free);
     }
 }

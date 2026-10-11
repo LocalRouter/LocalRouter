@@ -82,6 +82,13 @@ export function useIncrementalModels(
       listenSafe('models-changed', () => {
         if (cancelled) return
         setLoadingProviders(new Set())
+        // Providers added, renamed, removed or changed outside a global
+        // refresh: take the backend's cached lists as they are now.
+        invoke<Model[]>('get_cached_models')
+          .then(cached => {
+            if (!cancelled) setModels(cached)
+          })
+          .catch(() => {})
       }),
     ]
 
