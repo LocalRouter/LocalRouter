@@ -265,6 +265,19 @@ pub trait ModelProvider: Send + Sync {
         None
     }
 
+    /// Ask the provider's documented usage / credits endpoint with this
+    /// instance's own credentials, for the usage tracker. `None` when the
+    /// provider has no such endpoint (no request is made).
+    ///
+    /// Implementations mark the request with
+    /// [`http_client::UsagePoll`] so it is not counted as traffic. The
+    /// caller decides whether polling is allowed (Settings → Usage).
+    async fn fetch_usage(
+        &self,
+    ) -> Option<Result<lr_usage::UsageReport, lr_usage::fetch::FetchError>> {
+        None
+    }
+
     /// Whether this provider supports embeddings.
     /// Default: false. Override to true in providers that implement embed().
     fn supports_embeddings(&self) -> bool {

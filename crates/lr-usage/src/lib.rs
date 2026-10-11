@@ -13,6 +13,7 @@ pub mod cli_logins;
 pub mod fetch;
 pub mod headers;
 pub mod plans;
+pub mod providers;
 pub mod tracker;
 pub mod types;
 pub mod view;
@@ -61,7 +62,10 @@ impl UsageTracker {
         }
         let classified = classify(host, path, request_headers)?;
         self.note_traffic(&classified.account);
-        let mut report = headers::parse_headers(response_headers, tracker::now_secs());
+        let scheme = providers::spec_for(&classified.account.provider)
+            .filter(|s| s.kind == classified.account.kind)
+            .map_or(providers::HeaderScheme::Generic, |s| s.headers);
+        let mut report = headers::parse_headers_for(scheme, response_headers, tracker::now_secs());
         if report.plan.is_none() {
             report.plan = classified.plan_hint.clone();
         }
@@ -174,6 +178,43 @@ mod tests {
         let w = &snap.accounts[0].windows[0];
         assert_eq!(w.id, "seven_day");
         assert!((w.used_percent - 31.0).abs() < 1e-9);
+    }
+
+    /// Groq's headers on LocalRouter's own call land on the Groq API
+    /// account as a per-day request limit and a per-minute token limit.
+    #[test]
+    fn observe_response_reads_provider_specific_headers() {
+        let t = UsageTracker::new(UsageTrackingConfig::default());
+        let mut req = HeaderMap::new();
+        req.insert("authorization", "Bearer gsk_x".parse().unwrap());
+        let mut resp = HeaderMap::new();
+        for (k, v) in [
+            ("x-ratelimit-limit-requests", "14400"),
+            ("x-ratelimit-remaining-requests", "14370"),
+            ("x-ratelimit-reset-requests", "2m59.56s"),
+            ("x-ratelimit-limit-tokens", "18000"),
+            ("x-ratelimit-remaining-tokens", "17997"),
+            ("x-ratelimit-reset-tokens", "7.66s"),
+        ] {
+            resp.insert(k, v.parse().unwrap());
+        }
+        let account = t
+            .observe_response(
+                "api.groq.com",
+                "/openai/v1/chat/completions",
+                &req,
+                &resp,
+                DataSource::GatewayHeaders,
+            )
+            .unwrap();
+        assert_eq!(account, AccountRef::api("groq"));
+        let snap = t.snapshot();
+        let labels: Vec<_> = snap.accounts[0]
+            .quotas
+            .iter()
+            .map(|q| q.label.as_str())
+            .collect();
+        assert_eq!(labels, ["Requests / day", "Tokens / minute"]);
     }
 
     #[test]

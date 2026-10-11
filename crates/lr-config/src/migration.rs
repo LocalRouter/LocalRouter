@@ -183,6 +183,11 @@ pub fn migrate_config(mut config: AppConfig) -> AppResult<AppConfig> {
         config = migrate_to_v31(config)?;
     }
 
+    // Migrate to v32: Don't start polling the newly polled provider types
+    if config.version < 32 {
+        config = migrate_to_v32(config)?;
+    }
+
     // Update version to current
     config.version = CONFIG_VERSION;
 
@@ -999,6 +1004,29 @@ fn migrate_to_v31(mut config: AppConfig) -> AppResult<AppConfig> {
     Ok(config)
 }
 
+/// Migrate to version 32: LLM Gateway and Vercel AI Gateway usage endpoints
+/// are queried too. Exclude instances of those types that already exist, so
+/// upgrading makes no new background requests (as v31 did for every
+/// provider existing then).
+fn migrate_to_v32(mut config: AppConfig) -> AppResult<AppConfig> {
+    use super::ProviderType;
+    info!("Migrating to version 32: exclude existing gateways from usage polling");
+
+    let excluded = &mut config.usage_tracking.poll_excluded_providers;
+    for provider in &config.providers {
+        let newly_polled = matches!(
+            provider.provider_type,
+            ProviderType::LlmGateway | ProviderType::VercelAiGateway
+        );
+        if newly_polled && !excluded.contains(&provider.name) {
+            excluded.push(provider.name.clone());
+        }
+    }
+
+    config.version = 32;
+    Ok(config)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1241,6 +1269,36 @@ mod tests {
             .usage_tracking
             .poll_excluded_providers
             .is_empty());
+    }
+
+    #[test]
+    fn test_migrate_to_v32_excludes_existing_gateways_from_usage_polling() {
+        use super::super::{ProviderConfig, ProviderType};
+        let provider = |name: &str, provider_type: ProviderType| ProviderConfig {
+            name: name.to_string(),
+            provider_type,
+            ..ProviderConfig::default_ollama()
+        };
+        let mut config = AppConfig {
+            version: 31,
+            providers: vec![
+                provider("Gateway", ProviderType::LlmGateway),
+                provider("Vercel", ProviderType::VercelAiGateway),
+                provider("Groq", ProviderType::Groq),
+                provider("OR", ProviderType::OpenRouter),
+            ],
+            ..Default::default()
+        };
+        config.usage_tracking.poll_excluded_providers = vec!["Vercel".to_string()];
+
+        let migrated = migrate_config(config).unwrap();
+
+        assert_eq!(migrated.version, CONFIG_VERSION);
+        // Providers polled before v32 keep their setting.
+        assert_eq!(
+            migrated.usage_tracking.poll_excluded_providers,
+            ["Vercel", "Gateway"]
+        );
     }
 
     #[test]

@@ -2,6 +2,7 @@ import type {
   UsageAccountView,
   UsageDataSource,
   UsagePaceStatus,
+  UsageQuotaView,
   UsageWindowView,
 } from '@/types/tauri-commands'
 
@@ -125,9 +126,82 @@ export function visibleAccounts(accounts: UsageAccountView[]): UsageAccountView[
   )
 }
 
-/** Whether an account has no limits, credits or quotas to show yet. */
+function hasLimits(account: UsageAccountView): boolean {
+  return account.windows.length > 0 || account.quotas.length > 0 || account.credits !== null
+}
+
+/**
+ * Whether an account has no limits, credits or quotas to show yet, from a
+ * provider that does report them.
+ */
 export function awaitingLimits(account: UsageAccountView): boolean {
-  return account.windows.length === 0 && account.quotas.length === 0 && account.credits === null
+  return account.reports_limits && !hasLimits(account)
+}
+
+/** Whether the provider reports no limits at all (its card shows spend only). */
+export function limitsUnreported(account: UsageAccountView): boolean {
+  return !account.reports_limits && !hasLimits(account)
+}
+
+const QUOTA_METRIC_SHORT: Record<string, string> = {
+  requests: 'Req',
+  tokens: 'Tokens',
+  input_tokens: 'Input',
+  output_tokens: 'Output',
+  free_requests: 'Free req',
+}
+const QUOTA_PERIOD_SHORT: Record<number, string> = {
+  1: 's',
+  60: 'min',
+  3_600: 'hour',
+  86_400: 'day',
+  2_592_000: 'mo',
+}
+const QUOTA_PERIOD_LONG: Record<number, string> = {
+  1: 'second',
+  60: 'minute',
+  3_600: 'hour',
+  86_400: 'day',
+  2_592_000: 'month',
+}
+
+/** The quota's metric id without its period suffix (`tokens_minute` → `tokens`). */
+function quotaMetric(quota: UsageQuotaView): string {
+  return quota.window_secs === null
+    ? quota.id
+    : quota.id.replace(/_(second|minute|hour|day|month)$/, '')
+}
+
+/**
+ * Row label for a rate limit, short enough for the card's label column:
+ * `Req/min`, `Tokens/day`, or the full label for limits without a period.
+ */
+export function quotaShortLabel(quota: UsageQuotaView): string {
+  if (quota.window_secs === null) return quota.label
+  const metric = QUOTA_METRIC_SHORT[quotaMetric(quota)]
+  const period = QUOTA_PERIOD_SHORT[quota.window_secs]
+  return metric && period ? `${metric}/${period}` : quota.label
+}
+
+/** Tooltip lines for a rate limit. */
+export function quotaDetails(quota: UsageQuotaView, nowMs: number): string[] {
+  const period = quota.window_secs !== null ? QUOTA_PERIOD_LONG[quota.window_secs] : undefined
+  const metric = quota.label.split(' / ')[0]
+  const exact = (v: number) => Math.round(v).toLocaleString('en-US')
+  const lines = [period ? `${metric} per ${period}` : quota.label]
+  if (quota.remaining !== null && quota.limit !== null) {
+    const used = quota.used_percent !== null ? ` (${formatPercent(quota.used_percent)} used)` : ''
+    lines.push(`${exact(quota.remaining)} of ${exact(quota.limit)} left${used}`)
+  } else if (quota.remaining !== null) {
+    lines.push(`${exact(quota.remaining)} left`)
+  } else if (quota.limit !== null) {
+    lines.push(`Limit ${exact(quota.limit)}`)
+  }
+  if (quota.resets_at !== null && quota.resets_at > nowMs / 1000) {
+    lines.push(`Full again in ${formatDuration(quota.resets_at - nowMs / 1000)}`)
+  }
+  lines.push(`Updated ${formatAgo(quota.updated_at, nowMs)}`)
+  return lines
 }
 
 /**

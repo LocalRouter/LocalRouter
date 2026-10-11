@@ -58,23 +58,33 @@ async fn get_json(req: reqwest::RequestBuilder) -> Result<Value, FetchError> {
         .send()
         .await
         .map_err(|e| FetchError::Network(e.to_string()))?;
-    let status = resp.status().as_u16();
-    match status {
-        200..=299 => {}
-        401 | 403 => return Err(FetchError::Unauthorized),
-        429 => {
-            let retry = resp
-                .headers()
-                .get(reqwest::header::RETRY_AFTER)
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| parse_retry_after(v, chrono::Utc::now().timestamp()));
-            return Err(FetchError::RateLimited(retry));
-        }
-        other => return Err(FetchError::Http(other)),
-    }
+    json_body(resp).await
+}
+
+/// A usage endpoint's response as JSON, or the error its status means.
+/// Shared with providers that ask their usage endpoint through their own
+/// HTTP client.
+pub async fn json_body(resp: reqwest::Response) -> Result<Value, FetchError> {
+    check_status(resp.status().as_u16(), resp.headers())?;
     resp.json::<Value>()
         .await
         .map_err(|_| FetchError::Unrecognized)
+}
+
+/// The error an unsuccessful usage-endpoint status means.
+pub fn check_status(status: u16, headers: &http::HeaderMap) -> Result<(), FetchError> {
+    match status {
+        200..=299 => Ok(()),
+        401 | 403 => Err(FetchError::Unauthorized),
+        429 => {
+            let retry = headers
+                .get(http::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| parse_retry_after(v, chrono::Utc::now().timestamp()));
+            Err(FetchError::RateLimited(retry))
+        }
+        other => Err(FetchError::Http(other)),
+    }
 }
 
 /// `Retry-After` as delay-seconds or an HTTP-date, in seconds from `now`.
@@ -171,5 +181,20 @@ mod tests {
             Some(0)
         );
         assert_eq!(parse_retry_after("soon", now), None);
+    }
+
+    #[test]
+    fn status_errors() {
+        let mut h = http::HeaderMap::new();
+        assert_eq!(check_status(200, &h), Ok(()));
+        assert_eq!(check_status(401, &h), Err(FetchError::Unauthorized));
+        assert_eq!(check_status(403, &h), Err(FetchError::Unauthorized));
+        assert_eq!(check_status(500, &h), Err(FetchError::Http(500)));
+        assert_eq!(check_status(429, &h), Err(FetchError::RateLimited(None)));
+        h.insert("retry-after", "30".parse().unwrap());
+        assert_eq!(
+            check_status(429, &h),
+            Err(FetchError::RateLimited(Some(30)))
+        );
     }
 }

@@ -74,6 +74,23 @@ impl Middleware for UsageObserverMiddleware {
     }
 }
 
+/// GET a provider's usage endpoint as a usage poll (not counted as
+/// traffic) and parse the JSON body with `parse`.
+pub async fn fetch_usage_json(
+    request: reqwest_middleware::RequestBuilder,
+    parse: impl FnOnce(&serde_json::Value) -> Option<lr_usage::UsageReport>,
+) -> Result<lr_usage::UsageReport, lr_usage::fetch::FetchError> {
+    use lr_usage::fetch::{json_body, FetchError};
+    let resp = request
+        .with_extension(UsagePoll)
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|e| FetchError::Network(e.to_string()))?;
+    let body = json_body(resp).await?;
+    parse(&body).ok_or(FetchError::Unrecognized)
+}
+
 /// Wrap a plain reqwest client with the shared middleware stack.
 pub fn with_middleware(client: Client) -> ClientWithMiddleware {
     ClientBuilder::new(client)
@@ -408,5 +425,58 @@ mod trace_tests {
 
         let seen = seen.lock().unwrap().clone();
         assert_eq!(seen, vec![None, Some("abc;hop=2".to_string()), None]);
+    }
+}
+
+#[cfg(test)]
+mod usage_poll_tests {
+    use super::*;
+    use lr_usage::fetch::FetchError;
+
+    /// One-shot HTTP server answering every request with `status` + `body`.
+    async fn serve(status: &'static str, body: &'static str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf).await;
+                let resp = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\nretry-after: 7\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+            }
+        });
+        format!("http://{addr}/v1/credits")
+    }
+
+    #[tokio::test]
+    async fn usage_poll_parses_the_body_and_maps_errors() {
+        let client = default_client();
+        let url = serve("200 OK", r#"{"balance":"95.50","total_used":"4.50"}"#).await;
+        let report = fetch_usage_json(client.get(&url), lr_usage::bodies::parse_vercel_credits)
+            .await
+            .unwrap();
+        assert_eq!(report.credits.unwrap().balance_usd, Some(95.5));
+
+        let url = serve("200 OK", r#"{"unexpected":true}"#).await;
+        let err = fetch_usage_json(client.get(&url), lr_usage::bodies::parse_vercel_credits)
+            .await
+            .unwrap_err();
+        assert_eq!(err, FetchError::Unrecognized);
+
+        let url = serve("401 Unauthorized", "{}").await;
+        let err = fetch_usage_json(client.get(&url), lr_usage::bodies::parse_vercel_credits)
+            .await
+            .unwrap_err();
+        assert_eq!(err, FetchError::Unauthorized);
+
+        let url = serve("429 Too Many Requests", "{}").await;
+        let err = fetch_usage_json(client.get(&url), lr_usage::bodies::parse_vercel_credits)
+            .await
+            .unwrap_err();
+        assert_eq!(err, FetchError::RateLimited(Some(7)));
     }
 }

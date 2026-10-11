@@ -68,22 +68,10 @@ pub fn plan_info(provider: &str, raw: &str) -> Option<PlanInfo> {
 /// Display name of a provider family.
 pub fn provider_label(provider: &str) -> String {
     match provider {
-        "anthropic" => "Anthropic".to_string(),
-        "openai" => "OpenAI".to_string(),
         "github-copilot" => "GitHub Copilot".to_string(),
-        "openrouter" => "OpenRouter".to_string(),
-        "groq" => "Groq".to_string(),
-        "cerebras" => "Cerebras".to_string(),
-        "mistral" => "Mistral".to_string(),
-        "xai" => "xAI".to_string(),
-        "togetherai" => "Together AI".to_string(),
-        "deepinfra" => "DeepInfra".to_string(),
-        "gemini" => "Gemini".to_string(),
-        "perplexity" => "Perplexity".to_string(),
-        "cohere" => "Cohere".to_string(),
-        "deepseek" => "DeepSeek".to_string(),
-        "moonshot" => "Moonshot".to_string(),
-        other => other.to_string(),
+        other => crate::providers::spec_for(other)
+            .map(|s| s.label.to_string())
+            .unwrap_or_else(|| other.to_string()),
     }
 }
 

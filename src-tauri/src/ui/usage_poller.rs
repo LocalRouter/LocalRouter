@@ -11,7 +11,9 @@
 //!
 //! Sources:
 //! - "Ask connected providers" — ChatGPT Plus/Pro (LocalRouter's OAuth
-//!   login), GitHub Copilot, and providers with a credits API (OpenRouter).
+//!   login), GitHub Copilot, and API providers with a documented usage or
+//!   credits endpoint that takes their own key (OpenRouter, LLM Gateway,
+//!   Vercel AI Gateway; `lr_usage::providers::polled_provider_types`).
 //! - "Use Claude Code and Codex logins" (off by default) — the CLIs' saved
 //!   logins, for their subscription usage.
 //!
@@ -28,7 +30,7 @@ use std::time::Duration;
 use lr_config::{ConfigManager, UsageTrackingConfig};
 use lr_providers::registry::ProviderRegistry;
 use lr_usage::fetch::{self, FetchError};
-use lr_usage::{AccountKind, AccountRef, CreditsReading, DataSource, UsageReport, UsageTracker};
+use lr_usage::{AccountRef, DataSource, UsageReport, UsageTracker};
 use parking_lot::{Mutex, RwLock};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Listener, Manager};
@@ -46,7 +48,7 @@ const SCHEDULER_TICK_SECS: u64 = 30;
 /// State of one polled usage source, for Settings.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct UsagePollStatus {
-    /// e.g. `claude_code_login`, `chatgpt_oauth`, `credits:openrouter`.
+    /// e.g. `claude_code_login`, `chatgpt_oauth`, `credits:<instance>`.
     pub id: String,
     pub label: String,
     pub account_id: String,
@@ -215,15 +217,14 @@ impl UsagePoller {
                 active.push("github_copilot".into());
                 self.poll_copilot().await;
             }
-            for inst in &instances {
-                let Some(account) = lr_usage::account_for_provider_type(&inst.provider_type)
-                    .filter(|a| a.kind == AccountKind::Api)
-                else {
-                    continue;
-                };
+            let polled_api_types = lr_usage::providers::polled_api_provider_types();
+            for inst in instances
+                .iter()
+                .filter(|i| polled_api_types.contains(&i.provider_type.as_str()))
+            {
                 let id = format!("credits:{}", inst.instance_name);
                 if self
-                    .poll_credits(&id, &inst.instance_name, &inst.provider_name, &account)
+                    .poll_provider_usage(&id, &inst.instance_name, &inst.provider_name)
                     .await
                 {
                     active.push(id);
@@ -410,45 +411,37 @@ impl UsagePoller {
         self.finish(id, label, &account, result, DataSource::ProviderApi);
     }
 
-    /// Credits / key limit via the provider's own API. Returns whether the
-    /// provider reports credits at all (so it gets a status row).
-    async fn poll_credits(
-        &self,
-        id: &str,
-        instance: &str,
-        provider_name: &str,
-        account: &AccountRef,
-    ) -> bool {
-        if !self.due(id, account, DataSource::ProviderApi) {
-            return true;
-        }
+    /// Usage / credits via the provider's own documented endpoint
+    /// ([`ModelProvider::fetch_usage`]). Returns whether the instance has
+    /// one (so it gets a status row).
+    ///
+    /// [`ModelProvider::fetch_usage`]: lr_providers::ModelProvider::fetch_usage
+    async fn poll_provider_usage(&self, id: &str, instance: &str, provider_name: &str) -> bool {
         let Some(provider) = self.registry.get_provider(instance) else {
             return false;
         };
-        let Some(info) = provider.check_credits().await else {
-            // Either the provider reports no credits (no request is made) or
-            // the request failed. Wait like a failed poll either way, so a
-            // failing endpoint is not asked again on every tick.
+        let Some(account) = provider.usage_account().or_else(|| {
+            self.registry
+                .get_provider_type_for_instance(instance)
+                .and_then(|t| lr_usage::account_for_provider_type(&t))
+        }) else {
+            return false;
+        };
+        if !self.due(id, &account, DataSource::ProviderApi) {
+            return true;
+        }
+        let Some(result) = provider.fetch_usage().await else {
+            // No endpoint for this instance (e.g. a gateway pointed at
+            // another host): nothing was asked. Check again after the
+            // failure back-off rather than on every tick.
             self.defer_after_failure(id);
             return false;
         };
-        let has_limit = info.total_credits_usd.is_some_and(|t| t > 0.0);
-        let report = UsageReport {
-            credits: Some(CreditsReading {
-                label: if has_limit { "Key limit" } else { "Spend" }.to_string(),
-                balance_usd: info.remaining_credits_usd.filter(|_| has_limit),
-                limit_usd: info.total_credits_usd.filter(|_| has_limit),
-                used_usd: info.used_credits_usd,
-                unlimited: !has_limit,
-                currency: Some("USD".to_string()),
-            }),
-            ..Default::default()
-        };
         self.finish(
             id,
-            &format!("{provider_name} credits"),
-            account,
-            Ok(report),
+            &format!("{provider_name} usage"),
+            &account,
+            result,
             DataSource::ProviderApi,
         );
         true

@@ -2857,6 +2857,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands_usage::get_usage_limits,
             ui::commands_usage::refresh_usage_limits,
             ui::commands_usage::get_usage_poll_status,
+            ui::commands_usage::get_usage_polled_provider_types,
             ui::commands_usage::get_usage_tracking_config,
             ui::commands_usage::update_usage_tracking_config,
             ui::commands_usage::forget_usage_account,

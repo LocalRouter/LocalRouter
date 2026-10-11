@@ -9,23 +9,48 @@
 //!   does not have is sent empty (`0`, `0`, no reset) — e.g. Pro Lite's
 //!   weekly limit is the primary window and its secondary is empty.
 //! - API keys: `x-ratelimit-{limit,remaining,reset}-<what>` (OpenAI, Groq,
-//!   Cerebras, …) and `anthropic-ratelimit-<what>-{limit,remaining,reset}`.
+//!   Cerebras, DigitalOcean, …), `anthropic-ratelimit-<what>-{limit,
+//!   remaining,reset}` (plus Anthropic's `anthropic-priority-*` and
+//!   `anthropic-fast-*`), and the IETF `RateLimit` / `RateLimit-Policy`
+//!   structured fields (LLM Gateway). What a name means differs per
+//!   provider (Groq's `-requests` is per day), so each family's quotas are
+//!   normalized onto period-named ids (`requests_day`, `tokens_minute`) by
+//!   [`parse_headers_for`].
 
 use std::collections::BTreeMap;
 
 use http::HeaderMap;
 
+use crate::providers::HeaderScheme;
 use crate::types::{
-    id_fragment, window_label, window_secs_for, CreditsReading, QuotaReading, UsageReport,
-    WindowReading,
+    id_fragment, period_name, quota_id, window_label, window_secs_for, CreditsReading,
+    QuotaReading, UsageReport, WindowReading,
 };
 
 const UNIFIED: &str = "anthropic-ratelimit-unified-";
+/// Anthropic's per-key rate-limit families → quota id prefix: the standard
+/// limits, Priority Tier and fast mode.
+const ANTHROPIC_PREFIXES: &[(&str, &str)] = &[
+    ("anthropic-ratelimit-", ""),
+    ("anthropic-priority-", "priority_"),
+    ("anthropic-fast-", "fast_"),
+];
 
 /// Parse every usage reading in a response's headers. `now` is unix seconds,
 /// used to resolve relative reset times.
 pub fn parse_headers(headers: &HeaderMap, now: i64) -> UsageReport {
-    let map: BTreeMap<String, String> = headers
+    parse_header_map(&lowercase_map(headers), now)
+}
+
+/// [`parse_headers`] for a provider family whose headers are read as
+/// `scheme`: the generic readings, with the family's quotas renamed to what
+/// its documentation says they count.
+pub fn parse_headers_for(scheme: HeaderScheme, headers: &HeaderMap, now: i64) -> UsageReport {
+    parse_header_map_for(scheme, &lowercase_map(headers), now)
+}
+
+fn lowercase_map(headers: &HeaderMap) -> BTreeMap<String, String> {
+    headers
         .iter()
         .filter_map(|(k, v)| {
             Some((
@@ -33,8 +58,7 @@ pub fn parse_headers(headers: &HeaderMap, now: i64) -> UsageReport {
                 v.to_str().ok()?.trim().to_string(),
             ))
         })
-        .collect();
-    parse_header_map(&map, now)
+        .collect()
 }
 
 /// [`parse_headers`] over lowercase name → value pairs.
@@ -44,6 +68,169 @@ pub fn parse_header_map(map: &BTreeMap<String, String>, now: i64) -> UsageReport
     parse_codex(map, &mut report, now);
     report.quotas = parse_quotas(map, now);
     report
+}
+
+/// [`parse_headers_for`] over lowercase name → value pairs.
+pub fn parse_header_map_for(
+    scheme: HeaderScheme,
+    map: &BTreeMap<String, String>,
+    now: i64,
+) -> UsageReport {
+    let mut report = parse_header_map(map, now);
+    let quotas = std::mem::take(&mut report.quotas);
+    report.quotas = match scheme {
+        HeaderScheme::None | HeaderScheme::Generic => quotas,
+        HeaderScheme::TogetherPerSecond => {
+            let mut quotas = rename_quotas(quotas, |id| match id {
+                "rate" => Some(quota_id("requests", "second")),
+                other => Some(other.to_string()),
+            });
+            let tokens = QuotaReading {
+                id: quota_id("tokens", "second"),
+                limit: map.get("x-tokenlimit-limit").and_then(|v| v.parse().ok()),
+                remaining: map
+                    .get("x-tokenlimit-remaining")
+                    .and_then(|v| v.parse().ok()),
+                resets_at: None,
+            };
+            if tokens.limit.is_some() || tokens.remaining.is_some() {
+                quotas.push(tokens);
+            }
+            quotas
+        }
+        HeaderScheme::GroqDailyRequests => rename_quotas(quotas, |id| match id {
+            "requests" => Some(quota_id("requests", "day")),
+            "tokens" => Some(quota_id("tokens", "minute")),
+            other => Some(other.to_string()),
+        }),
+        HeaderScheme::DigitalOcean => {
+            let quotas = rename_quotas(quotas, |id| match id {
+                "requests" => Some(quota_id("requests", "minute")),
+                "tokens_per_minute" => Some(quota_id("tokens", "minute")),
+                "tokens_per_day" => Some(quota_id("tokens", "day")),
+                other => Some(other.to_string()),
+            });
+            // Resets are refill projections in epoch seconds; `0` means
+            // there was capacity to spare (no reset pending).
+            quotas
+                .into_iter()
+                .map(|mut q| {
+                    if let Some(raw) = map.get(&format!("x-ratelimit-reset-{}", do_header(&q.id))) {
+                        q.resets_at = parse_epoch(raw);
+                    }
+                    q
+                })
+                .collect()
+        }
+        HeaderScheme::IetfStructured => {
+            // The unprefixed `x-ratelimit-*` / `ratelimit-*` triples are
+            // overwritten by other gates (a spend-cap 429 puts the dollar
+            // cap in them); the structured fields are not.
+            let mut quotas: Vec<_> = quotas.into_iter().filter(|q| q.id != "rate").collect();
+            quotas.extend(parse_structured_ratelimit(map, now));
+            quotas
+        }
+    };
+    report
+}
+
+/// The DigitalOcean header suffix a normalized quota id came from.
+fn do_header(id: &str) -> &str {
+    match id {
+        "requests_minute" => "requests",
+        "tokens_minute" => "tokens-per-minute",
+        "tokens_day" => "tokens-per-day",
+        other => other,
+    }
+}
+
+/// Rename quotas by id; `None` drops one.
+fn rename_quotas(
+    quotas: Vec<QuotaReading>,
+    rename: impl Fn(&str) -> Option<String>,
+) -> Vec<QuotaReading> {
+    quotas
+        .into_iter()
+        .filter_map(|q| {
+            let id = rename(&q.id)?;
+            Some(QuotaReading { id, ..q })
+        })
+        .collect()
+}
+
+/// One item of an RFC 8941 list: its (unquoted) name and parameters.
+fn structured_items(value: &str) -> Vec<(String, BTreeMap<String, String>)> {
+    value
+        .split(',')
+        .filter_map(|item| {
+            let mut parts = item.split(';').map(str::trim);
+            let name = parts.next()?.trim_matches('"').to_string();
+            if name.is_empty() {
+                return None;
+            }
+            let params = parts
+                .filter_map(|p| {
+                    let (k, v) = p.split_once('=')?;
+                    Some((
+                        k.trim().to_ascii_lowercase(),
+                        v.trim().trim_matches('"').to_string(),
+                    ))
+                })
+                .collect();
+            Some((name, params))
+        })
+        .collect()
+}
+
+/// Quotas from the IETF `RateLimit-Policy` (`"requests";q=600;w=60`) and
+/// `RateLimit` (`"requests";r=599;t=60`) structured fields, matched by
+/// policy name. A policy's window names the period (`w=60` → per minute);
+/// concurrency policies are not rates and are skipped.
+fn parse_structured_ratelimit(map: &BTreeMap<String, String>, now: i64) -> Vec<QuotaReading> {
+    let Some(policies) = map.get("ratelimit-policy") else {
+        return Vec::new();
+    };
+    let current: BTreeMap<String, BTreeMap<String, String>> = map
+        .get("ratelimit")
+        .map(|v| structured_items(v).into_iter().collect())
+        .unwrap_or_default();
+    structured_items(policies)
+        .into_iter()
+        .filter_map(|(name, params)| {
+            let unit = params.get("qu").map(String::as_str).unwrap_or("requests");
+            if unit.starts_with("concurrent") || name == "concurrency" {
+                return None;
+            }
+            let limit = params.get("q").and_then(|v| v.parse::<f64>().ok());
+            let window = params
+                .get("w")
+                .and_then(|v| v.parse::<i64>().ok())
+                .filter(|w| *w > 0);
+            let metric = if unit == "requests" {
+                "requests".to_string()
+            } else {
+                id_fragment(unit)
+            };
+            let id = match window.and_then(period_name) {
+                Some(period) => quota_id(&metric, period),
+                None => metric,
+            };
+            let now_params = current.get(&name);
+            let remaining = now_params
+                .and_then(|p| p.get("r"))
+                .and_then(|v| v.parse::<f64>().ok());
+            let resets_at = now_params
+                .and_then(|p| p.get("t"))
+                .and_then(|v| v.parse::<f64>().ok())
+                .and_then(|t| after_secs(now, t));
+            (limit.is_some() || remaining.is_some()).then_some(QuotaReading {
+                id,
+                limit,
+                remaining,
+                resets_at,
+            })
+        })
+        .collect()
 }
 
 fn parse_anthropic_unified(map: &BTreeMap<String, String>, report: &mut UsageReport) {
@@ -225,13 +412,16 @@ fn parse_quotas(map: &BTreeMap<String, String>, now: i64) -> Vec<QuotaReading> {
                     set(id_fragment(what), field, value);
                 }
             }
-        } else if let Some(rest) = name.strip_prefix("anthropic-ratelimit-") {
+        } else if let Some((tier, rest)) = ANTHROPIC_PREFIXES
+            .iter()
+            .find_map(|(prefix, tier)| Some((*tier, name.strip_prefix(prefix)?)))
+        {
             if rest.starts_with("unified-") {
                 continue;
             }
             for field in ["limit", "remaining", "reset"] {
                 if let Some(what) = rest.strip_suffix(&format!("-{field}")) {
-                    set(id_fragment(what), field, value);
+                    set(format!("{tier}{}", id_fragment(what)), field, value);
                 }
             }
         }
@@ -529,5 +719,165 @@ mod tests {
         let r = parse_headers(&h, 0);
         assert_eq!(r.windows.len(), 1);
         assert_eq!(r.windows[0].id, "seven_day");
+    }
+
+    fn quota<'a>(r: &'a UsageReport, id: &str) -> &'a QuotaReading {
+        r.quotas
+            .iter()
+            .find(|q| q.id == id)
+            .unwrap_or_else(|| panic!("no {id} in {:?}", r.quotas))
+    }
+
+    /// Groq's documented example: `-requests` is per day, `-tokens` per
+    /// minute, resets are Go durations.
+    #[test]
+    fn groq_requests_per_day_tokens_per_minute() {
+        let now = 1_000;
+        let m = map(&[
+            ("x-ratelimit-limit-requests", "14400"),
+            ("x-ratelimit-limit-tokens", "18000"),
+            ("x-ratelimit-remaining-requests", "14370"),
+            ("x-ratelimit-remaining-tokens", "17997"),
+            ("x-ratelimit-reset-requests", "2m59.56s"),
+            ("x-ratelimit-reset-tokens", "7.66s"),
+        ]);
+        let r = parse_header_map_for(HeaderScheme::GroqDailyRequests, &m, now);
+        let rpd = quota(&r, "requests_day");
+        assert_eq!((rpd.limit, rpd.remaining), (Some(14_400.0), Some(14_370.0)));
+        assert_eq!(rpd.resets_at, Some(now + 180));
+        let tpm = quota(&r, "tokens_minute");
+        assert_eq!((tpm.limit, tpm.remaining), (Some(18_000.0), Some(17_997.0)));
+        assert_eq!(tpm.resets_at, Some(now + 8));
+        assert_eq!(r.quotas.len(), 2);
+    }
+
+    /// Cerebras' documented example: the names carry the period; resets are
+    /// float seconds.
+    #[test]
+    fn cerebras_periods_from_names() {
+        let now = 1_000;
+        let m = map(&[
+            ("x-ratelimit-limit-requests-day", "1000000000"),
+            ("x-ratelimit-limit-tokens-minute", "1000000000"),
+            ("x-ratelimit-remaining-requests-day", "999999997"),
+            ("x-ratelimit-remaining-tokens-minute", "999998298"),
+            ("x-ratelimit-reset-requests-day", "33011.382867097855"),
+            ("x-ratelimit-reset-tokens-minute", "11.382867097854614"),
+        ]);
+        let r = parse_header_map_for(HeaderScheme::Generic, &m, now);
+        assert_eq!(quota(&r, "requests_day").resets_at, Some(now + 33_012));
+        assert_eq!(quota(&r, "tokens_minute").remaining, Some(999_998_298.0));
+        assert_eq!(quota(&r, "tokens_minute").resets_at, Some(now + 12));
+    }
+
+    /// Together: per-second request and token limits.
+    #[test]
+    fn together_per_second() {
+        let m = map(&[
+            ("x-ratelimit-limit", "10"),
+            ("x-ratelimit-remaining", "9"),
+            ("x-ratelimit-reset", "1"),
+            ("x-tokenlimit-limit", "3333"),
+            ("x-tokenlimit-remaining", "3000"),
+        ]);
+        let r = parse_header_map_for(HeaderScheme::TogetherPerSecond, &m, 50);
+        let rps = quota(&r, "requests_second");
+        assert_eq!(
+            (rps.limit, rps.remaining, rps.resets_at),
+            (Some(10.0), Some(9.0), Some(51))
+        );
+        let tps = quota(&r, "tokens_second");
+        assert_eq!((tps.limit, tps.remaining), (Some(3333.0), Some(3000.0)));
+        // Without token headers only the request limit is reported.
+        let r = parse_header_map_for(
+            HeaderScheme::TogetherPerSecond,
+            &map(&[("x-ratelimit-remaining", "4")]),
+            0,
+        );
+        assert_eq!(r.quotas.len(), 1);
+    }
+
+    /// DigitalOcean's documented example: epoch-second resets, `0` = none
+    /// pending.
+    #[test]
+    fn digitalocean_epoch_resets() {
+        let now = 1_789_592_400;
+        let m = map(&[
+            ("x-ratelimit-limit-requests", "1201"),
+            ("x-ratelimit-remaining-requests", "1200"),
+            ("x-ratelimit-reset-requests", "1789592460"),
+            ("x-ratelimit-limit-tokens-per-minute", "15000000"),
+            ("x-ratelimit-remaining-tokens-per-minute", "15000000"),
+            ("x-ratelimit-reset-tokens-per-minute", "0"),
+            ("x-ratelimit-limit-tokens-per-day", "100000000"),
+            ("x-ratelimit-remaining-tokens-per-day", "99000000"),
+            ("x-ratelimit-reset-tokens-per-day", "0"),
+        ]);
+        let r = parse_header_map_for(HeaderScheme::DigitalOcean, &m, now);
+        assert_eq!(quota(&r, "requests_minute").resets_at, Some(1_789_592_460));
+        assert_eq!(quota(&r, "tokens_minute").resets_at, None);
+        assert_eq!(quota(&r, "tokens_day").remaining, Some(99_000_000.0));
+        assert_eq!(quota(&r, "tokens_day").resets_at, None);
+        assert_eq!(r.quotas.len(), 3);
+    }
+
+    /// LLM Gateway's documented headers: the structured fields win over the
+    /// legacy triples (which spend-cap 429s overwrite with dollar caps);
+    /// concurrency is not a rate.
+    #[test]
+    fn ietf_structured_fields() {
+        let now = 1_000;
+        let m = map(&[
+            (
+                "ratelimit-policy",
+                r#""requests";q=600;w=60, "concurrency";q=100;qu="concurrent-requests""#,
+            ),
+            ("ratelimit", r#""requests";r=599;t=60, "concurrency";r=99"#),
+            ("ratelimit-limit", "25"),
+            ("ratelimit-remaining", "0"),
+            ("ratelimit-reset", "60"),
+            ("x-ratelimit-limit", "600"),
+            ("x-ratelimit-remaining", "599"),
+            ("x-ratelimit-reset", "1789592460"),
+        ]);
+        let r = parse_header_map_for(HeaderScheme::IetfStructured, &m, now);
+        assert_eq!(r.quotas.len(), 1, "{:?}", r.quotas);
+        let rpm = quota(&r, "requests_minute");
+        assert_eq!(
+            (rpm.limit, rpm.remaining, rpm.resets_at),
+            (Some(600.0), Some(599.0), Some(now + 60))
+        );
+        // A window with no period name keeps the bare metric.
+        let m = map(&[("ratelimit-policy", r#""burst";q=50;w=10"#)]);
+        let r = parse_header_map_for(HeaderScheme::IetfStructured, &m, now);
+        assert_eq!(quota(&r, "requests").limit, Some(50.0));
+        assert_eq!(quota(&r, "requests").remaining, None);
+        // Garbage does not panic or produce readings.
+        let m = map(&[
+            ("ratelimit-policy", ";;,=,\"\";q=x;w=-1"),
+            ("ratelimit", "\""),
+        ]);
+        assert!(parse_header_map_for(HeaderScheme::IetfStructured, &m, now)
+            .quotas
+            .is_empty());
+    }
+
+    /// Anthropic's Priority Tier and fast-mode limits sit next to the
+    /// standard ones.
+    #[test]
+    fn anthropic_priority_and_fast_limits() {
+        let m = map(&[
+            ("anthropic-ratelimit-requests-limit", "4000"),
+            ("anthropic-ratelimit-requests-remaining", "3999"),
+            ("anthropic-ratelimit-requests-reset", "2026-10-11T12:00:01Z"),
+            ("anthropic-priority-input-tokens-limit", "100000"),
+            ("anthropic-priority-input-tokens-remaining", "99000"),
+            ("anthropic-fast-output-tokens-limit", "8000"),
+            ("anthropic-fast-output-tokens-remaining", "8000"),
+        ]);
+        let r = parse_header_map_for(HeaderScheme::Generic, &m, 0);
+        assert_eq!(quota(&r, "requests").remaining, Some(3_999.0));
+        assert_eq!(quota(&r, "priority_input_tokens").limit, Some(100_000.0));
+        assert_eq!(quota(&r, "fast_output_tokens").remaining, Some(8_000.0));
     }
 }

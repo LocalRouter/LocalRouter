@@ -218,6 +218,7 @@ mod tests {
             windows,
             quotas: vec![],
             credits: None,
+            reports_limits: true,
             spend: UsageSpendView::default(),
             value_multiplier: None,
         }

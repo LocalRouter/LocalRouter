@@ -3716,12 +3716,17 @@ export interface UsageWindowView {
 
 /** Rust: crates/lr-usage/src/view.rs - UsageQuotaView struct */
 export interface UsageQuotaView {
+  /** `<metric>[_<period>]`, e.g. `requests`, `tokens_minute`, `requests_day`. */
   id: string
+  /** e.g. "Requests / day". */
   label: string
   limit: number | null
+  /** Back to `limit` once the reset time has passed. */
   remaining: number | null
   used_percent: number | null
   resets_at: number | null
+  /** Period the limit applies to (60 = per minute), when the provider says. */
+  window_secs: number | null
   updated_at: number
 }
 
@@ -3772,6 +3777,11 @@ export interface UsageAccountView {
   windows: UsageWindowView[]
   quotas: UsageQuotaView[]
   credits: UsageCredits | null
+  /**
+   * Whether the provider reports limits at all (rate-limit headers or a usage
+   * endpoint); `false` for API providers that document neither.
+   */
+  reports_limits: boolean
   spend: UsageSpendView
   value_multiplier: number | null
 }
