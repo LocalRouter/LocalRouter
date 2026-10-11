@@ -128,6 +128,7 @@ pub mod cohere;
 pub mod deepinfra;
 pub mod embedded;
 pub mod factory;
+pub mod fastflowlm;
 pub mod features;
 pub mod gemini;
 pub mod gpt4all;
@@ -141,6 +142,7 @@ pub mod llamacpp;
 pub mod lmstudio;
 pub mod localai;
 pub mod mistral;
+pub mod model_settings;
 pub mod oauth;
 pub mod ollama;
 pub mod openai;
@@ -178,6 +180,16 @@ pub trait ModelProvider: Send + Sync {
 
     /// Lists all available models from this provider
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>>;
+
+    /// The model listing with what the registry needs to know about it.
+    /// Defaults to [`Self::list_models`]; providers whose listing names more
+    /// than they can serve right away say so here.
+    async fn list_model_listing(&self) -> AppResult<ModelListing> {
+        Ok(ModelListing {
+            models: self.list_models().await?,
+            new_models_hidden: false,
+        })
+    }
 
     /// Gets pricing information for a specific model
     async fn get_pricing(&self, model: &str) -> AppResult<PricingInfo>;
@@ -1019,6 +1031,54 @@ impl ModelInfo {
             && !capabilities.contains(&Capability::FunctionCalling)
         {
             capabilities.push(Capability::FunctionCalling);
+        }
+    }
+}
+
+/// A provider's model listing, as the registry caches it.
+#[derive(Debug, Clone, Default)]
+pub struct ModelListing {
+    /// The listed ("discovered") models
+    pub models: Vec<ModelInfo>,
+    /// The listing names every model the provider could serve, not only the
+    /// ones ready to use (FastFlowLM's full catalog when the installed models
+    /// cannot be determined). Discovered models without an entry of their own
+    /// are then hidden unless the user turns "show new models" on.
+    pub new_models_hidden: bool,
+}
+
+impl Capability {
+    /// The capability a configured override names; `None` for one this
+    /// version does not know.
+    pub fn from_kind(kind: lr_config::ModelCapabilityKind) -> Option<Self> {
+        use lr_config::ModelCapabilityKind as K;
+        Some(match kind {
+            K::Chat => Capability::Chat,
+            K::Completion => Capability::Completion,
+            K::Embedding => Capability::Embedding,
+            K::Vision => Capability::Vision,
+            K::FunctionCalling => Capability::FunctionCalling,
+            K::Audio => Capability::Audio,
+            K::TextToSpeech => Capability::TextToSpeech,
+            K::Decision => Capability::Decision,
+            K::ImageGeneration => Capability::ImageGeneration,
+            K::Unknown => return None,
+        })
+    }
+
+    /// The config form of this capability.
+    pub fn kind(&self) -> lr_config::ModelCapabilityKind {
+        use lr_config::ModelCapabilityKind as K;
+        match self {
+            Capability::Chat => K::Chat,
+            Capability::Completion => K::Completion,
+            Capability::Embedding => K::Embedding,
+            Capability::Vision => K::Vision,
+            Capability::FunctionCalling => K::FunctionCalling,
+            Capability::Audio => K::Audio,
+            Capability::TextToSpeech => K::TextToSpeech,
+            Capability::Decision => K::Decision,
+            Capability::ImageGeneration => K::ImageGeneration,
         }
     }
 }
