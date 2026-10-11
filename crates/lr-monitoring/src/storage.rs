@@ -4,9 +4,6 @@
 //! - Per-minute: Last 24 hours (1,440 points)
 //! - Per-hour: Last 31 days (744 points), so a 30-day chart has sub-day detail
 //! - Per-day: Last 90 days (90 points)
-//!
-//! It also keeps the peak number of requests in progress per minute for the
-//! last 31 days (one row per minute that had any).
 #![allow(dead_code)]
 
 use anyhow::Result;
@@ -27,9 +24,6 @@ pub enum Granularity {
 
 /// How long hourly rows are kept.
 pub const HOUR_RETENTION_DAYS: i64 = 31;
-
-/// How long per-minute in-progress peaks are kept.
-pub const IN_FLIGHT_RETENTION_DAYS: i64 = 31;
 
 impl Granularity {
     /// Seconds one row of this granularity covers.
@@ -165,44 +159,11 @@ impl MetricsDatabase {
             [],
         )?;
 
-        // Peak number of requests in progress, per minute (Unix seconds at
-        // the start of the minute). Minutes without any are not stored.
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS in_flight_peaks (
-                minute INTEGER PRIMARY KEY,
-                peak INTEGER NOT NULL
-            )",
-            [],
-        )?;
+        // Version 0.0.155 stored per-minute peaks of requests in progress
+        // here; the traffic chart no longer plots them.
+        conn.execute("DROP TABLE IF EXISTS in_flight_peaks", [])?;
 
         Ok(())
-    }
-
-    /// Raise the stored in-progress peak of `minute` to at least `peak`.
-    pub fn record_in_flight_peak(&self, minute: i64, peak: u64) -> Result<()> {
-        let conn = self.conn.lock();
-        conn.execute(
-            "INSERT INTO in_flight_peaks (minute, peak) VALUES (?1, ?2)
-             ON CONFLICT(minute) DO UPDATE SET peak = MAX(peak, excluded.peak)",
-            params![minute, peak as i64],
-        )?;
-        Ok(())
-    }
-
-    /// Per-minute in-progress peaks with `start <= minute < end`, oldest first.
-    pub fn query_in_flight_peaks(&self, start: i64, end: i64) -> Result<Vec<(i64, u64)>> {
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT minute, peak FROM in_flight_peaks
-             WHERE minute >= ?1 AND minute < ?2
-             ORDER BY minute ASC",
-        )?;
-        let rows = stmt.query_map(params![start, end], |row| {
-            let minute: i64 = row.get(0)?;
-            let peak: i64 = row.get(1)?;
-            Ok((minute, peak.max(0) as u64))
-        })?;
-        Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
     /// Insert or update a metric row
@@ -452,7 +413,6 @@ impl MetricsDatabase {
     /// - Minute data: older than 24 hours
     /// - Hour data: older than [`HOUR_RETENTION_DAYS`]
     /// - Day data: older than 90 days
-    /// - In-progress peaks: older than [`IN_FLIGHT_RETENTION_DAYS`]
     pub fn cleanup_old_data(&self) -> Result<()> {
         let now = Utc::now();
         let conn = self.conn.lock();
@@ -478,18 +438,11 @@ impl MetricsDatabase {
             params![day_cutoff.timestamp()],
         )?;
 
-        let peak_cutoff = now - chrono::Duration::days(IN_FLIGHT_RETENTION_DAYS);
-        let peaks_deleted = conn.execute(
-            "DELETE FROM in_flight_peaks WHERE minute < ?",
-            params![peak_cutoff.timestamp()],
-        )?;
-
         tracing::debug!(
-            "Cleaned up old metrics: {} minutes, {} hours, {} days, {} in-progress peaks",
+            "Cleaned up old metrics: {} minutes, {} hours, {} days",
             minute_deleted,
             hour_deleted,
-            day_deleted,
-            peaks_deleted
+            day_deleted
         );
 
         // Reclaim space
@@ -901,23 +854,12 @@ mod tests {
         assert_eq!(results[0].failed_requests, 3); // 3 * 1
     }
 
-    /// Peaks only ever rise within a minute, and old peaks and hourly rows
-    /// follow their retention.
+    /// Hourly rows are kept long enough for the 30-day chart.
     #[test]
-    fn in_flight_peaks_keep_the_maximum_and_expire_with_hourly_rows() {
+    fn hourly_rows_follow_their_retention() {
         let dir = tempdir().unwrap();
         let db = MetricsDatabase::new(dir.path().join("test.db")).unwrap();
         let now = Utc::now().timestamp();
-        let minute = now - now.rem_euclid(60);
-        db.record_in_flight_peak(minute, 3).unwrap();
-        db.record_in_flight_peak(minute, 2).unwrap();
-        db.record_in_flight_peak(minute - 60, 1).unwrap();
-        let old = minute - (IN_FLIGHT_RETENTION_DAYS + 1) * 86_400;
-        db.record_in_flight_peak(old, 9).unwrap();
-        assert_eq!(
-            db.query_in_flight_peaks(minute - 60, minute + 60).unwrap(),
-            vec![(minute - 60, 1), (minute, 3)]
-        );
 
         let hour_row = |days: i64| MetricRow {
             timestamp: DateTime::from_timestamp(now - days * 86_400, 0).unwrap(),
@@ -939,11 +881,6 @@ mod tests {
             .unwrap();
 
         db.cleanup_old_data().unwrap();
-        assert!(db.query_in_flight_peaks(old, old + 60).unwrap().is_empty());
-        assert_eq!(
-            db.query_in_flight_peaks(minute, minute + 60).unwrap().len(),
-            1
-        );
         let rows = db
             .query_all_granularities("llm_global", now - 40 * 86_400, now)
             .unwrap();
@@ -952,5 +889,61 @@ mod tests {
             1,
             "a 20-day-old hourly row is kept for the 30-day chart"
         );
+    }
+
+    /// A database written by 0.0.155, with its table of in-progress peaks,
+    /// still opens and keeps its metrics; the unused table is dropped.
+    #[test]
+    fn databases_with_the_old_in_flight_peaks_table_still_open() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        {
+            let db = MetricsDatabase::new(path.clone()).unwrap();
+            db.upsert_metric(
+                "llm_global",
+                &MetricRow {
+                    timestamp: DateTime::from_timestamp(Utc::now().timestamp() / 60 * 60, 0)
+                        .unwrap(),
+                    granularity: Granularity::Minute,
+                    requests: 2,
+                    successful_requests: 1,
+                    failed_requests: 1,
+                    avg_latency_ms: 0.0,
+                    input_tokens: None,
+                    output_tokens: None,
+                    cost_usd: None,
+                    method_counts: None,
+                    p50_latency_ms: None,
+                    p95_latency_ms: None,
+                    p99_latency_ms: None,
+                },
+            )
+            .unwrap();
+            let conn = db.conn.lock();
+            conn.execute(
+                "CREATE TABLE in_flight_peaks (minute INTEGER PRIMARY KEY, peak INTEGER NOT NULL)",
+                [],
+            )
+            .unwrap();
+            conn.execute("INSERT INTO in_flight_peaks VALUES (60, 3)", [])
+                .unwrap();
+        }
+        let db = MetricsDatabase::new(path).unwrap();
+        let now = Utc::now().timestamp();
+        let rows = db
+            .query_all_granularities("llm_global", now - 3_600, now + 60)
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].failed_requests, 1);
+        let tables: i64 = db
+            .conn
+            .lock()
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'in_flight_peaks'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 0);
     }
 }

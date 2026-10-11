@@ -1,5 +1,8 @@
 # Dashboard traffic chart and usage cards
 
+> The per-bucket "in progress" peaks and the separate error panel described
+> here were replaced in `2026-10-10-TRAFFIC_CHART_LIVE_IN_PROGRESS.md`.
+
 ## Problems
 1. The usage-limit cards show a "Near limit" pill; the user wants it gone.
 2. The money line on the usage cards ("API value 30d $4.95") does not say what

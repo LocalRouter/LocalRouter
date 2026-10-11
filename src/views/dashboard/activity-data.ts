@@ -57,32 +57,27 @@ export interface TrafficPoint {
   mcp: number | null
   /** Failed requests (LLM + MCP). */
   errors: number | null
-  /** Most requests in progress at once during the bucket. */
-  inFlight: number | null
   cost: number | null
+  /** The bucket that contains the current time (still filling). */
+  live: boolean
 }
 
 /**
  * Chart points for a timeline. The timeline is extended to the bucket that
  * contains `now` (it may have rolled over since the last read), keeping the
- * window length, and the requests running right now are placed on that live
- * bucket so the chart reacts before the next read.
+ * window length; that bucket is marked `live`.
  */
-export function trafficPoints(
-  timeline: TrafficTimeline | null,
-  now: number,
-  inFlight: number,
-): TrafficPoint[] {
+export function trafficPoints(timeline: TrafficTimeline | null, now: number): TrafficPoint[] {
   if (!timeline || timeline.buckets.length === 0) return []
   const bucketMs = timeline.bucket_secs * 1000
-  const points: TrafficPoint[] = timeline.buckets.map(({ timestamp, counts, in_flight }) => ({
+  const points: TrafficPoint[] = timeline.buckets.map(({ timestamp, counts }) => ({
     timestamp: timestamp * 1000,
     completed: counts ? counts.llm_requests + counts.mcp_requests : null,
     llm: counts?.llm_requests ?? null,
     mcp: counts?.mcp_requests ?? null,
     errors: counts ? counts.llm_errors + counts.mcp_errors : null,
-    inFlight: in_flight,
     cost: counts?.cost_usd ?? null,
+    live: false,
   }))
   const length = points.length
   const last = points[length - 1]
@@ -96,22 +91,30 @@ export function trafficPoints(
         llm: 0,
         mcp: 0,
         errors: 0,
-        inFlight: 0,
         cost: 0,
+        live: false,
       })
     }
   }
   const window = points.slice(-length)
-  const live = window[window.length - 1]
-  if (live.completed !== null && now - live.timestamp < bucketMs) {
-    live.inFlight = Math.max(live.inFlight ?? 0, inFlight)
-  }
+  const newest = window[window.length - 1]
+  newest.live = newest.timestamp <= now && now - newest.timestamp < bucketMs
   return window
 }
 
-/** Highest finished-request or in-progress value, for the shared y-axis. */
-export function trafficPeak(points: TrafficPoint[]): number {
-  return Math.max(0, ...points.map((p) => Math.max(p.completed ?? 0, p.inFlight ?? 0)))
+/** The bucket still filling, if the timeline reaches the current time. */
+export function livePoint(points: TrafficPoint[]): TrafficPoint | null {
+  const newest = points[points.length - 1]
+  return newest?.live ? newest : null
+}
+
+/**
+ * Top of the shared count axis: the busiest bucket, and the requests in
+ * progress now when they are drawn at the live bucket.
+ */
+export function trafficPeak(points: TrafficPoint[], inFlightNow = 0): number {
+  const live = livePoint(points) ? inFlightNow : 0
+  return Math.max(live, ...points.map((p) => p.completed ?? 0))
 }
 
 /** Whole-number y-axis ticks from 0 to a round top of at least `peak`. */

@@ -354,7 +354,9 @@ function generateMockGraphData(datasetLabel = "Requests", baseValue = 200, varia
 }
 
 // Dashboard traffic chart: the same bucket layout as the backend (60–96
-// buckets per range), with stable values so refreshes do not jump.
+// buckets per range), with stable values so refreshes do not jump. A few
+// buckets per range have errors (LLM every 23rd bucket, MCP every 37th);
+// requests in progress come from the pending monitor events in mockData.
 // Returns: TrafficTimeline (src/types/tauri-commands.ts)
 function generateMockTrafficTimeline(args?: { timeRange?: string }): TrafficTimeline {
   const layout: Record<string, [number, number]> = {
@@ -369,18 +371,23 @@ function generateMockTrafficTimeline(args?: { timeRange?: string }): TrafficTime
   const current = Math.floor(now / bucketSecs) * bucketSecs
   // Requests per minute at a given time: busier in working hours, with bursts.
   const perMinute = (t: number) => {
-    const hour = new Date(t * 1000).getHours()
-    const daily = hour >= 9 && hour <= 18 ? 1.5 : hour >= 6 && hour <= 21 ? 1 : 0.15
+    const date = new Date(t * 1000)
+    const hour = date.getHours() + date.getMinutes() / 60
+    // Smooth daily cycle: busiest mid-afternoon, quiet (not idle) at night.
+    const daily = 0.9 + 0.6 * Math.cos(((hour - 14) / 24) * 2 * Math.PI)
     return Math.max(0, daily * (24 + 14 * Math.sin(t / 437) + 9 * Math.sin(t / 97)))
   }
   const totals = { llm_requests: 0, llm_errors: 0, mcp_requests: 0, mcp_errors: 0, cost_usd: 0 }
   const buckets = Array.from({ length: count }, (_, i) => {
     const timestamp = current - (count - 1 - i) * bucketSecs
-    const requests = Math.round(perMinute(timestamp) * (bucketSecs / 60))
+    const index = Math.floor(timestamp / bucketSecs)
+    // Stable per-bucket noise, so neighbouring buckets differ like real traffic.
+    const noise = (Math.sin(index * 12.9898) * 43758.5453) % 1
+    const requests = Math.round(perMinute(timestamp) * (bucketSecs / 60) * (0.55 + 0.9 * Math.abs(noise)))
     const llm = Math.round(requests * 0.7)
     const mcp = requests - llm
-    const llmErrors = Math.sin(timestamp / 211) > 0.93 ? Math.max(1, Math.round(llm * 0.08)) : 0
-    const mcpErrors = Math.sin(timestamp / 157) > 0.96 ? 1 : 0
+    const llmErrors = index % 23 === 7 ? 1 + (index % 3) : 0
+    const mcpErrors = index % 37 === 11 ? 1 : 0
     const counts = {
       llm_requests: llm,
       llm_errors: Math.min(llm, llmErrors),
@@ -393,8 +400,7 @@ function generateMockTrafficTimeline(args?: { timeRange?: string }): TrafficTime
     totals.mcp_requests += counts.mcp_requests
     totals.mcp_errors += counts.mcp_errors
     totals.cost_usd += counts.cost_usd
-    const inFlight = Math.max(0, Math.round(1.5 + 1.5 * Math.sin(timestamp / 173) + Math.min(3, requests / 400)))
-    return { timestamp, counts, in_flight: inFlight }
+    return { timestamp, counts }
   })
   return { bucket_secs: bucketSecs, buckets, totals }
 }
