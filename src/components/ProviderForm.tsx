@@ -27,6 +27,8 @@ export interface ProviderType {
   category: ProviderCategory
   description: string
   setup_parameters: SetupParameter[]
+  /** Rust: ProviderTypeInfo.default_free_tier */
+  default_free_tier?: { kind: string }
   free_tier_short_text?: string
   free_tier_long_text?: string
   docs_url?: string | null
@@ -496,7 +498,7 @@ export default function ProviderForm({
               <input
                 type="checkbox"
                 id={param.key}
-                checked={config[param.key] === 'true'}
+                checked={(config[param.key] ?? param.default_value) === 'true'}
                 onChange={(e) => handleConfigChange(param.key, e.target.checked.toString())}
                 className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
               />

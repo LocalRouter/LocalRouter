@@ -28,6 +28,116 @@ import type { MonitorEventFilter, MonitorEventSummary } from '@app/types/tauri-c
 // Types for mock return values - see src/types/tauri-commands.ts for full type definitions
 import type { RoutingPolicyPreview, GraphData, TrafficTimeline, ProviderFeatureSupport, FeatureEndpointMatrix, InstallSourceInfo, RequestDedupeConfig } from '@app/types/tauri-commands'
 import type {
+  FreeTierKind,
+  GetProviderModelMetadataParams,
+  PreviewFreeModelRulesParams,
+  ProviderFreeTierStatus,
+  SetProviderFreeTierParams,
+} from '@app/types/tauri-commands'
+import { MOCK_LISTING_METADATA, mockEvaluator, mockFreeTier, mockFreeTiers, mockPreview } from './mockFreeModels'
+import type {
+  GetProviderModelSettingsParams,
+  ListProviderModelsManagedParams,
+  ManagedModelInfo,
+  ModelCapabilityKind,
+  ProviderManagedModels,
+  ProviderModelSettings,
+  SetProviderModelSettingsParams,
+} from '@app/types/tauri-commands'
+
+// ---------------------------------------------------------------------------
+// Per-provider model settings (provider Models tab). The vLLM box shows a
+// hidden model, a model added by hand and one with overrides.
+// ---------------------------------------------------------------------------
+const mockModelSettings: Record<string, ProviderModelSettings> = {
+  'gpu-box-vllm': {
+    entries: [
+      {
+        id: 'meta-llama/Llama-3.3-70B-Instruct',
+        display_name: 'Llama 3.3 70B (team)',
+        pricing: { input_per_million: 0.2, output_per_million: 0.6 },
+      },
+      { id: 'Qwen/Qwen2.5-Coder-7B-Instruct', enabled: false },
+      { id: 'deepseek-ai/DeepSeek-R1-Distill-Llama-8B', enabled: false },
+      { id: 'my-org/support-finetune-v2', manual: true, context_window: 32768 },
+    ],
+  },
+}
+
+/** The demo providers' free tiers as shipped (for "Reset to Default"). */
+const MOCK_DEFAULT_FREE_TIERS: Record<string, { kind: FreeTierKind }> = Object.fromEntries(
+  Object.entries(mockFreeTiers).map(([name, t]) => [
+    name,
+    // Both user overrides are remote OpenAI-compatible servers: no free tier.
+    { kind: t.override ? ({ kind: 'none' } as FreeTierKind) : structuredClone(t.kind) },
+  ]),
+)
+
+const MOCK_EMBEDDING_MODELS = new Set(['BAAI/bge-m3', 'intfloat/multilingual-e5-large-instruct', 'bge-m3'])
+const MOCK_VISION_MODELS = new Set([
+  'meta-llama/Llama-3.2-11B-Vision-Instruct',
+  'Qwen/Qwen2.5-VL-7B-Instruct',
+  'google/gemma-3-27b-it',
+  'google/gemma-3-12b-it',
+  'google/gemma-3-4b-it',
+  'gemma3:4b',
+])
+
+/** Capabilities of a demo model. */
+function mockModelCapabilities(id: string): ModelCapabilityKind[] {
+  if (MOCK_EMBEDDING_MODELS.has(id)) return ['embedding']
+  const caps: ModelCapabilityKind[] = ['chat', 'completion', 'function_calling']
+  if (MOCK_VISION_MODELS.has(id)) caps.push('vision')
+  return caps
+}
+
+/** The demo's port of `model_settings::apply` for one provider instance. */
+function mockManagedModels(instanceName: string): ProviderManagedModels {
+  const settings = mockModelSettings[instanceName] ?? {}
+  const entries = settings.entries ?? []
+  const provider = mockData.providers.find(p => p.instance_name === instanceName)
+  const discoveryOn = (provider as { config?: Record<string, string> } | undefined)?.config?.model_discovery !== 'false'
+  const showNew = settings.show_new_models ?? true
+  const listed = discoveryOn ? mockData.models.filter(m => m.provider === instanceName) : []
+  const seen = new Set<string>()
+  const models: ManagedModelInfo[] = []
+  const describe = (id: string, ctx: number, source: ManagedModelInfo['source'], enabled: boolean): ManagedModelInfo => {
+    const e = entries.find(x => x.id === id)
+    return {
+      id,
+      name: e?.display_name || id,
+      source,
+      enabled,
+      has_overrides: !!(e?.display_name || e?.context_window || e?.capabilities || e?.pricing),
+      context_window: e?.context_window || ctx,
+      capabilities: e?.capabilities ?? mockModelCapabilities(id),
+      input_price_per_million: e?.pricing?.input_per_million ?? null,
+      output_price_per_million: e?.pricing?.output_per_million ?? null,
+    }
+  }
+  for (const m of listed) {
+    seen.add(m.id)
+    const e = entries.find(x => x.id === m.id)
+    const source = e?.manual ? 'manual_and_discovered' : 'discovered'
+    models.push(describe(m.id, m.context_length, source, e?.enabled ?? (showNew || !!e?.manual)))
+  }
+  for (const e of entries) {
+    if (seen.has(e.id)) continue
+    seen.add(e.id)
+    models.push(describe(e.id, 4096, e.manual ? 'manual' : 'missing', e.enabled ?? !!e.manual))
+  }
+  const factoryHasSwitch = ['openai_compatible', 'fastflowlm'].includes(provider?.provider_type ?? '')
+  return {
+    models,
+    discovery_error: null,
+    show_new_models: showNew,
+    new_models_hidden_by_provider: false,
+    has_discovery_switch: factoryHasSwitch,
+    discovery_enabled: discoveryOn || !factoryHasSwitch,
+    hidden_count: models.filter(m => !m.enabled && m.source !== 'missing').length,
+  }
+}
+import type {
   UsageAccountView,
   UsagePollStatus,
   UsageSnapshot,
@@ -1736,6 +1846,10 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       llamacpp_embedded: { context: 'auto', gpu_layers: 'auto', flash_attention: 'auto', kv_cache: 'f16', max_loaded_models: '1', idle_unload_minutes: '15' },
     }
     if (embeddedConfigs[provider.provider_type]) return embeddedConfigs[provider.provider_type]
+    const saved = (provider as { config?: Record<string, string> }).config
+    if (provider.instance_name === 'free-ai') return { base_url: 'https://api.free.ai/v1', api_key: 'fa-demo-key', ...saved }
+    if (provider.provider_type === 'openai_compatible') return { base_url: 'http://gpu-box.local:8000/v1', ...saved }
+    if (provider.provider_type === 'fastflowlm') return { base_url: 'http://127.0.0.1:52625/v1', ...saved }
     return { api_key: 'sk-demo-key-1234567890', base_url: 'https://api.openai.com/v1' }
   },
   'create_provider_instance': (args) => {
@@ -1755,6 +1869,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     if (provider && args?.config) {
       Object.assign(provider, { config: args.config })
     }
+    setTimeout(() => emit('providers-changed', {}), 10)
     return null
   },
   'rename_provider_instance': (args) => {
@@ -3036,6 +3151,20 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     (mockHandlers['list_all_models_detailed']() as Array<{ provider_instance: string }>).filter(
       (m) => m.provider_instance === args.instanceName,
     ),
+  'list_provider_models_managed': (args: ListProviderModelsManagedParams): ProviderManagedModels =>
+    mockManagedModels(args.instanceName),
+  'get_provider_model_settings': (args: GetProviderModelSettingsParams): ProviderModelSettings =>
+    mockModelSettings[args.instanceName] ?? {},
+  'set_provider_model_settings': (args: SetProviderModelSettingsParams): ProviderManagedModels => {
+    mockModelSettings[args.instanceName] = {
+      ...args.settings,
+      entries: (args.settings.entries ?? []).filter(
+        e => e.manual || e.enabled != null || e.display_name || e.context_window || e.capabilities || e.pricing,
+      ),
+    }
+    setTimeout(() => emit('models-changed', {}), 10)
+    return mockManagedModels(args.instanceName)
+  },
   'list_all_models_detailed': () => {
     const pricingMap: Record<string, { input: number; output: number; source: string }> = {
       'gpt-4o': { input: 2.50, output: 10.00, source: 'catalog' },
@@ -3059,6 +3188,9 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       'gemini-google': 'gemini',
       'groq-fast': 'groq',
       'openrouter-backup': 'openrouter',
+      'gpu-box-vllm': 'openai_compatible',
+      'fastflowlm-npu': 'fastflowlm',
+      'free-ai': 'openai_compatible',
     }
     const capabilitiesMap: Record<string, string[]> = {
       'gpt-4o': ['chat', 'completion', 'vision', 'functioncalling'],
@@ -3081,10 +3213,50 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       // llama.cpp Local Embedded (library models)
       'qwen3-8b-q4_k_m': ['chat', 'completion', 'functioncalling'],
       'nomic-embed-text-v1.5-q8_0': ['embedding'],
+      'bge-m3': ['embedding'],
+      'flux-schnell': ['imagegeneration'],
     }
-    return mockData.models.map(m => {
-      const pricing = pricingMap[m.id]
+    // Models hidden on their provider's Models tab are not offered.
+    const offered = new Set(
+      Object.keys(mockModelSettings).flatMap(name =>
+        mockManagedModels(name).models.filter(m => m.enabled && m.source !== 'missing').map(m => `${name}/${m.id}`),
+      ),
+    )
+    const managedExtra = Object.keys(mockModelSettings).flatMap(name =>
+      mockManagedModels(name)
+        .models.filter(m => m.source === 'manual' && m.enabled)
+        .map(m => ({ id: m.id, provider: name, display_name: m.name, context_length: m.context_window })),
+    )
+    const shown = [...mockData.models, ...managedExtra].filter(
+      m => !mockModelSettings[m.provider] || offered.has(`${m.provider}/${m.id}`),
+    )
+    const evaluators = new Map<string, ReturnType<typeof mockEvaluator>>()
+    const evaluatorFor = (instance: string) => {
+      let ev = evaluators.get(instance)
+      if (!ev) {
+        ev = mockEvaluator(mockFreeTier(instance))
+        evaluators.set(instance, ev)
+      }
+      return ev
+    }
+    return shown.map(m => {
+      const priced = mockModelSettings[m.provider]?.entries?.find(e => e.id === m.id)?.pricing
+      const listed = MOCK_LISTING_METADATA[m.provider]?.[m.id]
+      const listedPrices = listed?.pricing as Record<string, unknown> | undefined
+      const listedInput = Number(listedPrices?.prompt ?? listedPrices?.input)
+      const listedOutput = Number(listedPrices?.completion ?? listedPrices?.output ?? 0)
+      const pricing = priced
+        ? { input: priced.input_per_million, output: priced.output_per_million, source: 'override' }
+        : listedPrices && Number.isFinite(listedInput) && Number.isFinite(listedOutput)
+          ? { input: listedInput * 1_000_000, output: listedOutput * 1_000_000, source: 'listing' }
+          : pricingMap[m.id]
+      const freeTierModel = evaluatorFor(m.provider).decide({
+        modelId: m.id,
+        metadata: listed ?? null,
+        priceOverride: priced ?? null,
+      })
       return {
+        free_tier_model: freeTierModel,
         model_id: m.id,
         provider_instance: m.provider,
         provider_type: providerTypeMap[m.provider] || 'unknown',
@@ -4720,68 +4892,78 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // ============================================================================
   // Free Tier
   // ============================================================================
-  'get_free_tier_status': () => {
-    return [
-      {
-        provider_instance: 'ollama',
-        provider_type: 'ollama',
-        display_name: 'ollama',
-        free_tier: { kind: 'always_free_local' },
-        is_user_override: false,
-        supports_credit_check: false,
-        rate_rpm_used: null, rate_rpm_limit: null,
-        rate_rpd_used: null, rate_rpd_limit: null,
-        rate_tpm_used: null, rate_tpm_limit: null,
-        rate_tpd_used: null, rate_tpd_limit: null,
-        rate_monthly_calls_used: null, rate_monthly_calls_limit: null,
-        rate_monthly_tokens_used: null, rate_monthly_tokens_limit: null,
-        credit_used_usd: null, credit_budget_usd: null, credit_remaining_usd: null,
-        is_backed_off: false, backoff_retry_after_secs: null, backoff_reason: null,
-        cost_backoff_active: false, cost_backoff_retry_after_secs: null, cost_backoff_duration_secs: null, cost_backoff_last_trigger: null, cost_backoff_trigger_count: 0,
-        has_capacity: true, status_message: 'Always free',
-      },
-      {
-        provider_instance: 'groq-fast',
-        provider_type: 'groq',
-        display_name: 'groq-fast',
-        free_tier: { kind: 'rate_limited_free', max_rpm: 30, max_rpd: 14400, max_tpm: 6000, max_tpd: 500000, max_monthly_calls: 0, max_monthly_tokens: 0 },
-        is_user_override: false,
-        supports_credit_check: false,
-        rate_rpm_used: 12, rate_rpm_limit: 30,
-        rate_rpd_used: 245, rate_rpd_limit: 14400,
-        rate_tpm_used: 2100, rate_tpm_limit: 6000,
-        rate_tpd_used: null, rate_tpd_limit: null,
-        rate_monthly_calls_used: null, rate_monthly_calls_limit: null,
-        rate_monthly_tokens_used: null, rate_monthly_tokens_limit: null,
-        credit_used_usd: null, credit_budget_usd: null, credit_remaining_usd: null,
-        is_backed_off: false, backoff_retry_after_secs: null, backoff_reason: null,
-        cost_backoff_active: false, cost_backoff_retry_after_secs: null, cost_backoff_duration_secs: null, cost_backoff_last_trigger: null, cost_backoff_trigger_count: 0,
-        has_capacity: true, status_message: 'Available',
-      },
-      {
-        provider_instance: 'openai-primary',
-        provider_type: 'openai',
-        display_name: 'openai-primary',
-        free_tier: { kind: 'none' },
-        is_user_override: false,
-        supports_credit_check: false,
-        rate_rpm_used: null, rate_rpm_limit: null,
-        rate_rpd_used: null, rate_rpd_limit: null,
-        rate_tpm_used: null, rate_tpm_limit: null,
-        rate_tpd_used: null, rate_tpd_limit: null,
-        rate_monthly_calls_used: null, rate_monthly_calls_limit: null,
-        rate_monthly_tokens_used: null, rate_monthly_tokens_limit: null,
-        credit_used_usd: null, credit_budget_usd: null, credit_remaining_usd: null,
-        is_backed_off: false, backoff_retry_after_secs: null, backoff_reason: null,
-        cost_backoff_active: false, cost_backoff_retry_after_secs: null, cost_backoff_duration_secs: null, cost_backoff_last_trigger: null, cost_backoff_trigger_count: 0,
-        has_capacity: false, status_message: 'No free tier',
-      },
-    ]
+  'get_free_tier_status': (): ProviderFreeTierStatus[] => {
+    const blank = {
+      rate_rpm_used: null, rate_rpm_limit: null,
+      rate_rpd_used: null, rate_rpd_limit: null,
+      rate_tpm_used: null, rate_tpm_limit: null,
+      rate_tpd_used: null, rate_tpd_limit: null,
+      rate_monthly_calls_used: null, rate_monthly_calls_limit: null,
+      rate_monthly_tokens_used: null, rate_monthly_tokens_limit: null,
+      credit_used_usd: null, credit_budget_usd: null, credit_remaining_usd: null,
+      is_backed_off: false, backoff_retry_after_secs: null, backoff_reason: null,
+      cost_backoff_active: false, cost_backoff_retry_after_secs: null, cost_backoff_duration_secs: null, cost_backoff_last_trigger: null, cost_backoff_trigger_count: 0,
+    }
+    return mockData.providers
+      .filter(p => p.enabled)
+      .map(p => {
+        const tier = mockFreeTiers[p.instance_name] ?? { kind: { kind: 'none' } as FreeTierKind, override: false }
+        const k = tier.kind
+        const status: ProviderFreeTierStatus = {
+          provider_instance: p.instance_name,
+          provider_type: p.provider_type,
+          display_name: p.instance_name,
+          free_tier: k,
+          is_user_override: tier.override,
+          supports_credit_check: false,
+          ...blank,
+          has_capacity: k.kind !== 'none',
+          status_message:
+            k.kind === 'none' ? 'No free tier'
+              : k.kind === 'always_free_local' || k.kind === 'subscription' ? 'Always free'
+              : k.kind === 'free_models_only' ? `Free models available (${k.max_rpm > 0 ? `3/${k.max_rpm} RPM used` : 'no limit'})`
+              : 'Available',
+        }
+        if (k.kind === 'free_models_only' && k.max_rpm > 0) {
+          status.rate_rpm_used = 3
+          status.rate_rpm_limit = k.max_rpm
+        }
+        if (p.instance_name === 'groq-fast') {
+          Object.assign(status, { rate_rpm_used: 12, rate_rpm_limit: 30, rate_rpd_used: 245, rate_rpd_limit: 14400, rate_tpm_used: 2100, rate_tpm_limit: 6000 })
+        }
+        return status
+      })
   },
-  'set_provider_free_tier': () => {
+  'set_provider_free_tier': (args: SetProviderFreeTierParams) => {
+    if (args.freeTier) {
+      const errors = mockEvaluator(args.freeTier).errors
+      if (errors.length > 0) {
+        throw errors
+          .map(e => `${e.rule_index != null ? `Rule ${e.rule_index + 1}` : 'List'} (${e.field}): ${e.message}`)
+          .join('; ')
+      }
+      mockFreeTiers[args.providerInstance] = { kind: structuredClone(args.freeTier), override: true }
+    } else {
+      mockFreeTiers[args.providerInstance] = { ...MOCK_DEFAULT_FREE_TIERS[args.providerInstance] ?? { kind: { kind: 'none' } }, override: false }
+    }
     toast.success('Free tier config updated (demo)')
+    setTimeout(() => emit('models-changed', {}), 10)
     return null
   },
+  'preview_free_model_rules': (args: PreviewFreeModelRulesParams) => {
+    const entries = mockModelSettings[args.instanceName]?.entries ?? []
+    const models = mockManagedModels(args.instanceName)
+      .models.filter(m => m.source !== 'missing')
+      .map(m => ({
+        id: m.id,
+        name: m.name,
+        enabled: m.enabled,
+        priceOverride: entries.find(e => e.id === m.id)?.pricing ?? null,
+      }))
+    return mockPreview(args.freeTier, models, MOCK_LISTING_METADATA[args.instanceName] ?? {})
+  },
+  'get_provider_model_metadata': (args: GetProviderModelMetadataParams) =>
+    MOCK_LISTING_METADATA[args.instanceName]?.[args.modelId] ?? null,
   'reset_provider_free_tier_usage': () => {
     toast.success('Free tier usage reset (demo)')
     return null

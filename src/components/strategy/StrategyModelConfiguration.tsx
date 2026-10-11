@@ -29,7 +29,7 @@ import {UnifiedModelsSelector} from "./UnifiedModelsSelector"
 import type { ModelPermissions } from "@/components/permissions"
 import { PermissionStateButton } from "@/components/permissions"
 import {DragThresholdModelSelector, ModelPricingInfo} from "./DragThresholdModelSelector"
-import type { FreeTierKind, ProviderFreeTierStatus } from "@/types/tauri-commands"
+import type { FreeTierKind, ModelFreeTierInfo, ProviderFreeTierStatus } from "@/types/tauri-commands"
 
 // Strategy configuration types
 import { RoutingPolicyEditor, persistRoutingPolicy } from "./RoutingPolicyEditor"
@@ -131,6 +131,7 @@ export function StrategyModelConfiguration({
         input_price_per_million?: number | null
         output_price_per_million?: number | null
         parameter_count?: string | null
+        free_tier_model?: ModelFreeTierInfo | null
     }
 
     const loadPricingData = async () => {
@@ -145,6 +146,7 @@ export function StrategyModelConfiguration({
                 pricingMap[`${m.provider_instance}/${m.model_id}`] = {
                     input: m.input_price_per_million,
                     output: m.output_price_per_million,
+                    free: m.free_tier_model,
                 }
                 if (m.parameter_count) {
                     paramMap[`${m.provider_instance}/${m.model_id}`] = m.parameter_count

@@ -244,6 +244,10 @@ with AGPL-3.0-or-later distribution.
 | semver | 1.0.27 | MIT OR Apache-2.0 | https://github.com/dtolnay/semver |
 | serde | 1.0.228 | MIT OR Apache-2.0 | https://github.com/serde-rs/serde |
 | serde_json | 1.0.149 | MIT OR Apache-2.0 | https://github.com/serde-rs/json |
+| serde_json_path | 0.7.2 | MIT | https://github.com/hiltontj/serde_json_path |
+| serde_json_path_core | 0.2.2 | MIT | https://github.com/hiltontj/serde_json_path |
+| serde_json_path_macros | 0.1.6 | MIT | https://github.com/hiltontj/serde_json_path |
+| serde_json_path_macros_internal | 0.1.2 | MIT | https://github.com/hiltontj/serde_json_path |
 | serde_yaml | 0.9.34 | MIT OR Apache-2.0 | https://github.com/dtolnay/serde-yaml |
 | serial_test | 3.3.1 | MIT | https://github.com/palfrey/serial_test/ |
 | sha2 | 0.10.9 | MIT OR Apache-2.0 | https://github.com/RustCrypto/hashes |

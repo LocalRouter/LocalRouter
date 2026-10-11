@@ -497,6 +497,7 @@ export function UnifiedModelsSelector({
                         inputPricePerMillion={modelPricing[`${provider}/${model.id}`]?.input}
                         outputPricePerMillion={modelPricing[`${provider}/${model.id}`]?.output}
                         freeTierKind={freeTierKinds?.[provider]}
+                        freeModel={modelPricing[`${provider}/${model.id}`]?.free}
                       />
                     )}
                     <PermissionStateButton

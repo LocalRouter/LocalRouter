@@ -245,7 +245,11 @@ export function CommandPalette({
                   key={`${model.provider}/${model.id}`}
                   onSelect={() =>
                     runCommand(() =>
-                      onViewChange('resources', `providers/${model.provider}`)
+                      // Open the provider with its model list filtered to this model.
+                      onViewChange(
+                        'resources',
+                        `providers/${model.provider}?model=${encodeURIComponent(model.id)}`,
+                      )
                     )
                   }
                 >

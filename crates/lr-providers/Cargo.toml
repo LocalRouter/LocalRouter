@@ -42,6 +42,8 @@ sha2 = { workspace = true }
 jsonschema = { workspace = true }
 image = { workspace = true }
 tauri = { workspace = true }
+regex = { workspace = true }
+serde_json_path = { workspace = true }
 
 tempfile = "3.8"
 wiremock = "0.6"

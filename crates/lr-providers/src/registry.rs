@@ -20,8 +20,9 @@ use tracing::{debug, info, warn};
 
 use super::factory::{ProviderFactory, SetupParameter};
 use super::health::HealthCheckManager;
-use super::{Capability, ModelInfo, ModelProvider, ProviderHealth};
-use lr_config::{FreeTierKind, ModelCacheConfig};
+use super::model_settings::{self, ManagedModel};
+use super::{Capability, ModelInfo, ModelListing, ModelProvider, PricingInfo, ProviderHealth};
+use lr_config::{FreeTierKind, ModelCacheConfig, ModelPricingOverride, ProviderModelSettings};
 use lr_types::{AppError, AppResult};
 
 /// Format a number with K/M/B suffix for human-readable display.
@@ -151,36 +152,48 @@ pub fn free_tier_description_texts(kind: &FreeTierKind) -> (String, String) {
         FreeTierKind::FreeModelsOnly {
             max_rpm,
             free_model_patterns,
+            rules,
+            ..
         } => {
             let short = if *max_rpm > 0 {
                 format!("Free models: {} req/min", max_rpm)
             } else {
                 "Free models available".to_string()
             };
-            let model_count = free_model_patterns.len();
+            let which = match (free_model_patterns.len(), rules.len()) {
+                (0, 0) => "No models are marked free".to_string(),
+                (n, 0) => format!("{} free model{}", n, if n == 1 { "" } else { "s" }),
+                (0, _) => "Free models are picked by rules".to_string(),
+                (n, _) => format!(
+                    "{} free model{} plus rules",
+                    n,
+                    if n == 1 { "" } else { "s" }
+                ),
+            };
             let long = if *max_rpm > 0 {
-                format!(
-                    "{} free model{}. Rate-limited to {} req/min.",
-                    model_count,
-                    if model_count == 1 { "" } else { "s" },
-                    max_rpm
-                )
+                format!("{which}. Rate-limited to {max_rpm} req/min.")
             } else {
-                format!(
-                    "{} free model{} available.",
-                    model_count,
-                    if model_count == 1 { "" } else { "s" },
-                )
+                format!("{which}.")
             };
             (short, long)
         }
     }
 }
 
+/// How long a failed model listing is kept before it is retried, at most.
+const FAILED_LISTING_TTL_SECS: u64 = 60;
+
 /// Cached model list for a single provider
 #[derive(Clone)]
 struct ModelCache {
-    /// The cached models
+    /// What the provider listed (or the fallback used when listing failed),
+    /// before the instance's model settings are applied
+    listing: ModelListing,
+    /// Why listing failed, when it did
+    discovery_error: Option<String>,
+    /// Every model with the instance's settings applied
+    managed: Vec<ManagedModel>,
+    /// The offered models (`managed` filtered by visibility)
     models: Vec<ModelInfo>,
     /// When this cache was populated
     fetched_at: DateTime<Utc>,
@@ -189,12 +202,48 @@ struct ModelCache {
 }
 
 impl ModelCache {
+    #[cfg(test)]
     fn new(models: Vec<ModelInfo>, ttl_seconds: u64) -> Self {
-        Self {
-            models,
+        Self::from_listing(
+            ModelListing {
+                models,
+                ..Default::default()
+            },
+            None,
+            &ProviderModelSettings::default(),
+            "",
+            ttl_seconds,
+        )
+    }
+
+    fn from_listing(
+        listing: ModelListing,
+        discovery_error: Option<String>,
+        settings: &ProviderModelSettings,
+        instance_name: &str,
+        ttl_seconds: u64,
+    ) -> Self {
+        let mut cache = Self {
+            listing,
+            discovery_error,
+            managed: Vec::new(),
+            models: Vec::new(),
             fetched_at: Utc::now(),
             ttl_seconds,
-        }
+        };
+        cache.apply_settings(settings, instance_name);
+        cache
+    }
+
+    /// Recompute the managed and offered lists from the cached listing.
+    fn apply_settings(&mut self, settings: &ProviderModelSettings, instance_name: &str) {
+        self.managed = model_settings::apply(
+            &self.listing.models,
+            settings,
+            instance_name,
+            self.listing.new_models_hidden,
+        );
+        self.models = model_settings::offered(&self.managed);
     }
 
     /// Check if cache is expired
@@ -257,6 +306,22 @@ pub struct ProviderInstance {
 
     /// Whether this instance is enabled
     pub enabled: bool,
+
+    /// Manual models, per-model visibility and overrides
+    pub model_settings: ProviderModelSettings,
+}
+
+/// A provider instance's models with their settings applied, for the UI.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManagedModelList {
+    /// Every model: discovered, manual, and settings for models gone
+    pub models: Vec<ManagedModel>,
+    /// Why the last listing failed, when it did
+    pub discovery_error: Option<String>,
+    /// Whether discovered models without an entry are shown
+    pub show_new_models: bool,
+    /// The provider marked its listing as naming more than is installed
+    pub new_models_hidden_by_provider: bool,
 }
 
 /// Information about a provider type (for setup UI)
@@ -342,15 +407,41 @@ impl ProviderRegistry {
         &self,
         provider_type: &lr_config::ProviderType,
     ) -> lr_config::FreeTierKind {
-        let type_str = serde_json::to_string(provider_type)
-            .unwrap_or_default()
-            .trim_matches('"')
-            .to_string();
         self.factories
             .read()
-            .get(&type_str)
+            .get(provider_type.factory_id())
             .map(|f| f.default_free_tier())
             .unwrap_or(lr_config::FreeTierKind::None)
+    }
+
+    /// The default free tier of a provider instance: its factory's default
+    /// for the instance's configuration (an OpenAI-compatible provider is
+    /// always free only on this machine). Falls back to the type's default
+    /// for an instance that is not registered.
+    pub fn default_free_tier_for_instance(
+        &self,
+        instance_name: &str,
+        provider_type: &lr_config::ProviderType,
+    ) -> lr_config::FreeTierKind {
+        let instance = self
+            .instances
+            .read()
+            .get(instance_name)
+            .map(|i| (i.provider_type.clone(), i.config.clone()));
+        match instance {
+            Some((type_id, config)) => self
+                .factories
+                .read()
+                .get(&type_id)
+                .map(|f| f.default_free_tier_for(&config))
+                .unwrap_or(lr_config::FreeTierKind::None),
+            None => self
+                .factories
+                .read()
+                .get(provider_type.factory_id())
+                .map(|f| f.default_free_tier_for(&HashMap::new()))
+                .unwrap_or(lr_config::FreeTierKind::None),
+        }
     }
 
     /// Local and Local Embedded providers talk to the one engine on this
@@ -473,6 +564,7 @@ impl ProviderRegistry {
             config,
             created_at: Utc::now(),
             enabled: true,
+            model_settings: ProviderModelSettings::default(),
         };
 
         self.instances
@@ -556,12 +648,16 @@ impl ProviderRegistry {
         );
 
         // Get the old instance to preserve state
-        let (enabled, created_at) = {
+        let (enabled, created_at, model_settings) = {
             let instances = self.instances.read();
             let instance = instances.get(&instance_name).ok_or_else(|| {
                 AppError::Config(format!("Provider instance '{}' not found", instance_name))
             })?;
-            (instance.enabled, instance.created_at)
+            (
+                instance.enabled,
+                instance.created_at,
+                instance.model_settings.clone(),
+            )
         };
 
         // Remove the old instance
@@ -590,11 +686,14 @@ impl ProviderRegistry {
             config,
             created_at, // Preserve original creation time
             enabled,    // Preserve enabled state
+            model_settings,
         };
 
         self.instances
             .write()
             .insert(instance_name.clone(), instance);
+        // A new base URL, key or discovery setting lists different models.
+        self.model_cache.write().remove(&instance_name);
 
         info!("Successfully updated provider instance: {}", instance_name);
         Ok(())
@@ -622,6 +721,7 @@ impl ProviderRegistry {
         let Some(removed) = self.instances.write().remove(instance_name) else {
             return Ok(());
         };
+        self.model_cache.write().remove(instance_name);
         info!("Removed provider instance: {}", instance_name);
         // Drop the health manager's reference too, so a provider that owns
         // resources (child processes, loaded models) is actually released.
@@ -693,19 +793,6 @@ impl ProviderRegistry {
         self.model_cache.read().get(instance_name).cloned()
     }
 
-    /// Update cache for a provider
-    async fn update_model_cache(&self, instance_name: &str, models: Vec<ModelInfo>) {
-        let ttl = self.get_provider_ttl(instance_name);
-        let cache = ModelCache::new(models, ttl);
-        self.model_cache
-            .write()
-            .insert(instance_name.to_string(), cache);
-        debug!(
-            "Updated model cache for '{}' (TTL: {}s)",
-            instance_name, ttl
-        );
-    }
-
     /// Get models from models.dev catalog for a provider type
     fn get_models_from_catalog(&self, provider_type: &str) -> Vec<ModelInfo> {
         lr_catalog::models()
@@ -746,45 +833,41 @@ impl ProviderRegistry {
             .collect()
     }
 
-    /// Fallback to catalog or stale cache
-    async fn fallback_to_catalog_or_stale_cache(
-        &self,
-        instance_name: &str,
-        provider_type: &str,
-    ) -> AppResult<Vec<ModelInfo>> {
-        let config = self.cache_config.read();
-
-        if config.use_catalog_fallback {
-            // Try models.dev catalog
-            let catalog_models = self.get_models_from_catalog(provider_type);
+    /// What to use as the listing when the provider's listing failed:
+    /// the models.dev catalog (when enabled and it knows the provider), else
+    /// the previous listing, else nothing.
+    fn fallback_listing(&self, instance_name: &str, catalog_id: &str) -> ModelListing {
+        if self.cache_config.read().use_catalog_fallback {
+            let catalog_models = self.get_models_from_catalog(catalog_id);
             if !catalog_models.is_empty() {
                 info!(
                     "Using models.dev catalog fallback for '{}' ({} models)",
                     instance_name,
                     catalog_models.len()
                 );
-                return Ok(catalog_models);
+                return ModelListing {
+                    models: catalog_models,
+                    ..Default::default()
+                };
             }
         }
-
-        // Use stale cache if available
         if let Some(cached) = self.get_cached_models_for_provider(instance_name) {
             warn!(
-                "Using stale cache for '{}' (expired {} seconds ago)",
+                "Using stale model list for '{}' (expired {} seconds ago)",
                 instance_name,
                 -cached.expires_in()
             );
-            return Ok(cached.models.clone());
+            return cached.listing;
         }
-
-        // Complete failure
-        Err(AppError::Provider(format!(
-            "No models available for '{}': API failed, no catalog data, no stale cache",
-            instance_name
-        )))
+        ModelListing::default()
     }
 
     /// List models from a provider with caching
+    ///
+    /// Returns the offered models: the provider's listing (or its fallback
+    /// when listing fails) plus manual models, with the instance's model
+    /// settings applied. Errs only when listing failed and nothing is left
+    /// to offer.
     pub async fn list_provider_models_cached(
         &self,
         instance_name: &str,
@@ -797,7 +880,7 @@ impl ProviderRegistry {
                     instance_name,
                     cached.expires_in()
                 );
-                return Ok(cached.models.clone());
+                return Self::offered_or_error(instance_name, &cached);
             }
         }
 
@@ -809,23 +892,263 @@ impl ProviderRegistry {
             .cloned()
             .ok_or_else(|| AppError::Config(format!("Provider '{}' not found", instance_name)))?;
 
-        match provider_instance.provider.list_models().await {
-            Ok(models) => {
-                // Success: Cache and return
-                self.update_model_cache(instance_name, models.clone()).await;
-                Ok(models)
-            }
-            Err(e) => {
-                warn!("Failed to fetch models from '{}': {}", instance_name, e);
+        let ttl = self.get_provider_ttl(instance_name);
+        let (listing, discovery_error, ttl) =
+            match provider_instance.provider.list_model_listing().await {
+                Ok(listing) => (listing, None, ttl),
+                Err(e) => {
+                    warn!("Failed to fetch models from '{}': {}", instance_name, e);
+                    // 3. Fallback - use catalog_provider_id if available, else provider_type
+                    let catalog_id = provider_instance
+                        .catalog_provider_id
+                        .as_deref()
+                        .unwrap_or(&provider_instance.provider_type);
+                    (
+                        self.fallback_listing(instance_name, catalog_id),
+                        Some(e.to_string()),
+                        ttl.min(FAILED_LISTING_TTL_SECS),
+                    )
+                }
+            };
 
-                // 3. Fallback strategy - use catalog_provider_id if available, else provider_type
-                let catalog_id = provider_instance
-                    .catalog_provider_id
-                    .as_deref()
-                    .unwrap_or(&provider_instance.provider_type);
-                self.fallback_to_catalog_or_stale_cache(instance_name, catalog_id)
-                    .await
+        // Apply the settings current now, not the ones read before the
+        // fetch: they may have changed while it ran. Read them under the
+        // cache lock so a concurrent `set_model_settings` either sees this
+        // entry or is seen by it.
+        let mut caches = self.model_cache.write();
+        let Some(settings) = self.get_model_settings(instance_name) else {
+            return Err(AppError::Config(format!(
+                "Provider '{}' not found",
+                instance_name
+            )));
+        };
+        let cache =
+            ModelCache::from_listing(listing, discovery_error, &settings, instance_name, ttl);
+        let result = Self::offered_or_error(instance_name, &cache);
+        caches.insert(instance_name.to_string(), cache);
+        drop(caches);
+        debug!(
+            "Updated model cache for '{}' (TTL: {}s)",
+            instance_name, ttl
+        );
+        result
+    }
+
+    fn offered_or_error(instance_name: &str, cache: &ModelCache) -> AppResult<Vec<ModelInfo>> {
+        match &cache.discovery_error {
+            Some(e) if cache.models.is_empty() => Err(AppError::Provider(format!(
+                "No models available for '{}': {}",
+                instance_name, e
+            ))),
+            _ => Ok(cache.models.clone()),
+        }
+    }
+
+    // ===== PER-MODEL SETTINGS =====
+
+    /// The model settings of a provider instance.
+    pub fn get_model_settings(&self, instance_name: &str) -> Option<ProviderModelSettings> {
+        self.instances
+            .read()
+            .get(instance_name)
+            .map(|inst| inst.model_settings.clone())
+    }
+
+    /// Replace a provider instance's model settings. The cached listing is
+    /// re-filtered right away; nothing is fetched.
+    pub fn set_model_settings(
+        &self,
+        instance_name: &str,
+        settings: ProviderModelSettings,
+    ) -> AppResult<()> {
+        {
+            let mut instances = self.instances.write();
+            let instance = instances.get_mut(instance_name).ok_or_else(|| {
+                AppError::Config(format!("Provider instance '{}' not found", instance_name))
+            })?;
+            instance.model_settings = settings.clone();
+        }
+        let offered = {
+            let mut cache = self.model_cache.write();
+            match cache.get_mut(instance_name) {
+                Some(cached) => {
+                    cached.apply_settings(&settings, instance_name);
+                    Some(cached.models.clone())
+                }
+                None => None,
             }
+        };
+        if let Some(offered) = offered {
+            let mut all = self.cached_models.write();
+            all.retain(|m| m.provider != instance_name);
+            all.extend(offered);
+        }
+        Ok(())
+    }
+
+    /// Every model of a provider instance with its settings applied, from
+    /// the cache (call `list_provider_models_cached` first to fill it).
+    pub fn managed_models(&self, instance_name: &str) -> Option<ManagedModelList> {
+        let settings = self.get_model_settings(instance_name)?;
+        let cache = self.model_cache.read();
+        let cached = cache.get(instance_name);
+        let new_models_hidden = cached.is_some_and(|c| c.listing.new_models_hidden);
+        let models = match cached {
+            Some(c) => c.managed.clone(),
+            None => model_settings::apply(&[], &settings, instance_name, false),
+        };
+        Some(ManagedModelList {
+            models,
+            discovery_error: cached.and_then(|c| c.discovery_error.clone()),
+            show_new_models: model_settings::shows_new_models(&settings, new_models_hidden),
+            new_models_hidden_by_provider: new_models_hidden,
+        })
+    }
+
+    /// Whether `model_id` is a model this instance knows (listed, added by
+    /// hand, or configured) and the user turned off. Unknown ids are not
+    /// disabled: they pass through to the provider as before.
+    pub fn is_model_disabled(&self, instance_name: &str, model_id: &str) -> bool {
+        let cache = self.model_cache.read();
+        if let Some(cached) = cache.get(instance_name) {
+            let find = |exact: bool| {
+                cached.managed.iter().find(|m| {
+                    if exact {
+                        m.info.id == model_id
+                    } else {
+                        m.info.id.eq_ignore_ascii_case(model_id)
+                    }
+                })
+            };
+            if let Some(m) = find(true).or_else(|| find(false)) {
+                return !m.enabled;
+            }
+            return false;
+        }
+        drop(cache);
+        // Not listed yet: only an explicit setting can say.
+        self.instances
+            .read()
+            .get(instance_name)
+            .and_then(|inst| inst.model_settings.entry(model_id).and_then(|e| e.enabled))
+            .is_some_and(|enabled| !enabled)
+    }
+
+    /// The model's own entry in the provider's listing (raw JSON), from the
+    /// cache, when the provider keeps listing entries and lists the model.
+    pub fn model_metadata(&self, instance_name: &str, model_id: &str) -> Option<serde_json::Value> {
+        self.model_cache
+            .read()
+            .get(instance_name)?
+            .listing
+            .metadata
+            .get(model_id)
+            .cloned()
+    }
+
+    /// Every listed model's entry (raw JSON) of a provider instance, from
+    /// the cache.
+    pub fn listing_metadata(
+        &self,
+        instance_name: &str,
+    ) -> Option<crate::listing_metadata::ModelMetadata> {
+        self.model_cache
+            .read()
+            .get(instance_name)
+            .map(|c| c.listing.metadata.clone())
+    }
+
+    /// Whether a model of this instance is free under `evaluator`, from the
+    /// cached listing entry and the model's price override (this
+    /// instance's, else the legacy one for the provider type in
+    /// `legacy_overrides`). Does not fetch.
+    pub fn decide_free_model(
+        &self,
+        instance_name: &str,
+        model_id: &str,
+        evaluator: &crate::free_models::FreeTierEvaluator,
+        legacy_overrides: &HashMap<String, HashMap<String, ModelPricingOverride>>,
+    ) -> crate::free_models::FreeModelDecision {
+        let metadata = self.model_metadata(instance_name, model_id);
+        let price_override =
+            self.effective_pricing_override(instance_name, model_id, legacy_overrides);
+        evaluator.decide(&crate::free_models::FreeModelInput {
+            model_id,
+            metadata: metadata.as_ref(),
+            price_override: price_override.as_ref(),
+        })
+    }
+
+    /// The model's price override: this instance's, else the legacy one for
+    /// its provider type.
+    pub fn effective_pricing_override(
+        &self,
+        instance_name: &str,
+        model_id: &str,
+        legacy_overrides: &HashMap<String, HashMap<String, ModelPricingOverride>>,
+    ) -> Option<ModelPricingOverride> {
+        self.pricing_override(instance_name, model_id).or_else(|| {
+            let provider_type = self.get_provider_type_for_instance(instance_name)?;
+            legacy_overrides.get(&provider_type)?.get(model_id).cloned()
+        })
+    }
+
+    /// Bring the aggregate model list (`get_cached_models`) in line with one
+    /// instance's cached list: its offered models while it is enabled,
+    /// none otherwise (also for an instance that no longer exists).
+    pub fn sync_cached_models(&self, instance_name: &str) {
+        let enabled = self.is_provider_enabled(instance_name).unwrap_or(false);
+        let offered = if enabled {
+            self.model_cache
+                .read()
+                .get(instance_name)
+                .map(|c| c.models.clone())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let mut all = self.cached_models.write();
+        all.retain(|m| m.provider != instance_name);
+        all.extend(offered);
+    }
+
+    /// Whether the instance's model list was fetched (or tried) at least once.
+    pub fn has_cached_models(&self, instance_name: &str) -> bool {
+        self.model_cache.read().contains_key(instance_name)
+    }
+
+    /// The per-instance price override of a model, if set.
+    pub fn pricing_override(
+        &self,
+        instance_name: &str,
+        model_id: &str,
+    ) -> Option<ModelPricingOverride> {
+        self.instances
+            .read()
+            .get(instance_name)?
+            .model_settings
+            .entry(model_id)?
+            .pricing
+            .clone()
+    }
+
+    /// Pricing of a model on a provider instance: the instance's price
+    /// override when set, else what the provider reports, else free.
+    pub async fn get_pricing(&self, instance_name: &str, model_id: &str) -> PricingInfo {
+        if let Some(p) = self.pricing_override(instance_name, model_id) {
+            return PricingInfo {
+                input_cost_per_1k: p.input_per_million / 1000.0,
+                output_cost_per_1k: p.output_per_million / 1000.0,
+                ..PricingInfo::free()
+            };
+        }
+        let provider = self.get_provider_unchecked(instance_name);
+        match provider {
+            Some(p) => p
+                .get_pricing(model_id)
+                .await
+                .unwrap_or_else(|_| PricingInfo::free()),
+            None => PricingInfo::free(),
         }
     }
 
@@ -1637,11 +1960,78 @@ mod tests {
     fn test_free_tier_texts_free_models_only() {
         let kind = FreeTierKind::FreeModelsOnly {
             free_model_patterns: vec!["model-a".to_string()],
+            excluded_models: vec![],
+            rules: vec![],
             max_rpm: 3,
         };
         let (short, long) = free_tier_description_texts(&kind);
         assert!(short.contains("3 req/min"));
         assert!(long.contains("1 free model"));
+        let rules_only = FreeTierKind::FreeModelsOnly {
+            free_model_patterns: vec![],
+            excluded_models: vec![],
+            rules: vec![lr_config::FreeModelRule {
+                enabled: true,
+                effect: lr_config::FreeModelRuleEffect::Include,
+                when: lr_config::FreeModelCondition::ZeroPrice {
+                    sources: vec![lr_config::PriceSource::ProviderListing],
+                    input_pointer: None,
+                    output_pointer: None,
+                },
+                label: None,
+            }],
+            max_rpm: 0,
+        };
+        let (_, long) = free_tier_description_texts(&rules_only);
+        assert_eq!(long, "Free models are picked by rules.");
+    }
+
+    #[tokio::test]
+    async fn instance_free_tier_defaults_use_the_factory_type() {
+        use crate::factory::{OpenAICompatibleProviderFactory, OpenRouterProviderFactory};
+        let registry = ProviderRegistry::new();
+        registry.register_factory(Arc::new(OpenRouterProviderFactory));
+        registry.register_factory(Arc::new(OpenAICompatibleProviderFactory));
+        let url = |u: &str| HashMap::from([("base_url".to_string(), u.to_string())]);
+        registry
+            .create_provider(
+                "local".into(),
+                "openai_compatible".into(),
+                url("http://localhost:8080/v1"),
+            )
+            .await
+            .unwrap();
+        registry
+            .create_provider(
+                "remote".into(),
+                "openai_compatible".into(),
+                url("https://api.example.com/v1"),
+            )
+            .await
+            .unwrap();
+        // Serialized as `open_router` / `custom` in the config file.
+        assert!(matches!(
+            registry.get_factory_default_free_tier(&lr_config::ProviderType::OpenRouter),
+            FreeTierKind::FreeModelsOnly { .. }
+        ));
+        assert!(matches!(
+            registry
+                .default_free_tier_for_instance("not-loaded", &lr_config::ProviderType::OpenRouter),
+            FreeTierKind::FreeModelsOnly { .. }
+        ));
+        assert_eq!(
+            registry.default_free_tier_for_instance("local", &lr_config::ProviderType::Custom),
+            FreeTierKind::AlwaysFreeLocal
+        );
+        assert_eq!(
+            registry.default_free_tier_for_instance("remote", &lr_config::ProviderType::Custom),
+            FreeTierKind::None
+        );
+        // Without an instance there is no base URL to tell.
+        assert_eq!(
+            registry.default_free_tier_for_instance("gone", &lr_config::ProviderType::Custom),
+            FreeTierKind::None
+        );
     }
 
     #[tokio::test]
@@ -1753,5 +2143,410 @@ mod tests {
         }"#;
         let info: ProviderTypeInfo = serde_json::from_str(json).unwrap();
         assert_eq!(info.free_tier_notes, None);
+    }
+
+    // ----- Per-model settings -----
+
+    mod model_settings_tests {
+        use super::*;
+        use crate::{ModelListing, PricingInfo, ProviderHealth};
+        use async_trait::async_trait;
+        use lr_config::{ModelEntry, ModelPricingOverride};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        /// What the mock provider's listing returns.
+        #[derive(Clone)]
+        enum Listing {
+            Models(Vec<&'static str>, bool),
+            Fails,
+        }
+
+        struct MockProvider {
+            listing: Arc<parking_lot::Mutex<Listing>>,
+            calls: Arc<AtomicUsize>,
+        }
+
+        #[async_trait]
+        impl ModelProvider for MockProvider {
+            fn name(&self) -> &str {
+                "mock"
+            }
+            async fn health_check(&self) -> ProviderHealth {
+                unimplemented!()
+            }
+            async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
+                Ok(self.list_model_listing().await?.models)
+            }
+            async fn list_model_listing(&self) -> AppResult<ModelListing> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                match self.listing.lock().clone() {
+                    Listing::Models(ids, hidden) => Ok(ModelListing {
+                        metadata: Arc::new(
+                            ids.iter()
+                                .map(|id| (id.to_string(), serde_json::json!({"id": id})))
+                                .collect(),
+                        ),
+                        models: ids
+                            .into_iter()
+                            .map(|id| ModelInfo {
+                                id: id.into(),
+                                name: id.into(),
+                                provider: "mock".into(),
+                                parameter_count: None,
+                                context_window: 1000,
+                                supports_streaming: true,
+                                capabilities: vec![Capability::Chat],
+                                detailed_capabilities: None,
+                            })
+                            .collect(),
+                        new_models_hidden: hidden,
+                    }),
+                    Listing::Fails => Err(AppError::Provider("connection refused".into())),
+                }
+            }
+            async fn get_pricing(&self, _model: &str) -> AppResult<PricingInfo> {
+                Ok(PricingInfo {
+                    input_cost_per_1k: 0.5,
+                    ..PricingInfo::free()
+                })
+            }
+            async fn complete(
+                &self,
+                _request: crate::CompletionRequest,
+            ) -> AppResult<crate::CompletionResponse> {
+                unimplemented!()
+            }
+            async fn stream_complete(
+                &self,
+                _request: crate::CompletionRequest,
+            ) -> AppResult<
+                std::pin::Pin<
+                    Box<dyn futures::Stream<Item = AppResult<crate::CompletionChunk>> + Send>,
+                >,
+            > {
+                unimplemented!()
+            }
+        }
+
+        struct MockFactory {
+            listing: Arc<parking_lot::Mutex<Listing>>,
+            calls: Arc<AtomicUsize>,
+        }
+
+        impl ProviderFactory for MockFactory {
+            fn provider_type(&self) -> &str {
+                "mock"
+            }
+            fn display_name(&self) -> &str {
+                "Mock"
+            }
+            fn category(&self) -> crate::factory::ProviderCategory {
+                crate::factory::ProviderCategory::Generic
+            }
+            fn description(&self) -> &str {
+                "mock"
+            }
+            fn setup_parameters(&self) -> Vec<SetupParameter> {
+                vec![]
+            }
+            fn create(
+                &self,
+                _instance_name: String,
+                _config: HashMap<String, String>,
+            ) -> AppResult<Arc<dyn ModelProvider>> {
+                Ok(Arc::new(MockProvider {
+                    listing: self.listing.clone(),
+                    calls: self.calls.clone(),
+                }))
+            }
+            fn validate_config(&self, _config: &HashMap<String, String>) -> AppResult<()> {
+                Ok(())
+            }
+            fn catalog_provider_id(&self) -> Option<&str> {
+                None
+            }
+        }
+
+        struct Fixture {
+            registry: ProviderRegistry,
+            listing: Arc<parking_lot::Mutex<Listing>>,
+            calls: Arc<AtomicUsize>,
+        }
+
+        async fn fixture(listing: Listing) -> Fixture {
+            let listing = Arc::new(parking_lot::Mutex::new(listing));
+            let calls = Arc::new(AtomicUsize::new(0));
+            let registry = ProviderRegistry::new();
+            registry.register_factory(Arc::new(MockFactory {
+                listing: listing.clone(),
+                calls: calls.clone(),
+            }));
+            registry
+                .create_provider("p".into(), "mock".into(), HashMap::new())
+                .await
+                .unwrap();
+            Fixture {
+                registry,
+                listing,
+                calls,
+            }
+        }
+
+        fn settings(entries: Vec<ModelEntry>) -> ProviderModelSettings {
+            ProviderModelSettings {
+                show_new_models: None,
+                entries,
+            }
+        }
+
+        fn entry(id: &str) -> ModelEntry {
+            ModelEntry {
+                id: id.into(),
+                ..Default::default()
+            }
+        }
+
+        fn ids(models: &[ModelInfo]) -> Vec<String> {
+            models.iter().map(|m| m.id.clone()).collect()
+        }
+
+        #[tokio::test]
+        async fn hiding_a_model_applies_without_refetching() {
+            let f = fixture(Listing::Models(vec!["a", "b"], false)).await;
+            let models = f.registry.list_provider_models_cached("p").await.unwrap();
+            assert_eq!(ids(&models), vec!["a", "b"]);
+            assert!(models.iter().all(|m| m.provider == "p"));
+
+            f.registry
+                .set_model_settings(
+                    "p",
+                    settings(vec![ModelEntry {
+                        enabled: Some(false),
+                        ..entry("b")
+                    }]),
+                )
+                .unwrap();
+            assert_eq!(
+                ids(&f.registry.list_provider_models_cached("p").await.unwrap()),
+                vec!["a"]
+            );
+            assert_eq!(ids(&f.registry.get_all_cached_models_instant()), vec!["a"]);
+            assert_eq!(f.calls.load(Ordering::SeqCst), 1, "no second fetch");
+
+            let managed = f.registry.managed_models("p").unwrap();
+            assert_eq!(managed.models.len(), 2);
+            assert!(!managed.models[1].enabled);
+            assert!(managed.show_new_models);
+            assert_eq!(managed.discovery_error, None);
+        }
+
+        #[tokio::test]
+        async fn manual_models_survive_a_failed_listing() {
+            let f = fixture(Listing::Fails).await;
+            // Nothing to offer: the failure is an error, as before.
+            let err = f
+                .registry
+                .list_provider_models_cached("p")
+                .await
+                .unwrap_err();
+            assert!(err.to_string().contains("connection refused"), "{err}");
+            assert!(f
+                .registry
+                .managed_models("p")
+                .unwrap()
+                .discovery_error
+                .unwrap()
+                .contains("connection refused"));
+
+            f.registry
+                .set_model_settings(
+                    "p",
+                    settings(vec![ModelEntry {
+                        manual: true,
+                        context_window: Some(32_000),
+                        ..entry("my-model")
+                    }]),
+                )
+                .unwrap();
+            let models = f.registry.list_provider_models_cached("p").await.unwrap();
+            assert_eq!(ids(&models), vec!["my-model"]);
+            assert_eq!(models[0].context_window, 32_000);
+            let managed = f.registry.managed_models("p").unwrap();
+            assert!(managed.discovery_error.is_some());
+        }
+
+        #[tokio::test]
+        async fn failed_listing_keeps_the_previous_models() {
+            let f = fixture(Listing::Models(vec!["a"], false)).await;
+            f.registry.list_provider_models_cached("p").await.unwrap();
+            *f.listing.lock() = Listing::Fails;
+            // Expire the cache.
+            f.registry
+                .model_cache
+                .write()
+                .get_mut("p")
+                .unwrap()
+                .fetched_at = Utc::now() - Duration::seconds(100_000);
+            let models = f.registry.list_provider_models_cached("p").await.unwrap();
+            assert_eq!(ids(&models), vec!["a"]);
+            assert!(f
+                .registry
+                .managed_models("p")
+                .unwrap()
+                .discovery_error
+                .is_some());
+            // The listing entries are kept with the previous list.
+            assert_eq!(
+                f.registry.model_metadata("p", "a"),
+                Some(serde_json::json!({"id": "a"}))
+            );
+        }
+
+        #[tokio::test]
+        async fn listing_entries_are_cached_with_the_list() {
+            let f = fixture(Listing::Models(vec!["a", "b"], false)).await;
+            assert!(!f.registry.has_cached_models("p"));
+            assert_eq!(f.registry.model_metadata("p", "a"), None);
+            f.registry.list_provider_models_cached("p").await.unwrap();
+            assert!(f.registry.has_cached_models("p"));
+            assert_eq!(
+                f.registry.model_metadata("p", "b"),
+                Some(serde_json::json!({"id": "b"}))
+            );
+            assert_eq!(f.registry.model_metadata("p", "zzz"), None);
+            // Hiding a model keeps its entry (the listing is unchanged).
+            f.registry
+                .set_model_settings(
+                    "p",
+                    settings(vec![ModelEntry {
+                        enabled: Some(false),
+                        ..entry("b")
+                    }]),
+                )
+                .unwrap();
+            assert!(f.registry.model_metadata("p", "b").is_some());
+            assert_eq!(f.registry.listing_metadata("p").unwrap().len(), 2);
+        }
+
+        #[tokio::test]
+        async fn listing_marked_untrusted_hides_new_models_by_default() {
+            let f = fixture(Listing::Models(vec!["a", "b"], true)).await;
+            assert!(f
+                .registry
+                .list_provider_models_cached("p")
+                .await
+                .unwrap()
+                .is_empty());
+            let managed = f.registry.managed_models("p").unwrap();
+            assert!(!managed.show_new_models);
+            assert!(managed.new_models_hidden_by_provider);
+
+            f.registry
+                .set_model_settings(
+                    "p",
+                    settings(vec![ModelEntry {
+                        enabled: Some(true),
+                        ..entry("b")
+                    }]),
+                )
+                .unwrap();
+            assert_eq!(
+                ids(&f.registry.list_provider_models_cached("p").await.unwrap()),
+                vec!["b"]
+            );
+            f.registry
+                .set_model_settings(
+                    "p",
+                    ProviderModelSettings {
+                        show_new_models: Some(true),
+                        entries: vec![],
+                    },
+                )
+                .unwrap();
+            assert_eq!(
+                ids(&f.registry.list_provider_models_cached("p").await.unwrap()),
+                vec!["a", "b"]
+            );
+        }
+
+        #[tokio::test]
+        async fn only_known_turned_off_models_are_disabled() {
+            let f = fixture(Listing::Models(vec!["Model-A", "b"], false)).await;
+            let hidden = settings(vec![ModelEntry {
+                enabled: Some(false),
+                ..entry("Model-A")
+            }]);
+            f.registry.set_model_settings("p", hidden).unwrap();
+            // Before the list is fetched, the setting alone decides.
+            assert!(f.registry.is_model_disabled("p", "Model-A"));
+            assert!(!f.registry.is_model_disabled("p", "b"));
+            f.registry.list_provider_models_cached("p").await.unwrap();
+            assert!(f.registry.is_model_disabled("p", "Model-A"));
+            assert!(f.registry.is_model_disabled("p", "model-a"));
+            assert!(!f.registry.is_model_disabled("p", "b"));
+            assert!(!f.registry.is_model_disabled("p", "unknown"));
+            assert!(!f.registry.is_model_disabled("other", "Model-A"));
+        }
+
+        #[tokio::test]
+        async fn price_override_comes_first() {
+            let f = fixture(Listing::Models(vec!["a"], false)).await;
+            assert_eq!(
+                f.registry.get_pricing("p", "a").await.input_cost_per_1k,
+                0.5
+            );
+            f.registry
+                .set_model_settings(
+                    "p",
+                    settings(vec![ModelEntry {
+                        pricing: Some(ModelPricingOverride {
+                            input_per_million: 3.0,
+                            output_per_million: 15.0,
+                        }),
+                        ..entry("a")
+                    }]),
+                )
+                .unwrap();
+            let p = f.registry.get_pricing("p", "a").await;
+            assert!((p.input_cost_per_1k - 0.003).abs() < 1e-12);
+            assert!((p.output_cost_per_1k - 0.015).abs() < 1e-12);
+            assert_eq!(
+                f.registry
+                    .pricing_override("p", "a")
+                    .unwrap()
+                    .input_per_million,
+                3.0
+            );
+            // Other models and unknown providers: the provider's price, or free.
+            assert_eq!(
+                f.registry.get_pricing("p", "b").await.input_cost_per_1k,
+                0.5
+            );
+            assert_eq!(
+                f.registry.get_pricing("nope", "a").await.input_cost_per_1k,
+                0.0
+            );
+        }
+
+        #[tokio::test]
+        async fn updating_a_provider_keeps_its_settings_and_refetches() {
+            let f = fixture(Listing::Models(vec!["a"], false)).await;
+            let s = settings(vec![ModelEntry {
+                manual: true,
+                ..entry("m")
+            }]);
+            f.registry.set_model_settings("p", s.clone()).unwrap();
+            f.registry.list_provider_models_cached("p").await.unwrap();
+            f.registry
+                .update_provider("p".into(), "mock".into(), HashMap::new())
+                .await
+                .unwrap();
+            assert_eq!(f.registry.get_model_settings("p"), Some(s));
+            f.registry.list_provider_models_cached("p").await.unwrap();
+            assert_eq!(f.calls.load(Ordering::SeqCst), 2);
+            f.registry.remove_provider("p").unwrap();
+            assert!(f.registry.managed_models("p").is_none());
+            assert!(f.registry.model_cache.read().get("p").is_none());
+        }
     }
 }

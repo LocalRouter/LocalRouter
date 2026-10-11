@@ -1261,6 +1261,7 @@ fn create_free_tier_router(mut config: AppConfig) -> Router {
         provider_config: None,
         api_key_ref: None,
         free_tier: Some(FreeTierKind::AlwaysFreeLocal),
+        models: Default::default(),
     });
 
     let config_manager = Arc::new(localrouter::config::ConfigManager::new(
@@ -1338,6 +1339,7 @@ async fn test_free_tier_blocks_paid_provider() {
         provider_config: None,
         api_key_ref: None,
         free_tier: None, // Factory default: None (paid)
+        models: Default::default(),
     });
 
     let config_manager = Arc::new(localrouter::config::ConfigManager::new(
@@ -1393,6 +1395,7 @@ async fn test_free_tier_fallback_ask_returns_fallback_available() {
         provider_config: None,
         api_key_ref: None,
         free_tier: None,
+        models: Default::default(),
     });
 
     let config_manager = Arc::new(localrouter::config::ConfigManager::new(
@@ -1487,6 +1490,7 @@ async fn test_free_tier_streaming_blocks_paid_provider() {
         provider_config: None,
         api_key_ref: None,
         free_tier: None,
+        models: Default::default(),
     });
 
     let config_manager = Arc::new(localrouter::config::ConfigManager::new(
@@ -1546,6 +1550,7 @@ async fn test_free_tier_user_override_makes_paid_provider_free() {
         provider_config: None,
         api_key_ref: None,
         free_tier: Some(FreeTierKind::AlwaysFreeLocal), // User override
+        models: Default::default(),
     });
 
     let config_manager = Arc::new(localrouter::config::ConfigManager::new(
@@ -1657,6 +1662,7 @@ async fn test_bug_embed_bypasses_free_tier_paid_provider() {
         provider_config: None,
         api_key_ref: None,
         free_tier: None, // Factory default: None (paid)
+        models: Default::default(),
     });
 
     let config_manager = Arc::new(ConfigManager::new(

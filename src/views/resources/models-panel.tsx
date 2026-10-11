@@ -21,9 +21,9 @@ import {
   SelectValue,
 } from "@/components/ui/Select"
 import { cn } from "@/lib/utils"
-import { ModelPricingBadge, FREE_TIER_LABELS } from "@/components/shared/model-pricing-badge"
+import { ModelPricingBadge, FREE_TIER_LABELS, pricingSourceLabel } from "@/components/shared/model-pricing-badge"
 import { RefreshModelsButton } from "@/components/shared/RefreshModelsButton"
-import type { ProviderFreeTierStatus } from "@/types/tauri-commands"
+import type { ModelFreeTierInfo, ProviderFreeTierStatus } from "@/types/tauri-commands"
 
 interface Model {
   model_id: string
@@ -36,6 +36,7 @@ interface Model {
   output_price_per_million?: number
   parameter_count?: string
   pricing_source?: string
+  free_tier_model?: ModelFreeTierInfo | null
 }
 
 interface ModelsPanelProps {
@@ -147,7 +148,10 @@ export function ModelsPanel({
       const price = model.input_price_per_million
       const ftKind = freeTierStatuses[model.provider_instance]?.free_tier?.kind
       if (filterPrice === "free") {
-        if (ftKind !== "always_free_local" && ftKind !== "subscription" && (price == null || price > 0)) return false
+        const freeHere = model.free_tier_model
+          ? model.free_tier_model.is_free && (ftKind === "always_free_local" || ftKind === "subscription")
+          : ftKind === "always_free_local" || ftKind === "subscription"
+        if (!freeHere && (price == null || price > 0)) return false
       } else if (filterPrice === "under1") {
         if (price == null || price >= 1) return false
       } else if (filterPrice === "1to10") {
@@ -160,7 +164,10 @@ export function ModelsPanel({
     // Free tier filter
     if (filterFreeTier !== "all") {
       const ftKind = freeTierStatuses[model.provider_instance]?.free_tier?.kind
-      const hasFreeTier = ftKind && ftKind !== "none"
+      // Per model when known (a provider's free tier may cover only some models)
+      const hasFreeTier = model.free_tier_model
+        ? model.free_tier_model.is_free
+        : ftKind != null && ftKind !== "none"
       if (filterFreeTier === "has_free" && !hasFreeTier) return false
       if (filterFreeTier === "no_free" && hasFreeTier) return false
     }
@@ -227,8 +234,8 @@ export function ModelsPanel({
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All</SelectItem>
-                  <SelectItem value="has_free">Has free tier</SelectItem>
-                  <SelectItem value="no_free">No free tier</SelectItem>
+                  <SelectItem value="has_free">Free tier</SelectItem>
+                  <SelectItem value="no_free">Not free</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -263,6 +270,7 @@ export function ModelsPanel({
                         inputPricePerMillion={model.input_price_per_million}
                         outputPricePerMillion={model.output_price_per_million}
                         freeTierKind={ftStatus?.free_tier}
+                        freeModel={model.free_tier_model}
                       />
                     </div>
                   )
@@ -336,7 +344,7 @@ export function ModelsPanel({
                     {selectedModel.pricing_source && (
                       <div>
                         <p className="text-muted-foreground">Pricing Source</p>
-                        <p className="font-medium capitalize">{selectedModel.pricing_source}</p>
+                        <p className="font-medium">{pricingSourceLabel(selectedModel.pricing_source)}</p>
                       </div>
                     )}
                   </div>
@@ -353,6 +361,7 @@ export function ModelsPanel({
                     inputPricePerMillion={selectedModel.input_price_per_million}
                     outputPricePerMillion={selectedModel.output_price_per_million}
                     freeTierKind={selectedFreeTier?.free_tier}
+                    freeModel={selectedModel.free_tier_model}
                     variant="full"
                   />
                 </CardContent>
@@ -384,9 +393,18 @@ export function ModelsPanel({
                   </CardHeader>
                   <CardContent className="text-sm space-y-2">
                     <div className="flex items-center gap-2">
-                      <span className="inline-block h-2 w-2 rounded-full bg-green-500" />
+                      <span className={cn(
+                        "inline-block h-2 w-2 rounded-full",
+                        selectedModel.free_tier_model?.is_free === false ? "bg-muted-foreground/50" : "bg-green-500",
+                      )} />
                       <span className="font-medium">{FREE_TIER_LABELS[selectedFreeTier.free_tier.kind]}</span>
                     </div>
+                    {selectedModel.free_tier_model && (
+                      <p>
+                        <span className="font-medium">{selectedModel.free_tier_model.is_free ? "This model is free" : "This model is not free"}</span>
+                        <span className="text-muted-foreground">: {selectedModel.free_tier_model.reason}</span>
+                      </p>
+                    )}
                     <p className="text-muted-foreground">{selectedFreeTier.status_message}</p>
                     {selectedFreeTier.free_tier.kind === "rate_limited_free" && (
                       <div className="grid grid-cols-2 gap-2 text-xs mt-2">

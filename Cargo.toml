@@ -137,6 +137,9 @@ zeroize = { version = "1.8", features = ["zeroize_derive"] }
 # Regex
 regex = "1"
 
+# JSONPath (RFC 9535) for free-model rules
+serde_json_path = "0.7"
+
 # Testing
 serial_test = "3.2"
 

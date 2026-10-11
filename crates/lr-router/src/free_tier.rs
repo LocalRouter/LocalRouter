@@ -467,23 +467,30 @@ impl FreeTierManager {
     // Classification
     // ============================================================
 
-    /// Determine if a model/provider combination is free
+    /// Whether a model of a provider counts as free right now.
+    ///
+    /// `model_is_free` is the model's own decision
+    /// (`lr_providers::free_models`): for always-free providers a priced
+    /// model is paid, and for free-models-only providers only free models
+    /// qualify (within `max_rpm`). Rate-limited and credit-based providers
+    /// are free while they have capacity.
     pub fn classify_model(
         &self,
         provider_instance: &str,
-        model: &str,
         free_tier: &FreeTierKind,
+        model_is_free: bool,
     ) -> ModelFreeStatus {
         match free_tier {
             FreeTierKind::AlwaysFreeLocal | FreeTierKind::Subscription => {
-                ModelFreeStatus::AlwaysFree
+                if model_is_free {
+                    ModelFreeStatus::AlwaysFree
+                } else {
+                    ModelFreeStatus::NotFree
+                }
             }
             FreeTierKind::None => ModelFreeStatus::NotFree,
-            FreeTierKind::FreeModelsOnly {
-                free_model_patterns,
-                max_rpm,
-            } => {
-                if !Self::model_matches_patterns(model, free_model_patterns) {
+            FreeTierKind::FreeModelsOnly { max_rpm, .. } => {
+                if !model_is_free {
                     return ModelFreeStatus::NotFree;
                 }
                 // Check RPM limit if configured
@@ -517,24 +524,6 @@ impl FreeTierManager {
                 }
             }
         }
-    }
-
-    fn model_matches_patterns(model: &str, patterns: &[String]) -> bool {
-        for pattern in patterns {
-            if pattern.contains('*') {
-                // Simple glob: "*:free" matches "anything:free"
-                let parts: Vec<&str> = pattern.split('*').collect();
-                if parts.len() == 2 {
-                    let (prefix, suffix) = (parts[0], parts[1]);
-                    if model.starts_with(prefix) && model.ends_with(suffix) {
-                        return true;
-                    }
-                }
-            } else if model == pattern {
-                return true;
-            }
-        }
-        false
     }
 
     // ============================================================
@@ -873,12 +862,14 @@ impl FreeTierManager {
     /// Dispatches to the appropriate tracker:
     /// - `RateLimitedFree` → rate limit tracker
     /// - `CreditBased` → credit tracker
-    /// - `FreeModelsOnly` → rate limit tracker (if has max_rpm)
+    /// - `FreeModelsOnly` → rate limit tracker (if has max_rpm), for free
+    ///   models only (`model_is_free`)
     /// - `AlwaysFreeLocal` / `Subscription` / `None` → no-op
     pub fn record_usage(
         &self,
         provider_instance: &str,
         free_tier: &FreeTierKind,
+        model_is_free: bool,
         total_tokens: u64,
         cost_usd: f64,
     ) {
@@ -892,10 +883,11 @@ impl FreeTierManager {
             FreeTierKind::CreditBased { .. } => {
                 self.record_credit_usage(provider_instance, cost_usd);
             }
-            FreeTierKind::FreeModelsOnly { max_rpm, .. } if *max_rpm > 0 => {
+            FreeTierKind::FreeModelsOnly { max_rpm, .. } if *max_rpm > 0 && model_is_free => {
                 self.record_rate_limit_usage(provider_instance, total_tokens);
             }
-            // AlwaysFreeLocal, Subscription, None, FreeModelsOnly with max_rpm=0
+            // AlwaysFreeLocal, Subscription, None, FreeModelsOnly with
+            // max_rpm=0 or a paid model
             _ => {}
         }
     }
@@ -1375,29 +1367,85 @@ mod tests {
         assert_eq!(info.retry_after_secs, Some(5));
     }
 
+    /// The model's own free decision, from its id only.
+    fn model_free(kind: &FreeTierKind, model: &str) -> bool {
+        lr_providers::free_models::FreeTierEvaluator::new(kind)
+            .decide(&lr_providers::free_models::FreeModelInput {
+                model_id: model,
+                ..Default::default()
+            })
+            .is_free
+    }
+
+    fn free_list(patterns: &[&str], max_rpm: u32) -> FreeTierKind {
+        FreeTierKind::FreeModelsOnly {
+            free_model_patterns: patterns.iter().map(|p| p.to_string()).collect(),
+            excluded_models: vec![],
+            rules: vec![],
+            max_rpm,
+        }
+    }
+
     #[test]
     fn test_model_matches_patterns() {
-        assert!(FreeTierManager::model_matches_patterns(
-            "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free",
-            &["meta-llama/Llama-3.3-70B-Instruct-Turbo-Free".to_string()]
+        let exact = free_list(&["meta-llama/Llama-3.3-70B-Instruct-Turbo-Free"], 0);
+        assert!(model_free(
+            &exact,
+            "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free"
         ));
+        assert!(model_free(&free_list(&["*:free"], 0), "anything:free"));
+        assert!(!model_free(&free_list(&["*:free"], 0), "gpt-4"));
+        // Several stars now match (they never did before).
+        assert!(model_free(
+            &free_list(&["*llama*:free"], 0),
+            "meta/llama-3:free"
+        ));
+    }
 
-        assert!(FreeTierManager::model_matches_patterns(
-            "anything:free",
-            &["*:free".to_string()]
-        ));
+    #[test]
+    fn priced_model_on_an_always_free_provider_is_not_free() {
+        let manager = FreeTierManager::new(None);
+        for kind in [FreeTierKind::AlwaysFreeLocal, FreeTierKind::Subscription] {
+            assert_eq!(
+                manager.classify_model("p", &kind, true),
+                ModelFreeStatus::AlwaysFree
+            );
+            assert_eq!(
+                manager.classify_model("p", &kind, false),
+                ModelFreeStatus::NotFree
+            );
+        }
+    }
 
-        assert!(!FreeTierManager::model_matches_patterns(
-            "gpt-4",
-            &["*:free".to_string()]
-        ));
+    #[test]
+    fn only_free_models_count_against_the_free_models_limit() {
+        let manager = FreeTierManager::new(None);
+        let free_tier = free_list(&["free-model"], 2);
+        for _ in 0..5 {
+            manager.record_usage("p", &free_tier, false, 100, 0.01);
+        }
+        assert_eq!(
+            manager.classify_model("p", &free_tier, true),
+            ModelFreeStatus::FreeModel,
+            "paid requests do not use up the free models' RPM"
+        );
+        manager.record_usage("p", &free_tier, true, 100, 0.0);
+        manager.record_usage("p", &free_tier, true, 100, 0.0);
+        assert_eq!(
+            manager.classify_model("p", &free_tier, true),
+            ModelFreeStatus::NotFree
+        );
     }
 
     #[test]
     fn test_classify_always_free() {
         let manager = FreeTierManager::new(None);
         assert_eq!(
-            manager.classify_model("ollama", "llama3", &FreeTierKind::AlwaysFreeLocal),
+            manager.classify_model(
+                "ollama",
+                &FreeTierKind::AlwaysFreeLocal,
+                model_free(&FreeTierKind::AlwaysFreeLocal, "llama3")
+            ),
             ModelFreeStatus::AlwaysFree
         );
     }
@@ -1406,7 +1454,11 @@ mod tests {
     fn test_classify_none() {
         let manager = FreeTierManager::new(None);
         assert_eq!(
-            manager.classify_model("openai", "gpt-4", &FreeTierKind::None),
+            manager.classify_model(
+                "openai",
+                &FreeTierKind::None,
+                model_free(&FreeTierKind::None, "gpt-4")
+            ),
             ModelFreeStatus::NotFree
         );
     }
@@ -1416,18 +1468,20 @@ mod tests {
         let manager = FreeTierManager::new(None);
         let free_tier = FreeTierKind::FreeModelsOnly {
             free_model_patterns: vec!["meta-llama/Llama-3.3-70B-Instruct-Turbo-Free".to_string()],
+            excluded_models: vec![],
+            rules: vec![],
             max_rpm: 3,
         };
         assert_eq!(
             manager.classify_model(
                 "togetherai",
-                "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free",
-                &free_tier
+                &free_tier,
+                model_free(&free_tier, "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free")
             ),
             ModelFreeStatus::FreeModel
         );
         assert_eq!(
-            manager.classify_model("togetherai", "gpt-4", &free_tier),
+            manager.classify_model("togetherai", &free_tier, model_free(&free_tier, "gpt-4")),
             ModelFreeStatus::NotFree
         );
     }
@@ -1581,7 +1635,7 @@ mod tests {
             max_monthly_tokens: 0,
         };
 
-        manager.record_usage("groq", &free_tier, 500, 0.001);
+        manager.record_usage("groq", &free_tier, true, 500, 0.001);
 
         let tracker = manager.get_rate_tracker("groq").unwrap();
         assert_eq!(tracker.minute_requests, 1);
@@ -1599,7 +1653,7 @@ mod tests {
             detection: lr_config::CreditDetection::LocalOnly,
         };
 
-        manager.record_usage("openrouter", &free_tier, 500, 0.01);
+        manager.record_usage("openrouter", &free_tier, true, 500, 0.01);
 
         let credit = manager.get_credit_tracker("openrouter").unwrap();
         assert!((credit.current_cost_usd - 0.01).abs() < f64::EPSILON);
@@ -1612,10 +1666,12 @@ mod tests {
         let manager = FreeTierManager::new(None);
         let free_tier = FreeTierKind::FreeModelsOnly {
             free_model_patterns: vec!["*:free".to_string()],
+            excluded_models: vec![],
+            rules: vec![],
             max_rpm: 5,
         };
 
-        manager.record_usage("togetherai", &free_tier, 200, 0.0);
+        manager.record_usage("togetherai", &free_tier, true, 200, 0.0);
 
         let tracker = manager.get_rate_tracker("togetherai").unwrap();
         assert_eq!(tracker.minute_requests, 1);
@@ -1625,7 +1681,7 @@ mod tests {
     #[test]
     fn test_record_usage_always_free_local_is_noop() {
         let manager = FreeTierManager::new(None);
-        manager.record_usage("ollama", &FreeTierKind::AlwaysFreeLocal, 1000, 0.0);
+        manager.record_usage("ollama", &FreeTierKind::AlwaysFreeLocal, true, 1000, 0.0);
         assert!(manager.get_rate_tracker("ollama").is_none());
         assert!(manager.get_credit_tracker("ollama").is_none());
     }
@@ -1633,7 +1689,7 @@ mod tests {
     #[test]
     fn test_record_usage_subscription_is_noop() {
         let manager = FreeTierManager::new(None);
-        manager.record_usage("lmstudio", &FreeTierKind::Subscription, 1000, 0.0);
+        manager.record_usage("lmstudio", &FreeTierKind::Subscription, true, 1000, 0.0);
         assert!(manager.get_rate_tracker("lmstudio").is_none());
         assert!(manager.get_credit_tracker("lmstudio").is_none());
     }
@@ -1641,7 +1697,7 @@ mod tests {
     #[test]
     fn test_record_usage_none_is_noop() {
         let manager = FreeTierManager::new(None);
-        manager.record_usage("openai", &FreeTierKind::None, 1000, 0.05);
+        manager.record_usage("openai", &FreeTierKind::None, true, 1000, 0.05);
         assert!(manager.get_rate_tracker("openai").is_none());
         assert!(manager.get_credit_tracker("openai").is_none());
     }
@@ -1658,9 +1714,9 @@ mod tests {
             max_monthly_tokens: 0,
         };
 
-        manager.record_usage("gemini", &free_tier, 100, 0.0);
-        manager.record_usage("gemini", &free_tier, 200, 0.0);
-        manager.record_usage("gemini", &free_tier, 300, 0.0);
+        manager.record_usage("gemini", &free_tier, true, 100, 0.0);
+        manager.record_usage("gemini", &free_tier, true, 200, 0.0);
+        manager.record_usage("gemini", &free_tier, true, 300, 0.0);
 
         let tracker = manager.get_rate_tracker("gemini").unwrap();
         assert_eq!(tracker.minute_requests, 3);
@@ -1677,8 +1733,8 @@ mod tests {
         };
 
         // Use up the full budget
-        manager.record_usage("deepinfra", &free_tier, 500, 0.50);
-        manager.record_usage("deepinfra", &free_tier, 500, 0.50);
+        manager.record_usage("deepinfra", &free_tier, true, 500, 0.50);
+        manager.record_usage("deepinfra", &free_tier, true, 500, 0.50);
 
         let cap = manager.check_credit_balance("deepinfra", &free_tier);
         assert!(!cap.has_capacity);
@@ -1697,8 +1753,8 @@ mod tests {
             max_monthly_tokens: 0,
         };
 
-        manager.record_usage("cerebras", &free_tier, 100, 0.0);
-        manager.record_usage("cerebras", &free_tier, 100, 0.0);
+        manager.record_usage("cerebras", &free_tier, true, 100, 0.0);
+        manager.record_usage("cerebras", &free_tier, true, 100, 0.0);
 
         let cap = manager.check_rate_limit_capacity("cerebras", &free_tier);
         assert!(!cap.has_capacity);
@@ -1722,13 +1778,15 @@ mod tests {
 
         // Use up RPM limit
         for _ in 0..5 {
-            let status = manager.classify_model("gemini", "gemini-pro", &free_tier);
+            let status =
+                manager.classify_model("gemini", &free_tier, model_free(&free_tier, "gemini-pro"));
             assert_eq!(status, ModelFreeStatus::FreeWithinLimits);
-            manager.record_usage("gemini", &free_tier, 100, 0.0);
+            manager.record_usage("gemini", &free_tier, true, 100, 0.0);
         }
 
         // 6th request should be blocked
-        let status = manager.classify_model("gemini", "gemini-pro", &free_tier);
+        let status =
+            manager.classify_model("gemini", &free_tier, model_free(&free_tier, "gemini-pro"));
         assert_eq!(
             status,
             ModelFreeStatus::NotFree,
@@ -1749,12 +1807,13 @@ mod tests {
         };
 
         for _ in 0..3 {
-            let status = manager.classify_model("groq", "llama3", &free_tier);
+            let status =
+                manager.classify_model("groq", &free_tier, model_free(&free_tier, "llama3"));
             assert_eq!(status, ModelFreeStatus::FreeWithinLimits);
-            manager.record_usage("groq", &free_tier, 100, 0.0);
+            manager.record_usage("groq", &free_tier, true, 100, 0.0);
         }
 
-        let status = manager.classify_model("groq", "llama3", &free_tier);
+        let status = manager.classify_model("groq", &free_tier, model_free(&free_tier, "llama3"));
         assert_eq!(
             status,
             ModelFreeStatus::NotFree,
@@ -1775,9 +1834,10 @@ mod tests {
         };
 
         // Use up TPM limit
-        manager.record_usage("gemini", &free_tier, 1000, 0.0);
+        manager.record_usage("gemini", &free_tier, true, 1000, 0.0);
 
-        let status = manager.classify_model("gemini", "gemini-pro", &free_tier);
+        let status =
+            manager.classify_model("gemini", &free_tier, model_free(&free_tier, "gemini-pro"));
         assert_eq!(
             status,
             ModelFreeStatus::NotFree,
@@ -1797,10 +1857,11 @@ mod tests {
             max_monthly_tokens: 0,
         };
 
-        manager.record_usage("cohere", &free_tier, 100, 0.0);
-        manager.record_usage("cohere", &free_tier, 100, 0.0);
+        manager.record_usage("cohere", &free_tier, true, 100, 0.0);
+        manager.record_usage("cohere", &free_tier, true, 100, 0.0);
 
-        let status = manager.classify_model("cohere", "command-r", &free_tier);
+        let status =
+            manager.classify_model("cohere", &free_tier, model_free(&free_tier, "command-r"));
         assert_eq!(
             status,
             ModelFreeStatus::NotFree,
@@ -1820,9 +1881,13 @@ mod tests {
             max_monthly_tokens: 500,
         };
 
-        manager.record_usage("mistral", &free_tier, 500, 0.0);
+        manager.record_usage("mistral", &free_tier, true, 500, 0.0);
 
-        let status = manager.classify_model("mistral", "mistral-large", &free_tier);
+        let status = manager.classify_model(
+            "mistral",
+            &free_tier,
+            model_free(&free_tier, "mistral-large"),
+        );
         assert_eq!(
             status,
             ModelFreeStatus::NotFree,
@@ -1841,6 +1906,8 @@ mod tests {
         let manager = FreeTierManager::new(None);
         let free_tier = FreeTierKind::FreeModelsOnly {
             free_model_patterns: vec!["meta-llama/Llama-3.3-70B-Instruct-Turbo-Free".to_string()],
+            excluded_models: vec![],
+            rules: vec![],
             max_rpm: 3,
         };
 
@@ -1848,11 +1915,12 @@ mod tests {
 
         // Use up RPM limit
         for _ in 0..3 {
-            manager.record_usage("togetherai", &free_tier, 100, 0.0);
+            manager.record_usage("togetherai", &free_tier, true, 100, 0.0);
         }
 
         // Should be NotFree after RPM exhausted, but bug: still returns FreeModel
-        let status = manager.classify_model("togetherai", model, &free_tier);
+        let status =
+            manager.classify_model("togetherai", &free_tier, model_free(&free_tier, model));
         assert_eq!(
             status,
             ModelFreeStatus::NotFree,
@@ -1925,7 +1993,8 @@ mod tests {
             detection: lr_config::CreditDetection::ProviderApi,
         };
 
-        let status = manager.classify_model("openrouter", "gpt-4o", &free_tier);
+        let status =
+            manager.classify_model("openrouter", &free_tier, model_free(&free_tier, "gpt-4o"));
         assert_eq!(
             status,
             ModelFreeStatus::FreeWithinLimits,
@@ -2047,7 +2116,8 @@ mod tests {
             max_monthly_tokens: 0,
         };
 
-        let status = manager.classify_model("gemini", "gemini-pro", &free_tier);
+        let status =
+            manager.classify_model("gemini", &free_tier, model_free(&free_tier, "gemini-pro"));
         assert_eq!(status, ModelFreeStatus::FreeWithinLimits);
     }
 
@@ -2066,7 +2136,8 @@ mod tests {
         manager.record_rate_limit_usage("gemini", 100);
         manager.record_rate_limit_usage("gemini", 100);
 
-        let status = manager.classify_model("gemini", "gemini-pro", &free_tier);
+        let status =
+            manager.classify_model("gemini", &free_tier, model_free(&free_tier, "gemini-pro"));
         assert_eq!(status, ModelFreeStatus::NotFree);
     }
 
@@ -2079,7 +2150,11 @@ mod tests {
             detection: lr_config::CreditDetection::LocalOnly,
         };
 
-        let status = manager.classify_model("deepinfra", "meta-llama/llama3", &free_tier);
+        let status = manager.classify_model(
+            "deepinfra",
+            &free_tier,
+            model_free(&free_tier, "meta-llama/llama3"),
+        );
         assert_eq!(status, ModelFreeStatus::FreeWithinLimits);
     }
 
@@ -2094,14 +2169,22 @@ mod tests {
 
         manager.record_credit_usage("deepinfra", 1.0);
 
-        let status = manager.classify_model("deepinfra", "meta-llama/llama3", &free_tier);
+        let status = manager.classify_model(
+            "deepinfra",
+            &free_tier,
+            model_free(&free_tier, "meta-llama/llama3"),
+        );
         assert_eq!(status, ModelFreeStatus::NotFree);
     }
 
     #[test]
     fn test_classify_model_subscription() {
         let manager = FreeTierManager::new(None);
-        let status = manager.classify_model("openai", "gpt-4", &FreeTierKind::Subscription);
+        let status = manager.classify_model(
+            "openai",
+            &FreeTierKind::Subscription,
+            model_free(&FreeTierKind::Subscription, "gpt-4"),
+        );
         assert_eq!(status, ModelFreeStatus::AlwaysFree);
     }
 
@@ -2110,10 +2193,13 @@ mod tests {
         let manager = FreeTierManager::new(None);
         let free_tier = FreeTierKind::FreeModelsOnly {
             free_model_patterns: vec!["*:free".to_string()],
+            excluded_models: vec![],
+            rules: vec![],
             max_rpm: 0,
         };
 
-        let status = manager.classify_model("togetherai", "gpt-4", &free_tier);
+        let status =
+            manager.classify_model("togetherai", &free_tier, model_free(&free_tier, "gpt-4"));
         assert_eq!(status, ModelFreeStatus::NotFree);
     }
 
@@ -2134,8 +2220,8 @@ mod tests {
             max_monthly_tokens: 0,
         };
 
-        manager.record_usage("provider", &free_tier, 100, 0.0);
-        manager.record_usage("provider", &free_tier, 100, 0.0);
+        manager.record_usage("provider", &free_tier, true, 100, 0.0);
+        manager.record_usage("provider", &free_tier, true, 100, 0.0);
 
         // RPM is fine (2/100) but RPD is exhausted (2/2)
         let cap = manager.check_rate_limit_capacity("provider", &free_tier);
@@ -2157,7 +2243,7 @@ mod tests {
             max_monthly_tokens: 0,
         };
 
-        manager.record_usage("provider", &free_tier, 500, 0.0);
+        manager.record_usage("provider", &free_tier, true, 500, 0.0);
 
         let cap = manager.check_rate_limit_capacity("provider", &free_tier);
         assert!(
@@ -2269,7 +2355,8 @@ mod tests {
         manager.record_rate_limit_error("gemini", "gemini-pro", 429, Some(60), None, false);
 
         // classify_model should still return FreeWithinLimits (backoff is separate)
-        let status = manager.classify_model("gemini", "gemini-pro", &free_tier);
+        let status =
+            manager.classify_model("gemini", &free_tier, model_free(&free_tier, "gemini-pro"));
         assert_eq!(
             status,
             ModelFreeStatus::FreeWithinLimits,
@@ -2349,8 +2436,8 @@ mod tests {
             max_monthly_tokens: 1_000_000,
         };
 
-        manager.record_usage("gemini", &free_tier, 500, 0.0);
-        manager.record_usage("gemini", &free_tier, 300, 0.0);
+        manager.record_usage("gemini", &free_tier, true, 500, 0.0);
+        manager.record_usage("gemini", &free_tier, true, 300, 0.0);
         manager.persist().unwrap();
 
         let loaded = FreeTierManager::load(&path);
@@ -2402,12 +2489,18 @@ mod tests {
                 "*:free".to_string(),
                 "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free".to_string(),
             ],
+            excluded_models: vec![],
+            rules: vec![],
             max_rpm: 0,
         };
 
         // Matches glob pattern
         assert_eq!(
-            manager.classify_model("togetherai", "model:free", &free_tier),
+            manager.classify_model(
+                "togetherai",
+                &free_tier,
+                model_free(&free_tier, "model:free")
+            ),
             ModelFreeStatus::FreeModel
         );
 
@@ -2415,15 +2508,15 @@ mod tests {
         assert_eq!(
             manager.classify_model(
                 "togetherai",
-                "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free",
-                &free_tier
+                &free_tier,
+                model_free(&free_tier, "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free")
             ),
             ModelFreeStatus::FreeModel
         );
 
         // Doesn't match any
         assert_eq!(
-            manager.classify_model("togetherai", "gpt-4", &free_tier),
+            manager.classify_model("togetherai", &free_tier, model_free(&free_tier, "gpt-4")),
             ModelFreeStatus::NotFree
         );
     }
@@ -2431,14 +2524,8 @@ mod tests {
     #[test]
     fn test_glob_pattern_prefix_and_suffix() {
         // Test "*-Free" pattern
-        assert!(FreeTierManager::model_matches_patterns(
-            "Llama-Free",
-            &["*-Free".to_string()]
-        ));
-        assert!(!FreeTierManager::model_matches_patterns(
-            "Llama-Premium",
-            &["*-Free".to_string()]
-        ));
+        assert!(model_free(&free_list(&["*-Free"], 0), "Llama-Free"));
+        assert!(!model_free(&free_list(&["*-Free"], 0), "Llama-Premium"));
     }
 
     // ============================================================

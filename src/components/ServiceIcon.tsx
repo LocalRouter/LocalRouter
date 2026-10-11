@@ -29,6 +29,7 @@ const ICON_MAP: Record<string, string> = {
   gpt4all: 'gpt4all.png',
   localai: 'localai.png',
   llamacpp: 'llamacpp.png',
+  fastflowlm: 'fastflowlm.png', // official asset; see public/icons/SOURCES.md
   // Local Embedded providers (official upstream assets; see public/icons/SOURCES.md)
   llamacpp_embedded: 'llamacpp.png',
   ollaya: 'ollaya.svg',

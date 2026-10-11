@@ -21,10 +21,11 @@ use localrouter::{
 use lr_providers::factory::{
     AnthropicProviderFactory, CerebrasProviderFactory, CloudflareAIProviderFactory,
     CohereProviderFactory, DeepInfraProviderFactory, DigitalOceanProviderFactory,
-    GPT4AllProviderFactory, GeminiProviderFactory, GitHubCopilotProviderFactory,
-    GitHubModelsProviderFactory, GroqProviderFactory, HuggingFaceProviderFactory,
-    JanProviderFactory, KlusterAIProviderFactory, LMStudioProviderFactory, LlamaCppProviderFactory,
-    Llm7ProviderFactory, LlmGatewayProviderFactory, LocalAIProviderFactory, MistralProviderFactory,
+    FastFlowLMProviderFactory, GPT4AllProviderFactory, GeminiProviderFactory,
+    GitHubCopilotProviderFactory, GitHubModelsProviderFactory, GroqProviderFactory,
+    HuggingFaceProviderFactory, JanProviderFactory, KlusterAIProviderFactory,
+    LMStudioProviderFactory, LlamaCppProviderFactory, Llm7ProviderFactory,
+    LlmGatewayProviderFactory, LocalAIProviderFactory, MistralProviderFactory,
     NvidiaNimProviderFactory, OllamaProviderFactory, OpenAICodexProviderFactory,
     OpenAICompatibleProviderFactory, OpenAIProviderFactory, OpenCodeGoProviderFactory,
     OpenCodeZenProviderFactory, OpenRouterProviderFactory, PerplexityProviderFactory,
@@ -331,6 +332,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
     provider_registry.register_factory(Arc::new(OpenCodeGoProviderFactory));
     provider_registry.register_factory(Arc::new(LlmGatewayProviderFactory));
     provider_registry.register_factory(Arc::new(VercelAiGatewayProviderFactory));
+    provider_registry.register_factory(Arc::new(FastFlowLMProviderFactory));
     // System One decision providers for servers the user runs or hosts
     for factory in SystemOneProviderFactory::all() {
         provider_registry.register_factory(Arc::new(factory));
@@ -425,49 +427,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
     info!("Loading provider instances from configuration...");
     let providers = config_manager.get().providers;
     for provider_config in providers {
-        let provider_type = match provider_config.provider_type {
-            config::ProviderType::Ollama => "ollama",
-            config::ProviderType::LMStudio => "lmstudio",
-            config::ProviderType::OpenAI => "openai",
-            config::ProviderType::Anthropic => "anthropic",
-            config::ProviderType::Gemini => "gemini",
-            config::ProviderType::OpenRouter => "openrouter",
-            config::ProviderType::Groq => "groq",
-            config::ProviderType::Mistral => "mistral",
-            config::ProviderType::Cohere => "cohere",
-            config::ProviderType::TogetherAI => "togetherai",
-            config::ProviderType::Perplexity => "perplexity",
-            config::ProviderType::DeepInfra => "deepinfra",
-            config::ProviderType::Cerebras => "cerebras",
-            config::ProviderType::XAI => "xai",
-            config::ProviderType::Jan => "jan",
-            config::ProviderType::GPT4All => "gpt4all",
-            config::ProviderType::LocalAI => "localai",
-            config::ProviderType::LlamaCpp => "llamacpp",
-            config::ProviderType::GitHubModels => "github_models",
-            config::ProviderType::NvidiaNim => "nvidia_nim",
-            config::ProviderType::CloudflareAI => "cloudflare_ai",
-            config::ProviderType::Llm7 => "llm7",
-            config::ProviderType::KlusterAI => "kluster_ai",
-            config::ProviderType::HuggingFace => "huggingface",
-            config::ProviderType::Zhipu => "zhipu",
-            config::ProviderType::DigitalOcean => "digitalocean",
-            config::ProviderType::OpenCodeZen => "opencode_zen",
-            config::ProviderType::OpenCodeGo => "opencode_go",
-            config::ProviderType::ChatGPTPlus => "openai-chatgpt-plus",
-            config::ProviderType::TypeSafe => "typesafe",
-            config::ProviderType::Laya => "laya",
-            config::ProviderType::Kev => "kev",
-            config::ProviderType::SystemOneCompatible => "systemone_compatible",
-            config::ProviderType::Von => "von",
-            config::ProviderType::Decider => "decider",
-            config::ProviderType::Ollaya => "ollaya",
-            config::ProviderType::LlamaCppEmbedded => "llamacpp_embedded",
-            config::ProviderType::SdCppEmbedded => "sdcpp_embedded",
-            config::ProviderType::LlmGateway => "llmgateway",
-            config::ProviderType::VercelAiGateway => "vercel_ai_gateway",
-            config::ProviderType::Custom => "openai_compatible",
-        };
+        let provider_type = provider_config.provider_type.factory_id();
 
         // Convert provider_config JSON to HashMap
         let mut config_map = std::collections::HashMap::new();
@@ -531,6 +491,19 @@ async fn run_gui_mode() -> anyhow::Result<()> {
         {
             tracing::warn!("Failed to load provider '{}': {}", provider_config.name, e);
             continue;
+        }
+
+        // Manual models, per-model visibility and overrides
+        if !provider_config.models.is_default() {
+            if let Err(e) = provider_registry
+                .set_model_settings(&provider_config.name, provider_config.models.clone())
+            {
+                tracing::warn!(
+                    "Failed to apply model settings for provider '{}': {}",
+                    provider_config.name,
+                    e
+                );
+            }
         }
 
         // Set enabled state
@@ -2578,6 +2551,9 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::list_all_models,
             ui::commands::list_all_models_detailed,
             ui::commands::list_provider_models_detailed,
+            ui::commands::list_provider_models_managed,
+            ui::commands::get_provider_model_settings,
+            ui::commands::set_provider_model_settings,
             ui::commands::get_cached_models,
             ui::commands::refresh_models_incremental,
             ui::commands::get_catalog_stats,
@@ -2973,6 +2949,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             // Free tier commands
             ui::commands_free_tier::get_free_tier_status,
             ui::commands_free_tier::set_provider_free_tier,
+            ui::commands_free_tier::preview_free_model_rules,
+            ui::commands_free_tier::get_provider_model_metadata,
             ui::commands_free_tier::reset_provider_free_tier_usage,
             ui::commands_free_tier::set_provider_free_tier_usage,
             ui::commands_free_tier::get_default_free_tier,

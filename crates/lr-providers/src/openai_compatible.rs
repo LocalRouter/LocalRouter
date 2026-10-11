@@ -5,9 +5,10 @@
 
 use super::{
     Capability, ChatMessage, ChunkChoice, ChunkDelta, CompletionChoice, CompletionChunk,
-    CompletionRequest, CompletionResponse, HealthStatus, ModelInfo, ModelProvider, PricingInfo,
-    ProviderHealth, TokenUsage,
+    CompletionRequest, CompletionResponse, HealthStatus, ModelInfo, ModelListing, ModelProvider,
+    PricingInfo, ProviderHealth, TokenUsage,
 };
+use crate::listing_metadata::ModelMetadata;
 use async_trait::async_trait;
 use chrono::Utc;
 use futures::stream::{Stream, StreamExt};
@@ -33,6 +34,13 @@ pub struct OpenAICompatibleProvider {
     /// streaming requests ask for usage (`stream_options.include_usage`);
     /// unknown upstreams are never asked.
     provider_type: Option<String>,
+    /// Whether `GET {base}/models` is asked for the model list. Off for
+    /// servers without that endpoint: only manual models are offered.
+    model_discovery: bool,
+    /// FastFlowLM: list only the models installed on this machine.
+    installed_models: Option<crate::fastflowlm::InstalledModels>,
+    /// Each model's entry in the latest `GET {base}/models` (prices, tiers)
+    listing: crate::listing_metadata::ListingMetadataCache,
 }
 
 /// Parse a `custom_headers` config value into a header map.
@@ -81,7 +89,27 @@ impl OpenAICompatibleProvider {
             client: crate::http_client::default_client(),
             systemone_gateway: None,
             provider_type: None,
+            model_discovery: true,
+            installed_models: None,
+            listing: Default::default(),
         }
+    }
+
+    /// Turn model discovery (`GET {base}/models`) on or off.
+    pub fn with_model_discovery(mut self, enabled: bool) -> Self {
+        self.model_discovery = enabled;
+        self
+    }
+
+    /// List the models FastFlowLM has installed instead of its whole catalog.
+    pub fn with_installed_models(mut self, installed: crate::fastflowlm::InstalledModels) -> Self {
+        self.installed_models = Some(installed);
+        self
+    }
+
+    /// The configured base URL (trimmed, without a trailing slash).
+    pub fn base_url(&self) -> &str {
+        &self.base_url
     }
 
     /// Identify the upstream by provider type id, so streaming requests ask
@@ -127,11 +155,79 @@ impl OpenAICompatibleProvider {
     }
 }
 
+impl OpenAICompatibleProvider {
+    /// `GET {base}/models`, parsed, plus the gateway's decision models, and
+    /// each listed model's raw entry (also kept for pricing).
+    async fn fetch_listed_models(&self) -> AppResult<(Vec<ModelInfo>, ModelMetadata)> {
+        let result = self.fetch_listed_models_uncached().await;
+        match &result {
+            Ok((_, metadata)) => self.listing.store(metadata.clone()),
+            Err(_) => self.listing.mark_failed(),
+        }
+        result
+    }
+
+    async fn fetch_listed_models_uncached(&self) -> AppResult<(Vec<ModelInfo>, ModelMetadata)> {
+        let request = self.apply_headers(self.client.get(format!("{}/models", self.base_url)));
+
+        let response = request
+            .send()
+            .await
+            .map_err(|e| AppError::Provider(format!("Failed to fetch models: {}", e)))?;
+
+        if !response.status().is_success() {
+            return Err(AppError::Provider(format!(
+                "API returned status: {}",
+                response.status()
+            )));
+        }
+
+        let body = response
+            .text()
+            .await
+            .map_err(|e| AppError::Provider(format!("Failed to read models response: {}", e)))?;
+
+        let model_list: Vec<OpenAIModel> = parse_models_response(&body)
+            .map_err(|e| AppError::Provider(format!("Failed to parse models response: {}", e)))?;
+        let metadata = serde_json::from_str::<serde_json::Value>(&body)
+            .map(|v| crate::listing_metadata::entries_by_id(&v))
+            .unwrap_or_default();
+
+        let mut models: Vec<ModelInfo> = model_list
+            .into_iter()
+            .map(|model| listed_model_info(model, &self.name))
+            .collect();
+        if let Some(gateway) = &self.systemone_gateway {
+            gateway.merge_into(&self.name, &mut models).await;
+        }
+        Ok((models, std::sync::Arc::new(metadata)))
+    }
+
+    /// The price a model has in the server's model listing, if it lists
+    /// one. Fetches the listing once when it was never fetched.
+    async fn listed_pricing(&self, model: &str) -> Option<PricingInfo> {
+        if self.listing.get().is_none() && self.model_discovery && self.listing.should_fetch() {
+            let _ = self.fetch_listed_models().await;
+        }
+        self.listing
+            .get()?
+            .get(model)
+            .and_then(crate::listing_metadata::listing_pricing)
+    }
+}
+
 // OpenAI API response types (reused from OpenAI provider)
 
 #[derive(Debug, Deserialize)]
 struct OpenAIModel {
     id: String,
+    /// Display name, when the listing has one (e.g. Free.ai)
+    #[serde(default)]
+    name: Option<String>,
+    /// Model kind, when the listing declares one (e.g. Free.ai: `chat`,
+    /// `embeddings`, `image`, `tts`, `vision`)
+    #[serde(default, rename = "type")]
+    kind: Option<String>,
     // The fields below are not used by LocalRouter, but the OpenAI spec includes them.
     // GitHub Models, Cloudflare Workers AI, and DigitalOcean Gradient omit some/all of
     // them, so they must be optional with serde defaults to avoid parse failures.
@@ -158,12 +254,78 @@ struct CloudflareModelsResponse {
     result: Vec<OpenAIModel>,
 }
 
-/// Try the three known model-list response shapes, in order.
+/// Free.ai returns `{"models": [...]}`.
+#[derive(Debug, Deserialize)]
+struct ModelsEnvelopeResponse {
+    models: Vec<OpenAIModel>,
+}
+
+/// Try the known model-list response shapes, in order.
 fn parse_models_response(body: &str) -> Result<Vec<OpenAIModel>, serde_json::Error> {
     serde_json::from_str::<OpenAIModelsResponse>(body)
         .map(|r| r.data)
         .or_else(|_| serde_json::from_str::<Vec<OpenAIModel>>(body))
         .or_else(|_| serde_json::from_str::<CloudflareModelsResponse>(body).map(|r| r.result))
+        .or_else(|_| serde_json::from_str::<ModelsEnvelopeResponse>(body).map(|r| r.models))
+}
+
+/// Capabilities of a listed model from the kind its listing declares.
+/// Only kinds with an unambiguous meaning are mapped; anything else (or no
+/// kind) is a chat model.
+fn listed_capabilities(kind: Option<&str>) -> Vec<Capability> {
+    match kind {
+        Some("embeddings") => vec![Capability::Embedding],
+        Some("image") => vec![Capability::ImageGeneration],
+        Some("tts") => vec![Capability::TextToSpeech],
+        Some("vision") => vec![Capability::Chat, Capability::Completion, Capability::Vision],
+        _ => vec![Capability::Chat, Capability::Completion],
+    }
+}
+
+/// A listed model as LocalRouter describes it.
+fn listed_model_info(model: OpenAIModel, provider: &str) -> ModelInfo {
+    let name = model
+        .name
+        .filter(|n| !n.trim().is_empty())
+        .unwrap_or_else(|| model.id.clone());
+    ModelInfo {
+        capabilities: listed_capabilities(model.kind.as_deref()),
+        id: model.id,
+        name,
+        provider: provider.to_string(),
+        parameter_count: None, // Not available from API
+        context_window: 4096,  // Default, actual value depends on model
+        supports_streaming: true,
+        detailed_capabilities: None,
+    }
+    .enrich_with_catalog_by_name() // Model-only search for multi-provider system
+}
+
+/// Health from the status `GET {base}/models` answered with. Any reply
+/// means the server is up; servers without a model listing answer 404,
+/// so only auth failures, rate limits and server errors are reported.
+fn health_from_status(status: reqwest::StatusCode, latency_ms: u64) -> ProviderHealth {
+    let (status, error_message) = match status.as_u16() {
+        401 | 403 => (
+            HealthStatus::Unhealthy,
+            Some(format!("Authentication failed (HTTP {})", status)),
+        ),
+        429 => (
+            HealthStatus::Degraded,
+            Some("Rate limited (HTTP 429)".to_string()),
+        ),
+        _ if status.is_server_error() => (
+            HealthStatus::Degraded,
+            Some(format!("Server error (HTTP {})", status)),
+        ),
+        _ => (HealthStatus::Healthy, None),
+    };
+    ProviderHealth {
+        status,
+        latency_ms: Some(latency_ms),
+        last_checked: Utc::now(),
+        error_message,
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -357,38 +519,7 @@ impl ModelProvider for OpenAICompatibleProvider {
         let latency_ms = start.elapsed().as_millis() as u64;
 
         match result {
-            Ok(response) => {
-                let status = response.status();
-                if status.is_success() {
-                    ProviderHealth {
-                        status: HealthStatus::Healthy,
-                        latency_ms: Some(latency_ms),
-                        last_checked: Utc::now(),
-                        error_message: None,
-                    }
-                } else if status.as_u16() == 429 {
-                    ProviderHealth {
-                        status: HealthStatus::Degraded,
-                        latency_ms: Some(latency_ms),
-                        last_checked: Utc::now(),
-                        error_message: Some("Rate limited (HTTP 429)".to_string()),
-                    }
-                } else if status.is_server_error() {
-                    ProviderHealth {
-                        status: HealthStatus::Degraded,
-                        latency_ms: Some(latency_ms),
-                        last_checked: Utc::now(),
-                        error_message: Some(format!("Server error (HTTP {})", status)),
-                    }
-                } else {
-                    ProviderHealth {
-                        status: HealthStatus::Unhealthy,
-                        latency_ms: Some(latency_ms),
-                        last_checked: Utc::now(),
-                        error_message: Some(format!("API returned status: {}", status)),
-                    }
-                }
-            }
+            Ok(response) => health_from_status(response.status(), latency_ms),
             Err(e) => ProviderHealth {
                 status: HealthStatus::Unhealthy,
                 latency_ms: None,
@@ -399,54 +530,35 @@ impl ModelProvider for OpenAICompatibleProvider {
     }
 
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
-        let request = self.apply_headers(self.client.get(format!("{}/models", self.base_url)));
+        Ok(self.list_model_listing().await?.models)
+    }
 
-        let response = request
-            .send()
-            .await
-            .map_err(|e| AppError::Provider(format!("Failed to fetch models: {}", e)))?;
-
-        if !response.status().is_success() {
-            return Err(AppError::Provider(format!(
-                "API returned status: {}",
-                response.status()
-            )));
+    async fn list_model_listing(&self) -> AppResult<ModelListing> {
+        if !self.model_discovery {
+            return Ok(ModelListing::default());
         }
-
-        // Parse response — try shapes in order:
-        //   1. Standard OpenAI envelope: {"data": [...]}
-        //   2. Bare array: [...]                    (e.g. GitHub Models)
-        //   3. Cloudflare envelope: {"result": [...]}   (Cloudflare Workers AI)
-        let body = response
-            .text()
-            .await
-            .map_err(|e| AppError::Provider(format!("Failed to read models response: {}", e)))?;
-
-        let model_list: Vec<OpenAIModel> = parse_models_response(&body)
-            .map_err(|e| AppError::Provider(format!("Failed to parse models response: {}", e)))?;
-
-        let models = model_list
-            .into_iter()
-            .map(|model| {
-                ModelInfo {
-                    id: model.id.clone(),
-                    name: model.id,
-                    provider: self.name.clone(),
-                    parameter_count: None, // Not available from API
-                    context_window: 4096,  // Default, actual value depends on model
-                    supports_streaming: true,
-                    capabilities: vec![Capability::Chat, Capability::Completion],
-                    detailed_capabilities: None,
-                }
-                .enrich_with_catalog_by_name()
-            }) // Use model-only search for multi-provider system
-            .collect();
-
-        let mut models: Vec<ModelInfo> = models;
-        if let Some(gateway) = &self.systemone_gateway {
-            gateway.merge_into(&self.name, &mut models).await;
+        if let Some(installed) = &self.installed_models {
+            if let Some(models) = installed.detect(&self.name, &self.base_url).await {
+                return Ok(ModelListing {
+                    models,
+                    ..Default::default()
+                });
+            }
+            // The server lists every model it supports, installed or not;
+            // offer them only once the user picks.
+            let (models, metadata) = self.fetch_listed_models().await?;
+            return Ok(ModelListing {
+                models,
+                new_models_hidden: true,
+                metadata,
+            });
         }
-        Ok(models)
+        let (models, metadata) = self.fetch_listed_models().await?;
+        Ok(ModelListing {
+            models,
+            new_models_hidden: false,
+            metadata,
+        })
     }
 
     async fn get_pricing(&self, model: &str) -> AppResult<PricingInfo> {
@@ -456,9 +568,13 @@ impl ModelProvider for OpenAICompatibleProvider {
                 return Ok(pricing);
             }
         }
-        // Generic providers don't have standard pricing
-        // Return free by default, can be overridden by configuration
-        Ok(PricingInfo::free())
+        // Prices the server lists for the model (per token, e.g. the
+        // OpenRouter-style `pricing` object); otherwise free unless a price
+        // is set for the model on its Models tab.
+        Ok(self
+            .listed_pricing(model)
+            .await
+            .unwrap_or_else(PricingInfo::free))
     }
 
     fn supports_systemone(&self) -> bool {
@@ -919,10 +1035,92 @@ mod tests {
             "test".to_string(),
             "http://localhost:8080/v1".to_string(),
             None,
-        );
+        )
+        .with_model_discovery(false);
         let pricing = provider.get_pricing("any-model").await.unwrap();
         assert_eq!(pricing.input_cost_per_1k, 0.0);
         assert_eq!(pricing.output_cost_per_1k, 0.0);
+    }
+
+    #[tokio::test]
+    async fn listing_entries_and_prices_come_from_the_model_list() {
+        use wiremock::{matchers, Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(matchers::path("/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"models":[
+                    {"id":"paid","tier":"pro","pricing":{"input":"0.000002","output":"0.000004"}},
+                    {"id":"free","tier":"free","pricing":{"input":0}},
+                    {"id":"plain"}
+                ]}"#,
+            ))
+            .mount(&server)
+            .await;
+        let provider = OpenAICompatibleProvider::new("x".into(), server.uri(), None);
+        // Pricing fetches the list once and keeps it.
+        let paid = provider.get_pricing("paid").await.unwrap();
+        assert!((paid.input_cost_per_1k - 0.002).abs() < 1e-12);
+        assert!((paid.output_cost_per_1k - 0.004).abs() < 1e-12);
+        assert_eq!(
+            provider
+                .get_pricing("free")
+                .await
+                .unwrap()
+                .input_cost_per_1k,
+            0.0
+        );
+        assert_eq!(
+            provider
+                .get_pricing("plain")
+                .await
+                .unwrap()
+                .input_cost_per_1k,
+            0.0
+        );
+        assert_eq!(
+            provider
+                .get_pricing("unknown")
+                .await
+                .unwrap()
+                .input_cost_per_1k,
+            0.0
+        );
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn listing_keeps_each_models_entry() {
+        use wiremock::{matchers, Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(matchers::path("/models"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(r#"{"data":[{"id":"a","tier":"free"},{"id":"b"}]}"#),
+            )
+            .mount(&server)
+            .await;
+        let provider = OpenAICompatibleProvider::new("x".into(), server.uri(), None);
+        let listing = provider.list_model_listing().await.unwrap();
+        assert_eq!(listing.metadata.len(), 2);
+        assert_eq!(listing.metadata["a"]["tier"], "free");
+    }
+
+    #[tokio::test]
+    async fn failed_listing_is_not_retried_for_every_price() {
+        use wiremock::{matchers, Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(matchers::path("/models"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let provider = OpenAICompatibleProvider::new("x".into(), server.uri(), None);
+        for _ in 0..3 {
+            assert_eq!(
+                provider.get_pricing("m").await.unwrap().input_cost_per_1k,
+                0.0
+            );
+        }
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
     }
 
     #[test]
@@ -964,6 +1162,135 @@ mod tests {
         let models = parse_models_response(body).unwrap();
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].id, "@cf/meta/llama-3.1-8b-instruct");
+    }
+
+    #[test]
+    fn test_parse_models_free_ai_envelope() {
+        // Free.ai: {"models": [...]} with a display name, kind and prices.
+        let body = r#"{"models":[
+            {"id":"llama-3.3-70b","name":"Llama 3.3 70B","type":"chat","pricing":{"input":0}},
+            {"id":"bge-m3","name":"BGE M3","type":"embeddings"},
+            {"id":"flux","type":"image"}
+        ]}"#;
+        let models = parse_models_response(body).unwrap();
+        assert_eq!(models.len(), 3);
+        let infos: Vec<ModelInfo> = models
+            .into_iter()
+            .map(|m| listed_model_info(m, "free"))
+            .collect();
+        assert_eq!(infos[0].name, "Llama 3.3 70B");
+        assert!(infos[0].capabilities.contains(&Capability::Chat));
+        assert_eq!(infos[1].capabilities[0], Capability::Embedding);
+        assert!(!infos[1].capabilities.contains(&Capability::Chat));
+        assert_eq!(infos[2].name, "flux");
+        assert_eq!(infos[2].capabilities[0], Capability::ImageGeneration);
+        assert!(infos.iter().all(|m| m.provider == "free"));
+    }
+
+    #[test]
+    fn listed_kinds_map_only_the_declared_set() {
+        assert_eq!(
+            listed_capabilities(Some("tts")),
+            vec![Capability::TextToSpeech]
+        );
+        assert_eq!(
+            listed_capabilities(Some("vision")),
+            vec![Capability::Chat, Capability::Completion, Capability::Vision]
+        );
+        for other in [
+            None,
+            Some("chat"),
+            Some("audio"),
+            Some("Embeddings"),
+            Some(""),
+        ] {
+            assert_eq!(
+                listed_capabilities(other),
+                vec![Capability::Chat, Capability::Completion],
+                "{other:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn health_counts_any_reply_but_auth_limits_and_server_errors() {
+        use reqwest::StatusCode as S;
+        for ok in [S::OK, S::NOT_FOUND, S::METHOD_NOT_ALLOWED, S::BAD_REQUEST] {
+            assert_eq!(
+                health_from_status(ok, 1).status,
+                HealthStatus::Healthy,
+                "{ok}"
+            );
+        }
+        for bad in [S::UNAUTHORIZED, S::FORBIDDEN] {
+            assert_eq!(health_from_status(bad, 1).status, HealthStatus::Unhealthy);
+        }
+        for degraded in [
+            S::TOO_MANY_REQUESTS,
+            S::INTERNAL_SERVER_ERROR,
+            S::BAD_GATEWAY,
+        ] {
+            assert_eq!(
+                health_from_status(degraded, 1).status,
+                HealthStatus::Degraded
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn server_without_a_model_list_is_healthy() {
+        use wiremock::{matchers, Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(matchers::path("/models"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        let provider = OpenAICompatibleProvider::new("x".into(), server.uri(), None);
+        assert_eq!(provider.health_check().await.status, HealthStatus::Healthy);
+    }
+
+    #[tokio::test]
+    async fn discovery_off_makes_no_request() {
+        use wiremock::{matchers, Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(matchers::path("/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"data":[{"id":"a"}]}"#))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let provider = OpenAICompatibleProvider::new("x".into(), server.uri(), None)
+            .with_model_discovery(false);
+        assert!(provider.list_models().await.unwrap().is_empty());
+        let listing = provider.list_model_listing().await.unwrap();
+        assert!(listing.models.is_empty());
+        assert!(!listing.new_models_hidden);
+    }
+
+    #[tokio::test]
+    async fn fastflowlm_without_installed_models_hides_its_catalog() {
+        use wiremock::{matchers, Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(matchers::path("/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"object":"list","data":[{"id":"llama3.2:1b"},{"id":"qwen3:4b"}]}"#,
+            ))
+            .mount(&server)
+            .await;
+        let provider = OpenAICompatibleProvider::new("flm".into(), server.uri(), None)
+            .with_provider_type("fastflowlm")
+            .with_installed_models(crate::fastflowlm::InstalledModels::unavailable());
+        let listing = provider.list_model_listing().await.unwrap();
+        assert_eq!(listing.models.len(), 2);
+        assert!(listing.new_models_hidden);
+        // A generic provider's listing is trusted.
+        let generic = OpenAICompatibleProvider::new("g".into(), server.uri(), None);
+        assert!(
+            !generic
+                .list_model_listing()
+                .await
+                .unwrap()
+                .new_models_hidden
+        );
     }
 
     #[test]

@@ -28,3 +28,7 @@ Vercel starter mark, so it is not used as Kev branding.
 ## Pi client template
 
 - `pi.svg`: official Pi logo, https://pi.dev/logo.svg (byte-identical to https://pi.dev/logo-auto.svg, which the upstream README at https://github.com/earendil-works/pi embeds; retrieved 2026-10-10, SHA-256 `abd66e7868b2d24f0f0895f9237ee8a6dcb22337583b0dc54aeb595acecb4d6b`). Copied without modification. The Pi source code is MIT-licensed; the logo is not part of that repository and no separate logo license is published. Pi mark of its owners; used solely to identify the app.
+
+## FastFlowLM provider
+
+- `fastflowlm.png`: official FastFlowLM logo, [`assets/logo.png`](https://github.com/ROCm/FastFlowLM/blob/1405461da9328e382a8ccf408c1250049598bcc1/assets/logo.png) in the upstream repository (the image its README shows; retrieved 2026-10-11, SHA-256 `928588533d5e91186c855291a6805660a0ba986a0be87318803083cd62c2b47d`). Copied without modification. The repository is MIT-licensed; its license (`LICENSE_RUNTIME.txt` at revision `e5e33d9f64388f4e239eb6584493c76ef5a07231`) is included as `fastflowlm-LICENSE.txt`. FastFlowLM name and mark of their owners; used solely to identify the provider.

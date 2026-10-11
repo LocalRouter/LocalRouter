@@ -275,6 +275,10 @@ impl ModelProvider for TogetherAIProvider {
     }
 
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
+        Ok(self.list_model_listing().await?.models)
+    }
+
+    async fn list_model_listing(&self) -> AppResult<crate::ModelListing> {
         let url = format!("{}/models", self.base_url);
 
         let response = self
@@ -296,12 +300,16 @@ impl ModelProvider for TogetherAIProvider {
             )));
         }
 
-        let models_list: Vec<TogetherModel> = response.json().await.map_err(|e| {
+        let parse_error = |e: &dyn std::fmt::Display| {
             AppError::Provider(format!(
                 "Failed to parse Together AI models response: {}",
                 e
             ))
-        })?;
+        };
+        let body: serde_json::Value = response.json().await.map_err(|e| parse_error(&e))?;
+        let models_list: Vec<TogetherModel> =
+            serde_json::from_value(body.clone()).map_err(|e| parse_error(&e))?;
+        let metadata = std::sync::Arc::new(crate::listing_metadata::entries_by_id(&body));
 
         let models = models_list
             .into_iter()
@@ -326,7 +334,11 @@ impl ModelProvider for TogetherAIProvider {
             })
             .collect();
 
-        Ok(models)
+        Ok(crate::ModelListing {
+            models,
+            new_models_hidden: false,
+            metadata,
+        })
     }
 
     async fn get_pricing(&self, model: &str) -> AppResult<PricingInfo> {

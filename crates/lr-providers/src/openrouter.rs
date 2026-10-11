@@ -16,9 +16,10 @@ use lr_types::{AppError, AppResult};
 
 use super::{
     Capability, ChatMessage, ChunkChoice, ChunkDelta, CompletionChoice, CompletionChunk,
-    CompletionRequest, CompletionResponse, HealthStatus, ModelInfo, ModelProvider, PricingInfo,
-    ProviderCreditsInfo, ProviderHealth, TokenUsage, Tool, ToolChoice,
+    CompletionRequest, CompletionResponse, HealthStatus, ModelInfo, ModelListing, ModelProvider,
+    PricingInfo, ProviderCreditsInfo, ProviderHealth, TokenUsage, Tool, ToolChoice,
 };
+use crate::listing_metadata::ModelMetadata;
 
 const OPENROUTER_API_BASE: &str = "https://openrouter.ai/api/v1";
 
@@ -31,6 +32,8 @@ pub struct OpenRouterProvider {
     base_url: String,
     /// Hosted decision models (TypeSafe Jev) on `POST /systemone`.
     systemone: Option<std::sync::Arc<crate::systemone::SystemOneGateway>>,
+    /// Each model's entry in the latest `GET /models` (prices, modalities)
+    listing: crate::listing_metadata::ListingMetadataCache,
 }
 
 #[allow(dead_code)]
@@ -58,6 +61,7 @@ impl OpenRouterProvider {
             app_url: Some("https://github.com/localrouter/localrouter".to_string()),
             base_url,
             systemone,
+            listing: Default::default(),
         }
     }
 
@@ -125,6 +129,67 @@ impl OpenRouterProvider {
 
         req
     }
+
+    /// `GET /models`: the chat models and each model's raw entry (also kept
+    /// for pricing).
+    async fn fetch_listing(&self) -> AppResult<(Vec<ModelInfo>, ModelMetadata)> {
+        let result = self.fetch_listing_uncached().await;
+        match &result {
+            Ok((_, metadata)) => self.listing.store(metadata.clone()),
+            Err(_) => self.listing.mark_failed(),
+        }
+        result
+    }
+
+    async fn fetch_listing_uncached(&self) -> AppResult<(Vec<ModelInfo>, ModelMetadata)> {
+        let url = format!("{}/models", self.base_url);
+
+        let response = self
+            .build_request(&url)
+            .send()
+            .await
+            .map_err(|e| AppError::Provider(format!("Failed to fetch models: {}", e)))?;
+
+        if !response.status().is_success() {
+            return Err(AppError::Provider(format!(
+                "OpenRouter API returned status: {}",
+                response.status()
+            )));
+        }
+
+        let body: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| AppError::Provider(format!("Failed to parse models response: {}", e)))?;
+        let models_response: OpenRouterModelsResponse = serde_json::from_value(body.clone())
+            .map_err(|e| AppError::Provider(format!("Failed to parse models response: {}", e)))?;
+
+        let models = models_response
+            .data
+            .into_iter()
+            .map(|model| {
+                let capabilities = if model.id.contains("vision") {
+                    vec![Capability::Chat, Capability::Vision]
+                } else {
+                    vec![Capability::Chat]
+                };
+
+                ModelInfo {
+                    id: model.id.clone(),
+                    name: model.name.unwrap_or_else(|| model.id.clone()),
+                    provider: "openrouter".to_string(),
+                    parameter_count: None,
+                    context_window: model.context_length,
+                    supports_streaming: true,
+                    capabilities,
+                    detailed_capabilities: None,
+                }
+                .enrich_with_catalog_by_name() // Use model-only search for multi-provider system
+            })
+            .collect();
+        let metadata = std::sync::Arc::new(crate::listing_metadata::entries_by_id(&body));
+        Ok((models, metadata))
+    }
 }
 
 #[async_trait]
@@ -178,55 +243,20 @@ impl ModelProvider for OpenRouterProvider {
     }
 
     async fn list_models(&self) -> AppResult<Vec<ModelInfo>> {
-        let url = format!("{}/models", self.base_url);
+        Ok(self.list_model_listing().await?.models)
+    }
 
-        let response = self
-            .build_request(&url)
-            .send()
-            .await
-            .map_err(|e| AppError::Provider(format!("Failed to fetch models: {}", e)))?;
-
-        if !response.status().is_success() {
-            return Err(AppError::Provider(format!(
-                "OpenRouter API returned status: {}",
-                response.status()
-            )));
-        }
-
-        let models_response: OpenRouterModelsResponse = response
-            .json()
-            .await
-            .map_err(|e| AppError::Provider(format!("Failed to parse models response: {}", e)))?;
-
-        let mut models: Vec<ModelInfo> = models_response
-            .data
-            .into_iter()
-            .map(|model| {
-                let capabilities = if model.id.contains("vision") {
-                    vec![Capability::Chat, Capability::Vision]
-                } else {
-                    vec![Capability::Chat]
-                };
-
-                ModelInfo {
-                    id: model.id.clone(),
-                    name: model.name.unwrap_or_else(|| model.id.clone()),
-                    provider: "openrouter".to_string(),
-                    parameter_count: None,
-                    context_window: model.context_length,
-                    supports_streaming: true,
-                    capabilities,
-                    detailed_capabilities: None,
-                }
-                .enrich_with_catalog_by_name() // Use model-only search for multi-provider system
-            })
-            .collect();
-
+    async fn list_model_listing(&self) -> AppResult<ModelListing> {
+        let (mut models, metadata) = self.fetch_listing().await?;
         // Decision models are listed only when asked for by modality.
         if let Some(gateway) = &self.systemone {
             gateway.merge_into("openrouter", &mut models).await;
         }
-        Ok(models)
+        Ok(ModelListing {
+            models,
+            new_models_hidden: false,
+            metadata,
+        })
     }
 
     async fn get_pricing(&self, model: &str) -> AppResult<PricingInfo> {
@@ -235,41 +265,20 @@ impl ModelProvider for OpenRouterProvider {
                 return Ok(pricing);
             }
         }
-        let url = format!("{}/models", self.base_url);
-        let response = self
-            .build_request(&url)
-            .send()
-            .await
-            .map_err(|e| AppError::Provider(format!("Failed to fetch pricing: {}", e)))?;
-
-        if !response.status().is_success() {
-            return Err(AppError::Provider(format!(
-                "OpenRouter API returned status: {}",
-                response.status()
-            )));
+        // The model list the registry fetched; fetched here only when it
+        // never was.
+        if self.listing.get().is_none() && self.listing.should_fetch() {
+            let _ = self.fetch_listing().await;
         }
-
-        let models_response: OpenRouterModelsResponse = response
-            .json()
-            .await
-            .map_err(|e| AppError::Provider(format!("Failed to parse pricing response: {}", e)))?;
-
-        // Find the model in the response
-        let model_data = models_response
-            .data
-            .iter()
-            .find(|m| m.id == model)
+        let entries = self
+            .listing
+            .get()
+            .ok_or_else(|| AppError::Provider("OpenRouter model list unavailable".to_string()))?;
+        let entry = entries
+            .get(model)
             .ok_or_else(|| AppError::Provider(format!("Model not found: {}", model)))?;
-
-        Ok(PricingInfo {
-            input_cost_per_1k: model_data.pricing.prompt.parse::<f64>().unwrap_or(0.0) * 1000.0,
-            output_cost_per_1k: model_data.pricing.completion.parse::<f64>().unwrap_or(0.0)
-                * 1000.0,
-            reasoning_cost_per_1k: None,
-            cache_read_cost_per_1k: None,
-            cache_write_cost_per_1k: None,
-            currency: "USD".to_string(),
-        })
+        crate::listing_metadata::listing_pricing(entry)
+            .ok_or_else(|| AppError::Provider(format!("No price listed for {}", model)))
     }
 
     async fn complete(&self, request: CompletionRequest) -> AppResult<CompletionResponse> {
@@ -758,13 +767,6 @@ struct OpenRouterModel {
     id: String,
     name: Option<String>,
     context_length: u32,
-    pricing: OpenRouterPricing,
-}
-
-#[derive(Debug, Deserialize)]
-struct OpenRouterPricing {
-    prompt: String,
-    completion: String,
 }
 
 #[cfg(test)]
@@ -790,6 +792,47 @@ mod tests {
         let provider = OpenRouterProvider::new("test-key".to_string())
             .with_app_url("https://example.com".to_string());
         assert_eq!(provider.app_url, Some("https://example.com".to_string()));
+    }
+
+    #[tokio::test]
+    async fn prices_come_from_the_kept_model_list() {
+        use wiremock::{matchers, Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(matchers::path("/models"))
+            .and(matchers::query_param("output_modalities", "decisions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"data":[]}"#))
+            .mount(&server)
+            .await;
+        Mock::given(matchers::path("/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"data":[
+                    {"id":"a/paid","name":"Paid","context_length":8000,
+                     "pricing":{"prompt":"0.000001","completion":"0.000002","request":"0"}},
+                    {"id":"a/free:free","context_length":8000,
+                     "pricing":{"prompt":"0","completion":"0"}}
+                ]}"#,
+            ))
+            .mount(&server)
+            .await;
+        let provider = OpenRouterProvider::with_base_url("k".into(), server.uri());
+        let listing = provider.list_model_listing().await.unwrap();
+        assert_eq!(listing.models.len(), 2);
+        assert_eq!(listing.metadata["a/free:free"]["pricing"]["prompt"], "0");
+        let model_list_requests =
+            |reqs: &[wiremock::Request]| reqs.iter().filter(|r| r.url.query().is_none()).count();
+        let before = model_list_requests(&server.received_requests().await.unwrap());
+
+        let paid = provider.get_pricing("a/paid").await.unwrap();
+        assert!((paid.input_cost_per_1k - 0.001).abs() < 1e-12);
+        assert!((paid.output_cost_per_1k - 0.002).abs() < 1e-12);
+        let free = provider.get_pricing("a/free:free").await.unwrap();
+        assert_eq!(free.input_cost_per_1k, 0.0);
+        assert!(provider.get_pricing("a/unknown").await.is_err());
+        // No second download of the model list.
+        assert_eq!(
+            model_list_requests(&server.received_requests().await.unwrap()),
+            before
+        );
     }
 
     // Integration tests require a valid API key

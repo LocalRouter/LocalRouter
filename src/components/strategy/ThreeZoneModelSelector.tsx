@@ -238,6 +238,7 @@ function SortableRow({
           inputPricePerMillion={pricing.input}
           outputPricePerMillion={pricing.output}
           freeTierKind={freeTierKind}
+          freeModel={pricing.free}
         />
       )}
     </div>
@@ -293,6 +294,7 @@ function DragOverlayItem({
           inputPricePerMillion={pricing.input}
           outputPricePerMillion={pricing.output}
           freeTierKind={freeTierKind}
+          freeModel={pricing.free}
         />
       )}
     </div>
@@ -519,8 +521,11 @@ export function ThreeZoneModelSelector({
     return (input + output) / 2
   }
 
-  // Helper: check if a model's provider has free tier
-  const isFreeTierProvider = (provider: string): boolean => {
+  // Helper: check if a model is free (per model when known, else by its
+  // provider's free tier)
+  const isFreeTierModel = (provider: string, modelId: string): boolean => {
+    const free = modelPricing?.[`${provider}/${modelId}`]?.free
+    if (free) return free.is_free
     const kind = freeTierKinds?.[provider]?.kind
     return kind != null && kind !== 'none'
   }
@@ -555,7 +560,7 @@ export function ThreeZoneModelSelector({
 
     // Free tier filter
     if (freeTierOnly) {
-      items = items.filter((item) => isFreeTierProvider(item.provider))
+      items = items.filter((item) => isFreeTierModel(item.provider, item.modelId))
     }
 
     // Capability filters

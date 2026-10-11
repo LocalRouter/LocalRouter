@@ -128,6 +128,13 @@ pub trait ProviderFactory: Send + Sync {
         FreeTierKind::None
     }
 
+    /// Default free tier of one instance with this configuration. Defaults
+    /// to [`Self::default_free_tier`]; types whose free tier depends on
+    /// where they point override it.
+    fn default_free_tier_for(&self, _config: &HashMap<String, String>) -> FreeTierKind {
+        self.default_free_tier()
+    }
+
     /// Optional provider-specific notes about free tier caveats.
     /// Appended to the auto-generated long description text.
     fn free_tier_notes(&self) -> Option<&str> {
@@ -613,13 +620,24 @@ impl ProviderFactory for OpenRouterProviderFactory {
 
     fn default_free_tier(&self) -> FreeTierKind {
         FreeTierKind::FreeModelsOnly {
-            free_model_patterns: vec![":free".to_string()],
+            free_model_patterns: vec![],
+            excluded_models: vec![],
+            rules: vec![lr_config::FreeModelRule {
+                enabled: true,
+                effect: lr_config::FreeModelRuleEffect::Include,
+                when: lr_config::FreeModelCondition::ZeroPrice {
+                    sources: vec![lr_config::PriceSource::ProviderListing],
+                    input_pointer: None,
+                    output_pointer: None,
+                },
+                label: Some("Priced at $0 in OpenRouter's model list".to_string()),
+            }],
             max_rpm: 20,
         }
     }
 
     fn free_tier_notes(&self) -> Option<&str> {
-        Some("Free tier provides access to 25+ free models (model IDs ending in ':free') at 20 RPM / 50 RPD. Purchasing $10+ in credits unlocks 1,000 RPD on free models. BYOK gives 1M free requests/month.")
+        Some("Free tier provides access to 25+ free models (model IDs ending in ':free', listed at $0) at 20 RPM / 50 RPD. Purchasing $10+ in credits unlocks 1,000 RPD on free models. BYOK gives 1M free requests/month.")
     }
 
     fn setup_parameters(&self) -> Vec<SetupParameter> {
@@ -711,6 +729,19 @@ impl ProviderFactory for OpenAICompatibleProviderFactory {
         FreeTierKind::AlwaysFreeLocal
     }
 
+    /// Always free only when the server runs on this machine; a remote API
+    /// may bill for every request.
+    fn default_free_tier_for(&self, config: &HashMap<String, String>) -> FreeTierKind {
+        match config.get("base_url") {
+            Some(url) if crate::fastflowlm::is_loopback_url(url) => FreeTierKind::AlwaysFreeLocal,
+            _ => FreeTierKind::None,
+        }
+    }
+
+    fn free_tier_notes(&self) -> Option<&str> {
+        Some("Free when the base URL is on this machine (localhost). Remote APIs have no free tier until you set one on the provider's Free Tier tab.")
+    }
+
     fn setup_parameters(&self) -> Vec<SetupParameter> {
         vec![
             SetupParameter::required(
@@ -733,6 +764,7 @@ impl ProviderFactory for OpenAICompatibleProviderFactory {
                 None::<String>,
                 false,
             ),
+            model_discovery_parameter(),
         ]
     }
 
@@ -758,7 +790,8 @@ impl ProviderFactory for OpenAICompatibleProviderFactory {
         Ok(Arc::new(
             OpenAICompatibleProvider::new(instance_name, base_url, api_key)
                 .with_provider_type(self.provider_type())
-                .with_extra_headers(extra_headers),
+                .with_extra_headers(extra_headers)
+                .with_model_discovery(model_discovery_enabled(&config)),
         ))
     }
 
@@ -791,6 +824,109 @@ impl ProviderFactory for OpenAICompatibleProviderFactory {
 
     fn model_list_source(&self) -> ModelListSource {
         ModelListSource::ApiOnly // Generic provider, catalog irrelevant
+    }
+}
+
+/// Config key of the model discovery switch.
+pub const MODEL_DISCOVERY_KEY: &str = "model_discovery";
+
+/// The "Discover models" switch: whether `GET {base}/models` is asked for
+/// the model list. Shown on the provider's Models tab.
+fn model_discovery_parameter() -> SetupParameter {
+    SetupParameter::optional(
+        MODEL_DISCOVERY_KEY,
+        ParameterType::Boolean,
+        "Discover models from the server's model list (GET /models)",
+        Some("true"),
+        false,
+    )
+}
+
+/// Discovery is on unless the config turns it off.
+pub fn model_discovery_enabled(config: &HashMap<String, String>) -> bool {
+    config
+        .get(MODEL_DISCOVERY_KEY)
+        .map(|v| !v.trim().eq_ignore_ascii_case("false"))
+        .unwrap_or(true)
+}
+
+/// Factory for FastFlowLM (AMD Ryzen AI NPU) servers
+pub struct FastFlowLMProviderFactory;
+
+impl ProviderFactory for FastFlowLMProviderFactory {
+    fn provider_type(&self) -> &str {
+        "fastflowlm"
+    }
+
+    fn display_name(&self) -> &str {
+        "FastFlowLM"
+    }
+
+    fn category(&self) -> ProviderCategory {
+        ProviderCategory::Local
+    }
+
+    fn description(&self) -> &str {
+        "FastFlowLM server (flm serve) running models on AMD Ryzen AI NPUs"
+    }
+
+    fn default_free_tier(&self) -> FreeTierKind {
+        FreeTierKind::AlwaysFreeLocal
+    }
+
+    fn setup_parameters(&self) -> Vec<SetupParameter> {
+        vec![
+            SetupParameter::optional(
+                "base_url",
+                ParameterType::BaseUrl,
+                "FastFlowLM API base URL",
+                Some(crate::fastflowlm::DEFAULT_BASE_URL),
+                false,
+            ),
+            model_discovery_parameter(),
+        ]
+    }
+
+    fn create(
+        &self,
+        instance_name: String,
+        config: HashMap<String, String>,
+    ) -> AppResult<Arc<dyn ModelProvider>> {
+        self.validate_config(&config)?;
+        let base_url = config
+            .get("base_url")
+            .map(|u| u.trim().to_string())
+            .filter(|u| !u.is_empty())
+            .unwrap_or_else(|| crate::fastflowlm::DEFAULT_BASE_URL.to_string());
+        Ok(Arc::new(
+            OpenAICompatibleProvider::new(instance_name, base_url, None)
+                .with_provider_type(self.provider_type())
+                .with_model_discovery(model_discovery_enabled(&config))
+                .with_installed_models(crate::fastflowlm::InstalledModels::new()),
+        ))
+    }
+
+    fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
+        if let Some(url) = config.get("base_url").map(|u| u.trim()) {
+            if !url.is_empty() && !url.starts_with("http://") && !url.starts_with("https://") {
+                return Err(AppError::Config(
+                    "base_url must start with http:// or https://".to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn catalog_provider_id(&self) -> Option<&str> {
+        None // Local provider, no catalog mapping
+    }
+
+    fn model_list_source(&self) -> ModelListSource {
+        ModelListSource::ApiOnly
+    }
+
+    fn docs_url(&self) -> Option<&str> {
+        Some("https://fastflowlm.com/docs/")
     }
 }
 
@@ -1060,6 +1196,8 @@ impl ProviderFactory for TogetherAIProviderFactory {
     fn default_free_tier(&self) -> FreeTierKind {
         FreeTierKind::FreeModelsOnly {
             free_model_patterns: vec!["meta-llama/Llama-3.3-70B-Instruct-Turbo-Free".to_string()],
+            excluded_models: vec![],
+            rules: vec![],
             max_rpm: 3,
         }
     }
@@ -3495,13 +3633,53 @@ mod tests {
         match factory.default_free_tier() {
             FreeTierKind::FreeModelsOnly {
                 free_model_patterns,
+                rules,
                 max_rpm,
+                ..
             } => {
                 assert_eq!(max_rpm, 20);
-                assert_eq!(free_model_patterns, vec![":free".to_string()]);
+                assert!(free_model_patterns.is_empty());
+                assert_eq!(rules.len(), 1);
+                assert!(matches!(
+                    &rules[0].when,
+                    lr_config::FreeModelCondition::ZeroPrice { sources, .. }
+                        if sources == &[lr_config::PriceSource::ProviderListing]
+                ));
+                assert!(crate::free_models::validate(&factory.default_free_tier()).is_empty());
             }
             other => panic!("Expected FreeModelsOnly, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn openai_compatible_is_always_free_only_on_this_machine() {
+        let factory = OpenAICompatibleProviderFactory;
+        let config = |url: &str| HashMap::from([("base_url".to_string(), url.to_string())]);
+        assert_eq!(
+            factory.default_free_tier_for(&config("http://localhost:8080/v1")),
+            FreeTierKind::AlwaysFreeLocal
+        );
+        assert_eq!(
+            factory.default_free_tier_for(&config("http://127.0.0.1:1234/v1")),
+            FreeTierKind::AlwaysFreeLocal
+        );
+        assert_eq!(
+            factory.default_free_tier_for(&config("https://api.free.ai/v1")),
+            FreeTierKind::None
+        );
+        assert_eq!(
+            factory.default_free_tier_for(&config("http://192.168.1.10:8000/v1")),
+            FreeTierKind::None
+        );
+        assert_eq!(
+            factory.default_free_tier_for(&HashMap::new()),
+            FreeTierKind::None
+        );
+        // Other types ignore the config.
+        assert_eq!(
+            OllamaProviderFactory.default_free_tier_for(&config("http://10.0.0.2:11434")),
+            FreeTierKind::AlwaysFreeLocal
+        );
     }
 
     #[test]
@@ -4161,6 +4339,7 @@ mod tests {
             )),
             Box::new(LlmGatewayProviderFactory),
             Box::new(VercelAiGatewayProviderFactory),
+            Box::new(FastFlowLMProviderFactory),
         ]
     }
 
@@ -4414,6 +4593,61 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn model_discovery_switch() {
+        let cfg = |v: Option<&str>| {
+            v.map(|v| {
+                [(MODEL_DISCOVERY_KEY.to_string(), v.to_string())]
+                    .into_iter()
+                    .collect()
+            })
+            .unwrap_or_default()
+        };
+        assert!(model_discovery_enabled(&cfg(None)));
+        assert!(model_discovery_enabled(&cfg(Some("true"))));
+        assert!(!model_discovery_enabled(&cfg(Some("false"))));
+        assert!(!model_discovery_enabled(&cfg(Some(" FALSE "))));
+        for factory in [
+            Box::new(OpenAICompatibleProviderFactory) as Box<dyn ProviderFactory>,
+            Box::new(FastFlowLMProviderFactory),
+        ] {
+            let param = factory
+                .setup_parameters()
+                .into_iter()
+                .find(|p| p.key == MODEL_DISCOVERY_KEY)
+                .expect("discovery switch");
+            assert_eq!(param.param_type, ParameterType::Boolean);
+            assert_eq!(param.default_value.as_deref(), Some("true"));
+            assert!(!param.required);
+        }
+    }
+
+    #[test]
+    fn fastflowlm_is_a_local_provider_on_its_default_port() {
+        let f = FastFlowLMProviderFactory;
+        assert_eq!(f.provider_type(), "fastflowlm");
+        assert_eq!(f.category(), ProviderCategory::Local);
+        assert_eq!(f.default_free_tier(), FreeTierKind::AlwaysFreeLocal);
+        assert!(f.catalog_provider_id().is_none());
+        let base = f
+            .setup_parameters()
+            .into_iter()
+            .find(|p| p.key == "base_url")
+            .unwrap();
+        assert_eq!(
+            base.default_value.as_deref(),
+            Some("http://127.0.0.1:52625/v1")
+        );
+        assert!(f.create("FastFlowLM".into(), HashMap::new()).is_ok());
+        let mut bad = HashMap::new();
+        bad.insert("base_url".to_string(), "127.0.0.1:52625".to_string());
+        assert!(f.validate_config(&bad).is_err());
+        // Local: added once.
+        let registry = crate::registry::ProviderRegistry::new();
+        registry.register_factory(Arc::new(FastFlowLMProviderFactory));
+        assert!(registry.existing_single_instance("fastflowlm").is_none());
     }
 
     #[test]

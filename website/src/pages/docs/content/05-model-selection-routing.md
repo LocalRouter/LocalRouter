@@ -84,7 +84,7 @@ Each provider is assigned one of six free-tier types. The type determines how th
 
 **No Free Tier** — The provider has no free API access. Always skipped in free-tier mode. Default for: OpenAI, Anthropic.
 
-**Always Free (Local)** — A local or self-hosted provider with no external billing. Always treated as free. Default for: Ollama, LM Studio, OpenAI Compatible.
+**Always Free (Local)** — A local or self-hosted provider with no external billing. Always treated as free, except a model given a price on the provider's Models tab. Default for: Ollama, LM Studio, and OpenAI Compatible providers whose base URL is on this machine (`localhost`); a remote OpenAI Compatible provider has no free tier until you set one.
 
 **Subscription** — Access is included in an existing subscription plan. Always treated as free. Default for: GitHub Copilot.
 
@@ -104,14 +104,22 @@ When any tracked limit is reached, the provider is skipped. Default for: Gemini,
 - **Credit Budget (USD)** — Total free credit allowance.
 - **Reset Period** — When the budget resets: Daily, Monthly, or One-time (for promotional credits).
 
-For providers that expose a balance API (currently OpenRouter), the router can sync the actual remaining balance directly. Default for: OpenRouter, xAI, DeepInfra, Perplexity.
+For providers that expose a balance API, the router can sync the actual remaining balance directly. Default for: xAI, DeepInfra, Perplexity.
 
-**Free Models Only** — Only specific models from this provider are free. The router checks each model against a list of free model IDs. Non-matching models are treated as paid.
+**Free Models Only** — Only some models from this provider are free. Each model is decided in this order:
 
-- **Free Model Patterns** — List of model IDs that are free.
-- **Requests per Minute (RPM)** — Rate limit for the free models.
+1. **Never free** — model IDs or globs (`*` matches anything) that are never free.
+2. **Always free** — model IDs or globs that are always free.
+3. **Rules** — the first enabled rule that matches decides. A rule makes matching models free, or not free, when:
+   - **Model ID** — the ID matches exactly, a glob, or a regular expression (optionally ignoring case).
+   - **Listing field** — a field of the model's entry in the provider's model list, addressed by a JSON Pointer such as `/tier`, equals, contains, matches, or compares with a value.
+   - **JSONPath filter** — an RFC 9535 filter expression where `@` is the model's entry, e.g. `@.tier == 'free'`.
+   - **$0 price** — input and output price are $0 in the price set on the Models tab and/or the provider's model list.
+4. Otherwise the model is not free.
 
-Default for: Together AI.
+Missing data never makes a model free: a model without an entry in the provider's model list, or without a known price, does not match rules that need one, and an exclude rule applies to it. Catalog prices are not used. The Free Tier tab shows a live preview of every model with why it is or is not free, lets you set a model to Always free / Never free, and opens a model's model-list entry to build a rule from one of its fields. **Requests per Minute (RPM)** limits requests to the free models only.
+
+Default for: OpenRouter (models listed at $0, such as the `:free` variants), Together AI.
 
 <!-- @entry free-tier-override -->
 

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use uuid::Uuid;
 
-pub(crate) const CONFIG_VERSION: u32 = 32;
+pub(crate) const CONFIG_VERSION: u32 = 33;
 
 /// Keyring service name for provider API keys
 pub const PROVIDER_KEYRING_SERVICE: &str = "LocalRouter-Providers";
@@ -4118,14 +4118,162 @@ pub enum FreeTierKind {
         /// How credits are tracked
         detection: CreditDetection,
     },
-    /// Specific free models only (e.g. Together AI free model, OpenRouter :free models)
+    /// Specific free models only (e.g. Together AI free model, OpenRouter
+    /// models listed at $0).
+    ///
+    /// A model is decided by, in order: `excluded_models` (never free),
+    /// `free_model_patterns` (always free), the first enabled rule in `rules`
+    /// that matches, else not free.
     FreeModelsOnly {
-        /// Model ID patterns that are free
+        /// Model ids that are always free: exact ids, or globs where `*`
+        /// matches any run of characters. Always written to the file: builds
+        /// before free-model rules require it.
+        #[serde(default)]
         free_model_patterns: Vec<String>,
+        /// Model ids (or globs) that are never free; checked first
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        excluded_models: Vec<String>,
+        /// Ordered rules for the remaining models; the first enabled rule
+        /// that matches decides
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        rules: Vec<FreeModelRule>,
         /// Rate limits on free models (0 = not tracked)
         #[serde(default)]
         max_rpm: u32,
     },
+}
+
+/// One rule deciding whether models of a `FreeModelsOnly` provider are free.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FreeModelRule {
+    /// Disabled rules are skipped
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// What a match means
+    #[serde(default)]
+    pub effect: FreeModelRuleEffect,
+    /// The condition a model must meet
+    pub when: FreeModelCondition,
+    /// Optional note shown in the UI
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+/// What a matching rule decides.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FreeModelRuleEffect {
+    /// Matching models are free
+    #[default]
+    Include,
+    /// Matching models are not free
+    Exclude,
+    /// An effect this version does not know; a match makes the model not
+    /// free
+    #[serde(other)]
+    Unknown,
+}
+
+/// The condition of a free-model rule.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum FreeModelCondition {
+    /// The model id matches a pattern
+    ModelId {
+        pattern: String,
+        #[serde(default)]
+        syntax: ModelIdPatternSyntax,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        case_insensitive: bool,
+    },
+    /// A field of the model's entry in the provider's model listing,
+    /// addressed by a JSON Pointer (RFC 6901, e.g. `/tier`), compared with
+    /// `value`
+    Field {
+        pointer: String,
+        op: FieldOp,
+        #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+        value: serde_json::Value,
+    },
+    /// A JSONPath filter expression (RFC 9535) over the model's listing
+    /// entry, where `@` is the model (e.g. `@.tier == 'free'`)
+    JsonPath { expression: String },
+    /// The model costs nothing: input and output price are $0 in the first
+    /// of `sources` that has a price for it
+    ZeroPrice {
+        #[serde(default = "default_price_sources")]
+        sources: Vec<PriceSource>,
+        /// JSON Pointer to the input price in the listing entry, when the
+        /// listing does not use the usual `pricing` object
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        input_pointer: Option<String>,
+        /// JSON Pointer to the output price in the listing entry
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output_pointer: Option<String>,
+    },
+    /// A condition this version does not know; never makes a model free
+    #[serde(other)]
+    Unsupported,
+}
+
+/// How a model id pattern is read.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelIdPatternSyntax {
+    /// The whole id equals the pattern
+    Exact,
+    /// `*` matches any run of characters; the rest must match exactly
+    #[default]
+    Glob,
+    /// A regular expression found anywhere in the id (anchor with `^…$`)
+    Regex,
+    /// A syntax this version does not know
+    #[serde(other)]
+    Unknown,
+}
+
+/// Comparison of a listing field with a rule's value.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FieldOp {
+    /// Present and not null
+    Exists,
+    /// Absent or null
+    NotExists,
+    Equals,
+    NotEquals,
+    /// String contains the value, or array has an element equal to it
+    Contains,
+    /// String matches the value as a regular expression
+    Matches,
+    #[serde(rename = "lt")]
+    LessThan,
+    #[serde(rename = "lte")]
+    LessOrEqual,
+    #[serde(rename = "gt")]
+    GreaterThan,
+    #[serde(rename = "gte")]
+    GreaterOrEqual,
+    /// An operator this version does not know
+    #[serde(other)]
+    Unknown,
+}
+
+/// Where a zero-price rule looks for a model's price.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PriceSource {
+    /// The price set for the model on the provider's Models tab
+    PricingOverride,
+    /// The price in the provider's model listing
+    ProviderListing,
+    /// A source this version does not know (skipped)
+    #[serde(other)]
+    Unknown,
+}
+
+fn default_price_sources() -> Vec<PriceSource> {
+    vec![PriceSource::PricingOverride, PriceSource::ProviderListing]
 }
 
 /// Reset period for credit-based free tiers
@@ -4246,6 +4394,130 @@ pub struct ProviderConfig {
     /// If None, uses the provider type's default free tier.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub free_tier: Option<FreeTierKind>,
+
+    /// Which of this provider's models are offered and how they are described:
+    /// manual models, per-model visibility and per-model overrides. Omitted
+    /// from the file while it holds nothing.
+    #[serde(default, skip_serializing_if = "ProviderModelSettings::is_default")]
+    pub models: ProviderModelSettings,
+}
+
+/// Per-provider model list settings, applied on top of the models the
+/// provider lists (its "discovered" models).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ProviderModelSettings {
+    /// Whether discovered models that have no entry of their own are offered.
+    /// `None` uses the provider's default: on, except for a listing the
+    /// provider marks as not reflecting what is installed (FastFlowLM's full
+    /// catalog), where it is off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_new_models: Option<bool>,
+
+    /// Per-model entries: manual models, visibility and overrides.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entries: Vec<ModelEntry>,
+}
+
+impl ProviderModelSettings {
+    /// True when nothing is configured (the block is not written to disk).
+    pub fn is_default(&self) -> bool {
+        self.show_new_models.is_none() && self.entries.is_empty()
+    }
+
+    /// The entry for a model id, if any (exact match).
+    pub fn entry(&self, model_id: &str) -> Option<&ModelEntry> {
+        self.entries.iter().find(|e| e.id == model_id)
+    }
+
+    /// Drop entries that carry no information, and merge duplicate ids
+    /// (the last one wins), so the saved block stays minimal.
+    pub fn normalized(mut self) -> Self {
+        let mut seen = std::collections::HashSet::new();
+        let mut kept: Vec<ModelEntry> = Vec::new();
+        for entry in self.entries.into_iter().rev() {
+            let mut entry = entry;
+            entry.id = entry.id.trim().to_string();
+            if entry.id.is_empty() || entry.is_empty() || !seen.insert(entry.id.clone()) {
+                continue;
+            }
+            if entry
+                .display_name
+                .as_deref()
+                .is_some_and(|n| n.trim().is_empty())
+            {
+                entry.display_name = None;
+            }
+            kept.push(entry);
+        }
+        kept.reverse();
+        self.entries = kept;
+        self
+    }
+}
+
+/// One model's settings within a provider.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ModelEntry {
+    /// Model id as sent to the provider
+    pub id: String,
+
+    /// Added by hand: offered even when the provider does not list it
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub manual: bool,
+
+    /// Explicit visibility; `None` follows `show_new_models` (manual models
+    /// are shown)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+
+    /// Display name override
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+
+    /// Context window override, in tokens
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
+
+    /// Capabilities override; replaces the listed/derived set entirely
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<Vec<ModelCapabilityKind>>,
+
+    /// Price override for this model on this provider instance
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing: Option<ModelPricingOverride>,
+}
+
+impl ModelEntry {
+    /// Whether any override (beyond visibility) is set.
+    pub fn has_overrides(&self) -> bool {
+        self.display_name.is_some()
+            || self.context_window.is_some()
+            || self.capabilities.is_some()
+            || self.pricing.is_some()
+    }
+
+    /// An entry that changes nothing.
+    pub fn is_empty(&self) -> bool {
+        !self.manual && self.enabled.is_none() && !self.has_overrides()
+    }
+}
+
+/// A model capability, as stored in per-model capability overrides.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelCapabilityKind {
+    Chat,
+    Completion,
+    Embedding,
+    Vision,
+    FunctionCalling,
+    Audio,
+    TextToSpeech,
+    Decision,
+    ImageGeneration,
+    /// A capability written by a newer version; ignored
+    #[serde(other)]
+    Unknown,
 }
 
 /// Provider type
@@ -4369,8 +4641,63 @@ pub enum ProviderType {
     /// Vercel AI Gateway
     #[serde(rename = "vercel_ai_gateway")]
     VercelAiGateway,
+    /// FastFlowLM local server (AMD Ryzen AI NPU, OpenAI-compatible)
+    #[serde(rename = "fastflowlm")]
+    FastFlowLM,
     /// Custom provider
     Custom,
+}
+
+impl ProviderType {
+    /// The provider factory id this config type is created with
+    /// (`openrouter`, `openai_compatible`, ...), which is not always its
+    /// serialized name (`open_router`, `custom`).
+    pub fn factory_id(&self) -> &'static str {
+        match self {
+            ProviderType::Ollama => "ollama",
+            ProviderType::LMStudio => "lmstudio",
+            ProviderType::OpenAI => "openai",
+            ProviderType::Anthropic => "anthropic",
+            ProviderType::Gemini => "gemini",
+            ProviderType::OpenRouter => "openrouter",
+            ProviderType::Groq => "groq",
+            ProviderType::Mistral => "mistral",
+            ProviderType::Cohere => "cohere",
+            ProviderType::TogetherAI => "togetherai",
+            ProviderType::Perplexity => "perplexity",
+            ProviderType::DeepInfra => "deepinfra",
+            ProviderType::Cerebras => "cerebras",
+            ProviderType::XAI => "xai",
+            ProviderType::Jan => "jan",
+            ProviderType::GPT4All => "gpt4all",
+            ProviderType::LocalAI => "localai",
+            ProviderType::LlamaCpp => "llamacpp",
+            ProviderType::GitHubModels => "github_models",
+            ProviderType::NvidiaNim => "nvidia_nim",
+            ProviderType::CloudflareAI => "cloudflare_ai",
+            ProviderType::Llm7 => "llm7",
+            ProviderType::KlusterAI => "kluster_ai",
+            ProviderType::HuggingFace => "huggingface",
+            ProviderType::Zhipu => "zhipu",
+            ProviderType::DigitalOcean => "digitalocean",
+            ProviderType::OpenCodeZen => "opencode_zen",
+            ProviderType::OpenCodeGo => "opencode_go",
+            ProviderType::ChatGPTPlus => "openai-chatgpt-plus",
+            ProviderType::TypeSafe => "typesafe",
+            ProviderType::Laya => "laya",
+            ProviderType::Kev => "kev",
+            ProviderType::SystemOneCompatible => "systemone_compatible",
+            ProviderType::Von => "von",
+            ProviderType::Decider => "decider",
+            ProviderType::Ollaya => "ollaya",
+            ProviderType::LlamaCppEmbedded => "llamacpp_embedded",
+            ProviderType::SdCppEmbedded => "sdcpp_embedded",
+            ProviderType::LlmGateway => "llmgateway",
+            ProviderType::VercelAiGateway => "vercel_ai_gateway",
+            ProviderType::FastFlowLM => "fastflowlm",
+            ProviderType::Custom => "openai_compatible",
+        }
+    }
 }
 
 /// Logging configuration
@@ -4589,6 +4916,7 @@ impl ProviderConfig {
             })),
             api_key_ref: None,
             free_tier: None,
+            models: Default::default(),
         }
     }
 
@@ -4603,6 +4931,7 @@ impl ProviderConfig {
             })),
             api_key_ref: None,
             free_tier: None,
+            models: Default::default(),
         }
     }
 
@@ -4617,6 +4946,7 @@ impl ProviderConfig {
             })),
             api_key_ref: None,
             free_tier: None,
+            models: Default::default(),
         }
     }
 
@@ -4631,6 +4961,7 @@ impl ProviderConfig {
             })),
             api_key_ref: None,
             free_tier: None,
+            models: Default::default(),
         }
     }
 
@@ -4645,6 +4976,7 @@ impl ProviderConfig {
             })),
             api_key_ref: None,
             free_tier: None,
+            models: Default::default(),
         }
     }
 
@@ -4659,6 +4991,7 @@ impl ProviderConfig {
             })),
             api_key_ref: None,
             free_tier: None,
+            models: Default::default(),
         }
     }
 }
@@ -5879,6 +6212,7 @@ sampling_permission: "off"
             (ProviderType::SdCppEmbedded, "sdcpp_embedded"),
             (ProviderType::LlmGateway, "llmgateway"),
             (ProviderType::VercelAiGateway, "vercel_ai_gateway"),
+            (ProviderType::FastFlowLM, "fastflowlm"),
         ];
         for (variant, expected_str) in &variants {
             // Serialize to JSON string
@@ -5934,6 +6268,7 @@ sampling_permission: "off"
             ProviderType::SdCppEmbedded,
             ProviderType::LlmGateway,
             ProviderType::VercelAiGateway,
+            ProviderType::FastFlowLM,
         ];
         for variant in &variants {
             let yaml = serde_yaml::to_string(variant).unwrap();
@@ -5952,11 +6287,95 @@ sampling_permission: "off"
             provider_config: Some(serde_json::json!({"api_key": "ghp_test"})),
             api_key_ref: None,
             free_tier: None,
+            models: Default::default(),
         };
         let yaml = serde_yaml::to_string(&config).unwrap();
         assert!(yaml.contains("github_models"));
         let deserialized: ProviderConfig = serde_yaml::from_str(&yaml).unwrap();
         assert_eq!(deserialized.provider_type, ProviderType::GitHubModels);
+        // Nothing configured: no `models` block is written.
+        assert!(!yaml.lines().any(|l| l.starts_with("models:")));
+    }
+
+    #[test]
+    fn provider_model_settings_round_trip() {
+        let yaml = r#"
+name: Free.ai
+provider_type: custom
+models:
+  show_new_models: false
+  entries:
+    - id: llama-3.3-70b
+      enabled: true
+      display_name: Llama 3.3 70B
+      context_window: 131072
+      capabilities: [chat, function_calling, some_future_capability]
+      pricing:
+        input_per_million: 0.5
+        output_per_million: 1.5
+    - id: my-model
+      manual: true
+"#;
+        let config: ProviderConfig = serde_yaml::from_str(yaml).unwrap();
+        let models = &config.models;
+        assert_eq!(models.show_new_models, Some(false));
+        let first = models.entry("llama-3.3-70b").unwrap();
+        assert_eq!(
+            first.capabilities.as_deref(),
+            Some(
+                &[
+                    ModelCapabilityKind::Chat,
+                    ModelCapabilityKind::FunctionCalling,
+                    ModelCapabilityKind::Unknown
+                ][..]
+            )
+        );
+        assert!(first.has_overrides());
+        assert!(models.entry("my-model").unwrap().manual);
+        assert!(!models.entry("my-model").unwrap().has_overrides());
+
+        let again: ProviderConfig =
+            serde_yaml::from_str(&serde_yaml::to_string(&config).unwrap()).unwrap();
+        assert_eq!(again.models.entries.len(), 2);
+        assert_eq!(again.models.show_new_models, Some(false));
+        // Unset fields are not written.
+        let out = serde_yaml::to_string(&again.models.entries[1]).unwrap();
+        assert_eq!(out.trim(), "id: my-model\nmanual: true");
+    }
+
+    #[test]
+    fn provider_model_settings_normalize() {
+        let settings = ProviderModelSettings {
+            show_new_models: None,
+            entries: vec![
+                ModelEntry {
+                    id: " a ".into(),
+                    enabled: Some(false),
+                    ..Default::default()
+                },
+                ModelEntry {
+                    id: "empty".into(),
+                    ..Default::default()
+                },
+                ModelEntry {
+                    id: "a".into(),
+                    display_name: Some("  ".into()),
+                    enabled: Some(true),
+                    ..Default::default()
+                },
+                ModelEntry {
+                    id: "".into(),
+                    manual: true,
+                    ..Default::default()
+                },
+            ],
+        }
+        .normalized();
+        assert_eq!(settings.entries.len(), 1);
+        assert_eq!(settings.entries[0].id, "a");
+        assert_eq!(settings.entries[0].enabled, Some(true));
+        assert_eq!(settings.entries[0].display_name, None);
+        assert!(ProviderModelSettings::default().normalized().is_default());
     }
 
     #[test]
@@ -6176,5 +6595,162 @@ sampling_permission: "off"
         assert!(perms.has_any_access());
         assert!(perms.has_any_enabled_for_skill("s"));
         assert_eq!(perms.resolve_skill("s"), PermissionState::Off);
+    }
+
+    #[test]
+    fn free_models_only_from_older_builds_loads() {
+        let yaml = "kind: free_models_only\nfree_model_patterns:\n- \":free\"\nmax_rpm: 20\n";
+        let kind: FreeTierKind = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(
+            kind,
+            FreeTierKind::FreeModelsOnly {
+                free_model_patterns: vec![":free".into()],
+                excluded_models: vec![],
+                rules: vec![],
+                max_rpm: 20,
+            }
+        );
+        // Written the way older builds read it: no new keys while empty,
+        // and the pattern list always present.
+        let empty = FreeTierKind::FreeModelsOnly {
+            free_model_patterns: vec![],
+            excluded_models: vec![],
+            rules: vec![],
+            max_rpm: 0,
+        };
+        let json = serde_json::to_value(&empty).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"kind": "free_models_only", "free_model_patterns": [], "max_rpm": 0})
+        );
+        // The pattern list may be omitted now.
+        let kind: FreeTierKind =
+            serde_json::from_str(r#"{"kind":"free_models_only","rules":[]}"#).unwrap();
+        assert!(matches!(
+            kind,
+            FreeTierKind::FreeModelsOnly { max_rpm: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn free_model_rules_round_trip() {
+        let kind = FreeTierKind::FreeModelsOnly {
+            free_model_patterns: vec!["a".into()],
+            excluded_models: vec!["*-preview".into()],
+            rules: vec![
+                FreeModelRule {
+                    enabled: true,
+                    effect: FreeModelRuleEffect::Include,
+                    when: FreeModelCondition::ModelId {
+                        pattern: "*:free".into(),
+                        syntax: ModelIdPatternSyntax::Glob,
+                        case_insensitive: true,
+                    },
+                    label: Some("suffix".into()),
+                },
+                FreeModelRule {
+                    enabled: false,
+                    effect: FreeModelRuleEffect::Exclude,
+                    when: FreeModelCondition::Field {
+                        pointer: "/tier".into(),
+                        op: FieldOp::Equals,
+                        value: serde_json::json!("paid"),
+                    },
+                    label: None,
+                },
+                FreeModelRule {
+                    enabled: true,
+                    effect: FreeModelRuleEffect::Include,
+                    when: FreeModelCondition::JsonPath {
+                        expression: "@.tier == 'free'".into(),
+                    },
+                    label: None,
+                },
+                FreeModelRule {
+                    enabled: true,
+                    effect: FreeModelRuleEffect::Include,
+                    when: FreeModelCondition::ZeroPrice {
+                        sources: vec![PriceSource::ProviderListing],
+                        input_pointer: Some("/cost/in".into()),
+                        output_pointer: None,
+                    },
+                    label: None,
+                },
+            ],
+            max_rpm: 5,
+        };
+        let yaml = serde_yaml::to_string(&kind).unwrap();
+        let back: FreeTierKind = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(back, kind);
+        let json = serde_json::to_value(&kind).unwrap();
+        assert_eq!(json["rules"][1]["when"]["op"], "equals");
+        assert_eq!(json["rules"][0]["when"]["type"], "model_id");
+        // A rule with only a condition gets the defaults.
+        let rule: FreeModelRule =
+            serde_json::from_str(r#"{"when":{"type":"zero_price"}}"#).unwrap();
+        assert!(rule.enabled);
+        assert_eq!(rule.effect, FreeModelRuleEffect::Include);
+        assert_eq!(
+            rule.when,
+            FreeModelCondition::ZeroPrice {
+                sources: vec![PriceSource::PricingOverride, PriceSource::ProviderListing],
+                input_pointer: None,
+                output_pointer: None,
+            }
+        );
+    }
+
+    #[test]
+    fn free_model_rules_from_newer_builds_still_load() {
+        let json = r#"{"kind":"free_models_only","free_model_patterns":[],"rules":[
+            {"effect":"maybe","when":{"type":"model_id","pattern":"x","syntax":"wildcard"}},
+            {"when":{"type":"script","code":"return true"}},
+            {"when":{"type":"field","pointer":"/a","op":"between","value":[1,2]}},
+            {"when":{"type":"zero_price","sources":["catalog","provider_listing"]}}
+        ]}"#;
+        let FreeTierKind::FreeModelsOnly { rules, .. } = serde_json::from_str(json).unwrap() else {
+            panic!("expected free_models_only");
+        };
+        assert_eq!(rules[0].effect, FreeModelRuleEffect::Unknown);
+        assert!(matches!(
+            rules[0].when,
+            FreeModelCondition::ModelId {
+                syntax: ModelIdPatternSyntax::Unknown,
+                ..
+            }
+        ));
+        assert_eq!(rules[1].when, FreeModelCondition::Unsupported);
+        assert!(matches!(
+            rules[2].when,
+            FreeModelCondition::Field {
+                op: FieldOp::Unknown,
+                ..
+            }
+        ));
+        assert!(matches!(
+            &rules[3].when,
+            FreeModelCondition::ZeroPrice { sources, .. }
+                if sources == &[PriceSource::Unknown, PriceSource::ProviderListing]
+        ));
+    }
+
+    #[test]
+    fn factory_ids_differ_from_serialized_names() {
+        let serialized = |t: ProviderType| {
+            serde_json::to_value(t)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(serialized(ProviderType::OpenRouter), "open_router");
+        assert_eq!(ProviderType::OpenRouter.factory_id(), "openrouter");
+        assert_eq!(serialized(ProviderType::Custom), "custom");
+        assert_eq!(ProviderType::Custom.factory_id(), "openai_compatible");
+        assert_eq!(ProviderType::TogetherAI.factory_id(), "togetherai");
+        assert_eq!(
+            ProviderType::LMStudio.factory_id(),
+            serialized(ProviderType::LMStudio)
+        );
     }
 }
