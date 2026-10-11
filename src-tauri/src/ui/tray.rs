@@ -49,6 +49,51 @@ impl UpdateNotificationState {
     }
 }
 
+/// Id of the app's tray icon.
+pub const TRAY_ID: &str = "main";
+
+/// In app state once the tray icon exists, so any thread can ask whether
+/// there is a tray without taking a tray handle (see [`with_tray`]).
+pub struct TrayPresent;
+
+/// Whether the tray icon exists (it does not on Linux without an
+/// AppIndicator library). Safe from any thread.
+pub fn tray_present<R: Runtime, M: Manager<R>>(app: &M) -> bool {
+    app.try_state::<TrayPresent>().is_some()
+}
+
+/// Run `f` with the tray icon on the main thread, right away when called
+/// there and queued otherwise. Does nothing without a tray.
+///
+/// This is the only way to reach the tray icon. `tauri::tray::TrayIcon` is a
+/// handle onto tray-icon's `Rc<RefCell<TrayIcon>>`, which Tauri marks
+/// `Send + Sync` but whose reference count is not atomic: `tray_by_id`
+/// clones it, every `TrayIcon` method clones it again into a main-thread
+/// task, and the handles are dropped wherever they end up. Taking handles on
+/// background threads raced those counts with each other and with the main
+/// thread; a lost update dropped the count to zero while handles were still
+/// live, which removed the menu bar icon (tray-icon removes the status item
+/// when the last handle goes) and freed the tray state that later handles
+/// then wrote into (0.0.155 heap corruption crash). Handles taken, used and
+/// dropped only on the main thread never race.
+pub fn with_tray<R, F>(app: &AppHandle<R>, f: F) -> tauri::Result<()>
+where
+    R: Runtime,
+    F: FnOnce(&tauri::tray::TrayIcon<R>) + Send + 'static,
+{
+    if !tray_present(app) {
+        return Ok(());
+    }
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        #[allow(clippy::disallowed_methods)] // main thread: see above
+        let tray = handle.tray_by_id(TRAY_ID);
+        if let Some(tray) = tray {
+            f(&tray);
+        }
+    })
+}
+
 /// Setup system tray icon and menu
 pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
     info!("Setting up system tray");
@@ -74,7 +119,7 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
         "LocalRouter"
     };
 
-    let _tray = TrayIconBuilder::with_id("main")
+    let _tray = TrayIconBuilder::with_id(TRAY_ID)
         .icon(icon)
         .menu(&menu)
         .tooltip(tooltip)
@@ -566,6 +611,7 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
         })
         .build(app)?;
     app.manage(TrayMenuKeeper::new(menu));
+    app.manage(TrayPresent);
 
     // Subscribe to health status changes to rebuild the tray menu
     // This ensures health issues appear in the menu when status changes
@@ -584,16 +630,16 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
 /// Rebuild the system tray menu with updated API keys
 pub fn rebuild_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     // No tray (Linux without an AppIndicator library): nothing to rebuild.
-    let Some(tray) = app.tray_by_id("main") else {
+    if !tray_present(app) {
         return Ok(());
-    };
+    }
     debug!("Rebuilding system tray menu");
 
     let menu = build_tray_menu(app)?;
     // Swap on the main thread: whether the old menu can still be on screen
     // depends on AppKit's run loop mode there (see ui::tray_menu_keeper).
     let app_handle = app.clone();
-    app.run_on_main_thread(move || {
+    with_tray(app, move |tray| {
         let freed = app_handle
             .try_state::<TrayMenuKeeper<R>>()
             .map(|keeper| keeper.replace(menu.clone()));
@@ -614,23 +660,27 @@ pub fn update_tray_icon<R: Runtime>(app: &AppHandle<R>, status: &str) -> tauri::
     // Embed the tray icons at compile time
     const TRAY_ICON: &[u8] = include_bytes!("../../icons/32x32.png");
 
-    if let Some(tray) = app.tray_by_id("main") {
-        match status {
+    let status = status.to_string();
+    with_tray(app, move |tray| {
+        let result = match status.as_str() {
             "stopped" => {
                 // Stopped: Use static template icon (dynamic graph shows red dot but server stopped)
-                let icon = tauri::image::Image::from_bytes(TRAY_ICON).map_err(|e| {
-                    tauri::Error::Anyhow(anyhow::anyhow!("Failed to load tray icon: {}", e))
-                })?;
-                tray.set_icon(Some(icon))?;
-                tray.set_icon_as_template(true)?;
-                tray.set_tooltip(Some("LocalRouter - Server Stopped"))?;
-                info!("Tray icon updated: stopped (template mode)");
+                tauri::image::Image::from_bytes(TRAY_ICON)
+                    .map_err(|e| {
+                        tauri::Error::Anyhow(anyhow::anyhow!("Failed to load tray icon: {}", e))
+                    })
+                    .and_then(|icon| tray.set_icon(Some(icon)))
+                    .and_then(|()| tray.set_icon_as_template(true))
+                    .and_then(|()| tray.set_tooltip(Some("LocalRouter - Server Stopped")))
+                    .map(|()| info!("Tray icon updated: stopped (template mode)"))
             }
             "running" => {
                 // Running: Only update tooltip, don't change icon (graph manager handles it)
                 // The dynamic graph with health dot is always displayed now
-                tray.set_tooltip(Some("LocalRouter - Server Running"))?;
-                info!("Tray tooltip updated: running (graph managed by TrayGraphManager)");
+                tray.set_tooltip(Some("LocalRouter - Server Running"))
+                    .map(|()| {
+                        info!("Tray tooltip updated: running (graph managed by TrayGraphManager)")
+                    })
             }
             _ => {
                 // Unknown status - just update tooltip
@@ -638,12 +688,13 @@ pub fn update_tray_icon<R: Runtime>(app: &AppHandle<R>, status: &str) -> tauri::
                     "Unknown tray icon status: {}, updating tooltip only",
                     status
                 );
-                tray.set_tooltip(Some(&format!("LocalRouter - {}", status)))?;
+                tray.set_tooltip(Some(&format!("LocalRouter - {}", status)))
             }
+        };
+        if let Err(e) = result {
+            error!("Failed to update tray icon for status {}: {}", status, e);
         }
-    }
-
-    Ok(())
+    })
 }
 
 // handle_toggle_tray_graph removed - dynamic tray graph is always enabled

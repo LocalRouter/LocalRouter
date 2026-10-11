@@ -1,0 +1,4 @@
+disallowed-methods = [
+    { path = "tauri::AppHandle::tray_by_id", reason = "a TrayIcon handle wraps a non-atomic Rc and must only be cloned or dropped on the main thread; use ui::tray::with_tray / ui::tray::tray_present" },
+    { path = "tauri::App::tray_by_id", reason = "a TrayIcon handle wraps a non-atomic Rc and must only be cloned or dropped on the main thread; use ui::tray::with_tray / ui::tray::tray_present" },
+]
