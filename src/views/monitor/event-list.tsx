@@ -11,6 +11,8 @@ interface EventListProps {
   showType: boolean
   selectedId: string | null
   onSelect: (id: string) => void
+  /** A filter narrows the list, so an empty list means "no matches", not "no events". */
+  filtered?: boolean
 }
 
 const categoryConfig: Record<string, { icon: React.ComponentType<{ className?: string }>; color: string }> = {
@@ -106,14 +108,23 @@ function ApiCell({ event }: { event: MonitorEventSummary }) {
   )
 }
 
-export function EventList({ events, showType, selectedId, onSelect }: EventListProps) {
+export function EventList({ events, showType, selectedId, onSelect, filtered = false }: EventListProps) {
   if (events.length === 0) {
     return (
       <div className="flex h-full items-center justify-center text-muted-foreground text-sm">
         <div className="text-center">
           <AlertTriangle className="mx-auto h-8 w-8 mb-2 opacity-50" />
-          <p>No events captured yet</p>
-          <p className="text-xs mt-1">Events will appear here as requests flow through LocalRouter</p>
+          {filtered ? (
+            <>
+              <p>No events match these filters</p>
+              <p className="text-xs mt-1">Matching events will appear here as they happen</p>
+            </>
+          ) : (
+            <>
+              <p>No events captured yet</p>
+              <p className="text-xs mt-1">Events will appear here as requests flow through LocalRouter</p>
+            </>
+          )}
         </div>
       </div>
     )

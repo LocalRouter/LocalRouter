@@ -157,6 +157,7 @@ export const RequestMonitor = memo(function RequestMonitor({ reloadSignal, class
       showType={showEventTypeColumn(filter.event_types)}
       selectedId={selectedId}
       onSelect={selectEvent}
+      filtered={filter.event_types != null || filter.status != null || Boolean(filter.search)}
     />
   )
 

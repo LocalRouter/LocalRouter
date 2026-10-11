@@ -1,12 +1,12 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useId, useState } from 'react'
 import {
-  Bar,
   CartesianGrid,
   ComposedChart,
+  Curve,
+  type CurveProps,
   LabelList,
   type LabelProps,
   Line,
-  ReferenceDot,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -17,13 +17,14 @@ import { Button } from '@/components/ui/Button'
 import { cn } from '@/lib/utils'
 import type { TimeRange, TrafficTimeline } from '@/types/tauri-commands'
 import {
+  chartPoints,
+  type ChartPoint,
   livePoint,
   niceTicks,
   RANGES,
   roundTicks,
   trafficPeak,
   trafficPoints,
-  type TrafficPoint,
 } from './activity-data'
 import { CollapsibleSection, useCollapsed } from './collapsible-section'
 
@@ -42,17 +43,21 @@ const money = new Intl.NumberFormat(undefined, {
 
 /*
  * Series colors (validated with the dataviz palette checker, light and dark):
- * finished requests take categorical slot 1 (blue); the requests in progress
- * right now, drawn once at the live edge, the yellow slot (amber, like the
- * header's live indicator; orange sits too close to the error red); errors the
- * reserved "critical" status red, always next to an icon and a label. Light
- * and dark steps are set as CSS variables on the section.
+ * requests take categorical slot 1 (blue); errors the reserved "critical"
+ * status red, always next to an icon and a label. Light and dark steps are
+ * set as CSS variables on the section.
  */
 const DONE = 'var(--traffic-done)'
-const LIVE = 'var(--traffic-live)'
 const ERROR = 'var(--traffic-error)'
+/**
+ * The open bucket's segment: the same blue, lighter and dashed, so it reads
+ * as the line still growing rather than another series. Dark mode keeps more
+ * of the stroke, since a faded blue sinks into the dark card.
+ */
+const PROVISIONAL_DASH = '4 4'
+const PROVISIONAL_OPACITY = 'var(--traffic-provisional)'
 const PALETTE =
-  '[--traffic-done:#2a78d6] [--traffic-live:#eda100] [--traffic-error:#d03b3b] dark:[--traffic-done:#3987e5] dark:[--traffic-live:#c98500]'
+  '[--traffic-done:#2a78d6] [--traffic-error:#d03b3b] [--traffic-provisional:0.55] dark:[--traffic-done:#3987e5] dark:[--traffic-provisional:0.75]'
 
 const AXIS_TICK = { fill: 'hsl(var(--muted-foreground))', fontSize: 10 }
 const GRID = 'hsl(var(--border))'
@@ -61,14 +66,17 @@ const SURFACE = 'hsl(var(--card))'
 const HALO = { paintOrder: 'stroke', stroke: SURFACE, strokeWidth: 3, strokeLinejoin: 'round' } as const
 /** Error buckets get a count label while they are few enough to read. */
 const MAX_LABELLED_ERROR_BUCKETS = 8
+/** Chart height, and the plot inside it (less the top margin and time axis). */
+const CHART_HEIGHT = 156
+const CHART_TOP = 14
+const AXIS_HEIGHT = 18
+const PLOT_HEIGHT = CHART_HEIGHT - CHART_TOP - AXIS_HEIGHT
 /**
- * Space right of the plot for the "now" label, kept whether or not anything
- * is running so the chart does not shift as requests start and finish.
+ * Lowest drawn error peak, in px: a single error next to busy traffic would
+ * otherwise be a flat smear on the baseline. Its count label and the tooltip
+ * carry the exact number.
  */
-const NOW_GUTTER = 112
-
-/** Errors of a bucket, or nothing: buckets without errors draw no mark. */
-const errorMark = (point: TrafficPoint) => (point.errors ? point.errors : null)
+const MIN_ERROR_PEAK = 8
 
 interface RequestTrafficProps {
   range: TimeRange
@@ -119,15 +127,17 @@ function LineKey({ color }: { color: string }) {
   return <span className="h-0.5 w-3 shrink-0 rounded-full" style={{ background: color }} aria-hidden />
 }
 
-function DotKey({ color }: { color: string }) {
-  return <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: color }} aria-hidden />
-}
-
-function BarKey({ color }: { color: string }) {
+function DashedKey({ color }: { color: string }) {
   return (
-    <span className="flex h-3 w-3 shrink-0 items-end justify-center" aria-hidden>
-      <span className="h-2 w-1 rounded-t-sm" style={{ background: color }} />
-    </span>
+    <span
+      className="h-0.5 w-3 shrink-0"
+      style={{
+        backgroundImage: `linear-gradient(to right, ${color} 50%, transparent 50%)`,
+        backgroundSize: '4px 100%',
+        opacity: PROVISIONAL_OPACITY,
+      }}
+      aria-hidden
+    />
   )
 }
 
@@ -139,7 +149,7 @@ function TrafficTooltip({
   inFlight,
 }: {
   active?: boolean
-  payload?: { payload: TrafficPoint }[]
+  payload?: { payload: ChartPoint }[]
   range: TimeRange
   bucketMs: number
   inFlight: number
@@ -148,9 +158,9 @@ function TrafficTooltip({
   if (!active || !point) return null
   return (
     <div className="min-w-[11rem] rounded-lg border bg-popover px-2.5 py-1.5 text-xs text-popover-foreground shadow-md">
+      {point.live && <div className="font-medium">Now (in progress)</div>}
       <div className="mb-1 text-muted-foreground">
         {formatBucket(range, point.timestamp, bucketMs)}
-        {point.live ? ' · now' : ''}
       </div>
       {point.completed === null ? (
         <div className="text-muted-foreground">Not recorded at this resolution</div>
@@ -158,13 +168,20 @@ function TrafficTooltip({
         <div className="space-y-0.5">
           <div className="flex items-center gap-1.5">
             <LineKey color={DONE} />
-            Finished
+            {point.live ? 'Finished so far' : 'Finished'}
             <strong className="ml-auto pl-3 tabular-nums">{point.completed}</strong>
           </div>
           <div className="pl-[1.125rem] text-muted-foreground">
             LLM {point.llm} · MCP {point.mcp}
             {point.cost ? ` · ${money.format(point.cost)}` : ''}
           </div>
+          {point.live && (
+            <div className="flex items-center gap-1.5">
+              <DashedKey color={DONE} />
+              In progress
+              <strong className="ml-auto pl-3 tabular-nums">{inFlight}</strong>
+            </div>
+          )}
           <div className={cn('flex items-center gap-1.5', !point.errors && 'text-muted-foreground')}>
             <CircleAlert
               className="h-3 w-3"
@@ -174,26 +191,19 @@ function TrafficTooltip({
             Errors
             <strong className="ml-auto pl-3 tabular-nums">{point.errors}</strong>
           </div>
-          {point.live && (
-            <div className="flex items-center gap-1.5">
-              <DotKey color={LIVE} />
-              In progress now
-              <strong className="ml-auto pl-3 tabular-nums">{inFlight}</strong>
-            </div>
-          )}
         </div>
       )}
     </div>
   )
 }
 
-/** Count above an error bar. */
-function ErrorCount({ x, y, width, value }: LabelProps) {
+/** Count above an error peak. */
+function ErrorCount({ x, y, value }: LabelProps) {
   if (!value || x === undefined || y === undefined) return null
   return (
     <text
-      x={Number(x) + Number(width ?? 0) / 2}
-      y={Number(y) - 4}
+      x={Number(x)}
+      y={Number(y) - 6}
       textAnchor="middle"
       fontSize={10}
       fontWeight={600}
@@ -206,37 +216,64 @@ function ErrorCount({ x, y, width, value }: LabelProps) {
 }
 
 /**
- * The requests in progress right now, at the live bucket: an amber dot at
- * their count on the shared axis, labelled "N in progress now" in the gutter
- * right of the plot, where no line can cross the label. With nothing running
- * there is no dot, only a muted "Idle now" at the baseline.
+ * The requests line, drawn as one curve so its smoothing runs through the
+ * open bucket: solid up to the last finished bucket (`splitIndex`), then the
+ * same curve lighter and dashed to the open bucket's provisional value. When
+ * the bucket closes, the next render draws that stretch solid.
  */
-function NowMarker({ cx, cy, count }: { cx?: number; cy?: number; count: number }) {
-  if (cx === undefined || cy === undefined) return <g />
-  const label = (
-    <text
-      x={cx + 10}
-      y={cy}
-      dy="0.35em"
-      fontSize={11}
-      fontWeight={count ? 600 : 400}
-      fill={count ? 'hsl(var(--foreground))' : 'hsl(var(--muted-foreground))'}
-    >
-      {count ? `${count} in progress now` : 'Idle now'}
-    </text>
-  )
-  if (!count) return <g data-testid="traffic-now">{label}</g>
+function RequestsCurve({ splitIndex, ...props }: CurveProps & { splitIndex: number | null }) {
+  const id = `traffic-split-${useId().replace(/[^\w-]/g, '')}`
+  const splitX = splitIndex === null ? null : props.points?.[splitIndex]?.x
+  if (splitX === null || splitX === undefined) return <Curve {...props} />
+  const reach = 100_000
   return (
-    <g data-testid="traffic-now">
-      <circle
-        cx={cx}
-        cy={cy}
-        r={5}
-        fill={LIVE}
-        className="animate-ping opacity-60 [transform-box:fill-box] [transform-origin:center] motion-reduce:hidden"
+    <g>
+      <defs>
+        <clipPath id={`${id}-done`}>
+          <rect x={splitX - reach} y={-reach} width={reach} height={2 * reach} />
+        </clipPath>
+        <clipPath id={`${id}-open`}>
+          <rect x={splitX} y={-reach} width={reach} height={2 * reach} />
+        </clipPath>
+      </defs>
+      <Curve {...props} clipPath={`url(#${id}-done)`} />
+      <Curve
+        {...props}
+        pathRef={undefined}
+        className="traffic-provisional"
+        clipPath={`url(#${id}-open)`}
+        strokeDasharray={PROVISIONAL_DASH}
+        strokeOpacity={PROVISIONAL_OPACITY}
+        strokeLinecap="butt"
       />
-      <circle cx={cx} cy={cy} r={5} fill={LIVE} stroke={SURFACE} strokeWidth={2} />
-      {label}
+    </g>
+  )
+}
+
+/**
+ * The errors line, one piece per run of errors: a piece rises from the zero
+ * before the run and falls to the zero after it, and no line joins two zeros,
+ * so nothing runs along the baseline between runs.
+ */
+function ErrorsCurve(props: CurveProps) {
+  const runs: NonNullable<CurveProps['points']>[number][][] = []
+  let run: NonNullable<CurveProps['points']>[number][] = []
+  for (const point of props.points ?? []) {
+    const value = (point as { value?: number | null }).value
+    const previous = run[run.length - 1] as { value?: number | null } | undefined
+    if (value === null || value === undefined || (value === 0 && previous?.value === 0)) {
+      if (run.length > 1) runs.push(run)
+      run = value === 0 ? [point] : []
+    } else {
+      run.push(point)
+    }
+  }
+  if (run.length > 1) runs.push(run)
+  return (
+    <g>
+      {runs.map((points) => (
+        <Curve key={points[0].x} {...props} pathRef={undefined} points={points} />
+      ))}
     </g>
   )
 }
@@ -281,10 +318,20 @@ export function RequestTraffic({
   const now = useNow(2_000)
   const points = trafficPoints(timeline ?? null, now)
   const live = livePoint(points)
-  const showNow = live !== null && inFlight > 0
+  const rows = chartPoints(points, inFlight)
+  // The requests line turns provisional after the last finished bucket.
+  const splitIndex = live && points.length > 1 ? points.length - 2 : null
   const bucketMs = (timeline?.bucket_secs ?? 0) * 1000
   const yTicks = niceTicks(trafficPeak(points, inFlight))
-  const xTicks = roundTicks(range, points.map((p) => p.timestamp), bucketMs)
+  const errorFloor = (yTicks[yTicks.length - 1] * MIN_ERROR_PEAK) / PLOT_HEIGHT
+  const errorPeak = (p: ChartPoint) =>
+    p.errorLine ? Math.max(p.errorLine, errorFloor) : p.errorLine
+  // The newest point sits on the plot's right edge: a time label on the last
+  // two buckets would run past it.
+  const lastTick = points[points.length - 3]?.timestamp ?? -Infinity
+  const xTicks = roundTicks(range, points.map((p) => p.timestamp), bucketMs).filter(
+    (t) => t <= lastTick,
+  )
   const errorBuckets = points.filter((p) => p.errors).length
   const totals = timeline?.totals ?? null
   const total = totals ? totals.llm_requests + totals.mcp_requests : null
@@ -382,26 +429,7 @@ export function RequestTraffic({
       className={cn(PALETTE, className)}
     >
       <div className="px-2 pb-2">
-        <div
-          className="flex items-center gap-4 px-2 pb-1 text-[11px] text-muted-foreground"
-          data-testid="traffic-legend"
-          aria-hidden
-        >
-          <span className="flex items-center gap-1.5">
-            <LineKey color={DONE} /> Finished per {RANGES[range].bucket}
-          </span>
-          {errorBuckets > 0 && (
-            <span className="flex items-center gap-1.5">
-              <BarKey color={ERROR} /> Errors
-            </span>
-          )}
-          {showNow && (
-            <span className="flex items-center gap-1.5">
-              <DotKey color={LIVE} /> In progress now
-            </span>
-          )}
-        </div>
-        <div className="relative h-[156px]" role="img" aria-label={describe}>
+        <div className="relative" style={{ height: CHART_HEIGHT }} role="img" aria-label={describe}>
           {initialLoading ? (
             <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
               Loading request traffic…
@@ -411,12 +439,11 @@ export function RequestTraffic({
               width="100%"
               height="100%"
               minWidth={0}
-              initialDimension={{ width: 600, height: 156 }}
+              initialDimension={{ width: 600, height: CHART_HEIGHT }}
             >
               <ComposedChart
-                data={points}
-                margin={{ top: 14, right: NOW_GUTTER, left: 0, bottom: 0 }}
-                barCategoryGap={0}
+                data={rows}
+                margin={{ top: CHART_TOP, right: 16, left: 0, bottom: 0 }}
                 accessibilityLayer
               >
                 <CartesianGrid vertical={false} stroke={GRID} strokeWidth={1} />
@@ -429,7 +456,7 @@ export function RequestTraffic({
                   axisLine={{ stroke: GRID }}
                   tickLine={false}
                   tickMargin={3}
-                  height={18}
+                  height={AXIS_HEIGHT}
                 />
                 <YAxis
                   allowDecimals={false}
@@ -450,45 +477,65 @@ export function RequestTraffic({
                   isAnimationActive={false}
                 />
                 <Line
-                  name="Finished"
-                  dataKey="completed"
+                  name="Requests"
+                  dataKey="requests"
                   type="monotone"
                   stroke={DONE}
                   strokeWidth={2}
                   strokeLinejoin="round"
                   strokeLinecap="round"
                   dot={false}
-                  activeDot={{ r: 4, strokeWidth: 2, stroke: SURFACE, fill: DONE }}
+                  activeDot={(props: { cx?: number; cy?: number; payload?: ChartPoint }) => (
+                    <circle
+                      key="requests-active"
+                      cx={props.cx}
+                      cy={props.cy}
+                      r={4}
+                      strokeWidth={2}
+                      stroke={props.payload?.live ? DONE : SURFACE}
+                      fill={props.payload?.live ? SURFACE : DONE}
+                    />
+                  )}
+                  shape={<RequestsCurve splitIndex={splitIndex} />}
                   isAnimationActive={false}
                 />
                 {/*
-                  Errors over the line, so a line never hides one. Always
-                  mounted (buckets without errors draw nothing) so the time
-                  axis keeps the same layout whether or not any errors exist.
+                  Errors over the requests line, drawn the same way: each run
+                  of errors rises from zero and falls back to it; no line where
+                  there are none.
                 */}
-                <Bar
+                <Line
                   name="Errors"
-                  dataKey={errorMark}
-                  fill={ERROR}
-                  barSize={8}
-                  radius={[3, 3, 0, 0]}
-                  minPointSize={(value) => (value ? 8 : 0)}
+                  dataKey={errorPeak}
+                  type="monotone"
+                  stroke={ERROR}
+                  strokeWidth={2}
+                  strokeLinejoin="round"
+                  strokeLinecap="round"
+                  dot={false}
+                  activeDot={(props: { cx?: number; cy?: number; payload?: ChartPoint }) =>
+                    props.payload?.errors ? (
+                      <circle
+                        key="errors-active"
+                        cx={props.cx}
+                        cy={props.cy}
+                        r={4}
+                        strokeWidth={2}
+                        stroke={SURFACE}
+                        fill={ERROR}
+                      />
+                    ) : (
+                      <g key="errors-active" />
+                    )
+                  }
+                  className="traffic-errors"
+                  shape={<ErrorsCurve />}
                   isAnimationActive={false}
                 >
                   {errorBuckets > 0 && errorBuckets <= MAX_LABELLED_ERROR_BUCKETS && (
-                    <LabelList dataKey={errorMark} content={ErrorCount} />
+                    <LabelList dataKey="errors" content={ErrorCount} />
                   )}
-                </Bar>
-                {live && (
-                  <ReferenceDot
-                    x={live.timestamp}
-                    y={inFlight}
-                    r={5}
-                    shape={(props) => (
-                      <NowMarker cx={props.cx} cy={props.cy} count={inFlight} />
-                    )}
-                  />
-                )}
+                </Line>
               </ComposedChart>
             </ResponsiveContainer>
           ) : (

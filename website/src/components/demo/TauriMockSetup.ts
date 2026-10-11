@@ -23,6 +23,8 @@ import type { McpConnectionDiscovery } from '@app/types/tauri-commands'
 import { toast } from 'sonner'
 import { mockData } from './mockData'
 import { routingPolicyIssue } from '@app/components/strategy/routing-policy-status'
+import { matchesFilter } from '@app/views/monitor/monitor-events'
+import type { MonitorEventFilter, MonitorEventSummary } from '@app/types/tauri-commands'
 // Types for mock return values - see src/types/tauri-commands.ts for full type definitions
 import type { RoutingPolicyPreview, GraphData, TrafficTimeline, ProviderFeatureSupport, FeatureEndpointMatrix, InstallSourceInfo, RequestDedupeConfig } from '@app/types/tauri-commands'
 import type {
@@ -355,7 +357,8 @@ function generateMockGraphData(datasetLabel = "Requests", baseValue = 200, varia
 }
 
 // Dashboard traffic chart: the same bucket layout as the backend (60–96
-// buckets per range), with stable values so refreshes do not jump. A few
+// buckets per range), with stable values so refreshes do not jump (the open
+// bucket fills as its time passes). A few
 // buckets per range have errors (LLM every 23rd bucket, MCP every 37th);
 // requests in progress come from the pending monitor events in mockData.
 // Returns: TrafficTimeline (src/types/tauri-commands.ts)
@@ -384,7 +387,11 @@ function generateMockTrafficTimeline(args?: { timeRange?: string }): TrafficTime
     const index = Math.floor(timestamp / bucketSecs)
     // Stable per-bucket noise, so neighbouring buckets differ like real traffic.
     const noise = (Math.sin(index * 12.9898) * 43758.5453) % 1
-    const requests = Math.round(perMinute(timestamp) * (bucketSecs / 60) * (0.55 + 0.9 * Math.abs(noise)))
+    // The open bucket has only the requests finished so far.
+    const elapsed = timestamp === current ? (now - current + 1) / bucketSecs : 1
+    const requests = Math.round(
+      perMinute(timestamp) * (bucketSecs / 60) * (0.55 + 0.9 * Math.abs(noise)) * elapsed,
+    )
     const llm = Math.round(requests * 0.7)
     const mcp = requests - llm
     const llmErrors = index % 23 === 7 ? 1 + (index % 3) : 0
@@ -4833,14 +4840,20 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // ============================================================================
   // Monitor
   // ============================================================================
-  'get_monitor_events': (args) => ({
-    // Summaries carry an LLM call's APIs, as the backend's to_summary does.
-    events: mockData.monitorEvents.slice(args?.offset ?? 0, (args?.offset ?? 0) + (args?.limit ?? 100)).map(({ data, ...summary }) => {
-      const llm = data as { client_api?: string; upstream_api?: string }
-      return { ...summary, client_api: llm.client_api ?? null, upstream_api: llm.upstream_api ?? null }
-    }),
-    total: mockData.monitorEvents.length,
-  }),
+  'get_monitor_events': (args) => {
+    // The backend's filter predicate (type, status, search, …), mirrored by the app for live events.
+    const matching = mockData.monitorEvents.filter((event) =>
+      matchesFilter(event as unknown as MonitorEventSummary, args?.filter as MonitorEventFilter | null),
+    )
+    return {
+      // Summaries carry an LLM call's APIs, as the backend's to_summary does.
+      events: matching.slice(args?.offset ?? 0, (args?.offset ?? 0) + (args?.limit ?? 100)).map(({ data, ...summary }) => {
+        const llm = data as { client_api?: string; upstream_api?: string }
+        return { ...summary, client_api: llm.client_api ?? null, upstream_api: llm.upstream_api ?? null }
+      }),
+      total: matching.length,
+    }
+  },
   'get_monitor_event_detail': (args) =>
     (mockData.monitorEvents as { id: string }[]).find(e => e.id === args?.eventId) ?? null,
   'clear_monitor_events': () => null,

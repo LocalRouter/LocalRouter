@@ -109,12 +109,39 @@ export function livePoint(points: TrafficPoint[]): TrafficPoint | null {
 }
 
 /**
- * Top of the shared count axis: the busiest bucket, and the requests in
- * progress now when they are drawn at the live bucket.
+ * Top of the shared count axis: the busiest bucket, the live bucket counting
+ * its requests in progress now (its provisional value).
  */
 export function trafficPeak(points: TrafficPoint[], inFlightNow = 0): number {
-  const live = livePoint(points) ? inFlightNow : 0
-  return Math.max(live, ...points.map((p) => p.completed ?? 0))
+  return Math.max(0, ...points.map((p) => (p.completed ?? 0) + (p.live ? inFlightNow : 0)))
+}
+
+export interface ChartPoint extends TrafficPoint {
+  /**
+   * The requests line: finished requests per bucket; at the live bucket a
+   * provisional value, finished so far plus in progress now.
+   */
+  requests: number | null
+  /**
+   * The errors line: the errors where they happened and 0 at the buckets
+   * next to them, so each run of errors rises from and falls back to zero;
+   * `null` elsewhere, so no line runs along the baseline.
+   */
+  errorLine: number | null
+}
+
+/** Chart rows: the requests line with its provisional live value, and the errors line. */
+export function chartPoints(points: TrafficPoint[], inFlightNow: number): ChartPoint[] {
+  const hasErrors = (p: TrafficPoint | undefined) => Boolean(p?.errors)
+  return points.map((p, i) => ({
+    ...p,
+    requests: p.live ? (p.completed ?? 0) + inFlightNow : p.completed,
+    errorLine: hasErrors(p)
+      ? p.errors
+      : p.errors !== null && (hasErrors(points[i - 1]) || hasErrors(points[i + 1]))
+        ? 0
+        : null,
+  }))
 }
 
 /** Whole-number y-axis ticks from 0 to a round top of at least `peak`. */
