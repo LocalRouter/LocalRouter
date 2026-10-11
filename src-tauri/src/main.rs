@@ -2358,8 +2358,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             // Setup system tray. On Linux the tray backend panics (aborting
             // the release build) when libayatana-appindicator3 cannot be
             // loaded, so load it first and run without a tray if it fails.
-            // Everything else that touches the tray looks it up by id and
-            // does nothing when it is absent.
+            // Everything else that touches the tray goes through
+            // `ui::tray::with_tray` and does nothing when it is absent.
             match ui::tray_support::check_tray_backend() {
                 Err(unavailable) => warn!("{unavailable}"),
                 Ok(()) => {
@@ -3021,7 +3021,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 use ui::tray_support::{close_request_action, CloseRequestAction};
 
-                let tray_present = window.app_handle().tray_by_id("main").is_some();
+                let tray_present = ui::tray::tray_present(window.app_handle());
                 match close_request_action(window.label(), tray_present) {
                     CloseRequestAction::Hide => {
                         // Keep running in the background; hide instead of closing.

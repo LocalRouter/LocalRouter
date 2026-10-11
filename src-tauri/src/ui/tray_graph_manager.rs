@@ -760,31 +760,24 @@ impl TrayGraphManager {
         icon: Option<Vec<u8>>,
         tooltip: Option<String>,
     ) -> anyhow::Result<()> {
-        let app = app_handle.clone();
-        app_handle
-            .run_on_main_thread(move || {
-                let Some(tray) = app.tray_by_id("main") else {
-                    return;
-                };
-                if let Some(bytes) = icon {
-                    match tauri::image::Image::from_bytes(&bytes) {
-                        Ok(image) => {
-                            if let Err(e) = tray.set_icon(Some(image)) {
-                                error!("Failed to set tray icon: {}", e);
-                            }
+        crate::ui::tray::with_tray(app_handle, move |tray| {
+            if let Some(bytes) = icon {
+                match tauri::image::Image::from_bytes(&bytes) {
+                    Ok(image) => {
+                        if let Err(e) = tray.set_icon(Some(image)) {
+                            error!("Failed to set tray icon: {}", e);
                         }
-                        Err(e) => error!("Failed to create tray image: {}", e),
                     }
+                    Err(e) => error!("Failed to create tray image: {}", e),
                 }
-                if let Some(tooltip) = tooltip {
-                    if let Err(e) = tray.set_tooltip(Some(&tooltip)) {
-                        error!("Failed to set tray tooltip: {}", e);
-                    }
+            }
+            if let Some(tooltip) = tooltip {
+                if let Err(e) = tray.set_tooltip(Some(&tooltip)) {
+                    error!("Failed to set tray tooltip: {}", e);
                 }
-            })
-            .map_err(|e| {
-                anyhow::anyhow!("Failed to dispatch tray icon update to main thread: {}", e)
-            })
+            }
+        })
+        .map_err(|e| anyhow::anyhow!("Failed to dispatch tray icon update to main thread: {}", e))
     }
 
     /// macOS variant: talk to the `NSStatusItem` directly instead of going
@@ -797,9 +790,6 @@ impl TrayGraphManager {
     /// height and lays it out ~20% too wide — the item visibly widens and then
     /// animates back on every icon swap. Sizing the image first and installing
     /// it afterwards means the menu bar only ever measures the final size.
-    ///
-    /// Must not be called from the main thread: the underlying tray access
-    /// dispatches there and waits for the result.
     #[cfg(target_os = "macos")]
     fn apply_presentation(
         app_handle: &AppHandle,
@@ -809,20 +799,24 @@ impl TrayGraphManager {
         /// Height every macOS menu bar icon is scaled to.
         const MENU_BAR_ICON_HEIGHT: f64 = 18.0;
 
-        let Some(tray) = app_handle.tray_by_id("main") else {
-            return Ok(());
-        };
-        tray.with_inner_tray_icon(move |inner| {
-            if let Some(bytes) = icon {
-                match set_status_item_image(inner.ns_status_item(), &bytes, MENU_BAR_ICON_HEIGHT) {
-                    Ok(()) => {}
-                    Err(e) => error!("Failed to set tray icon: {}", e),
+        crate::ui::tray::with_tray(app_handle, move |tray| {
+            // Runs inline: `with_tray` calls this on the main thread.
+            let applied = tray.with_inner_tray_icon(move |inner| {
+                if let Some(bytes) = icon {
+                    if let Err(e) =
+                        set_status_item_image(inner.ns_status_item(), &bytes, MENU_BAR_ICON_HEIGHT)
+                    {
+                        error!("Failed to set tray icon: {}", e);
+                    }
                 }
-            }
-            if let Some(tooltip) = tooltip {
-                if let Err(e) = inner.set_tooltip(Some(&tooltip)) {
-                    error!("Failed to set tray tooltip: {}", e);
+                if let Some(tooltip) = tooltip {
+                    if let Err(e) = inner.set_tooltip(Some(&tooltip)) {
+                        error!("Failed to set tray tooltip: {}", e);
+                    }
                 }
+            });
+            if let Err(e) = applied {
+                error!("Failed to update the tray icon: {}", e);
             }
         })
         .map_err(|e| anyhow::anyhow!("Failed to dispatch tray icon update to main thread: {}", e))
@@ -1110,7 +1104,7 @@ impl TrayGraphManager {
         // No tray (Linux without an AppIndicator library): skip rendering
         // icons and menus nobody can see. The manager itself stays for the
         // settings preview and the commands that hold it as state.
-        if app_handle.tray_by_id("main").is_none() {
+        if !crate::ui::tray::tray_present(app_handle) {
             return Ok(());
         }
 
