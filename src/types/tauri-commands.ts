@@ -3749,12 +3749,17 @@ export interface UsageSpendView {
 
 /** Rust: crates/lr-usage/src/view.rs - UsageAccountView struct */
 export interface UsageAccountView {
-  /** e.g. `anthropic:subscription`. */
+  /**
+   * e.g. `anthropic:subscription`. A family's further logins (a second
+   * ChatGPT account) are `openai:subscription:<login tag>`.
+   */
   id: string
   provider: string
   provider_label: string
   kind: UsageAccountKind
   title: string
+  /** Who the login belongs to (e.g. a ChatGPT account's email), when known. */
+  login_label: string | null
   plan: string | null
   plan_label: string | null
   monthly_price_usd: number | null

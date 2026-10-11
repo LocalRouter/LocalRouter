@@ -3,8 +3,11 @@
 //! - Claude subscriptions: `anthropic-ratelimit-unified-{5h,7d,…}-utilization`
 //!   (0–1 fraction) with matching `-reset` (unix seconds) and `-status`.
 //! - ChatGPT (Codex backend): `x-codex-{primary,secondary}-used-percent`,
-//!   `-window-minutes`, `-reset-at`, plus `x-codex-credits-*`. Other limit
-//!   families use the same shape under their own prefix (`x-codex-other-…`).
+//!   `-window-minutes`, `-reset-at`, plus `x-codex-credits-*` and
+//!   `x-codex-plan-type`. Other limit families use the same shape under their
+//!   own prefix (`x-codex-other-…`, named by `-limit-name`). A slot the plan
+//!   does not have is sent empty (`0`, `0`, no reset) — e.g. Pro Lite's
+//!   weekly limit is the primary window and its secondary is empty.
 //! - API keys: `x-ratelimit-{limit,remaining,reset}-<what>` (OpenAI, Groq,
 //!   Cerebras, …) and `anthropic-ratelimit-<what>-{limit,remaining,reset}`.
 
@@ -109,18 +112,28 @@ fn parse_codex(map: &BTreeMap<String, String>, report: &mut UsageReport, now: i6
         let minutes = map
             .get(&format!("{prefix}-window-minutes"))
             .and_then(|v| v.parse::<f64>().ok())
+            .filter(|m| m.is_finite() && *m > 0.0)
             .map(|m| (m * 60.0) as i64);
-        let resets_at = map
+        let reset_at = map
             .get(&format!("{prefix}-reset-at"))
-            .and_then(|v| parse_epoch(v))
-            .or_else(|| {
-                let after = map
-                    .get(&format!("{prefix}-reset-after-seconds"))?
-                    .parse::<f64>()
-                    .ok()?;
-                after_secs(now, after)
-            });
-        let (id, label) = codex_window(limit, slot, minutes);
+            .and_then(|v| parse_epoch(v));
+        let reset_after = map
+            .get(&format!("{prefix}-reset-after-seconds"))
+            .and_then(|v| v.parse::<f64>().ok())
+            .filter(|s| *s > 0.0);
+        if !codex_slot_has_data(used, minutes, reset_at.is_some() || reset_after.is_some()) {
+            continue;
+        }
+        let resets_at = reset_at.or_else(|| after_secs(now, reset_after?));
+        let (id, mut label) = codex_window(limit, slot, minutes);
+        if let Some(name) = map
+            .get(&format!("x-{limit}-limit-name"))
+            .filter(|n| !n.is_empty())
+        {
+            if let Some((_, base)) = label.split_once(" · ") {
+                label = format!("{name} · {base}");
+            }
+        }
         report.windows.push(WindowReading {
             id,
             label,
@@ -128,6 +141,9 @@ fn parse_codex(map: &BTreeMap<String, String>, report: &mut UsageReport, now: i6
             resets_at,
             window_secs: minutes,
         });
+    }
+    if let Some(plan) = map.get("x-codex-plan-type").filter(|p| !p.is_empty()) {
+        report.plan = Some(plan.clone());
     }
     if map.contains_key("x-codex-rate-limit-reached-type") {
         report.status = Some("rejected".to_string());
@@ -149,6 +165,13 @@ fn parse_codex(map: &BTreeMap<String, String>, report: &mut UsageReport, now: i6
             ..Default::default()
         });
     }
+}
+
+/// Whether a Codex rate-limit slot carries a window: one the plan does not
+/// have arrives as zero usage, zero length and no reset (as Codex itself
+/// reads it).
+pub(crate) fn codex_slot_has_data(used: f64, window_secs: Option<i64>, has_reset: bool) -> bool {
+    used != 0.0 || window_secs.is_some_and(|s| s > 0) || has_reset
 }
 
 /// Id + label for a Codex rate-limit window. The `codex` family maps onto
@@ -380,6 +403,70 @@ mod tests {
         let credits = r.credits.unwrap();
         assert_eq!(credits.balance_usd, Some(9.99));
         assert_eq!(credits.currency, None);
+    }
+
+    /// Headers the ChatGPT backend sends a Pro Lite account on
+    /// `/backend-api/codex/responses` (from Codex's own log): the weekly
+    /// limit is the primary window, the secondary slot is empty.
+    #[test]
+    fn codex_pro_lite_weekly_primary_and_empty_secondary() {
+        let now = 1_791_388_033;
+        let m = map(&[
+            ("x-codex-active-limit", "premium"),
+            ("x-codex-plan-type", "prolite"),
+            ("x-codex-primary-used-percent", "13"),
+            ("x-codex-primary-window-minutes", "10080"),
+            ("x-codex-primary-over-secondary-limit-percent", "0"),
+            ("x-codex-primary-reset-after-seconds", "597265"),
+            ("x-codex-primary-reset-at", "1791985298"),
+            ("x-codex-secondary-used-percent", "0"),
+            ("x-codex-secondary-window-minutes", "0"),
+            ("x-codex-secondary-reset-after-seconds", "0"),
+            ("x-codex-secondary-reset-at", ""),
+            ("x-codex-credits-has-credits", "False"),
+            ("x-codex-credits-balance", "0"),
+            ("x-codex-credits-unlimited", "False"),
+        ]);
+        let r = parse_header_map(&m, now);
+        assert_eq!(r.plan.as_deref(), Some("prolite"));
+        assert_eq!(r.windows.len(), 1, "the empty secondary is no window");
+        let week = &r.windows[0];
+        assert_eq!(week.id, "seven_day");
+        assert!((week.used_percent - 13.0).abs() < 1e-9);
+        assert_eq!(week.window_secs, Some(604_800));
+        assert_eq!(week.resets_at, Some(1_791_985_298));
+        assert_eq!(r.credits, None);
+        assert_eq!(r.status, None);
+    }
+
+    #[test]
+    fn codex_slot_with_any_data_is_kept() {
+        // Zero usage but a known length or reset is a real window.
+        let m = map(&[
+            ("x-codex-secondary-used-percent", "0"),
+            ("x-codex-secondary-window-minutes", "10080"),
+            ("x-codex-primary-used-percent", "0"),
+            ("x-codex-primary-reset-after-seconds", "60"),
+        ]);
+        let r = parse_header_map(&m, 1_000);
+        let ids: Vec<_> = r.windows.iter().map(|w| w.id.as_str()).collect();
+        assert_eq!(ids, vec!["five_hour", "seven_day"]);
+        assert_eq!(r.windows[0].resets_at, Some(1_060));
+        assert!(codex_slot_has_data(0.5, None, false));
+        assert!(!codex_slot_has_data(0.0, Some(0), false));
+        assert!(!codex_slot_has_data(0.0, None, false));
+    }
+
+    #[test]
+    fn codex_family_named_by_limit_name() {
+        let m = map(&[
+            ("x-codex-bengalfox-primary-used-percent", "80"),
+            ("x-codex-bengalfox-primary-window-minutes", "300"),
+            ("x-codex-bengalfox-limit-name", "GPT-5.2-Codex-Sonic"),
+        ]);
+        let r = parse_header_map(&m, 0);
+        assert_eq!(r.windows[0].id, "codex_bengalfox_five_hour");
+        assert_eq!(r.windows[0].label, "GPT-5.2-Codex-Sonic · 5-hour session");
     }
 
     #[test]

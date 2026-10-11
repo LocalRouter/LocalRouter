@@ -111,6 +111,14 @@ pub(crate) struct StoredQuota {
 pub(crate) struct AccountState {
     pub provider: String,
     pub kind: AccountKind,
+    /// The login this account is ([`AccountRef::login`]). `None` until a
+    /// reading names one: the family's first login then adopts the account,
+    /// so state recorded before logins were told apart carries over.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login: Option<String>,
+    /// Who the login belongs to (e.g. the ChatGPT account's email).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login_label: Option<String>,
     #[serde(default)]
     pub plan: Option<String>,
     #[serde(default)]
@@ -136,6 +144,8 @@ impl AccountState {
         Self {
             provider: account.provider.clone(),
             kind: account.kind,
+            login: account.login.clone(),
+            login_label: None,
             plan: None,
             windows: BTreeMap::new(),
             quotas: BTreeMap::new(),
@@ -155,6 +165,61 @@ pub(crate) struct State {
     pub version: u32,
     #[serde(default)]
     pub accounts: BTreeMap<String, AccountState>,
+}
+
+impl State {
+    /// The key `account` is stored under.
+    ///
+    /// A family's logins share its base id (`openai:subscription`) until
+    /// they are told apart: the account under the base id is the first login
+    /// seen (or one not yet bound to a login, which the first login seen
+    /// adopts); every further login gets its own `base:login` id. So one
+    /// login is always one account, two logins two accounts, and ids already
+    /// in the settings (plan overrides, hidden accounts, tray items) and the
+    /// state file keep meaning the same account.
+    ///
+    /// A reading that does not say which login it is goes to the base
+    /// account, or to the family's only account when the base id is free.
+    fn account_key(&self, account: &AccountRef) -> String {
+        let base = account.base_id();
+        let same_family =
+            |a: &AccountState| a.provider == account.provider && a.kind == account.kind;
+        let Some(login) = &account.login else {
+            if self.accounts.contains_key(&base) {
+                return base;
+            }
+            let mut family = self.accounts.iter().filter(|(_, a)| same_family(a));
+            return match (family.next(), family.next()) {
+                (Some((key, _)), None) => key.clone(),
+                _ => base,
+            };
+        };
+        if let Some((key, _)) = self
+            .accounts
+            .iter()
+            .find(|(_, a)| same_family(a) && a.login.as_ref() == Some(login))
+        {
+            return key.clone();
+        }
+        match self.accounts.get(&base) {
+            Some(a) if a.login.is_some() => account.id(),
+            _ => base,
+        }
+    }
+
+    /// The account `account` is stored as, created (or adopted by its
+    /// login) as needed. Returns its key too.
+    fn account_mut(&mut self, account: &AccountRef, now: i64) -> (String, &mut AccountState) {
+        let key = self.account_key(account);
+        let acct = self
+            .accounts
+            .entry(key.clone())
+            .or_insert_with(|| AccountState::new(account, now));
+        if acct.login.is_none() && account.login.is_some() {
+            acct.login = account.login.clone();
+        }
+        (key, acct)
+    }
 }
 
 type ChangeCallback = Arc<dyn Fn() + Send + Sync>;
@@ -257,12 +322,15 @@ impl UsageTracker {
         let mut changed = false;
         {
             let mut state = self.state.write();
-            let acct = state
-                .accounts
-                .entry(account.id())
-                .or_insert_with(|| AccountState::new(account, now));
+            let (_, acct) = state.account_mut(account, now);
             acct.last_seen = now;
             acct.sources.insert(source, now);
+            if let Some(label) = &report.login_label {
+                if acct.login_label.as_ref() != Some(label) {
+                    acct.login_label = Some(label.clone());
+                    changed = true;
+                }
+            }
             if let Some(plan) = &report.plan {
                 if acct.plan.as_ref() != Some(plan) {
                     acct.plan = Some(plan.clone());
@@ -304,10 +372,17 @@ impl UsageTracker {
         }
     }
 
+    /// The id `account` is shown and configured under (see
+    /// [`AccountRef::id`]): its base id for the family's first login.
+    pub fn account_id(&self, account: &AccountRef) -> String {
+        self.state.read().account_key(account)
+    }
+
     /// Note that real traffic for `account` was just seen (drives how often
     /// its usage endpoint is polled).
     pub fn note_traffic(&self, account: &AccountRef) {
-        self.traffic.write().insert(account.id(), now_secs());
+        let key = self.account_id(account);
+        self.traffic.write().insert(key, now_secs());
     }
 
     /// When traffic for `account_id` was last seen.
@@ -318,16 +393,24 @@ impl UsageTracker {
     /// When a passive source (headers or a usage response on traffic
     /// LocalRouter carried) last reported for `account_id`.
     pub fn last_passive_reading(&self, account_id: &str) -> Option<i64> {
+        self.last_reading_besides(account_id, None)
+    }
+
+    /// When any source other than `poll` last reported for `account_id`:
+    /// the passive sources, and the other polled ones (so two logins of the
+    /// same account — LocalRouter's and a CLI's — do not both poll it).
+    pub fn last_reading_besides(&self, account_id: &str, poll: Option<DataSource>) -> Option<i64> {
         let state = self.state.read();
         let acct = state.accounts.get(account_id)?;
-        [
-            DataSource::ProxyHeaders,
-            DataSource::ProxyUsageResponse,
-            DataSource::GatewayHeaders,
-        ]
-        .iter()
-        .filter_map(|s| acct.sources.get(s).copied())
-        .max()
+        let polled = [DataSource::ProviderApi, DataSource::CliLogin];
+        acct.sources
+            .iter()
+            .filter(|(s, _)| match poll {
+                None => !polled.contains(s),
+                Some(own) => **s != own,
+            })
+            .map(|(_, t)| *t)
+            .max()
     }
 
     /// Add one request's tokens and API-equivalent cost to `account`.
@@ -339,13 +422,9 @@ impl UsageTracker {
         if !self.is_enabled() {
             return;
         }
-        self.traffic.write().insert(account.id(), now);
-        {
+        let key = {
             let mut state = self.state.write();
-            let acct = state
-                .accounts
-                .entry(account.id())
-                .or_insert_with(|| AccountState::new(account, now));
+            let (key, acct) = state.account_mut(account, now);
             acct.last_seen = now;
             let bucket = now - now.rem_euclid(LEDGER_BUCKET_SECS);
             let is_new_bucket = !acct.ledger.contains_key(&bucket);
@@ -354,7 +433,9 @@ impl UsageTracker {
                 let cutoff = now - RETENTION_SECS;
                 acct.ledger.retain(|b, _| *b >= cutoff);
             }
-        }
+            key
+        };
+        self.traffic.write().insert(key, now);
         self.dirty.store(true, Ordering::Relaxed);
         self.mark_changed();
     }
@@ -1021,5 +1102,94 @@ mod tests {
         t.apply_at(&claude(), &week(1.0, 10), DataSource::ProxyHeaders, 0);
         assert!(t.forget("anthropic:subscription"));
         assert!(!t.forget("anthropic:subscription"));
+    }
+
+    /// A state file written before ChatGPT logins were told apart: its
+    /// `openai:subscription` account is adopted by the first login seen, so
+    /// ids in the settings (plans, hidden accounts, tray items) keep working.
+    #[test]
+    fn legacy_account_is_adopted_by_the_first_login() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("usage.json");
+        std::fs::write(
+            &path,
+            r#"{"version":1,"accounts":{"openai:subscription":{"provider":"openai","kind":"subscription","plan":"prolite","sources":{"proxy_headers":100},"first_seen":100,"last_seen":100}}}"#,
+        )
+        .unwrap();
+        let t = UsageTracker::load(path.clone(), UsageTrackingConfig::default());
+        let acc1 = AccountRef::chatgpt(Some("acc-1"));
+        let acc2 = AccountRef::chatgpt(Some("acc-2"));
+        assert_eq!(t.account_id(&acc1), "openai:subscription");
+        t.apply_at(&acc1, &week(5.0, 10_000_000), DataSource::ProxyHeaders, 200);
+        // Bound now: another login gets its own account.
+        assert_eq!(t.account_id(&acc1), "openai:subscription");
+        assert_eq!(t.account_id(&acc2), acc2.id());
+        t.apply_at(&acc2, &week(50.0, 10_000_000), DataSource::CliLogin, 300);
+        // A reading that does not name its login goes to the base account.
+        assert_eq!(
+            t.account_id(&AccountRef::chatgpt(None)),
+            "openai:subscription"
+        );
+        t.persist_now();
+
+        // The binding survives a restart.
+        let t = UsageTracker::load(path, UsageTrackingConfig::default());
+        assert_eq!(t.account_id(&acc1), "openai:subscription");
+        assert_eq!(t.account_id(&acc2), acc2.id());
+        let state = t.state.read();
+        assert_eq!(state.accounts.len(), 2);
+        let base = &state.accounts["openai:subscription"];
+        assert_eq!(base.login, acc1.login);
+        assert_eq!(base.plan.as_deref(), Some("prolite"));
+        assert_eq!(base.windows["seven_day"].reading.used_percent, 5.0);
+        assert_eq!(
+            state.accounts[&acc2.id()].windows["seven_day"]
+                .reading
+                .used_percent,
+            50.0
+        );
+    }
+
+    #[test]
+    fn unnamed_login_goes_to_the_familys_only_account() {
+        let t = UsageTracker::new(UsageTrackingConfig::default());
+        let acc1 = AccountRef::chatgpt(Some("acc-1"));
+        let acc2 = AccountRef::chatgpt(Some("acc-2"));
+        t.apply_at(&acc1, &week(1.0, 10_000_000), DataSource::ProxyHeaders, 0);
+        t.apply_at(&acc2, &week(2.0, 10_000_000), DataSource::ProxyHeaders, 0);
+        assert!(t.forget("openai:subscription"));
+        // Only the second login is left; an unnamed reading is its.
+        assert_eq!(t.account_id(&AccountRef::chatgpt(None)), acc2.id());
+        assert_eq!(t.account_id(&acc2), acc2.id());
+        // A new login takes the free base id.
+        assert_eq!(
+            t.account_id(&AccountRef::chatgpt(Some("acc-3"))),
+            "openai:subscription"
+        );
+        // Other families are unaffected.
+        assert_eq!(t.account_id(&claude()), "anthropic:subscription");
+    }
+
+    #[test]
+    fn other_poll_sources_count_as_fresh_readings() {
+        let t = UsageTracker::new(UsageTrackingConfig::default());
+        let acc = AccountRef::chatgpt(Some("acc-1"));
+        t.apply_at(&acc, &week(1.0, 10_000_000), DataSource::ProviderApi, 50);
+        let id = t.account_id(&acc);
+        assert_eq!(t.last_passive_reading(&id), None);
+        assert_eq!(
+            t.last_reading_besides(&id, Some(DataSource::ProviderApi)),
+            None
+        );
+        assert_eq!(
+            t.last_reading_besides(&id, Some(DataSource::CliLogin)),
+            Some(50)
+        );
+        t.apply_at(&acc, &week(1.0, 10_000_000), DataSource::GatewayHeaders, 60);
+        assert_eq!(t.last_passive_reading(&id), Some(60));
+        assert_eq!(
+            t.last_reading_besides(&id, Some(DataSource::ProviderApi)),
+            Some(60)
+        );
     }
 }

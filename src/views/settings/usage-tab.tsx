@@ -387,6 +387,7 @@ function AccountRow({
       <div className="min-w-40 flex-1">
         <div className="text-sm font-medium">{a.title}</div>
         <div className="text-xs text-muted-foreground">
+          {a.login_label && `${a.login_label} · `}
           {a.id}
           {a.monthly_price_usd !== null && ` · ${formatUsd(a.monthly_price_usd)}/mo`}
         </div>

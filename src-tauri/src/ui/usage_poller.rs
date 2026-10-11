@@ -4,7 +4,9 @@
 //! usage endpoints directly, only as the settings allow, and only as often as
 //! traffic warrants: every `poll_interval_secs` (5 min) while requests for the
 //! account keep coming in, every `idle_poll_interval_secs` (1 h) otherwise. A
-//! fresh passive reading answers the poll. Failures back off exponentially
+//! fresh reading from elsewhere — the traffic itself, or another login of the
+//! same account (LocalRouter's ChatGPT login and Codex's on one ChatGPT
+//! account) — answers the poll. Failures back off exponentially
 //! (5 → 10 → 20 min, capped at 1 h, with jitter), honouring `Retry-After`.
 //!
 //! Sources:
@@ -237,22 +239,35 @@ impl UsagePoller {
         self.statuses.write().retain(|id, _| active.contains(id));
     }
 
-    /// Whether source `id` (feeding `account`) should be polled now.
-    fn due(&self, id: &str, account: &AccountRef) -> bool {
+    /// Whether source `id` (feeding `account` as `source`) should be polled
+    /// now. For sources whose login is only known once polled (ChatGPT), the
+    /// account the last poll found stands in for `account`.
+    fn due(&self, id: &str, account: &AccountRef, source: DataSource) -> bool {
         let config = self.tracker.config();
         let timing = Timing {
             active_secs: config.poll_interval_secs.clamp(60, 3_600) as i64,
             idle_secs: config.idle_poll_interval_secs.clamp(300, 86_400) as i64,
         };
-        let account_id = account.id();
         let schedule = self.schedules.lock().get(id).cloned().unwrap_or_default();
+        let account_id = self
+            .tracker
+            .account_id(schedule.account.as_ref().unwrap_or(account));
         is_due(
             &schedule,
             now(),
             self.tracker.last_traffic(&account_id),
-            self.tracker.last_passive_reading(&account_id),
+            self.tracker.last_reading_besides(&account_id, Some(source)),
             &timing,
         )
+    }
+
+    /// Remember which account source `id` turned out to feed.
+    fn note_account(&self, id: &str, account: &AccountRef) {
+        self.schedules
+            .lock()
+            .entry(id.to_string())
+            .or_default()
+            .account = Some(account.clone());
     }
 
     /// Record an attempt's outcome for `id`.
@@ -278,12 +293,13 @@ impl UsagePoller {
             .or_insert_with(|| UsagePollStatus {
                 id: id.to_string(),
                 label: label.to_string(),
-                account_id: account.id(),
+                account_id: String::new(),
                 last_attempt: None,
                 last_success: None,
                 last_error: None,
                 retry_after: None,
             });
+        s.account_id = self.tracker.account_id(account);
         s.last_attempt = Some(t);
         s.retry_after = retry_after;
         match result {
@@ -344,36 +360,35 @@ impl UsagePoller {
     async fn poll_chatgpt_oauth(&self) {
         let id = "chatgpt_oauth";
         let label = "ChatGPT Plus/Pro (LocalRouter login)";
-        let account = AccountRef::subscription("openai");
-        if !self.due(id, &account) {
+        let source = DataSource::ProviderApi;
+        let unknown = AccountRef::chatgpt(None);
+        if !self.due(id, &unknown, source) {
             return;
         }
-        let Some(source) = lr_providers::oauth::token_source("openai-codex") else {
+        let Some(tokens) = lr_providers::oauth::token_source("openai-codex") else {
             return;
         };
-        let token = match source.access_token().await {
+        let token = match tokens.access_token().await {
             Ok(t) => t,
             Err(e) => {
-                self.record(id, label, &account, Err(format!("no login: {e}")), None);
+                self.record(id, label, &unknown, Err(format!("no login: {e}")), None);
                 return;
             }
         };
         let account_id = lr_usage::classify::chatgpt_account_from_jwt(&token);
-        let mut result =
-            fetch::fetch_codex_usage(&self.client, &token, account_id.as_deref()).await;
-        if let Ok(report) = &mut result {
-            if report.plan.is_none() {
-                report.plan = lr_usage::classify::chatgpt_plan_from_jwt(&token);
-            }
-        }
-        self.finish(id, label, &account, result, DataSource::ProviderApi);
+        let account = AccountRef::chatgpt(account_id.as_deref());
+        self.note_account(id, &account);
+        let result = fetch::fetch_codex_usage(&self.client, &token, account_id.as_deref())
+            .await
+            .map(|report| with_chatgpt_login(report, &token));
+        self.finish(id, label, &account, result, source);
     }
 
     async fn poll_copilot(&self) {
         let id = "github_copilot";
         let label = "GitHub Copilot";
         let account = AccountRef::subscription("github-copilot");
-        if !self.due(id, &account) {
+        if !self.due(id, &account, DataSource::ProviderApi) {
             return;
         }
         let token = tokio::task::spawn_blocking(|| {
@@ -404,7 +419,7 @@ impl UsagePoller {
         provider_name: &str,
         account: &AccountRef,
     ) -> bool {
-        if !self.due(id, account) {
+        if !self.due(id, account, DataSource::ProviderApi) {
             return true;
         }
         let Some(provider) = self.registry.get_provider(instance) else {
@@ -443,7 +458,7 @@ impl UsagePoller {
         let id = "claude_code_login";
         let label = "Claude Code login";
         let account = AccountRef::subscription("anthropic");
-        if !self.due(id, &account) {
+        if !self.due(id, &account, DataSource::CliLogin) {
             return;
         }
         let login = tokio::task::spawn_blocking(lr_usage::cli_logins::read_claude_code_login)
@@ -480,8 +495,9 @@ impl UsagePoller {
     async fn poll_codex_cli(&self) {
         let id = "codex_login";
         let label = "Codex login";
-        let account = AccountRef::subscription("openai");
-        if !self.due(id, &account) {
+        let source = DataSource::CliLogin;
+        let unknown = AccountRef::chatgpt(None);
+        if !self.due(id, &unknown, source) {
             return;
         }
         let login = tokio::task::spawn_blocking(lr_usage::cli_logins::read_codex_login)
@@ -492,26 +508,32 @@ impl UsagePoller {
             self.record(
                 id,
                 label,
-                &account,
+                &unknown,
                 Err("not logged in with ChatGPT".into()),
                 None,
             );
             return;
         };
-        let account_id = login
-            .account_id
-            .clone()
-            .or_else(|| lr_usage::classify::chatgpt_account_from_jwt(&login.access_token));
-        let mut result =
+        let account_id = lr_usage::classify::chatgpt_account_from_jwt(&login.access_token)
+            .or_else(|| login.account_id.clone());
+        let account = AccountRef::chatgpt(account_id.as_deref());
+        self.note_account(id, &account);
+        let result =
             fetch::fetch_codex_usage(&self.client, &login.access_token, account_id.as_deref())
-                .await;
-        if let Ok(report) = &mut result {
-            if report.plan.is_none() {
-                report.plan = lr_usage::classify::chatgpt_plan_from_jwt(&login.access_token);
-            }
-        }
-        self.finish(id, label, &account, result, DataSource::CliLogin);
+                .await
+                .map(|report| with_chatgpt_login(report, &login.access_token));
+        self.finish(id, label, &account, result, source);
     }
+}
+
+/// A ChatGPT usage report completed from the access token it was fetched
+/// with: the plan when the endpoint did not say, and who the login is.
+fn with_chatgpt_login(mut report: UsageReport, token: &str) -> UsageReport {
+    if report.plan.is_none() {
+        report.plan = lr_usage::classify::chatgpt_plan_from_jwt(token);
+    }
+    report.login_label = lr_usage::classify::chatgpt_email_from_jwt(token);
+    report
 }
 
 /// Whether a settings change alters what is polled.
@@ -525,6 +547,9 @@ fn sources_changed(previous: &UsageTrackingConfig, next: &UsageTrackingConfig) -
 /// Poll bookkeeping for one source.
 #[derive(Debug, Clone, Default, PartialEq)]
 struct Schedule {
+    /// The account the source fed when last polled, for sources whose login
+    /// is only known once polled.
+    account: Option<AccountRef>,
     last_poll: Option<i64>,
     /// Consecutive failures (reset by a success).
     failures: u32,
@@ -546,12 +571,12 @@ struct Timing {
 }
 
 /// Whether a source is due, given when it was last polled and when its
-/// account last saw traffic and a passive reading.
+/// account last saw traffic and a reading from any other source.
 fn is_due(
     schedule: &Schedule,
     now: i64,
     last_traffic: Option<i64>,
-    last_passive: Option<i64>,
+    last_elsewhere: Option<i64>,
     timing: &Timing,
 ) -> bool {
     if schedule.retry_at.is_some_and(|r| r > now) {
@@ -570,11 +595,11 @@ fn is_due(
     if since < interval {
         return false;
     }
-    // Fresh readings from the traffic itself answer the poll; the endpoint
-    // is still asked at the idle rate for what only it reports (per-model
-    // weekly caps, extra usage).
-    let passive_fresh = last_passive.is_some_and(|p| now - p < timing.active_secs);
-    !(passive_fresh && since < timing.idle_secs)
+    // Fresh readings from the traffic itself (or another login of the same
+    // account) answer the poll; the endpoint is still asked at the idle rate
+    // for what only it reports (per-model weekly caps, extra usage).
+    let fresh_elsewhere = last_elsewhere.is_some_and(|p| now - p < timing.active_secs);
+    !(fresh_elsewhere && since < timing.idle_secs)
 }
 
 /// Seconds to wait after the `failures`-th consecutive failure: 5, 10, 20,
@@ -688,6 +713,88 @@ mod tests {
         assert!(!poller.schedules.lock().is_empty());
     }
 
+    /// LocalRouter's ChatGPT login and Codex's, signed in to the same
+    /// account: once one has polled it, the other is not due until the idle
+    /// interval; a different account is polled on its own schedule.
+    #[test]
+    fn two_logins_of_one_chatgpt_account_poll_it_once() {
+        let tracker = Arc::new(UsageTracker::new(UsageTrackingConfig::default()));
+        let poller = UsagePoller::new(tracker.clone(), Arc::new(ProviderRegistry::new()));
+        let unknown = AccountRef::chatgpt(None);
+        let acc1 = AccountRef::chatgpt(Some("acc-1"));
+        let acc2 = AccountRef::chatgpt(Some("acc-2"));
+        let polled = |id: &str, account: &AccountRef, source: DataSource| {
+            poller.note_account(id, account);
+            poller.finish(
+                id,
+                id,
+                account,
+                Ok(UsageReport {
+                    plan: Some("pro".into()),
+                    ..Default::default()
+                }),
+                source,
+            );
+        };
+        assert!(poller.due("chatgpt_oauth", &unknown, DataSource::ProviderApi));
+        polled("chatgpt_oauth", &acc1, DataSource::ProviderApi);
+        assert!(!poller.due("chatgpt_oauth", &unknown, DataSource::ProviderApi));
+
+        // Codex has not been polled yet, so it is due. Ten minutes after its
+        // last poll an account in use is due again — unless, as here, the
+        // other login of the same account has just polled it.
+        assert!(poller.due("codex_login", &unknown, DataSource::CliLogin));
+        poller.note_account("codex_login", &acc1);
+        poller
+            .schedules
+            .lock()
+            .get_mut("codex_login")
+            .unwrap()
+            .last_poll = Some(now() - 600);
+        tracker.note_traffic(&acc1);
+        assert!(!poller.due("codex_login", &unknown, DataSource::CliLogin));
+        // A different account in use has no fresh reading: due.
+        poller.note_account("codex_login", &acc2);
+        tracker.note_traffic(&acc2);
+        assert!(poller.due("codex_login", &unknown, DataSource::CliLogin));
+        polled("codex_login", &acc2, DataSource::CliLogin);
+
+        let statuses = poller.statuses();
+        let account_of = |id: &str| {
+            statuses
+                .iter()
+                .find(|s| s.id == id)
+                .map(|s| s.account_id.clone())
+                .unwrap()
+        };
+        assert_eq!(account_of("chatgpt_oauth"), "openai:subscription");
+        assert_eq!(account_of("codex_login"), acc2.id());
+        assert_eq!(tracker.snapshot().accounts.len(), 2);
+    }
+
+    #[test]
+    fn chatgpt_report_takes_plan_and_login_from_the_token() {
+        use base64::Engine;
+        let claims = serde_json::json!({
+            "https://api.openai.com/auth": {"chatgpt_plan_type": "plus", "chatgpt_account_id": "a"},
+            "https://api.openai.com/profile": {"email": "me@example.com"}
+        });
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&claims).unwrap());
+        let token = format!("h.{payload}.s");
+        let r = with_chatgpt_login(UsageReport::default(), &token);
+        assert_eq!(r.plan.as_deref(), Some("plus"));
+        assert_eq!(r.login_label.as_deref(), Some("me@example.com"));
+        let r = with_chatgpt_login(
+            UsageReport {
+                plan: Some("pro".into()),
+                ..Default::default()
+            },
+            &token,
+        );
+        assert_eq!(r.plan.as_deref(), Some("pro"), "the endpoint's plan wins");
+    }
+
     #[test]
     fn first_poll_is_due() {
         assert!(is_due(&Schedule::default(), 1_000, None, None, &T));
@@ -747,6 +854,7 @@ mod tests {
             last_poll: Some(now - 10_000),
             failures: 2,
             retry_at: Some(now + 5),
+            ..Default::default()
         };
         assert!(!is_due(&s, now, Some(now), None, &T));
         assert!(is_due(&s, now + 5, Some(now), None, &T));

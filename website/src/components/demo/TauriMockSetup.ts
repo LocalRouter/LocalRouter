@@ -91,6 +91,7 @@ function mockUsageWindow(
 function mockUsageAccount(partial: Partial<UsageAccountView> & Pick<UsageAccountView, 'id' | 'provider' | 'provider_label' | 'kind' | 'title'>): UsageAccountView {
   const now = Math.floor(Date.now() / 1000)
   const account: UsageAccountView = {
+    login_label: null,
     plan: null,
     plan_label: null,
     monthly_price_usd: null,

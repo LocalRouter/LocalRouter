@@ -15,6 +15,8 @@ import type {
   UsageWindowView,
 } from '@/types/tauri-commands'
 import {
+  awaitingLimits,
+  displayTitle,
   formatAgo,
   formatClock,
   formatCount,
@@ -130,7 +132,12 @@ export function UsageLimits({ className, onOpenSettings }: UsageLimitsProps) {
             ) : (
               <div className="grid gap-2 [grid-template-columns:repeat(auto-fill,minmax(270px,1fr))]">
                 {[...subscriptions, ...others].map((a) => (
-                  <AccountCard key={a.id} account={a} now={now} />
+                  <AccountCard
+                    key={a.id}
+                    account={a}
+                    title={displayTitle(a, accounts)}
+                    now={now}
+                  />
                 ))}
               </div>
             )}
@@ -238,7 +245,15 @@ function StatusBadge({ status }: { status: string | null }) {
   )
 }
 
-function AccountCard({ account: a, now }: { account: UsageAccountView; now: number }) {
+function AccountCard({
+  account: a,
+  title,
+  now,
+}: {
+  account: UsageAccountView
+  title: string
+  now: number
+}) {
   const updated = Math.max(a.last_seen, ...a.windows.map((w) => w.updated_at))
   return (
     <article className="flex flex-col gap-1.5 rounded-lg border bg-background/40 px-3 py-2">
@@ -246,9 +261,10 @@ function AccountCard({ account: a, now }: { account: UsageAccountView; now: numb
         <ProviderIcon providerId={a.provider} size={16} className="shrink-0" />
         <Tooltip>
           <TooltipTrigger asChild>
-            <h3 className="truncate text-sm font-semibold">{a.title}</h3>
+            <h3 className="truncate text-sm font-semibold">{title}</h3>
           </TooltipTrigger>
           <TooltipContent className="max-w-xs text-xs">
+            {a.login_label && <>{a.login_label} · </>}
             {a.kind === 'subscription' ? 'Subscription' : 'API usage'}
             {a.plan_overridden && ' · plan set by you'} · via{' '}
             {a.sources.map((s) => SOURCE_LABEL[s]).join(', ') || 'LocalRouter'} · updated{' '}
@@ -272,6 +288,12 @@ function AccountCard({ account: a, now }: { account: UsageAccountView; now: numb
         <QuotaRow key={q.id} quota={q} now={now} />
       ))}
       {a.credits && <CreditsRow credits={a.credits} />}
+      {awaitingLimits(a) && (
+        <p className="text-xs text-muted-foreground">
+          No limits reported yet. They show after the next request, or when LocalRouter may ask
+          the provider (Usage settings).
+        </p>
+      )}
 
       <RoutedSpend account={a} />
     </article>

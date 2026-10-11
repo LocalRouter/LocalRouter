@@ -547,7 +547,12 @@ async fn proxy_request(
     recorded.response_is_sse = is_sse;
     let on_end: Box<dyn FnOnce(Vec<u8>) + Send> = Box::new(move |bytes| {
         if let Some((tracker, endpoint)) = usage_body {
-            tracker.observe_usage_body(endpoint, &bytes, lr_usage::DataSource::ProxyUsageResponse);
+            tracker.observe_usage_body(
+                endpoint,
+                recorded.usage_account.as_ref(),
+                &bytes,
+                lr_usage::DataSource::ProxyUsageResponse,
+            );
         }
         let mut ex = recorded;
         ex.response_body = (!bytes.is_empty()).then_some(bytes);

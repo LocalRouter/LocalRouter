@@ -205,6 +205,7 @@ mod tests {
             provider_label: "Anthropic".into(),
             kind,
             title: "Claude Max 20x".into(),
+            login_label: None,
             plan: None,
             plan_label: None,
             monthly_price_usd: None,

@@ -383,8 +383,13 @@ impl WsSession {
     async fn on_server_message(&self, text: &str) {
         let json = serde_json::from_str::<Value>(text).ok();
         if let (Some(usage), Some(j)) = (&self.usage, &json) {
-            // Rate-limit events can arrive outside a request cycle.
-            usage.observe_stream_event(j, lr_usage::DataSource::ProxyHeaders);
+            // Rate-limit events can arrive outside a request cycle. They
+            // belong to the login that opened the connection.
+            usage.observe_stream_event(
+                self.base.usage_account.as_ref(),
+                j,
+                lr_usage::DataSource::ProxyHeaders,
+            );
         }
         let terminal = json
             .as_ref()
@@ -696,6 +701,48 @@ mod tests {
         frame.extend(std::iter::repeat_n(0x41, 128));
         assert!(d.push(&frame).is_empty());
         assert!(d.is_poisoned());
+    }
+
+    /// `codex.rate_limits` events are filed under the login that opened the
+    /// connection, so a second ChatGPT account gets its own usage account.
+    #[tokio::test]
+    async fn rate_limit_events_go_to_the_connections_login() {
+        let store = Arc::new(MonitorEventStore::new(16));
+        let interceptor = Arc::new(PassiveInterceptor::new(store));
+        let usage = Arc::new(lr_usage::UsageTracker::new(Default::default()));
+        // Another login already holds the family's base account.
+        usage.record_request(
+            &lr_usage::AccountRef::chatgpt(Some("acc-1")),
+            lr_usage::LedgerEntry::default(),
+        );
+        let login = lr_usage::AccountRef::chatgpt(Some("acc-2"));
+        let mut base = base_exchange();
+        base.usage_account = Some(login.clone());
+        let session = WsSession::new(interceptor, WireFormat::OpenAiResponses, base)
+            .with_usage(Some(usage.clone()));
+        session
+            .on_server_message(
+                &json!({"type":"codex.rate_limits","plan_type":"prolite","rate_limits":{
+                    "primary":{"used_percent":13,"window_minutes":10080,"reset_at":4102444800i64},
+                    "secondary":null}})
+                .to_string(),
+            )
+            .await;
+        let snap = usage.snapshot();
+        let account = snap
+            .accounts
+            .iter()
+            .find(|a| a.id == login.id())
+            .expect("the second login's account");
+        assert_eq!(account.windows.len(), 1);
+        assert_eq!(account.windows[0].id, "seven_day");
+        assert_eq!(account.windows[0].used_percent, 13.0);
+        let first = snap
+            .accounts
+            .iter()
+            .find(|a| a.id == "openai:subscription")
+            .unwrap();
+        assert!(first.windows.is_empty());
     }
 
     #[tokio::test]

@@ -98,6 +98,9 @@ pub struct UsageAccountView {
     pub kind: AccountKind,
     /// e.g. "Claude Max 20x" or "OpenAI API".
     pub title: String,
+    /// Who the login belongs to (e.g. a ChatGPT account's email), when the
+    /// family's logins are told apart.
+    pub login_label: Option<String>,
     pub plan: Option<String>,
     pub plan_label: Option<String>,
     pub monthly_price_usd: Option<f64>,
@@ -208,6 +211,7 @@ fn account_view(
         provider_label: provider_label(&acct.provider),
         kind: acct.kind,
         title,
+        login_label: acct.login_label.clone(),
         plan: acct.plan.clone(),
         plan_label,
         monthly_price_usd,

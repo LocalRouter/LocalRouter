@@ -8,7 +8,7 @@
 
 use serde_json::Value;
 
-use crate::headers::{codex_window, parse_epoch};
+use crate::headers::{codex_slot_has_data, codex_window, parse_epoch};
 use crate::types::{
     id_fragment, window_label, window_secs_for, CreditsReading, QuotaReading, UsageReport,
     WindowReading,
@@ -136,15 +136,20 @@ pub fn parse_claude_profile(body: &Value) -> Option<String> {
 }
 
 fn codex_window_reading(family: &str, slot: &str, w: &Value, now: i64) -> Option<WindowReading> {
-    let used = f64_of(w.get("used_percent"))?;
+    let used = f64_of(w.get("used_percent")).filter(|u| u.is_finite())?;
     let secs = f64_of(w.get("limit_window_seconds"))
         .map(|s| s as i64)
-        .or_else(|| f64_of(w.get("window_minutes")).map(|m| (m * 60.0) as i64));
-    let resets_at = time_of(w.get("reset_at")).or_else(|| {
-        f64_of(w.get("reset_after_seconds"))
-            .or_else(|| f64_of(w.get("resets_in_seconds")))
-            .and_then(|s| crate::headers::after_secs(now, s))
-    });
+        .or_else(|| f64_of(w.get("window_minutes")).map(|m| (m * 60.0) as i64))
+        .filter(|s| *s > 0);
+    let reset_at = time_of(w.get("reset_at"));
+    let reset_after = f64_of(w.get("reset_after_seconds"))
+        .or_else(|| f64_of(w.get("resets_in_seconds")))
+        .filter(|s| *s > 0.0);
+    if !codex_slot_has_data(used, secs, reset_at.is_some() || reset_after.is_some()) {
+        return None;
+    }
+    let resets_at =
+        reset_at.or_else(|| reset_after.and_then(|s| crate::headers::after_secs(now, s)));
     let (id, label) = codex_window(family, slot, secs);
     Some(WindowReading {
         id,
@@ -223,6 +228,7 @@ pub fn parse_codex_rate_limits_event(event: &Value, now: i64) -> Option<UsageRep
     }
     let family = event
         .get("metered_limit_name")
+        .or_else(|| event.get("limit_name"))
         .and_then(Value::as_str)
         .unwrap_or("codex");
     let mut report = UsageReport {
@@ -398,6 +404,37 @@ mod tests {
             .iter()
             .any(|w| w.id == "seven_day" && w.used_percent == 30.0));
         assert!(parse_codex_rate_limits_event(&json!({"type":"response.created"}), 0).is_none());
+    }
+
+    /// Pro Lite: the weekly limit is the primary window; the secondary slot
+    /// is absent or empty and must not overwrite it.
+    #[test]
+    fn codex_weekly_primary_with_empty_secondary() {
+        let ev = json!({"type":"codex.rate_limits","plan_type":"prolite",
+            "rate_limits":{"allowed":true,"limit_reached":false,
+                "primary":{"used_percent":13,"window_minutes":10080,"reset_at":1791985298i64},
+                "secondary":{"used_percent":0,"window_minutes":0,"reset_at":null}},
+            "credits":{"has_credits":false,"unlimited":false,"balance":"0"}});
+        let r = parse_codex_rate_limits_event(&ev, 0).unwrap();
+        assert_eq!(r.windows.len(), 1);
+        assert_eq!(r.windows[0].id, "seven_day");
+        assert_eq!(r.windows[0].used_percent, 13.0);
+        assert_eq!(r.windows[0].resets_at, Some(1_791_985_298));
+        assert_eq!(r.credits, None);
+
+        let ev = json!({"type":"codex.rate_limits","limit_name":"codex",
+            "rate_limits":{"primary":{"used_percent":13,"window_minutes":10080},"secondary":null}});
+        let r = parse_codex_rate_limits_event(&ev, 0).unwrap();
+        assert_eq!(r.windows.len(), 1);
+        assert_eq!(r.windows[0].id, "seven_day");
+
+        let body = json!({"plan_type":"prolite","rate_limit":{"allowed":true,"limit_reached":false,
+            "primary_window":{"used_percent":13,"limit_window_seconds":604800,"reset_after_seconds":597265,"reset_at":1791985298i64},
+            "secondary_window":{"used_percent":0,"limit_window_seconds":0,"reset_after_seconds":0,"reset_at":0}}});
+        let r = parse_codex_usage(&body, 0).unwrap();
+        let ids: Vec<_> = r.windows.iter().map(|w| w.id.as_str()).collect();
+        assert_eq!(ids, vec!["seven_day"]);
+        assert_eq!(r.windows[0].used_percent, 13.0);
     }
 
     #[test]

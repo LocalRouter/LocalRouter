@@ -4,7 +4,8 @@
 //! on traffic LocalRouter already carries (proxy and gateway), and — when the
 //! user allows it — LocalRouter asking providers' usage endpoints. The
 //! [`UsageTracker`] merges them per account (provider family × subscription
-//! or API) and derives pace, projections and value estimates for the UI.
+//! or API × login, where logins are told apart) and derives pace,
+//! projections and value estimates for the UI.
 
 pub mod bodies;
 pub mod classify;
@@ -64,13 +65,23 @@ impl UsageTracker {
         if report.plan.is_none() {
             report.plan = classified.plan_hint.clone();
         }
+        report.login_label = classified.login_label.clone();
         self.apply(&classified.account, &report, source);
         Some(classified.account)
     }
 
     /// Observe a usage-endpoint response body (e.g. Claude Code's `/usage`
-    /// passing through the proxy).
-    pub fn observe_usage_body(&self, endpoint: UsageEndpoint, body: &[u8], source: DataSource) {
+    /// passing through the proxy). `account` is what [`observe_response`]
+    /// classified the request as; it says which login the body is for.
+    ///
+    /// [`observe_response`]: Self::observe_response
+    pub fn observe_usage_body(
+        &self,
+        endpoint: UsageEndpoint,
+        account: Option<&AccountRef>,
+        body: &[u8],
+        source: DataSource,
+    ) {
         if !self.is_enabled() {
             return;
         }
@@ -91,7 +102,7 @@ impl UsageTracker {
                 }),
             ),
             UsageEndpoint::CodexUsage => (
-                AccountRef::subscription("openai"),
+                chatgpt_account(account),
                 bodies::parse_codex_usage(&json, now),
             ),
             UsageEndpoint::CopilotUser => (
@@ -105,15 +116,29 @@ impl UsageTracker {
     }
 
     /// Observe one in-stream event (SSE `data:` payload or websocket text
-    /// frame) from the ChatGPT backend.
-    pub fn observe_stream_event(&self, event: &serde_json::Value, source: DataSource) {
+    /// frame) from the ChatGPT backend. `account` is what the request that
+    /// opened the stream was classified as.
+    pub fn observe_stream_event(
+        &self,
+        account: Option<&AccountRef>,
+        event: &serde_json::Value,
+        source: DataSource,
+    ) {
         if !self.is_enabled() {
             return;
         }
         if let Some(report) = bodies::parse_codex_rate_limits_event(event, tracker::now_secs()) {
-            self.apply(&AccountRef::subscription("openai"), &report, source);
+            self.apply(&chatgpt_account(account), &report, source);
         }
     }
+}
+
+/// `account` when it is a ChatGPT subscription, else the ChatGPT family's.
+fn chatgpt_account(account: Option<&AccountRef>) -> AccountRef {
+    account
+        .filter(|a| a.provider == "openai" && a.kind == AccountKind::Subscription)
+        .cloned()
+        .unwrap_or_else(|| AccountRef::chatgpt(None))
 }
 
 #[cfg(test)]
@@ -156,15 +181,18 @@ mod tests {
         let t = UsageTracker::new(UsageTrackingConfig::default());
         t.observe_usage_body(
             UsageEndpoint::ClaudeUsage,
+            None,
             br#"{"five_hour":{"utilization":3,"resets_at":"2099-01-01T00:00:00Z"}}"#,
             DataSource::ProxyUsageResponse,
         );
         t.observe_usage_body(
             UsageEndpoint::CodexUsage,
+            None,
             b"not json",
             DataSource::ProxyUsageResponse,
         );
         t.observe_stream_event(
+            None,
             &serde_json::json!({"type":"codex.rate_limits","rate_limits":{"secondary":{"used_percent":12,"window_minutes":10080,"reset_at":4102444800i64}}}),
             DataSource::ProxyHeaders,
         );
@@ -172,5 +200,117 @@ mod tests {
         let ids: Vec<_> = snap.accounts.iter().map(|a| a.id.as_str()).collect();
         assert!(ids.contains(&"anthropic:subscription"));
         assert!(ids.contains(&"openai:subscription"));
+    }
+
+    fn chatgpt_request(account_id: &str, email: Option<&str>) -> HeaderMap {
+        let token = classify::chatgpt_jwt(account_id, "prolite", email);
+        let mut req = HeaderMap::new();
+        req.insert("authorization", format!("Bearer {token}").parse().unwrap());
+        req
+    }
+
+    fn codex_weekly(used: &str) -> HeaderMap {
+        let mut resp = HeaderMap::new();
+        resp.insert("x-codex-primary-used-percent", used.parse().unwrap());
+        resp.insert("x-codex-primary-window-minutes", "10080".parse().unwrap());
+        resp.insert(
+            "x-codex-primary-reset-at",
+            (tracker::now_secs() + 86_400).to_string().parse().unwrap(),
+        );
+        resp.insert("x-codex-secondary-used-percent", "0".parse().unwrap());
+        resp.insert("x-codex-secondary-window-minutes", "0".parse().unwrap());
+        resp.insert("x-codex-secondary-reset-at", "".parse().unwrap());
+        resp
+    }
+
+    fn weekly_of(t: &UsageTracker, id: &str) -> f64 {
+        let snap = t.snapshot();
+        let a = snap.accounts.iter().find(|a| a.id == id).unwrap();
+        a.windows
+            .iter()
+            .find(|w| w.id == "seven_day")
+            .unwrap()
+            .used_percent
+    }
+
+    /// The ChatGPT provider (gateway), Codex through the proxy (HTTP and
+    /// websocket) and the poller all feed one card per ChatGPT account.
+    #[test]
+    fn same_chatgpt_account_from_every_source_is_one_account() {
+        let t = UsageTracker::new(UsageTrackingConfig::default());
+        let req = chatgpt_request("acc-1", Some("me@example.com"));
+        let gateway = t
+            .observe_response(
+                "chatgpt.com",
+                "/backend-api/codex/responses",
+                &req,
+                &codex_weekly("13"),
+                DataSource::GatewayHeaders,
+            )
+            .unwrap();
+        let proxied = t
+            .observe_response(
+                "chatgpt.com",
+                "/backend-api/codex/responses",
+                &chatgpt_request("acc-1", None),
+                &codex_weekly("14"),
+                DataSource::ProxyHeaders,
+            )
+            .unwrap();
+        assert_eq!(gateway, proxied);
+        t.observe_stream_event(
+            Some(&proxied),
+            &serde_json::json!({"type":"codex.rate_limits","rate_limits":{
+                "primary":{"used_percent":15,"window_minutes":10080,"reset_at":tracker::now_secs() + 86_400},
+                "secondary":null}}),
+            DataSource::ProxyHeaders,
+        );
+        t.record_request(
+            &AccountRef::chatgpt(Some("acc-1")),
+            LedgerEntry {
+                requests: 1,
+                ..Default::default()
+            },
+        );
+        let snap = t.snapshot();
+        assert_eq!(snap.accounts.len(), 1, "one card: {:?}", snap.accounts);
+        let a = &snap.accounts[0];
+        assert_eq!(
+            a.id, "openai:subscription",
+            "the first login keeps the base id"
+        );
+        assert_eq!(a.title, "ChatGPT Pro Lite");
+        assert_eq!(a.login_label.as_deref(), Some("me@example.com"));
+        assert_eq!(a.spend.requests_30d, 1);
+        assert_eq!(weekly_of(&t, "openai:subscription"), 15.0);
+        assert_eq!(a.windows.len(), 1, "the empty secondary adds no window");
+    }
+
+    #[test]
+    fn two_chatgpt_accounts_are_two_accounts() {
+        let t = UsageTracker::new(UsageTrackingConfig::default());
+        for (account, used) in [("acc-1", "10"), ("acc-2", "70"), ("acc-1", "11")] {
+            t.observe_response(
+                "chatgpt.com",
+                "/backend-api/codex/responses",
+                &chatgpt_request(account, None),
+                &codex_weekly(used),
+                DataSource::ProxyHeaders,
+            );
+        }
+        let second = AccountRef::chatgpt(Some("acc-2"));
+        assert_eq!(t.account_id(&second), second.id());
+        assert_eq!(t.snapshot().accounts.len(), 2);
+        assert_eq!(weekly_of(&t, "openai:subscription"), 11.0);
+        assert_eq!(weekly_of(&t, &second.id()), 70.0);
+        // A usage body for the second login lands on its account.
+        t.observe_usage_body(
+            UsageEndpoint::CodexUsage,
+            Some(&second),
+            br#"{"rate_limit":{"primary_window":{"used_percent":71,"limit_window_seconds":604800}}}"#,
+            DataSource::ProxyUsageResponse,
+        );
+        assert_eq!(weekly_of(&t, &second.id()), 71.0);
+        assert_eq!(weekly_of(&t, "openai:subscription"), 11.0);
     }
 }
