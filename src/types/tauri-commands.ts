@@ -51,6 +51,8 @@ export interface McpPermissions {
  */
 export interface SkillsPermissions {
   global: PermissionState
+  /** Per-source overrides keyed by the configured source path (omitted when empty) */
+  sources?: Record<string, PermissionState>
   skills: Record<string, PermissionState>
   tools: Record<string, PermissionState>
 }
@@ -1335,6 +1337,25 @@ export interface SkillInfo {
 }
 
 /**
+ * Kind of a configured skill source.
+ * Rust: src-tauri/src/ui/commands.rs - SkillSourceKind enum
+ */
+export type SkillSourceKind = 'user' | 'marketplace' | 'archive' | 'directory'
+
+/**
+ * A configured skill source path and its discovered skills.
+ * Rust: src-tauri/src/ui/commands.rs - SkillSourceInfo struct
+ */
+export interface SkillSourceInfo {
+  /** Source path exactly as configured (key for source-level permissions) */
+  path: string
+  label: string
+  kind: SkillSourceKind
+  exists: boolean
+  skill_count: number
+}
+
+/**
  * Skill definition with full details.
  * Rust: crates/lr-skills/src/types.rs - SkillDefinition struct
  */
@@ -1373,7 +1394,7 @@ export interface SkillToolInfo {
  */
 export interface SkillFileInfo {
   name: string
-  category: 'script' | 'reference' | 'asset'
+  category: 'skill_md' | 'script' | 'reference' | 'asset'
   content_preview?: string | null
 }
 
@@ -2710,7 +2731,7 @@ export interface GetFeatureClientsStatusParams {
 export type McpPermissionLevel = 'global' | 'server' | 'tool' | 'resource' | 'prompt'
 
 /** Permission level for skills permissions */
-export type SkillsPermissionLevel = 'global' | 'skill' | 'tool'
+export type SkillsPermissionLevel = 'global' | 'source' | 'skill' | 'tool'
 
 /** Permission level for model permissions */
 export type ModelPermissionLevel = 'global' | 'provider' | 'model'
@@ -2770,8 +2791,10 @@ export interface ClearClientMcpChildPermissionsParams {
 /** Params for clear_client_skills_child_permissions */
 export interface ClearClientSkillsChildPermissionsParams {
   clientId: string
-  /** If provided, only clear children of this skill. If null, clear all children. */
+  /** If provided, only clear children of this skill. */
   skillName?: string | null
+  /** If provided (and skillName is not), clear the skills of this source and their tools. If both are null, clear all children. */
+  sourcePath?: string | null
 }
 
 /** Params for clear_client_model_child_permissions */
@@ -3070,6 +3093,12 @@ export interface DeleteUserSkillParams {
 /** Params for set_skill_enabled */
 export interface SetSkillEnabledParams {
   skillName: string
+  enabled: boolean
+}
+
+/** Params for set_skills_enabled */
+export interface SetSkillsEnabledParams {
+  skillNames: string[]
   enabled: boolean
 }
 

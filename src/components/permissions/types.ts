@@ -10,6 +10,8 @@ export interface McpPermissions {
 
 export interface SkillsPermissions {
   global: PermissionState
+  /** Per-source overrides keyed by the configured source path (omitted when empty) */
+  sources?: Record<string, PermissionState>
   skills: Record<string, PermissionState>
   tools: Record<string, PermissionState>
 }
@@ -38,6 +40,8 @@ export interface TreeNode {
   error?: string
   /** Disable permission toggling for this node (e.g. non-indexable tools) */
   disabled?: boolean
+  /** Extra text matched by tree search (e.g. a path or tags), not displayed */
+  searchText?: string
 }
 
 export interface PermissionTreeProps {

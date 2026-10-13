@@ -1793,6 +1793,7 @@ impl McpPermissions {
 ///
 /// Hierarchical permission system:
 /// - global: applies to all skills
+/// - sources: per-source overrides (key: the configured skill source path)
 /// - skills: per-skill overrides
 /// - tools: per-skill-tool overrides (key: "skill_name__tool_name")
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -1800,6 +1801,10 @@ pub struct SkillsPermissions {
     /// Global permission for all skills
     #[serde(default)]
     pub global: PermissionState,
+    /// Per-source permission overrides (source path -> state). The key is the
+    /// path exactly as configured in `skills.paths`.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub sources: std::collections::HashMap<String, PermissionState>,
     /// Per-skill permission overrides (skill_name -> state)
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub skills: std::collections::HashMap<String, PermissionState>,
@@ -1809,33 +1814,45 @@ pub struct SkillsPermissions {
 }
 
 impl SkillsPermissions {
-    /// Resolve the effective permission for a skill
-    pub fn resolve_skill(&self, skill_name: &str) -> PermissionState {
-        self.skills
-            .get(skill_name)
+    /// Resolve the effective permission for a skill source
+    ///
+    /// Resolution order: source -> global
+    pub fn resolve_source(&self, source: &str) -> PermissionState {
+        self.sources
+            .get(source)
             .cloned()
             .unwrap_or(self.global.clone())
     }
 
+    /// Resolve the effective permission for a skill loaded from `source`
+    ///
+    /// Resolution order: skill -> source -> global
+    pub fn resolve_skill(&self, source: &str, skill_name: &str) -> PermissionState {
+        self.skills
+            .get(skill_name)
+            .cloned()
+            .unwrap_or_else(|| self.resolve_source(source))
+    }
+
     /// Resolve the effective permission for a skill tool
     ///
-    /// Resolution order: tool -> skill -> global
-    pub fn resolve_tool(&self, skill_name: &str, tool_name: &str) -> PermissionState {
+    /// Resolution order: tool -> skill -> source -> global
+    pub fn resolve_tool(&self, source: &str, skill_name: &str, tool_name: &str) -> PermissionState {
         let tool_key = format!("{}__{}", skill_name, tool_name);
         if let Some(state) = self.tools.get(&tool_key) {
             return state.clone();
         }
-        self.resolve_skill(skill_name)
+        self.resolve_skill(source, skill_name)
     }
 
     /// Check if a skill has any enabled permissions (skill-level or tool-level)
     ///
     /// Returns true if:
-    /// - The skill itself is enabled (Allow/Ask), OR
+    /// - The skill itself is enabled (Allow/Ask), directly or via its source, OR
     /// - Any tool under this skill is explicitly enabled
-    pub fn has_any_enabled_for_skill(&self, skill_name: &str) -> bool {
+    pub fn has_any_enabled_for_skill(&self, source: &str, skill_name: &str) -> bool {
         // Check skill-level permission
-        if self.resolve_skill(skill_name).is_enabled() {
+        if self.resolve_skill(source, skill_name).is_enabled() {
             return true;
         }
 
@@ -1854,29 +1871,15 @@ impl SkillsPermissions {
     ///
     /// Returns true if:
     /// - Global skills permission is enabled, OR
-    /// - Any skill has an enabled permission, OR
-    /// - Any skill tool is explicitly enabled
+    /// - Any source, skill or skill tool has an enabled permission
     pub fn has_any_access(&self) -> bool {
-        // Check global permission
-        if self.global.is_enabled() {
-            return true;
-        }
-
-        // Check skill-level permissions
-        for state in self.skills.values() {
-            if state.is_enabled() {
-                return true;
-            }
-        }
-
-        // Check tool-level permissions
-        for state in self.tools.values() {
-            if state.is_enabled() {
-                return true;
-            }
-        }
-
-        false
+        self.global.is_enabled()
+            || self
+                .sources
+                .values()
+                .chain(self.skills.values())
+                .chain(self.tools.values())
+                .any(|state| state.is_enabled())
     }
 }
 
@@ -6593,8 +6596,72 @@ models:
             .tools
             .insert("s__run".to_string(), PermissionState::Allow);
         assert!(perms.has_any_access());
-        assert!(perms.has_any_enabled_for_skill("s"));
-        assert_eq!(perms.resolve_skill("s"), PermissionState::Off);
+        assert!(perms.has_any_enabled_for_skill("/src", "s"));
+        assert_eq!(perms.resolve_skill("/src", "s"), PermissionState::Off);
+    }
+
+    #[test]
+    fn skills_permissions_resolve_through_source() {
+        let mut perms = SkillsPermissions::default(); // global off
+        perms
+            .sources
+            .insert("/a".to_string(), PermissionState::Allow);
+        assert!(perms.has_any_access());
+
+        // Skills inherit from their source, other sources from global
+        assert_eq!(perms.resolve_skill("/a", "s"), PermissionState::Allow);
+        assert_eq!(perms.resolve_skill("/b", "s"), PermissionState::Off);
+        assert!(perms.has_any_enabled_for_skill("/a", "s"));
+        assert!(!perms.has_any_enabled_for_skill("/b", "s"));
+
+        // Skill overrides source, tool overrides skill
+        perms.skills.insert("s".to_string(), PermissionState::Ask);
+        assert_eq!(perms.resolve_skill("/a", "s"), PermissionState::Ask);
+        assert_eq!(perms.resolve_tool("/a", "s", "run"), PermissionState::Ask);
+        assert_eq!(perms.resolve_tool("/a", "t", "run"), PermissionState::Allow);
+        perms
+            .tools
+            .insert("s__run".to_string(), PermissionState::Off);
+        assert_eq!(perms.resolve_tool("/a", "s", "run"), PermissionState::Off);
+
+        // Source off under global allow
+        let mut perms = SkillsPermissions {
+            global: PermissionState::Allow,
+            ..Default::default()
+        };
+        perms.sources.insert("/a".to_string(), PermissionState::Off);
+        assert_eq!(perms.resolve_skill("/a", "s"), PermissionState::Off);
+        assert_eq!(perms.resolve_source("/b"), PermissionState::Allow);
+    }
+
+    #[test]
+    fn skills_permissions_without_sources_stay_compatible() {
+        // Configs written before source-level permissions load unchanged
+        let yaml = "global: ask\nskills:\n  weather: allow\ntools:\n  weather__SkillRead: off\n";
+        let perms: SkillsPermissions = serde_yaml::from_str(yaml).unwrap();
+        assert!(perms.sources.is_empty());
+        assert_eq!(
+            perms.resolve_skill("/any", "weather"),
+            PermissionState::Allow
+        );
+        assert_eq!(perms.resolve_skill("/any", "other"), PermissionState::Ask);
+        assert_eq!(
+            perms.resolve_tool("/any", "weather", "SkillRead"),
+            PermissionState::Off
+        );
+
+        // ...and are written back without a sources key
+        let out = serde_yaml::to_string(&perms).unwrap();
+        assert!(!out.contains("sources"), "{out}");
+
+        // Source overrides round-trip
+        let mut perms = perms;
+        perms
+            .sources
+            .insert("/Users/me/skills".to_string(), PermissionState::Allow);
+        let back: SkillsPermissions =
+            serde_yaml::from_str(&serde_yaml::to_string(&perms).unwrap()).unwrap();
+        assert_eq!(back, perms);
     }
 
     #[test]

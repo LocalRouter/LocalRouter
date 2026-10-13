@@ -298,13 +298,14 @@ mod skills_permissions {
     fn test_global_allow_inherits_to_all() {
         let perms = SkillsPermissions {
             global: PermissionState::Allow,
+            sources: HashMap::new(),
             skills: HashMap::new(),
             tools: HashMap::new(),
         };
 
-        assert_eq!(perms.resolve_skill("any-skill"), PermissionState::Allow);
+        assert_eq!(perms.resolve_skill("", "any-skill"), PermissionState::Allow);
         assert_eq!(
-            perms.resolve_tool("any-skill", "any-tool"),
+            perms.resolve_tool("", "any-skill", "any-tool"),
             PermissionState::Allow
         );
     }
@@ -313,13 +314,14 @@ mod skills_permissions {
     fn test_global_ask_inherits_to_all() {
         let perms = SkillsPermissions {
             global: PermissionState::Ask,
+            sources: HashMap::new(),
             skills: HashMap::new(),
             tools: HashMap::new(),
         };
 
-        assert_eq!(perms.resolve_skill("any-skill"), PermissionState::Ask);
+        assert_eq!(perms.resolve_skill("", "any-skill"), PermissionState::Ask);
         assert_eq!(
-            perms.resolve_tool("any-skill", "any-tool"),
+            perms.resolve_tool("", "any-skill", "any-tool"),
             PermissionState::Ask
         );
     }
@@ -328,13 +330,14 @@ mod skills_permissions {
     fn test_global_off_inherits_to_all() {
         let perms = SkillsPermissions {
             global: PermissionState::Off,
+            sources: HashMap::new(),
             skills: HashMap::new(),
             tools: HashMap::new(),
         };
 
-        assert_eq!(perms.resolve_skill("any-skill"), PermissionState::Off);
+        assert_eq!(perms.resolve_skill("", "any-skill"), PermissionState::Off);
         assert_eq!(
-            perms.resolve_tool("any-skill", "any-tool"),
+            perms.resolve_tool("", "any-skill", "any-tool"),
             PermissionState::Off
         );
     }
@@ -346,28 +349,32 @@ mod skills_permissions {
 
         let perms = SkillsPermissions {
             global: PermissionState::Allow,
+            sources: HashMap::new(),
             skills,
             tools: HashMap::new(),
         };
 
         // Skill has explicit override
-        assert_eq!(perms.resolve_skill("filesystem"), PermissionState::Ask);
+        assert_eq!(perms.resolve_skill("", "filesystem"), PermissionState::Ask);
 
         // Other skill inherits from global
-        assert_eq!(perms.resolve_skill("http"), PermissionState::Allow);
+        assert_eq!(perms.resolve_skill("", "http"), PermissionState::Allow);
 
         // Tools on filesystem skill inherit from skill override
         assert_eq!(
-            perms.resolve_tool("filesystem", "read_file"),
+            perms.resolve_tool("", "filesystem", "read_file"),
             PermissionState::Ask
         );
         assert_eq!(
-            perms.resolve_tool("filesystem", "write_file"),
+            perms.resolve_tool("", "filesystem", "write_file"),
             PermissionState::Ask
         );
 
         // Tools on http skill inherit from global
-        assert_eq!(perms.resolve_tool("http", "get"), PermissionState::Allow);
+        assert_eq!(
+            perms.resolve_tool("", "http", "get"),
+            PermissionState::Allow
+        );
     }
 
     #[test]
@@ -381,25 +388,26 @@ mod skills_permissions {
 
         let perms = SkillsPermissions {
             global: PermissionState::Allow,
+            sources: HashMap::new(),
             skills,
             tools,
         };
 
         // Regular tool inherits from skill
         assert_eq!(
-            perms.resolve_tool("filesystem", "read_file"),
+            perms.resolve_tool("", "filesystem", "read_file"),
             PermissionState::Allow
         );
 
         // delete_file has Ask override
         assert_eq!(
-            perms.resolve_tool("filesystem", "delete_file"),
+            perms.resolve_tool("", "filesystem", "delete_file"),
             PermissionState::Ask
         );
 
         // format_disk has Off override
         assert_eq!(
-            perms.resolve_tool("filesystem", "format_disk"),
+            perms.resolve_tool("", "filesystem", "format_disk"),
             PermissionState::Off
         );
     }
@@ -423,34 +431,38 @@ mod skills_permissions {
 
         let perms = SkillsPermissions {
             global: PermissionState::Allow,
+            sources: HashMap::new(),
             skills,
             tools,
         };
 
         // Filesystem skill has Ask override
-        assert_eq!(perms.resolve_skill("filesystem"), PermissionState::Ask);
+        assert_eq!(perms.resolve_skill("", "filesystem"), PermissionState::Ask);
         // read_file has explicit Allow override
         assert_eq!(
-            perms.resolve_tool("filesystem", "read_file"),
+            perms.resolve_tool("", "filesystem", "read_file"),
             PermissionState::Allow
         );
         // write_file inherits from skill (Ask)
         assert_eq!(
-            perms.resolve_tool("filesystem", "write_file"),
+            perms.resolve_tool("", "filesystem", "write_file"),
             PermissionState::Ask
         );
         // delete_file has explicit Off override
         assert_eq!(
-            perms.resolve_tool("filesystem", "delete_file"),
+            perms.resolve_tool("", "filesystem", "delete_file"),
             PermissionState::Off
         );
 
         // Http skill inherits from global (Allow)
-        assert_eq!(perms.resolve_skill("http"), PermissionState::Allow);
+        assert_eq!(perms.resolve_skill("", "http"), PermissionState::Allow);
         // get inherits from skill (Allow)
-        assert_eq!(perms.resolve_tool("http", "get"), PermissionState::Allow);
+        assert_eq!(
+            perms.resolve_tool("", "http", "get"),
+            PermissionState::Allow
+        );
         // post has explicit Ask override
-        assert_eq!(perms.resolve_tool("http", "post"), PermissionState::Ask);
+        assert_eq!(perms.resolve_tool("", "http", "post"), PermissionState::Ask);
     }
 }
 
@@ -779,17 +791,18 @@ mod child_overrides_parent {
 
         let perms = SkillsPermissions {
             global: PermissionState::Off,
+            sources: HashMap::new(),
             skills,
             tools,
         };
 
-        assert_eq!(perms.resolve_skill("filesystem"), PermissionState::Off);
+        assert_eq!(perms.resolve_skill("", "filesystem"), PermissionState::Off);
         assert_eq!(
-            perms.resolve_tool("filesystem", "read_file"),
+            perms.resolve_tool("", "filesystem", "read_file"),
             PermissionState::Allow
         );
         assert_eq!(
-            perms.resolve_tool("filesystem", "write_file"),
+            perms.resolve_tool("", "filesystem", "write_file"),
             PermissionState::Off
         );
     }
@@ -804,12 +817,13 @@ mod child_overrides_parent {
 
         let perms = SkillsPermissions {
             global: PermissionState::Off,
+            sources: HashMap::new(),
             skills,
             tools,
         };
 
         assert_eq!(
-            perms.resolve_tool("filesystem", "read_file"),
+            perms.resolve_tool("", "filesystem", "read_file"),
             PermissionState::Ask
         );
     }
@@ -821,13 +835,14 @@ mod child_overrides_parent {
 
         let perms = SkillsPermissions {
             global: PermissionState::Off,
+            sources: HashMap::new(),
             skills: HashMap::new(),
             tools,
         };
 
-        assert_eq!(perms.resolve_skill("filesystem"), PermissionState::Off);
+        assert_eq!(perms.resolve_skill("", "filesystem"), PermissionState::Off);
         assert_eq!(
-            perms.resolve_tool("filesystem", "read_file"),
+            perms.resolve_tool("", "filesystem", "read_file"),
             PermissionState::Allow
         );
     }
@@ -1015,13 +1030,14 @@ mod has_any_enabled_child_overrides {
 
         let perms = SkillsPermissions {
             global: PermissionState::Off,
+            sources: HashMap::new(),
             skills,
             tools,
         };
 
         // Skill is Off, but tool is Allow → should return true
-        assert!(perms.has_any_enabled_for_skill("filesystem"));
-        assert!(!perms.has_any_enabled_for_skill("http"));
+        assert!(perms.has_any_enabled_for_skill("", "filesystem"));
+        assert!(!perms.has_any_enabled_for_skill("", "http"));
     }
 
     #[test]
@@ -1034,11 +1050,12 @@ mod has_any_enabled_child_overrides {
 
         let perms = SkillsPermissions {
             global: PermissionState::Off,
+            sources: HashMap::new(),
             skills,
             tools,
         };
 
-        assert!(perms.has_any_enabled_for_skill("filesystem"));
+        assert!(perms.has_any_enabled_for_skill("", "filesystem"));
     }
 
     #[test]
@@ -1163,8 +1180,8 @@ mod empty_permissions {
         let perms = SkillsPermissions::default();
 
         assert_eq!(perms.global, PermissionState::Off);
-        assert_eq!(perms.resolve_skill("any"), PermissionState::Off);
-        assert_eq!(perms.resolve_tool("any", "tool"), PermissionState::Off);
+        assert_eq!(perms.resolve_skill("", "any"), PermissionState::Off);
+        assert_eq!(perms.resolve_tool("", "any", "tool"), PermissionState::Off);
     }
 
     #[test]

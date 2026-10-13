@@ -149,8 +149,14 @@ impl VirtualMcpServer for SkillsVirtualServer {
             .downcast_ref::<SkillsSessionState>()
             .expect("wrong state type for SkillsVirtualServer");
 
+        let skill_source = self
+            .skill_manager
+            .get(&skill_name)
+            .map(|s| s.source_path)
+            .unwrap_or_default();
         let ctx = FirewallCheckContext::SkillTool {
             permissions: &state.permissions,
+            skill_source: &skill_source,
             skill_name: &skill_name,
             tool_name,
             session_approved,

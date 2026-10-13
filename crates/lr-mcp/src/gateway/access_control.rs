@@ -47,13 +47,16 @@ pub fn check_mcp_tool_access(
 
 /// Check access for a skill tool call using skills_permissions hierarchy.
 ///
-/// Resolution order: tool -> skill -> global (handled by SkillsPermissions::resolve_tool)
+/// Resolution order: tool -> skill -> source -> global (handled by SkillsPermissions::resolve_tool)
 pub fn check_skill_tool_access(
     perms: &SkillsPermissions,
+    skill_source: &str,
     skill_name: &str,
     tool_name: &str,
 ) -> AccessDecision {
-    perms.resolve_tool(skill_name, tool_name).into()
+    perms
+        .resolve_tool(skill_source, skill_name, tool_name)
+        .into()
 }
 
 /// Check access for marketplace.
@@ -104,6 +107,8 @@ pub enum FirewallCheckContext<'a> {
     },
     SkillTool {
         permissions: &'a SkillsPermissions,
+        /// Configured source path the skill was loaded from
+        skill_source: &'a str,
         skill_name: &'a str,
         tool_name: &'a str,
         session_approved: bool,
@@ -161,12 +166,14 @@ pub fn check_needs_approval(ctx: &FirewallCheckContext) -> FirewallCheckResult {
         }
         FirewallCheckContext::SkillTool {
             permissions,
+            skill_source,
             skill_name,
             tool_name,
             session_approved,
             session_denied,
         } => {
-            let decision = check_skill_tool_access(permissions, skill_name, tool_name);
+            let decision =
+                check_skill_tool_access(permissions, skill_source, skill_name, tool_name);
             match decision {
                 AccessDecision::Allow => FirewallCheckResult::Allow,
                 AccessDecision::Deny => FirewallCheckResult::Deny,
@@ -356,7 +363,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            check_skill_tool_access(&perms, "weather", "skill_weather_run_main"),
+            check_skill_tool_access(&perms, "/skills", "weather", "skill_weather_run_main"),
             AccessDecision::Ask
         );
     }
@@ -372,12 +379,12 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            check_skill_tool_access(&perms, "weather", "skill_weather_run_main"),
+            check_skill_tool_access(&perms, "/skills", "weather", "skill_weather_run_main"),
             AccessDecision::Allow
         );
         // Other skill falls through to global
         assert_eq!(
-            check_skill_tool_access(&perms, "sysinfo", "skill_sysinfo_run_main"),
+            check_skill_tool_access(&perms, "/skills", "sysinfo", "skill_sysinfo_run_main"),
             AccessDecision::Ask
         );
     }
@@ -397,14 +404,43 @@ mod tests {
             global: PermissionState::Ask,
             skills,
             tools,
+            ..Default::default()
         };
         assert_eq!(
-            check_skill_tool_access(&perms, "weather", "skill_weather_run_dangerous"),
+            check_skill_tool_access(&perms, "/skills", "weather", "skill_weather_run_dangerous"),
             AccessDecision::Deny
         );
         assert_eq!(
-            check_skill_tool_access(&perms, "weather", "skill_weather_run_main"),
+            check_skill_tool_access(&perms, "/skills", "weather", "skill_weather_run_main"),
             AccessDecision::Allow
+        );
+    }
+
+    #[test]
+    fn test_skill_tool_access_source_override() {
+        let mut sources = HashMap::new();
+        sources.insert("/team".to_string(), PermissionState::Allow);
+        let mut skills = HashMap::new();
+        skills.insert("risky".to_string(), PermissionState::Ask);
+        let perms = SkillsPermissions {
+            global: PermissionState::Off,
+            sources,
+            skills,
+            ..Default::default()
+        };
+        assert_eq!(
+            check_skill_tool_access(&perms, "/team", "deploy", "SkillRead"),
+            AccessDecision::Allow
+        );
+        // Skill-level override beats its source
+        assert_eq!(
+            check_skill_tool_access(&perms, "/team", "risky", "SkillRead"),
+            AccessDecision::Ask
+        );
+        // Skills from other sources fall through to global
+        assert_eq!(
+            check_skill_tool_access(&perms, "/other", "deploy", "SkillRead"),
+            AccessDecision::Deny
         );
     }
 
@@ -635,6 +671,7 @@ mod tests {
         };
         let ctx = FirewallCheckContext::SkillTool {
             permissions: &perms,
+            skill_source: "/skills",
             skill_name: "weather",
             tool_name: "skill_weather_run_main",
             session_approved: false,
@@ -654,6 +691,7 @@ mod tests {
         };
         let ctx = FirewallCheckContext::SkillTool {
             permissions: &perms,
+            skill_source: "/skills",
             skill_name: "weather",
             tool_name: "skill_weather_run_main",
             session_approved: false,
@@ -675,9 +713,11 @@ mod tests {
             global: PermissionState::Ask,
             skills,
             tools,
+            ..Default::default()
         };
         let ctx = FirewallCheckContext::SkillTool {
             permissions: &perms,
+            skill_source: "/skills",
             skill_name: "weather",
             tool_name: "skill_weather_run_dangerous",
             session_approved: false,
@@ -694,6 +734,7 @@ mod tests {
         };
         let ctx = FirewallCheckContext::SkillTool {
             permissions: &perms,
+            skill_source: "/skills",
             skill_name: "weather",
             tool_name: "skill_weather_run_main",
             session_approved: true,
@@ -710,6 +751,7 @@ mod tests {
         };
         let ctx = FirewallCheckContext::SkillTool {
             permissions: &perms,
+            skill_source: "/skills",
             skill_name: "weather",
             tool_name: "skill_weather_run_main",
             session_approved: false,

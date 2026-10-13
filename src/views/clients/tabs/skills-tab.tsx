@@ -1,13 +1,7 @@
-import { useState, useEffect, useCallback } from "react"
-import { invoke } from "@tauri-apps/api/core"
-import { listenSafe } from "@/hooks/useTauriListener"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { SkillsPermissionTree } from "@/components/permissions"
 import { SamplePopupButton } from "@/components/shared/SamplePopupButton"
-import { McpToolDisplay } from "@/components/shared/McpToolDisplay"
-import type { McpToolDisplayItem } from "@/components/shared/McpToolDisplay"
 import type { SkillsPermissions } from "@/components/permissions"
-import type { SkillInfo, SkillToolInfo } from "@/types/tauri-commands"
 
 interface Client {
   id: string
@@ -22,69 +16,18 @@ interface SkillsTabProps {
 }
 
 export function ClientSkillsTab({ client, onUpdate }: SkillsTabProps) {
-  const [skillTools, setSkillTools] = useState<McpToolDisplayItem[]>([])
-
-  const loadSkillTools = useCallback(async () => {
-    try {
-      const skills = await invoke<SkillInfo[]>("list_skills")
-      const enabledSkills = skills.filter((s) => s.enabled)
-
-      const allTools: McpToolDisplayItem[] = []
-      for (const skill of enabledSkills) {
-        try {
-          const tools = await invoke<SkillToolInfo[]>("get_skill_tools", {
-            skillName: skill.name,
-          })
-          for (const t of tools) {
-            allTools.push({
-              name: `${skill.name}/${t.name}`,
-              description: t.description,
-            })
-          }
-        } catch {
-          // skip skill if tools fail to load
-        }
-      }
-      setSkillTools(allTools)
-    } catch {
-      setSkillTools([])
-    }
-  }, [])
-
-  useEffect(() => {
-    loadSkillTools()
-
-    const l = listenSafe("skills-changed", () => {
-      loadSkillTools()
-    })
-
-    return () => {
-      l.cleanup()
-    }
-  }, [loadSkillTools])
-
   return (
     <div className="space-y-6">
       <Card>
         <CardHeader>
           <CardTitle>Skills Permissions</CardTitle>
           <CardDescription>
-            Control which skills and their tools this client can access.
+            Control which skills this client can access, per source or per skill.
+            A source&apos;s setting applies to every skill it contains, including skills added to it later.
             Use "Ask" to require approval before execution.
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {skillTools.length > 0 && (
-            <div className="p-4 rounded-lg bg-muted/50 border space-y-2 mb-4">
-              <p className="text-sm text-muted-foreground">
-                When enabled, this client will have access to {skillTools.length} skill tools:
-              </p>
-              <McpToolDisplay
-                tools={skillTools}
-                compact
-              />
-            </div>
-          )}
           <div className="flex items-center justify-between mb-4 pb-4 border-b">
             <div>
               <span className="text-sm font-medium">Approval Popup Preview</span>

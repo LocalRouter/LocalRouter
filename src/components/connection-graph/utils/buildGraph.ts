@@ -21,6 +21,7 @@ import type {
   ItemHealthStatus,
 } from '../types'
 import type { ClientMode } from '@/types/tauri-commands'
+import { resolveSkillPermission } from '@/utils/skill-sources'
 
 // Node dimensions for layout calculation
 const NODE_WIDTH = 140
@@ -198,17 +199,13 @@ function buildNodes(
 // Determine edge style based on permission state for a client's connection
 function getPermissionEdgeStyle(
   client: Client,
-  targetType: 'server' | 'skill',
-  targetId: string,
+  target: { type: 'server'; id: string } | { type: 'skill'; skill: Skill },
   isConnected: boolean
 ): Record<string, string | number> {
   // Resolve permission state from the hierarchical permissions
-  let state: string
-  if (targetType === 'server') {
-    state = client.mcp_permissions?.servers?.[targetId] ?? client.mcp_permissions?.global ?? 'off'
-  } else {
-    state = client.skills_permissions?.skills?.[targetId] ?? client.skills_permissions?.global ?? 'off'
-  }
+  const state = target.type === 'server'
+    ? client.mcp_permissions?.servers?.[target.id] ?? client.mcp_permissions?.global ?? 'off'
+    : resolveSkillPermission(client.skills_permissions, target.skill)
 
   if (state === 'off') {
     return {
@@ -226,7 +223,7 @@ function getPermissionEdgeStyle(
   }
 
   // Allow — standard style
-  const defaultColor = targetType === 'server' ? '#10b981' : '#f59e0b'
+  const defaultColor = target.type === 'server' ? '#10b981' : '#f59e0b'
   return {
     stroke: isConnected ? defaultColor : '#64748b',
     strokeWidth: isConnected ? 2 : 1,
@@ -278,7 +275,6 @@ function buildEdges(
 
   const providerNames = new Set(enabledProviders.map(p => p.instance_name))
   const mcpServerIds = new Set(enabledMcpServers.map(s => s.id))
-  const skillNames = new Set(skills.map(s => s.name))
   const codingAgentTypes = new Set(codingAgents.map(a => a.agentType))
 
   enabledClients.forEach((client) => {
@@ -326,7 +322,7 @@ function buildEdges(
           .map(([id]) => id)
 
     clientMcpServers.forEach((serverId) => {
-      const firewallStyle = getPermissionEdgeStyle(client, 'server', serverId, isConnected)
+      const firewallStyle = getPermissionEdgeStyle(client, { type: 'server', id: serverId }, isConnected)
       edges.push({
         id: `edge-${client.id}-mcp-${serverId}`,
         source: `client-${client.id}`,
@@ -338,20 +334,18 @@ function buildEdges(
     })
 
     // Create edges to skills based on skills_permissions
-    // If global is not 'off', client has access to all skills
-    // Otherwise, check specific skill permissions (both 'allow' and 'ask' are enabled)
+    // If global is not 'off', every skill gets an edge (denied ones styled as off)
+    // Otherwise, only skills enabled via their own or their source's permission
     const clientSkills = client.skills_permissions.global !== 'off'
-      ? Array.from(skillNames)
-      : Object.entries(client.skills_permissions.skills ?? {})
-          .filter(([name, state]) => state !== 'off' && skillNames.has(name))
-          .map(([name]) => name)
+      ? skills
+      : skills.filter((skill) => resolveSkillPermission(client.skills_permissions, skill) !== 'off')
 
-    clientSkills.forEach((skillName) => {
-      const firewallStyle = getPermissionEdgeStyle(client, 'skill', skillName, isConnected)
+    clientSkills.forEach((skill) => {
+      const firewallStyle = getPermissionEdgeStyle(client, { type: 'skill', skill }, isConnected)
       edges.push({
-        id: `edge-${client.id}-skill-${skillName}`,
+        id: `edge-${client.id}-skill-${skill.name}`,
         source: `client-${client.id}`,
-        target: `skill-${skillName}`,
+        target: `skill-${skill.name}`,
         animated: isConnected,
         style: firewallStyle,
         data: { isActive: isConnected },

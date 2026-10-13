@@ -1961,6 +1961,106 @@ pub async fn list_skills(
     Ok(skill_manager.list())
 }
 
+/// Where a skill source comes from
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillSourceKind {
+    /// The directory skills created in LocalRouter are written to
+    User,
+    /// A skill installed from the marketplace
+    Marketplace,
+    /// A zip or `.skill` file
+    Archive,
+    /// Any other directory
+    Directory,
+}
+
+/// A configured skill source path and the skills discovered in it
+#[derive(Debug, Clone, Serialize)]
+pub struct SkillSourceInfo {
+    /// Source path exactly as configured (the key for source-level permissions)
+    pub path: String,
+    /// Short display name
+    pub label: String,
+    pub kind: SkillSourceKind,
+    /// Whether the path currently exists on disk
+    pub exists: bool,
+    /// Number of discovered skills from this source (enabled or not)
+    pub skill_count: usize,
+}
+
+/// Classify a skill source path and give it a short display name.
+fn describe_skill_source(
+    path: &str,
+    user_skills_dir: Option<&std::path::Path>,
+    marketplace_dir: Option<&std::path::Path>,
+) -> (SkillSourceKind, String) {
+    let p = std::path::Path::new(path);
+    let file_name = || {
+        p.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.to_string())
+    };
+    if user_skills_dir.is_some_and(|d| p == d) {
+        return (SkillSourceKind::User, "My Skills".to_string());
+    }
+    if let Some(rel) = marketplace_dir.and_then(|d| p.strip_prefix(d).ok()) {
+        let rel = rel.to_string_lossy().to_string();
+        let label = if rel.is_empty() { file_name() } else { rel };
+        return (SkillSourceKind::Marketplace, label);
+    }
+    let is_archive = p.is_file()
+        || p.extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("zip") || e.eq_ignore_ascii_case("skill"));
+    if is_archive {
+        return (SkillSourceKind::Archive, file_name());
+    }
+    (SkillSourceKind::Directory, file_name())
+}
+
+/// List configured skill sources with their discovered skill counts
+///
+/// Sources are returned in configuration order. A skill whose source is no
+/// longer configured (e.g. before the next rescan) still gets an entry.
+#[tauri::command]
+pub async fn list_skill_sources(
+    config_manager: State<'_, ConfigManager>,
+    skill_manager: State<'_, Arc<lr_skills::SkillManager>>,
+    marketplace_service: State<'_, Option<Arc<lr_marketplace::MarketplaceService>>>,
+) -> Result<Vec<SkillSourceInfo>, String> {
+    let user_skills_dir = lr_utils::paths::config_dir().ok().map(|d| d.join("skills"));
+    let marketplace_dir = marketplace_service
+        .inner()
+        .as_ref()
+        .map(|s| s.skills_data_dir());
+
+    let mut paths = config_manager.get().skills.paths;
+    let skills = skill_manager.list();
+    for skill in &skills {
+        if !paths.contains(&skill.source_path) {
+            paths.push(skill.source_path.clone());
+        }
+    }
+
+    Ok(paths
+        .into_iter()
+        .map(|path| {
+            let (kind, label) = describe_skill_source(
+                &path,
+                user_skills_dir.as_deref(),
+                marketplace_dir.as_deref(),
+            );
+            SkillSourceInfo {
+                exists: std::path::Path::new(&path).exists(),
+                skill_count: skills.iter().filter(|s| s.source_path == path).count(),
+                path,
+                label,
+                kind,
+            }
+        })
+        .collect())
+}
+
 /// Get a specific skill by name
 #[tauri::command]
 pub async fn get_skill(
@@ -2968,13 +3068,34 @@ pub async fn set_skill_enabled(
     skill_manager: State<'_, Arc<lr_skills::SkillManager>>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
+    set_skills_enabled(
+        vec![skill_name],
+        enabled,
+        config_manager,
+        skill_manager,
+        app,
+    )
+    .await
+}
+
+/// Set the global enabled state of several skills at once (e.g. a whole source)
+#[tauri::command]
+pub async fn set_skills_enabled(
+    skill_names: Vec<String>,
+    enabled: bool,
+    config_manager: State<'_, ConfigManager>,
+    skill_manager: State<'_, Arc<lr_skills::SkillManager>>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
     // Update disabled_skills in config
     config_manager
         .update(|cfg| {
-            if enabled {
-                cfg.skills.disabled_skills.retain(|n| n != &skill_name);
-            } else if !cfg.skills.disabled_skills.contains(&skill_name) {
-                cfg.skills.disabled_skills.push(skill_name.clone());
+            for skill_name in &skill_names {
+                if enabled {
+                    cfg.skills.disabled_skills.retain(|n| n != skill_name);
+                } else if !cfg.skills.disabled_skills.contains(skill_name) {
+                    cfg.skills.disabled_skills.push(skill_name.clone());
+                }
             }
         })
         .map_err(|e| e.to_string())?;
@@ -2982,7 +3103,9 @@ pub async fn set_skill_enabled(
     config_manager.save().await.map_err(|e| e.to_string())?;
 
     // Update in-memory manager
-    skill_manager.set_skill_enabled(&skill_name, enabled);
+    for skill_name in &skill_names {
+        skill_manager.set_skill_enabled(skill_name, enabled);
+    }
 
     if let Err(e) = app.emit("skills-changed", ()) {
         tracing::error!("Failed to emit skills-changed event: {}", e);
@@ -5550,4 +5673,51 @@ pub async fn read_memory_archive_file(
     tokio::fs::read_to_string(&archive_path)
         .await
         .map_err(|e| format!("Failed to read archive file '{}': {}", filename, e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn skill_sources_are_classified_and_labelled() {
+        let user = Path::new("/cfg/skills");
+        let market = Path::new("/data/marketplace-skills");
+        let describe = |p: &str| describe_skill_source(p, Some(user), Some(market));
+
+        assert_eq!(
+            describe("/cfg/skills"),
+            (SkillSourceKind::User, "My Skills".to_string())
+        );
+        assert_eq!(
+            describe("/data/marketplace-skills/Anthropic/algorithmic-art"),
+            (
+                SkillSourceKind::Marketplace,
+                "Anthropic/algorithmic-art".to_string()
+            )
+        );
+        assert_eq!(
+            describe("/nowhere/bundle.zip"),
+            (SkillSourceKind::Archive, "bundle.zip".to_string())
+        );
+        assert_eq!(
+            describe("/nowhere/thing.SKILL"),
+            (SkillSourceKind::Archive, "thing.SKILL".to_string())
+        );
+        assert_eq!(
+            describe("/home/me/.claude/skills"),
+            (SkillSourceKind::Directory, "skills".to_string())
+        );
+        // A sibling that merely shares a string prefix is not marketplace
+        assert_eq!(
+            describe("/data/marketplace-skills-old/x").0,
+            SkillSourceKind::Directory
+        );
+        // Without known managed dirs everything is a plain source
+        assert_eq!(
+            describe_skill_source("/cfg/skills", None, None).0,
+            SkillSourceKind::Directory
+        );
+    }
 }

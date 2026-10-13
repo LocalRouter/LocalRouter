@@ -1997,6 +1997,16 @@ pub(crate) fn reevaluate_pending_approvals(
             continue;
         }
 
+        // Configured source of a skill tool's skill, for source-level permissions
+        let skill_source = if info.tool_name.starts_with("skill_") {
+            app.try_state::<Arc<lr_skills::SkillManager>>()
+                .and_then(|m| m.get(&info.server_name))
+                .map(|s| s.source_path)
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+
         let ctx = if info.is_auto_router_request {
             let strategy = config
                 .strategies
@@ -2061,6 +2071,7 @@ pub(crate) fn reevaluate_pending_approvals(
         } else if info.tool_name.starts_with("skill_") {
             FirewallCheckContext::SkillTool {
                 permissions: &client.skills_permissions,
+                skill_source: &skill_source,
                 skill_name: &info.server_name,
                 tool_name: &info.tool_name,
                 session_approved: false,
@@ -2714,6 +2725,8 @@ pub enum McpPermissionLevel {
 #[serde(rename_all = "snake_case")]
 pub enum SkillsPermissionLevel {
     Global,
+    /// A configured skill source path
+    Source,
     Skill,
     Tool,
 }
@@ -2823,8 +2836,8 @@ pub async fn set_client_mcp_permission(
 ///
 /// # Arguments
 /// * `client_id` - The client ID
-/// * `level` - Permission level: global, skill, tool
-/// * `key` - The key for the permission (e.g., skill_name, tool_name)
+/// * `level` - Permission level: global, source, skill, tool
+/// * `key` - The key for the permission (source path, skill_name, or skill_name__tool_name)
 /// * `state` - The permission state to set
 /// * `clear` - If true, removes the override (inherits from parent). If false/None, sets the state.
 #[tauri::command]
@@ -2855,6 +2868,15 @@ pub async fn set_client_skills_permission(
                 match level {
                     SkillsPermissionLevel::Global => {
                         client.skills_permissions.global = state.clone();
+                    }
+                    SkillsPermissionLevel::Source => {
+                        if let Some(k) = key.clone() {
+                            if should_clear {
+                                client.skills_permissions.sources.remove(&k);
+                            } else {
+                                client.skills_permissions.sources.insert(k, state.clone());
+                            }
+                        }
                     }
                     SkillsPermissionLevel::Skill => {
                         if let Some(k) = key.clone() {
@@ -3047,38 +3069,75 @@ pub async fn clear_client_mcp_child_permissions(
     Ok(())
 }
 
+/// Remove the overrides below one node of a client's skills permission tree.
+///
+/// With `skill_name`, clears that skill's tool overrides. Otherwise, with
+/// `source_skills` (the skills loaded from a source), clears those skills and
+/// their tools. With neither, clears every source, skill and tool override.
+fn clear_skills_child_permissions(
+    perms: &mut lr_config::SkillsPermissions,
+    skill_name: Option<&str>,
+    source_skills: Option<&[String]>,
+) {
+    let clear_skill_tools = |perms: &mut lr_config::SkillsPermissions, skill: &str| {
+        let prefix = format!("{skill}__");
+        perms.tools.retain(|k, _| !k.starts_with(&prefix));
+    };
+    match (skill_name, source_skills) {
+        (Some(skill), _) => clear_skill_tools(perms, skill),
+        (None, Some(skills)) => {
+            for skill in skills {
+                perms.skills.remove(skill);
+                clear_skill_tools(perms, skill);
+            }
+        }
+        (None, None) => {
+            perms.sources.clear();
+            perms.skills.clear();
+            perms.tools.clear();
+        }
+    }
+}
+
 /// Clear child Skills permissions for a client
 /// If skill_name is provided, only clears children of that skill (tools)
-/// If skill_name is None, clears all children (skills, tools)
+/// If source_path is provided, clears the skills of that source and their tools
+/// If neither is provided, clears all children (sources, skills, tools)
 #[tauri::command]
 pub async fn clear_client_skills_child_permissions(
     client_id: String,
     skill_name: Option<String>,
+    source_path: Option<String>,
     config_manager: State<'_, ConfigManager>,
+    skill_manager: State<'_, Arc<lr_skills::SkillManager>>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     tracing::info!(
-        "Clearing Skills child permissions for client {}, skill_name: {:?}",
+        "Clearing Skills child permissions for client {}, skill_name: {:?}, source_path: {:?}",
         client_id,
-        skill_name
+        skill_name,
+        source_path
     );
+
+    let source_skills: Vec<String> = match (&skill_name, &source_path) {
+        (None, Some(source)) => skill_manager
+            .list()
+            .into_iter()
+            .filter(|s| &s.source_path == source)
+            .map(|s| s.name)
+            .collect(),
+        _ => Vec::new(),
+    };
 
     let mut found = false;
     config_manager
         .update(|cfg| {
             if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
-                if let Some(ref sname) = skill_name {
-                    // Only clear children of the specific skill
-                    let prefix = format!("{sname}__");
-                    client
-                        .skills_permissions
-                        .tools
-                        .retain(|k, _| !k.starts_with(&prefix));
-                } else {
-                    // Clear all children
-                    client.skills_permissions.skills.clear();
-                    client.skills_permissions.tools.clear();
-                }
+                clear_skills_child_permissions(
+                    &mut client.skills_permissions,
+                    skill_name.as_deref(),
+                    source_path.as_deref().map(|_| source_skills.as_slice()),
+                );
                 found = true;
             }
         })
@@ -4516,7 +4575,7 @@ mod tests {
         assert_eq!(
             client
                 .skills_permissions
-                .resolve_tool("weather", "SkillRead"),
+                .resolve_tool("", "weather", "SkillRead"),
             PermissionState::Allow,
             "resolve_tool should find the permission set by apply_tool_permission_to_client"
         );
@@ -4524,7 +4583,7 @@ mod tests {
         assert_eq!(
             client
                 .skills_permissions
-                .resolve_tool("sysinfo", "SkillRead"),
+                .resolve_tool("", "sysinfo", "SkillRead"),
             PermissionState::Ask,
         );
     }
@@ -4677,5 +4736,43 @@ mod tests {
         );
         assert_eq!(flagged_category_key(&json!({"other": "x"})), None);
         assert_eq!(flagged_category_key(&json!(42)), None);
+    }
+
+    #[test]
+    fn clearing_skill_source_children_keeps_other_sources() {
+        use lr_config::{PermissionState, SkillsPermissions};
+        let mut perms = SkillsPermissions::default();
+        perms.sources.insert("/team".into(), PermissionState::Allow);
+        perms.skills.insert("deploy".into(), PermissionState::Off);
+        perms.skills.insert("secret".into(), PermissionState::Allow);
+        perms
+            .tools
+            .insert("deploy__SkillRead".into(), PermissionState::Ask);
+        perms
+            .tools
+            .insert("secret__SkillRead".into(), PermissionState::Ask);
+
+        // Source: clears the overrides of its skills, keeps the source itself
+        let mut cleared = perms.clone();
+        clear_skills_child_permissions(&mut cleared, None, Some(&["deploy".to_string()]));
+        assert_eq!(cleared.sources.len(), 1);
+        assert!(!cleared.skills.contains_key("deploy"));
+        assert!(!cleared.tools.contains_key("deploy__SkillRead"));
+        assert!(cleared.skills.contains_key("secret"));
+        assert!(cleared.tools.contains_key("secret__SkillRead"));
+
+        // Skill: clears only its tools
+        let mut cleared = perms.clone();
+        clear_skills_child_permissions(&mut cleared, Some("deploy"), None);
+        assert!(cleared.skills.contains_key("deploy"));
+        assert!(!cleared.tools.contains_key("deploy__SkillRead"));
+        assert!(cleared.tools.contains_key("secret__SkillRead"));
+
+        // Global: clears everything below it
+        let mut cleared = perms;
+        clear_skills_child_permissions(&mut cleared, None, None);
+        assert!(
+            cleared.sources.is_empty() && cleared.skills.is_empty() && cleared.tools.is_empty()
+        );
     }
 }

@@ -117,6 +117,8 @@ export interface McpServer {
 // Skill info from backend
 export interface Skill {
   name: string
+  /** Configured source path the skill was loaded from */
+  source_path: string
 }
 
 // Coding agent info from backend

@@ -100,7 +100,9 @@ pub fn build_skill_tools(
     let all_skills = skill_manager.get_all();
     let accessible: Vec<&SkillDefinition> = all_skills
         .iter()
-        .filter(|s| s.enabled && permissions.has_any_enabled_for_skill(&s.metadata.name))
+        .filter(|s| {
+            s.enabled && permissions.has_any_enabled_for_skill(&s.source_path, &s.metadata.name)
+        })
         .collect();
 
     if accessible.is_empty() {
@@ -139,7 +141,9 @@ pub fn build_skill_catalog(
     let all_skills = skill_manager.get_all();
     let accessible: Vec<&SkillDefinition> = all_skills
         .iter()
-        .filter(|s| s.enabled && permissions.has_any_enabled_for_skill(&s.metadata.name))
+        .filter(|s| {
+            s.enabled && permissions.has_any_enabled_for_skill(&s.source_path, &s.metadata.name)
+        })
         .collect();
 
     if accessible.is_empty() {
@@ -248,7 +252,9 @@ pub fn build_skill_index_entries(
     let all_skills = skill_manager.get_all();
     let accessible: Vec<&SkillDefinition> = all_skills
         .iter()
-        .filter(|s| s.enabled && permissions.has_any_enabled_for_skill(&s.metadata.name))
+        .filter(|s| {
+            s.enabled && permissions.has_any_enabled_for_skill(&s.source_path, &s.metadata.name)
+        })
         .collect();
 
     let mut entries = Vec::with_capacity(accessible.len());
@@ -360,7 +366,7 @@ pub async fn handle_skill_tool_call(
 
     // Try exact match first (fast path)
     if let Some(skill) = skill_manager.get(skill_name) {
-        if !permissions.has_any_enabled_for_skill(skill_name) {
+        if !permissions.has_any_enabled_for_skill(&skill.source_path, skill_name) {
             return Err(format!("Skill '{}' is not permitted", skill_name));
         }
         if !skill.enabled {
@@ -378,7 +384,7 @@ pub async fn handle_skill_tool_call(
             let resolved_name = &skill.metadata.name;
 
             // Check permissions on the resolved name
-            if !permissions.has_any_enabled_for_skill(resolved_name) {
+            if !permissions.has_any_enabled_for_skill(&skill.source_path, resolved_name) {
                 return Err(not_found_error(skill_name, skill_manager, permissions));
             }
 
@@ -421,7 +427,7 @@ pub fn read_skill_file(
 
     // Resolve skill: exact match first, then fuzzy fallback
     let (skill, correction_note) = if let Some(skill) = skill_manager.get(skill_name) {
-        if !permissions.has_any_enabled_for_skill(skill_name) {
+        if !permissions.has_any_enabled_for_skill(&skill.source_path, skill_name) {
             return Err(format!("Skill '{}' is not permitted", skill_name));
         }
         if !skill.enabled {
@@ -433,7 +439,7 @@ pub fn read_skill_file(
         match skill_manager.find_closest(skill_name) {
             Some((skill, match_kind)) if !matches!(match_kind, crate::fuzzy::MatchKind::Exact) => {
                 let resolved = &skill.metadata.name;
-                if !permissions.has_any_enabled_for_skill(resolved) {
+                if !permissions.has_any_enabled_for_skill(&skill.source_path, resolved) {
                     return Err(not_found_error(skill_name, skill_manager, permissions));
                 }
                 let note = format!(
@@ -650,7 +656,9 @@ fn not_found_error(
     let all_skills = skill_manager.get_all();
     let accessible_names: Vec<&str> = all_skills
         .iter()
-        .filter(|s| s.enabled && permissions.has_any_enabled_for_skill(&s.metadata.name))
+        .filter(|s| {
+            s.enabled && permissions.has_any_enabled_for_skill(&s.source_path, &s.metadata.name)
+        })
         .map(|s| s.metadata.name.as_str())
         .collect();
 
@@ -781,7 +789,9 @@ fn accessible_skills(
     skill_manager
         .get_all()
         .iter()
-        .filter(|s| s.enabled && permissions.has_any_enabled_for_skill(&s.metadata.name))
+        .filter(|s| {
+            s.enabled && permissions.has_any_enabled_for_skill(&s.source_path, &s.metadata.name)
+        })
         .cloned()
         .collect()
 }
@@ -1337,5 +1347,65 @@ mod tests {
         let files: Vec<&str> = vec![];
         let err = resolve_skill_file_path("anything.sh", &files).unwrap_err();
         assert!(err.contains("no readable files"));
+    }
+
+    #[tokio::test]
+    async fn source_permission_grants_every_skill_in_that_source() {
+        let tmp = tempfile::tempdir().unwrap();
+        let write_skill = |dir: &std::path::Path, name: &str| {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(
+                dir.join("SKILL.md"),
+                format!("---\nname: {name}\n---\nBody of {name}."),
+            )
+            .unwrap();
+        };
+        let team = tmp.path().join("team");
+        write_skill(&team.join("deploy"), "deploy");
+        write_skill(&team.join("review"), "review");
+        let other = tmp.path().join("other");
+        write_skill(&other.join("secret"), "secret");
+        let team_src = team.display().to_string();
+
+        let manager = SkillManager::new();
+        manager.initial_scan(&[team_src.clone(), other.display().to_string()], &[]);
+
+        // Global off, only the team source granted, one of its skills opted out
+        let mut permissions = SkillsPermissions::default();
+        permissions
+            .sources
+            .insert(team_src, lr_config::PermissionState::Allow);
+        permissions
+            .skills
+            .insert("review".to_string(), lr_config::PermissionState::Off);
+
+        let names: Vec<String> = accessible_skills(&manager, &permissions)
+            .into_iter()
+            .map(|s| s.metadata.name)
+            .collect();
+        assert_eq!(names, vec!["deploy".to_string()]);
+
+        let text = skill_read_text(
+            &manager,
+            &permissions,
+            json!({"name": "deploy"}),
+            SkillPathStyle::Disk,
+        )
+        .await;
+        assert!(text.contains("Body of deploy."), "{text}");
+
+        let result = handle_skill_tool_call(
+            "SkillRead",
+            &json!({"name": "secret"}),
+            &manager,
+            &permissions,
+            "SkillRead",
+            SkillPathStyle::Disk,
+        )
+        .await;
+        let Err(err) = result else {
+            panic!("a skill from an ungranted source must not be readable");
+        };
+        assert!(err.contains("not permitted"), "{err}");
     }
 }

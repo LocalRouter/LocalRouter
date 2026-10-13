@@ -1,6 +1,7 @@
 import { useState, useMemo, type ReactNode } from "react"
-import { ChevronRight, ChevronDown, Loader2 } from "lucide-react"
+import { ChevronRight, ChevronDown, Loader2, Search } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { Input } from "@/components/ui/Input"
 import type { TreeNode } from "./types"
 
 export interface TreeButtonProps<S extends string> {
@@ -29,6 +30,26 @@ export interface PermissionTreeSelectorProps<S extends string> {
   loading?: boolean
   /** Start with all nodes expanded (default: false) */
   defaultExpanded?: boolean
+  /** Show a search box that filters the tree by label, description and searchText */
+  searchable?: boolean
+  searchPlaceholder?: string
+}
+
+/**
+ * Filter a tree by a lowercase query. A matching node keeps all its children;
+ * a non-matching node is kept only with its matching descendants, and is
+ * reported in `expanded` so those descendants are shown.
+ */
+function filterTree(nodes: TreeNode[], query: string, expanded: Set<string>): TreeNode[] {
+  const matches = (node: TreeNode) =>
+    [node.label, node.description, node.searchText].some((t) => t?.toLowerCase().includes(query))
+  return nodes.flatMap((node) => {
+    if (matches(node)) return [node]
+    const children = node.children ? filterTree(node.children, query, expanded) : []
+    if (children.length === 0) return []
+    expanded.add(node.id)
+    return [{ ...node, children }]
+  })
 }
 
 export function PermissionTreeSelector<S extends string>({
@@ -44,7 +65,20 @@ export function PermissionTreeSelector<S extends string>({
   loading = false,
   defaultExpanded = false,
   renderGlobalButton,
+  searchable = false,
+  searchPlaceholder = "Search...",
 }: PermissionTreeSelectorProps<S>) {
+  const [search, setSearch] = useState("")
+  const query = search.trim().toLowerCase()
+
+  // Nodes to render and the nodes forced open to reveal matches. Permission
+  // inheritance and rollups always use the full tree.
+  const { visibleNodes, searchExpanded } = useMemo(() => {
+    const expanded = new Set<string>()
+    if (!query) return { visibleNodes: nodes, searchExpanded: expanded }
+    return { visibleNodes: filterTree(nodes, query, expanded), searchExpanded: expanded }
+  }, [nodes, query])
+
   const [expandedNodes, setExpandedNodes] = useState<Set<string>>(() => {
     if (!defaultExpanded) return new Set<string>()
     // Collect all node IDs that have children
@@ -153,7 +187,7 @@ export function PermissionTreeSelector<S extends string>({
   }, [nodes, permissions, getChildRollupStates])
 
   const renderNode = (node: TreeNode, parentPermission: S, depth: number = 0) => {
-    const isExpanded = expandedNodes.has(node.id)
+    const isExpanded = expandedNodes.has(node.id) || searchExpanded.has(node.id)
     const hasChildren = node.children && node.children.length > 0
     const effectivePermission = getEffectivePermission(node.id, parentPermission)
     const inherited = isInherited(node.id)
@@ -187,11 +221,11 @@ export function PermissionTreeSelector<S extends string>({
                 e.stopPropagation()
                 canExpand && toggleNode(node.id)
               }}
+              disabled={!canExpand || searchExpanded.has(node.id)}
               className={cn(
                 "p-0.5 rounded hover:bg-muted",
                 !canExpand && "opacity-30 cursor-not-allowed"
               )}
-              disabled={!canExpand}
             >
               {isExpanded ? (
                 <ChevronDown className="h-4 w-4 text-muted-foreground" />
@@ -253,7 +287,7 @@ export function PermissionTreeSelector<S extends string>({
     )
   }
 
-  return (
+  const tree = (
     <div className="border rounded-lg overflow-x-auto">
       <div className="max-h-[500px] overflow-y-auto min-w-0">
         {/* Global row - sticky header */}
@@ -278,10 +312,32 @@ export function PermissionTreeSelector<S extends string>({
           <div className="px-3 py-4 text-center text-muted-foreground text-sm">
             {emptyMessage}
           </div>
+        ) : visibleNodes.length === 0 ? (
+          <div className="px-3 py-4 text-center text-muted-foreground text-sm">
+            No matches for &ldquo;{search.trim()}&rdquo;
+          </div>
         ) : (
-          nodes.map((node) => renderNode(node, globalPermission, 0))
+          visibleNodes.map((node) => renderNode(node, globalPermission, 0))
         )}
       </div>
+    </div>
+  )
+
+  if (!searchable) return tree
+
+  return (
+    <div className="space-y-2">
+      <div className="relative">
+        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+        <Input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder={searchPlaceholder}
+          className="pl-8"
+          aria-label={searchPlaceholder}
+        />
+      </div>
+      {tree}
     </div>
   )
 }

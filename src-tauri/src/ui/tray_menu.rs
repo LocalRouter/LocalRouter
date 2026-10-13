@@ -1487,6 +1487,11 @@ pub(crate) async fn handle_toggle_skill_access<R: Runtime>(
     );
 
     let config_manager = app.state::<ConfigManager>();
+    let skill_source = app
+        .try_state::<Arc<lr_skills::SkillManager>>()
+        .and_then(|m| m.get(skill_name))
+        .map(|s| s.source_path)
+        .unwrap_or_default();
 
     // Read current access and toggle by skill name using new permission system
     let mut found = false;
@@ -1496,7 +1501,7 @@ pub(crate) async fn handle_toggle_skill_access<R: Runtime>(
                 // Check if skill is currently allowed using the new permission system
                 let is_allowed = client
                     .skills_permissions
-                    .resolve_skill(skill_name)
+                    .resolve_skill(&skill_source, skill_name)
                     .is_enabled();
                 if is_allowed {
                     // Set skill permission to Off

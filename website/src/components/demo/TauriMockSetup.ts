@@ -19,7 +19,7 @@
 import { mockIPC, mockWindows, clearMocks } from '@tauri-apps/api/mocks'
 import { emit } from '@tauri-apps/api/event'
 import type { InvokeArgs } from '@tauri-apps/api/core'
-import type { McpConnectionDiscovery } from '@app/types/tauri-commands'
+import type { McpConnectionDiscovery, SkillSourceInfo } from '@app/types/tauri-commands'
 import { toast } from 'sonner'
 import { mockData } from './mockData'
 import { routingPolicyIssue } from '@app/components/strategy/routing-policy-status'
@@ -1693,7 +1693,9 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     if (client && args?.level && args?.state) {
       // Handle clear flag
       if (args.clear && args.level !== 'global') {
-        if (args.level === 'skill' && args.key) {
+        if (args.level === 'source' && args.key) {
+          delete client.skills_permissions.sources?.[args.key]
+        } else if (args.level === 'skill' && args.key) {
           delete client.skills_permissions.skills[args.key]
         } else if (args.level === 'tool' && args.key) {
           delete client.skills_permissions.tools[args.key]
@@ -1701,6 +1703,8 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       } else {
         if (args.level === 'global') {
           client.skills_permissions.global = args.state
+        } else if (args.level === 'source' && args.key) {
+          client.skills_permissions.sources = { ...client.skills_permissions.sources, [args.key]: args.state }
         } else if (args.level === 'skill' && args.key) {
           client.skills_permissions.skills[args.key] = args.state
         } else if (args.level === 'tool' && args.key) {
@@ -1792,14 +1796,25 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
     if (client) {
       const skillName = args?.skillName
-      if (skillName) {
-        // Only clear children of the specific skill
-        const prefix = `${skillName}__`
+      const sourcePath = args?.sourcePath
+      const clearSkillTools = (name: string) => {
+        const prefix = `${name}__`
         for (const key of Object.keys(client.skills_permissions.tools)) {
           if (key.startsWith(prefix)) delete client.skills_permissions.tools[key]
         }
+      }
+      if (skillName) {
+        // Only clear children of the specific skill
+        clearSkillTools(skillName)
+      } else if (sourcePath) {
+        // Clear the skills of this source and their tools
+        for (const skill of mockData.skills.filter(s => s.source_path === sourcePath)) {
+          delete client.skills_permissions.skills[skill.name]
+          clearSkillTools(skill.name)
+        }
       } else {
         // Clear all children
+        client.skills_permissions.sources = {}
         client.skills_permissions.skills = {}
         client.skills_permissions.tools = {}
       }
@@ -3506,6 +3521,16 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // Skills
   // ============================================================================
   'list_skills': () => mockData.skills,
+  'list_skill_sources': (): SkillSourceInfo[] => {
+    const paths = ['~/.localrouter/skills', '~/.claude/skills']
+    return paths.map((path) => ({
+      path,
+      label: path === '~/.localrouter/skills' ? 'My Skills' : path.split('/').pop() || path,
+      kind: path === '~/.localrouter/skills' ? 'user' as const : 'directory' as const,
+      exists: true,
+      skill_count: mockData.skills.filter(s => s.source_path === path).length,
+    }))
+  },
   'get_skill': (args) => mockData.skills.find(s => s.name === args?.name),
   'get_skill_files': (args) => {
     const skill = mockData.skills.find(s => s.name === args?.name || s.name === args?.skillName)
@@ -3918,7 +3943,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     remaining_lines: 73,
   }),
   'get_skills_config': () => ({
-    paths: ["~/.localrouter/skills"],
+    paths: ["~/.localrouter/skills", "~/.claude/skills"],
     disabled_skills: ["test-generator"],
     async_enabled: true,
     tool_name: "SkillRead",
@@ -3930,6 +3955,14 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'set_skill_enabled': (args) => {
     const skill = mockData.skills.find(s => s.name === args?.name || s.name === args?.skillName)
     if (skill) skill.enabled = args?.enabled ?? true
+    return null
+  },
+  'set_skills_enabled': (args) => {
+    const names: string[] = args?.skillNames ?? []
+    for (const skill of mockData.skills) {
+      if (names.includes(skill.name)) skill.enabled = args?.enabled ?? true
+    }
+    setTimeout(() => emit('skills-changed', {}), 10)
     return null
   },
   'rescan_skills': () => {

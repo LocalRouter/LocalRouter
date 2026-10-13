@@ -2889,6 +2889,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::open_path,
             // Skills commands
             ui::commands::list_skills,
+            ui::commands::list_skill_sources,
             ui::commands::get_skill,
             ui::commands::get_context_management_config,
             ui::commands::update_context_management_config,
@@ -2916,6 +2917,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::is_user_created_skill,
             ui::commands::delete_user_skill,
             ui::commands::set_skill_enabled,
+            ui::commands::set_skills_enabled,
             ui::commands::rescan_skills,
             ui::commands::get_skill_files,
             // Marketplace commands
