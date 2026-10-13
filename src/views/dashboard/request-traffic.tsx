@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from 'react'
+import { type ReactNode, useEffect, useState } from 'react'
 import {
   CartesianGrid,
   ComposedChart,
@@ -19,7 +19,7 @@ import type { TimeRange, TrafficTimeline } from '@/types/tauri-commands'
 import {
   chartPoints,
   type ChartPoint,
-  livePoint,
+  type InFlightCounts,
   niceTicks,
   RANGES,
   roundTicks,
@@ -42,22 +42,19 @@ const money = new Intl.NumberFormat(undefined, {
 })
 
 /*
- * Series colors (validated with the dataviz palette checker, light and dark):
- * requests take categorical slot 1 (blue); errors the reserved "critical"
- * status red, always next to an icon and a label. Light and dark steps are
- * set as CSS variables on the section.
+ * Series colors (validated with the dataviz palette checker, light and dark,
+ * all pairs): LLM requests take categorical slot 1 (blue), MCP requests slot 3
+ * (aqua; slot 2's orange is too close to the error red), requests in progress
+ * slot 4 (yellow); errors the reserved "critical" status red, always next to
+ * an icon and a label. Light and dark steps are set as CSS variables on the
+ * section.
  */
-const DONE = 'var(--traffic-done)'
+const LLM = 'var(--traffic-llm)'
+const MCP = 'var(--traffic-mcp)'
+const IN_PROGRESS = 'var(--traffic-in-progress)'
 const ERROR = 'var(--traffic-error)'
-/**
- * The open bucket's segment: the same blue, lighter and dashed, so it reads
- * as the line still growing rather than another series. Dark mode keeps more
- * of the stroke, since a faded blue sinks into the dark card.
- */
-const PROVISIONAL_DASH = '4 4'
-const PROVISIONAL_OPACITY = 'var(--traffic-provisional)'
 const PALETTE =
-  '[--traffic-done:#2a78d6] [--traffic-error:#d03b3b] [--traffic-provisional:0.55] dark:[--traffic-done:#3987e5] dark:[--traffic-provisional:0.75]'
+  '[--traffic-llm:#2a78d6] [--traffic-mcp:#1baf7a] [--traffic-in-progress:#eda100] [--traffic-error:#d03b3b] dark:[--traffic-llm:#3987e5] dark:[--traffic-mcp:#199e70] dark:[--traffic-in-progress:#c98500]'
 
 const AXIS_TICK = { fill: 'hsl(var(--muted-foreground))', fontSize: 10 }
 const GRID = 'hsl(var(--border))'
@@ -84,8 +81,8 @@ interface RequestTrafficProps {
   /** `undefined` while the first read of this range is pending; `null` if it failed. */
   timeline: TrafficTimeline | null | undefined
   loading: boolean
-  /** Requests still running right now (LLM and MCP). */
-  inFlight: number
+  /** Requests still running right now, by kind. */
+  inFlight: InFlightCounts
   onRefresh: () => void
   className?: string
 }
@@ -127,17 +124,23 @@ function LineKey({ color }: { color: string }) {
   return <span className="h-0.5 w-3 shrink-0 rounded-full" style={{ background: color }} aria-hidden />
 }
 
-function DashedKey({ color }: { color: string }) {
+function TooltipRow({
+  marker,
+  label,
+  value,
+  muted,
+}: {
+  marker: ReactNode
+  label: string
+  value: ReactNode
+  muted?: boolean
+}) {
   return (
-    <span
-      className="h-0.5 w-3 shrink-0"
-      style={{
-        backgroundImage: `linear-gradient(to right, ${color} 50%, transparent 50%)`,
-        backgroundSize: '4px 100%',
-        opacity: PROVISIONAL_OPACITY,
-      }}
-      aria-hidden
-    />
+    <div className={cn('flex items-center gap-1.5', muted && 'text-muted-foreground')}>
+      {marker}
+      {label}
+      <strong className="ml-auto pl-3 tabular-nums">{value}</strong>
+    </div>
   )
 }
 
@@ -152,7 +155,7 @@ function TrafficTooltip({
   payload?: { payload: ChartPoint }[]
   range: TimeRange
   bucketMs: number
-  inFlight: number
+  inFlight: InFlightCounts
 }) {
   const point = payload?.[0]?.payload
   if (!active || !point) return null
@@ -166,33 +169,57 @@ function TrafficTooltip({
         <div className="text-muted-foreground">Not recorded at this resolution</div>
       ) : (
         <div className="space-y-0.5">
-          <div className="flex items-center gap-1.5">
-            <LineKey color={DONE} />
-            {point.live ? 'Finished so far' : 'Finished'}
-            <strong className="ml-auto pl-3 tabular-nums">{point.completed}</strong>
-          </div>
-          <div className="pl-[1.125rem] text-muted-foreground">
-            LLM {point.llm} · MCP {point.mcp}
-            {point.cost ? ` · ${money.format(point.cost)}` : ''}
-          </div>
+          <TooltipRow marker={<LineKey color={LLM} />} label="LLM requests" value={point.llm} />
+          <TooltipRow marker={<LineKey color={MCP} />} label="MCP requests" value={point.mcp} />
+          <TooltipRow
+            marker={
+              <CircleAlert
+                className="h-3 w-3"
+                style={point.errors ? { color: ERROR } : undefined}
+                aria-hidden
+              />
+            }
+            label="Errors"
+            value={point.errors}
+            muted={!point.errors}
+          />
           {point.live && (
-            <div className="flex items-center gap-1.5">
-              <DashedKey color={DONE} />
-              In progress
-              <strong className="ml-auto pl-3 tabular-nums">{inFlight}</strong>
-            </div>
-          )}
-          <div className={cn('flex items-center gap-1.5', !point.errors && 'text-muted-foreground')}>
-            <CircleAlert
-              className="h-3 w-3"
-              style={point.errors ? { color: ERROR } : undefined}
-              aria-hidden
+            <TooltipRow
+              marker={<LineKey color={IN_PROGRESS} />}
+              label="In progress"
+              value={inFlight.llm + inFlight.mcp}
             />
-            Errors
-            <strong className="ml-auto pl-3 tabular-nums">{point.errors}</strong>
-          </div>
+          )}
+          {point.cost ? (
+            <div className="pl-[1.125rem] text-muted-foreground">
+              Est. cost {money.format(point.cost)}
+            </div>
+          ) : null}
         </div>
       )}
+    </div>
+  )
+}
+
+/** Static key above the plot, one entry per line. */
+function TrafficLegend() {
+  return (
+    <div
+      data-testid="traffic-legend"
+      className="flex flex-wrap items-center gap-x-3 gap-y-0.5 px-1 pb-1 text-[11px] text-muted-foreground"
+    >
+      <span className="flex items-center gap-1.5">
+        <LineKey color={LLM} /> LLM requests
+      </span>
+      <span className="flex items-center gap-1.5">
+        <LineKey color={MCP} /> MCP requests
+      </span>
+      <span className="flex items-center gap-1.5">
+        <CircleAlert className="h-3 w-3" style={{ color: ERROR }} aria-hidden /> Errors
+      </span>
+      <span className="flex items-center gap-1.5">
+        <LineKey color={IN_PROGRESS} /> In progress
+      </span>
     </div>
   )
 }
@@ -212,41 +239,6 @@ function ErrorCount({ x, y, value }: LabelProps) {
     >
       {value}
     </text>
-  )
-}
-
-/**
- * The requests line, drawn as one curve so its smoothing runs through the
- * open bucket: solid up to the last finished bucket (`splitIndex`), then the
- * same curve lighter and dashed to the open bucket's provisional value. When
- * the bucket closes, the next render draws that stretch solid.
- */
-function RequestsCurve({ splitIndex, ...props }: CurveProps & { splitIndex: number | null }) {
-  const id = `traffic-split-${useId().replace(/[^\w-]/g, '')}`
-  const splitX = splitIndex === null ? null : props.points?.[splitIndex]?.x
-  if (splitX === null || splitX === undefined) return <Curve {...props} />
-  const reach = 100_000
-  return (
-    <g>
-      <defs>
-        <clipPath id={`${id}-done`}>
-          <rect x={splitX - reach} y={-reach} width={reach} height={2 * reach} />
-        </clipPath>
-        <clipPath id={`${id}-open`}>
-          <rect x={splitX} y={-reach} width={reach} height={2 * reach} />
-        </clipPath>
-      </defs>
-      <Curve {...props} clipPath={`url(#${id}-done)`} />
-      <Curve
-        {...props}
-        pathRef={undefined}
-        className="traffic-provisional"
-        clipPath={`url(#${id}-open)`}
-        strokeDasharray={PROVISIONAL_DASH}
-        strokeOpacity={PROVISIONAL_OPACITY}
-        strokeLinecap="butt"
-      />
-    </g>
   )
 }
 
@@ -317,10 +309,8 @@ export function RequestTraffic({
   const [collapsed, toggle] = useCollapsed(COLLAPSED_KEY)
   const now = useNow(2_000)
   const points = trafficPoints(timeline ?? null, now)
-  const live = livePoint(points)
   const rows = chartPoints(points, inFlight)
-  // The requests line turns provisional after the last finished bucket.
-  const splitIndex = live && points.length > 1 ? points.length - 2 : null
+  const inFlightTotal = inFlight.llm + inFlight.mcp
   const bucketMs = (timeline?.bucket_secs ?? 0) * 1000
   const yTicks = niceTicks(trafficPeak(points, inFlight))
   const errorFloor = (yTicks[yTicks.length - 1] * MIN_ERROR_PEAK) / PLOT_HEIGHT
@@ -366,7 +356,7 @@ export function RequestTraffic({
       <span>
         {strong(totals ? money.format(totals.cost_usd) : '—')} est. cost
       </span>
-      <InFlightPill inFlight={inFlight} />
+      <InFlightPill inFlight={inFlightTotal} />
     </div>
   )
 
@@ -415,7 +405,7 @@ export function RequestTraffic({
       : `${total} finished requests (${totals?.llm_requests} LLM, ${totals?.mcp_requests} MCP), ${errors} ${errors === 1 ? 'error' : 'errors'}${
           errorBuckets ? ` in ${errorBuckets} ${errorBuckets === 1 ? 'interval' : 'intervals'}` : ''
         }.`
-  } ${inFlight} in progress now.`
+  } ${inFlightTotal} in progress now.`
 
   return (
     <CollapsibleSection
@@ -429,6 +419,7 @@ export function RequestTraffic({
       className={cn(PALETTE, className)}
     >
       <div className="px-2 pb-2">
+        {!initialLoading && points.length > 0 && <TrafficLegend />}
         <div className="relative" style={{ height: CHART_HEIGHT }} role="img" aria-label={describe}>
           {initialLoading ? (
             <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
@@ -476,31 +467,85 @@ export function RequestTraffic({
                   }
                   isAnimationActive={false}
                 />
+                {/*
+                  Each requests line, and under it the requests of its kind
+                  in progress now stacked on top: a yellow segment from the
+                  previous bucket to finished plus in progress at the live one.
+                */}
                 <Line
-                  name="Requests"
-                  dataKey="requests"
-                  type="monotone"
-                  stroke={DONE}
+                  name="LLM requests in progress"
+                  dataKey="llmInProgress"
+                  type="linear"
+                  stroke={IN_PROGRESS}
                   strokeWidth={2}
                   strokeLinejoin="round"
                   strokeLinecap="round"
                   dot={false}
-                  activeDot={(props: { cx?: number; cy?: number; payload?: ChartPoint }) => (
+                  activeDot={false}
+                  className="traffic-in-progress"
+                  isAnimationActive={false}
+                />
+                <Line
+                  name="LLM requests"
+                  dataKey="llmLine"
+                  type="monotone"
+                  stroke={LLM}
+                  strokeWidth={2}
+                  strokeLinejoin="round"
+                  strokeLinecap="round"
+                  dot={false}
+                  activeDot={(props: { cx?: number; cy?: number }) => (
                     <circle
-                      key="requests-active"
+                      key="traffic-llm-active"
                       cx={props.cx}
                       cy={props.cy}
                       r={4}
                       strokeWidth={2}
-                      stroke={props.payload?.live ? DONE : SURFACE}
-                      fill={props.payload?.live ? SURFACE : DONE}
+                      stroke={SURFACE}
+                      fill={LLM}
                     />
                   )}
-                  shape={<RequestsCurve splitIndex={splitIndex} />}
+                  className="traffic-llm"
+                  isAnimationActive={false}
+                />
+                <Line
+                  name="MCP requests in progress"
+                  dataKey="mcpInProgress"
+                  type="linear"
+                  stroke={IN_PROGRESS}
+                  strokeWidth={2}
+                  strokeLinejoin="round"
+                  strokeLinecap="round"
+                  dot={false}
+                  activeDot={false}
+                  className="traffic-in-progress"
+                  isAnimationActive={false}
+                />
+                <Line
+                  name="MCP requests"
+                  dataKey="mcpLine"
+                  type="monotone"
+                  stroke={MCP}
+                  strokeWidth={2}
+                  strokeLinejoin="round"
+                  strokeLinecap="round"
+                  dot={false}
+                  activeDot={(props: { cx?: number; cy?: number }) => (
+                    <circle
+                      key="traffic-mcp-active"
+                      cx={props.cx}
+                      cy={props.cy}
+                      r={4}
+                      strokeWidth={2}
+                      stroke={SURFACE}
+                      fill={MCP}
+                    />
+                  )}
+                  className="traffic-mcp"
                   isAnimationActive={false}
                 />
                 {/*
-                  Errors over the requests line, drawn the same way: each run
+                  Errors over the requests lines, drawn the same way: each run
                   of errors rises from zero and falls back to it; no line where
                   there are none.
                 */}
@@ -546,7 +591,7 @@ export function RequestTraffic({
                 : 'No traffic in this period'}
             </div>
           )}
-          {total === 0 && inFlight === 0 && points.length > 0 && (
+          {total === 0 && inFlightTotal === 0 && points.length > 0 && (
             <div className="pointer-events-none absolute inset-x-0 top-0 flex h-[60%] items-center justify-center text-xs text-muted-foreground">
               No requests in this period. Your next request will appear here live.
             </div>

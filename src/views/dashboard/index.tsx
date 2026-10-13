@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { TimeRange } from '@/types/tauri-commands'
+import { inFlightCounts } from './activity-data'
 import { RequestMonitor } from './request-monitor'
 import { RequestTraffic } from './request-traffic'
 import { UsageLimits } from './usage-limits'
@@ -31,7 +32,7 @@ export function DashboardView({ onTabChange }: DashboardViewProps = {}) {
         onRangeChange={setRange}
         timeline={home.timeline}
         loading={home.trafficLoading}
-        inFlight={inFlight.length}
+        inFlight={inFlightCounts(inFlight)}
         onRefresh={() => {
           home.refresh()
           setMonitorReload((value) => value + 1)

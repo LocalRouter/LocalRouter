@@ -57,7 +57,8 @@ test('buckets become points with finished requests and errors; unknown stays unk
     { timestamp: base * 1000, completed: null, llm: null, mcp: null, errors: null, cost: null, live: false },
     { timestamp: (base + 10) * 1000, completed: 5, llm: 4, mcp: 1, errors: 2, cost: 0.04, live: true },
   ])
-  expect(trafficPeak(points)).toBe(5)
+  // The tallest line, LLM at 4: the lines are drawn separately, not summed.
+  expect(trafficPeak(points)).toBe(4)
   expect(trafficPoints(null, base * 1000)).toEqual([])
   expect(trafficPoints(timeline([]), base * 1000)).toEqual([])
 })

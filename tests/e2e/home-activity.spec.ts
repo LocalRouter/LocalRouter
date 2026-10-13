@@ -1,7 +1,8 @@
 import { expect, type Page, test } from '@playwright/test'
 
-const REQUESTS_SOLID = '.recharts-line:not(.traffic-errors) path.recharts-line-curve'
-const REQUESTS_OPEN = '.recharts-line:not(.traffic-errors) path.traffic-provisional'
+const LLM_LINE = '.traffic-llm path.recharts-line-curve'
+const MCP_LINE = '.traffic-mcp path.recharts-line-curve'
+const IN_PROGRESS = '.traffic-in-progress path.recharts-line-curve'
 const ERRORS_LINE = '.traffic-errors path.recharts-line-curve'
 
 /** Serve a fixed 10-second timeline whose newest bucket is the open one. */
@@ -72,16 +73,21 @@ test('time ranges use a compact line chart and the merged Monitor opens request 
   expect(await traffic.getByRole('img').getAttribute('aria-label')).not.toBe(
     defaultLabel,
   )
-  // One requests line, solid up to the last finished bucket and dashed into
-  // the open one; an errors line only around errors; nothing stacked, no
-  // markers or labels for the requests in progress.
-  await expect(traffic.locator(REQUESTS_SOLID)).toHaveCount(1)
-  await expect(traffic.locator(REQUESTS_OPEN)).toHaveCount(1)
+  // An LLM line, an MCP line, an errors line only around errors; no areas,
+  // bars or markers for the requests in progress.
+  await expect(traffic.locator(LLM_LINE)).toHaveCount(1)
+  await expect(traffic.locator(MCP_LINE)).toHaveCount(1)
   await expect(traffic.locator(ERRORS_LINE).first()).toBeVisible()
   await expect(traffic.locator('.recharts-area-curve')).toHaveCount(0)
   await expect(traffic.locator('.recharts-bar-rectangle')).toHaveCount(0)
-  await expect(traffic.getByTestId('traffic-legend')).toHaveCount(0)
   await expect(traffic.getByTestId('traffic-now')).toHaveCount(0)
+  // A static legend names every line.
+  await expect(traffic.getByTestId('traffic-legend').locator(':scope > span')).toHaveText([
+    'LLM requests',
+    'MCP requests',
+    'Errors',
+    'In progress',
+  ])
   for (const label of ['Most in progress', 'Finished per', 'in progress now', 'Idle now']) {
     await expect(traffic.getByText(label)).toHaveCount(0)
   }
@@ -186,12 +192,13 @@ test('in-flight requests are shown live on the chart and clear when they finish'
   const baseline = Number(
     (await traffic.getByText(/^(\d+ in progress|Idle)$/).textContent())?.match(/\d+/)?.[0] ?? 0,
   )
-  const open = traffic.locator(REQUESTS_OPEN)
-  const before = await open.getAttribute('d')
+  const segments = () =>
+    traffic.locator(IN_PROGRESS).evaluateAll((paths) => paths.map((p) => p.getAttribute('d')).join())
+  const before = await segments()
   await publish('monitor-event-created', request)
   await expect(traffic).toContainText(`${baseline + 1} in progress`)
-  // The open bucket's dashed segment rises with the new request.
-  await expect.poll(() => open.getAttribute('d')).not.toBe(before)
+  // The in-progress segment on the LLM line rises with the new request.
+  await expect.poll(segments).not.toBe(before)
   await expect(traffic.getByRole('img')).toHaveAttribute(
     'aria-label',
     new RegExp(`${baseline + 1} in progress now`),
@@ -205,7 +212,7 @@ test('in-flight requests are shown live on the chart and clear when they finish'
   await expect(traffic.getByText('Idle now')).toHaveCount(0)
 })
 
-test('the open bucket continues the line, dashed, at finished so far plus in progress', async ({
+test('requests in progress stack on their line, and errors run from zero back to zero', async ({
   page,
 }) => {
   await fixedTimeline(page, [
@@ -220,25 +227,45 @@ test('the open bucket continues the line, dashed, at finished so far plus in pro
   ])
   const traffic = page.getByRole('region', { name: 'Request traffic' })
   await expect(traffic).toContainText('27 requests')
+  // An LLM request still running, so the LLM line has a segment in progress.
+  await page.evaluate(async () => {
+    const { emit } = await import(/* @vite-ignore */ '/src/stubs/tauri-api-event.ts')
+    await emit(
+      'monitor-event-created',
+      JSON.stringify({
+        id: 'stacked-in-flight',
+        sequence: 902,
+        timestamp: new Date().toISOString(),
+        event_type: 'llm_call',
+        client_id: 'test',
+        client_name: 'Live client',
+        session_id: null,
+        status: 'pending',
+        duration_ms: null,
+        summary: 'A live request',
+        question: 'A live question',
+        answer: '',
+      }),
+    )
+  })
+  await expect(traffic.getByText(/^\d+ in progress$/)).toBeVisible()
   const inProgress = Number(
-    (await traffic.getByText(/^(\d+ in progress|Idle)$/).textContent())?.match(/\d+/)?.[0] ?? 0,
+    (await traffic.getByText(/^\d+ in progress$/).textContent())!.match(/\d+/)![0],
   )
-  // Solid and dashed are one curve split at the last finished bucket: the
-  // dashed part starts where the solid part ends.
-  const solid = traffic.locator(REQUESTS_SOLID)
-  const open = traffic.locator(REQUESTS_OPEN)
-  await expect(open).toHaveAttribute('stroke-dasharray', /\d/)
-  const clipEdge = async (path: typeof solid) => {
-    const id = (await path.getAttribute('clip-path'))!.match(/#([^)]+)/)![1]
-    return page.evaluate((id) => {
-      const rect = document.getElementById(id)!.querySelector('rect')!
-      return [rect.x.baseVal.value, rect.width.baseVal.value]
-    }, id)
-  }
-  const [solidX, solidWidth] = await clipEdge(solid)
-  const [openX] = await clipEdge(open)
-  expect(solidX + solidWidth).toBeCloseTo(openX)
-  expect(await solid.getAttribute('d')).toBe(await open.getAttribute('d'))
+  // The yellow segment runs from the previous bucket's point on the LLM line
+  // to above the live bucket's point: finished so far plus in progress.
+  const coords = (d: string) => d.match(/-?\d+(\.\d+)?/g)!.map(Number)
+  const line = coords((await traffic.locator(LLM_LINE).getAttribute('d'))!)
+  const [liveX, liveY] = line.slice(-2)
+  // The last curve segment is `C cp1 cp2 end`: the previous point ends the one before.
+  const [prevX, prevY] = line.slice(-8, -6)
+  const [fromX, fromY, toX, toY] = coords(
+    (await traffic.locator(IN_PROGRESS).first().getAttribute('d'))!,
+  )
+  expect(fromX).toBeCloseTo(prevX)
+  expect(fromY).toBeCloseTo(prevY)
+  expect(toX).toBeCloseTo(liveX)
+  expect(toY).toBeLessThan(liveY)
   // The errors line rises from zero around each run of errors and is not
   // drawn elsewhere: two runs, two pieces, each from zero back to zero.
   const pieces = traffic.locator(ERRORS_LINE)
@@ -252,12 +279,13 @@ test('the open bucket continues the line, dashed, at finished so far plus in pro
   await page.mouse.move(grid.x + grid.width - 1, grid.y + grid.height / 2)
   const tooltip = traffic.locator('.recharts-tooltip-wrapper')
   await expect(tooltip).toContainText('Now (in progress)')
-  await expect(tooltip).toContainText('Finished so far1')
+  await expect(tooltip).toContainText('LLM requests1')
   await expect(tooltip).toContainText(`In progress${inProgress}`)
   // A finished bucket keeps the usual rows.
   await page.mouse.move(grid.x + (grid.width * 4) / 7, grid.y + grid.height / 2)
   await expect(tooltip).not.toContainText('Now (in progress)')
-  await expect(tooltip).toContainText('Finished5')
+  await expect(tooltip).toContainText('LLM requests5')
+  await expect(tooltip).toContainText('MCP requests0')
   await expect(tooltip).toContainText('Errors2')
 })
 
@@ -280,7 +308,7 @@ test('a range without errors draws no error marks', async ({ page }) => {
   await expect(traffic).toContainText('0 errors')
   await expect(traffic.locator(ERRORS_LINE)).toHaveCount(0)
   await expect(traffic.locator('.recharts-label-list text')).toHaveCount(0)
-  await expect(traffic.locator(REQUESTS_SOLID)).toHaveCount(1)
+  await expect(traffic.locator(LLM_LINE)).toHaveCount(1)
 })
 
 test('the monitor filter selection is remembered across reloads', async ({

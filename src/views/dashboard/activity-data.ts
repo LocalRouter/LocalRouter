@@ -108,20 +108,53 @@ export function livePoint(points: TrafficPoint[]): TrafficPoint | null {
   return newest?.live ? newest : null
 }
 
+/** Requests still running right now, by kind. */
+export interface InFlightCounts {
+  llm: number
+  mcp: number
+}
+
+export const NONE_IN_FLIGHT: InFlightCounts = { llm: 0, mcp: 0 }
+
+export function inFlightCounts(events: MonitorEventSummary[]): InFlightCounts {
+  const counts = { llm: 0, mcp: 0 }
+  for (const event of events) {
+    const kind = activityKind(event)
+    if (kind === 'LLM') counts.llm++
+    else if (kind === 'MCP') counts.mcp++
+  }
+  return counts
+}
+
 /**
- * Top of the shared count axis: the busiest bucket, the live bucket counting
- * its requests in progress now (its provisional value).
+ * Top of the shared count axis: the highest LLM, MCP or errors value of any
+ * bucket, the live bucket counting its requests in progress now (its
+ * provisional value).
  */
-export function trafficPeak(points: TrafficPoint[], inFlightNow = 0): number {
-  return Math.max(0, ...points.map((p) => (p.completed ?? 0) + (p.live ? inFlightNow : 0)))
+export function trafficPeak(points: TrafficPoint[], inFlightNow = NONE_IN_FLIGHT): number {
+  return Math.max(
+    0,
+    ...points.map((p) =>
+      Math.max(
+        (p.llm ?? 0) + (p.live ? inFlightNow.llm : 0),
+        (p.mcp ?? 0) + (p.live ? inFlightNow.mcp : 0),
+        p.errors ?? 0,
+      ),
+    ),
+  )
 }
 
 export interface ChartPoint extends TrafficPoint {
+  /** The LLM and MCP lines: finished requests per bucket (so far, at the live bucket). */
+  llmLine: number | null
+  mcpLine: number | null
   /**
-   * The requests line: finished requests per bucket; at the live bucket a
-   * provisional value, finished so far plus in progress now.
+   * The in-progress segments, stacked on the LLM and MCP lines: from the
+   * previous bucket's value to the live bucket's finished plus in progress
+   * now. `null` everywhere else, and when none of that kind are running.
    */
-  requests: number | null
+  llmInProgress: number | null
+  mcpInProgress: number | null
   /**
    * The errors line: the errors where they happened and 0 at the buckets
    * next to them, so each run of errors rises from and falls back to zero;
@@ -130,12 +163,24 @@ export interface ChartPoint extends TrafficPoint {
   errorLine: number | null
 }
 
-/** Chart rows: the requests line with its provisional live value, and the errors line. */
-export function chartPoints(points: TrafficPoint[], inFlightNow: number): ChartPoint[] {
+/** Chart rows: the LLM and MCP lines, their in-progress segments, and the errors line. */
+export function chartPoints(points: TrafficPoint[], inFlightNow = NONE_IN_FLIGHT): ChartPoint[] {
   const hasErrors = (p: TrafficPoint | undefined) => Boolean(p?.errors)
+  const liveIndex = points.findIndex((p) => p.live)
+  const live = points[liveIndex]
+  /** The segment's value at bucket `i`: its start before the live bucket, its top at it. */
+  const inProgress = (i: number, kind: 'llm' | 'mcp'): number | null => {
+    if (!live || inFlightNow[kind] === 0) return null
+    if (i === liveIndex) return (live[kind] ?? 0) + inFlightNow[kind]
+    if (i === liveIndex - 1) return points[i][kind]
+    return null
+  }
   return points.map((p, i) => ({
     ...p,
-    requests: p.live ? (p.completed ?? 0) + inFlightNow : p.completed,
+    llmLine: p.llm,
+    mcpLine: p.mcp,
+    llmInProgress: inProgress(i, 'llm'),
+    mcpInProgress: inProgress(i, 'mcp'),
     errorLine: hasErrors(p)
       ? p.errors
       : p.errors !== null && (hasErrors(points[i - 1]) || hasErrors(points[i + 1]))
