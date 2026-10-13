@@ -44,17 +44,21 @@ const money = new Intl.NumberFormat(undefined, {
 /*
  * Series colors (validated with the dataviz palette checker, light and dark,
  * all pairs): LLM requests take categorical slot 1 (blue), MCP requests slot 3
- * (aqua; slot 2's orange is too close to the error red), requests in progress
- * slot 4 (yellow); errors the reserved "critical" status red, always next to
- * an icon and a label. Light and dark steps are set as CSS variables on the
- * section.
+ * (aqua; slot 2's orange is too close to the error red); errors the reserved
+ * "critical" status red, labelled in the legend and tooltip. Light and dark
+ * steps are set as CSS variables on the section.
  */
 const LLM = 'var(--traffic-llm)'
 const MCP = 'var(--traffic-mcp)'
-const IN_PROGRESS = 'var(--traffic-in-progress)'
 const ERROR = 'var(--traffic-error)'
+/**
+ * Requests in progress: the same color as their line, lighter, so they read
+ * as that line still growing. Dark mode keeps more of the stroke, since a
+ * faded line sinks into the dark card.
+ */
+const IN_PROGRESS_OPACITY = 'var(--traffic-in-progress)'
 const PALETTE =
-  '[--traffic-llm:#2a78d6] [--traffic-mcp:#1baf7a] [--traffic-in-progress:#eda100] [--traffic-error:#d03b3b] dark:[--traffic-llm:#3987e5] dark:[--traffic-mcp:#199e70] dark:[--traffic-in-progress:#c98500]'
+  '[--traffic-llm:#2a78d6] [--traffic-mcp:#1baf7a] [--traffic-error:#d03b3b] [--traffic-in-progress:0.4] dark:[--traffic-llm:#3987e5] dark:[--traffic-mcp:#199e70] dark:[--traffic-in-progress:0.55]'
 
 const AXIS_TICK = { fill: 'hsl(var(--muted-foreground))', fontSize: 10 }
 const GRID = 'hsl(var(--border))'
@@ -120,8 +124,14 @@ function formatBucket(range: TimeRange, start: number, bucketMs: number): string
   return `${day}${from.toLocaleTimeString(undefined, options)}–${to.toLocaleTimeString(undefined, options)}`
 }
 
-function LineKey({ color }: { color: string }) {
-  return <span className="h-0.5 w-3 shrink-0 rounded-full" style={{ background: color }} aria-hidden />
+function LineKey({ color, opacity }: { color: string; opacity?: string }) {
+  return (
+    <span
+      className="h-0.5 w-3 shrink-0 rounded-full"
+      style={{ background: color, opacity }}
+      aria-hidden
+    />
+  )
 }
 
 function TooltipRow({
@@ -172,22 +182,23 @@ function TrafficTooltip({
           <TooltipRow marker={<LineKey color={LLM} />} label="LLM requests" value={point.llm} />
           <TooltipRow marker={<LineKey color={MCP} />} label="MCP requests" value={point.mcp} />
           <TooltipRow
-            marker={
-              <CircleAlert
-                className="h-3 w-3"
-                style={point.errors ? { color: ERROR } : undefined}
-                aria-hidden
-              />
-            }
+            marker={<LineKey color={ERROR} />}
             label="Errors"
             value={point.errors}
             muted={!point.errors}
           />
-          {point.live && (
+          {point.live && inFlight.llm > 0 && (
             <TooltipRow
-              marker={<LineKey color={IN_PROGRESS} />}
-              label="In progress"
-              value={inFlight.llm + inFlight.mcp}
+              marker={<LineKey color={LLM} opacity={IN_PROGRESS_OPACITY} />}
+              label="LLM in progress"
+              value={inFlight.llm}
+            />
+          )}
+          {point.live && inFlight.mcp > 0 && (
+            <TooltipRow
+              marker={<LineKey color={MCP} opacity={IN_PROGRESS_OPACITY} />}
+              label="MCP in progress"
+              value={inFlight.mcp}
             />
           )}
           {point.cost ? (
@@ -215,10 +226,7 @@ function TrafficLegend() {
         <LineKey color={MCP} /> MCP requests
       </span>
       <span className="flex items-center gap-1.5">
-        <CircleAlert className="h-3 w-3" style={{ color: ERROR }} aria-hidden /> Errors
-      </span>
-      <span className="flex items-center gap-1.5">
-        <LineKey color={IN_PROGRESS} /> In progress
+        <LineKey color={ERROR} /> Errors
       </span>
     </div>
   )
@@ -469,14 +477,15 @@ export function RequestTraffic({
                 />
                 {/*
                   Each requests line, and under it the requests of its kind
-                  in progress now stacked on top: a yellow segment from the
+                  in progress now stacked on top: a lighter segment from the
                   previous bucket to finished plus in progress at the live one.
                 */}
                 <Line
                   name="LLM requests in progress"
                   dataKey="llmInProgress"
                   type="linear"
-                  stroke={IN_PROGRESS}
+                  stroke={LLM}
+                  strokeOpacity={IN_PROGRESS_OPACITY}
                   strokeWidth={2}
                   strokeLinejoin="round"
                   strokeLinecap="round"
@@ -512,7 +521,8 @@ export function RequestTraffic({
                   name="MCP requests in progress"
                   dataKey="mcpInProgress"
                   type="linear"
-                  stroke={IN_PROGRESS}
+                  stroke={MCP}
+                  strokeOpacity={IN_PROGRESS_OPACITY}
                   strokeWidth={2}
                   strokeLinejoin="round"
                   strokeLinecap="round"

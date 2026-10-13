@@ -14,8 +14,10 @@ Feedback on the dashboard Traffic chart (screenshots from the installed
 2. MCP requests should be a line of their own.
 3. Labels should be plain and static ("Finished per 10 seconds" was unclear).
 4. Requests in progress should stack on the finished line: previous bucket 3,
-   live bucket 1 finished + 1 running → a yellow segment from 3 to 2, above
-   the line's 1.
+   live bucket 1 finished + 1 running → a segment from 3 to 2, above the
+   line's 1, in the same color as its line but lighter.
+5. The legend names only the lines (no "In progress" entry), and errors are
+   keyed by a red line, not an icon.
 
 ## Changes
 
@@ -26,12 +28,14 @@ Feedback on the dashboard Traffic chart (screenshots from the installed
   requests by kind; `trafficPeak` takes the tallest single line (LLM, MCP with
   in-progress, or errors) instead of their sum.
 - `request-traffic.tsx`: two monotone lines (LLM blue, MCP aqua) and a linear
-  yellow in-progress segment per kind; the dashed clipped provisional curve is
-  gone. A static legend above the plot: LLM requests, MCP requests, Errors, In
-  progress. Tooltip rows use the same labels.
+  in-progress segment per kind in its line's color at reduced opacity (0.4
+  light, 0.55 dark); the dashed clipped provisional curve is gone. A static
+  legend above the plot keys each line with a line swatch: LLM requests, MCP
+  requests, Errors (red). Tooltip rows use the same labels, plus "LLM in
+  progress" / "MCP in progress" at the live bucket.
 - Colors validated with the dataviz checker (all pairs, light and dark): blue
-  `#2a78d6`/`#3987e5`, aqua `#1baf7a`/`#199e70`, yellow `#eda100`/`#c98500`,
-  error red `#d03b3b`. Orange failed against the error red.
+  `#2a78d6`/`#3987e5`, aqua `#1baf7a`/`#199e70`, error red `#d03b3b`. Orange
+  failed against the error red.
 
 ## Testing
 

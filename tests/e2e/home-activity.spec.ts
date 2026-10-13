@@ -86,7 +86,6 @@ test('time ranges use a compact line chart and the merged Monitor opens request 
     'LLM requests',
     'MCP requests',
     'Errors',
-    'In progress',
   ])
   for (const label of ['Most in progress', 'Finished per', 'in progress now', 'Idle now']) {
     await expect(traffic.getByText(label)).toHaveCount(0)
@@ -249,10 +248,7 @@ test('requests in progress stack on their line, and errors run from zero back to
     )
   })
   await expect(traffic.getByText(/^\d+ in progress$/)).toBeVisible()
-  const inProgress = Number(
-    (await traffic.getByText(/^\d+ in progress$/).textContent())!.match(/\d+/)![0],
-  )
-  // The yellow segment runs from the previous bucket's point on the LLM line
+  // The lighter segment runs from the previous bucket's point on the LLM line
   // to above the live bucket's point: finished so far plus in progress.
   const coords = (d: string) => d.match(/-?\d+(\.\d+)?/g)!.map(Number)
   const line = coords((await traffic.locator(LLM_LINE).getAttribute('d'))!)
@@ -280,7 +276,7 @@ test('requests in progress stack on their line, and errors run from zero back to
   const tooltip = traffic.locator('.recharts-tooltip-wrapper')
   await expect(tooltip).toContainText('Now (in progress)')
   await expect(tooltip).toContainText('LLM requests1')
-  await expect(tooltip).toContainText(`In progress${inProgress}`)
+  await expect(tooltip).toContainText(/LLM in progress\d+/)
   // A finished bucket keeps the usual rows.
   await page.mouse.move(grid.x + (grid.width * 4) / 7, grid.y + grid.height / 2)
   await expect(tooltip).not.toContainText('Now (in progress)')
