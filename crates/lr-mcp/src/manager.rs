@@ -1081,6 +1081,13 @@ impl McpServerManager {
                 .get(server_id)
                 .is_some_and(|t| t.is_healthy());
 
+        // A transport that exists but is no longer alive means a running server
+        // went away, as opposed to a server that simply hasn't been started.
+        let had_dead_transport = !has_live_global_transport
+            && (self.stdio_transports.contains_key(server_id)
+                || self.sse_transports.contains_key(server_id)
+                || self.websocket_transports.contains_key(server_id));
+
         // If a global transport is alive (e.g. manually started from UI), report healthy.
         // Otherwise, always do a fresh readiness check (try to spawn/connect).
         let (status, latency_ms, error) = if has_live_global_transport {
@@ -1115,9 +1122,22 @@ impl McpServerManager {
             .map(|c| c.name)
             .unwrap_or_else(|| "Unknown".to_string());
 
-        // Emit monitor event for unhealthy running servers (disconnected)
+        // Emit a monitor event when the server can't be reached or started
         if status == HealthStatus::Unhealthy {
             if let Some(ref err_msg) = error {
+                let (action, message) = if had_dead_transport {
+                    (
+                        "disconnected",
+                        format!(
+                            "{server_name} was running but stopped responding, and restarting it failed: {err_msg}"
+                        ),
+                    )
+                } else {
+                    (
+                        "health_check_failed",
+                        format!("Health check could not start {server_name}. {err_msg}"),
+                    )
+                };
                 self.emit_monitor_event(
                     lr_monitor::MonitorEventType::McpServerEvent,
                     None,
@@ -1126,8 +1146,8 @@ impl McpServerManager {
                     lr_monitor::MonitorEventData::McpServerEvent {
                         server_id: server_id.to_string(),
                         server_name: Some(server_name.clone()),
-                        action: "disconnected".to_string(),
-                        message: err_msg.clone(),
+                        action: action.to_string(),
+                        message,
                     },
                     lr_monitor::EventStatus::Error,
                     None,
@@ -1250,6 +1270,18 @@ impl McpServerManager {
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
 
+        // Hold stdin open for the whole probe. `Child::wait` closes a stdin it
+        // still owns before waiting, and stdio MCP servers exit (often with an
+        // error such as "connection closed: initialize request") when stdin
+        // closes before the handshake. Sending an initialize request also gives
+        // a well-behaved server something to answer on stdout right away.
+        let mut stdin = child.stdin.take();
+        if let Some(ref mut pipe) = stdin {
+            use tokio::io::AsyncWriteExt;
+            let _ = pipe.write_all(PROBE_INITIALIZE_REQUEST.as_bytes()).await;
+            let _ = pipe.flush().await;
+        }
+
         // Wait for either:
         // 1. Any output on stdout (MCP server is running)
         // 2. Any output on stderr (could be error or npx progress)
@@ -1265,6 +1297,7 @@ impl McpServerManager {
 
         // Always try to kill the child process
         let _ = child.kill().await;
+        drop(stdin);
 
         match result {
             Ok(Ok(())) => {
@@ -1330,7 +1363,14 @@ impl McpServerManager {
             None
         };
 
-        tokio::select! {
+        enum Outcome {
+            Output,
+            StdoutClosed,
+            Exited(std::io::Result<std::process::ExitStatus>),
+            StillRunning,
+        }
+
+        let outcome = tokio::select! {
             // Wait for stdout line (positive signal: server is producing output)
             result = async {
                 if let Some(mut reader) = stdout_reader {
@@ -1341,62 +1381,50 @@ impl McpServerManager {
                 }
             } => {
                 match result {
-                    Ok(0) => {
-                        // EOF on stdout — process closed without producing output.
-                        // This is normal for stdio MCP servers that exit when they
-                        // don't receive an initialize request on stdin. The process
-                        // was spawnable, so consider it ready.
-                        Ok(())
-                    }
-                    Ok(_) => {
-                        // Got output on stdout - server is running!
-                        Ok(())
-                    }
-                    Err(e) => Err(format!("Failed to read stdout: {}", e)),
+                    Ok(0) => Outcome::StdoutClosed,
+                    Ok(_) => Outcome::Output,
+                    Err(e) => return Err(format!("Failed to read stdout: {}", e)),
                 }
             }
 
             // Wait for process exit
-            result = child.wait() => {
-                match result {
-                    Ok(status) if status.success() => {
-                        // Exited successfully (unusual for MCP servers)
-                        Ok(())
-                    }
-                    Ok(status) => {
-                        // Process exited with error - use captured stderr for context
-                        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-                        let captured = stderr_capture.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                        if captured.is_empty() {
-                            Err(format!("Exited with code: {}", status))
-                        } else {
-                            let first_error = captured.lines()
-                                .find(|l| {
-                                    let lower = l.to_lowercase();
-                                    lower.contains("error") || lower.contains("fatal")
-                                        || lower.contains("failed") || lower.contains("not found")
-                                })
-                                .or_else(|| captured.lines().next())
-                                .unwrap_or("");
-                            let truncated = if first_error.len() > 100 {
-                                format!("{}...", &first_error[..100])
-                            } else {
-                                first_error.to_string()
-                            };
-                            Err(truncated)
-                        }
-                    }
-                    Err(e) => Err(format!("Failed to wait for process: {}", e)),
-                }
-            }
+            result = child.wait() => Outcome::Exited(result),
 
             // If the process is still alive after a brief delay, consider it healthy.
             // MCP stdio servers won't produce stdout output until they receive a
             // JSON-RPC initialize request on stdin, so staying alive without errors
             // is sufficient for a health check.
-            _ = tokio::time::sleep(tokio::time::Duration::from_secs(3)) => {
-                Ok(())
+            _ = tokio::time::sleep(tokio::time::Duration::from_secs(3)) => Outcome::StillRunning,
+        };
+
+        let exit = match outcome {
+            // Got output on stdout - server is running!
+            Outcome::Output | Outcome::StillRunning => return Ok(()),
+            // Stdout closes when the process exits, so let the exit status decide.
+            // A process that closed stdout but keeps running is still ready.
+            Outcome::StdoutClosed => {
+                match tokio::time::timeout(tokio::time::Duration::from_secs(1), child.wait()).await
+                {
+                    Ok(result) => result,
+                    Err(_) => return Ok(()),
+                }
             }
+            Outcome::Exited(result) => result,
+        };
+
+        match exit {
+            // Exited successfully (unusual for MCP servers)
+            Ok(status) if status.success() => Ok(()),
+            Ok(status) => {
+                // Process exited with error - use captured stderr for context
+                tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                let captured = stderr_capture
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
+                Err(describe_early_exit(&status.to_string(), &captured))
+            }
+            Err(e) => Err(format!("Failed to wait for process: {}", e)),
         }
     }
 
@@ -1553,6 +1581,66 @@ impl McpServerManager {
             }
         }
     }
+}
+
+/// MCP initialize request written to a stdio server during a readiness probe
+const PROBE_INITIALIZE_REQUEST: &str = concat!(
+    r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18","#,
+    r#""capabilities":{},"clientInfo":{"name":"localrouter-health-check","version":"1"}}}"#,
+    "\n"
+);
+
+/// Remove ANSI escape sequences (colored log output) from a line
+fn strip_ansi(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                // CSI sequence: parameters, then a final byte in @..~
+                for c in chars.by_ref() {
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Explain a stdio server that exited during the readiness probe, quoting the
+/// most relevant stderr line.
+fn describe_early_exit(status: &str, stderr: &str) -> String {
+    let lines: Vec<String> = stderr
+        .lines()
+        .map(|l| strip_ansi(l).trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    let reason = lines
+        .iter()
+        .find(|l| {
+            let lower = l.to_lowercase();
+            lower.contains("error")
+                || lower.contains("fatal")
+                || lower.contains("failed")
+                || lower.contains("not found")
+        })
+        .or_else(|| lines.last());
+    let mut message =
+        format!("The server process stopped on its own ({status}) before it could be used");
+    if let Some(reason) = reason {
+        let reason = if reason.chars().count() > 160 {
+            format!("{}...", reason.chars().take(160).collect::<String>())
+        } else {
+            reason.clone()
+        };
+        message.push_str(&format!(". It reported: {reason}"));
+    }
+    message
 }
 
 impl Default for McpServerManager {
@@ -1801,5 +1889,68 @@ mod tests {
             "command that exits cleanly without output should be considered ready: {:?}",
             result
         );
+    }
+
+    #[tokio::test]
+    async fn test_try_spawn_command_keeps_stdin_open_for_handshake() {
+        // Like many stdio MCP servers: read the initialize request from stdin
+        // and fail if stdin closes first.
+        let result = McpServerManager::try_spawn_command(
+            "sh",
+            &[
+                "-c".to_string(),
+                "read -r line || { echo 'Error: connection closed: initialize request' >&2; exit 1; }; echo \"$line\"".to_string(),
+            ],
+            &std::collections::HashMap::new(),
+            None,
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "probe closed stdin before the handshake: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_try_spawn_command_explains_early_exit() {
+        let result = McpServerManager::try_spawn_command(
+            "sh",
+            &[
+                "-c".to_string(),
+                "printf '\\033[31mfatal: missing API key\\033[0m\\n' >&2; exit 3".to_string(),
+            ],
+            &std::collections::HashMap::new(),
+            None,
+        )
+        .await;
+        let err = result.unwrap_err();
+        assert!(err.contains("stopped on its own"), "{err}");
+        assert!(err.contains("missing API key"), "{err}");
+    }
+
+    #[test]
+    fn test_describe_early_exit() {
+        let stderr = "\u{1b}[2m2026-10-13T18:03:04Z\u{1b}[0m \u{1b}[32m INFO\u{1b}[0m Starting\n\
+                      Error: connection closed: initialize request\n";
+        assert_eq!(
+            describe_early_exit("exit status: 1", stderr),
+            "The server process stopped on its own (exit status: 1) before it could be used. \
+             It reported: Error: connection closed: initialize request"
+        );
+        // No stderr: just the status
+        assert_eq!(
+            describe_early_exit("exit status: 2", ""),
+            "The server process stopped on its own (exit status: 2) before it could be used"
+        );
+        // Without an error-looking line, the last line is quoted
+        assert!(
+            describe_early_exit("exit status: 1", "starting\nbye\n").ends_with("It reported: bye")
+        );
+    }
+
+    #[test]
+    fn test_strip_ansi() {
+        assert_eq!(strip_ansi("\u{1b}[33m WARN\u{1b}[0m x"), " WARN x");
+        assert_eq!(strip_ansi("plain"), "plain");
     }
 }

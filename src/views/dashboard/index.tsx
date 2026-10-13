@@ -13,7 +13,6 @@ interface DashboardViewProps {
 
 export function DashboardView({ onTabChange }: DashboardViewProps = {}) {
   const [range, setRange] = useState<TimeRange>('ten_minutes')
-  const [monitorReload, setMonitorReload] = useState(0)
   const home = useHomeActivity(range)
   const inFlight = useInFlightRequests(home.refreshSoon)
 
@@ -33,10 +32,6 @@ export function DashboardView({ onTabChange }: DashboardViewProps = {}) {
         timeline={home.timeline}
         loading={home.trafficLoading}
         inFlight={inFlightCounts(inFlight)}
-        onRefresh={() => {
-          home.refresh()
-          setMonitorReload((value) => value + 1)
-        }}
       />
 
       <UsageLimits
@@ -46,7 +41,6 @@ export function DashboardView({ onTabChange }: DashboardViewProps = {}) {
 
       <RequestMonitor
         className="mx-auto min-h-[440px] w-full max-w-[1440px] flex-1"
-        reloadSignal={monitorReload}
       />
     </div>
   )

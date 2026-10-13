@@ -5,6 +5,21 @@ const MCP_LINE = '.traffic-mcp path.recharts-line-curve'
 const IN_PROGRESS = '.traffic-in-progress path.recharts-line-curve'
 const ERRORS_LINE = '.traffic-errors path.recharts-line-curve'
 
+/** Re-read the traffic timeline now (the chart is live; switching range reloads it). */
+async function reloadTraffic(page: Page) {
+  await page.getByRole('button', { name: 'last hour', exact: true }).click()
+  await page.getByRole('button', { name: 'last 10 minutes', exact: true }).click()
+}
+
+/** Re-read the monitor's event snapshot (a filter change reloads it). */
+async function reloadMonitor(page: Page) {
+  const errorsOnly = page
+    .getByRole('region', { name: 'Request monitor' })
+    .getByRole('button', { name: 'Errors only' })
+  await errorsOnly.click()
+  await errorsOnly.click()
+}
+
 /** Serve a fixed 10-second timeline whose newest bucket is the open one. */
 async function fixedTimeline(
   page: Page,
@@ -39,15 +54,15 @@ async function fixedTimeline(
       }
     }
   }, buckets)
-  await page.getByRole('button', { name: 'Refresh activity' }).click()
+  await reloadTraffic(page)
 }
 
 test.beforeEach(async ({ page }) => {
   await page.goto('/demo')
   await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible()
   await expect(
-    page.getByRole('button', { name: 'Refresh activity' }),
-  ).toBeEnabled()
+    page.getByRole('region', { name: 'Request traffic' }).locator('.traffic-llm'),
+  ).toHaveCount(1)
 })
 
 test('time ranges use a compact line chart and the merged Monitor opens request details in a pane', async ({
@@ -67,9 +82,10 @@ test('time ranges use a compact line chart and the merged Monitor opens request 
     'aria-label',
     /per minute/,
   )
-  await expect(
-    page.getByRole('button', { name: 'Refresh activity' }),
-  ).toBeEnabled()
+  // The chart is live: no refresh control, and the totals row is shown only
+  // while the section is folded.
+  await expect(traffic.getByRole('button', { name: 'Refresh activity' })).toHaveCount(0)
+  await expect(traffic).not.toContainText('est. cost')
   expect(await traffic.getByRole('img').getAttribute('aria-label')).not.toBe(
     defaultLabel,
   )
@@ -188,14 +204,15 @@ test('in-flight requests are shown live on the chart and clear when they finish'
       },
       { name, payload },
     )
-  const baseline = Number(
-    (await traffic.getByText(/^(\d+ in progress|Idle)$/).textContent())?.match(/\d+/)?.[0] ?? 0,
-  )
+  const inProgressNow = async () =>
+    Number(
+      (await traffic.getByRole('img').getAttribute('aria-label'))?.match(/(\d+) in progress now/)?.[1] ?? 0,
+    )
+  const baseline = await inProgressNow()
   const segments = () =>
     traffic.locator(IN_PROGRESS).evaluateAll((paths) => paths.map((p) => p.getAttribute('d')).join())
   const before = await segments()
   await publish('monitor-event-created', request)
-  await expect(traffic).toContainText(`${baseline + 1} in progress`)
   // The in-progress segment on the LLM line rises with the new request.
   await expect.poll(segments).not.toBe(before)
   await expect(traffic.getByRole('img')).toHaveAttribute(
@@ -207,7 +224,7 @@ test('in-flight requests are shown live on the chart and clear when they finish'
     status: 'complete',
     duration_ms: 500,
   })
-  await expect(traffic).not.toContainText(`${baseline + 1} in progress`)
+  await expect.poll(inProgressNow).toBe(baseline)
   await expect(traffic.getByText('Idle now')).toHaveCount(0)
 })
 
@@ -225,7 +242,7 @@ test('requests in progress stack on their line, and errors run from zero back to
     { requests: 1 },
   ])
   const traffic = page.getByRole('region', { name: 'Request traffic' })
-  await expect(traffic).toContainText('27 requests')
+  await expect(traffic.getByRole('img')).toHaveAttribute('aria-label', /27 finished requests/)
   // An LLM request still running, so the LLM line has a segment in progress.
   await page.evaluate(async () => {
     const { emit } = await import(/* @vite-ignore */ '/src/stubs/tauri-api-event.ts')
@@ -247,7 +264,9 @@ test('requests in progress stack on their line, and errors run from zero back to
       }),
     )
   })
-  await expect(traffic.getByText(/^\d+ in progress$/)).toBeVisible()
+  await expect(traffic.getByRole('img')).toHaveAttribute('aria-label', /[1-9]\d* in progress now/)
+  // In progress is drawn dashed, not only lighter.
+  await expect(traffic.locator(IN_PROGRESS).first()).toHaveAttribute('stroke-dasharray', /\d/)
   // The lighter segment runs from the previous bucket's point on the LLM line
   // to above the live bucket's point: finished so far plus in progress.
   const coords = (d: string) => d.match(/-?\d+(\.\d+)?/g)!.map(Number)
@@ -269,7 +288,8 @@ test('requests in progress stack on their line, and errors run from zero back to
   for (const d of await pieces.evaluateAll((paths) => paths.map((p) => p.getAttribute('d')!))) {
     expect(d.match(/M/g)).toHaveLength(1)
   }
-  await expect(traffic.locator('.recharts-label-list text')).toHaveText(['1', '2', '1'])
+  // Error counts live in the tooltip, not as numbers over the peaks.
+  await expect(traffic.locator('.recharts-label-list text')).toHaveCount(0)
   // Hovering the open bucket explains the provisional value.
   const grid = (await traffic.locator('.recharts-cartesian-grid').boundingBox())!
   await page.mouse.move(grid.x + grid.width - 1, grid.y + grid.height / 2)
@@ -299,9 +319,9 @@ test('a range without errors draws no error marks', async ({ page }) => {
       return result
     }
   })
-  await page.getByRole('button', { name: 'Refresh activity' }).click()
+  await reloadTraffic(page)
   const traffic = page.getByRole('region', { name: 'Request traffic' })
-  await expect(traffic).toContainText('0 errors')
+  await expect(traffic.getByRole('img')).toHaveAttribute('aria-label', /, 0 errors\./)
   await expect(traffic.locator(ERRORS_LINE)).toHaveCount(0)
   await expect(traffic.locator('.recharts-label-list text')).toHaveCount(0)
   await expect(traffic.locator(LLM_LINE)).toHaveCount(1)
@@ -349,7 +369,7 @@ test('live completion wins over an older in-flight snapshot', async ({
       })
     }
   })
-  await page.getByRole('button', { name: 'Refresh activity' }).click()
+  await reloadMonitor(page)
   await page.waitForFunction(() => (window as any).resolveHomeSnapshot)
   await page.evaluate(async () => {
     const { emit } = await import(
@@ -444,7 +464,8 @@ test('empty traffic and failed loads are distinct and retry recovers', async ({
       )
     }
   })
-  await page.getByRole('button', { name: 'Refresh activity' }).click()
+  await reloadTraffic(page)
+  await reloadMonitor(page)
   await expect(page.getByText('No events captured yet')).toBeVisible()
   await expect(
     page.getByText('No requests in this period.', { exact: false }),
@@ -452,7 +473,8 @@ test('empty traffic and failed loads are distinct and retry recovers', async ({
   await page.evaluate(() => {
     ;(window as any).homeFailure = true
   })
-  await page.getByRole('button', { name: 'Refresh activity' }).click()
+  await reloadTraffic(page)
+  await reloadMonitor(page)
   await expect(page.getByText('Request traffic is unavailable')).toBeVisible()
   await expect(
     page.getByText('Activity is unavailable.', { exact: false }),
@@ -534,7 +556,9 @@ test('the errors filter shows only failed events, live ones included, and is rem
       { name, payload },
     )
   await publish('monitor-event-created', request)
-  await expect(page.getByRole('region', { name: 'Request traffic' })).toContainText(/\d+ in progress/)
+  await expect(
+    page.getByRole('region', { name: 'Request traffic' }).getByRole('img'),
+  ).toHaveAttribute('aria-label', /[1-9]\d* in progress now/)
   await expect(monitor).not.toContainText('Will this one fail?')
   await publish('monitor-event-updated', { ...request, status: 'error', duration_ms: 20 })
   await expect(monitor).toContainText('Will this one fail?')

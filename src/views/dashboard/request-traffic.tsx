@@ -4,16 +4,13 @@ import {
   ComposedChart,
   Curve,
   type CurveProps,
-  LabelList,
-  type LabelProps,
   Line,
   ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
 } from 'recharts'
-import { Activity, CircleAlert, RefreshCw } from 'lucide-react'
-import { Button } from '@/components/ui/Button'
+import { Activity, CircleAlert } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { TimeRange, TrafficTimeline } from '@/types/tauri-commands'
 import {
@@ -52,21 +49,18 @@ const LLM = 'var(--traffic-llm)'
 const MCP = 'var(--traffic-mcp)'
 const ERROR = 'var(--traffic-error)'
 /**
- * Requests in progress: the same color as their line, lighter, so they read
- * as that line still growing. Dark mode keeps more of the stroke, since a
- * faded line sinks into the dark card.
+ * Requests in progress: the same color as their line, lighter and dashed, so
+ * they read as that line still growing. Dark mode keeps more of the stroke,
+ * since a faded line sinks into the dark card.
  */
 const IN_PROGRESS_OPACITY = 'var(--traffic-in-progress)'
+const IN_PROGRESS_DASH = '3 3'
 const PALETTE =
   '[--traffic-llm:#2a78d6] [--traffic-mcp:#1baf7a] [--traffic-error:#d03b3b] [--traffic-in-progress:0.4] dark:[--traffic-llm:#3987e5] dark:[--traffic-mcp:#199e70] dark:[--traffic-in-progress:0.55]'
 
 const AXIS_TICK = { fill: 'hsl(var(--muted-foreground))', fontSize: 10 }
 const GRID = 'hsl(var(--border))'
 const SURFACE = 'hsl(var(--card))'
-/** Labels on the plot keep a ring of the card color so lines never cut them. */
-const HALO = { paintOrder: 'stroke', stroke: SURFACE, strokeWidth: 3, strokeLinejoin: 'round' } as const
-/** Error buckets get a count label while they are few enough to read. */
-const MAX_LABELLED_ERROR_BUCKETS = 8
 /** Chart height, and the plot inside it (less the top margin and time axis). */
 const CHART_HEIGHT = 156
 const CHART_TOP = 14
@@ -74,8 +68,8 @@ const AXIS_HEIGHT = 18
 const PLOT_HEIGHT = CHART_HEIGHT - CHART_TOP - AXIS_HEIGHT
 /**
  * Lowest drawn error peak, in px: a single error next to busy traffic would
- * otherwise be a flat smear on the baseline. Its count label and the tooltip
- * carry the exact number.
+ * otherwise be a flat smear on the baseline. The tooltip carries the exact
+ * number.
  */
 const MIN_ERROR_PEAK = 8
 
@@ -87,7 +81,6 @@ interface RequestTrafficProps {
   loading: boolean
   /** Requests still running right now, by kind. */
   inFlight: InFlightCounts
-  onRefresh: () => void
   className?: string
 }
 
@@ -124,7 +117,16 @@ function formatBucket(range: TimeRange, start: number, bucketMs: number): string
   return `${day}${from.toLocaleTimeString(undefined, options)}–${to.toLocaleTimeString(undefined, options)}`
 }
 
-function LineKey({ color, opacity }: { color: string; opacity?: string }) {
+function LineKey({ color, opacity, dashed }: { color: string; opacity?: string; dashed?: boolean }) {
+  if (dashed) {
+    return (
+      <span
+        className="h-0 w-3 shrink-0 border-t-2 border-dashed"
+        style={{ borderColor: color, opacity }}
+        aria-hidden
+      />
+    )
+  }
   return (
     <span
       className="h-0.5 w-3 shrink-0 rounded-full"
@@ -189,14 +191,14 @@ function TrafficTooltip({
           />
           {point.live && inFlight.llm > 0 && (
             <TooltipRow
-              marker={<LineKey color={LLM} opacity={IN_PROGRESS_OPACITY} />}
+              marker={<LineKey color={LLM} opacity={IN_PROGRESS_OPACITY} dashed />}
               label="LLM in progress"
               value={inFlight.llm}
             />
           )}
           {point.live && inFlight.mcp > 0 && (
             <TooltipRow
-              marker={<LineKey color={MCP} opacity={IN_PROGRESS_OPACITY} />}
+              marker={<LineKey color={MCP} opacity={IN_PROGRESS_OPACITY} dashed />}
               label="MCP in progress"
               value={inFlight.mcp}
             />
@@ -229,24 +231,6 @@ function TrafficLegend() {
         <LineKey color={ERROR} /> Errors
       </span>
     </div>
-  )
-}
-
-/** Count above an error peak. */
-function ErrorCount({ x, y, value }: LabelProps) {
-  if (!value || x === undefined || y === undefined) return null
-  return (
-    <text
-      x={Number(x)}
-      y={Number(y) - 6}
-      textAnchor="middle"
-      fontSize={10}
-      fontWeight={600}
-      fill="hsl(var(--foreground))"
-      style={HALO}
-    >
-      {value}
-    </text>
   )
 }
 
@@ -311,7 +295,6 @@ export function RequestTraffic({
   timeline,
   loading,
   inFlight,
-  onRefresh,
   className,
 }: RequestTrafficProps) {
   const [collapsed, toggle] = useCollapsed(COLLAPSED_KEY)
@@ -388,22 +371,6 @@ export function RequestTraffic({
           </button>
         ))}
       </div>
-      <Button
-        variant="ghost"
-        size="sm"
-        className="h-7 w-7 p-0"
-        onClick={onRefresh}
-        aria-label="Refresh activity"
-        disabled={initialLoading}
-      >
-        <RefreshCw
-          className={cn(
-            'h-3.5 w-3.5',
-            // Live polling stays quiet; only the first load spins.
-            initialLoading && 'animate-spin motion-reduce:animate-none',
-          )}
-        />
-      </Button>
     </>
   )
 
@@ -422,7 +389,8 @@ export function RequestTraffic({
       icon={Activity}
       collapsed={collapsed}
       onToggle={toggle}
-      summary={summary}
+      // Expanded, the chart and its tooltip carry these numbers.
+      summary={collapsed ? summary : undefined}
       actions={actions}
       className={cn(PALETTE, className)}
     >
@@ -477,7 +445,7 @@ export function RequestTraffic({
                 />
                 {/*
                   Each requests line, and under it the requests of its kind
-                  in progress now stacked on top: a lighter segment from the
+                  in progress now stacked on top: a lighter, dashed segment from the
                   previous bucket to finished plus in progress at the live one.
                 */}
                 <Line
@@ -486,6 +454,7 @@ export function RequestTraffic({
                   type="linear"
                   stroke={LLM}
                   strokeOpacity={IN_PROGRESS_OPACITY}
+                  strokeDasharray={IN_PROGRESS_DASH}
                   strokeWidth={2}
                   strokeLinejoin="round"
                   strokeLinecap="round"
@@ -523,6 +492,7 @@ export function RequestTraffic({
                   type="linear"
                   stroke={MCP}
                   strokeOpacity={IN_PROGRESS_OPACITY}
+                  strokeDasharray={IN_PROGRESS_DASH}
                   strokeWidth={2}
                   strokeLinejoin="round"
                   strokeLinecap="round"
@@ -586,18 +556,14 @@ export function RequestTraffic({
                   className="traffic-errors"
                   shape={<ErrorsCurve />}
                   isAnimationActive={false}
-                >
-                  {errorBuckets > 0 && errorBuckets <= MAX_LABELLED_ERROR_BUCKETS && (
-                    <LabelList dataKey="errors" content={ErrorCount} />
-                  )}
-                </Line>
+                />
               </ComposedChart>
             </ResponsiveContainer>
           ) : (
             <div className="flex h-full items-center justify-center gap-2 text-xs text-muted-foreground">
               <Activity className="h-4 w-4 opacity-50" />
               {unavailable
-                ? 'Request traffic is unavailable · retry with refresh'
+                ? 'Request traffic is unavailable'
                 : 'No traffic in this period'}
             </div>
           )}

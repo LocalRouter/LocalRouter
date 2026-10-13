@@ -280,11 +280,17 @@ pub fn generate_summary(event: &MonitorEvent) -> String {
 
         MonitorEventData::McpServerEvent {
             server_id,
+            server_name,
             action,
             message,
-            ..
         } => {
-            format!("{}: {} — {}", server_id, action, truncate(message, 50))
+            let server = server_name.as_deref().unwrap_or(server_id);
+            format!(
+                "{}: {} — {}",
+                server,
+                mcp_server_action_label(action),
+                truncate(message, 80)
+            )
         }
 
         MonitorEventData::OAuthEvent {
@@ -439,6 +445,20 @@ pub fn to_summary(event: &MonitorEvent) -> MonitorEventSummary {
             MonitorEventData::LlmCall { upstream_api, .. } => *upstream_api,
             _ => None,
         },
+    }
+}
+
+/// Plain-language label for an MCP server event action
+pub fn mcp_server_action_label(action: &str) -> &str {
+    match action {
+        "connection_failed" => "failed to start",
+        "disconnected" => "stopped responding",
+        "health_check_failed" => "health check failed",
+        "health_changed" => "health changed",
+        "stop_failed" => "failed to stop",
+        "path_resolution_failed" => "could not find command",
+        "gateway_error" => "gateway error",
+        other => other,
     }
 }
 

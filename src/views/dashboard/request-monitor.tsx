@@ -45,13 +45,11 @@ function loadPersistedFilter(): MonitorEventFilter {
 }
 
 interface RequestMonitorProps {
-  /** Bumped by the dashboard's refresh control to reload the event snapshot. */
-  reloadSignal: number
   className?: string
 }
 
 // Memoized: the traffic chart's live updates re-render the dashboard often.
-export const RequestMonitor = memo(function RequestMonitor({ reloadSignal, className }: RequestMonitorProps) {
+export const RequestMonitor = memo(function RequestMonitor({ className }: RequestMonitorProps) {
   const [filter, setFilter] = useState<MonitorEventFilter>(loadPersistedFilter)
   const [tryItOutOpen, setTryItOutOpen] = useState(false)
   const [interceptRule, setInterceptRule] = useState<InterceptRule | null>(null)
@@ -103,10 +101,6 @@ export const RequestMonitor = memo(function RequestMonitor({ reloadSignal, class
     retryDetail,
     selectEvent,
   } = useMonitorEvents(activeFilter)
-
-  useEffect(() => {
-    if (reloadSignal > 0) reload()
-  }, [reloadSignal, reload])
 
   const bodyRef = useRef<HTMLDivElement>(null)
   const { dock, setDock, drag, startDrag, detailSize, saveLayout } = useDetailDock(bodyRef)

@@ -540,8 +540,8 @@ pub enum MonitorEventData {
         server_id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         server_name: Option<String>,
-        /// "connection_failed", "disconnected", "health_changed", "stop_failed",
-        /// "path_resolution_failed", "gateway_error"
+        /// "connection_failed", "disconnected", "health_check_failed",
+        /// "health_changed", "stop_failed", "path_resolution_failed", "gateway_error"
         action: String,
         message: String,
     },

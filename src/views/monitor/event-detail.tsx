@@ -1390,7 +1390,19 @@ function ValidationErrorDetail({ data }: { data: EventData }) {
   )
 }
 
+/** Plain-language labels for MCP server event actions (Rust: lr-monitor summary.rs) */
+const MCP_SERVER_ACTION_LABELS: Record<string, string> = {
+  connection_failed: 'Failed to start',
+  disconnected: 'Stopped responding',
+  health_check_failed: 'Health check failed',
+  health_changed: 'Health changed',
+  stop_failed: 'Failed to stop',
+  path_resolution_failed: 'Could not find command',
+  gateway_error: 'Gateway error',
+}
+
 function McpServerEventDetail({ data }: { data: EventData }) {
+  const action = data.action as string
   return (
     <div className="space-y-3">
       <div className="space-y-2">
@@ -1400,11 +1412,11 @@ function McpServerEventDetail({ data }: { data: EventData }) {
             <span className="text-muted-foreground">Server:</span>
             <span>{(data.server_name || data.server_id) as string}</span>
           </div>
-          <Field label="Action" value={data.action as string} />
+          <Field label="What happened" value={MCP_SERVER_ACTION_LABELS[action] ?? action} />
         </div>
       </div>
       {data.message && (
-        <section aria-label="Response">
+        <section aria-label="Details">
           <pre className="p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive">
             {data.message as string}
           </pre>
