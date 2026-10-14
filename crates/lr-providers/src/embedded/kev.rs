@@ -311,8 +311,6 @@ impl ModelProvider for KevEmbeddedProvider {
             (!found).then(|| {
                 "uv was not found on PATH. Install it from the provider's Engine tab.".to_string()
             }),
-            !self.downloaded().is_empty(),
-            "No model is downloaded yet. Download one in the Models tab.",
             &self.supervisor,
             &self.key_prefix(),
         )
@@ -559,7 +557,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn health_reflects_engine_and_downloads() {
+    async fn health_is_healthy_with_or_without_downloads() {
         use crate::HealthStatus;
         let dir = tempfile::tempdir().unwrap();
         let Some(fake) = crate::embedded::fake_engine_path() else {
@@ -571,9 +569,10 @@ mod tests {
             KevSettings::from_config(&cfg(&[("binary_path", fake.to_str().unwrap())])).unwrap(),
             Supervisor::new(dir.path()),
         );
+        // No model downloaded yet is not a fault
         let h = p.health_check().await;
-        assert_eq!(h.status, HealthStatus::Degraded);
-        assert!(h.error_message.unwrap().contains("Models tab"));
+        assert_eq!(h.status, HealthStatus::Healthy);
+        assert!(h.error_message.is_none());
         p.downloads
             .fake_downloaded(&dir.path().join("hub"), "kev-4b", "jaredpalmer/kev-4b");
         assert_eq!(p.health_check().await.status, HealthStatus::Healthy);

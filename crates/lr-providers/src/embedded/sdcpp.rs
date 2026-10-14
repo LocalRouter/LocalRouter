@@ -382,16 +382,11 @@ impl ModelProvider for SdCppEmbeddedProvider {
     async fn health_check(&self) -> ProviderHealth {
         // Never starts the engine.
         let found = self.command().await.is_ok();
-        let any = backend()
-            .map(|b| b.models().iter().any(|m| m.downloaded))
-            .unwrap_or(false);
         super::engine_health(
             (!found).then(|| {
                 "sd-server was not found. Choose it or download it in the provider's Engine tab."
                     .to_string()
             }),
-            any,
-            "No image model is downloaded yet. Download one in the Models tab.",
             &self.supervisor,
             &self.key_prefix(),
         )

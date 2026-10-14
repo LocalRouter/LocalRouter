@@ -325,8 +325,6 @@ impl ModelProvider for LayaEmbeddedProvider {
                 "laya-serve was not found on PATH. Install it from the provider's Engine tab."
                     .to_string()
             }),
-            !self.downloaded().is_empty(),
-            "No model is downloaded yet. Download one in the Models tab.",
             &self.supervisor,
             &self.spec_key(),
         )

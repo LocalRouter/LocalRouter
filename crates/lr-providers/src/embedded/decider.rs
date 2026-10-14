@@ -312,8 +312,6 @@ impl ModelProvider for DeciderEmbeddedProvider {
             (!found).then(|| {
                 "uv was not found on PATH. Install it from the provider's Engine tab.".to_string()
             }),
-            !self.downloaded().is_empty(),
-            "No model is downloaded yet. Download one in the Models tab.",
             &self.supervisor,
             &self.key_prefix(),
         )

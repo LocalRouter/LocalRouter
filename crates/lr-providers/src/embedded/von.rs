@@ -270,8 +270,6 @@ impl ModelProvider for VonEmbeddedProvider {
             (!found).then(|| {
                 "von was not found on PATH. Install it from the provider's Engine tab.".to_string()
             }),
-            self.is_downloaded(),
-            "No model is downloaded yet. Download one in the Models tab.",
             &self.supervisor,
             &self.key(),
         )

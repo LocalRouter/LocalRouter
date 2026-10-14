@@ -1114,8 +1114,6 @@ impl ModelProvider for OllayaEmbeddedProvider {
             (!found).then(|| {
                 "Ollaya is not installed. Download it in the provider's Engine tab.".to_string()
             }),
-            !self.stored().is_empty(),
-            "No model is downloaded yet. Download one in the Models tab.",
             &self.supervisor,
             &self.spec_key(),
         )

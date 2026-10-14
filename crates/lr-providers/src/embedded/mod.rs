@@ -100,12 +100,10 @@ pub struct EmbeddedCatalogModel {
 }
 
 /// Health of a Local Embedded provider without starting anything: the
-/// engine must be installed, its last serving process must not have failed,
-/// and at least one model must be downloaded.
+/// engine must be installed and its last serving process must not have
+/// failed. Having no model downloaded yet is not a fault.
 pub(crate) fn engine_health(
     missing: Option<String>,
-    has_models: bool,
-    no_models: &str,
     supervisor: &lr_engines::Supervisor,
     key_prefix: &str,
 ) -> crate::ProviderHealth {
@@ -124,8 +122,6 @@ pub(crate) fn engine_health(
             HealthStatus::Unhealthy,
             Some(format!("The engine failed to run: {detail}")),
         )
-    } else if !has_models {
-        (HealthStatus::Degraded, Some(no_models.to_string()))
     } else {
         (HealthStatus::Healthy, None)
     };
