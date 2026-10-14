@@ -15,13 +15,13 @@ interface ServiceIconProps {
   service: string
   size?: number
   className?: string
-  /** If true, shows generic server icon as fallback instead of emoji */
+  /** If true, uses the standard MCP server icon for services without a logo */
   fallbackToServerIcon?: boolean
 }
 
 // Mapping of service identifiers to icon files
 // Keys are lowercase for case-insensitive matching
-const ICON_MAP: Record<string, string> = {
+const ICON_MAP: Record<string, string | null> = {
   // LLM Providers
   ollama: 'ollama.png',
   lmstudio: 'lmstudio.png',
@@ -48,8 +48,18 @@ const ICON_MAP: Record<string, string> = {
   xai: 'xai.png',
   openrouter: 'openrouter.png',
   llmgateway: 'llmgateway.svg', // official asset; see public/icons/SOURCES.md
-  'openai_compatible': 'openai.png',
-  'openai-compatible': 'openai.png',
+  'llm gateway': 'llmgateway.svg',
+  typesafe: 'typesafe.png',
+  vercel_ai_gateway: 'vercel.svg',
+  vercel: 'vercel.svg',
+  // Generic endpoints do not carry a provider brand. Null also prevents
+  // their names from matching the shorter OpenAI key.
+  openai_compatible: null,
+  'openai-compatible': null,
+  'openai compatible': null,
+  systemone_compatible: null,
+  'systemone-compatible': null,
+  'system one compatible': null,
   github_models: 'github.png',
   nvidia_nim: 'nvidia.svg',
   nvidia: 'nvidia.svg',
@@ -134,152 +144,30 @@ const ICON_MAP: Record<string, string> = {
   zed: 'zed.png',
 }
 
-// Emoji fallbacks for services
-const EMOJI_MAP: Record<string, string> = {
-  // LLM Providers
-  ollama: '🦙',
-  lmstudio: '💻',
-  jan: '👋',
-  gpt4all: '🌿',
-  localai: '🦙',
-  llamacpp: '🦙',
-  openai: '🤖',
-  anthropic: '🧠',
-  gemini: '✨',
-  groq: '⚡',
-  mistral: '🌬️',
-  cohere: '🎯',
-  togetherai: '🤝',
-  perplexity: '🔍',
-  deepinfra: '🏗️',
-  cerebras: '🧮',
-  xai: '🚀',
-  openrouter: '🌐',
-  'openai_compatible': '🔌',
-  'openai-compatible': '🔌',
-  github_models: '🐙',
-  nvidia_nim: '💚',
-  nvidia: '💚',
-  cloudflare_ai: '🔶',
-  llm7: '🐴',
-  kluster_ai: '🔗',
-  huggingface: '🤗',
-  'hugging-face': '🤗',
-  zhipu: '🇨🇳',
-  digitalocean: '🌊',
-  opencode_zen: '📝',
-  opencode_go: '📝',
-  // System One (decision) providers
-  typesafe: '🎲',
-  systemone_compatible: '🔀',
-  // Gateways
-  vercel_ai_gateway: '▲',
-
-  // OAuth Providers
-  'github-copilot': '🐙',
-  'openai-codex': '🤖',
-  'openai-chatgpt-plus': '🤖',
-  'anthropic-claude': '🧠',
-
-  // VCS
-  github: '🐙',
-  gitlab: '🦊',
-  git: '🔗',
-
-  // Productivity
-  slack: '💬',
-  jira: '📋',
-  notion: '📑',
-  confluence: '📄',
-  'google-drive': '📁',
-  'google-workspace': '🏢',
-  gws: '🏢',
-  figma: '🎨',
-  obsidian: '🧠',
-
-  // Databases
-  postgres: '🐘',
-  postgresql: '🐘',
-  supabase: '🗄️',
-  sqlite: '💾',
-
-  // Search
-  brave: '🦁',
-  'brave-search': '🦁',
-
-  // Client Templates
-  'claude-code': '🧠',
-  codex: '💻',
-  aider: '🤖',
-  cursor: '🖱️',
-  windsurf: '🏄',
-  'vscode-continue': '🔧',
-  opencode: '📝',
-  droid: '🤖',
-  'open-webui': '🌐',
-  lobechat: '💬',
-  goose: '🪿',
-  openclaw: '🦞',
-  cline: '🤖',
-  'roo-code': '🦘',
-  jetbrains: '🧠',
-  marimo: '📓',
-  n8n: '⚡',
-  onyx: '💎',
-  xcode: '🔨',
-  zed: '⚡',
-  custom: '⚙️',
-  // Cloud & Infrastructure
-  'aws-core': '☁️',
-  'aws-docs': '📖',
-  aws: '☁️',
-  gcloud: '🌤️',
-  'google-cloud': '🌤️',
-  kubernetes: '☸️',
-  kubectl: '☸️',
-  docker: '🐳',
-  cloudflare: '🔶',
-
-  // Generic MCP categories
-  filesystem: '📂',
-  fetch: '🌐',
-  time: '⏰',
-  memory: '💭',
-  everything: '🧪',
-}
-
 /**
  * Keys too short to match as a substring of another service name: "pi" would
  * otherwise claim "pinecone", "openapi", "copilot" and similar names.
  */
 const EXACT_MATCH_ONLY = new Set(['pi'])
 
-/**
- * Normalize and find a matching icon for a service name
- */
-function findMatch(service: string): { iconFile?: string; emoji?: string } {
+// Prefer the most specific service name: e.g. DigitalOcean over Git.
+const ICON_PATTERNS = Object.entries(ICON_MAP).sort(([a], [b]) => b.length - a.length)
+
+/** Normalize a service name and resolve its locally bundled logo. */
+export function resolveServiceIcon(service: string): string | undefined {
   const normalized = service.toLowerCase().trim()
 
-  // Direct match
-  if (ICON_MAP[normalized]) {
-    return { iconFile: ICON_MAP[normalized], emoji: EMOJI_MAP[normalized] }
+  if (Object.prototype.hasOwnProperty.call(ICON_MAP, normalized)) {
+    return ICON_MAP[normalized] ?? undefined
   }
 
-  // Pattern match - check if the service name contains a known key
-  for (const [key, iconFile] of Object.entries(ICON_MAP)) {
+  for (const [key, iconFile] of ICON_PATTERNS) {
     if (!EXACT_MATCH_ONLY.has(key) && normalized.includes(key)) {
-      return { iconFile, emoji: EMOJI_MAP[key] }
+      return iconFile ?? undefined
     }
   }
 
-  // Emoji-only match
-  for (const [key, emoji] of Object.entries(EMOJI_MAP)) {
-    if (!EXACT_MATCH_ONLY.has(key) && normalized.includes(key)) {
-      return { emoji }
-    }
-  }
-
-  return {}
+  return undefined
 }
 
 export default function ServiceIcon({
@@ -288,15 +176,16 @@ export default function ServiceIcon({
   className = '',
   fallbackToServerIcon = false
 }: ServiceIconProps) {
-  const { iconFile, emoji } = findMatch(service)
+  const iconFile = resolveServiceIcon(service)
 
-  // If we have an icon file, render it with fallback
+  // Reset image/fallback DOM state when the resolved logo changes.
   if (iconFile) {
     const padding = Math.max(4, size * 0.15)
     const containerSize = size + padding * 2
 
     return (
       <span
+        key={iconFile}
         className="inline-flex items-center justify-center rounded-lg dark:bg-white/90"
         style={{ width: containerSize, height: containerSize }}
       >
@@ -318,35 +207,16 @@ export default function ServiceIcon({
           className={`items-center justify-center text-foreground dark:text-gray-800 ${className}`}
           style={{ display: 'none' }}
         >
-          {emoji
-            ? <span style={{ fontSize: `${size}px`, lineHeight: '1' }}>{emoji}</span>
-            : fallbackToServerIcon
-              ? <McpIcon style={{ width: size, height: size }} />
-              : <ProvidersIcon style={{ width: size, height: size }} />
+          {fallbackToServerIcon
+            ? <McpIcon style={{ width: size, height: size }} />
+            : <ProvidersIcon style={{ width: size, height: size }} />
           }
         </span>
       </span>
     )
   }
 
-  // Emoji fallback - use same container as icons for consistent alignment
-  if (emoji) {
-    const padding = Math.max(4, size * 0.15)
-    const containerSize = size + padding * 2
-
-    return (
-      <span
-        className={`inline-flex items-center justify-center ${className}`}
-        style={{ width: containerSize, height: containerSize }}
-      >
-        <span style={{ fontSize: `${size}px`, lineHeight: '1' }}>
-          {emoji}
-        </span>
-      </span>
-    )
-  }
-
-  // Ultimate fallback - use category icons with same container
+  // Services without a logo use the established category icon.
   const padding = Math.max(4, size * 0.15)
   const containerSize = size + padding * 2
 
