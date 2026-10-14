@@ -47,6 +47,7 @@ const ICON_MAP: Record<string, string> = {
   cerebras: 'cerebras.png',
   xai: 'xai.png',
   openrouter: 'openrouter.png',
+  llmgateway: 'llmgateway.svg', // official asset; see public/icons/SOURCES.md
   'openai_compatible': 'openai.png',
   'openai-compatible': 'openai.png',
   github_models: 'github.png',
@@ -172,7 +173,6 @@ const EMOJI_MAP: Record<string, string> = {
   typesafe: '🎲',
   systemone_compatible: '🔀',
   // Gateways
-  llmgateway: '🛣️',
   vercel_ai_gateway: '▲',
 
   // OAuth Providers

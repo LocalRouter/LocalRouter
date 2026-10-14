@@ -32,3 +32,7 @@ Vercel starter mark, so it is not used as Kev branding.
 ## FastFlowLM provider
 
 - `fastflowlm.png`: official FastFlowLM logo, [`assets/logo.png`](https://github.com/ROCm/FastFlowLM/blob/1405461da9328e382a8ccf408c1250049598bcc1/assets/logo.png) in the upstream repository (the image its README shows; retrieved 2026-10-11, SHA-256 `928588533d5e91186c855291a6805660a0ba986a0be87318803083cd62c2b47d`). Copied without modification. The repository is MIT-licensed; its license (`LICENSE_RUNTIME.txt` at revision `e5e33d9f64388f4e239eb6584493c76ef5a07231`) is included as `fastflowlm-LICENSE.txt`. FastFlowLM name and mark of their owners; used solely to identify the provider.
+
+## LLM Gateway provider
+
+- `llmgateway.svg`: official black symbol from LLM Gateway's [brand assets](https://llmgateway.io/brand), copied without modification from [`apps/ui/public/brand/logo-black.svg`](https://github.com/theopenco/llmgateway/blob/ba743696ea6db4b7a68ba764ddd70edc19fbb95d/apps/ui/public/brand/logo-black.svg) (retrieved 2026-10-14). The upstream repository licenses this content under AGPLv3; its [license notice](https://github.com/theopenco/llmgateway/blob/ba743696ea6db4b7a68ba764ddd70edc19fbb95d/LICENSE) is included as `llmgateway-LICENSE.txt`. Copyright (c) 2025-present LLMGateway, Inc. The name and mark belong to their owners and identify the provider without implying endorsement. The existing icon container supplies a light background in dark mode.

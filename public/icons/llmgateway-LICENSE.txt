@@ -1,0 +1,9 @@
+Copyright (c) 2025-present LLMGateway, Inc.
+
+Portions of this software are licensed as follows:
+
+* All content that resides under the "ee/" directory of this repository (Commercial License) is licensed under the license defined in "ee/LICENSE".
+* All third party components incorporated into the LLMGateway Software are licensed under the original license provided by the owner of the applicable component.
+* Content outside of the above mentioned directories or restrictions above is available under the "AGPLv3" license as defined below.
+
+For the full AGPLv3 license text, see <https://www.gnu.org/licenses/agpl-3.0.html>
