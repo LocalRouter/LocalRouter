@@ -773,7 +773,8 @@ pub struct TrayStatsItem {
     #[serde(default = "default_true")]
     pub enabled: bool,
     /// User-provided panel label (≤ 4 chars, uppercased at render time).
-    /// `None` derives one from the item's name.
+    /// `None` derives one from the item's name; an empty label hides this
+    /// item's panel label (the tray menu line still uses the derived one).
     #[serde(default)]
     pub label: Option<String>,
 }
@@ -785,6 +786,13 @@ impl TrayStatsItem {
             enabled: true,
             label: None,
         }
+    }
+
+    /// Whether the user cleared this item's panel label.
+    pub fn label_hidden(&self) -> bool {
+        self.label
+            .as_deref()
+            .is_some_and(|l| normalize_tray_label(l).is_empty())
     }
 }
 

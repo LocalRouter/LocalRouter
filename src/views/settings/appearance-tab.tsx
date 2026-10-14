@@ -377,7 +377,7 @@ function TrayStatsCard({ graphEnabled, refreshRateSecs }: { graphEnabled: boolea
         <div className="space-y-2">
           <Label className="flex items-center gap-1">
             Items
-            <InfoTooltip content="Each enabled item becomes one panel in the tray icon (up to 6) and one line in the tray menu. Request items (all, clients, providers, models) show traffic; usage limits show how much of a subscription window is used. Labels are up to 4 letters." />
+            <InfoTooltip content="Each enabled item becomes one panel in the tray icon (up to 6) and one line in the tray menu. Request items (all, clients, providers, models) show traffic; usage limits show how much of a subscription window is used. Labels are up to 4 letters; clear one to show that panel without a label." />
           </Label>
           <div className="rounded-md border divide-y">
             {config.items.map((item, index) => {
@@ -398,17 +398,16 @@ function TrayStatsCard({ graphEnabled, refreshRateSecs }: { graphEnabled: boolea
                     }
                   />
                   <Input
-                    value={item.label ?? ""}
-                    placeholder={defaultLabel(item.source) || "?"}
+                    value={item.label ?? defaultLabel(item.source)}
+                    placeholder="none"
+                    title="Panel label; leave empty for no label on this panel"
                     maxLength={4}
-                    className="h-7 w-16 font-mono uppercase text-xs"
+                    className="h-7 w-16 font-mono uppercase text-xs placeholder:normal-case"
                     onChange={(e) =>
                       updateConfig((c) => ({
                         ...c,
                         items: c.items.map((i) =>
-                          sameSource(i.source, item.source)
-                            ? { ...i, label: normalizeLabel(e.target.value) || null }
-                            : i,
+                          sameSource(i.source, item.source) ? { ...i, label: normalizeLabel(e.target.value) } : i,
                         ),
                       }))
                     }

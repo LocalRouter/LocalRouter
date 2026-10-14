@@ -423,8 +423,9 @@ pub fn effective_layout(config: &TrayStatsConfig) -> TrayLayout {
     }
 }
 
-/// Panel label for an item: the user's label if set, else derived from the
-/// item's name. Never empty — falls back to the source key.
+/// Label for an item: the user's label if set, else derived from the
+/// item's name. Never empty — falls back to the source key. Menu lines
+/// always use it; the panel drops it when [`TrayStatsItem::label_hidden`].
 pub fn resolve_label(item: &TrayStatsItem, client_name: Option<&str>) -> String {
     if let Some(custom) = item.label.as_deref() {
         let normalized = normalize_tray_label(custom);
@@ -974,7 +975,7 @@ impl TrayGraphManager {
                     }
                 };
                 PaneSpec {
-                    label: Some(label.clone()),
+                    label: (!item.label_hidden()).then(|| label.clone()),
                     content,
                 }
             })
@@ -1556,8 +1557,14 @@ mod tests {
         assert_eq!(resolve_label(&item, None), "ABC1");
         item.label = Some("cc".into());
         assert_eq!(resolve_label(&item, Some("Claude Code")), "CC");
-        item.label = Some("--".into()); // normalizes to empty → derived
+        // A cleared label hides the panel label; menu lines keep the derived one
+        item.label = Some(String::new());
+        assert!(item.label_hidden());
         assert_eq!(resolve_label(&item, Some("Claude Code")), "CLAU");
+        item.label = Some("--".into());
+        assert!(item.label_hidden());
+        item.label = None;
+        assert!(!item.label_hidden());
         let all = TrayStatsItem::new(TraySource::All);
         assert_eq!(resolve_label(&all, None), "ALL");
         // Nothing usable at all falls back to the source key
@@ -1565,6 +1572,28 @@ mod tests {
             instance: "---".into(),
         });
         assert_eq!(resolve_label(&weird, None), "PROV");
+    }
+
+    #[test]
+    fn cleared_label_drops_only_that_panes_label() {
+        let stats = TrayStatsConfig::default();
+        let mut hidden = TrayStatsItem::new(TraySource::Provider {
+            instance: "openai".into(),
+        });
+        hidden.label = Some(String::new());
+        let items = vec![
+            (TrayStatsItem::new(TraySource::All), "ALL".to_string()),
+            (hidden, "OPEN".to_string()),
+        ];
+        let panes = TrayGraphManager::build_panes(
+            &stats,
+            &items,
+            &[],
+            &|_| UsageTotals::default(),
+            &|_| None,
+        );
+        let labels: Vec<Option<String>> = panes.into_iter().map(|p| p.label).collect();
+        assert_eq!(labels, vec![Some("ALL".to_string()), None]);
     }
 
     #[test]

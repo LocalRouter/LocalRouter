@@ -1953,7 +1953,7 @@ export type TraySource =
 export interface TrayStatsItem {
   source: TraySource
   enabled: boolean
-  /** Custom panel label (≤ 4 chars, uppercased); null derives from the name */
+  /** Custom panel label (≤ 4 chars, uppercased); null derives from the name, "" hides the panel label */
   label: string | null
 }
 

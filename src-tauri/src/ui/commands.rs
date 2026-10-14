@@ -1502,13 +1502,9 @@ pub async fn update_tray_stats_config(
     let mut config = config;
     config.ensure_all_present();
     // Labels are stored normalized (uppercase alphanumerics, ≤ 4 chars);
-    // an empty custom label means "derive from the name".
+    // `None` derives from the name, an empty label hides the panel label.
     for item in &mut config.items {
-        item.label = item
-            .label
-            .as_deref()
-            .map(lr_config::normalize_tray_label)
-            .filter(|l| !l.is_empty());
+        item.label = item.label.as_deref().map(lr_config::normalize_tray_label);
     }
     // Dedupe sources, keeping the first occurrence.
     let mut seen = std::collections::HashSet::new();
