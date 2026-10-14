@@ -623,6 +623,10 @@ impl ModelProvider for OpenRouterProvider {
         self.systemone.is_some()
     }
 
+    fn supports_decisions(&self) -> bool {
+        self.systemone.is_some()
+    }
+
     async fn supports_systemone_model(&self, model: &str) -> bool {
         match &self.systemone {
             Some(gateway) => gateway.is_decision_model(model).await,

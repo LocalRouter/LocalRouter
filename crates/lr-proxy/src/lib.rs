@@ -34,6 +34,7 @@
 pub mod active;
 pub mod anthropic;
 pub mod cert;
+pub mod decisions;
 pub mod error;
 pub mod interceptor;
 pub mod manager;

@@ -6,6 +6,7 @@
 //!   Gateway, Vercel AI Gateway, Cloudflare Workers AI).
 //! - [`emulation`]: translation of System One requests onto chat completions.
 
+pub mod decisions;
 pub mod emulation;
 pub mod gateway;
 pub mod provider;

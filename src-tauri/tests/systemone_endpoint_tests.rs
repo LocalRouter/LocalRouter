@@ -35,6 +35,45 @@ use wiremock::{
     Mock, MockServer, Request, ResponseTemplate,
 };
 
+struct TestGatewayFactory;
+impl localrouter::providers::factory::ProviderFactory for TestGatewayFactory {
+    fn provider_type(&self) -> &str {
+        "llmgateway"
+    }
+    fn display_name(&self) -> &str {
+        "Test Gateway"
+    }
+    fn category(&self) -> localrouter::providers::factory::ProviderCategory {
+        localrouter::providers::factory::ProviderCategory::ThirdParty
+    }
+    fn description(&self) -> &str {
+        "Loopback fixture"
+    }
+    fn setup_parameters(&self) -> Vec<localrouter::providers::factory::SetupParameter> {
+        vec![]
+    }
+    fn validate_config(&self, _: &HashMap<String, String>) -> lr_types::AppResult<()> {
+        Ok(())
+    }
+    fn create(
+        &self,
+        _: String,
+        config: HashMap<String, String>,
+    ) -> lr_types::AppResult<Arc<dyn ModelProvider>> {
+        let base = config.get("base_url").unwrap();
+        let key = config.get("api_key").unwrap();
+        let gateway = localrouter::providers::systemone::SystemOneGateway::llmgateway(base, key)?;
+        Ok(Arc::new(
+            localrouter::providers::openai_compatible::OpenAICompatibleProvider::new(
+                "llmgateway".into(),
+                base.clone(),
+                Some(key.clone()),
+            )
+            .with_systemone_gateway(gateway),
+        ))
+    }
+}
+
 // ============================================================================
 // Test infrastructure
 // ============================================================================
@@ -68,6 +107,7 @@ async fn start_server(upstreams: Vec<Upstream>) -> (String, String) {
     provider_registry.register_factory(Arc::new(LlamaCppProviderFactory));
     provider_registry.register_factory(Arc::new(OpenAICompatibleProviderFactory));
     provider_registry.register_factory(Arc::new(OllamaProviderFactory));
+    provider_registry.register_factory(Arc::new(TestGatewayFactory));
     for (name, provider_type, cfg) in upstreams {
         let cfg: HashMap<String, String> =
             cfg.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
@@ -732,4 +772,91 @@ async fn typesafe_health_probe_treats_validation_error_as_healthy() {
         provider.health_check().await.status,
         localrouter::providers::HealthStatus::Healthy
     );
+}
+
+// OpenAI Decisions ingress uses the same policies while preserving its wire shape.
+#[tokio::test]
+async fn decisions_translates_text_to_legacy_and_rejects_images() {
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .and(body_partial_json(json!({"state":"test evidence"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "model":"local","answers":{"decision_0":{"type":"noul","noul":0.8}},
+            "usage":{"input_tokens":10,"output_tokens":0}
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let (base, secret) = start_server(vec![(
+        "legacy",
+        "systemone_compatible",
+        vec![("base_url", format!("{}/v1", mock.uri()))],
+    )])
+    .await;
+    let body = json!({"model":"legacy/local","input":[{"role":"user","content":[{"type":"input_text","text":"test evidence"}]}],"questions":[{"type":"predicate","instructions":"yes?"}]});
+    let response = post(&base, "/v1/decisions", &secret, &body).await;
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        response.headers()["x-localrouter-decisions-backend"],
+        "native"
+    );
+    let result: Value = response.json().await.unwrap();
+    assert_eq!(
+        result["answers"][0],
+        json!({"type":"predicate","name":null,"probability":0.8})
+    );
+    let mut image = body;
+    image["input"] = json!([{"role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,AAAA"}]}]);
+    let image_response = post(&base, "/decisions", &secret, &image).await;
+    let image_status = image_response.status();
+    let image_error = image_response.text().await.unwrap();
+    assert_eq!(image_status, 400, "{image_error}");
+    let mut invalid = image;
+    invalid["questions"] = json!([]);
+    assert_eq!(
+        post(&base, "/v1/decisions", &secret, &invalid)
+            .await
+            .status(),
+        400
+    );
+    let spec: Value = reqwest::get(format!("{base}/openapi.json"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(spec["paths"]["/v1/decisions"]["post"].is_object());
+    assert!(spec["components"]["schemas"]["DecisionAnswer"].is_object());
+}
+
+#[tokio::test]
+async fn decisions_gateway_preserves_images_booleans_and_refusals() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET")).and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data":[{"id":"image-decider","architecture":{"output_modalities":["decision"],"input_modalities":["text","image"]}}]})))
+        .mount(&mock).await;
+    Mock::given(method("POST")).and(path("/v1/decisions"))
+        .and(header("authorization","Bearer fake-key"))
+        .and(body_partial_json(json!({"model":"image-decider","input":[{"role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,AAAA"}]}]})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "model":"image-decider","answers":[{"type":"choice","name":"damage","choice":true,"confidence":0.8,"probabilities":[{"value":true,"probability":0.9},{"value":"true","probability":0.1}]},{"type":"refusal","name":null}],
+            "usage":{"input_tokens":10,"output_tokens":0,"total_tokens":10}
+        }))).expect(1).mount(&mock).await;
+    let (base, secret) = start_server(vec![(
+        "gateway",
+        "llmgateway",
+        vec![
+            ("base_url", format!("{}/v1", mock.uri())),
+            ("api_key", "fake-key".into()),
+        ],
+    )])
+    .await;
+    let request = json!({"model":"gateway/image-decider","input":[{"role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,AAAA"}]}],"questions":[{"type":"choice","name":"damage","instructions":"choose","choices":[{"value":true},{"value":"true"}]},{"type":"predicate","instructions":"private?"}]});
+    let response = post(&base, "/v1/decisions", &secret, &request).await;
+    assert_eq!(response.status(), 200);
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["answers"][0]["choice"], true);
+    assert_eq!(body["answers"][0]["probabilities"][1]["value"], "true");
+    assert_eq!(body["answers"][1], json!({"type":"refusal","name":null}));
 }

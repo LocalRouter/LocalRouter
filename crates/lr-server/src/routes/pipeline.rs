@@ -987,6 +987,10 @@ pub(crate) async fn run_systemone_state_compression(
     client_context: Option<&ClientAuthContext>,
     request: &mut lr_providers::SystemOneRequest,
 ) -> Result<Option<StateCompressionStats>, String> {
+    // Decisions message envelopes contain image URLs/roles: never compress these as text.
+    if request.decisions.is_some() && !request.state.is_string() {
+        return Ok(None);
+    }
     let Some(engine) = state.compression_service.read().clone() else {
         return Ok(None);
     };

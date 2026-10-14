@@ -10,7 +10,7 @@
 - [ ] Bug hunt after implementation: inspect streaming, retries, concurrency, policy precedence, cancellation, and cost accounting.
 - [ ] Commit and push each completed, validated implementation and any automatic catalog update, preserving unrelated changes.
 
-Research date: **2026-10-14**. This deliverable is a proposal, not authorization to implement every item. Current documentation establishes feature availability; only dated announcements below establish recency. Enterprise restrictions and availability may change. Estimates are relative engineering size, not delivery commitments: S = contained change, M = cross-layer feature, L = new API/lifecycle or substantial routing work.
+Research date: **2026-10-14**. Implementation was approved on 2026-10-14, with local replay promoted to P1; execution is tracked in plan/2026-10-14-GATEWAY_FEATURE_IMPLEMENTATION.md. Current documentation establishes feature availability; only dated announcements below establish recency. Enterprise restrictions and availability may change. Estimates are relative engineering size, not delivery commitments: S = contained change, M = cross-layer feature, L = new API/lifecycle or substantial routing work.
 
 ## Recommendation
 
@@ -98,6 +98,12 @@ Respect provider-bound reasoning signatures and continuation state: some session
 
 **Done when:** sessions do not collide across clients; restart/expiry behavior is documented; supported sessions retain cache affinity; incompatible continuation cannot silently migrate; cache statistics distinguish provider prompt reuse from gateway replay.
 
+### 8. Local replay and model/policy evaluation — P1, M
+
+Add “open this request in Try It Out,” editable replay and side-by-side comparison against user-selected allowed models. Use only payloads the user chose to retain/import. Persist local experiment datasets/results and policy snapshots; report cost, latency, validity and user-defined task checks. A judge model is optional and explicitly user-triggered, with its cost shown separately.
+
+**Done when:** no request is automatically mirrored to another provider; tools and MCP actions are disabled/stubbed by default for replay; redacted logs cannot be reconstructed; quality results have sample size and reproducible policy version. Begin with manual comparison before traffic splits or a prompt-management platform.
+
 ## Phase 2: add local cost and compatibility features
 
 ### 6. Opt-in exact response caching — P2, M
@@ -113,12 +119,6 @@ Default off. Add bypass, invalidation, clear controls, hit/miss and realized-cos
 Expose `/v1/messages` (and token counting if required by target clients) so compatible coding clients can use the local API directly. Preserve native content blocks, tool results, thinking/signatures and streaming event sequence on Anthropic routes; translate supported subsets elsewhere and reject unsupported semantics explicitly. Reuse LocalRouter permissions, guardrails, secrets, MCP, budgets and routing instead of making a second policy stack.
 
 **Done when:** recorded client-contract fixtures cover tool loops, cache markers, errors, thinking and cancellation. Native safeguards/tool search need explicit provider capability checks; do not strip them silently or advertise full parity. Review existing interception/client setup first so this adds direct API support without duplicating proxy workflows.
-
-### 8. Local replay and model/policy evaluation — P2, M
-
-Add “open this request in Try It Out,” editable replay and side-by-side comparison against user-selected allowed models. Use only payloads the user chose to retain/import. Persist local experiment datasets/results and policy snapshots; report cost, latency, validity and user-defined task checks. A judge model is optional and explicitly user-triggered, with its cost shown separately.
-
-**Done when:** no request is automatically mirrored to another provider; tools and MCP actions are disabled/stubbed by default for replay; redacted logs cannot be reconstructed; quality results have sample size and reproducible policy version. Begin with manual comparison before traffic splits or a prompt-management platform.
 
 ### 9. Native discounted batch jobs — P2, L
 
@@ -150,7 +150,7 @@ Revise the existing Files/Batches plan around current provider contracts. Add re
 
 1. Decisions compatibility; typed gateway options and attribution.
 2. Routing explanations; measured ordering/deadlines; session/cache affinity.
-3. Exact cache; native Messages; user-triggered comparisons.
+3. P1 user-triggered local replay/comparisons; then P2 exact cache and native Messages.
 4. Discounted batch lifecycle; then choose named-route versions/search/rerank based on actual client needs.
 
 Every implementation needs its own saved plan, migration/default behavior, tests and release criteria. Endpoint changes require utoipa annotations, ToSchema types, schema registration and live OpenAPI verification; Tauri changes require Rust/TS parameters and results, demo mocks and frontend type checks. Preserve current explicit-mode and free-tier semantics.
@@ -172,3 +172,5 @@ Mandatory final implementation steps: **Plan Review**, **Test Coverage Review**,
 Only this plan is changed by this task; no gateway/application behavior is implemented. Current-code pointers and dated primary sources were reviewed. Pre-commit validation results are recorded below when complete.
 
 Research delivery checks: updated rustup stable (1.99.0), verified the actual rustup compiler path, and ran the required workspace Clippy (`-D warnings`), formatting check, and workspace tests; all passed. Tests: 4,144 passed, 69 ignored, zero failures. Plan structure, required final review steps, key local file references, and whitespace were checked. No application code or tests were added by this research task.
+
+User approved the full proposed roadmap on 2026-10-14, with local replay promoted to P1. Execution is tracked in plan/2026-10-14-GATEWAY_FEATURE_IMPLEMENTATION.md.

@@ -2380,7 +2380,7 @@ fn required_api_key(config: &HashMap<String, String>) -> AppResult<String> {
 }
 
 /// Factory for LLM Gateway (llmgateway.io): an OpenAI-compatible gateway
-/// that also serves TypeSafe Jev on `/v1/systemone`.
+/// that also serves native decision models on `/v1/decisions`.
 pub struct LlmGatewayProviderFactory;
 
 pub const LLMGATEWAY_API_BASE: &str = "https://api.llmgateway.io/v1";
@@ -2399,7 +2399,7 @@ impl ProviderFactory for LlmGatewayProviderFactory {
     }
 
     fn description(&self) -> &str {
-        "Open-source gateway to 290+ models from one API key, including TypeSafe Jev System One decisions"
+        "Open-source gateway to 290+ models from one API key, including native typed decisions"
     }
 
     fn setup_parameters(&self) -> Vec<SetupParameter> {
@@ -2478,7 +2478,7 @@ impl ProviderFactory for VercelAiGatewayProviderFactory {
     }
 
     fn description(&self) -> &str {
-        "Vercel's gateway to hundreds of models with one key and unified billing, including TypeSafe Jev System One decisions"
+        "Vercel's gateway to hundreds of models with one key and unified billing, including native typed decisions"
     }
 
     fn setup_parameters(&self) -> Vec<SetupParameter> {

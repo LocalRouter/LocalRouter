@@ -393,6 +393,12 @@ pub trait ModelProvider: Send + Sync {
         false
     }
 
+    /// Whether native decision execution uses the OpenAI Decisions contract,
+    /// which can carry images, typed choice values and refusals.
+    fn supports_decisions(&self) -> bool {
+        false
+    }
+
     /// Whether `model` is answered natively through `systemone()`, for
     /// providers that serve both chat models and decision models (gateways
     /// such as OpenRouter). Other models of such a provider are translated
@@ -600,11 +606,31 @@ pub fn default_feature_support(
                 SupportLevel::NotSupported
             },
             notes: Some(if provider.supports_systemone() {
-                "Typed choice / score / yes-no decisions with calibrated probabilities".into()
+                "Typed choice / score / yes-no decisions".into()
             } else if has_chat {
                 "Translated onto chat completions by LocalRouter (logprobs when available, otherwise JSON)".into()
             } else {
                 "This provider does not answer System One decisions".into()
+            }),
+        },
+        EndpointSupport {
+            name: "Decisions".into(),
+            endpoint: "/v1/decisions".into(),
+            support: if provider.supports_decisions() {
+                SupportLevel::Supported
+            } else if provider.supports_systemone() || has_chat {
+                SupportLevel::Translated
+            } else {
+                SupportLevel::NotSupported
+            },
+            notes: Some(if provider.supports_decisions() {
+                "Native typed decisions; image support depends on the selected model".into()
+            } else if provider.supports_systemone() {
+                "Text decisions translated to the legacy System One wire format".into()
+            } else if has_chat {
+                "Text decisions translated onto chat; probabilities are not asserted to be calibrated".into()
+            } else {
+                "This provider does not answer decisions".into()
             }),
         },
         EndpointSupport {

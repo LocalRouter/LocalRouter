@@ -29,6 +29,10 @@ const LISTING_RETRY: Duration = Duration::from_secs(60);
 /// Request/response envelope the gateway uses for System One.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GatewayWire {
+    /// OpenAI Decisions arrays, including typed values and refusals.
+    Decisions,
+    VercelDecisions,
+    OpenRouterDecisions,
     /// The TypeSafe body and response, unchanged.
     Plain,
     /// Cloudflare `POST /ai/run`: `{"model", "input": {state, questions}}`
@@ -62,11 +66,13 @@ pub struct ListedModel {
     pub context_window: Option<u32>,
     pub pricing: Option<PricingInfo>,
     pub decision: bool,
+    pub image_input: bool,
 }
 
 impl ListedModel {
     pub fn decision(id: &str, name: &str, context_window: u32, input_per_1k: f64) -> Self {
         Self {
+            image_input: false,
             id: id.to_string(),
             name: name.to_string(),
             context_window: Some(context_window),
@@ -132,14 +138,17 @@ impl SystemOneGateway {
         })
     }
 
-    /// OpenRouter: `POST {base}/systemone`; decision models are listed only
+    /// OpenRouter: alpha Decisions accepts System One maps; decision models are listed only
     /// by `GET {base}/models?output_modalities=decisions`.
     pub fn openrouter(base_url: &str, api_key: &str, extra_headers: HeaderMap) -> AppResult<Self> {
         let base = base_url.trim_end_matches('/');
         Self::new(
             "OpenRouter",
-            format!("{base}/systemone"),
-            GatewayWire::Plain,
+            format!(
+                "{}/alpha/decisions",
+                base.strip_suffix("/v1").unwrap_or(base)
+            ),
+            GatewayWire::OpenRouterDecisions,
             DecisionDiscovery::OutputModality {
                 url: format!("{base}/models?output_modalities=decisions"),
                 modality: "decisions",
@@ -150,14 +159,14 @@ impl SystemOneGateway {
         )
     }
 
-    /// LLM Gateway: `POST {base}/systemone`; decision models list
+    /// LLM Gateway: `POST {base}/decisions`; decision models list
     /// `decision` among their output modalities in `GET {base}/models`.
     pub fn llmgateway(base_url: &str, api_key: &str) -> AppResult<Self> {
         let base = base_url.trim_end_matches('/');
         Self::new(
             "LLM Gateway",
-            format!("{base}/systemone"),
-            GatewayWire::Plain,
+            format!("{base}/decisions"),
+            GatewayWire::Decisions,
             DecisionDiscovery::OutputModality {
                 url: format!("{base}/models"),
                 modality: "decision",
@@ -168,17 +177,14 @@ impl SystemOneGateway {
         )
     }
 
-    /// Vercel AI Gateway: the TypeSafe-compatible API at
-    /// `{origin}/typesafe/v1/systemone`, which keeps confidence and legend
-    /// (the generic `/v1/evaluate` API drops both). Decision models have
+    /// Vercel AI Gateway's OpenAI-compatible Decisions API. Decision models have
     /// `"type": "evaluation"` in `GET {base}/models`.
     pub fn vercel(base_url: &str, api_key: &str) -> AppResult<Self> {
         let base = base_url.trim_end_matches('/');
-        let origin = base.strip_suffix("/v1").unwrap_or(base);
         Self::new(
             "Vercel AI Gateway",
-            format!("{origin}/typesafe/v1/systemone"),
-            GatewayWire::Plain,
+            format!("{base}/decisions"),
+            GatewayWire::VercelDecisions,
             DecisionDiscovery::ModelType {
                 url: format!("{base}/models"),
                 model_type: "evaluation",
@@ -267,6 +273,9 @@ impl SystemOneGateway {
             }
             DecisionDiscovery::ModelType { model_type, .. } => parse_listing(body, |m| {
                 m.get("type").and_then(Value::as_str) == Some(*model_type)
+                    || m.get("type").and_then(Value::as_str) == Some("decision")
+                    || has_output_modality(m, "decision")
+                    || has_output_modality(m, "decisions")
             }),
         }
     }
@@ -351,15 +360,35 @@ impl SystemOneGateway {
             .take()
             .unwrap_or_else(|| self.default_model.clone());
         let body = match self.wire {
+            GatewayWire::Decisions | GatewayWire::VercelDecisions => {
+                request.model = Some(model);
+                let decision = super::decisions::DecisionRequest::from_systemone(&request)
+                    .map_err(AppError::InvalidParams)?;
+                if self.wire == GatewayWire::VercelDecisions {
+                    decision
+                        .validate_vercel()
+                        .map_err(AppError::InvalidParams)?;
+                } else {
+                    decision.validate().map_err(AppError::InvalidParams)?;
+                }
+                serde_json::to_value(decision)
+                    .map_err(|e| AppError::Internal(format!("serialize decision: {e}")))?
+            }
             GatewayWire::Plain => {
                 request.model = Some(model);
                 serde_json::to_value(&request)
                     .map_err(|e| AppError::Internal(format!("serialize request: {e}")))?
             }
+            GatewayWire::OpenRouterDecisions => {
+                request.model = Some(model);
+                let adapted = super::decisions::DecisionRequest::openrouter_request(&request)
+                    .map_err(AppError::InvalidParams)?;
+                serde_json::to_value(adapted).map_err(|e| AppError::Internal(e.to_string()))?
+            }
             // Cloudflare's input schema rejects any field besides these two.
             GatewayWire::CloudflareRun => json!({
                 "model": model,
-                "input": {"state": request.state, "questions": request.questions},
+                "input": {"state": request.state.clone(), "questions": request.questions.clone()},
             }),
         };
         let resp = self
@@ -386,22 +415,46 @@ impl SystemOneGateway {
             return Err(map_systemone_error(status, text));
         }
         let payload = match self.wire {
-            GatewayWire::Plain => serde_json::from_str::<Value>(&text).map_err(|e| {
+            GatewayWire::Plain
+            | GatewayWire::Decisions
+            | GatewayWire::VercelDecisions
+            | GatewayWire::OpenRouterDecisions => {
+                serde_json::from_str::<Value>(&text).map_err(|e| {
+                    AppError::Provider(format!(
+                        "{} returned an invalid System One response: {e}",
+                        self.display_name
+                    ))
+                })?
+            }
+            GatewayWire::CloudflareRun => unwrap_cloudflare(&text)?,
+        };
+        let mut parsed: SystemOneResponse = if matches!(
+            self.wire,
+            GatewayWire::Decisions | GatewayWire::VercelDecisions
+        ) {
+            serde_json::from_value::<super::decisions::DecisionResponse>(payload)
+                .map_err(|e| AppError::Provider(format!("Invalid Decisions response: {e}")))?
+                .into_systemone(&request)
+                .map_err(AppError::Provider)?
+        } else {
+            serde_json::from_value(payload).map_err(|e| {
                 AppError::Provider(format!(
                     "{} returned an invalid System One response: {e}",
                     self.display_name
                 ))
-            })?,
-            GatewayWire::CloudflareRun => unwrap_cloudflare(&text)?,
+            })?
         };
-        let mut parsed: SystemOneResponse = serde_json::from_value(payload).map_err(|e| {
-            AppError::Provider(format!(
-                "{} returned an invalid System One response: {e}",
-                self.display_name
-            ))
-        })?;
         parsed.request_id = request_id;
         Ok(parsed)
+    }
+
+    pub fn supports_decisions(&self) -> bool {
+        matches!(
+            self.wire,
+            GatewayWire::Decisions
+                | GatewayWire::VercelDecisions
+                | GatewayWire::OpenRouterDecisions
+        )
     }
 }
 
@@ -413,7 +466,11 @@ fn decision_model_info(m: &ListedModel, provider: &str) -> ModelInfo {
         parameter_count: None,
         context_window: m.context_window.unwrap_or(32_000),
         supports_streaming: false,
-        capabilities: vec![Capability::Decision],
+        capabilities: if m.image_input {
+            vec![Capability::Decision, Capability::Vision]
+        } else {
+            vec![Capability::Decision]
+        },
         detailed_capabilities: None,
     }
 }
@@ -457,6 +514,13 @@ pub fn parse_listing(body: &Value, is_decision: impl Fn(&Value) -> bool) -> Vec<
             // OpenRouter/LLM Gateway: prompt/completion; Vercel: input/output.
             let pricing = crate::listing_metadata::listing_pricing(m);
             Some(ListedModel {
+                image_input: m
+                    .pointer("/architecture/input_modalities")
+                    .or_else(|| m.get("input_modalities"))
+                    .and_then(Value::as_array)
+                    .is_some_and(|modalities| {
+                        modalities.iter().any(|v| v.as_str() == Some("image"))
+                    }),
                 decision: is_decision(m),
                 id,
                 name,
@@ -688,7 +752,7 @@ mod tests {
             .mount(&server)
             .await;
         Mock::given(method("POST"))
-            .and(path("/api/v1/systemone"))
+            .and(path("/api/alpha/decisions"))
             .and(header("authorization", "Bearer k"))
             .respond_with(ResponseTemplate::new(200).set_body_json({
                 let mut p = answer_payload("typesafe/jev-1.13-20260917");
@@ -755,22 +819,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn vercel_uses_the_typesafe_compatible_path() {
+    async fn vercel_uses_native_decisions_path() {
         let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/typesafe/v1/systemone"))
-            .and(body_json(json!({
-                "model": "typesafe-ai/jev",
-                "state": {"ticket": "charged twice"},
-                "questions": {"team": {"type": "choice", "instructions": "Which team?",
-                                        "criteria": {"billing": "refunds", "tech": "bugs"}}}
-            })))
-            .respond_with(ResponseTemplate::new(200).set_body_json(answer_payload("jev-1.13.0")))
-            .mount(&server)
-            .await;
+        Mock::given(method("POST")).and(path("/v1/decisions"))
+            .and(body_json(json!({"model":"typesafe-ai/jev","input":"{\"ticket\":\"charged twice\"}","questions":[{"type":"choice","name":"team","instructions":"Which team?","choices":[{"value":"billing","description":"refunds"},{"value":"tech","description":"bugs"}]}]})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"model":"jev-1.13.0","answers":[{"type":"choice","name":"team","choice":"billing","confidence":0.8,"probabilities":[{"value":"billing","probability":0.9},{"value":"tech","probability":0.1}]}],"usage":{"input_tokens":10,"output_tokens":0,"total_tokens":10}})))
+            .expect(1).mount(&server).await;
         let gw = SystemOneGateway::vercel(&format!("{}/v1", server.uri()), "k").unwrap();
-        let resp = gw.systemone(request(None)).await.unwrap();
-        assert_eq!(resp.model, "jev-1.13.0");
+        assert!(gw.supports_decisions());
+        let response = gw.systemone(request(None)).await.unwrap();
+        assert_eq!(response.model, "jev-1.13.0");
+        assert!(
+            matches!(&response.answers["team"], super::super::SystemOneAnswer::Choice { choice, .. } if choice == "billing")
+        );
     }
 
     #[tokio::test]
@@ -808,7 +869,7 @@ mod tests {
     async fn upstream_client_errors_keep_their_body() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/v1/systemone"))
+            .and(path("/v1/decisions"))
             .respond_with(
                 ResponseTemplate::new(400)
                     .set_body_json(json!({"error": {"code": 400, "message": "too many options"}})),

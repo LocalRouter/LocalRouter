@@ -3,6 +3,7 @@
 pub mod audio;
 pub mod chat;
 pub mod completions;
+pub mod decisions;
 pub mod embeddings;
 pub mod finalize;
 pub mod generation;

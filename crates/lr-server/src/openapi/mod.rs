@@ -46,6 +46,7 @@ use utoipa::OpenApi;
 
         // System One typed decisions
         crate::routes::systemone::systemone,
+        crate::routes::decisions::decisions,
 
         // Models endpoints
         crate::routes::models::list_models,
@@ -146,6 +147,25 @@ use utoipa::OpenApi;
             crate::types::SpeechRequest,
             lr_providers::TranscriptionWord,
             lr_providers::TranscriptionSegment,
+
+            // Decisions types
+            lr_providers::systemone::decisions::DecisionRequest,
+            lr_providers::systemone::decisions::DecisionResponse,
+            lr_providers::systemone::decisions::DecisionInput,
+            lr_providers::systemone::decisions::DecisionInputMessage,
+            lr_providers::systemone::decisions::DecisionContent,
+            lr_providers::systemone::decisions::DecisionInputPart,
+            lr_providers::systemone::decisions::DecisionRole,
+            lr_providers::systemone::decisions::DecisionMessageType,
+            lr_providers::systemone::decisions::DecisionImageDetail,
+            lr_providers::systemone::decisions::DecisionQuestion,
+            lr_providers::systemone::decisions::DecisionChoice,
+            lr_providers::systemone::decisions::DecisionValue,
+            lr_providers::systemone::decisions::DecisionLevel,
+            lr_providers::systemone::decisions::DecisionAnswer,
+            lr_providers::systemone::decisions::DecisionProbability,
+            lr_providers::systemone::decisions::DecisionScoreProbability,
+            lr_providers::systemone::decisions::DecisionUsage,
 
             // System One types
             lr_providers::SystemOneRequest,

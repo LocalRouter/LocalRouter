@@ -5201,6 +5201,13 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
           },
         },
       },
+      '/v1/decisions': {
+        post: {
+          summary: 'Typed Decisions API', operationId: 'decisions', tags: ['System One'],
+          requestBody: { required: true, content: { 'application/json': { schema: { '$ref': '#/components/schemas/DecisionRequest' } } } },
+          responses: { '200': { description: 'Ordered typed answers or refusals', content: { 'application/json': { schema: { '$ref': '#/components/schemas/DecisionResponse' } } } }, '400': { description: 'Invalid request or unsupported image input' }, '403': { description: 'Access denied' }, '429': { description: 'Rate limited' } },
+        },
+      },
       '/health': {
         get: {
           summary: 'Health check',
@@ -5213,6 +5220,8 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     components: {
       schemas: {
         ChatCompletionRequest: { type: 'object', properties: { model: { type: 'string' }, messages: { type: 'array' } } },
+        DecisionRequest: { type: 'object', required: ['model', 'input', 'questions'], properties: { model: { type: 'string' }, input: { oneOf: [{ type: 'string' }, { type: 'array' }] }, questions: { type: 'array', minItems: 1, maxItems: 200, items: { type: 'object', properties: { type: { type: 'string', enum: ['predicate', 'choice', 'score'] }, name: { type: 'string' }, instructions: { type: 'string' }, choices: { type: 'array' }, levels: { type: 'array' } } } } } },
+        DecisionResponse: { type: 'object', required: ['model', 'answers', 'usage'], properties: { model: { type: 'string' }, answers: { type: 'array', items: { type: 'object' } }, usage: { type: 'object' } } },
         SystemOneRequest: { type: 'object', required: ['state', 'questions'], properties: { model: { type: 'string' }, state: {}, questions: { type: 'object', additionalProperties: { type: 'object', properties: { type: { type: 'string', enum: ['choice', 'score', 'noul'] }, instructions: { type: 'string' }, criteria: {} } } } } },
         SystemOneResponse: { type: 'object', properties: { model: { type: 'string' }, answers: { type: 'object' }, usage: { type: 'object', properties: { input_tokens: { type: 'integer', nullable: true }, output_tokens: { type: 'integer', nullable: true } } } } },
       },

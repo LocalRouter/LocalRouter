@@ -70,20 +70,35 @@ pub async fn systemone(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     client_auth: Option<Extension<ClientAuthContext>>,
-    Json(mut request): Json<SystemOneRequest>,
+    Json(request): Json<SystemOneRequest>,
 ) -> ApiResult<Response> {
+    handle_decision(state, auth, client_auth, request).await
+}
+
+/// Shared policy pipeline for both decision wire contracts.
+pub(crate) async fn handle_decision(
+    state: AppState,
+    auth: AuthContext,
+    client_auth: Option<Extension<ClientAuthContext>>,
+    mut request: SystemOneRequest,
+) -> ApiResult<Response> {
+    let endpoint = if request.decisions.is_some() {
+        "/v1/decisions"
+    } else {
+        ENDPOINT
+    };
     state.emit_event("llm-request", "systemone");
 
     let session_id = Uuid::new_v4().to_string();
     let is_duplicate = lr_types::is_duplicate_hop();
     let model_label = request.model.clone().unwrap_or_else(|| "auto".to_string());
 
-    let request_json = serde_json::to_value(&request).unwrap_or_default();
+    let request_json = request_wire_json(&request)?;
     let mut llm_guard = super::monitor_helpers::emit_llm_call(
         &state,
         client_auth.as_ref(),
         Some(&session_id),
-        ENDPOINT,
+        endpoint,
         &model_label,
         false,
         &request_json,
@@ -104,7 +119,7 @@ pub async fn systemone(
             &state,
             client_auth.as_ref(),
             Some(&session_id),
-            ENDPOINT,
+            endpoint,
             None,
             &err.error.error.message,
             400,
@@ -131,7 +146,7 @@ pub async fn systemone(
             client_auth.as_ref(),
             Some(&session_id),
             "rate_limit_exceeded",
-            ENDPOINT,
+            endpoint,
             &e.error.error.message,
             429,
             None,
@@ -146,7 +161,7 @@ pub async fn systemone(
             .as_ref()
             .map(|c| c.0.client_id.clone())
             .unwrap_or_else(|| auth.api_key_id.clone());
-        let body = serde_json::to_value(&request).unwrap_or_default();
+        let body = request_wire_json(&request)?;
         let model_for_scan = request.model.clone().unwrap_or_default();
 
         match super::pipeline::scan_request_for_secrets(&state, &client_id, &model_for_scan, &body)
@@ -183,7 +198,7 @@ pub async fn systemone(
         .await
         {
             Ok(Some(stats)) => {
-                let transformed = serde_json::to_value(&request).unwrap_or_default();
+                let transformed = request_wire_json(&request)?;
                 super::monitor_helpers::update_llm_call_transformed(
                     &state,
                     llm_guard.event_id(),
@@ -282,6 +297,17 @@ pub async fn systemone(
         }
     };
 
+    let response_json = if request.decisions.is_some() {
+        serde_json::to_value(
+            lr_providers::systemone::decisions::DecisionResponse::from_systemone(
+                &response, &request,
+            )
+            .map_err(|e| llm_guard.capture_err(ApiErrorResponse::bad_gateway(e)))?,
+        )
+        .map_err(|e| ApiErrorResponse::internal_error(e.to_string()))?
+    } else {
+        serde_json::to_value(&response).unwrap_or_default()
+    };
     let completed_at = Instant::now();
     let latency_ms = completed_at.duration_since(started_at).as_millis() as u64;
     finalize_success(
@@ -293,13 +319,17 @@ pub async fn systemone(
         completed_at,
         latency_ms,
         &response,
+        &response_json,
         llm_guard,
     );
 
-    let mut http_response = Json(&response).into_response();
+    let mut http_response = Json(&response_json).into_response();
     let headers = http_response.headers_mut();
     if let Ok(v) = HeaderValue::from_str(response.backend.as_str()) {
-        headers.insert(BACKEND_HEADER, v);
+        headers.insert(BACKEND_HEADER, v.clone());
+        if request.decisions.is_some() {
+            headers.insert("x-localrouter-decisions-backend", v);
+        }
     }
     if let Some(rid) = response
         .request_id
@@ -358,7 +388,7 @@ async fn apply_access_checks(
                     lr_mcp::gateway::firewall::InterceptCategory::Llm,
                 ))
         {
-            let request_json = serde_json::to_value(&*request).unwrap_or_default();
+            let request_json = request_wire_json(request)?;
             if let Some(edits) = super::pipeline::request_auto_router_popup(
                 state,
                 auth,
@@ -368,7 +398,11 @@ async fn apply_access_checks(
                 auto_config,
                 request_json,
                 false,
-                ENDPOINT,
+                if request.decisions.is_some() {
+                    "/v1/decisions"
+                } else {
+                    ENDPOINT
+                },
                 llm_guard,
             )
             .await?
@@ -389,7 +423,7 @@ async fn apply_access_checks(
                 .auto_config
                 .as_ref()
                 .map(|ac| ac.permission.clone());
-            let snapshot = serde_json::to_value(&*request).unwrap_or_default();
+            let snapshot = request_wire_json(request)?;
             let edits = super::pipeline::check_model_firewall_for(
                 state,
                 client_auth.map(|e| &e.0),
@@ -412,17 +446,35 @@ async fn apply_access_checks(
 /// request body; anything that no longer parses as a System One request is
 /// ignored, keeping the original.
 fn apply_popup_edits(request: &mut SystemOneRequest, edits: &serde_json::Value) {
-    let mut merged = serde_json::to_value(&*request).unwrap_or_default();
+    let Ok(mut merged) = request_wire_json(request) else {
+        return;
+    };
     if let (Some(target), Some(changes)) = (merged.as_object_mut(), edits.as_object()) {
         for (k, v) in changes {
             target.insert(k.clone(), v.clone());
         }
     }
-    match serde_json::from_value::<SystemOneRequest>(merged) {
+    let edited = if request.decisions.is_some() {
+        serde_json::from_value::<lr_providers::systemone::decisions::DecisionRequest>(merged)
+            .map(|r| r.into_systemone())
+    } else {
+        serde_json::from_value::<SystemOneRequest>(merged)
+    };
+    match edited {
         Ok(edited) if lr_providers::systemone::validate_systemone_request(&edited).is_ok() => {
             *request = edited;
         }
         _ => tracing::warn!("Ignoring System One popup edits that do not form a valid request"),
+    }
+}
+
+fn request_wire_json(request: &SystemOneRequest) -> ApiResult<serde_json::Value> {
+    if request.decisions.is_some() {
+        let decision = lr_providers::systemone::decisions::DecisionRequest::from_systemone(request)
+            .map_err(ApiErrorResponse::bad_request)?;
+        serde_json::to_value(decision).map_err(|e| ApiErrorResponse::internal_error(e.to_string()))
+    } else {
+        serde_json::to_value(request).map_err(|e| ApiErrorResponse::internal_error(e.to_string()))
     }
 }
 
@@ -461,6 +513,7 @@ fn finalize_success(
     completed_at: Instant,
     latency_ms: u64,
     response: &SystemOneResponse,
+    response_json: &serde_json::Value,
     llm_guard: super::monitor_helpers::LlmCallGuard,
 ) {
     let provider = if response.provider.is_empty() {
@@ -505,7 +558,6 @@ fn finalize_success(
     );
 
     let event_id = llm_guard.event_id().to_string();
-    let response_json = serde_json::to_value(response).unwrap_or_default();
     llm_guard.complete(
         state,
         &provider,
@@ -513,19 +565,32 @@ fn finalize_success(
         200,
         input_tokens,
         output_tokens,
-        None,
+        response
+            .usage
+            .extra
+            .get("input_tokens_details")
+            .and_then(|v| v.get("cached_tokens"))
+            .and_then(serde_json::Value::as_u64),
         Some(cost),
         latency_ms,
         Some("stop"),
         &answers_preview(response),
         false,
     );
-    super::monitor_helpers::update_llm_call_response_body(state, &event_id, &response_json);
+    super::monitor_helpers::update_llm_call_response_body(state, &event_id, response_json);
     // Emulated decisions went upstream over the chat provider's own API.
     let upstream_api = match response.backend {
-        lr_providers::systemone::types::SystemOneBackend::Native => {
-            Some(lr_monitor::LlmApi::SystemOne)
-        }
+        lr_providers::systemone::types::SystemOneBackend::Native => Some(
+            if state
+                .provider_registry
+                .get_provider(&provider)
+                .is_some_and(|p| p.supports_decisions())
+            {
+                lr_monitor::LlmApi::Decisions
+            } else {
+                lr_monitor::LlmApi::SystemOne
+            },
+        ),
         _ => state
             .provider_registry
             .get_provider(&provider)
@@ -577,6 +642,7 @@ pub(crate) fn answers_preview(response: &SystemOneResponse) -> String {
             } => format!("{id}={choice} ({confidence:.2})"),
             lr_providers::SystemOneAnswer::Score { score, .. } => format!("{id}={score:.2}"),
             lr_providers::SystemOneAnswer::Noul { noul, .. } => format!("{id}={noul:.2}"),
+            lr_providers::SystemOneAnswer::Refusal { .. } => format!("{id}=refused"),
         })
         .collect::<Vec<_>>()
         .join(", ")

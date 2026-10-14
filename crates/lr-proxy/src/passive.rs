@@ -630,6 +630,7 @@ fn protocol_for(format: WireFormat) -> LlmProtocol {
         // monitor's purposes (messages + content + token counts).
         WireFormat::Ollama(_) => LlmProtocol::Openai,
         WireFormat::SystemOne => LlmProtocol::SystemOne,
+        WireFormat::Decisions => LlmProtocol::Openai,
     }
 }
 
@@ -641,6 +642,7 @@ fn api_for(format: WireFormat) -> LlmApi {
         WireFormat::OpenAiResponses => LlmApi::Responses,
         WireFormat::Ollama(_) => LlmApi::OllamaChat,
         WireFormat::SystemOne => LlmApi::SystemOne,
+        WireFormat::Decisions => LlmApi::Decisions,
     }
 }
 

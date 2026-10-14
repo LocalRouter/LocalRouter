@@ -9,6 +9,7 @@ export const LLM_API_LABELS: Record<LlmApi, string> = {
   cohere_chat: 'Cohere Chat',
   ollama_chat: 'Ollama chat',
   system_one: 'System One',
+  decisions: 'Decisions',
   embeddings: 'Embeddings',
   moderations: 'Moderations',
   images: 'Images',
@@ -25,6 +26,7 @@ export const LLM_API_SHORT: Record<LlmApi, string> = {
   cohere_chat: 'Cohere',
   ollama_chat: 'Ollama',
   system_one: 'System One',
+  decisions: 'Decisions',
   embeddings: 'Embeddings',
   moderations: 'Moderation',
   images: 'Images',
@@ -42,6 +44,7 @@ export function apiFromPath(path: string | null | undefined): LlmApi | null {
   if (p.includes(':generateContent') || p.includes(':streamGenerateContent')) return 'gemini_generate_content'
   if (p.endsWith('/v2/chat')) return 'cohere_chat'
   if (p.endsWith('/api/chat') || p.endsWith('/api/generate')) return 'ollama_chat'
+  if (p.endsWith('/decisions')) return 'decisions'
   if (p.endsWith('/systemone')) return 'system_one'
   if (p.endsWith('/embeddings')) return 'embeddings'
   if (p.endsWith('/moderations')) return 'moderations'

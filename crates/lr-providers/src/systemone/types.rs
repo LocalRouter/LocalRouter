@@ -43,6 +43,10 @@ pub const MAX_SCORE_LEVELS: usize = 10;
     }
 }))]
 pub struct SystemOneRequest {
+    /// Original Decisions contract, set only by LocalRouter's typed adapter.
+    /// Never accepted from or sent to a System One client/provider.
+    #[serde(skip)]
+    pub decisions: Option<Box<super::decisions::DecisionRequest>>,
     /// The information to evaluate: a string, a JSON object, or an array.
     pub state: Value,
     /// Model to use. `provider/model` targets a specific provider instance,
@@ -116,6 +120,12 @@ impl SystemOneQuestion {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SystemOneAnswer {
+    /// A native decision model declined this question.
+    Refusal {
+        #[serde(flatten)]
+        #[schema(value_type = Object)]
+        extra: Map<String, Value>,
+    },
     /// Probability (0-1) that the answer is yes/true.
     Noul {
         noul: f64,
@@ -158,6 +168,7 @@ impl SystemOneAnswer {
     /// Wire name of the answer type.
     pub fn type_name(&self) -> &'static str {
         match self {
+            SystemOneAnswer::Refusal { .. } => "refusal",
             SystemOneAnswer::Noul { .. } => "noul",
             SystemOneAnswer::Choice { .. } => "choice",
             SystemOneAnswer::Score { .. } => "score",
@@ -172,6 +183,10 @@ pub struct SystemOneUsage {
     pub input_tokens: Option<u64>,
     #[serde(default)]
     pub output_tokens: Option<u64>,
+    /// Native usage details, including cache accounting and total tokens.
+    #[serde(flatten)]
+    #[schema(value_type = Object)]
+    pub extra: Map<String, Value>,
 }
 
 /// How a System One answer was produced.
@@ -232,6 +247,9 @@ pub struct SystemOneResponse {
 /// Validate a request before routing. Returns a message naming the offending
 /// field on failure.
 pub fn validate_systemone_request(req: &SystemOneRequest) -> Result<(), String> {
+    if req.decisions.is_some() {
+        return super::decisions::DecisionRequest::from_systemone(req)?.validate();
+    }
     if req.state.is_null() {
         return Err("'state' is required and must be a string, object, or array".into());
     }

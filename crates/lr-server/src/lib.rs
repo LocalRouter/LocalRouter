@@ -288,6 +288,7 @@ fn build_app(state: AppState, enable_cors: bool, shutdown: CancellationToken) ->
         .route("/v1/images/generations", post(routes::image_generations))
         .route("/v1/audio/speech", post(routes::audio_speech))
         .route("/v1/systemone", post(routes::systemone))
+        .route("/v1/decisions", post(routes::decisions::decisions))
         .route("/v1/models", get(routes::list_models))
         .route("/v1/models/{id}", get(routes::get_model))
         .route(
@@ -308,6 +309,7 @@ fn build_app(state: AppState, enable_cors: bool, shutdown: CancellationToken) ->
         .route("/images/generations", post(routes::image_generations))
         .route("/audio/speech", post(routes::audio_speech))
         .route("/systemone", post(routes::systemone))
+        .route("/decisions", post(routes::decisions::decisions))
         .route("/models", get(routes::list_models))
         .route("/models/{id}", get(routes::get_model))
         .route(

@@ -4812,6 +4812,7 @@ export type LlmApi =
   | 'cohere_chat'
   | 'ollama_chat'
   | 'system_one'
+  | 'decisions'
   | 'embeddings'
   | 'moderations'
   | 'images'

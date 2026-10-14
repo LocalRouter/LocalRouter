@@ -70,10 +70,12 @@ export type SystemOneAnswer =
   | SystemOneChoiceAnswer
   | SystemOneScoreAnswer
   | SystemOneNoulAnswer
+  | { type: 'refusal' }
 
 export interface SystemOneUsage {
   input_tokens: number | null
   output_tokens: number | null
+  [detail: string]: unknown
 }
 
 export interface SystemOneResponse {

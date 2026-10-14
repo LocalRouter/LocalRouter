@@ -627,6 +627,64 @@ fn audio_mime_type(file_name: &str) -> String {
 #[async_trait]
 #[allow(dead_code)]
 impl ModelProvider for OpenAIProvider {
+    fn supports_systemone(&self) -> bool {
+        matches!(self.auth, ProviderAuth::ApiKey(_))
+    }
+
+    fn supports_decisions(&self) -> bool {
+        self.supports_systemone()
+    }
+
+    async fn supports_systemone_model(&self, model: &str) -> bool {
+        // Decisions currently supports gpt-6-luna on the public API. Codex
+        // subscription credentials have no access to this endpoint.
+        self.supports_decisions() && model == "gpt-6-luna"
+    }
+
+    async fn systemone(
+        &self,
+        mut request: crate::SystemOneRequest,
+    ) -> AppResult<crate::SystemOneResponse> {
+        use crate::systemone::decisions::{DecisionRequest, DecisionResponse};
+        if !self.supports_decisions() {
+            return Err(AppError::InvalidParams(
+                "Decisions requires an OpenAI API key".into(),
+            ));
+        }
+        request.model.get_or_insert_with(|| "gpt-6-luna".into());
+        let decision =
+            DecisionRequest::from_systemone(&request).map_err(AppError::InvalidParams)?;
+        decision.validate().map_err(AppError::InvalidParams)?;
+        let response = self
+            .client
+            .post(format!("{}/decisions", self.base_url.trim_end_matches('/')))
+            .bearer_auth(self.auth.token().await?)
+            .json(&decision)
+            .send()
+            .await
+            .map_err(|e| AppError::Provider(format!("Decisions connection failed: {e}")))?;
+        let status = response.status().as_u16();
+        let request_id = response
+            .headers()
+            .get("x-request-id")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let text = response
+            .text()
+            .await
+            .map_err(|e| AppError::Provider(e.to_string()))?;
+        if !(200..300).contains(&status) {
+            return Err(crate::systemone::provider::map_systemone_error(
+                status, text,
+            ));
+        }
+        let wire: DecisionResponse = serde_json::from_str(&text)
+            .map_err(|e| AppError::Provider(format!("Invalid Decisions response: {e}")))?;
+        let mut result = wire.into_systemone(&request).map_err(AppError::Provider)?;
+        result.request_id = request_id;
+        Ok(result)
+    }
+
     fn upstream_api(&self) -> lr_types::LlmApi {
         // The ChatGPT Plus/Pro backend only speaks the Responses API.
         if self.is_chatgpt_backend() {
@@ -846,6 +904,9 @@ impl ModelProvider for OpenAIProvider {
 
             // Determine capabilities
             let mut capabilities = vec![Capability::Chat, Capability::Completion];
+            if model.id == "gpt-6-luna" {
+                capabilities.extend([Capability::Decision, Capability::Vision]);
+            }
             if !model.id.starts_with("o1") {
                 capabilities.push(Capability::FunctionCalling);
             }
@@ -1749,6 +1810,32 @@ mod tests {
         assert_eq!(
             stored_completion_metadata(Some(true), Some(Default::default())),
             None
+        );
+    }
+
+    #[tokio::test]
+    async fn native_decisions_preserves_refusal_and_usage_details() {
+        use wiremock::matchers::{body_partial_json, header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/decisions"))
+            .and(header("authorization", "Bearer fake-key"))
+            .and(body_partial_json(serde_json::json!({"model":"gpt-6-luna","questions":[{"type":"predicate","name":"q","instructions":"yes?"}]})))
+            .respond_with(ResponseTemplate::new(200).insert_header("x-request-id","decision-1").set_body_json(serde_json::json!({"model":"gpt-6-luna","answers":[{"type":"refusal","name":"q"}],"usage":{"input_tokens":100,"output_tokens":0,"total_tokens":100,"input_tokens_details":{"cached_tokens":80,"cache_write_tokens":0}}})))
+            .expect(1).mount(&server).await;
+        let provider = OpenAIProvider::with_base_url("fake-key".into(), server.uri()).unwrap();
+        assert!(provider.supports_systemone_model("gpt-6-luna").await);
+        assert!(!provider.supports_systemone_model("gpt-4o").await);
+        let request = serde_json::from_value(serde_json::json!({"model":"gpt-6-luna","state":"evidence","questions":{"q":{"type":"noul","instructions":"yes?"}}})).unwrap();
+        let response = provider.systemone(request).await.unwrap();
+        assert!(matches!(
+            response.answers["q"],
+            crate::SystemOneAnswer::Refusal { .. }
+        ));
+        assert_eq!(response.request_id.as_deref(), Some("decision-1"));
+        assert_eq!(
+            response.usage.extra["input_tokens_details"]["cached_tokens"],
+            80
         );
     }
 

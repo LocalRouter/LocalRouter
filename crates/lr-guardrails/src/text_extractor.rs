@@ -173,6 +173,18 @@ pub fn extract_request_text(body: &serde_json::Value) -> Vec<ExtractedText> {
         }
     }
 
+    // Decisions uses ordered questions; scan the rubric as well as input.
+    // Descriptions can contain outbound secrets or harmful instructions.
+    if let Some(questions) = body.get("questions").and_then(|q| q.as_array()) {
+        for (i, question) in questions.iter().enumerate() {
+            for field in ["instructions", "choices", "levels"] {
+                if let Some(value) = question.get(field) {
+                    push_value_text(value, &format!("Decision question {i} {field}"), &mut texts);
+                }
+            }
+        }
+    }
+
     texts
 }
 
@@ -368,6 +380,18 @@ pub fn extract_snippet(text: &str, start: usize, end: usize, context_chars: usiz
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn decisions_scan_input_and_all_question_rubrics() {
+        let texts = extract_request_text(&serde_json::json!({
+            "input":[{"role":"user","content":[{"type":"input_text","text":"evidence"},{"type":"input_image","image_url":"data:image/png;base64,AAAA"}]}],
+            "questions":[{"type":"choice","instructions":"classify","choices":[{"value":true,"description":"secret in rubric"}]},{"type":"score","instructions":"rate","levels":[{"label":"private severity"}]}]
+        }));
+        assert!(texts.iter().any(|t| t.text == "evidence"));
+        assert!(texts.iter().any(|t| t.text.contains("secret in rubric")));
+        assert!(texts.iter().any(|t| t.text.contains("private severity")));
+        assert!(texts.iter().all(|t| !t.text.contains("base64")));
+    }
 
     #[test]
     fn test_extract_systemone_request() {

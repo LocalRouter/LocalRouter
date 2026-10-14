@@ -34,6 +34,7 @@ import { EmbeddingsPanel } from "./embeddings-panel"
 import { SpeechPanel } from "./speech-panel"
 import { TranscribePanel } from "./transcribe-panel"
 import { SystemOnePanel } from "./systemone-panel"
+import { DecisionsPanel } from "./decisions-panel"
 import type {
   ApiPathSupport,
   GetApiPathSupportParams,
@@ -43,12 +44,13 @@ import type {
 } from "@/types/tauri-commands"
 
 /** Sections in display order; the first available one opens by default. */
-const SECTION_ORDER = ["chat", "systemone", "images", "embeddings", "speech", "transcribe"] as const
+const SECTION_ORDER = ["chat", "decisions", "systemone", "images", "embeddings", "speech", "transcribe"] as const
 type Section = (typeof SECTION_ORDER)[number]
 
 /** The endpoint each non-chat section calls. */
 const SECTION_ENDPOINTS: Record<Exclude<Section, "chat">, string> = {
   systemone: "/v1/systemone",
+  decisions: "/v1/decisions",
   images: "/v1/images/generations",
   embeddings: "/v1/embeddings",
   speech: "/v1/audio/speech",
@@ -980,6 +982,7 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
             <MessageSquare className="h-3 w-3" />
             Chat
           </TabsTrigger>
+          <TabsTrigger value="decisions" className="flex items-center gap-1" disabled={sectionDisabled("decisions")} title={sectionDisabled("decisions") ? unavailableTitle : undefined}><Scale className="h-3 w-3" />Decisions</TabsTrigger>
           <TabsTrigger value="systemone" className="flex items-center gap-1" disabled={sectionDisabled("systemone")} title={sectionDisabled("systemone") ? unavailableTitle : undefined}>
             <Scale className="h-3 w-3" />
             System One
@@ -1055,6 +1058,7 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
           />
         </TabsContent>
 
+        <TabsContent value="decisions" className="flex-1 min-h-0 mt-4"><DecisionsPanel key={`${mode}-${selectedClientId}-${selectedProvider}`} openaiClient={openaiClient} isReady={isReady()} selectedModel={getModelWithProvider()} /></TabsContent>
         <TabsContent value="systemone" className="flex-1 min-h-0 mt-4">
           <SystemOnePanel
             key={`${mode}-${selectedClientId}-${selectedProvider}`}

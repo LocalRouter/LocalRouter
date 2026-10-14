@@ -581,6 +581,12 @@ impl ModelProvider for OpenAICompatibleProvider {
         self.systemone_gateway.is_some()
     }
 
+    fn supports_decisions(&self) -> bool {
+        self.systemone_gateway
+            .as_ref()
+            .is_some_and(|g| g.supports_decisions())
+    }
+
     async fn supports_systemone_model(&self, model: &str) -> bool {
         match &self.systemone_gateway {
             Some(gateway) => gateway.is_decision_model(model).await,

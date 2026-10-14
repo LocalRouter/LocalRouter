@@ -231,6 +231,33 @@ impl Router {
             Some(m) => provider_instance.supports_systemone_model(m).await,
             None => provider_instance.supports_systemone(),
         };
+        if request
+            .decisions
+            .as_ref()
+            .is_some_and(|r| r.input.has_images())
+        {
+            if let Some(model) = model {
+                if let Ok(models) = self
+                    .provider_registry
+                    .list_provider_models_cached(provider)
+                    .await
+                {
+                    if models.iter().any(|m| {
+                        m.id == model && !m.capabilities.contains(&lr_providers::Capability::Vision)
+                    }) {
+                        return Err(AppError::InvalidParams(format!(
+                            "Model '{provider}/{model}' does not support image decisions"
+                        )));
+                    }
+                }
+            }
+        }
+        // Only a native Decisions transport may carry image input. Legacy
+        // System One and chat emulation receive text, never image URLs as text.
+        if request.decisions.is_some() && !(native && provider_instance.supports_decisions()) {
+            request = lr_providers::systemone::decisions::DecisionRequest::legacy_request(&request)
+                .map_err(AppError::InvalidParams)?;
+        }
         if native {
             request.model = model.map(str::to_string);
             let mut response = match provider_instance.systemone(request).await {
@@ -256,7 +283,48 @@ impl Router {
                 .await;
             let input = response.usage.input_tokens.unwrap_or(0);
             let output = response.usage.output_tokens.unwrap_or(0);
-            let cost = calculate_cost(input, output, None, &pricing);
+            let cached = response
+                .usage
+                .extra
+                .get("input_tokens_details")
+                .and_then(|v| v.get("cached_tokens"))
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0)
+                .min(input);
+            let cache_write = response
+                .usage
+                .extra
+                .get("input_tokens_details")
+                .and_then(|v| v.get("cache_write_tokens"))
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0)
+                .min(input - cached);
+            let estimated_cost =
+                calculate_cost(input - cached - cache_write, output, None, &pricing)
+                    + cached as f64 / 1000.0
+                        * pricing
+                            .cache_read_cost_per_1k
+                            .unwrap_or(pricing.input_cost_per_1k)
+                    + cache_write as f64 / 1000.0
+                        * pricing
+                            .cache_write_cost_per_1k
+                            .unwrap_or(pricing.input_cost_per_1k);
+            let native_cost = response
+                .usage
+                .extra
+                .get("cost")
+                .or_else(|| {
+                    response
+                        .extra
+                        .get("provider_metadata")
+                        .and_then(|v| v.pointer("/gateway/cost"))
+                })
+                .and_then(|v| {
+                    v.as_f64()
+                        .or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok()))
+                })
+                .filter(|v| v.is_finite() && *v >= 0.0);
+            let cost = native_cost.unwrap_or(estimated_cost);
             response.cost_usd = Some(cost);
             self.record_systemone_usage(
                 client_id,
@@ -358,6 +426,7 @@ impl Router {
         let mut usage = SystemOneUsage {
             input_tokens: Some(0),
             output_tokens: Some(0),
+            extra: Default::default(),
         };
         let mut cost = 0.0;
         let add = |resp: &CompletionResponse, usage: &mut SystemOneUsage, cost: &mut f64| {
@@ -482,6 +551,31 @@ impl Router {
 
         let mut last_error = None;
         for (provider, model) in selected_models {
+            if request
+                .decisions
+                .as_ref()
+                .is_some_and(|r| r.input.has_images())
+            {
+                let Some(instance) = self.provider_registry.get_provider(provider) else {
+                    continue;
+                };
+                if !instance.supports_decisions() || !instance.supports_systemone_model(model).await
+                {
+                    continue;
+                }
+                if let Ok(models) = self
+                    .provider_registry
+                    .list_provider_models_cached(provider)
+                    .await
+                {
+                    if models.iter().any(|m| {
+                        m.id == *model
+                            && !m.capabilities.contains(&lr_providers::Capability::Vision)
+                    }) {
+                        continue;
+                    }
+                }
+            }
             if self.should_skip_for_endpoint(provider, model, EndpointType::SystemOne)
                 || self.provider_registry.is_model_disabled(provider, model)
             {
@@ -782,6 +876,7 @@ mod tests {
                 usage: SystemOneUsage {
                     input_tokens: Some(1000),
                     output_tokens: Some(0),
+                    extra: Default::default(),
                 },
                 extra: Default::default(),
                 provider: String::new(),

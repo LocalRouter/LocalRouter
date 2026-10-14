@@ -24,6 +24,7 @@ pub enum LlmApi {
     OllamaChat,
     /// System One decisions (`/v1/systemone`).
     SystemOne,
+    Decisions,
     /// Embeddings (`/embeddings`).
     Embeddings,
     /// Moderations (`/moderations`).
@@ -53,6 +54,8 @@ impl LlmApi {
             Some(Self::CohereChat)
         } else if path.ends_with("/api/chat") || path.ends_with("/api/generate") {
             Some(Self::OllamaChat)
+        } else if path.ends_with("/decisions") {
+            Some(Self::Decisions)
         } else if path.ends_with("/systemone") {
             Some(Self::SystemOne)
         } else if path.ends_with("/embeddings") {
@@ -91,6 +94,8 @@ mod tests {
             ("/api/chat", LlmApi::OllamaChat),
             ("/api/generate", LlmApi::OllamaChat),
             ("/v1/systemone", LlmApi::SystemOne),
+            ("/v1/decisions", LlmApi::Decisions),
+            ("/decisions", LlmApi::Decisions),
             ("/v1/embeddings", LlmApi::Embeddings),
             ("/v1/moderations", LlmApi::Moderations),
             ("/v1/images/generations", LlmApi::Images),

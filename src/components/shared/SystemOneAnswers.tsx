@@ -123,7 +123,7 @@ export function SystemOneAnswerView({
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-mono text-sm font-medium">{id}</span>
         <Badge variant="secondary" className="text-[10px]">
-          {TYPE_LABEL[answer.type] ?? answer.type}
+          {answer.type === "refusal" ? "Refused" : TYPE_LABEL[answer.type] ?? answer.type}
         </Badge>
         {answer.type === "choice" && (
           <span className="text-sm">

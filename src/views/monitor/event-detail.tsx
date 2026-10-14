@@ -13,6 +13,7 @@ import remarkGfm from 'remark-gfm'
 import { capturedExcerpt, capturedRequestBody, capturedResponseMessages, contentText, requestMessages } from './message-content'
 import { LLM_API_LABELS, llmApiFlow, type ApiFlow } from './llm-api'
 import type { EventStatus, LlmProtocol, MonitorEvent, ReadMemoryArchiveFileParams } from '@/types/tauri-commands'
+import { decisionAnswersForView, decisionQuestionsForView } from '@/utils/decisions'
 import type { SystemOneAnswer, SystemOneQuestion } from '@/types/systemone'
 import { SystemOneAnswerView, SystemOneQuestionView } from '@/components/shared/SystemOneAnswers'
 
@@ -601,12 +602,13 @@ function isSystemOneEvent(data: EventData): boolean {
 
 function systemOneQuestions(body: Record<string, unknown> | undefined): Record<string, SystemOneQuestion> {
   const q = body?.questions
-  return q && typeof q === 'object' && !Array.isArray(q) ? (q as Record<string, SystemOneQuestion>) : {}
+  if (Array.isArray(q)) return decisionQuestionsForView(q)
+  return q && typeof q === 'object' ? (q as Record<string, SystemOneQuestion>) : {}
 }
 
 /** Request view: the state being judged and every question asked about it. */
 function SystemOneRequestView({ body }: { body: Record<string, unknown> }) {
-  const state = body.state
+  const state = body.input ?? body.state
   const questions = Object.entries(systemOneQuestions(body))
   return (
     <div className="space-y-2">
@@ -630,19 +632,15 @@ function SystemOneRequestView({ body }: { body: Record<string, unknown> }) {
 
 /** Response view: each answer with its probability bars. */
 function SystemOneAnswersList({ data }: { data: EventData }) {
-  const answers = (data.response_body as Record<string, unknown> | undefined)?.answers as
-    Record<string, SystemOneAnswer> | undefined
+  const raw = (data.response_body as Record<string, unknown> | undefined)?.answers
+  let answers: Record<string, SystemOneAnswer> | undefined
+  if (Array.isArray(raw)) answers = decisionAnswersForView(raw)
+  else if (raw && typeof raw === 'object') answers = raw as Record<string, SystemOneAnswer>
+  if (!answers || Object.keys(answers).length === 0) return null
   const questions = systemOneQuestions(data.request_body as Record<string, unknown> | undefined)
-  if (!answers || Object.keys(answers).length === 0) {
-    return <p className="text-xs text-muted-foreground italic">No answers in the response.</p>
-  }
-  return (
-    <div className="space-y-2">
-      {Object.entries(answers).map(([id, answer]) => (
-        <SystemOneAnswerView key={id} id={id} answer={answer} question={questions[id]} />
-      ))}
-    </div>
-  )
+  return <div className="space-y-2">{Object.entries(answers).map(([id, answer]) =>
+    <SystemOneAnswerView key={id} id={id} answer={answer} question={questions[id]} />
+  )}</div>
 }
 
 // ---- Exchange building blocks ----
