@@ -2,6 +2,7 @@
 //!
 //! Legacy text completion endpoint (converts to chat format internally).
 
+use super::gateway_json::GatewayJson;
 use axum::{
     extract::State,
     response::{
@@ -55,7 +56,7 @@ pub async fn completions(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     client_auth: Option<Extension<ClientAuthContext>>,
-    Json(request): Json<CompletionRequest>,
+    GatewayJson(request): GatewayJson<CompletionRequest>,
 ) -> ApiResult<Response> {
     // Emit LLM request event to trigger tray icon indicator
     state.emit_event("llm-request", "completion");
@@ -512,7 +513,7 @@ fn legacy_to_chat_completion_request(
         audio: None,
         prediction: None,
         reasoning_effort: None,
-        extensions: None,
+        extensions: req.extensions.clone(),
         user: req.user.clone(),
     })
 }
@@ -750,6 +751,7 @@ async fn build_non_streaming_response(
     // finalize tail can still borrow `&response` for the generation
     // row.
     let api_response = CompletionResponse {
+        extensions: response.extensions.clone(),
         id: generation_id.clone(),
         object: "text_completion".to_string(),
         created: created_at.timestamp(),
@@ -800,13 +802,15 @@ fn usage_chunk_event(
     created: i64,
     tracked: &StreamTracker,
     prompt_estimate: u64,
+    include_usage: bool,
 ) -> Event {
     let chunk = CompletionChunk {
+        extensions: tracked.gateway_extensions(),
         id: id.to_string(),
         object: "text_completion".to_string(),
         created,
         choices: Vec::new(),
-        usage: Some(tracked.client_usage(prompt_estimate)),
+        usage: include_usage.then(|| tracked.client_usage(prompt_estimate)),
     };
     Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
 }
@@ -926,6 +930,7 @@ async fn handle_streaming(
 
                 // Convert chat completion chunk to legacy completion chunk
                 let api_chunk = CompletionChunk {
+                    extensions: provider_chunk.extensions,
                     id: gen_id.clone(),
                     object: "text_completion".to_string(),
                     created: created_timestamp,
@@ -967,12 +972,13 @@ async fn handle_streaming(
     let sse_stream = sse_stream.chain(futures::stream::iter(std::iter::once(()).flat_map(
         move |_| {
             let mut tail = Vec::new();
-            if include_usage {
+            if include_usage || tracker_end.lock().gateway_extensions().is_some() {
                 tail.push(Ok(usage_chunk_event(
                     &gen_id_end,
                     created_timestamp,
                     &tracker_end.lock(),
                     prompt_estimate,
+                    include_usage,
                 )));
             }
             tail.push(Ok::<Event, std::convert::Infallible>(
@@ -1168,6 +1174,7 @@ async fn handle_streaming_parallel(
                                  created_ts: i64|
              -> Result<Event, std::convert::Infallible> {
                 let api_chunk = CompletionChunk {
+                    extensions: provider_chunk.extensions,
                     id: gen_id.to_string(),
                     object: "text_completion".to_string(),
                     created: created_ts,
@@ -1316,13 +1323,14 @@ async fn handle_streaming_parallel(
             // End of stream for a client that is still there and allowed
             // to see it: optional usage chunk, then [DONE]
             if gate_state != GuardrailGate::Denied && !event_tx.is_closed() {
-                if include_usage {
+                if include_usage || tracker.gateway_extensions().is_some() {
                     let _ = event_tx
                         .send(Ok(usage_chunk_event(
                             &gen_id,
                             created_timestamp,
                             &tracker,
                             prompt_estimate,
+                            include_usage,
                         )))
                         .await;
                 }
@@ -1453,6 +1461,7 @@ mod tests {
 
     fn make_request(model: &str) -> CompletionRequest {
         CompletionRequest {
+            extensions: None,
             model: model.to_string(),
             prompt: PromptInput::Single("test".to_string()),
             max_tokens: None,
@@ -1556,6 +1565,7 @@ mod tests {
     #[test]
     fn test_legacy_to_chat_preserves_sampling_params() {
         let req = CompletionRequest {
+            extensions: None,
             model: "gpt-4".to_string(),
             prompt: PromptInput::Single("hi".to_string()),
             temperature: Some(0.7),
@@ -1590,6 +1600,7 @@ mod tests {
     #[test]
     fn test_legacy_to_chat_single_prompt_becomes_one_user_message() {
         let req = CompletionRequest {
+            extensions: None,
             model: "m".to_string(),
             prompt: PromptInput::Single("answer this".to_string()),
             temperature: None,
@@ -1622,6 +1633,7 @@ mod tests {
         // semantics for `n` parallel completions over an array
         // prompt; matches what the pre-migration handler did.
         let req = CompletionRequest {
+            extensions: None,
             model: "m".to_string(),
             prompt: PromptInput::Multiple(vec!["a".to_string(), "b".to_string(), "c".to_string()]),
             temperature: None,
@@ -1655,6 +1667,7 @@ mod tests {
         // accidentally enable features the legacy client never asked
         // for (e.g. tools, response_format, top_k).
         let req = CompletionRequest {
+            extensions: None,
             model: "m".to_string(),
             prompt: PromptInput::Single("x".to_string()),
             temperature: None,

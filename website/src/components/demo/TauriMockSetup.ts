@@ -1865,7 +1865,8 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     if (provider.instance_name === 'free-ai') return { base_url: 'https://api.free.ai/v1', api_key: 'fa-demo-key', ...saved }
     if (provider.provider_type === 'openai_compatible') return { base_url: 'http://gpu-box.local:8000/v1', ...saved }
     if (provider.provider_type === 'fastflowlm') return { base_url: 'http://127.0.0.1:52625/v1', ...saved }
-    return { api_key: 'sk-demo-key-1234567890', base_url: 'https://api.openai.com/v1' }
+    if (provider.provider_type === 'openrouter') return { api_key: 'sk-demo-key-1234567890', base_url: 'https://openrouter.ai/api/v1', gateway_preferences: '{}', ...saved }
+    return { api_key: 'sk-demo-key-1234567890', base_url: 'https://api.openai.com/v1', ...saved }
   },
   'create_provider_instance': (args) => {
     const newProvider = {

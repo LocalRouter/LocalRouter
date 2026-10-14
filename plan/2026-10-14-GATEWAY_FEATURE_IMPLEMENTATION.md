@@ -2,7 +2,7 @@
 
 - [x] Read the approved roadmap, current routes/provider contracts, and authoritative Decisions documentation.
 - [x] P0 Decisions API: typed contract, validation, native gateway support, legacy translation, refusal/image handling, route/OpenAPI, monitoring and tests.
-- [ ] P1 Advanced gateway options: typed configuration/request options, policy intersection, upstream attribution/costs and UI.
+- [x] P1 Advanced gateway options: typed configuration/request options, policy intersection, upstream attribution/costs and UI.
 - [ ] P1 Routing explanation and dry-run preview.
 - [ ] P1 Adaptive ordering and bounded attempts/deadlines.
 - [ ] P1 Session affinity, classifier reuse and prompt-cache accounting.
@@ -48,13 +48,51 @@ Additional P0 source verification: Vercel https://vercel.com/docs/ai-gateway/sdk
 
 ## P1 next slice: gateway preferences and attribution
 
-- [ ] Implement typed gateway preferences and validation in lr-providers, with per-instance defaults saved through the existing provider configuration API.
-- [ ] Merge request extensions.localrouter.gateway with configured policy: intersect allowlists (including narrower endpoint variants), union exclusions, choose stricter price ceilings/privacy requirements, and never enable fallbacks/unsupported parameters against a configured restriction. Reject empty eligibility and unsupported strict requirements before IO.
-- [ ] Adapt each gateway's verified contract: OpenRouter provider object and region-specific base URL; LLM Gateway routing factor plus provider prefix/X-No-Fallback; Vercel providerOptions.gateway. Unsupported cross-gateway fields return explicit errors instead of silently disappearing. Apply options on streaming and non-streaming paths and native decisions where supported.
-- [ ] Preserve returned inference-provider identity, service tier, routing attempts and authoritative costs in typed attribution carried through response/chunk extensions. Keep the LocalRouter provider-instance identity separate. Unknown attribution/pricing remains labelled unknown/estimated.
-- [ ] Add structured provider settings controls, TypeScript preference/attribution types, demo configuration/metadata, API examples, meaningful merge/adapter/error/streaming tests, and monitor display.
+- [x] Implement typed gateway preferences and validation in lr-providers, with per-instance defaults saved through the existing provider configuration API.
+- [x] Merge request extensions.localrouter.gateway with configured policy: intersect allowlists (including narrower endpoint variants), union exclusions, choose stricter price ceilings/privacy requirements, and never enable fallbacks/unsupported parameters against a configured restriction. Reject empty eligibility and unsupported strict requirements before IO.
+- [x] Adapt each gateway's verified contract: OpenRouter provider object and region-specific base URL; LLM Gateway routing factor plus provider prefix/X-No-Fallback; Vercel providerOptions.gateway. Unsupported cross-gateway fields return explicit errors instead of silently disappearing. Apply options on streaming and non-streaming paths and native decisions where supported.
+- [x] Preserve returned inference-provider identity, service tier, routing attempts and authoritative costs in typed attribution carried through response/chunk extensions. Keep the LocalRouter provider-instance identity separate. Unknown attribution/pricing remains labelled unknown/estimated.
+- [x] Add structured provider settings controls, TypeScript preference/attribution types, demo configuration/metadata, API examples, meaningful merge/adapter/error/streaming tests, and monitor display.
 - [ ] Plan Review, Test Coverage Review, Bug Hunt, final stable CI checks and frontend/demo checks, then commit and push.
 
 Provider defaults apply to that instance. Request constraints apply throughout the request's candidate chain and cannot be silently dropped on a direct-provider fallback. Later per-client privacy profiles extend these requirements to explicit client policy. Regional provider selection is a configuration of the upstream service, not a certification of residency by LocalRouter. Exact gateway field availability and plan restrictions must follow primary docs. UI should explain upstream inference-provider restrictions separately from LocalRouter's existing provider/model permissions.
 
 Verified sources: https://openrouter.ai/docs/guides/routing/provider-selection; https://docs.llmgateway.io/features/routing; https://vercel.com/docs/ai-gateway/models-and-providers/provider-options; https://vercel.com/docs/ai-gateway/sdks-and-apis/openai-chat-completions. Reuse CompletionRequest/CompletionResponse/CompletionChunk extensions and existing provider-config commands to avoid expanding every provider's wire struct or adding parallel configuration APIs.
+
+### P1 implementation review
+
+Typed per-instance defaults and request overrides now map separately to OpenRouter, LLM Gateway and Vercel. Saved allowlists, exclusions, price ceilings, privacy flags and disabled fallbacks cannot be relaxed by a request. Provider settings expose structured controls; OpenRouter's configurable HTTPS base URL supports regional hostnames. Unsupported strict constraints fail before IO, and automatic routing skips incompatible candidates. Chat, legacy Completions, Responses, native Decisions and translated decisions preserve the request namespace. Classifier requests retain the same privacy controls. The OpenRouter Alpha Decisions contract has no verified routing-control support, so constrained native Alpha requests fail closed; its settings UI states this limitation. Service-tier controls are enabled only on OpenRouter, per its current documented values.
+
+Attribution separates the local gateway instance from the reported inference provider, region, tier and sanitized routing attempts. Credential IDs, key fingerprints/labels and raw errors are omitted from the typed attribution. SSE metadata is retained for the same upstream request, without inheriting another call's identity or cost. Valid reported costs take precedence over catalog estimates; tool-loop and server stream aggregation require every upstream call's cost to be known. A final call's cost is never presented as a complete multi-call turn. Catalog component splits remain estimates even when the gateway reports an authoritative total. The monitor explicitly labels unknown identity and gateway cost.
+
+Plan review and bug hunt addressed policy intersection across endpoint variants, Vercel fallback pinning, unsupported constraints, raw vendor fallback fields, missing Responses/Completions propagation, classifier/emulation propagation, shared native-adapter configuration, metadata erasure across chunks, multi-call cost undercounting and custom-header precedence over fallback restrictions. Coverage includes policy/transport/SSE/metadata/cost/isolation fixtures, malformed captured responses and live OpenAPI schema checks. Validation is in progress before commit.
+
+Request example (OpenRouter, within the client's existing model permissions):
+
+```json
+{
+  "model": "my-openrouter/openai/gpt-5",
+  "messages": [{"role": "user", "content": "Explain this change."}],
+  "extensions": {
+    "localrouter.gateway": {
+      "only": ["openai"],
+      "zdr": true,
+      "allow_fallbacks": false,
+      "max_price": {"prompt": 5, "completion": 20},
+      "service_tier": "default"
+    }
+  }
+}
+```
+
+Prompt/completion ceilings use USD per million tokens; request/image ceilings use USD per request/image. Provider-level configuration stores the same object under gateway_preferences through the existing provider configuration command. Vercel maps ZDR/no-training to its documented providerOptions.gateway fields; LLM Gateway uses model provider pinning, routing and X-No-Fallback and rejects unsupported strict fields. OpenRouter service tiers: https://openrouter.ai/docs/guides/features/service-tiers. Additional Vercel privacy mappings: https://vercel.com/docs/ai-gateway/security-and-compliance/zdr and https://vercel.com/docs/ai-gateway/security-and-compliance/disallow-prompt-training.
+
+Next P1 slice has been saved before code in plan/2026-10-14-ROUTING_EXPLANATION_PREVIEW.md. All remaining master roadmap items remain pending until implemented and validated.
+
+Final P1 review additionally fixed the pre-existing decision-auto permission omission before gateway discovery, standard service-tier aliases, OpenRouter's unified reasoning-effort mapping with a saved compute ceiling, raw vendor-control loss at typed HTTP ingress, native routing metadata that could disclose credential details, and final metadata delivery on every LLM surface. Gateway cost_scope distinguishes an upstream call from a complete request; initial Vercel resolution stays separate from final inference identity. Tool-loop billing excludes already charged calls from an earlier pause/resume request. Tests cover these cases plus streaming with include_usage on/off and rejection of raw controls before inference.
+
+Validation: rustup stable 1.99.0, actual compiler PATH/RUSTC pinned, workspace Clippy with warnings denied, fmt check and workspace tests passed (4,173 passed, 69 ignored, zero failures). Live HTTP fixtures verify gateway options/attribution on Chat, legacy Completions, Responses and Decisions, and published OpenAPI definitions. App/demo type checks, all 62 frontend regressions and both production builds passed. P0 was pushed in 16be1102; P1 preferences/attribution is the next complete slice, with all later roadmap items still pending.
+
+Reasoning-effort source: https://openrouter.ai/docs/guides/best-practices/reasoning-tokens. Standard reasoning_effort maps to the unified reasoning.effort object on OpenRouter; saved effort is a ceiling, and request overrides can lower it. Native Decisions reasoning controls remain explicitly unsupported where no contract is verified. Raw vendor fields such as provider/providerOptions/routing/models and top-level privacy/price controls must use the namespaced LocalRouter preferences, so typed ingress cannot silently discard a restriction.
+
+P1 Plan Review, Test Coverage Review and Bug Hunt are complete. Final CI parity and live schema/API verification passed; the slice is ready for its normal commit and push. Remaining delivery begins with the saved routing-explanation/preview plan.

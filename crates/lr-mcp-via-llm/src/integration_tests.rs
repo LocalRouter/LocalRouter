@@ -395,6 +395,21 @@ mod helpers {
 
     // ── Helper functions ───────────────────────────────────────────────────
 
+    pub fn with_gateway_cost(
+        mut response: CompletionResponse,
+        cost: Option<f64>,
+    ) -> CompletionResponse {
+        response.extensions = Some(
+            lr_providers::gateway::GatewayAttribution::from_wire(
+                lr_providers::gateway::GatewayKind::Vercel,
+                &json!({"id":response.id,"usage":{"cost":cost}}),
+                Default::default(),
+            )
+            .extensions(),
+        );
+        response
+    }
+
     pub fn make_response(
         text: Option<&str>,
         tool_calls: Option<Vec<ToolCall>>,
@@ -1313,17 +1328,20 @@ mod mixed_tool_tests {
         let env = setup_test_env(
             vec![
                 // First call: mixed tools
-                make_response(
-                    None,
-                    Some(vec![
-                        make_tool_call("mcp-1", "fs__read", r#"{"path":"/tmp"}"#),
-                        make_tool_call("client-1", "my_tool", "{}"),
-                    ]),
+                with_gateway_cost(
+                    make_response(
+                        None,
+                        Some(vec![
+                            make_tool_call("mcp-1", "fs__read", r#"{"path":"/tmp"}"#),
+                            make_tool_call("client-1", "my_tool", "{}"),
+                        ]),
+                    ),
+                    Some(0.02),
                 ),
                 // After resume: no more tools available (already fetched above),
                 // so we need the resumed loop to find MCP tools again.
                 // The resumed loop will list tools, inject them, and call LLM again.
-                make_response(Some("All done!"), None),
+                with_gateway_cost(make_response(Some("All done!"), None), Some(0.03)),
             ],
             vec![tool],
             results,
@@ -1358,7 +1376,16 @@ mod mixed_tool_tests {
         .expect("phase 1 should succeed");
 
         let pending = match result {
-            OrchestratorResult::PendingMixed { pending, .. } => pending,
+            OrchestratorResult::PendingMixed {
+                pending,
+                client_response,
+            } => {
+                assert_eq!(
+                    lr_providers::gateway::reported_cost(client_response.extensions.as_ref()),
+                    Some(0.02)
+                );
+                pending
+            }
             _ => panic!("Expected PendingMixed"),
         };
 
@@ -1390,6 +1417,10 @@ mod mixed_tool_tests {
 
         match resume_result {
             OrchestratorResult::Complete(resp) => {
+                assert_eq!(
+                    lr_providers::gateway::reported_cost(resp.extensions.as_ref()),
+                    Some(0.03)
+                );
                 let text = &resp.choices[0].message.content;
                 assert!(matches!(
                     text,
@@ -1801,8 +1832,11 @@ mod metadata_tests {
 
         let env = setup_test_env(
             vec![
-                make_response(None, Some(vec![make_tool_call("c1", "fs__read", "{}")])),
-                make_response(Some("Final"), None),
+                with_gateway_cost(
+                    make_response(None, Some(vec![make_tool_call("c1", "fs__read", "{}")])),
+                    Some(0.02),
+                ),
+                with_gateway_cost(make_response(Some("Final"), None), Some(0.03)),
             ],
             vec![tool],
             HashMap::new(),
@@ -1840,6 +1874,67 @@ mod metadata_tests {
                 // 2 iterations × 5 completion tokens = 10
                 assert_eq!(resp.usage.completion_tokens, 10);
                 assert_eq!(resp.usage.total_tokens, 30);
+                assert_eq!(
+                    lr_providers::gateway::reported_cost(resp.extensions.as_ref()),
+                    Some(0.05)
+                );
+            }
+            _ => panic!("Expected Complete"),
+        }
+    }
+
+    #[tokio::test]
+    async fn gateway_cost_is_unknown_when_any_tool_iteration_is_unreported() {
+        let tool = make_mcp_tool("fs__read", "Read a file");
+
+        let env = setup_test_env(
+            vec![
+                with_gateway_cost(
+                    make_response(None, Some(vec![make_tool_call("c1", "fs__read", "{}")])),
+                    None,
+                ),
+                with_gateway_cost(make_response(Some("Final"), None), Some(0.03)),
+            ],
+            vec![tool],
+            HashMap::new(),
+        )
+        .await;
+
+        let session = make_session();
+        let config = make_config();
+        let request = make_request("Aggregate tokens");
+
+        let result = run_agentic_loop(
+            env.gateway.clone(),
+            &env.router,
+            &env.client,
+            session,
+            request,
+            &config,
+            vec![],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("should succeed");
+
+        match result {
+            OrchestratorResult::Complete(resp) => {
+                // 2 iterations × 10 prompt tokens = 20
+                assert_eq!(resp.usage.prompt_tokens, 20);
+                // 2 iterations × 5 completion tokens = 10
+                assert_eq!(resp.usage.completion_tokens, 10);
+                assert_eq!(resp.usage.total_tokens, 30);
+                assert_eq!(
+                    lr_providers::gateway::reported_cost(resp.extensions.as_ref()),
+                    None
+                );
             }
             _ => panic!("Expected Complete"),
         }

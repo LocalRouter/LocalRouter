@@ -12,6 +12,7 @@
 //! compression of `state`, free-tier handling, monitoring, metrics, access
 //! log and the generation tracker.
 
+use super::gateway_json::GatewayJson;
 use axum::{
     body::Body,
     extract::State,
@@ -70,7 +71,7 @@ pub async fn systemone(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     client_auth: Option<Extension<ClientAuthContext>>,
-    Json(request): Json<SystemOneRequest>,
+    GatewayJson(request): GatewayJson<SystemOneRequest>,
 ) -> ApiResult<Response> {
     handle_decision(state, auth, client_auth, request).await
 }

@@ -36,13 +36,13 @@
 //!   custom tools pass through untouched but aren't actively
 //!   interpreted.
 
+use super::gateway_json::GatewayJson;
 use std::convert::Infallible;
 use std::time::Instant;
 
 use axum::{
     extract::{Extension, State},
     response::{sse::KeepAlive, IntoResponse, Json as JsonResponse, Response, Sse},
-    Json,
 };
 use chrono::Utc;
 use futures::StreamExt;
@@ -86,6 +86,10 @@ use crate::types::{
 #[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct CreateResponseRequest {
+    /// Namespaced LocalRouter features, including localrouter.gateway restrictions.
+    #[serde(default)]
+    #[schema(value_type = Option<Object>)]
+    pub extensions: Option<std::collections::HashMap<String, Value>>,
     #[schema(example = "localrouter/auto")]
     pub model: String,
     /// Either a single string (shorthand for one user message) or an
@@ -169,7 +173,7 @@ pub async fn create_response(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     client_auth: Option<Extension<ClientAuthContext>>,
-    Json(req): Json<CreateResponseRequest>,
+    GatewayJson(req): GatewayJson<CreateResponseRequest>,
 ) -> ApiResult<Response> {
     // Correlate logs/monitor events across the turn.
     let session_id = Uuid::new_v4().to_string();
@@ -607,7 +611,7 @@ fn build_chat_completion_request(
         audio: None,
         prediction: None,
         reasoning_effort: req.reasoning.as_ref().and_then(|r| r.effort.clone()),
-        extensions: None,
+        extensions: req.extensions.clone(),
         user: None,
     })
 }
@@ -1052,7 +1056,10 @@ fn build_stream_response(
         // (it already emitted `response.completed` itself). Otherwise
         // emit the synthesized finish frames.
         if !saw_native_envelope {
-            for frame in emitter.finish(finish_reason.as_deref()) {
+            for mut frame in emitter.finish(finish_reason.as_deref()) {
+                if frame.event == "response.completed" || frame.event == "response.incomplete" {
+                    if let Some(extensions) = tracker.lock().gateway_extensions() { frame.data["response"]["extensions"] = serde_json::json!(extensions); }
+                }
                 yield sse_event(frame);
             }
         }
@@ -1077,7 +1084,7 @@ fn build_stream_response(
         // built-in tool results) over the emitter's synthesized
         // `final_response_object`. Falls back when the upstream
         // sequence didn't carry that event (defensive).
-        let wire_body = native_completed_envelope.clone().unwrap_or_else(|| {
+        let mut wire_body = native_completed_envelope.clone().unwrap_or_else(|| {
             let final_body = emitter.final_response_object(
                 if finish_reason.as_deref() == Some("tool_calls") {
                     "incomplete"
@@ -1087,6 +1094,10 @@ fn build_stream_response(
             );
             serde_json::to_value(&final_body).unwrap_or(Value::Null)
         });
+        if let Some(extensions) = tracked.gateway_extensions() {
+            if wire_body.get("response").is_some() { wire_body["response"]["extensions"] = serde_json::json!(extensions); }
+            else { wire_body["extensions"] = serde_json::json!(extensions); }
+        }
         let finalize_inputs = crate::routes::finalize::FinalizeInputs {
             state: &state,
             auth: &auth,
@@ -1104,6 +1115,7 @@ fn build_stream_response(
         crate::routes::finalize::finalize_streaming_at_end(
             &finalize_inputs,
             crate::routes::finalize::StreamingFinalizeSummary {
+                extensions: tracked.gateway_extensions(),
                 provider: provider_for_finalize,
                 model: model_for_finalize,
                 prompt_tokens,
@@ -1335,7 +1347,18 @@ fn select_wire_body(
             }
             v
         });
-    native_raw.unwrap_or_else(|| completion_to_response_object(completion, response_id, created_at))
+    let mut body = native_raw
+        .unwrap_or_else(|| completion_to_response_object(completion, response_id, created_at));
+    if let Some(attribution) = completion
+        .extensions
+        .as_ref()
+        .and_then(|extensions| extensions.get(lr_providers::gateway::EXTENSION))
+    {
+        if body.is_object() {
+            body["extensions"][lr_providers::gateway::EXTENSION] = attribution.clone();
+        }
+    }
+    body
 }
 
 #[cfg(test)]

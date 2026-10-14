@@ -161,6 +161,20 @@ where
                 Ok(chunk) => chunk,
                 Err(e) => return Some(Err(e)),
             };
+            let gateway_extensions = chunk.extensions.as_ref().and_then(|extensions| {
+                extensions.get(crate::gateway::EXTENSION).map(|value| {
+                    [(crate::gateway::EXTENSION.to_string(), value.clone())]
+                        .into_iter()
+                        .collect()
+                })
+            });
+            if gateway_extensions.is_some() {
+                if let Some(held) = sink.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+                    if held.id == chunk.id {
+                        held.extensions = gateway_extensions.clone();
+                    }
+                }
+            }
             let Some(usage) = chunk.usage.take() else {
                 return Some(Ok(chunk));
             };
@@ -170,11 +184,17 @@ where
                 created: chunk.created,
                 model: chunk.model.clone(),
                 choices: Vec::new(),
-                extensions: None,
+                extensions: gateway_extensions,
                 usage: Some(usage),
                 provider: None,
             });
-            if chunk.choices.is_empty() && chunk.extensions.is_none() {
+            if chunk.choices.is_empty()
+                && chunk.extensions.as_ref().is_none_or(|extensions| {
+                    extensions
+                        .keys()
+                        .all(|key| key == crate::gateway::EXTENSION)
+                })
+            {
                 None
             } else {
                 Some(Ok(chunk))

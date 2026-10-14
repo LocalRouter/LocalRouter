@@ -72,6 +72,15 @@ use utoipa::OpenApi;
     ),
     components(
         schemas(
+            lr_providers::gateway::GatewayPreferences,
+            lr_providers::gateway::GatewayMaxPrice,
+            lr_providers::gateway::GatewaySort,
+            lr_providers::gateway::DataCollection,
+            lr_providers::gateway::GatewayKind,
+            lr_providers::gateway::GatewayAttribution,
+            lr_providers::gateway::GatewayRoutingAttempt,
+            lr_providers::gateway::GatewayCostSource,
+            lr_providers::gateway::GatewayCostScope,
             // Request types
             crate::types::ChatCompletionRequest,
             crate::routes::responses::CreateResponseRequest,

@@ -1,3 +1,4 @@
+import { GatewayRoutingSettings, GATEWAY_CONFIG_KEY } from '@/components/providers/GatewayRoutingSettings'
 import { useState, useEffect, useCallback } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-shell'
@@ -332,6 +333,7 @@ export default function ProviderForm({
 
       {/* Dynamic Parameter Fields */}
       {visibleParameters.map((param) => {
+        if (param.key === GATEWAY_CONFIG_KEY) return <GatewayRoutingSettings key={param.key} providerType={providerType.provider_type} value={config[param.key] || ''} onChange={value => setConfig(prev => ({ ...prev, [param.key]: value }))} />
         // Handle OAuth parameters
         if (param.param_type === 'oauth') {
           return (

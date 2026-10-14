@@ -312,7 +312,8 @@ pub(crate) async fn finalize_metrics_and_monitor(
 
     // Cached prompt tokens and reasoning tokens are charged at their own
     // rates
-    let cost = pricing.cost(&charged_usage(prompt_tokens, &response.usage));
+    let cost = lr_providers::gateway::reported_cost(response.extensions.as_ref())
+        .unwrap_or_else(|| pricing.cost(&charged_usage(prompt_tokens, &response.usage)));
 
     let strategy_id = state
         .client_manager
@@ -450,6 +451,7 @@ pub(crate) async fn finalize_metrics_and_monitor(
 /// The fields mirror the pieces `complete_llm_call` + access log +
 /// metrics consume; each adapter feeds what its chunks expose.
 pub(crate) struct StreamingFinalizeSummary {
+    pub extensions: Option<std::collections::HashMap<String, serde_json::Value>>,
     pub provider: String,
     pub model: String,
     pub prompt_tokens: u32,
@@ -511,7 +513,7 @@ pub(crate) async fn finalize_streaming_at_end(
         },
         system_fingerprint: None,
         service_tier: None,
-        extensions: None,
+        extensions: summary.extensions.clone(),
         routellm_win_rate: None,
         request_usage_entries: None,
     };

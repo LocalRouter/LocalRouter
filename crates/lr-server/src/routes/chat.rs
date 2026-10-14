@@ -2,6 +2,7 @@
 //!
 //! The primary endpoint for conversational AI interactions.
 
+use super::gateway_json::GatewayJson;
 use std::time::Instant;
 
 use axum::{
@@ -52,7 +53,7 @@ pub async fn chat_completions(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     client_auth: Option<Extension<ClientAuthContext>>,
-    Json(request): Json<ChatCompletionRequest>,
+    GatewayJson(request): GatewayJson<ChatCompletionRequest>,
 ) -> ApiResult<Response> {
     // Emit LLM request event to trigger tray icon indicator
     state.emit_event("llm-request", "chat");
@@ -497,6 +498,7 @@ async fn handle_mcp_via_llm(
                     }
 
                     let api_chunk = ChatCompletionChunk {
+                        extensions: provider_chunk.extensions,
                         id: gen_id.clone(),
                         object: "chat.completion.chunk".to_string(),
                         created: created_timestamp,
@@ -604,13 +606,14 @@ async fn handle_mcp_via_llm(
         let sse_stream = data_stream.chain(futures::stream::iter(std::iter::once(()).flat_map(
             move |_| {
                 let mut tail = Vec::new();
-                if include_usage {
+                if include_usage || tracker_end.lock().gateway_extensions().is_some() {
                     tail.push(Ok(usage_chunk_event(
                         &gen_id_end,
                         created_timestamp,
                         &model_end,
                         &tracker_end.lock(),
                         prompt_estimate,
+                        include_usage,
                     )));
                 }
                 tail.push(Ok(Event::default().data("[DONE]")));
@@ -1172,7 +1175,7 @@ async fn build_non_streaming_response(
         },
         system_fingerprint: response.system_fingerprint.clone(),
         service_tier: response.service_tier.clone(),
-        extensions: None, // Provider-specific extensions (Phase 1)
+        extensions: response.extensions.clone(),
         request_usage_entries: response.request_usage_entries.as_ref().map(|entries| {
             entries
                 .iter()
@@ -1215,14 +1218,16 @@ fn usage_chunk_event(
     model: &str,
     tracked: &StreamTracker,
     prompt_estimate: u64,
+    include_usage: bool,
 ) -> Event {
     let chunk = ChatCompletionChunk {
+        extensions: tracked.gateway_extensions(),
         id: id.to_string(),
         object: "chat.completion.chunk".to_string(),
         created,
         model: tracked.model(model),
         choices: Vec::new(),
-        usage: Some(tracked.client_usage(prompt_estimate)),
+        usage: include_usage.then(|| tracked.client_usage(prompt_estimate)),
         system_fingerprint: None,
         service_tier: None,
         request_usage_entries: None,
@@ -1377,6 +1382,7 @@ async fn handle_streaming(
                 }
 
                 let api_chunk = ChatCompletionChunk {
+                    extensions: provider_chunk.extensions,
                     id: gen_id.clone(),
                     object: "chat.completion.chunk".to_string(),
                     created: created_timestamp,
@@ -1455,13 +1461,14 @@ async fn handle_streaming(
     let sse_stream = sse_stream.chain(futures::stream::iter(std::iter::once(()).flat_map(
         move |_| {
             let mut tail = Vec::new();
-            if include_usage {
+            if include_usage || tracker_end.lock().gateway_extensions().is_some() {
                 tail.push(Ok(usage_chunk_event(
                     &gen_id_end,
                     created_timestamp,
                     &model_end,
                     &tracker_end.lock(),
                     prompt_estimate,
+                    include_usage,
                 )));
             }
             tail.push(Ok(Event::default().data("[DONE]")));
@@ -1691,6 +1698,7 @@ async fn handle_streaming_parallel(
                                  repairer: &mut Option<super::finalize::StreamingRepair>|
              -> Result<Event, std::convert::Infallible> {
                 let api_chunk = ChatCompletionChunk {
+                    extensions: provider_chunk.extensions,
                     id: gen_id.to_string(),
                     object: "chat.completion.chunk".to_string(),
                     created: created_ts,
@@ -1889,7 +1897,7 @@ async fn handle_streaming_parallel(
             // End of stream for a client that is still there and allowed
             // to see it: optional usage chunk, then [DONE]
             if gate_state != GuardrailGate::Denied && !event_tx.is_closed() {
-                if include_usage {
+                if include_usage || tracker.gateway_extensions().is_some() {
                     let _ = event_tx
                         .send(Ok(usage_chunk_event(
                             &gen_id,
@@ -1897,6 +1905,7 @@ async fn handle_streaming_parallel(
                             &model_clone,
                             &tracker,
                             prompt_estimate,
+                            include_usage,
                         )))
                         .await;
                 }

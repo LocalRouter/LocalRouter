@@ -6,6 +6,7 @@ pub mod completions;
 pub mod decisions;
 pub mod embeddings;
 pub mod finalize;
+pub mod gateway_json;
 pub mod generation;
 pub mod helpers;
 pub mod images;

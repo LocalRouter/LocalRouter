@@ -828,6 +828,20 @@ async fn decisions_translates_text_to_legacy_and_rejects_images() {
         .unwrap();
     assert!(spec["paths"]["/v1/decisions"]["post"].is_object());
     assert!(spec["components"]["schemas"]["DecisionAnswer"].is_object());
+    for schema in [
+        "GatewayPreferences",
+        "GatewayAttribution",
+        "GatewayRoutingAttempt",
+    ] {
+        assert!(spec["components"]["schemas"][schema].is_object());
+    }
+    for schema in [
+        "ChatCompletionRequest",
+        "CompletionRequest",
+        "CreateResponseRequest",
+    ] {
+        assert!(spec["components"]["schemas"][schema]["properties"]["extensions"].is_object());
+    }
 }
 
 #[tokio::test]
@@ -841,7 +855,8 @@ async fn decisions_gateway_preserves_images_booleans_and_refusals() {
         .and(body_partial_json(json!({"model":"image-decider","input":[{"role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,AAAA"}]}]})))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "model":"image-decider","answers":[{"type":"choice","name":"damage","choice":true,"confidence":0.8,"probabilities":[{"value":true,"probability":0.9},{"value":"true","probability":0.1}]},{"type":"refusal","name":null}],
-            "usage":{"input_tokens":10,"output_tokens":0,"total_tokens":10}
+            "usage":{"input_tokens":10,"output_tokens":0,"total_tokens":10},
+            "metadata":{"routing":[{"provider":"typesafe","succeeded":true,"apiKeyHash":"private-key-fingerprint","providerKeyLabel":"private-key-label","error":"private-error"}]}
         }))).expect(1).mount(&mock).await;
     let (base, secret) = start_server(vec![(
         "gateway",
@@ -859,4 +874,172 @@ async fn decisions_gateway_preserves_images_booleans_and_refusals() {
     assert_eq!(body["answers"][0]["choice"], true);
     assert_eq!(body["answers"][0]["probabilities"][1]["value"], "true");
     assert_eq!(body["answers"][1], json!({"type":"refusal","name":null}));
+    assert!(!body.to_string().contains("private-key"));
+    assert!(!body.to_string().contains("private-error"));
+    let mut unsupported = request.clone();
+    unsupported["service_tier"] = json!("priority");
+    assert_eq!(
+        post(&base, "/v1/decisions", &secret, &unsupported)
+            .await
+            .status(),
+        400
+    );
+    let mut raw_controls = request.clone();
+    raw_controls["provider"] = json!({"zdr":true});
+    assert_eq!(
+        post(&base, "/v1/decisions", &secret, &raw_controls)
+            .await
+            .status(),
+        400
+    );
+    mock.verify().await;
+}
+
+#[tokio::test]
+async fn gateway_preferences_and_attribution_survive_every_nonstreaming_llm_surface() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data":[{"id":"test"}]})))
+        .mount(&mock)
+        .await;
+    Mock::given(method("POST")).and(path("/chat/completions"))
+        .and(body_partial_json(json!({"routing":"price","stream":false})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id":"gateway-call", "object":"chat.completion", "created":1, "model":"test",
+            "choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],
+            "usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4,"cost":0.02},
+            "metadata":{"routing":[{"provider":"openai","model":"test","succeeded":true,"apiKeyHash":"private"}]}
+        }))).expect(3).mount(&mock).await;
+    let (base, secret) = start_server(vec![(
+        "gw",
+        "llmgateway",
+        vec![("base_url", mock.uri()), ("api_key", "k".into())],
+    )])
+    .await;
+    for (route, input) in [
+        (
+            "/v1/chat/completions",
+            json!({"messages":[{"role":"user","content":"hi"}]}),
+        ),
+        ("/v1/completions", json!({"prompt":"hi"})),
+        ("/v1/responses", json!({"input":"hi","store":false})),
+    ] {
+        let mut body = input;
+        body["model"] = json!("gw/test");
+        body["extensions"] = json!({"localrouter.gateway":{"sort":"price"}});
+        let response = post(&base, route, &secret, &body).await;
+        assert_eq!(response.status(), 200, "{route}");
+        let value: Value = response.json().await.unwrap();
+        let attribution = &value["extensions"]["localrouter.gateway"];
+        assert_eq!(
+            attribution["inference_provider"], "openai",
+            "{route}: {value}"
+        );
+        assert_eq!(attribution["cost_usd"], 0.02, "{route}: {value}");
+        assert!(!attribution.to_string().contains("private"));
+        for raw_key in ["provider", "providerOptions", "routing", "models", "zdr"] {
+            let mut raw_controls = body.clone();
+            raw_controls[raw_key] = json!({"zdr":true});
+            let response = post(&base, route, &secret, &raw_controls).await;
+            assert_eq!(response.status(), 400, "{route}/{raw_key}");
+            let error: Value = response.json().await.unwrap();
+            assert!(error.to_string().contains("extensions.localrouter.gateway"));
+        }
+    }
+    for extra in [
+        json!({"service_tier":"priority"}),
+        json!({"extensions":{"localrouter.gateway":{"sort":"price","zdr":true}}}),
+    ] {
+        let mut body = json!({"model":"gw/test","messages":[{"role":"user","content":"must not be sent"}],"extensions":{"localrouter.gateway":{"sort":"price"}}});
+        for (key, value) in extra.as_object().unwrap() {
+            body[key] = value.clone();
+        }
+        assert_eq!(
+            post(&base, "/v1/chat/completions", &secret, &body)
+                .await
+                .status(),
+            400
+        );
+    }
+    mock.verify().await;
+}
+
+#[tokio::test]
+async fn final_gateway_metadata_is_delivered_with_or_without_requested_stream_usage() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data":[{"id":"test"}]})))
+        .mount(&mock)
+        .await;
+    let content = json!({"id":"gateway-stream","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]});
+    let usage = json!({"id":"gateway-stream","object":"chat.completion.chunk","created":1,"model":"test","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4,"cost":0.02},"metadata":{"routing":[{"provider":"openai","model":"test","succeeded":true}]}});
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(body_partial_json(json!({"routing":"price","stream":true})))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(format!(
+                    "data: {content}\n\ndata: {usage}\n\ndata: [DONE]\n\n"
+                ))
+                .insert_header("Content-Type", "text/event-stream"),
+        )
+        .expect(6)
+        .mount(&mock)
+        .await;
+    let (base, secret) = start_server(vec![(
+        "gw",
+        "llmgateway",
+        vec![("base_url", mock.uri()), ("api_key", "k".into())],
+    )])
+    .await;
+    for include_usage in [false, true] {
+        for (route, input) in [
+            (
+                "/v1/chat/completions",
+                json!({"messages":[{"role":"user","content":"hi"}]}),
+            ),
+            ("/v1/completions", json!({"prompt":"hi"})),
+            ("/v1/responses", json!({"input":"hi","store":false})),
+        ] {
+            let mut body = input;
+            body["model"] = json!("gw/test");
+            body["stream"] = json!(true);
+            body["extensions"] = json!({"localrouter.gateway":{"sort":"price"}});
+            if route != "/v1/responses" {
+                body["stream_options"] = json!({"include_usage":include_usage});
+            }
+            let response = post(&base, route, &secret, &body).await;
+            assert_eq!(response.status(), 200, "{route}");
+            let raw = response.text().await.unwrap();
+            let frames: Vec<Value> = raw
+                .lines()
+                .filter_map(|line| line.strip_prefix("data: "))
+                .filter_map(|data| serde_json::from_str(data).ok())
+                .collect();
+            let last_attribution = frames
+                .iter()
+                .filter_map(|frame| frame.get("response").unwrap_or(frame).get("extensions"))
+                .filter_map(|extensions| extensions.get("localrouter.gateway"))
+                .next_back()
+                .unwrap_or_else(|| panic!("{route}: {raw}"));
+            assert_eq!(
+                last_attribution["inference_provider"], "openai",
+                "{route}: {raw}"
+            );
+            assert_eq!(last_attribution["cost_usd"], 0.02, "{route}: {raw}");
+            assert_eq!(
+                last_attribution["cost_scope"], "request_total",
+                "{route}: {raw}"
+            );
+            if route != "/v1/responses" && !include_usage {
+                assert!(
+                    frames.iter().all(|frame| frame.get("usage").is_none()),
+                    "{route}: {raw}"
+                );
+            }
+        }
+    }
+    mock.verify().await;
 }

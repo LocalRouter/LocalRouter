@@ -15,6 +15,8 @@ use super::finalize::{FinalizeInputs, StreamingFinalizeSummary};
 
 #[derive(Default, Debug)]
 pub(crate) struct StreamTracker {
+    gateway_costs: std::collections::HashMap<String, Option<f64>>,
+    gateway_attribution: Option<serde_json::Value>,
     /// Generated text (for monitor previews).
     pub content: String,
     /// Characters of text, reasoning and tool-call names/arguments.
@@ -60,6 +62,24 @@ pub(crate) struct StreamTotals {
 
 impl StreamTracker {
     pub fn observe(&mut self, chunk: &CompletionChunk) {
+        let attribution = chunk
+            .extensions
+            .as_ref()
+            .and_then(|e| e.get(lr_providers::gateway::EXTENSION));
+        let id = attribution
+            .and_then(|a| a.get("upstream_request_id"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(&chunk.id)
+            .to_string();
+        let cost = lr_providers::gateway::reported_cost(chunk.extensions.as_ref());
+        let previous = self.gateway_costs.entry(id).or_default();
+        if cost.is_some() {
+            *previous = cost;
+        }
+        if let Some(attribution) = attribution {
+            self.gateway_attribution = Some(attribution.clone());
+        }
+
         for choice in &chunk.choices {
             if let Some(text) = &choice.delta.content {
                 self.content.push_str(text);
@@ -88,6 +108,31 @@ impl StreamTracker {
         if self.model.is_none() && !chunk.model.is_empty() {
             self.model = Some(chunk.model.clone());
         }
+    }
+
+    pub fn gateway_extensions(
+        &self,
+    ) -> Option<std::collections::HashMap<String, serde_json::Value>> {
+        let mut attribution = self.gateway_attribution.clone()?;
+        let total = self
+            .gateway_costs
+            .values()
+            .copied()
+            .collect::<Option<Vec<_>>>()
+            .map(|costs| costs.iter().sum::<f64>())
+            .filter(|v| v.is_finite());
+        attribution["cost_scope"] = serde_json::json!("request_total");
+        attribution["cost_usd"] = serde_json::json!(total);
+        attribution["cost_source"] = serde_json::json!(if total.is_some() {
+            "reported"
+        } else {
+            "unknown"
+        });
+        Some(
+            [(lr_providers::gateway::EXTENSION.to_string(), attribution)]
+                .into_iter()
+                .collect(),
+        )
     }
 
     /// The model the upstream reported, else `requested`.
@@ -225,7 +270,7 @@ pub(crate) async fn finalize_stream(
         .strip_prefix(&format!("{provider}/"))
         .map(str::to_string)
         .unwrap_or(model);
-    let wire_body = super::monitor_helpers::build_streaming_response_body(
+    let mut wire_body = super::monitor_helpers::build_streaming_response_body(
         inputs.generation_id,
         requested_model,
         &tracked.content,
@@ -234,9 +279,13 @@ pub(crate) async fn finalize_stream(
         totals.completion_tokens as u64,
         inputs.created_at.timestamp(),
     );
+    if let Some(extensions) = tracked.gateway_extensions() {
+        wire_body["extensions"] = serde_json::json!(extensions);
+    }
     super::finalize::finalize_streaming_at_end(
         &inputs,
         StreamingFinalizeSummary {
+            extensions: tracked.gateway_extensions(),
             provider,
             model,
             prompt_tokens: totals.prompt_tokens,
@@ -360,6 +409,39 @@ mod tests {
         }
     }
 
+    #[test]
+    fn gateway_costs_are_cumulative_per_call_and_unknown_calls_stay_unknown() {
+        use lr_providers::gateway::{GatewayAttribution, GatewayKind};
+        let mut tracker = StreamTracker::default();
+        let mut c = chunk(Some("x"), None);
+        let attribution = |id: &str, cost: Option<f64>| {
+            GatewayAttribution::from_wire(
+                GatewayKind::Openrouter,
+                &serde_json::json!({"id":id,"usage":{"cost":cost}}),
+                Default::default(),
+            )
+            .extensions()
+        };
+        c.id = "one".into();
+        c.extensions = Some(attribution("one", Some(0.01)));
+        tracker.observe(&c);
+        c.extensions = Some(attribution("one", Some(0.02)));
+        tracker.observe(&c);
+        c.id = "two".into();
+        c.extensions = Some(attribution("two", Some(0.03)));
+        tracker.observe(&c);
+        assert_eq!(
+            lr_providers::gateway::reported_cost(tracker.gateway_extensions().as_ref()),
+            Some(0.05)
+        );
+        c.id = "third".into();
+        c.extensions = None;
+        tracker.observe(&c);
+        assert_eq!(
+            lr_providers::gateway::reported_cost(tracker.gateway_extensions().as_ref()),
+            None
+        );
+    }
     #[test]
     fn upstream_usage_after_the_finish_reason_wins() {
         let mut t = StreamTracker::default();

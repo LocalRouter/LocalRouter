@@ -310,6 +310,7 @@ async fn wrap_stream_with_usage_tracking(
 
 #[derive(Default)]
 struct StreamUsageState {
+    reported_cost: Option<f64>,
     output_chars: u64,
     upstream: Option<lr_providers::TokenUsage>,
 }
@@ -343,6 +344,9 @@ struct StreamUsageRecorder {
 impl StreamUsageRecorder {
     fn observe(&self, chunk: &CompletionChunk) {
         let mut st = self.state.lock();
+        if let Some(cost) = lr_providers::gateway::reported_cost(chunk.extensions.as_ref()) {
+            st.reported_cost = Some(cost);
+        }
         st.output_chars += lr_providers::usage_estimate::chunk_output_chars(chunk);
         if let Some(u) = &chunk.usage {
             st.upstream = Some(u.clone());
@@ -355,7 +359,9 @@ impl StreamUsageRecorder {
         };
         let st = std::mem::take(&mut *self.state.lock());
         let totals = stream_usage_totals(&st, sink.prompt_estimate);
-        let cost = sink.pricing.cost(&totals);
+        let cost = st
+            .reported_cost
+            .unwrap_or_else(|| sink.pricing.cost(&totals));
         let input = totals.prompt_tokens as u64;
         let output = totals.completion_tokens as u64;
         let usage = UsageInfo {
@@ -1169,12 +1175,25 @@ impl Router {
             })?;
 
         // Modify the request to use just the model name (without provider prefix)
+        if request
+            .extensions
+            .as_ref()
+            .is_some_and(|e| e.contains_key(lr_providers::gateway::EXTENSION))
+            && !provider_instance.supports_gateway_options()
+        {
+            return Err(AppError::InvalidParams(
+                "Selected provider does not support gateway routing controls".into(),
+            ));
+        }
         let mut modified_request = request.clone().without_routing_metadata();
         modified_request.model = model.to_string();
 
         // Apply feature adapters if extensions are present
         if let Some(ref extensions) = request.extensions {
             for (feature_name, feature_params) in extensions {
+                if feature_name == lr_providers::gateway::EXTENSION {
+                    continue;
+                }
                 // Check if provider supports this feature
                 if provider_instance.supports_feature(feature_name) {
                     debug!(
@@ -1256,7 +1275,8 @@ impl Router {
         // Calculate cost and record usage for rate limiting
         let pricing = self.provider_registry.get_pricing(provider, model).await;
 
-        let cost = pricing.cost(&response.usage);
+        let cost = lr_providers::gateway::reported_cost(response.extensions.as_ref())
+            .unwrap_or_else(|| pricing.cost(&response.usage));
 
         let usage = UsageInfo {
             input_tokens: response.usage.prompt_tokens as u64,
@@ -1401,6 +1421,26 @@ impl Router {
                 model
             );
 
+            if request
+                .extensions
+                .as_ref()
+                .is_some_and(|e| e.contains_key(lr_providers::gateway::EXTENSION))
+                && !self
+                    .provider_registry
+                    .get_provider(provider)
+                    .is_some_and(|p| p.supports_gateway_options())
+            {
+                attempts.push(serde_json::json!({"provider":provider,"model":model,"outcome":"gateway_controls_unsupported"}));
+                continue;
+            }
+            if let Some(candidate) = self.provider_registry.get_provider(provider) {
+                let mut candidate_request = request.clone();
+                candidate_request.model = model.clone();
+                if let Err(error) = candidate.validate_gateway_options(&candidate_request) {
+                    attempts.push(serde_json::json!({"provider":provider,"model":model,"outcome":"gateway_constraints_ineligible","error":error.to_string()}));
+                    continue;
+                }
+            }
             // Check endpoint compatibility (skip models that don't support chat)
             if self.should_skip_for_endpoint(provider, model, lr_providers::EndpointType::Chat) {
                 attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "endpoint_not_supported"}));
@@ -1666,6 +1706,26 @@ impl Router {
                 model
             );
 
+            if request
+                .extensions
+                .as_ref()
+                .is_some_and(|e| e.contains_key(lr_providers::gateway::EXTENSION))
+                && !self
+                    .provider_registry
+                    .get_provider(provider)
+                    .is_some_and(|p| p.supports_gateway_options())
+            {
+                attempts.push(serde_json::json!({"provider":provider,"model":model,"outcome":"gateway_controls_unsupported"}));
+                continue;
+            }
+            if let Some(candidate) = self.provider_registry.get_provider(provider) {
+                let mut candidate_request = request.clone();
+                candidate_request.model = model.clone();
+                if let Err(error) = candidate.validate_gateway_options(&candidate_request) {
+                    attempts.push(serde_json::json!({"provider":provider,"model":model,"outcome":"gateway_constraints_ineligible","error":error.to_string()}));
+                    continue;
+                }
+            }
             // Check endpoint compatibility (skip models that don't support chat)
             if self.should_skip_for_endpoint(provider, model, lr_providers::EndpointType::Chat) {
                 attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "endpoint_not_supported"}));
@@ -1769,6 +1829,16 @@ impl Router {
             };
 
             // Execute streaming request
+            if request
+                .extensions
+                .as_ref()
+                .is_some_and(|e| e.contains_key(lr_providers::gateway::EXTENSION))
+                && !provider_instance.supports_gateway_options()
+            {
+                return Err(AppError::InvalidParams(
+                    "Selected provider does not support gateway routing controls".into(),
+                ));
+            }
             let mut modified_request = request.clone().without_routing_metadata();
             modified_request.model = model.clone();
 
@@ -1957,7 +2027,8 @@ impl Router {
                         .get_pricing(provider_name, model_name)
                         .await;
 
-                    let cost = pricing.cost(&response.usage);
+                    let cost = lr_providers::gateway::reported_cost(response.extensions.as_ref())
+                        .unwrap_or_else(|| pricing.cost(&response.usage));
 
                     let usage = UsageInfo {
                         input_tokens: response.usage.prompt_tokens as u64,
@@ -2056,6 +2127,9 @@ impl Router {
             "Routing completion request for client '{}', model '{}'",
             client_id, request.model
         );
+
+        lr_providers::gateway::GatewayPreferences::default()
+            .effective(request.extensions.as_ref())?;
 
         // Special handling for internal test token (bypasses all routing config)
         if client_id == "internal-test" || client_id == "memory-service" {
@@ -2167,6 +2241,9 @@ impl Router {
             client_id, request.model
         );
 
+        lr_providers::gateway::GatewayPreferences::default()
+            .effective(request.extensions.as_ref())?;
+
         // Special handling for internal test token
         if client_id == "internal-test" || client_id == "memory-service" {
             debug!("Internal test token detected - bypassing routing config for streaming (test mode only)");
@@ -2183,6 +2260,16 @@ impl Router {
                 .ok_or_else(|| AppError::Router(format!("Provider '{}' not found", provider)))?;
             let pricing = self.provider_registry.get_pricing(&provider, &model).await;
             let free_tier = self.free_tier_usage(&provider, &model);
+            if request
+                .extensions
+                .as_ref()
+                .is_some_and(|e| e.contains_key(lr_providers::gateway::EXTENSION))
+                && !provider_instance.supports_gateway_options()
+            {
+                return Err(AppError::InvalidParams(
+                    "Selected provider does not support gateway routing controls".into(),
+                ));
+            }
             let mut modified_request = request.clone().without_routing_metadata();
             modified_request.model = model.clone();
             let prompt_estimate = lr_providers::usage_estimate::prompt_tokens(
@@ -2291,6 +2378,16 @@ impl Router {
             .get_pricing(&final_provider, &final_model)
             .await;
         let free_tier = self.free_tier_usage(&final_provider, &final_model);
+        if request
+            .extensions
+            .as_ref()
+            .is_some_and(|e| e.contains_key(lr_providers::gateway::EXTENSION))
+            && !provider_instance.supports_gateway_options()
+        {
+            return Err(AppError::InvalidParams(
+                "Selected provider does not support gateway routing controls".into(),
+            ));
+        }
         let mut modified_request = request.clone().without_routing_metadata();
         modified_request.model = final_model.clone();
         let prompt_estimate = lr_providers::usage_estimate::prompt_tokens(
@@ -3191,6 +3288,7 @@ mod tests {
     #[test]
     fn stream_usage_totals_prefer_the_upstream_usage() {
         let st = StreamUsageState {
+            reported_cost: None,
             output_chars: 400,
             upstream: Some(lr_providers::TokenUsage {
                 prompt_tokens: 900,
@@ -3217,6 +3315,7 @@ mod tests {
     #[test]
     fn stream_usage_totals_estimate_without_upstream_usage() {
         let st = StreamUsageState {
+            reported_cost: None,
             output_chars: 401,
             upstream: None,
         };

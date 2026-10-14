@@ -20,10 +20,13 @@ use std::pin::Pin;
 use std::time::Instant;
 
 pub(crate) mod stream_usage;
+use crate::gateway::{GatewayAttribution, GatewayKind, GatewayPreferences};
 
 /// Generic OpenAI-compatible provider with configurable endpoint
 pub struct OpenAICompatibleProvider {
     name: String,
+    gateway_kind: Option<GatewayKind>,
+    gateway_preferences: GatewayPreferences,
     api_key: Option<String>,
     base_url: String,
     extra_headers: HeaderMap,
@@ -83,6 +86,8 @@ impl OpenAICompatibleProvider {
     pub fn new(name: String, base_url: String, api_key: Option<String>) -> Self {
         Self {
             name,
+            gateway_kind: None,
+            gateway_preferences: Default::default(),
             api_key,
             base_url: base_url.trim().trim_end_matches('/').to_string(),
             extra_headers: HeaderMap::new(),
@@ -93,6 +98,26 @@ impl OpenAICompatibleProvider {
             installed_models: None,
             listing: Default::default(),
         }
+    }
+
+    pub fn with_gateway_preferences(
+        mut self,
+        kind: GatewayKind,
+        preferences: GatewayPreferences,
+    ) -> AppResult<Self> {
+        let preferences = preferences.merge(&GatewayPreferences::default())?;
+        preferences.apply(kind, &mut serde_json::json!({"model":"model"}))?;
+        if let Some(shared) = self.systemone_gateway.as_mut() {
+            let gateway = std::sync::Arc::get_mut(shared).ok_or_else(|| {
+                AppError::Config(
+                    "Gateway preferences must be set before sharing the provider".into(),
+                )
+            })?;
+            gateway.set_gateway_preferences(preferences.clone());
+        }
+        self.gateway_kind = Some(kind);
+        self.gateway_preferences = preferences;
+        Ok(self)
     }
 
     /// Turn model discovery (`GET {base}/models`) on or off.
@@ -121,6 +146,7 @@ impl OpenAICompatibleProvider {
 
     /// Serve the gateway's decision models natively through `/v1/systemone`.
     pub fn with_systemone_gateway(mut self, gateway: crate::systemone::SystemOneGateway) -> Self {
+        self.gateway_kind = gateway.gateway_kind();
         self.systemone_gateway = Some(std::sync::Arc::new(gateway));
         self
     }
@@ -330,6 +356,8 @@ fn health_from_status(status: reqwest::StatusCode, latency_ms: u64) -> ProviderH
 
 #[derive(Debug, Serialize)]
 struct OpenAIChatRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    service_tier: Option<String>,
     model: String,
     messages: Vec<ChatMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -587,6 +615,59 @@ impl ModelProvider for OpenAICompatibleProvider {
             .is_some_and(|g| g.supports_decisions())
     }
 
+    fn supports_gateway_options(&self) -> bool {
+        self.gateway_kind.is_some()
+    }
+    fn validate_gateway_options(&self, request: &CompletionRequest) -> AppResult<()> {
+        let Some(kind) = self.gateway_kind else {
+            if request
+                .extensions
+                .as_ref()
+                .is_some_and(|e| e.contains_key(crate::gateway::EXTENSION))
+            {
+                return Err(AppError::InvalidParams(
+                    "Provider does not support gateway routing controls".into(),
+                ));
+            }
+            return Ok(());
+        };
+        self.gateway_preferences
+            .effective_for_chat(request)?
+            .apply(kind, &mut serde_json::json!({"model":request.model}))?;
+        Ok(())
+    }
+
+    async fn validate_systemone_gateway_options(
+        &self,
+        request: &crate::systemone::SystemOneRequest,
+    ) -> AppResult<()> {
+        if self.gateway_preferences == Default::default()
+            && !request.extra.contains_key("service_tier")
+            && !request
+                .extra
+                .get("extensions")
+                .is_some_and(|e| e.get(crate::gateway::EXTENSION).is_some())
+        {
+            return Ok(());
+        }
+        if let Some(gateway) = &self.systemone_gateway {
+            if gateway
+                .is_decision_model(request.model.as_deref().unwrap_or_default())
+                .await
+            {
+                return gateway.validate_options(request);
+            }
+        }
+        let mut completion =
+            CompletionRequest::new(request.model.clone().unwrap_or_default(), Vec::new());
+        completion.extensions = request
+            .extra
+            .get("extensions")
+            .and_then(serde_json::Value::as_object)
+            .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+        self.validate_gateway_options(&completion)
+    }
+
     async fn supports_systemone_model(&self, model: &str) -> bool {
         match &self.systemone_gateway {
             Some(gateway) => gateway.is_decision_model(model).await,
@@ -608,7 +689,24 @@ impl ModelProvider for OpenAICompatibleProvider {
     }
 
     async fn complete(&self, request: CompletionRequest) -> AppResult<CompletionResponse> {
+        if request
+            .extensions
+            .as_ref()
+            .is_some_and(|e| e.contains_key(crate::gateway::EXTENSION))
+            && self.gateway_kind.is_none()
+        {
+            return Err(AppError::InvalidParams(
+                "This provider does not support gateway routing controls".into(),
+            ));
+        }
+        let preferences = if self.gateway_kind.is_some() {
+            self.gateway_preferences.effective_for_chat(&request)?
+        } else {
+            self.gateway_preferences
+                .effective(request.extensions.as_ref())?
+        };
         let openai_request = OpenAIChatRequest {
+            service_tier: request.service_tier.filter(|_| self.gateway_kind.is_none()),
             model: request.model.clone(),
             messages: request.messages.clone(),
             temperature: request.temperature,
@@ -629,12 +727,20 @@ impl ModelProvider for OpenAICompatibleProvider {
             reasoning_effort: request.reasoning_effort,
         };
 
-        let req = self.apply_headers(
-            self.client
-                .post(format!("{}/chat/completions", self.base_url))
-                .header("Content-Type", "application/json")
-                .json(&openai_request),
-        );
+        let mut body = crate::gateway::wire_body(&openai_request)?;
+        let gateway_headers = self
+            .gateway_kind
+            .map(|kind| preferences.apply(kind, &mut body))
+            .transpose()?
+            .unwrap_or_default();
+        let req = self
+            .apply_headers(
+                self.client
+                    .post(format!("{}/chat/completions", self.base_url))
+                    .header("Content-Type", "application/json")
+                    .json(&body),
+            )
+            .headers(gateway_headers);
 
         let response = req
             .send()
@@ -654,10 +760,15 @@ impl ModelProvider for OpenAICompatibleProvider {
             ));
         }
 
-        let openai_response: OpenAIChatResponse = response
+        let raw: serde_json::Value = response
             .json()
             .await
-            .map_err(|e| AppError::Provider(format!("Failed to parse response: {}", e)))?;
+            .map_err(|e| AppError::Provider(e.to_string()))?;
+        let attribution = self
+            .gateway_kind
+            .map(|kind| GatewayAttribution::from_wire(kind, &raw, preferences));
+        let openai_response: OpenAIChatResponse = serde_json::from_value(raw)
+            .map_err(|e| AppError::Provider(format!("Invalid response: {e}")))?;
 
         // Validate choices array is not empty
         let choices: Vec<CompletionChoice> = openai_response
@@ -695,8 +806,8 @@ impl ModelProvider for OpenAICompatibleProvider {
                 completion_tokens_details: None,
             },
             system_fingerprint: None,
-            service_tier: None,
-            extensions: None,
+            service_tier: attribution.as_ref().and_then(|a| a.service_tier.clone()),
+            extensions: attribution.map(GatewayAttribution::extensions),
             routellm_win_rate: None,
             request_usage_entries: None,
         })
@@ -706,7 +817,25 @@ impl ModelProvider for OpenAICompatibleProvider {
         &self,
         request: CompletionRequest,
     ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>> {
+        if request
+            .extensions
+            .as_ref()
+            .is_some_and(|e| e.contains_key(crate::gateway::EXTENSION))
+            && self.gateway_kind.is_none()
+        {
+            return Err(AppError::InvalidParams(
+                "This provider does not support gateway routing controls".into(),
+            ));
+        }
+        let preferences = if self.gateway_kind.is_some() {
+            self.gateway_preferences.effective_for_chat(&request)?
+        } else {
+            self.gateway_preferences
+                .effective(request.extensions.as_ref())?
+        };
+        let gateway_kind = self.gateway_kind;
         let openai_request = OpenAIChatRequest {
+            service_tier: request.service_tier.filter(|_| self.gateway_kind.is_none()),
             model: request.model.clone(),
             messages: request.messages.clone(),
             temperature: request.temperature,
@@ -727,15 +856,22 @@ impl ModelProvider for OpenAICompatibleProvider {
             reasoning_effort: request.reasoning_effort,
         };
 
-        let req = self.apply_headers(
-            self.client
-                .post(format!("{}/chat/completions", self.base_url))
-                .header("Content-Type", "application/json")
-                .json(&stream_usage::streaming_body(
-                    &openai_request,
-                    self.provider_type.as_deref().unwrap_or_default(),
-                )?),
-        );
+        let mut body = stream_usage::streaming_body(
+            &openai_request,
+            self.provider_type.as_deref().unwrap_or_default(),
+        )?;
+        let gateway_headers = gateway_kind
+            .map(|kind| preferences.apply(kind, &mut body))
+            .transpose()?
+            .unwrap_or_default();
+        let req = self
+            .apply_headers(
+                self.client
+                    .post(format!("{}/chat/completions", self.base_url))
+                    .header("Content-Type", "application/json")
+                    .json(&body),
+            )
+            .headers(gateway_headers);
 
         let response = req
             .send()
@@ -760,6 +896,7 @@ impl ModelProvider for OpenAICompatibleProvider {
         // Buffer incomplete lines across HTTP chunks
 
         let lines = crate::sse_lines::line_batches(response.bytes_stream());
+        let mut latest_attribution: Option<GatewayAttribution> = None;
         let stream = lines.flat_map(move |result| {
             let chunks: Vec<AppResult<CompletionChunk>> = match result {
                 Ok(lines) => {
@@ -780,6 +917,23 @@ impl ModelProvider for OpenAICompatibleProvider {
                             // Parse JSON chunk
                             match serde_json::from_str::<OpenAIStreamChunk>(json_str) {
                                 Ok(openai_chunk) => {
+                                    let mut attribution = gateway_kind.and_then(|kind| {
+                                        serde_json::from_str::<serde_json::Value>(json_str)
+                                            .ok()
+                                            .map(|raw| {
+                                                GatewayAttribution::from_wire(
+                                                    kind,
+                                                    &raw,
+                                                    preferences.clone(),
+                                                )
+                                            })
+                                    });
+                                    if let Some(current) = attribution.as_mut() {
+                                        if let Some(previous) = &latest_attribution {
+                                            current.retain_stream_metadata(previous);
+                                        }
+                                        latest_attribution = Some(current.clone());
+                                    }
                                     parsed_chunks.push(Ok(CompletionChunk {
                                         id: openai_chunk.id,
                                         object: openai_chunk.object,
@@ -801,7 +955,7 @@ impl ModelProvider for OpenAICompatibleProvider {
                                                 finish_reason: choice.finish_reason,
                                             })
                                             .collect(),
-                                        extensions: None,
+                                        extensions: attribution.map(GatewayAttribution::extensions),
                                         usage: stream_usage::chunk_usage(
                                             openai_chunk.usage.as_ref(),
                                             openai_chunk.x_groq.as_ref(),
@@ -942,6 +1096,66 @@ impl ModelProvider for OpenAICompatibleProvider {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn gateway_preferences_reach_normal_and_streaming_transport() {
+        use futures::StreamExt;
+        use wiremock::matchers::{body_partial_json, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        let provider = OpenAICompatibleProvider::new("test".into(), server.uri(), None)
+            .with_gateway_preferences(
+                GatewayKind::Vercel,
+                serde_json::from_value(serde_json::json!({"only":["openai"],"zdr":true})).unwrap(),
+            )
+            .unwrap();
+        let request: CompletionRequest = serde_json::from_value(serde_json::json!({"model":"model","messages":[{"role":"user","content":"hi"}],"stream":false,"extensions":{"localrouter.gateway":{"only":["openai"],"zdr":false}}})).unwrap();
+        Mock::given(method("POST")).and(path("/chat/completions"))
+            .and(body_partial_json(serde_json::json!({"stream":false,"providerOptions":{"gateway":{"only":["openai"],"zeroDataRetention":true}}})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"id":"normal","object":"chat.completion","created":1,"model":"model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4},"provider_metadata":{"gateway":{"cost":"0.03","routing":{"finalProvider":"openai"}}}}))).expect(1).mount(&server).await;
+        let response = provider.complete(request.clone()).await.unwrap();
+        assert_eq!(
+            crate::gateway::reported_cost(response.extensions.as_ref()),
+            Some(0.03)
+        );
+        Mock::given(method("POST")).and(path("/chat/completions"))
+            .and(body_partial_json(serde_json::json!({"stream":true,"providerOptions":{"gateway":{"zeroDataRetention":true}}})))
+            .respond_with(ResponseTemplate::new(200).set_body_string("data: {\"id\":\"stream\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"model\",\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1,\"total_tokens\":4},\"provider_metadata\":{\"gateway\":{\"cost\":\"0.04\"}}}\n\ndata: [DONE]\n\n").insert_header("Content-Type","text/event-stream"))
+            .expect(1).mount(&server).await;
+        let chunks = provider
+            .stream_complete(request)
+            .await
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await;
+        assert!(chunks.iter().any(|c| crate::gateway::reported_cost(
+            c.as_ref().unwrap().extensions.as_ref()
+        ) == Some(0.04)));
+        server.verify().await;
+    }
+    #[tokio::test]
+    async fn gateway_fallback_policy_overrides_conflicting_custom_header() {
+        use wiremock::matchers::{body_partial_json, header};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(header("x-no-fallback", "true"))
+            .and(body_partial_json(serde_json::json!({"model":"openai/m"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"id":"x","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}))).expect(1).mount(&server).await;
+        let provider = OpenAICompatibleProvider::new("test".into(), server.uri(), None)
+            .with_extra_headers(parse_custom_headers("X-No-Fallback: false").unwrap())
+            .with_gateway_preferences(
+                GatewayKind::Llmgateway,
+                serde_json::from_value(
+                    serde_json::json!({"only":["openai"],"allow_fallbacks":false}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        provider
+            .complete(CompletionRequest::new("m", Vec::new()))
+            .await
+            .unwrap();
+        server.verify().await;
+    }
     #[test]
     fn generic_provider_bills_to_the_api_its_base_url_points_at() {
         let generic = |url: &str| {

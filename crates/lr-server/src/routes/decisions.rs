@@ -1,4 +1,5 @@
 //! OpenAI-compatible typed Decisions API, sharing the System One policy pipeline.
+use super::gateway_json::GatewayJson;
 use crate::{
     middleware::{
         client_auth::ClientAuthContext,
@@ -6,7 +7,7 @@ use crate::{
     },
     state::{AppState, AuthContext},
 };
-use axum::{extract::State, response::Response, Extension, Json};
+use axum::{extract::State, response::Response, Extension};
 use lr_providers::systemone::decisions::DecisionRequest;
 
 #[utoipa::path(
@@ -26,7 +27,7 @@ pub async fn decisions(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     client_auth: Option<Extension<ClientAuthContext>>,
-    Json(request): Json<DecisionRequest>,
+    GatewayJson(request): GatewayJson<DecisionRequest>,
 ) -> ApiResult<Response> {
     request.validate().map_err(ApiErrorResponse::bad_request)?;
     super::systemone::handle_decision(state, auth, client_auth, request.into_systemone()).await

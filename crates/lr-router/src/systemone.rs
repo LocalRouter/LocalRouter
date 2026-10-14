@@ -34,6 +34,9 @@ fn chat_cost(resp: &CompletionResponse, pricing: &PricingInfo) -> f64 {
         .as_ref()
         .and_then(|d| d.reasoning_tokens.or(d.thinking_tokens))
         .map(|t| t as u64);
+    if let Some(cost) = lr_providers::gateway::reported_cost(resp.extensions.as_ref()) {
+        return cost;
+    }
     calculate_cost(
         resp.usage.prompt_tokens as u64,
         resp.usage.completion_tokens as u64,
@@ -97,6 +100,12 @@ impl Router {
         strategy: &lr_config::Strategy,
         request: SystemOneRequest,
     ) -> AppResult<SystemOneResponse> {
+        let extensions = request
+            .extra
+            .get("extensions")
+            .and_then(serde_json::Value::as_object)
+            .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+        lr_providers::gateway::GatewayPreferences::default().effective(extensions.as_ref())?;
         let strategy = strategy.clone();
         let requested = match request.model.as_deref() {
             Some(m) => m.to_string(),
@@ -227,6 +236,17 @@ impl Router {
                 ))
             })?;
 
+        if request
+            .extra
+            .get("extensions")
+            .and_then(|v| v.get(lr_providers::gateway::EXTENSION))
+            .is_some()
+            && !provider_instance.supports_gateway_options()
+        {
+            return Err(AppError::InvalidParams(
+                "Selected provider does not support gateway routing controls".into(),
+            ));
+        }
         let native = match model {
             Some(m) => provider_instance.supports_systemone_model(m).await,
             None => provider_instance.supports_systemone(),
@@ -443,7 +463,12 @@ impl Router {
             let calls = request.questions.values().map(|q| {
                 let k = option_count(q) as u32;
                 let top = k.min(cfg.letter_top_logprobs).max(1);
-                let chat = emulation::build_letter_request(model, &request.state, q, top);
+                let mut chat = emulation::build_letter_request(model, &request.state, q, top);
+                chat.extensions = request
+                    .extra
+                    .get("extensions")
+                    .and_then(|v| v.as_object())
+                    .map(|map| map.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
                 self.execute_request(client_id, provider, model, chat, free_tier_only)
             });
             let results = join_all(calls).await;
@@ -476,7 +501,12 @@ impl Router {
             );
         }
 
-        let chat = emulation::build_json_request(model, &request);
+        let mut chat = emulation::build_json_request(model, &request);
+        chat.extensions = request
+            .extra
+            .get("extensions")
+            .and_then(|v| v.as_object())
+            .map(|map| map.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
         let resp = self
             .execute_request(client_id, provider, model, chat, free_tier_only)
             .await?;
@@ -551,6 +581,23 @@ impl Router {
 
         let mut last_error = None;
         for (provider, model) in selected_models {
+            // Apply client permissions before any gateway preflight/discovery.
+            if !strategy.is_model_allowed(provider, model)
+                || self.provider_registry.is_model_disabled(provider, model)
+            {
+                continue;
+            }
+            if let Some(instance) = self.provider_registry.get_provider(provider) {
+                let mut candidate_request = request.clone();
+                candidate_request.model = Some(model.clone());
+                if let Err(error) = instance
+                    .validate_systemone_gateway_options(&candidate_request)
+                    .await
+                {
+                    debug!("Skipping {provider}/{model}: {error}");
+                    continue;
+                }
+            }
             if request
                 .decisions
                 .as_ref()
@@ -1490,6 +1537,23 @@ mod tests {
             "messages": [{"role": "user", "content": "hi"}]
         }))
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn automatic_decisions_never_call_a_model_revoked_by_client_permissions() {
+        let h = harness(&[("chat", Kind::ChatJson)], &[("chat", "m1")], |config| {
+            let strategy = config.strategies.last_mut().unwrap();
+            strategy.model_permissions.global = lr_config::PermissionState::Off;
+            strategy.model_permissions.providers.clear();
+            strategy.model_permissions.models.clear();
+        })
+        .await;
+        let result = h
+            .router
+            .systemone(&h.client_id, request(Some("localrouter/auto")))
+            .await;
+        assert!(result.is_err());
+        assert_eq!(h.chat_calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

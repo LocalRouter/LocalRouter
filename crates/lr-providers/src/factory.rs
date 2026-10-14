@@ -642,6 +642,20 @@ impl ProviderFactory for OpenRouterProviderFactory {
 
     fn setup_parameters(&self) -> Vec<SetupParameter> {
         vec![
+            SetupParameter::optional(
+                crate::gateway::CONFIG_KEY,
+                ParameterType::String,
+                "Upstream routing constraints",
+                None::<String>,
+                false,
+            ),
+            SetupParameter::optional(
+                "base_url",
+                ParameterType::BaseUrl,
+                "Gateway base URL (global, US, EU or self-hosted)",
+                Some("https://openrouter.ai/api/v1"),
+                false,
+            ),
             SetupParameter::required("api_key", ParameterType::ApiKey, "OpenRouter API key", true),
             SetupParameter::optional(
                 "app_name",
@@ -672,7 +686,13 @@ impl ProviderFactory for OpenRouterProviderFactory {
             .ok_or_else(|| AppError::Config("api_key is required".to_string()))?
             .clone();
 
-        let mut provider = OpenRouterProvider::new(api_key);
+        let base = config
+            .get("base_url")
+            .map(|v| v.trim())
+            .filter(|v| !v.is_empty())
+            .unwrap_or("https://openrouter.ai/api/v1");
+        let mut provider = OpenRouterProvider::with_base_url(api_key, base.to_string())
+            .with_gateway_preferences(crate::gateway::GatewayPreferences::from_config(&config)?)?;
 
         if let Some(app_name) = config.get("app_name") {
             provider = provider.with_app_name(app_name.clone());
@@ -689,6 +709,8 @@ impl ProviderFactory for OpenRouterProviderFactory {
         if !config.contains_key("api_key") {
             return Err(AppError::Config("api_key is required".to_string()));
         }
+        validate_optional_https_base_url(config)?;
+        crate::gateway::GatewayPreferences::from_config(config)?;
         Ok(())
     }
 
@@ -2404,6 +2426,13 @@ impl ProviderFactory for LlmGatewayProviderFactory {
 
     fn setup_parameters(&self) -> Vec<SetupParameter> {
         vec![
+            SetupParameter::optional(
+                crate::gateway::CONFIG_KEY,
+                ParameterType::String,
+                "Upstream routing constraints",
+                None::<String>,
+                false,
+            ),
             SetupParameter::required(
                 "api_key",
                 ParameterType::ApiKey,
@@ -2436,13 +2465,23 @@ impl ProviderFactory for LlmGatewayProviderFactory {
         Ok(Arc::new(
             OpenAICompatibleProvider::new("llmgateway".to_string(), base_url, Some(api_key))
                 .with_provider_type(self.provider_type())
-                .with_systemone_gateway(gateway),
+                .with_systemone_gateway(gateway)
+                .with_gateway_preferences(
+                    crate::gateway::GatewayKind::Llmgateway,
+                    crate::gateway::GatewayPreferences::from_config(&config)?,
+                )?,
         ))
     }
 
     fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
         required_api_key(config)?;
-        validate_optional_https_base_url(config)
+        validate_optional_https_base_url(config)?;
+        let preferences = crate::gateway::GatewayPreferences::from_config(config)?;
+        preferences.apply(
+            crate::gateway::GatewayKind::Llmgateway,
+            &mut serde_json::json!({"model":"model"}),
+        )?;
+        Ok(())
     }
 
     fn catalog_provider_id(&self) -> Option<&str> {
@@ -2483,6 +2522,13 @@ impl ProviderFactory for VercelAiGatewayProviderFactory {
 
     fn setup_parameters(&self) -> Vec<SetupParameter> {
         vec![
+            SetupParameter::optional(
+                crate::gateway::CONFIG_KEY,
+                ParameterType::String,
+                "Upstream routing constraints",
+                None::<String>,
+                false,
+            ),
             SetupParameter::required("api_key", ParameterType::ApiKey, "AI Gateway API key", true),
             SetupParameter::optional(
                 "base_url",
@@ -2510,13 +2556,23 @@ impl ProviderFactory for VercelAiGatewayProviderFactory {
         Ok(Arc::new(
             OpenAICompatibleProvider::new("vercel_ai_gateway".to_string(), base_url, Some(api_key))
                 .with_provider_type(self.provider_type())
-                .with_systemone_gateway(gateway),
+                .with_systemone_gateway(gateway)
+                .with_gateway_preferences(
+                    crate::gateway::GatewayKind::Vercel,
+                    crate::gateway::GatewayPreferences::from_config(&config)?,
+                )?,
         ))
     }
 
     fn validate_config(&self, config: &HashMap<String, String>) -> AppResult<()> {
         required_api_key(config)?;
-        validate_optional_https_base_url(config)
+        validate_optional_https_base_url(config)?;
+        let preferences = crate::gateway::GatewayPreferences::from_config(config)?;
+        preferences.apply(
+            crate::gateway::GatewayKind::Vercel,
+            &mut serde_json::json!({"model":"model"}),
+        )?;
+        Ok(())
     }
 
     fn catalog_provider_id(&self) -> Option<&str> {

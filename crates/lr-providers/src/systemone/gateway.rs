@@ -106,6 +106,7 @@ pub struct SystemOneGateway {
     headers: HeaderMap,
     client: ClientWithMiddleware,
     cache: tokio::sync::Mutex<ListingCache>,
+    gateway_preferences: crate::gateway::GatewayPreferences,
 }
 
 impl SystemOneGateway {
@@ -135,6 +136,7 @@ impl SystemOneGateway {
             headers,
             client: crate::http_client::extended_client()?,
             cache: tokio::sync::Mutex::new(ListingCache::default()),
+            gateway_preferences: Default::default(),
         })
     }
 
@@ -352,14 +354,69 @@ impl SystemOneGateway {
         );
     }
 
+    pub fn validate_options(&self, request: &SystemOneRequest) -> AppResult<()> {
+        if request
+            .extra
+            .get("service_tier")
+            .is_some_and(|tier| !tier.is_string())
+        {
+            return Err(AppError::InvalidParams(
+                "Gateway service tier must be a string".into(),
+            ));
+        }
+        let extensions = request
+            .extra
+            .get("extensions")
+            .and_then(Value::as_object)
+            .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+        let preferences = self.gateway_preferences.effective_with_service_tier(
+            extensions.as_ref(),
+            request.extra.get("service_tier").and_then(Value::as_str),
+        )?;
+        if preferences.reasoning_effort.is_some()
+            || request.extra.contains_key("reasoning_effort")
+            || request.extra.contains_key("reasoning")
+        {
+            return Err(AppError::InvalidParams(
+                "Reasoning effort controls are not verified for native Decisions endpoints".into(),
+            ));
+        }
+        if self.wire == GatewayWire::OpenRouterDecisions && preferences != Default::default() {
+            return Err(AppError::InvalidParams(
+                "OpenRouter Alpha Decisions does not expose verified routing controls".into(),
+            ));
+        }
+        if let Some(kind) = self.gateway_kind() {
+            preferences.apply(kind, &mut serde_json::json!({"model":request.model.as_deref().unwrap_or(&self.default_model)}))?;
+        }
+        Ok(())
+    }
+
     /// Send a System One request. `request.model` is the gateway's model id
     /// (the default decision model when `None`).
     pub async fn systemone(&self, mut request: SystemOneRequest) -> AppResult<SystemOneResponse> {
+        self.validate_options(&request)?;
+        let extensions = request
+            .extra
+            .get("extensions")
+            .and_then(Value::as_object)
+            .map(|map| {
+                map.iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect::<std::collections::HashMap<_, _>>()
+            });
+        let preferences = self.gateway_preferences.effective_with_service_tier(
+            extensions.as_ref(),
+            request.extra.get("service_tier").and_then(Value::as_str),
+        )?;
+        if self.wire == GatewayWire::OpenRouterDecisions && preferences != Default::default() {
+            return Err(AppError::InvalidParams("OpenRouter alpha decisions does not expose verified per-request routing controls; use a separate instance or another gateway for constrained decisions".into()));
+        }
         let model = request
             .model
             .take()
             .unwrap_or_else(|| self.default_model.clone());
-        let body = match self.wire {
+        let mut body = match self.wire {
             GatewayWire::Decisions | GatewayWire::VercelDecisions => {
                 request.model = Some(model);
                 let decision = super::decisions::DecisionRequest::from_systemone(&request)
@@ -391,10 +448,24 @@ impl SystemOneGateway {
                 "input": {"state": request.state.clone(), "questions": request.questions.clone()},
             }),
         };
+        if let Some(extension) = body.get_mut("extensions").and_then(Value::as_object_mut) {
+            extension.remove(crate::gateway::EXTENSION);
+            if extension.is_empty() {
+                body.as_object_mut()
+                    .expect("request object")
+                    .remove("extensions");
+            }
+        }
+        let gateway_headers = self
+            .gateway_kind()
+            .map(|kind| preferences.apply(kind, &mut body))
+            .transpose()?
+            .unwrap_or_default();
         let resp = self
             .client
             .post(&self.systemone_url)
             .headers(self.headers.clone())
+            .headers(gateway_headers)
             .json(&body)
             .send()
             .await
@@ -414,7 +485,7 @@ impl SystemOneGateway {
         if !(200..300).contains(&status) {
             return Err(map_systemone_error(status, text));
         }
-        let payload = match self.wire {
+        let mut payload = match self.wire {
             GatewayWire::Plain
             | GatewayWire::Decisions
             | GatewayWire::VercelDecisions
@@ -428,6 +499,17 @@ impl SystemOneGateway {
             }
             GatewayWire::CloudflareRun => unwrap_cloudflare(&text)?,
         };
+        let attribution = self
+            .gateway_kind()
+            .map(|kind| crate::gateway::GatewayAttribution::from_wire(kind, &payload, preferences));
+        // Native response extras otherwise preserve upstream metadata. Apply
+        // the same credential-safe projection there, too.
+        if let Some(attribution) = &attribution {
+            if let Some(routing) = payload.pointer_mut("/metadata/routing") {
+                *routing = serde_json::to_value(&attribution.routing)
+                    .map_err(|e| AppError::Internal(e.to_string()))?;
+            }
+        }
         let mut parsed: SystemOneResponse = if matches!(
             self.wire,
             GatewayWire::Decisions | GatewayWire::VercelDecisions
@@ -445,7 +527,32 @@ impl SystemOneGateway {
             })?
         };
         parsed.request_id = request_id;
+        if let Some(attribution) = attribution {
+            let extensions = parsed
+                .extra
+                .entry("extensions")
+                .or_insert_with(|| json!({}));
+            if !extensions.is_object() {
+                *extensions = json!({});
+            }
+            extensions[crate::gateway::EXTENSION] =
+                serde_json::to_value(attribution).map_err(|e| AppError::Internal(e.to_string()))?;
+        }
         Ok(parsed)
+    }
+
+    pub fn gateway_kind(&self) -> Option<crate::gateway::GatewayKind> {
+        use crate::gateway::GatewayKind;
+        match self.wire {
+            GatewayWire::Decisions => Some(GatewayKind::Llmgateway),
+            GatewayWire::VercelDecisions => Some(GatewayKind::Vercel),
+            GatewayWire::OpenRouterDecisions => Some(GatewayKind::Openrouter),
+            _ => None,
+        }
+    }
+
+    pub fn set_gateway_preferences(&mut self, preferences: crate::gateway::GatewayPreferences) {
+        self.gateway_preferences = preferences;
     }
 
     pub fn supports_decisions(&self) -> bool {

@@ -158,7 +158,9 @@ pub struct ChatCompletionRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
 
-    // Provider-specific extensions (Layer 3)
+    /// Namespaced extensions. `localrouter.gateway` accepts GatewayPreferences;
+    /// request controls may tighten saved upstream provider/privacy/price restrictions.
+    /// Example: {"localrouter.gateway":{"only":["openai"],"zdr":true}}.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extensions: Option<HashMap<String, Value>>,
 
@@ -414,6 +416,9 @@ pub struct TokenUsage {
 // Streaming chunk
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ChatCompletionChunk {
+    /// LocalRouter attribution and feature metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<HashMap<String, Value>>,
     #[schema(example = "chatcmpl-123")]
     pub id: String,
 
@@ -494,6 +499,10 @@ pub struct FunctionCallDelta {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CompletionRequest {
+    /// Namespaced LocalRouter controls, including localrouter.gateway.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Object>)]
+    pub extensions: Option<HashMap<String, Value>>,
     #[schema(example = "gpt-3.5-turbo-instruct")]
     pub model: String,
 
@@ -558,6 +567,9 @@ pub enum PromptInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CompletionResponse {
+    /// LocalRouter attribution and feature metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<HashMap<String, Value>>,
     #[schema(example = "cmpl-123")]
     pub id: String,
 
@@ -591,6 +603,9 @@ pub struct CompletionChoice {
 #[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CompletionChunk {
+    /// LocalRouter attribution and feature metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<HashMap<String, Value>>,
     pub id: String,
 
     pub object: String,
@@ -824,8 +839,11 @@ pub struct GenerationDetailsResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CostDetails {
+    /// Catalog estimate of the prompt component; a gateway-reported total
+    /// may differ and does not imply this split was reported by the gateway.
     pub prompt_cost: f64,
 
+    /// Catalog estimate of the completion component.
     pub completion_cost: f64,
 
     /// Cost of reasoning tokens (if applicable)

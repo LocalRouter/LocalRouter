@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core"
 import { open } from "@tauri-apps/plugin-shell"
 import { isValidHttpUrl } from "@/utils/url"
 import { listenSafe } from "@/hooks/useTauriListener"
+import { GatewayRoutingSettings, GATEWAY_CONFIG_KEY } from "@/components/providers/GatewayRoutingSettings"
 import { EmbeddedEngineTab, isEmbeddedProviderType } from "@/components/providers/EmbeddedEngineTab"
 import { LocalModelsTab } from "@/components/providers/LocalModelsTab"
 import { EngineModelsTab } from "@/components/providers/EngineModelsTab"
@@ -966,6 +967,9 @@ export function ProvidersPanel({
                                 {selectedTypeForEdit.setup_parameters
                                   .filter((param) => param.param_type !== "oauth" && param.key !== MODEL_DISCOVERY_KEY)
                                   .map((param) => {
+                                    if (param.key === GATEWAY_CONFIG_KEY) {
+                                      return <GatewayRoutingSettings key={param.key} providerType={selectedProvider.provider_type} value={editConfig[param.key] || ""} onChange={value => handleConfigFieldChange(param.key, value)} />
+                                    }
                                     const isSensitive = param.sensitive
                                     const isVisible = visibleFields.has(param.key)
 

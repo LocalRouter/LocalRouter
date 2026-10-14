@@ -131,6 +131,7 @@ pub mod factory;
 pub mod fastflowlm;
 pub mod features;
 pub mod free_models;
+pub mod gateway;
 pub mod gemini;
 pub mod gpt4all;
 pub mod groq;
@@ -397,6 +398,39 @@ pub trait ModelProvider: Send + Sync {
     /// which can carry images, typed choice values and refusals.
     fn supports_decisions(&self) -> bool {
         false
+    }
+
+    /// Namespaced upstream routing controls are never silently dropped.
+    fn supports_gateway_options(&self) -> bool {
+        false
+    }
+
+    /// Preflight typed constraints before an automatic route attempts IO.
+    fn validate_gateway_options(&self, request: &CompletionRequest) -> AppResult<()> {
+        if request
+            .extensions
+            .as_ref()
+            .is_some_and(|e| e.contains_key(gateway::EXTENSION))
+        {
+            return Err(AppError::InvalidParams(
+                "Provider does not support gateway routing controls".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn validate_systemone_gateway_options(
+        &self,
+        request: &SystemOneRequest,
+    ) -> AppResult<()> {
+        let mut completion =
+            CompletionRequest::new(request.model.clone().unwrap_or_default(), Vec::new());
+        completion.extensions = request
+            .extra
+            .get("extensions")
+            .and_then(serde_json::Value::as_object)
+            .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+        self.validate_gateway_options(&completion)
     }
 
     /// Whether `model` is answered natively through `systemone()`, for

@@ -19,6 +19,7 @@ use super::{
     CompletionRequest, CompletionResponse, HealthStatus, ModelInfo, ModelListing, ModelProvider,
     PricingInfo, ProviderCreditsInfo, ProviderHealth, TokenUsage, Tool, ToolChoice,
 };
+use crate::gateway::{GatewayAttribution, GatewayKind, GatewayPreferences};
 use crate::listing_metadata::ModelMetadata;
 
 const OPENROUTER_API_BASE: &str = "https://openrouter.ai/api/v1";
@@ -34,6 +35,7 @@ pub struct OpenRouterProvider {
     systemone: Option<std::sync::Arc<crate::systemone::SystemOneGateway>>,
     /// Each model's entry in the latest `GET /models` (prices, modalities)
     listing: crate::listing_metadata::ListingMetadataCache,
+    gateway_preferences: GatewayPreferences,
 }
 
 #[allow(dead_code)]
@@ -62,7 +64,22 @@ impl OpenRouterProvider {
             base_url,
             systemone,
             listing: Default::default(),
+            gateway_preferences: Default::default(),
         }
+    }
+
+    pub fn with_gateway_preferences(mut self, preferences: GatewayPreferences) -> AppResult<Self> {
+        let preferences = preferences.merge(&GatewayPreferences::default())?;
+        if let Some(shared) = self.systemone.as_mut() {
+            let gateway = std::sync::Arc::get_mut(shared).ok_or_else(|| {
+                AppError::Config(
+                    "Gateway preferences must be set before sharing the provider".into(),
+                )
+            })?;
+            gateway.set_gateway_preferences(preferences.clone());
+        }
+        self.gateway_preferences = preferences;
+        Ok(self)
     }
 
     /// Sets the app name for routing headers
@@ -282,6 +299,7 @@ impl ModelProvider for OpenRouterProvider {
     }
 
     async fn complete(&self, request: CompletionRequest) -> AppResult<CompletionResponse> {
+        let preferences = self.gateway_preferences.effective_for_chat(&request)?;
         let url = format!("{}/chat/completions", self.base_url);
 
         let openrouter_request = OpenRouterRequest {
@@ -304,9 +322,12 @@ impl ModelProvider for OpenRouterProvider {
             prediction: request.prediction.clone(),
         };
 
+        let mut body = crate::gateway::wire_body(&openrouter_request)?;
+        let gateway_headers = preferences.apply(GatewayKind::Openrouter, &mut body)?;
         let response = self
             .build_post_request(&url)
-            .json(&openrouter_request)
+            .headers(gateway_headers)
+            .json(&body)
             .send()
             .await
             .map_err(|e| AppError::Provider(format!("Failed to send completion request: {}", e)))?;
@@ -323,9 +344,13 @@ impl ModelProvider for OpenRouterProvider {
             )));
         }
 
-        let openrouter_response: OpenRouterResponse = response.json().await.map_err(|e| {
-            AppError::Provider(format!("Failed to parse completion response: {}", e))
-        })?;
+        let raw: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| AppError::Provider(e.to_string()))?;
+        let attribution = GatewayAttribution::from_wire(GatewayKind::Openrouter, &raw, preferences);
+        let openrouter_response: OpenRouterResponse = serde_json::from_value(raw)
+            .map_err(|e| AppError::Provider(format!("Invalid gateway response: {e}")))?;
 
         // Convert OpenRouter response to our standard format
         Ok(CompletionResponse {
@@ -346,8 +371,8 @@ impl ModelProvider for OpenRouterProvider {
                 .collect(),
             usage: openrouter_response.usage,
             system_fingerprint: None,
-            service_tier: None,
-            extensions: None,
+            service_tier: attribution.service_tier.clone(),
+            extensions: Some(attribution.extensions()),
             routellm_win_rate: None,
             request_usage_entries: None,
         })
@@ -357,6 +382,7 @@ impl ModelProvider for OpenRouterProvider {
         &self,
         request: CompletionRequest,
     ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>> {
+        let preferences = self.gateway_preferences.effective_for_chat(&request)?;
         let url = format!("{}/chat/completions", self.base_url);
 
         let openrouter_request = OpenRouterRequest {
@@ -379,12 +405,12 @@ impl ModelProvider for OpenRouterProvider {
             prediction: request.prediction,
         };
 
+        let mut body = stream_usage::streaming_body(&openrouter_request, "openrouter")?;
+        let gateway_headers = preferences.apply(GatewayKind::Openrouter, &mut body)?;
         let response = self
             .build_post_request(&url)
-            .json(&stream_usage::streaming_body(
-                &openrouter_request,
-                "openrouter",
-            )?)
+            .headers(gateway_headers)
+            .json(&body)
             .send()
             .await
             .map_err(|e| {
@@ -407,6 +433,7 @@ impl ModelProvider for OpenRouterProvider {
         }
 
         let lines = crate::sse_lines::line_batches(response.bytes_stream());
+        let mut latest_attribution: Option<GatewayAttribution> = None;
         let stream = lines.flat_map(move |result| {
             let chunks: Vec<AppResult<CompletionChunk>> = match result {
                 Ok(lines) => {
@@ -424,6 +451,22 @@ impl ModelProvider for OpenRouterProvider {
 
                             match serde_json::from_str::<OpenRouterChunk>(json_str) {
                                 Ok(chunk) => {
+                                    let mut attribution =
+                                        serde_json::from_str::<serde_json::Value>(json_str)
+                                            .ok()
+                                            .map(|raw| {
+                                                GatewayAttribution::from_wire(
+                                                    GatewayKind::Openrouter,
+                                                    &raw,
+                                                    preferences.clone(),
+                                                )
+                                            });
+                                    if let Some(current) = attribution.as_mut() {
+                                        if let Some(previous) = &latest_attribution {
+                                            current.retain_stream_metadata(previous);
+                                        }
+                                        latest_attribution = Some(current.clone());
+                                    }
                                     parsed_chunks.push(Ok(CompletionChunk {
                                         id: chunk.id,
                                         object: "chat.completion.chunk".to_string(),
@@ -438,7 +481,7 @@ impl ModelProvider for OpenRouterProvider {
                                                 finish_reason: choice.finish_reason,
                                             })
                                             .collect(),
-                                        extensions: None,
+                                        extensions: attribution.map(GatewayAttribution::extensions),
                                         usage: chunk
                                             .usage
                                             .as_ref()
@@ -625,6 +668,50 @@ impl ModelProvider for OpenRouterProvider {
 
     fn supports_decisions(&self) -> bool {
         self.systemone.is_some()
+    }
+
+    fn supports_gateway_options(&self) -> bool {
+        true
+    }
+    fn validate_gateway_options(&self, request: &CompletionRequest) -> AppResult<()> {
+        self.gateway_preferences
+            .effective_for_chat(request)?
+            .apply(
+                GatewayKind::Openrouter,
+                &mut serde_json::json!({"model":request.model}),
+            )?;
+        Ok(())
+    }
+
+    async fn validate_systemone_gateway_options(
+        &self,
+        request: &crate::systemone::SystemOneRequest,
+    ) -> AppResult<()> {
+        if self.gateway_preferences == Default::default()
+            && !request.extra.contains_key("service_tier")
+            && !request
+                .extra
+                .get("extensions")
+                .is_some_and(|e| e.get(crate::gateway::EXTENSION).is_some())
+        {
+            return Ok(());
+        }
+        if let Some(gateway) = &self.systemone {
+            if gateway
+                .is_decision_model(request.model.as_deref().unwrap_or_default())
+                .await
+            {
+                return gateway.validate_options(request);
+            }
+        }
+        let mut completion =
+            CompletionRequest::new(request.model.clone().unwrap_or_default(), Vec::new());
+        completion.extensions = request
+            .extra
+            .get("extensions")
+            .and_then(serde_json::Value::as_object)
+            .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+        self.validate_gateway_options(&completion)
     }
 
     async fn supports_systemone_model(&self, model: &str) -> bool {

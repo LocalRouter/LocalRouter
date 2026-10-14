@@ -253,6 +253,9 @@ pub async fn run_agentic_loop(
     let mut mcp_tools_called: Vec<String> = Vec::new();
     let mut usage_entries: Vec<lr_providers::TokenUsage> =
         initial_usage_entries.unwrap_or_default();
+    // Earlier mixed-tool HTTP requests were already charged. Keep history for
+    // continuation, but aggregate gateway costs only for this request's calls.
+    let mut gateway_costs: Vec<Option<f64>> = Vec::new();
 
     let mut iteration: u32 = 0;
     loop {
@@ -445,6 +448,9 @@ pub async fn run_agentic_loop(
         total_prompt_tokens += response.usage.prompt_tokens as u64;
         total_completion_tokens += response.usage.completion_tokens as u64;
         usage_entries.push(response.usage.clone());
+        gateway_costs.push(lr_providers::gateway::reported_cost(
+            response.extensions.as_ref(),
+        ));
 
         // Inspect the response
         let choice = response
@@ -634,6 +640,7 @@ pub async fn run_agentic_loop(
                         &mcp_tools_called,
                         iteration + 1,
                         usage_entries.clone(),
+                        gateway_costs.clone(),
                     );
 
                     return Ok(OrchestratorResult::PendingMixed {
@@ -657,6 +664,7 @@ pub async fn run_agentic_loop(
                         &mcp_tools_called,
                         iteration + 1,
                         usage_entries,
+                        gateway_costs,
                     )));
                 }
 
@@ -908,6 +916,7 @@ pub async fn run_agentic_loop(
             &mcp_tools_called,
             iteration + 1,
             usage_entries,
+            gateway_costs,
         )));
     }
 }
@@ -1278,7 +1287,32 @@ fn build_final_response(
     mcp_tools_called: &[String],
     iterations: u32,
     usage_entries: Vec<lr_providers::TokenUsage>,
+    gateway_costs: Vec<Option<f64>>,
 ) -> CompletionResponse {
+    // The last upstream call's cost must never masquerade as the full turn cost.
+    if let Some(attribution) = response
+        .extensions
+        .as_mut()
+        .and_then(|e| e.get_mut(lr_providers::gateway::EXTENSION))
+    {
+        let total = if !gateway_costs.is_empty() {
+            gateway_costs
+                .iter()
+                .copied()
+                .collect::<Option<Vec<_>>>()
+                .map(|costs| costs.iter().sum::<f64>())
+                .filter(|v| v.is_finite())
+        } else {
+            None
+        };
+        attribution["cost_scope"] = serde_json::json!("request_total");
+        attribution["cost_usd"] = json!(total);
+        attribution["cost_source"] = json!(if total.is_some() {
+            "reported"
+        } else {
+            "unknown"
+        });
+    }
     // Aggregate usage across all iterations
     response.usage.prompt_tokens = total_prompt_tokens as u32;
     response.usage.completion_tokens = total_completion_tokens as u32;

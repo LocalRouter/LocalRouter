@@ -300,6 +300,8 @@ export const mockData = {
       description: "Access multiple providers through one API",
       setup_parameters: [
         { key: "api_key", param_type: "string", required: true, description: "OpenRouter API key", sensitive: true },
+        { key: "base_url", param_type: "string", required: false, description: "API base URL", default_value: "https://openrouter.ai/api/v1", sensitive: false },
+        { key: "gateway_preferences", param_type: "string", required: false, description: "Upstream gateway routing", sensitive: false },
       ],
       default_free_tier: { kind: "free_models_only", free_model_patterns: [], rules: [{ enabled: true, effect: "include", when: { type: "zero_price", sources: ["provider_listing"] } }], max_rpm: 20 },
       free_tier_short_text: "Free models: 20 req/min",

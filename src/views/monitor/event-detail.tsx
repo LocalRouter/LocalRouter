@@ -1,3 +1,4 @@
+import { gatewayAttribution } from '@/utils/gateway'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { McpToolDisplay, type McpToolDisplayItem } from '@/components/shared/McpToolDisplay'
@@ -712,6 +713,7 @@ function ResponseError({ error }: { error: unknown }) {
 
 function LlmResponseContent({ data, status }: { data: EventData; status: EventStatus }) {
   const body = data.response_body as Record<string, unknown> | undefined
+  const gateway = gatewayAttribution(body)
   const messages = capturedResponseMessages(body, data.raw_response)
   const visibleMessages = messages.filter(message => contentText(message.content) || (message.tool_calls as unknown[] | undefined)?.length)
   const reasoning = messages.map(message => message.reasoning_content).filter(Boolean).join('\n') || extractReasoning(body)
@@ -722,6 +724,15 @@ function LlmResponseContent({ data, status }: { data: EventData; status: EventSt
   return (
     <>
       <ResponseError error={data.error ?? body?.error} />
+      {gateway && <Disclosure title="Upstream gateway routing">
+        <Field label="Inference provider" value={gateway.inference_provider ?? 'Unknown'} />
+        {gateway.resolved_provider && <Field label="Initially resolved provider" value={gateway.resolved_provider} />}
+        <Field label="Region" value={gateway.region ?? 'Unknown'} />
+        <Field label="Service tier" value={gateway.service_tier ?? 'Unknown'} />
+        <Field label={gateway.cost_scope === 'request_total' ? 'Gateway-reported request total' : gateway.cost_scope === 'upstream_call' ? 'Gateway-reported upstream call cost' : 'Gateway-reported cost'} value={gateway.cost_source === 'reported' ? `$${gateway.cost_usd}` : 'Unknown (catalog estimates may apply)'} />
+        <JsonTree data={gateway.applied_preferences} label="Applied restrictions" />
+        {gateway.routing.length > 0 && <JsonTree data={gateway.routing} label="Upstream attempts" />}
+      </Disclosure>}
       {systemOne ? <SystemOneAnswersList data={data} /> : visibleMessages.length > 0 ? (
         <div className="space-y-2">
           {visibleMessages.map((message, index) => <MessageItem key={index} message={message} />)}
