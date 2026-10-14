@@ -87,6 +87,14 @@ impl LlmCallGuard {
     /// If the guard is dropped without explicit completion, the `Drop` impl
     /// will use this captured status code and message instead of a generic fallback.
     pub fn capture_err(&mut self, err: ApiErrorResponse) -> ApiErrorResponse {
+        if let Some(metadata) = err
+            .error
+            .extensions
+            .as_ref()
+            .and_then(|extensions| extensions.get("localrouter.routing"))
+        {
+            self.inner.set_routing_metadata(metadata.clone());
+        }
         self.inner
             .set_early_error(err.status.as_u16(), &err.error.error.message);
         err

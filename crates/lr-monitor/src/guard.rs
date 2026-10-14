@@ -55,6 +55,17 @@ impl MonitorEventGuard {
         self.early_error = Some((status_code, error.into()));
     }
 
+    /// Attach sanitized routing facts even when the handler returns early.
+    pub fn set_routing_metadata(&self, metadata: serde_json::Value) {
+        if let Ok(info) = serde_json::from_value(metadata) {
+            self.store.update(&self.event_id, |event| {
+                if let MonitorEventData::LlmCall { routing_info, .. } = &mut event.data {
+                    *routing_info = Some(info);
+                }
+            });
+        }
+    }
+
     /// Defuse the guard, returning the event ID.
     ///
     /// After calling this, the guard will NOT auto-complete the event on drop.

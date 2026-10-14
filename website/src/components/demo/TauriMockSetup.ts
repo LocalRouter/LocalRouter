@@ -4168,11 +4168,28 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // Draft preview is explicitly simulated in the demo; no model is called.
   'preview_routing_policy': (args): RoutingPolicyPreview => {
     const policy = args.policy
-    const rule = policy.mode_rules.find((r: { mode: string }) => r.mode === args.mode)
-    return { decision: { route: rule?.route ?? policy.default_route,
-      source: rule ? 'client_mode' : 'fallback', reason: rule ? 'client_mode_match' : 'demo_simulation_default',
-      probabilities: {}, latency_ms: 0, policy_version: policy.version, context_omitted: 0 },
-      context: { latest_user_request: args.prompt, request_context: { mode: args.mode, mode_source: 'demo' }, conversation: [] } }
+    const rule = policy.enabled ? policy.mode_rules.find((r: { mode: string }) => r.mode === args.mode) : null
+    const known = policy.enabled && (args.executeClassifier || rule || policy.mode === 'client_mode' || !policy.decision_model)
+    const decision = known ? { route: rule?.route ?? policy.default_route,
+      source: rule ? 'client_mode' : args.executeClassifier ? 'demo' : 'fallback',
+      reason: rule ? 'client_mode_match' : args.executeClassifier ? 'demo_simulation_default' : 'client_mode_default',
+      probabilities: {}, latency_ms: 0, policy_version: policy.version, context_omitted: 0, classifier_cost_usd: null, classifier_cost_estimated: null } : null
+    const strategy = mockData.strategies.find(s => s.id === args.strategyId)
+    const baseline = strategy?.auto_config?.prioritized_models ?? []
+    const routeIds = !policy.enabled ? ['baseline'] : decision ? [decision.route] : policy.options.map((o: { id: string }) => o.id)
+    const routes = routeIds.map((route: string) => {
+      const selected = policy.options.find((o: { id: string }) => o.id === route)?.models ?? []
+      const models: [string, string][] = selected.length ? selected : baseline
+      return { route, candidates: models.map(([provider, model], priority) => ({ provider, model, priority, eligible: true,
+        exclusions: [], unknown_checks: ['demo_simulation', 'runtime_readiness', 'provider_quota'], retry_after_secs: null,
+        gateway_preferences: null, pricing: null })) }
+    })
+    return { decision, context: { latest_user_request: args.prompt, request_context: { mode: args.mode, mode_source: 'demo' }, conversation: [] },
+      explanation: { policy_fingerprint: `demo-policy-${policy.version}`, config_fingerprint: 'demo-config',
+        active_route: decision?.route ?? null, classifier_required: policy.enabled && !known,
+        reason: policy.enabled ? decision?.reason ?? 'classifier_not_executed' : 'policy_disabled', routes,
+        no_route: routes.every((r: { candidates: unknown[] }) => r.candidates.length === 0),
+        runtime_checks: ['runtime_readiness', 'provider_quota', 'actual_pricing_and_upstream_identity'] } }
   },
 
   // ============================================================================

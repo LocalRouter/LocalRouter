@@ -572,6 +572,14 @@ async fn handle_non_streaming_parallel(
     let (response, routing_metadata) = llm_result.map_err(|e| {
         let err_text = e.to_string();
         let api_err: ApiErrorResponse = e.into();
+        if let Some(metadata) = api_err
+            .error
+            .extensions
+            .as_ref()
+            .and_then(|extensions| extensions.get("localrouter.routing"))
+        {
+            super::monitor_helpers::update_llm_call_routing(&state, &llm_event_id, metadata);
+        }
         let status_code = api_err.status.as_u16();
         let latency = Instant::now().duration_since(started_at).as_millis() as u64;
         let strategy_id = state
@@ -652,6 +660,14 @@ async fn handle_non_streaming(
         Err(e) => {
             let err_text = e.to_string();
             let api_err: ApiErrorResponse = e.into();
+            if let Some(metadata) = api_err
+                .error
+                .extensions
+                .as_ref()
+                .and_then(|extensions| extensions.get("localrouter.routing"))
+            {
+                super::monitor_helpers::update_llm_call_routing(&state, &llm_event_id, metadata);
+            }
             let status_code = api_err.status.as_u16();
             // Record failure metrics
             let latency = Instant::now().duration_since(started_at).as_millis() as u64;
@@ -849,6 +865,14 @@ async fn handle_streaming(
         Err(e) => {
             let err_text = e.to_string();
             let api_err: ApiErrorResponse = e.into();
+            if let Some(metadata) = api_err
+                .error
+                .extensions
+                .as_ref()
+                .and_then(|extensions| extensions.get("localrouter.routing"))
+            {
+                super::monitor_helpers::update_llm_call_routing(&state, &llm_event_id, metadata);
+            }
             let status_code = api_err.status.as_u16();
             // Record failure metrics
             let latency = Instant::now().duration_since(started_at).as_millis() as u64;
@@ -1066,6 +1090,14 @@ async fn handle_streaming_parallel(
         Err(e) => {
             let err_text = e.to_string();
             let api_err: ApiErrorResponse = e.into();
+            if let Some(metadata) = api_err
+                .error
+                .extensions
+                .as_ref()
+                .and_then(|extensions| extensions.get("localrouter.routing"))
+            {
+                super::monitor_helpers::update_llm_call_routing(&state, &llm_event_id, metadata);
+            }
             let status_code = api_err.status.as_u16();
             let latency = Instant::now().duration_since(started_at).as_millis() as u64;
             let strategy_id = state

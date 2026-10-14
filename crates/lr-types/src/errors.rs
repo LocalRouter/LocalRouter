@@ -23,6 +23,20 @@ pub enum AppError {
     #[error("Router error: {0}")]
     Router(String),
 
+    /// Safe routing facts, without prompts, credentials or raw upstream errors.
+    #[error("Router error: {message}")]
+    RoutingExhausted {
+        message: String,
+        explanation: Box<serde_json::Value>,
+    },
+
+    /// Preserve the original error/status while adding safe routing facts.
+    #[error("{error}")]
+    RoutingFailure {
+        error: Box<AppError>,
+        explanation: Box<serde_json::Value>,
+    },
+
     #[error("API key error: {0}")]
     ApiKey(String),
 

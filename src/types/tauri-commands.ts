@@ -342,11 +342,36 @@ export interface RoutingDecision {
   latency_ms: number
   policy_version: number
   context_omitted: number
+  classifier_cost_usd: number | null
+  classifier_cost_estimated: boolean | null
 }
 /** Rust: src-tauri/src/ui/commands_decision_routing.rs */
+export interface RoutingCandidateExplanation {
+  provider: string
+  model: string
+  priority: number
+  eligible: boolean
+  exclusions: string[]
+  unknown_checks: string[]
+  retry_after_secs: number | null
+  gateway_preferences: import('./gateway').GatewayPreferences | null
+  pricing: { input_per_million: number; output_per_million: number; source: string } | null
+}
+/** Rust: lr-router/src/explanation.rs */
+export interface RoutingExplanation {
+  policy_fingerprint: string
+  config_fingerprint: string
+  active_route: string | null
+  classifier_required: boolean
+  reason: string
+  routes: { route: string; candidates: RoutingCandidateExplanation[] }[]
+  no_route: boolean
+  runtime_checks: string[]
+}
 export interface RoutingPolicyPreview {
-  decision: RoutingDecision
+  decision: RoutingDecision | null
   context: unknown
+  explanation: RoutingExplanation
 }
 
 /**
@@ -3050,6 +3075,10 @@ export interface PreviewRoutingPolicyParams {
   policy: RoutingPolicy
   prompt: string
   mode: string | null
+  executeClassifier?: boolean | null
+  requestJson?: string | null
+  gatewayOptions?: import('./gateway').GatewayPreferences | null
+  endpoint?: 'chat' | 'systemone' | 'decisions' | null
 }
 
 // =============================================================================
@@ -4861,6 +4890,8 @@ export interface MonitorEvent {
 
 /** Rust: crates/lr-monitor/src/types.rs - RoutingAttempt */
 export interface RoutingAttempt {
+  exclusions?: string[]
+  unknown_checks?: string[]
   provider: string
   model: string
   outcome: string
@@ -4870,6 +4901,10 @@ export interface RoutingAttempt {
 
 /** Rust: crates/lr-monitor/src/types.rs - AutoRoutingInfo */
 export interface AutoRoutingInfo {
+  explanation?: RoutingExplanation | null
+  classifier_latency_ms?: number | null
+  classifier_cost_usd?: number | null
+  classifier_cost_estimated?: boolean | null
   decision_routing?: RoutingDecision | null
   routellm_tier?: string | null
   routellm_win_rate?: number | null

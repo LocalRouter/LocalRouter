@@ -81,6 +81,10 @@ use utoipa::OpenApi;
             lr_providers::gateway::GatewayRoutingAttempt,
             lr_providers::gateway::GatewayCostSource,
             lr_providers::gateway::GatewayCostScope,
+            lr_router::explanation::RoutingExplanation,
+            lr_router::explanation::RouteExplanation,
+            lr_router::explanation::CandidateExplanation,
+            lr_router::explanation::PriceEstimate,
             // Request types
             crate::types::ChatCompletionRequest,
             crate::routes::responses::CreateResponseRequest,

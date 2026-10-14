@@ -282,6 +282,7 @@ where
 /// Helper function to create an error response
 fn create_error_response(status: StatusCode, error_type: &str, message: &str) -> Response<Body> {
     let error = ErrorResponse {
+        extensions: None,
         error: ApiError {
             message: message.to_string(),
             error_type: error_type.to_string(),

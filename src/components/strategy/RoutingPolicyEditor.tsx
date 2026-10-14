@@ -111,11 +111,11 @@ export function RoutingPolicyEditor({ strategyId, value, onSave, readOnly = fals
     setSaving(true); setError(null)
     try { await onSave(draft); toast.success('Routing policy saved') } catch (e) { setError(String(e)) } finally { setSaving(false) }
   }
-  const preview = async () => {
+  const preview = async (executeClassifier = false) => {
     const requestId = ++previewRequest.current
     setTesting(true); setError(null); setResult(null)
     try {
-      const params: PreviewRoutingPolicyParams = { strategyId, policy: { ...draft, enabled: true }, prompt, mode: mode || null }
+      const params: PreviewRoutingPolicyParams = { strategyId, policy: executeClassifier ? { ...draft, enabled: true } : draft, prompt, mode: mode || null, executeClassifier }
       const response = await invoke<RoutingPolicyPreview>('preview_routing_policy', { ...params } satisfies PreviewRoutingPolicyParams)
       if (requestId === previewRequest.current) setResult(response)
     } catch (e) { if (requestId === previewRequest.current) setError(String(e)) } finally { if (requestId === previewRequest.current) setTesting(false) }
@@ -170,8 +170,21 @@ export function RoutingPolicyEditor({ strategyId, value, onSave, readOnly = fals
       ] as const).map(([key, label, min, max, step]) => <div key={key} className="space-y-2"><Label>{label}</Label><Input aria-label={label} type="number" min={min} max={max} step={step} value={draft[key]} onChange={e => change({ [key]: Number(e.target.value) })} disabled={disabled} /></div>)}
         <p className="text-xs text-muted-foreground col-span-full">Context characters bound what the decision model sees: the latest request, then as many recent history messages as fit. A longer request is shortened to its beginning and end, with the middle omitted, and leaves no room for history.</p></div>}
       <div className="border-t pt-4 space-y-3"><Label>Try this policy</Label><Input aria-label="Routing test prompt" value={prompt} onChange={e => setPrompt(e.target.value)} /><Input aria-label="Test client mode" placeholder="Client mode (optional), e.g. plan" value={mode} onChange={e => setMode(e.target.value)} />
-        <Button variant="outline" disabled={testing || readOnly} onClick={preview}>{testing && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}Preview draft</Button>
-        {result && <div className="rounded-md bg-muted p-3 space-y-2 text-sm"><p><strong>{result.decision.route}</strong> · {result.decision.source} · {result.decision.latency_ms} ms</p><p>{result.decision.reason.replace(/_/g, ' ')}</p><p>Destination: {draft.options.find(o => o.id === result.decision.route)?.models.map(m => m.join('/')).join(' → ') || 'Default priority list'}</p><details><summary>Scores and routing context</summary><pre className="text-xs overflow-auto max-h-72 whitespace-pre-wrap">{JSON.stringify(result, null, 2)}</pre></details></div>}
+        <Button variant="outline" disabled={testing} onClick={() => preview(false)}>{testing && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}Preview routes</Button>
+        <Button variant="outline" disabled={testing || readOnly || draft.mode !== 'semantic'} onClick={() => preview(true)}>Test classifier</Button>
+        <p className="text-xs text-muted-foreground">Preview uses cached local information. Testing runs the selected decision model.</p>
+        {result && <div className="rounded-md bg-muted p-3 space-y-2 text-sm">
+          {result.decision && <p><strong>{result.decision.route}</strong> · {result.decision.source} · {result.decision.latency_ms} ms</p>}
+          {result.decision?.classifier_cost_usd != null && <p className="text-xs">Classifier cost: {result.decision.classifier_cost_estimated ? 'estimated ' : ''}${result.decision.classifier_cost_usd.toFixed(6)}</p>}
+          <p>{result.explanation.classifier_required ? 'Route unknown until the classifier runs.' : result.explanation.reason.replace(/_/g, ' ')}</p>
+          {result.explanation.no_route && <p className="text-destructive">No eligible candidate under the known filters.</p>}
+          {result.explanation.routes.map(route => <div key={route.route} className="space-y-1"><strong>{route.route}</strong>{route.candidates.map(candidate => <div key={`${candidate.provider}/${candidate.model}`} className="text-xs">
+            {candidate.priority + 1}. {candidate.provider}/{candidate.model} · {candidate.eligible ? 'Eligible, subject to runtime checks' : candidate.exclusions.map(reason => reason.replace(/_/g, ' ')).join(', ')}
+            {candidate.retry_after_secs !== null && ` · cooldown ${candidate.retry_after_secs}s`}
+          </div>)}</div>)}
+          <p className="text-xs text-muted-foreground">Provider readiness, current quotas and actual upstream identity/cost still require runtime checks.</p>
+          <details><summary>Details and routing context</summary><pre className="text-xs overflow-auto max-h-72 whitespace-pre-wrap">{JSON.stringify(result, null, 2)}</pre></details>
+        </div>}
       </div>
       {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
       <p className="text-xs text-muted-foreground">Saving allows the selected decision and destination models for this client. This matches your routing preferences; it does not guarantee answer quality.</p>

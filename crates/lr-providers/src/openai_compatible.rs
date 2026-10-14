@@ -637,6 +637,46 @@ impl ModelProvider for OpenAICompatibleProvider {
         Ok(())
     }
 
+    fn effective_gateway_preferences(
+        &self,
+        request: &CompletionRequest,
+    ) -> AppResult<Option<GatewayPreferences>> {
+        self.validate_gateway_options(request)?;
+        if self.gateway_kind.is_none() {
+            return Ok(None);
+        }
+        Ok(Some(self.gateway_preferences.effective_for_chat(request)?))
+    }
+
+    fn effective_native_gateway_preferences(
+        &self,
+        request: &CompletionRequest,
+    ) -> AppResult<Option<GatewayPreferences>> {
+        if self.systemone_gateway.is_none() {
+            return self.effective_gateway_preferences(request);
+        }
+        if let Some(gateway) = &self.systemone_gateway {
+            let mut extra = serde_json::Map::new();
+            if let Some(extensions) = &request.extensions {
+                extra.insert("extensions".into(), serde_json::json!(extensions));
+            }
+            if let Some(tier) = &request.service_tier {
+                extra.insert("service_tier".into(), serde_json::json!(tier));
+            }
+            if let Some(effort) = &request.reasoning_effort {
+                extra.insert("reasoning_effort".into(), serde_json::json!(effort));
+            }
+            gateway.validate_options(&crate::SystemOneRequest {
+                decisions: None,
+                model: Some(request.model.clone()),
+                state: serde_json::Value::Null,
+                questions: Default::default(),
+                extra,
+            })?;
+        }
+        Ok(Some(self.gateway_preferences.effective_for_chat(request)?))
+    }
+
     async fn validate_systemone_gateway_options(
         &self,
         request: &crate::systemone::SystemOneRequest,

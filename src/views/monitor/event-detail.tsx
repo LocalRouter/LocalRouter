@@ -997,10 +997,12 @@ function RoutingInfoView({ info }: { info: EventData }) {
             ['Decided by', decision.source],
             ['Reason', decision.reason],
             ['Decision time', decision.latency_ms != null ? `${decision.latency_ms} ms` : null],
+            ['Classifier cost', decision.classifier_cost_usd != null ? `${decision.classifier_cost_estimated ? 'estimated ' : ''}$${Number(decision.classifier_cost_usd).toFixed(6)}` : null],
             ['Omitted messages', decision.context_omitted ? String(decision.context_omitted) : null],
           ]} />
         </Section>
       )}
+      {info.explanation && <Section title="Eligibility and policy version"><JsonTree data={info.explanation} /></Section>}
       {(info.routellm_tier || info.routellm_win_rate != null) && (
         <Section title="Legacy routing">
           <Properties items={[

@@ -339,6 +339,7 @@ impl DecisionRequest {
                 .model
                 .clone()
                 .unwrap_or_else(|| original.model.clone());
+            updated.extra = request.extra.clone();
             updated.input = serde_json::from_value(request.state.clone())
                 .map_err(|e| format!("Invalid decision input: {e}"))?;
             updated.validate()?;
@@ -806,6 +807,24 @@ mod tests {
                 .unwrap(),
             wire
         );
+    }
+    #[test]
+    fn native_adapter_uses_sanitized_metadata_from_current_request() {
+        let mut original = request();
+        original.extra.insert(
+            "metadata".into(),
+            json!({"localrouter.mode":"plan", "tag":"keep"}),
+        );
+        let mut canonical = original.into_systemone();
+        canonical
+            .extra
+            .get_mut("metadata")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .remove("localrouter.mode");
+        let wire = DecisionRequest::from_systemone(&canonical).unwrap();
+        assert_eq!(wire.extra["metadata"], json!({"tag":"keep"}));
     }
     #[test]
     fn validates_duplicates_bounds_and_streaming() {

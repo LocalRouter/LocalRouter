@@ -956,6 +956,14 @@ async fn handle_non_streaming(
             // Record failure metrics + access log + monitor error event.
             let err_text = e.to_string();
             let api_err: ApiErrorResponse = e.into();
+            if let Some(metadata) = api_err
+                .error
+                .extensions
+                .as_ref()
+                .and_then(|extensions| extensions.get("localrouter.routing"))
+            {
+                super::monitor_helpers::update_llm_call_routing(&state, &llm_event_id, metadata);
+            }
             let status_code = api_err.status.as_u16();
             let latency = Instant::now().duration_since(started_at).as_millis() as u64;
             let strategy_id = state
@@ -1286,6 +1294,14 @@ async fn handle_streaming(
             // Record failure metrics
             let err_text = e.to_string();
             let api_err: ApiErrorResponse = e.into();
+            if let Some(metadata) = api_err
+                .error
+                .extensions
+                .as_ref()
+                .and_then(|extensions| extensions.get("localrouter.routing"))
+            {
+                super::monitor_helpers::update_llm_call_routing(&state, &llm_event_id, metadata);
+            }
             let status_code = api_err.status.as_u16();
             let latency = Instant::now().duration_since(started_at).as_millis() as u64;
             let strategy_id = state
@@ -1567,6 +1583,14 @@ async fn handle_streaming_parallel(
         Err(e) => {
             let err_text = e.to_string();
             let api_err: ApiErrorResponse = e.into();
+            if let Some(metadata) = api_err
+                .error
+                .extensions
+                .as_ref()
+                .and_then(|extensions| extensions.get("localrouter.routing"))
+            {
+                super::monitor_helpers::update_llm_call_routing(&state, &llm_event_id, metadata);
+            }
             let status_code = api_err.status.as_u16();
             let latency = Instant::now().duration_since(started_at).as_millis() as u64;
             let strategy_id = state

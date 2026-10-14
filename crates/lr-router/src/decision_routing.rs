@@ -85,7 +85,7 @@ pub fn routing_context(
         "conversation":history,"omitted_messages":omitted})
 }
 
-fn fallback(policy: &RoutingPolicy, reason: impl Into<String>) -> PreComputedRouting {
+pub(crate) fn fallback(policy: &RoutingPolicy, reason: impl Into<String>) -> PreComputedRouting {
     PreComputedRouting {
         route: policy.default_route.clone(),
         source: "fallback".into(),
@@ -94,7 +94,67 @@ fn fallback(policy: &RoutingPolicy, reason: impl Into<String>) -> PreComputedRou
         latency_ms: 0,
         policy_version: policy.version,
         context_omitted: 0,
+        classifier_cost_usd: None,
+        classifier_cost_estimated: None,
     }
+}
+
+/// Only rules that can be decided without a classifier or provider discovery.
+pub(crate) fn deterministic_decision(
+    policy: &RoutingPolicy,
+    metadata: Option<&HashMap<String, String>>,
+) -> Option<PreComputedRouting> {
+    if let Err(error) = policy.validate() {
+        return Some(fallback(policy, format!("invalid_policy: {error}")));
+    }
+    if !policy.enabled {
+        return Some(fallback(policy, "policy_disabled"));
+    }
+    if let Some(rule) = policy
+        .mode_rules
+        .iter()
+        .find(|rule| Some(rule.mode.as_str()) == explicit_mode(metadata))
+    {
+        let mut decision = fallback(policy, "client_mode_match");
+        decision.route = rule.route.clone();
+        decision.source = "client_mode".into();
+        return Some(decision);
+    }
+    if policy.mode == RoutingPolicyMode::ClientMode {
+        return Some(fallback(policy, "client_mode_default"));
+    }
+    if policy.decision_model.is_none() {
+        return Some(fallback(policy, "decision_model_not_configured"));
+    }
+    None
+}
+
+/// Selected route, configured fallback, then baseline pool, with stable de-duplication.
+pub(crate) fn route_models(
+    policy: &RoutingPolicy,
+    baseline: &[(String, String)],
+    route: &str,
+) -> Vec<(String, String)> {
+    let mut models = Vec::new();
+    for id in [route, policy.default_route.as_str()] {
+        if let Some(option) = policy.options.iter().find(|option| option.id == id) {
+            for model in if option.models.is_empty() {
+                baseline
+            } else {
+                &option.models
+            } {
+                if !models.contains(model) {
+                    models.push(model.clone());
+                }
+            }
+        }
+    }
+    for model in baseline {
+        if !models.contains(model) {
+            models.push(model.clone());
+        }
+    }
+    models
 }
 
 fn answer_decision(policy: &RoutingPolicy, answer: Option<&SystemOneAnswer>) -> PreComputedRouting {
@@ -146,24 +206,8 @@ impl Router {
         request: &CompletionRequest,
     ) -> PreComputedRouting {
         let start = Instant::now();
-        if let Err(e) = policy.validate() {
-            return fallback(policy, format!("invalid_policy: {e}"));
-        }
-        if !policy.enabled {
-            return fallback(policy, "policy_disabled");
-        }
-        if let Some(rule) = policy
-            .mode_rules
-            .iter()
-            .find(|r| Some(r.mode.as_str()) == explicit_mode(request.metadata.as_ref()))
-        {
-            let mut decision = fallback(policy, "client_mode_match");
-            decision.route = rule.route.clone();
-            decision.source = "client_mode".into();
+        if let Some(decision) = self.deterministic_routing_decision(strategy, policy, request) {
             return decision;
-        }
-        if policy.mode == RoutingPolicyMode::ClientMode {
-            return fallback(policy, "client_mode_default");
         }
         let Some((provider, model)) = &policy.decision_model else {
             return fallback(policy, "decision_model_not_configured");
@@ -202,13 +246,25 @@ impl Router {
             };
             // Fixed provider/model prevents recursive auto routing. The ordinary
             // native execution path records usage and enforces free-tier limits.
-            self.route_systemone(client_id, strategy, decision_request)
+            Box::pin(self.route_systemone(client_id, strategy, decision_request))
                 .await
                 .map_err(|e| e.to_string())
         };
         let mut result =
             match tokio::time::timeout(Duration::from_millis(policy.timeout_ms), work).await {
-                Ok(Ok(response)) => answer_decision(policy, response.answers.get("route")),
+                Ok(Ok(response)) => {
+                    let mut decision = answer_decision(policy, response.answers.get("route"));
+                    decision.classifier_cost_usd = response.cost_usd;
+                    let reported = response
+                        .extra
+                        .get("extensions")
+                        .and_then(|extensions| extensions.get(lr_providers::gateway::EXTENSION))
+                        .and_then(|attribution| attribution.get("cost_usd"))
+                        .and_then(Value::as_f64)
+                        .is_some();
+                    decision.classifier_cost_estimated = response.cost_usd.map(|_| !reported);
+                    decision
+                }
                 Ok(Err(e)) => {
                     tracing::warn!("Decision routing failed: {e}");
                     fallback(policy, "decision_provider_error")

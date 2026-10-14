@@ -3,7 +3,7 @@
 - [x] Read the approved roadmap, current routes/provider contracts, and authoritative Decisions documentation.
 - [x] P0 Decisions API: typed contract, validation, native gateway support, legacy translation, refusal/image handling, route/OpenAPI, monitoring and tests.
 - [x] P1 Advanced gateway options: typed configuration/request options, policy intersection, upstream attribution/costs and UI.
-- [ ] P1 Routing explanation and dry-run preview.
+- [x] P1 Routing explanation and dry-run preview.
 - [ ] P1 Adaptive ordering and bounded attempts/deadlines.
 - [ ] P1 Session affinity, classifier reuse and prompt-cache accounting.
 - [ ] P1 Local replay and model/policy evaluation (promoted by user).
@@ -53,7 +53,7 @@ Additional P0 source verification: Vercel https://vercel.com/docs/ai-gateway/sdk
 - [x] Adapt each gateway's verified contract: OpenRouter provider object and region-specific base URL; LLM Gateway routing factor plus provider prefix/X-No-Fallback; Vercel providerOptions.gateway. Unsupported cross-gateway fields return explicit errors instead of silently disappearing. Apply options on streaming and non-streaming paths and native decisions where supported.
 - [x] Preserve returned inference-provider identity, service tier, routing attempts and authoritative costs in typed attribution carried through response/chunk extensions. Keep the LocalRouter provider-instance identity separate. Unknown attribution/pricing remains labelled unknown/estimated.
 - [x] Add structured provider settings controls, TypeScript preference/attribution types, demo configuration/metadata, API examples, meaningful merge/adapter/error/streaming tests, and monitor display.
-- [ ] Plan Review, Test Coverage Review, Bug Hunt, final stable CI checks and frontend/demo checks, then commit and push.
+- [x] Plan Review, Test Coverage Review, Bug Hunt, final stable CI checks and frontend/demo checks, then commit and push.
 
 Provider defaults apply to that instance. Request constraints apply throughout the request's candidate chain and cannot be silently dropped on a direct-provider fallback. Later per-client privacy profiles extend these requirements to explicit client policy. Regional provider selection is a configuration of the upstream service, not a certification of residency by LocalRouter. Exact gateway field availability and plan restrictions must follow primary docs. UI should explain upstream inference-provider restrictions separately from LocalRouter's existing provider/model permissions.
 
@@ -96,3 +96,9 @@ Validation: rustup stable 1.99.0, actual compiler PATH/RUSTC pinned, workspace C
 Reasoning-effort source: https://openrouter.ai/docs/guides/best-practices/reasoning-tokens. Standard reasoning_effort maps to the unified reasoning.effort object on OpenRouter; saved effort is a ceiling, and request overrides can lower it. Native Decisions reasoning controls remain explicitly unsupported where no contract is verified. Raw vendor fields such as provider/providerOptions/routing/models and top-level privacy/price controls must use the namespaced LocalRouter preferences, so typed ingress cannot silently discard a restriction.
 
 P1 Plan Review, Test Coverage Review and Bug Hunt are complete. Final CI parity and live schema/API verification passed; the slice is ready for its normal commit and push. Remaining delivery begins with the saved routing-explanation/preview plan.
+
+P1 preferences/attribution committed and pushed as d63e7311. Routing explanations and cached-only preview are now in progress, following the saved plan.
+
+P1 routing explanations and cached-only preview are complete. Shared filters, exact-mode preview, unknown semantic decisions, policy/config fingerprints and classifier overhead now reach normal/streaming responses, native Decisions, structured failures and the monitor. Explicit classifier tests remain opt-in. Review fixed adapter metadata restoration, post-request eligibility drift, dropped Responses/MCP traces, permanent-error status preservation and missing failed stream attempts. Validation: stable 1.99.0 pinned, workspace Clippy/fmt/tests (4,182 passed, 69 ignored), all 23 live HTTP/OpenAPI fixtures, 62 frontend unit regressions and app/demo types/builds passed.
+
+Next implementation plan saved before code: plan/2026-10-14-ADAPTIVE_ROUTING_BOUNDS.md. Remaining roadmap items remain pending, including P1 local replay.

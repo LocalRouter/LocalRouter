@@ -15,6 +15,7 @@ use super::finalize::{FinalizeInputs, StreamingFinalizeSummary};
 
 #[derive(Default, Debug)]
 pub(crate) struct StreamTracker {
+    routing_metadata: Option<serde_json::Value>,
     gateway_costs: std::collections::HashMap<String, Option<f64>>,
     gateway_attribution: Option<serde_json::Value>,
     /// Generated text (for monitor previews).
@@ -62,6 +63,13 @@ pub(crate) struct StreamTotals {
 
 impl StreamTracker {
     pub fn observe(&mut self, chunk: &CompletionChunk) {
+        if let Some(metadata) = chunk
+            .extensions
+            .as_ref()
+            .and_then(|extensions| extensions.get("localrouter.routing"))
+        {
+            self.routing_metadata = Some(metadata.clone());
+        }
         let attribution = chunk
             .extensions
             .as_ref()
@@ -133,6 +141,16 @@ impl StreamTracker {
                 .into_iter()
                 .collect(),
         )
+    }
+
+    pub fn response_extensions(
+        &self,
+    ) -> Option<std::collections::HashMap<String, serde_json::Value>> {
+        let mut extensions = self.gateway_extensions().unwrap_or_default();
+        if let Some(metadata) = &self.routing_metadata {
+            extensions.insert("localrouter.routing".into(), metadata.clone());
+        }
+        (!extensions.is_empty()).then_some(extensions)
     }
 
     /// The model the upstream reported, else `requested`.

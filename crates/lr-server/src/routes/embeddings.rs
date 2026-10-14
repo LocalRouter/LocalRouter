@@ -396,9 +396,7 @@ async fn check_rate_limits(
         ));
 
         if let Some(retry_after) = rate_limit_result.retry_after_secs {
-            error.error = error
-                .error
-                .with_code(format!("retry_after_{}", retry_after));
+            error.error.error.code = Some(format!("retry_after_{}", retry_after));
         }
 
         return Err(error);

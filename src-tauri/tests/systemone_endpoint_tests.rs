@@ -90,12 +90,29 @@ type Upstream = (&'static str, &'static str, Vec<(&'static str, String)>);
 /// Start a server with the given provider instances. Returns the base URL
 /// and the internal test secret (direct provider access, `provider/model`).
 async fn start_server(upstreams: Vec<Upstream>) -> (String, String) {
-    let test_client = create_test_client("test-api-key", "default");
-    let config = AppConfig {
+    start_configured_server(upstreams, |_| {}, false).await
+}
+
+async fn start_configured_server(
+    upstreams: Vec<Upstream>,
+    configure: impl FnOnce(&mut AppConfig),
+    normal_token: bool,
+) -> (String, String) {
+    let mut test_client = create_test_client("test-api-key", "default");
+    let mut config = AppConfig {
         clients: vec![test_client.clone()],
         strategies: vec![Strategy::new("Default".to_string())],
         ..Default::default()
     };
+    configure(&mut config);
+    test_client.strategy_id = config.strategies[0].id.clone();
+    config.clients[0] = test_client.clone();
+    let tokens = Arc::new(TokenStore::new());
+    let clients = Arc::new(ClientManager::with_keychain(
+        Vec::new(),
+        Arc::new(localrouter::api_keys::MockKeychain::new()),
+    ));
+    let normal_secret = clients.add_client_with_secret(test_client.clone()).unwrap();
     let config_path =
         std::env::temp_dir().join(format!("test_systemone_{}.yaml", uuid::Uuid::new_v4()));
     let config_manager = Arc::new(ConfigManager::new(config, config_path));
@@ -143,8 +160,8 @@ async fn start_server(upstreams: Vec<Upstream>) -> (String, String) {
         rate_limiter,
         provider_registry,
         config_manager,
-        Arc::new(ClientManager::new(vec![test_client])),
-        Arc::new(TokenStore::new()),
+        clients,
+        tokens,
         metrics_collector,
         None,
     )
@@ -153,7 +170,11 @@ async fn start_server(upstreams: Vec<Upstream>) -> (String, String) {
     sleep(Duration::from_millis(200)).await;
     (
         format!("http://127.0.0.1:{}", actual_port),
-        state.get_internal_test_secret(),
+        if normal_token {
+            normal_secret
+        } else {
+            state.get_internal_test_secret()
+        },
     )
 }
 
@@ -832,6 +853,8 @@ async fn decisions_translates_text_to_legacy_and_rejects_images() {
         "GatewayPreferences",
         "GatewayAttribution",
         "GatewayRoutingAttempt",
+        "RoutingExplanation",
+        "CandidateExplanation",
     ] {
         assert!(spec["components"]["schemas"][schema].is_object());
     }
@@ -1041,5 +1064,200 @@ async fn final_gateway_metadata_is_delivered_with_or_without_requested_stream_us
             }
         }
     }
+    mock.verify().await;
+}
+
+#[tokio::test]
+async fn no_route_http_explanation_survives_chat_completions_and_responses() {
+    let mock = MockServer::start().await;
+    let (base, token) = start_configured_server(
+        vec![(
+            "gw",
+            "llmgateway",
+            vec![("base_url", mock.uri()), ("api_key", "k".into())],
+        )],
+        |config| {
+            let strategy = &mut config.strategies[0];
+            strategy.auto_config.as_mut().unwrap().prioritized_models =
+                vec![("gw".into(), "test".into())];
+            strategy.model_permissions.global = localrouter::config::PermissionState::Off;
+        },
+        true,
+    )
+    .await;
+    for (path, input) in [
+        (
+            "/v1/chat/completions",
+            json!({"messages":[{"role":"user","content":"private prompt"}]}),
+        ),
+        ("/v1/completions", json!({"prompt":"private prompt"})),
+        (
+            "/v1/responses",
+            json!({"input":"private prompt","store":false}),
+        ),
+    ] {
+        let mut body = input;
+        body["model"] = json!("localrouter/auto");
+        let response = post(&base, path, &token, &body).await;
+        assert_eq!(response.status(), 502, "{path}");
+        let value: Value = response.json().await.unwrap();
+        assert_eq!(value["error"]["code"], "no_route", "{path}: {value}");
+        let facts = &value["extensions"]["localrouter.routing"];
+        assert_eq!(facts["explanation"]["no_route"], true, "{path}: {value}");
+        assert_eq!(facts["attempts"][0]["outcome"], "model_not_allowed");
+        assert!(!facts.to_string().contains("private prompt"));
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn successful_auto_route_explanations_reach_normal_and_streaming_clients() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data":[{"id":"test"}]})))
+        .mount(&mock)
+        .await;
+    Mock::given(method("POST")).and(path("/chat/completions"))
+        .and(body_partial_json(json!({"stream":false})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id":"route-normal","object":"chat.completion","created":1,"model":"test","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4,"cost":0.02}}))).expect(3).mount(&mock).await;
+    let content = json!({"id":"route-stream","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]});
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(body_partial_json(json!({"stream":true})))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(format!("data: {content}\n\ndata: [DONE]\n\n"))
+                .insert_header("Content-Type", "text/event-stream"),
+        )
+        .expect(3)
+        .mount(&mock)
+        .await;
+    let (base, token) = start_configured_server(
+        vec![(
+            "gw",
+            "llmgateway",
+            vec![("base_url", mock.uri()), ("api_key", "k".into())],
+        )],
+        |config| {
+            config.strategies[0]
+                .auto_config
+                .as_mut()
+                .unwrap()
+                .prioritized_models = vec![("gw".into(), "test".into())];
+        },
+        true,
+    )
+    .await;
+    for streaming in [false, true] {
+        for (path, input) in [
+            (
+                "/v1/chat/completions",
+                json!({"messages":[{"role":"user","content":"hi"}]}),
+            ),
+            ("/v1/completions", json!({"prompt":"hi"})),
+            ("/v1/responses", json!({"input":"hi","store":false})),
+        ] {
+            let mut body = input;
+            body["model"] = json!("localrouter/auto");
+            body["stream"] = json!(streaming);
+            let response = post(&base, path, &token, &body).await;
+            assert_eq!(response.status(), 200, "{path}");
+            let raw = response.text().await.unwrap();
+            if streaming {
+                // Text APIs send a routing namespace on their initial content chunk;
+                // Responses preserves it in response.completed.
+                assert!(raw.contains("localrouter.routing"), "{path}: {raw}");
+                assert!(raw.contains("config_fingerprint"), "{path}: {raw}");
+            } else {
+                let value: Value = serde_json::from_str(&raw).unwrap();
+                let facts = &value["extensions"]["localrouter.routing"];
+                assert_eq!(facts["attempts"][0]["outcome"], "success", "{path}: {raw}");
+                assert_eq!(facts["explanation"]["no_route"], false);
+                assert_eq!(
+                    facts["explanation"]["config_fingerprint"]
+                        .as_str()
+                        .unwrap()
+                        .len(),
+                    64
+                );
+            }
+        }
+    }
+    mock.verify().await;
+}
+
+#[tokio::test]
+async fn permanent_auto_route_failures_retain_status_and_trace_without_fallback() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"data":[{"id":"test"},{"id":"fallback"}]})),
+        )
+        .mount(&mock)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(body_partial_json(json!({"model":"test"})))
+        .respond_with(
+            ResponseTemplate::new(403)
+                .set_body_json(json!({"error":{"message":"forbidden","type":"permission_error"}})),
+        )
+        .expect(6)
+        .mount(&mock)
+        .await;
+    let (base, token) = start_configured_server(
+        vec![(
+            "gw",
+            "llmgateway",
+            vec![("base_url", mock.uri()), ("api_key", "k".into())],
+        )],
+        |config| {
+            config.strategies[0]
+                .auto_config
+                .as_mut()
+                .unwrap()
+                .prioritized_models = vec![
+                ("gw".into(), "test".into()),
+                ("gw".into(), "fallback".into()),
+            ];
+        },
+        true,
+    )
+    .await;
+    for stream in [false, true] {
+        for (route, input) in [
+            (
+                "/v1/chat/completions",
+                json!({"messages":[{"role":"user","content":"private input"}]}),
+            ),
+            ("/v1/completions", json!({"prompt":"private input"})),
+            (
+                "/v1/responses",
+                json!({"input":"private input","store":false}),
+            ),
+        ] {
+            let mut body = input;
+            body["model"] = json!("localrouter/auto");
+            body["stream"] = json!(stream);
+            let response = post(&base, route, &token, &body).await;
+            assert_eq!(response.status(), 403, "{route}/{stream}");
+            let error: Value = response.json().await.unwrap();
+            let trace = &error["extensions"]["localrouter.routing"];
+            assert_eq!(trace["attempts"].as_array().unwrap().len(), 1, "{error}");
+            assert_eq!(trace["attempts"][0]["outcome"], "error");
+            assert!(!trace.to_string().contains("private input"));
+            assert!(trace["explanation"]["config_fingerprint"].is_string());
+        }
+    }
+    assert!(mock
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|request| request.method == "POST")
+        .all(|request| request.body_json::<Value>().unwrap()["model"] == "test"));
     mock.verify().await;
 }

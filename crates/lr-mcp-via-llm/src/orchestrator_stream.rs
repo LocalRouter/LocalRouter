@@ -71,7 +71,7 @@ pub async fn run_agentic_loop_streaming(
         let (stream, _) = router
             .stream_complete(&client.id, request)
             .await
-            .map_err(|e| McpViaLlmError::Gateway(format!("stream passthrough failed: {}", e)))?;
+            .map_err(McpViaLlmError::from)?;
         return Ok(stream);
     }
 
@@ -365,7 +365,7 @@ async fn streaming_loop(
         let (mut provider_stream, _) = router
             .stream_complete(client_id, stream_request)
             .await
-            .map_err(|e| McpViaLlmError::Gateway(format!("stream_complete failed: {}", e)))?;
+            .map_err(McpViaLlmError::from)?;
 
         // Accumulate the full message from deltas
         let mut accumulated_content = String::new();

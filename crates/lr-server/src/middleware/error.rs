@@ -13,7 +13,7 @@ use lr_types::errors::AppError;
 #[derive(Debug)]
 pub struct ApiErrorResponse {
     pub status: StatusCode,
-    pub error: ErrorResponse,
+    pub error: Box<ErrorResponse>,
     /// Optional retry-after header value (seconds)
     pub retry_after_secs: Option<u64>,
 }
@@ -26,7 +26,7 @@ impl ApiErrorResponse {
     ) -> Self {
         Self {
             status,
-            error: ErrorResponse::new(error_type, message),
+            error: Box::new(ErrorResponse::new(error_type, message)),
             retry_after_secs: None,
         }
     }
@@ -80,13 +80,13 @@ impl ApiErrorResponse {
     }
 
     pub fn with_param(mut self, param: impl Into<String>) -> Self {
-        self.error = self.error.with_param(param);
+        self.error.error.param = Some(param.into());
         self
     }
 
     #[allow(dead_code)]
     pub fn with_code(mut self, code: impl Into<String>) -> Self {
-        self.error = self.error.with_code(code);
+        self.error.error.code = Some(code.into());
         self
     }
 }
@@ -103,6 +103,15 @@ impl IntoResponse for ApiErrorResponse {
             response
         } else {
             (self.status, Json(self.error)).into_response()
+        }
+    }
+}
+
+impl From<lr_mcp_via_llm::McpViaLlmError> for ApiErrorResponse {
+    fn from(error: lr_mcp_via_llm::McpViaLlmError) -> Self {
+        match error {
+            lr_mcp_via_llm::McpViaLlmError::Router(error) => error.into(),
+            error => Self::bad_gateway(format!("MCP-via-LLM error: {error}")),
         }
     }
 }
@@ -147,6 +156,29 @@ impl From<AppError> for ApiErrorResponse {
             AppError::Storage(msg) => {
                 ApiErrorResponse::internal_error(format!("Storage error: {}", msg))
             }
+            AppError::RoutingFailure { error, explanation } => {
+                let mut response = Self::from(*error);
+                response
+                    .error
+                    .extensions
+                    .get_or_insert_with(Default::default)
+                    .insert("localrouter.routing".into(), *explanation);
+                response
+            }
+            AppError::RoutingExhausted {
+                message,
+                explanation,
+            } => {
+                let mut response =
+                    ApiErrorResponse::bad_gateway(format!("Router error: {message}"))
+                        .with_code("no_route");
+                response.error.extensions = Some(
+                    [("localrouter.routing".into(), *explanation)]
+                        .into_iter()
+                        .collect(),
+                );
+                response
+            }
             AppError::Router(msg) => {
                 ApiErrorResponse::bad_gateway(format!("Router error: {}", msg))
             }
@@ -180,6 +212,43 @@ pub type ApiResult<T> = Result<T, ApiErrorResponse>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn routing_failure_preserves_original_status_and_headers() {
+        for (error, status, retry) in [
+            (
+                AppError::InvalidParams("bad input".into()),
+                StatusCode::BAD_REQUEST,
+                None,
+            ),
+            (
+                AppError::ProviderStatus {
+                    status: 403,
+                    message: "forbidden".into(),
+                },
+                StatusCode::FORBIDDEN,
+                None,
+            ),
+            (
+                AppError::FreeTierExhausted {
+                    retry_after_secs: 17,
+                },
+                StatusCode::PAYMENT_REQUIRED,
+                None,
+            ),
+        ] {
+            let response = ApiErrorResponse::from(AppError::RoutingFailure {
+                error: Box::new(error),
+                explanation: Box::new(serde_json::json!({"attempts":[{"outcome":"error"}]})),
+            });
+            assert_eq!(response.status, status);
+            assert_eq!(response.retry_after_secs, retry);
+            assert_eq!(
+                response.error.extensions.unwrap()["localrouter.routing"]["attempts"][0]["outcome"],
+                "error"
+            );
+        }
+    }
 
     #[test]
     fn provider_status_4xx_passes_through() {

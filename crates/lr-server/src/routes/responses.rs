@@ -299,10 +299,7 @@ pub async fn create_response(
             {
                 Ok(s) => (s, None),
                 Err(e) => {
-                    return Err(llm_guard.capture_err(ApiErrorResponse::bad_gateway(format!(
-                        "MCP-via-LLM error: {}",
-                        e
-                    ))));
+                    return Err(llm_guard.capture_err(ApiErrorResponse::from(e)));
                 }
             }
         } else {
@@ -313,10 +310,7 @@ pub async fn create_response(
             {
                 Ok((s, routing_meta)) => (s, routing_meta),
                 Err(e) => {
-                    return Err(llm_guard.capture_err(ApiErrorResponse::bad_gateway(format!(
-                        "Router error: {}",
-                        e
-                    ))));
+                    return Err(llm_guard.capture_err(ApiErrorResponse::from(e)));
                 }
             }
         };
@@ -384,24 +378,14 @@ pub async fn create_response(
                 req.previous_response_id.clone(),
             )
             .await
-            .map_err(|e| {
-                llm_guard.capture_err(ApiErrorResponse::bad_gateway(format!(
-                    "MCP-via-LLM error: {}",
-                    e
-                )))
-            })?;
+            .map_err(|e| llm_guard.capture_err(ApiErrorResponse::from(e)))?;
         (c, None)
     } else {
         let (completion, routing_meta) = state
             .router
             .complete(&auth.api_key_id, provider_request)
             .await
-            .map_err(|e| {
-                llm_guard.capture_err(ApiErrorResponse::bad_gateway(format!(
-                    "Router error: {}",
-                    e
-                )))
-            })?;
+            .map_err(|e| llm_guard.capture_err(ApiErrorResponse::from(e)))?;
         (completion, routing_meta)
     };
 
@@ -1058,7 +1042,7 @@ fn build_stream_response(
         if !saw_native_envelope {
             for mut frame in emitter.finish(finish_reason.as_deref()) {
                 if frame.event == "response.completed" || frame.event == "response.incomplete" {
-                    if let Some(extensions) = tracker.lock().gateway_extensions() { frame.data["response"]["extensions"] = serde_json::json!(extensions); }
+                    if let Some(extensions) = tracker.lock().response_extensions() { frame.data["response"]["extensions"] = serde_json::json!(extensions); }
                 }
                 yield sse_event(frame);
             }
@@ -1094,7 +1078,7 @@ fn build_stream_response(
             );
             serde_json::to_value(&final_body).unwrap_or(Value::Null)
         });
-        if let Some(extensions) = tracked.gateway_extensions() {
+        if let Some(extensions) = tracked.response_extensions() {
             if wire_body.get("response").is_some() { wire_body["response"]["extensions"] = serde_json::json!(extensions); }
             else { wire_body["extensions"] = serde_json::json!(extensions); }
         }
@@ -1115,7 +1099,7 @@ fn build_stream_response(
         crate::routes::finalize::finalize_streaming_at_end(
             &finalize_inputs,
             crate::routes::finalize::StreamingFinalizeSummary {
-                extensions: tracked.gateway_extensions(),
+                extensions: tracked.response_extensions(),
                 provider: provider_for_finalize,
                 model: model_for_finalize,
                 prompt_tokens,
@@ -1349,13 +1333,15 @@ fn select_wire_body(
         });
     let mut body = native_raw
         .unwrap_or_else(|| completion_to_response_object(completion, response_id, created_at));
-    if let Some(attribution) = completion
-        .extensions
-        .as_ref()
-        .and_then(|extensions| extensions.get(lr_providers::gateway::EXTENSION))
-    {
-        if body.is_object() {
-            body["extensions"][lr_providers::gateway::EXTENSION] = attribution.clone();
+    if body.is_object() {
+        for key in [lr_providers::gateway::EXTENSION, "localrouter.routing"] {
+            if let Some(metadata) = completion
+                .extensions
+                .as_ref()
+                .and_then(|extensions| extensions.get(key))
+            {
+                body["extensions"][key] = metadata.clone();
+            }
         }
     }
     body

@@ -258,7 +258,7 @@ pub(crate) async fn handle_decision(
         Err(e) => {
             let err_text = e.to_string();
             let passthrough = upstream_client_error(&e);
-            let api_err = ApiErrorResponse::from(e);
+            let api_err = llm_guard.capture_err(ApiErrorResponse::from(e));
             let status_code = passthrough
                 .as_ref()
                 .map(|(status, _)| status.as_u16())
@@ -298,6 +298,13 @@ pub(crate) async fn handle_decision(
         }
     };
 
+    if let Some(metadata) = response
+        .extra
+        .get("extensions")
+        .and_then(|extensions| extensions.get("localrouter.routing"))
+    {
+        super::monitor_helpers::update_llm_call_routing(&state, llm_guard.event_id(), metadata);
+    }
     let response_json = if request.decisions.is_some() {
         serde_json::to_value(
             lr_providers::systemone::decisions::DecisionResponse::from_systemone(
@@ -672,9 +679,7 @@ async fn check_rate_limits(
             result.current_usage, result.limit
         ));
         if let Some(retry_after) = result.retry_after_secs {
-            error.error = error
-                .error
-                .with_code(format!("retry_after_{}", retry_after));
+            error.error.error.code = Some(format!("retry_after_{}", retry_after));
         }
         return Err(error);
     }

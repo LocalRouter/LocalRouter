@@ -12,13 +12,14 @@ use lr_config::{ConfigManager, FreeTierFallback, FreeTierKind};
 use lr_providers::registry::ProviderRegistry;
 use lr_providers::{
     AudioTranscriptionRequest, AudioTranscriptionResponse, AudioTranslationRequest,
-    AudioTranslationResponse, Capability, CompletionChunk, CompletionRequest, CompletionResponse,
+    AudioTranslationResponse, CompletionChunk, CompletionRequest, CompletionResponse,
     EmbeddingRequest, EmbeddingResponse, SpeechRequest, SpeechResponse,
 };
 use lr_types::{AppError, AppResult};
 
 pub mod decision_routing;
 pub mod endpoint_cache;
+pub mod explanation;
 pub mod free_tier;
 pub mod rate_limit;
 mod systemone;
@@ -85,6 +86,7 @@ impl RouterError {
     /// Classify an AppError into a RouterError
     pub fn classify(error: &AppError, provider: &str, model: &str) -> Self {
         match error {
+            AppError::RoutingFailure { error, .. } => Self::classify(error, provider, model),
             // Prefer typed variants. Providers that parse their own error
             // bodies (OpenAI via `classify_openai_style_error`) produce these
             // so the router doesn't have to reverse-engineer the string.
@@ -505,6 +507,26 @@ fn build_routing_metadata(
     attempts: Vec<serde_json::Value>,
     successful_idx: Option<usize>,
 ) -> serde_json::Value {
+    let attempts: Vec<serde_json::Value> = attempts
+        .into_iter()
+        .map(|attempt| {
+            let mut safe = serde_json::json!({});
+            for key in [
+                "provider",
+                "model",
+                "outcome",
+                "duration_ms",
+                "exclusions",
+                "unknown_checks",
+                "retry_after_secs",
+            ] {
+                if let Some(value) = attempt.get(key) {
+                    safe[key] = value.clone();
+                }
+            }
+            safe
+        })
+        .collect();
     let total = attempts.len();
     let mut info = serde_json::json!({
         "candidate_models": candidate_models,
@@ -516,6 +538,9 @@ fn build_routing_metadata(
     }
     if let Some(decision) = decision {
         info["decision_routing"] = serde_json::to_value(decision).unwrap_or_default();
+        info["classifier_latency_ms"] = serde_json::json!(decision.latency_ms);
+        info["classifier_cost_usd"] = serde_json::json!(decision.classifier_cost_usd);
+        info["classifier_cost_estimated"] = serde_json::json!(decision.classifier_cost_estimated);
     }
     info
 }
@@ -1338,25 +1363,11 @@ impl Router {
                     .await
             }
         };
-        let mut models = Vec::new();
-        for id in [&decision.route, &policy.default_route] {
-            if let Some(option) = policy.options.iter().find(|o| &o.id == id) {
-                for model in if option.models.is_empty() {
-                    &auto_config.prioritized_models
-                } else {
-                    &option.models
-                } {
-                    if !models.contains(model) {
-                        models.push(model.clone());
-                    }
-                }
-            }
-        }
-        for model in &auto_config.prioritized_models {
-            if !models.contains(model) {
-                models.push(model.clone());
-            }
-        }
+        let models = decision_routing::route_models(
+            policy,
+            &auto_config.prioritized_models,
+            &decision.route,
+        );
         (models, Some(decision))
     }
 
@@ -1395,6 +1406,13 @@ impl Router {
             selected_models.len()
         );
 
+        let mut initial_metadata = serde_json::json!({});
+        self.attach_routing_explanation(
+            &mut initial_metadata,
+            strategy,
+            &request,
+            routing_decision.as_ref(),
+        );
         let mut last_error = None;
         let mut min_retry_after: u64 = u64::MAX;
         let candidate_models: Vec<String> = selected_models
@@ -1402,77 +1420,21 @@ impl Router {
             .map(|(p, m)| format!("{}/{}", p, m))
             .collect();
         let mut attempts: Vec<serde_json::Value> = Vec::new();
-        let request_has_tools = request.tools.as_ref().is_some_and(|t| !t.is_empty());
 
         for (idx, (provider, model)) in selected_models.iter().enumerate() {
-            if !strategy.is_model_allowed(provider, model) {
-                attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "model_not_allowed"}));
-                continue;
-            }
-            if self.provider_registry.is_model_disabled(provider, model) {
-                attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "model_disabled"}));
-                continue;
-            }
-            debug!(
-                "Auto-routing attempt {}/{}: {}/{}",
-                idx + 1,
-                auto_config.prioritized_models.len(),
-                provider,
-                model
-            );
-
-            if request
-                .extensions
-                .as_ref()
-                .is_some_and(|e| e.contains_key(lr_providers::gateway::EXTENSION))
-                && !self
-                    .provider_registry
-                    .get_provider(provider)
-                    .is_some_and(|p| p.supports_gateway_options())
-            {
-                attempts.push(serde_json::json!({"provider":provider,"model":model,"outcome":"gateway_controls_unsupported"}));
-                continue;
-            }
-            if let Some(candidate) = self.provider_registry.get_provider(provider) {
-                let mut candidate_request = request.clone();
-                candidate_request.model = model.clone();
-                if let Err(error) = candidate.validate_gateway_options(&candidate_request) {
-                    attempts.push(serde_json::json!({"provider":provider,"model":model,"outcome":"gateway_constraints_ineligible","error":error.to_string()}));
-                    continue;
+            let assessment = self.assess_chat_candidate(strategy, provider, model, &request, idx);
+            if let Some(outcome) = assessment.exclusions.first() {
+                if let Some(seconds) = assessment.retry_after_secs {
+                    min_retry_after = min_retry_after.min(seconds);
+                    last_error = Some(RouterError::RateLimited {
+                        provider: provider.clone(),
+                        model: model.clone(),
+                        retry_after_secs: seconds,
+                    });
                 }
-            }
-            // Check endpoint compatibility (skip models that don't support chat)
-            if self.should_skip_for_endpoint(provider, model, lr_providers::EndpointType::Chat) {
-                attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "endpoint_not_supported"}));
+                attempts.push(serde_json::json!({"provider":provider,"model":model,"outcome":outcome,"exclusions":assessment.exclusions,"unknown_checks":assessment.unknown_checks}));
                 continue;
             }
-
-            // Skip models that don't support tool/function calling when request has tools
-            if request_has_tools {
-                match self.provider_registry.model_has_capability(
-                    provider,
-                    model,
-                    &Capability::FunctionCalling,
-                ) {
-                    Some(false) => {
-                        debug!(
-                            "Skipping {}/{}: no function calling support (request has tools)",
-                            provider, model
-                        );
-                        attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "no_tool_support"}));
-                        continue;
-                    }
-                    Some(true) => {}
-                    None => {
-                        // Not in cache yet (e.g., first request after startup) — be permissive
-                        debug!(
-                            "Capability unknown for {}/{} (not in cache), allowing",
-                            provider, model
-                        );
-                    }
-                }
-            }
-
             // Check backoff state (skip providers with recent 429/402)
             if let Some(backoff) = self.free_tier_manager.is_in_backoff(provider, model) {
                 debug!("Skipping {}/{}: {}", provider, model, backoff.reason);
@@ -1547,12 +1509,21 @@ impl Router {
                     info!("Auto-routing succeeded with {}/{}", provider, model);
                     self.free_tier_manager.clear_backoff(provider, model);
                     attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "success", "duration_ms": attempt_ms}));
-                    let routing_meta = build_routing_metadata(
+                    let mut routing_meta = build_routing_metadata(
                         routing_decision.as_ref(),
                         &candidate_models,
                         attempts,
                         Some(idx),
                     );
+                    routing_meta
+                        .as_object_mut()
+                        .unwrap()
+                        .extend(initial_metadata.as_object().unwrap().clone());
+                    let mut response = response;
+                    response
+                        .extensions
+                        .get_or_insert_with(Default::default)
+                        .insert("localrouter.routing".into(), routing_meta.clone());
                     return Ok((response, Some(routing_meta)));
                 }
                 Err(e) => {
@@ -1598,7 +1569,20 @@ impl Router {
                             "Non-retryable error encountered: {}",
                             router_error.to_log_string()
                         );
-                        return Err(e);
+                        let mut metadata = build_routing_metadata(
+                            routing_decision.as_ref(),
+                            &candidate_models,
+                            attempts,
+                            None,
+                        );
+                        metadata
+                            .as_object_mut()
+                            .unwrap()
+                            .extend(initial_metadata.as_object().unwrap().clone());
+                        return Err(AppError::RoutingFailure {
+                            error: Box::new(e),
+                            explanation: Box::new(metadata),
+                        });
                     }
                 }
             }
@@ -1621,7 +1605,7 @@ impl Router {
         // out before any request was attempted. Surface the specific reason
         // instead of a generic "Unknown" so the user can fix the strategy.
         let detail = match last_error {
-            Some(e) => e.to_log_string(),
+            Some(e) => e.outcome_str().to_string(),
             None => {
                 let summary = summarize_attempt_outcomes(&attempts);
                 if summary.is_empty() {
@@ -1638,10 +1622,16 @@ impl Router {
                 }
             }
         };
-        Err(AppError::Router(format!(
-            "All auto-routing models failed. Last error: {}",
-            detail
-        )))
+        let mut metadata =
+            build_routing_metadata(routing_decision.as_ref(), &candidate_models, attempts, None);
+        metadata
+            .as_object_mut()
+            .unwrap()
+            .extend(initial_metadata.as_object().unwrap().clone());
+        Err(AppError::RoutingExhausted {
+            message: format!("All auto-routing models failed. Last error: {detail}"),
+            explanation: Box::new(metadata),
+        })
     }
 
     /// Stream complete with auto-routing (localrouter/auto virtual model for streaming)
@@ -1681,82 +1671,33 @@ impl Router {
             selected_models.len()
         );
 
+        let mut initial_metadata = serde_json::json!({});
+        self.attach_routing_explanation(
+            &mut initial_metadata,
+            strategy,
+            &request,
+            routing_decision.as_ref(),
+        );
         let mut last_error = None;
         let candidate_models: Vec<String> = selected_models
             .iter()
             .map(|(p, m)| format!("{}/{}", p, m))
             .collect();
         let mut attempts: Vec<serde_json::Value> = Vec::new();
-        let request_has_tools = request.tools.as_ref().is_some_and(|t| !t.is_empty());
 
         for (idx, (provider, model)) in selected_models.iter().enumerate() {
-            if !strategy.is_model_allowed(provider, model) {
-                attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "model_not_allowed"}));
-                continue;
-            }
-            if self.provider_registry.is_model_disabled(provider, model) {
-                attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "model_disabled"}));
-                continue;
-            }
-            debug!(
-                "Auto-routing streaming attempt {}/{}: {}/{}",
-                idx + 1,
-                selected_models.len(),
-                provider,
-                model
-            );
-
-            if request
-                .extensions
-                .as_ref()
-                .is_some_and(|e| e.contains_key(lr_providers::gateway::EXTENSION))
-                && !self
-                    .provider_registry
-                    .get_provider(provider)
-                    .is_some_and(|p| p.supports_gateway_options())
-            {
-                attempts.push(serde_json::json!({"provider":provider,"model":model,"outcome":"gateway_controls_unsupported"}));
-                continue;
-            }
-            if let Some(candidate) = self.provider_registry.get_provider(provider) {
-                let mut candidate_request = request.clone();
-                candidate_request.model = model.clone();
-                if let Err(error) = candidate.validate_gateway_options(&candidate_request) {
-                    attempts.push(serde_json::json!({"provider":provider,"model":model,"outcome":"gateway_constraints_ineligible","error":error.to_string()}));
-                    continue;
+            let assessment = self.assess_chat_candidate(strategy, provider, model, &request, idx);
+            if let Some(outcome) = assessment.exclusions.first() {
+                if let Some(seconds) = assessment.retry_after_secs {
+                    last_error = Some(RouterError::RateLimited {
+                        provider: provider.clone(),
+                        model: model.clone(),
+                        retry_after_secs: seconds,
+                    });
                 }
-            }
-            // Check endpoint compatibility (skip models that don't support chat)
-            if self.should_skip_for_endpoint(provider, model, lr_providers::EndpointType::Chat) {
-                attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "endpoint_not_supported"}));
+                attempts.push(serde_json::json!({"provider":provider,"model":model,"outcome":outcome,"exclusions":assessment.exclusions,"unknown_checks":assessment.unknown_checks}));
                 continue;
             }
-
-            // Skip models that don't support tool/function calling when request has tools
-            if request_has_tools {
-                match self.provider_registry.model_has_capability(
-                    provider,
-                    model,
-                    &Capability::FunctionCalling,
-                ) {
-                    Some(false) => {
-                        debug!(
-                            "Skipping {}/{}: no function calling support (request has tools)",
-                            provider, model
-                        );
-                        attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "no_tool_support"}));
-                        continue;
-                    }
-                    Some(true) => {}
-                    None => {
-                        debug!(
-                            "Capability unknown for {}/{} (not in cache), allowing",
-                            provider, model
-                        );
-                    }
-                }
-            }
-
             // Check backoff state (skip providers with recent 429/402)
             if let Some(backoff) = self.free_tier_manager.is_in_backoff(provider, model) {
                 debug!("Skipping {}/{}: {}", provider, model, backoff.reason);
@@ -1854,12 +1795,30 @@ impl Router {
                     );
                     self.free_tier_manager.clear_backoff(provider, model);
                     attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "success"}));
-                    let routing_meta = build_routing_metadata(
+                    let mut routing_meta = build_routing_metadata(
                         routing_decision.as_ref(),
                         &candidate_models,
                         attempts,
                         Some(idx),
                     );
+                    routing_meta
+                        .as_object_mut()
+                        .unwrap()
+                        .extend(initial_metadata.as_object().unwrap().clone());
+                    let stream_metadata = routing_meta.clone();
+                    let mut first = true;
+                    let stream = Box::pin(stream.map(move |result| {
+                        result.map(|mut chunk| {
+                            if first {
+                                chunk
+                                    .extensions
+                                    .get_or_insert_with(Default::default)
+                                    .insert("localrouter.routing".into(), stream_metadata.clone());
+                                first = false;
+                            }
+                            chunk
+                        })
+                    }));
                     let resolved_model = format!("{}/{}", provider, model);
                     let pricing = self.provider_registry.get_pricing(provider, model).await;
                     let free_tier = self.free_tier_usage(provider, model);
@@ -1917,6 +1876,7 @@ impl Router {
                         }
                     }
 
+                    attempts.push(serde_json::json!({"provider":provider,"model":model,"outcome":router_error.outcome_str()}));
                     last_error = Some(router_error.clone());
 
                     // Continue to next model on retryable errors
@@ -1925,7 +1885,20 @@ impl Router {
                             "Non-retryable error encountered: {}",
                             router_error.to_log_string()
                         );
-                        return Err(e);
+                        let mut metadata = build_routing_metadata(
+                            routing_decision.as_ref(),
+                            &candidate_models,
+                            attempts,
+                            None,
+                        );
+                        metadata
+                            .as_object_mut()
+                            .unwrap()
+                            .extend(initial_metadata.as_object().unwrap().clone());
+                        return Err(AppError::RoutingFailure {
+                            error: Box::new(e),
+                            explanation: Box::new(metadata),
+                        });
                     }
                 }
             }
@@ -1947,7 +1920,7 @@ impl Router {
         // Same "all filtered out" reporting as the non-streaming path: when
         // no request was ever attempted, say *why* models were skipped.
         let detail = match last_error {
-            Some(e) => e.to_log_string(),
+            Some(e) => e.outcome_str().to_string(),
             None => {
                 let summary = summarize_attempt_outcomes(&attempts);
                 if summary.is_empty() {
@@ -1964,10 +1937,16 @@ impl Router {
                 }
             }
         };
-        Err(AppError::Router(format!(
-            "All auto-routing streaming models failed. Last error: {}",
-            detail
-        )))
+        let mut metadata =
+            build_routing_metadata(routing_decision.as_ref(), &candidate_models, attempts, None);
+        metadata
+            .as_object_mut()
+            .unwrap()
+            .extend(initial_metadata.as_object().unwrap().clone());
+        Err(AppError::RoutingExhausted {
+            message: format!("All auto-routing streaming models failed. Last error: {detail}"),
+            explanation: Box::new(metadata),
+        })
     }
 
     /// Try completion with prioritized list of models (with automatic retry on failure)

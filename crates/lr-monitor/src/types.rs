@@ -739,6 +739,10 @@ pub struct FlaggedCategory {
 /// A single routing attempt during auto-routing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoutingAttempt {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclusions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unknown_checks: Vec<String>,
     /// Provider name (e.g., "openai")
     pub provider: String,
     /// Model name (e.g., "gpt-4o")
@@ -758,6 +762,14 @@ pub struct RoutingAttempt {
 /// Auto-routing metadata for LLM call monitor events.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AutoRoutingInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explanation: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub classifier_latency_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub classifier_cost_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub classifier_cost_estimated: Option<bool>,
     /// User-defined policy decision. Older events do not contain this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decision_routing: Option<serde_json::Value>,

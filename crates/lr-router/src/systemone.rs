@@ -247,6 +247,13 @@ impl Router {
                 "Selected provider does not support gateway routing controls".into(),
             ));
         }
+        if let Some(metadata) = request
+            .extra
+            .get_mut("metadata")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            metadata.remove("localrouter.mode");
+        }
         let native = match model {
             Some(m) => provider_instance.supports_systemone_model(m).await,
             None => provider_instance.supports_systemone(),
@@ -464,6 +471,16 @@ impl Router {
                 let k = option_count(q) as u32;
                 let top = k.min(cfg.letter_top_logprobs).max(1);
                 let mut chat = emulation::build_letter_request(model, &request.state, q, top);
+                chat.service_tier = request
+                    .extra
+                    .get("service_tier")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned);
+                chat.reasoning_effort = request
+                    .extra
+                    .get("reasoning_effort")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned);
                 chat.extensions = request
                     .extra
                     .get("extensions")
@@ -502,6 +519,16 @@ impl Router {
         }
 
         let mut chat = emulation::build_json_request(model, &request);
+        chat.service_tier = request
+            .extra
+            .get("service_tier")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        chat.reasoning_effort = request
+            .extra
+            .get("reasoning_effort")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
         chat.extensions = request
             .extra
             .get("extensions")
@@ -550,6 +577,104 @@ impl Router {
         })
     }
 
+    /// Textual classification context with image presence retained for eligibility.
+    pub fn decision_routing_request(
+        &self,
+        request: &SystemOneRequest,
+    ) -> lr_providers::CompletionRequest {
+        use lr_providers::systemone::decisions::{
+            DecisionContent, DecisionInput, DecisionInputPart,
+        };
+        use lr_providers::{ChatMessage, ChatMessageContent, ContentPart, ImageUrl};
+        let mut parts = vec![ContentPart::Text {
+            text: format!(
+                "Decision questions: {}\nInput:",
+                serde_json::to_string(&request.questions).unwrap_or_default()
+            ),
+        }];
+        if let Some(decisions) = &request.decisions {
+            match &decisions.input {
+                DecisionInput::Text(text) => parts.push(ContentPart::Text { text: text.clone() }),
+                DecisionInput::Messages(messages) => {
+                    for message in messages {
+                        match &message.content {
+                            DecisionContent::Text(text) => {
+                                parts.push(ContentPart::Text { text: text.clone() })
+                            }
+                            DecisionContent::Parts(input) => {
+                                for part in input {
+                                    parts.push(match part {
+                                        DecisionInputPart::InputText { text } => {
+                                            ContentPart::Text { text: text.clone() }
+                                        }
+                                        DecisionInputPart::InputImage { image_url, .. } => {
+                                            ContentPart::ImageUrl {
+                                                image_url: ImageUrl {
+                                                    url: image_url.clone(),
+                                                    detail: None,
+                                                },
+                                            }
+                                        }
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            parts.push(ContentPart::Text {
+                text: request
+                    .state
+                    .as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| request.state.to_string()),
+            });
+        }
+        let mut context = lr_providers::CompletionRequest::new(
+            "localrouter/auto",
+            vec![ChatMessage {
+                role: "user".into(),
+                content: ChatMessageContent::Parts(parts),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+                reasoning_content: None,
+            }],
+        );
+        context.metadata = request
+            .extra
+            .get("metadata")
+            .and_then(serde_json::Value::as_object)
+            .map(|map| {
+                map.iter()
+                    .filter_map(|(key, value)| {
+                        value.as_str().map(|value| (key.clone(), value.to_string()))
+                    })
+                    .collect()
+            });
+        context.extensions = request
+            .extra
+            .get("extensions")
+            .and_then(serde_json::Value::as_object)
+            .map(|map| {
+                map.iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect()
+            });
+        context.service_tier = request
+            .extra
+            .get("service_tier")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        context.reasoning_effort = request
+            .extra
+            .get("reasoning_effort")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        context
+    }
+
     /// Auto-routing for System One: tries the strategy's prioritized models
     /// in order, skipping models that can answer neither natively nor by
     /// translation.
@@ -567,12 +692,29 @@ impl Router {
                 "localrouter/auto is disabled for this strategy".into(),
             ));
         }
-        if auto_config.prioritized_models.is_empty() {
+        let routing_request = self.decision_routing_request(&request);
+        let (selected_models, routing_decision) = self
+            .select_models_for_auto_routing(client_id, strategy, auto_config, &routing_request)
+            .await;
+        if selected_models.is_empty() {
             return Err(AppError::Router(
-                "No prioritized models configured for auto-routing".into(),
+                "No models configured for auto-routing".into(),
             ));
         }
-        let selected_models = &auto_config.prioritized_models;
+        let selected_models = &selected_models;
+        let candidate_models: Vec<String> = selected_models
+            .iter()
+            .map(|(provider, model)| format!("{provider}/{model}"))
+            .collect();
+        let policy = auto_config.routing_policy.clone().unwrap_or_default();
+        let initial_explanation = serde_json::json!(self.routing_explanation_for_endpoint(
+            strategy,
+            &policy,
+            &routing_request,
+            routing_decision.as_ref(),
+            EndpointType::SystemOne
+        ));
+        let mut attempts = Vec::new();
         info!(
             "Auto-routing System One for client '{}' with {} prioritized models",
             client_id,
@@ -580,11 +722,17 @@ impl Router {
         );
 
         let mut last_error = None;
-        for (provider, model) in selected_models {
-            // Apply client permissions before any gateway preflight/discovery.
-            if !strategy.is_model_allowed(provider, model)
-                || self.provider_registry.is_model_disabled(provider, model)
-            {
+        for (idx, (provider, model)) in selected_models.iter().enumerate() {
+            let assessment = self.assess_candidate(
+                strategy,
+                provider,
+                model,
+                &routing_request,
+                idx,
+                EndpointType::SystemOne,
+            );
+            if let Some(outcome) = assessment.exclusions.first() {
+                attempts.push(serde_json::json!({"provider":provider,"model":model,"outcome":outcome,"exclusions":assessment.exclusions,"unknown_checks":assessment.unknown_checks}));
                 continue;
             }
             if let Some(instance) = self.provider_registry.get_provider(provider) {
@@ -595,6 +743,7 @@ impl Router {
                     .await
                 {
                     debug!("Skipping {provider}/{model}: {error}");
+                    attempts.push(serde_json::json!({"provider":provider,"model":model,"outcome":"gateway_constraints_ineligible"}));
                     continue;
                 }
             }
@@ -608,6 +757,7 @@ impl Router {
                 };
                 if !instance.supports_decisions() || !instance.supports_systemone_model(model).await
                 {
+                    attempts.push(serde_json::json!({"provider":provider,"model":model,"outcome":"image_protocol_unsupported"}));
                     continue;
                 }
                 if let Ok(models) = self
@@ -619,6 +769,7 @@ impl Router {
                         m.id == *model
                             && !m.capabilities.contains(&lr_providers::Capability::Vision)
                     }) {
+                        attempts.push(serde_json::json!({"provider":provider,"model":model,"outcome":"no_image_support"}));
                         continue;
                     }
                 }
@@ -642,6 +793,9 @@ impl Router {
                     self.classify_for_free_tier(provider, model).await,
                     free_tier::ModelFreeStatus::NotFree
                 ) {
+                    attempts.push(
+                        serde_json::json!({"provider":provider,"model":model,"outcome":"not_free"}),
+                    );
                     continue;
                 }
             }
@@ -668,15 +822,41 @@ impl Router {
                 )
                 .await
             {
-                Ok(response) => {
+                Ok(mut response) => {
                     info!(
                         "Auto-routing System One succeeded with {}/{}",
                         provider, model
                     );
+                    attempts.push(
+                        serde_json::json!({"provider":provider,"model":model,"outcome":"success"}),
+                    );
+                    let mut metadata = super::build_routing_metadata(
+                        routing_decision.as_ref(),
+                        &candidate_models,
+                        attempts,
+                        Some(idx),
+                    );
+                    metadata["explanation"] = initial_explanation.clone();
+                    if let Some(decision) = &routing_decision {
+                        metadata["classifier_latency_ms"] = serde_json::json!(decision.latency_ms);
+                        metadata["classifier_cost_usd"] =
+                            serde_json::json!(decision.classifier_cost_usd);
+                        metadata["classifier_cost_estimated"] =
+                            serde_json::json!(decision.classifier_cost_estimated);
+                    }
+                    let extensions = response
+                        .extra
+                        .entry("extensions")
+                        .or_insert_with(|| serde_json::json!({}));
+                    if !extensions.is_object() {
+                        *extensions = serde_json::json!({});
+                    }
+                    extensions["localrouter.routing"] = metadata;
                     return Ok(response);
                 }
                 Err(e) => {
                     let router_error = RouterError::classify(&e, provider, model);
+                    attempts.push(serde_json::json!({"provider":provider,"model":model,"outcome":router_error.outcome_str()}));
                     warn!(
                         "Auto-routing System One attempt failed: {}",
                         router_error.to_log_string()
@@ -692,7 +872,17 @@ impl Router {
                     last_error = Some(router_error);
                     if !retry {
                         error!("Non-retryable System One error, stopping auto-routing");
-                        return Err(e);
+                        let mut metadata = super::build_routing_metadata(
+                            routing_decision.as_ref(),
+                            &candidate_models,
+                            attempts,
+                            None,
+                        );
+                        metadata["explanation"] = initial_explanation;
+                        return Err(AppError::RoutingFailure {
+                            error: Box::new(e),
+                            explanation: Box::new(metadata),
+                        });
                     }
                 }
             }
@@ -710,12 +900,22 @@ impl Router {
             ));
         }
 
-        Err(AppError::Router(format!(
-            "All auto-routing System One models failed. Last error: {}",
-            last_error
-                .map(|e| e.to_log_string())
-                .unwrap_or_else(|| "no prioritized model can answer System One requests".into())
-        )))
+        let mut metadata = super::build_routing_metadata(
+            routing_decision.as_ref(),
+            &candidate_models,
+            attempts,
+            None,
+        );
+        metadata["explanation"] = initial_explanation;
+        Err(AppError::RoutingExhausted {
+            message: format!(
+                "All auto-routing System One models failed. Last error: {}",
+                last_error
+                    .map(|error| error.outcome_str().to_string())
+                    .unwrap_or_else(|| "no eligible candidate".into())
+            ),
+            explanation: Box::new(metadata),
+        })
     }
 
     /// A chat model that produced output we could not turn into answers:
@@ -1275,6 +1475,106 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cached_preview_leaves_semantic_routes_unknown_and_does_not_execute_models() {
+        let h = harness(
+            &[("decision", Kind::SlowNative), ("chat", Kind::ChatJson)],
+            &[("chat", "m1")],
+            |_| {},
+        )
+        .await;
+        let (_, strategy) = h.router.validate_client_and_strategy(&h.client_id).unwrap();
+        let policy = routing_policy("decision");
+        let request = CompletionRequest::new("localrouter/auto", vec![msg("Implement")]);
+        let decision = h
+            .router
+            .deterministic_routing_decision(&strategy, &policy, &request);
+        assert!(decision.is_none());
+        let explanation =
+            h.router
+                .routing_explanation(&strategy, &policy, &request, decision.as_ref());
+        assert!(explanation.classifier_required);
+        assert!(explanation.active_route.is_none());
+        assert!(!explanation.no_route);
+        assert_eq!(h.chat_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(h.router.decision_slots.available_permits(), 8);
+        let again = h
+            .router
+            .routing_explanation(&strategy, &policy, &request, None);
+        assert_eq!(explanation.config_fingerprint, again.config_fingerprint);
+        assert_eq!(explanation.policy_fingerprint.len(), 64);
+    }
+
+    #[tokio::test]
+    async fn preview_and_live_filters_agree_on_denied_candidates_and_no_route_details() {
+        let h = harness(&[("chat", Kind::ChatJson)], &[("chat", "m1")], |config| {
+            config
+                .strategies
+                .last_mut()
+                .unwrap()
+                .model_permissions
+                .global = lr_config::PermissionState::Off;
+        })
+        .await;
+        let (_, strategy) = h.router.validate_client_and_strategy(&h.client_id).unwrap();
+        let request = CompletionRequest::new("localrouter/auto", vec![msg("hi")]);
+        let assessment = h
+            .router
+            .assess_chat_candidate(&strategy, "chat", "m1", &request, 0);
+        assert!(!assessment.eligible);
+        assert!(assessment.exclusions.contains(&"model_not_allowed".into()));
+        let explanation = h.router.routing_explanation(
+            &strategy,
+            &lr_config::RoutingPolicy::default(),
+            &request,
+            None,
+        );
+        assert!(explanation.no_route);
+        let error = h.router.complete(&h.client_id, request).await.unwrap_err();
+        let AppError::RoutingExhausted { explanation, .. } = error else {
+            panic!("expected structured no-route error")
+        };
+        assert_eq!(explanation["attempts"][0]["outcome"], "model_not_allowed");
+        assert_eq!(h.chat_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn native_decision_auto_uses_exact_policy_modes_and_retains_explanation() {
+        let h = harness(
+            &[("laya", Kind::Native), ("chat", Kind::ChatJson)],
+            &[],
+            |config| {
+                let mut policy = routing_policy("missing");
+                for option in &mut policy.options {
+                    option.models = vec![("laya".into(), "m1".into())];
+                }
+                config
+                    .strategies
+                    .last_mut()
+                    .unwrap()
+                    .auto_config
+                    .as_mut()
+                    .unwrap()
+                    .routing_policy = Some(policy);
+            },
+        )
+        .await;
+        let mut input = request(Some("localrouter/auto"));
+        input
+            .extra
+            .insert("metadata".into(), json!({"localrouter.mode":"plan"}));
+        let response = h.router.systemone(&h.client_id, input).await.unwrap();
+        assert_eq!(
+            response.extra["extensions"]["localrouter.routing"]["decision_routing"]["source"],
+            "client_mode"
+        );
+        assert_eq!(
+            response.extra["extensions"]["localrouter.routing"]["decision_routing"]["route"],
+            "thorough"
+        );
+        assert_eq!(h.chat_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
     async fn policy_calls_selected_native_provider_and_routes_completion() {
         let h = harness(
             &[("decision", Kind::Native), ("chat", Kind::ChatJson)],
@@ -1394,7 +1694,14 @@ mod tests {
                 .evaluate_routing_policy(&h.client_id, &strategy, &p, &req)
                 .await
                 .reason,
-            "decision_provider_error"
+            "decision_provider_unavailable"
+        );
+        assert_eq!(
+            h.router
+                .deterministic_routing_decision(&strategy, &p, &req)
+                .unwrap()
+                .reason,
+            "decision_provider_unavailable"
         );
         strategy.model_permissions.global = lr_config::PermissionState::Off;
         strategy.model_permissions.providers.clear();

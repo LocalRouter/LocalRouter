@@ -1119,7 +1119,19 @@ async fn test_auto_routing_strategy_rate_limits_checked_per_model() {
             // Also acceptable: wrapped in Router error
             println!("Rate limit error (expected): {}", msg);
         }
-        Err(e) => panic!("Expected RateLimitExceeded or Router error, got: {:?}", e),
+        Err(AppError::RoutingExhausted { explanation, .. }) => {
+            let attempts = explanation["attempts"].as_array().unwrap();
+            assert_eq!(attempts.len(), 2);
+            assert!(attempts.iter().all(|attempt| {
+                attempt["exclusions"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|reason| reason == "strategy_rate_limit")
+            }));
+            assert_eq!(explanation["explanation"]["no_route"], true);
+        }
+        Err(e) => panic!("Expected a rate-limit exclusion, got: {:?}", e),
         Ok(_) => panic!("Expected rate limit error"),
     }
 }

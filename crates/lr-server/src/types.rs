@@ -879,6 +879,8 @@ pub struct ProviderHealthSnapshot {
     })
 )]
 pub struct ErrorResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<HashMap<String, Value>>,
     pub error: ApiError,
 }
 
@@ -902,6 +904,7 @@ pub struct ApiError {
 impl ErrorResponse {
     pub fn new(error_type: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
+            extensions: None,
             error: ApiError {
                 message: message.into(),
                 error_type: error_type.into(),

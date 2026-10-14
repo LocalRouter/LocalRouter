@@ -15,6 +15,8 @@ lr-monitoring = { workspace = true }
 lr-json-repair = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
+utoipa = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }

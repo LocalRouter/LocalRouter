@@ -419,6 +419,23 @@ pub trait ModelProvider: Send + Sync {
         Ok(())
     }
 
+    /// A sanitized, IO-free projection of effective gateway controls for previews.
+    fn effective_gateway_preferences(
+        &self,
+        request: &CompletionRequest,
+    ) -> AppResult<Option<gateway::GatewayPreferences>> {
+        self.validate_gateway_options(request)?;
+        Ok(None)
+    }
+
+    /// Native endpoint controls differ from chat controls; inspection remains IO-free.
+    fn effective_native_gateway_preferences(
+        &self,
+        request: &CompletionRequest,
+    ) -> AppResult<Option<gateway::GatewayPreferences>> {
+        self.effective_gateway_preferences(request)
+    }
+
     async fn validate_systemone_gateway_options(
         &self,
         request: &SystemOneRequest,
@@ -1464,6 +1481,10 @@ pub struct PreComputedRouting {
     pub latency_ms: u64,
     pub policy_version: u32,
     pub context_omitted: u64,
+    #[serde(default)]
+    pub classifier_cost_usd: Option<f64>,
+    #[serde(default)]
+    pub classifier_cost_estimated: Option<bool>,
 }
 
 /// Chat completion request (OpenAI-compatible format)
