@@ -160,6 +160,7 @@ pub mod openrouter;
 pub mod perplexity;
 pub mod privacy;
 pub mod registry;
+pub mod rerank;
 pub mod search;
 pub mod server_tools;
 pub(crate) mod sse_lines;
@@ -214,6 +215,14 @@ pub trait ModelProvider: Send + Sync {
         _request: &CompletionRequest,
     ) -> Option<documents::DocumentProtocol> {
         None
+    }
+    fn rerank_protocol(&self) -> Option<rerank::RerankProtocol> {
+        None
+    }
+    async fn rerank(&self, _request: rerank::RerankRequest) -> AppResult<rerank::RerankResponse> {
+        Err(AppError::InvalidParams(
+            "Provider has no native Rerank API".into(),
+        ))
     }
     fn ocr_protocol(&self) -> Option<ocr::OcrProtocol> {
         None

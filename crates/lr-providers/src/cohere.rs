@@ -745,6 +745,18 @@ struct CohereModel {
 #[async_trait]
 #[allow(dead_code)]
 impl ModelProvider for CohereProvider {
+    fn rerank_protocol(&self) -> Option<crate::rerank::RerankProtocol> {
+        Some(crate::rerank::RerankProtocol::Cohere)
+    }
+    async fn rerank(
+        &self,
+        request: crate::rerank::RerankRequest,
+    ) -> AppResult<crate::rerank::RerankResponse> {
+        let body = request.wire_body(crate::rerank::RerankProtocol::Cohere)?;
+        let response=crate::http_client::native_client()?.post(format!("{}/rerank",self.base_url)).bearer_auth(&self.api_key).json(&body).send().await.map_err(|_|AppError::Provider("Rerank dispatch failed; remote charges may be unknown and the dispatch is not retried".into()))?;
+        request.read_response(response).await
+    }
+
     fn upstream_api(&self) -> lr_types::LlmApi {
         lr_types::LlmApi::CohereChat
     }

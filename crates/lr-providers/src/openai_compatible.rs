@@ -536,6 +536,31 @@ impl ModelProvider for OpenAICompatibleProvider {
         crate::search::read_response(response, request.max_results.unwrap_or(10)).await
     }
 
+    fn rerank_protocol(&self) -> Option<crate::rerank::RerankProtocol> {
+        (self.gateway_kind == Some(GatewayKind::Llmgateway))
+            .then_some(crate::rerank::RerankProtocol::LlmGateway)
+    }
+    async fn rerank(
+        &self,
+        request: crate::rerank::RerankRequest,
+    ) -> AppResult<crate::rerank::RerankResponse> {
+        if self.rerank_protocol().is_none() {
+            return Err(AppError::InvalidParams(
+                "Provider has no verified Rerank mapping".into(),
+            ));
+        }
+        let mut preferences = self.gateway_preferences.clone();
+        preferences.allow_fallbacks = None;
+        if preferences != GatewayPreferences::default() {
+            return Err(AppError::InvalidParams(
+                "Configured gateway controls have no verified Rerank mapping".into(),
+            ));
+        }
+        let body = request.wire_body(crate::rerank::RerankProtocol::LlmGateway)?;
+        let response=self.apply_headers(crate::http_client::native_client()?.post(format!("{}/rerank",self.base_url)).json(&body)).header("X-No-Fallback","true").send().await.map_err(|_|AppError::Provider("Rerank dispatch failed; remote charges may be unknown and the dispatch is not retried".into()))?;
+        request.read_response(response).await
+    }
+
     fn ocr_protocol(&self) -> Option<crate::ocr::OcrProtocol> {
         (self.gateway_kind == Some(GatewayKind::Llmgateway))
             .then_some(crate::ocr::OcrProtocol::LlmGateway)

@@ -35,6 +35,7 @@ import { ImagesPanel } from "./images-panel"
 import { SearchPanel } from "./search-panel"
 import { DocumentsPanel } from "./documents-panel"
 import { OcrPanel } from "./ocr-panel"
+import { RerankPanel } from "./rerank-panel"
 import { EmbeddingsPanel } from "./embeddings-panel"
 import { SpeechPanel } from "./speech-panel"
 import { TranscribePanel } from "./transcribe-panel"
@@ -52,7 +53,7 @@ import type {
 } from "@/types/tauri-commands"
 
 /** Sections in display order; the first available one opens by default. */
-const SECTION_ORDER = ["chat", "messages", "decisions", "systemone", "images", "search", "documents", "ocr", "embeddings", "speech", "transcribe"] as const
+const SECTION_ORDER = ["chat", "messages", "decisions", "systemone", "images", "search", "documents", "ocr", "rerank", "embeddings", "speech", "transcribe"] as const
 type Section = (typeof SECTION_ORDER)[number]
 
 /** The endpoint each non-chat section calls. */
@@ -65,6 +66,7 @@ const SECTION_ENDPOINTS: Record<Exclude<Section, "chat">, string> = {
   search: "/v1/search",
   documents: "/v1/chat/completions",
   ocr: "/v1/ocr",
+  rerank: "/v1/rerank",
   speech: "/v1/audio/speech",
   transcribe: "/v1/audio/transcriptions",
 }
@@ -632,6 +634,7 @@ export function LlmTab({ initialReplay, initialMode, initialProvider, initialCli
         available.search = mode === "client" && !baseUrlOverride
         available.documents = mode === "client" && !baseUrlOverride
         available.ocr = mode === "client" && !baseUrlOverride
+        available.rerank = mode === "client" && !baseUrlOverride
         setSectionAvailable(available)
         setImageEditsAvailable(isAvailable(endpointLevel("/v1/images/edits")))
       })
@@ -712,7 +715,7 @@ export function LlmTab({ initialReplay, initialMode, initialProvider, initialCli
       <Card>
         <CardHeader className="pb-3">
           <div className="space-y-1.5">
-            <CardTitle className="text-base">{["search", "documents", "ocr"].includes(activeSubtab) ? "Client connection" : "Connect to LLM"}</CardTitle>
+            <CardTitle className="text-base">{["search", "documents", "ocr", "rerank"].includes(activeSubtab) ? "Client connection" : "Connect to LLM"}</CardTitle>
             <p className="text-sm text-muted-foreground">{getModeDescription()}</p>
           </div>
         </CardHeader>
@@ -817,7 +820,7 @@ export function LlmTab({ initialReplay, initialMode, initialProvider, initialCli
               )}
 
               {/* Model selector */}
-              {activeSubtab !== "search" && activeSubtab !== "documents" && activeSubtab !== "ocr" && (<div className="space-y-1.5">
+              {activeSubtab !== "search" && activeSubtab !== "documents" && activeSubtab !== "ocr" && activeSubtab !== "rerank" && (<div className="space-y-1.5">
                 <Label className="text-sm">Model</Label>
                 <div className="flex items-center gap-2">
                   <ModelCombobox
@@ -858,7 +861,7 @@ export function LlmTab({ initialReplay, initialMode, initialProvider, initialCli
           </div>
 
           {/* Model Parameters - outside two-column layout */}
-          {activeSubtab !== "search" && activeSubtab !== "documents" && activeSubtab !== "ocr" && (
+          {activeSubtab !== "search" && activeSubtab !== "documents" && activeSubtab !== "ocr" && activeSubtab !== "rerank" && (
           <Collapsible open={showParameters} onOpenChange={setShowParameters}>
             <CollapsibleTrigger asChild>
               <Button variant="ghost" size="sm" className="gap-2">
@@ -1016,6 +1019,7 @@ export function LlmTab({ initialReplay, initialMode, initialProvider, initialCli
             <ImageIcon className="h-3 w-3" />
             Images
           </TabsTrigger>
+          <TabsTrigger value="rerank" disabled={mode !== "client" || !!baseUrlOverride}>Rerank</TabsTrigger>
           <TabsTrigger value="ocr" disabled={mode !== "client" || !!baseUrlOverride}>OCR</TabsTrigger>
           <TabsTrigger value="documents" disabled={mode !== "client" || !!baseUrlOverride}>Documents</TabsTrigger>
           <TabsTrigger value="search" className="flex items-center gap-1" disabled={mode !== "client" || !!baseUrlOverride} title="Ranked search uses a client with explicit search permission"><Search className="h-3 w-3" />Search</TabsTrigger>
@@ -1062,6 +1066,7 @@ export function LlmTab({ initialReplay, initialMode, initialProvider, initialCli
           />
         </TabsContent>
 
+        <TabsContent value="rerank" className="flex-1 min-h-0 mt-4"><RerankPanel key={`${mode}-${selectedClientId}`} openaiClient={openaiClient} isReady={mode === "client" && !baseUrlOverride && !!openaiClient} /></TabsContent>
         <TabsContent value="ocr" className="flex-1 min-h-0 mt-4"><OcrPanel key={`${mode}-${selectedClientId}`} openaiClient={openaiClient} isReady={mode === "client" && !baseUrlOverride && !!openaiClient} /></TabsContent>
         <TabsContent value="documents" className="flex-1 min-h-0 mt-4"><DocumentsPanel key={`${mode}-${selectedClientId}`} openaiClient={openaiClient} isReady={mode === "client" && !baseUrlOverride && !!openaiClient} /></TabsContent>
         <TabsContent value="search" className="flex-1 min-h-0 mt-4"><SearchPanel key={`${mode}-${selectedClientId}`} openaiClient={openaiClient} isReady={mode === "client" && !baseUrlOverride && !!openaiClient} /></TabsContent>

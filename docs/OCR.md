@@ -1,6 +1,6 @@
 # Explicit OCR
 
-Enable **Client Settings → Document extraction → Allow OCR** for a client.
+Enable **Client Settings → Document operations → Allow OCR** for a client.
 This permission defaults off and is independent of web search, MCP tools and
 model permissions. The current client credential and explicit model permission
 are checked before dispatch.

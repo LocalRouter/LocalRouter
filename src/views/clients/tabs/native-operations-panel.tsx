@@ -63,21 +63,33 @@ export function NativeOperationsPanel({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Document extraction</CardTitle>
+        <CardTitle>Document operations</CardTitle>
         <CardDescription>
-          Allow explicit provider OCR requests. Each request must select the
-          pages to process; provider page fees may apply.
+          Allow explicit OCR or relevance scoring over supplied documents. Existing model permissions still apply; provider fees may apply.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        <label className="flex items-center gap-2 text-sm">
-          <Checkbox
-            checked={operations?.includes('ocr') ?? false}
-            disabled={busy || !operations}
-            onCheckedChange={(checked) => setOperations(checked ? ['ocr'] : [])}
-          />
-          Allow OCR
-        </label>
+        {(['ocr', 'rerank'] as const).map((operation) => (
+          <label key={operation} className="flex items-center gap-2 text-sm">
+            <Checkbox
+              checked={operations?.includes(operation) ?? false}
+              disabled={busy || !operations}
+              onCheckedChange={(checked) =>
+                setOperations(
+                  (current) =>
+                    current &&
+                    (checked
+                      ? [
+                          ...current.filter((value) => value !== operation),
+                          operation,
+                        ]
+                      : current.filter((value) => value !== operation)),
+                )
+              }
+            />
+            {operation === 'ocr' ? 'Allow OCR' : 'Allow rerank'}
+          </label>
+        ))}
         <Button disabled={busy || !operations} onClick={() => void save()}>
           {busy ? 'Saving…' : 'Save operation permissions'}
         </Button>

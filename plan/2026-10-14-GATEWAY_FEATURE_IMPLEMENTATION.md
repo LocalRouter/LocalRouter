@@ -14,7 +14,7 @@
 - [x] P3 Versioned named routes and deterministic rules.
 - [x] P3 Search/web fetch and upstream server tools.
 - [x] P3 PDF/document inputs and OCR.
-- [ ] P3 Rerank API.
+- [x] P3 Rerank API.
 - [ ] Later Video jobs and realtime sessions.
 - [ ] Plan Review: compare implemented behavior with each requirement and finish omissions.
 - [ ] Test Coverage Review: add meaningful edge, error, isolation and migration tests.
@@ -188,3 +188,11 @@ Full stable parity passed (4,481 tests, zero failures), frontend checks/builds/
 regressions and production Chrome smoke passed. Remaining: native rerank, video
 jobs and realtime sessions, then overall final review. Rerank's saved plan is
 plan/2026-10-15-NATIVE_RERANK_API.md. Document commit 472f2885 is green in CI.
+
+Native rerank is complete: direct Cohere v2 and LLM Gateway, bounded caller
+query/candidates, original index/source mapping and native order/scores, separate
+default-off grant, policy/ceiling checks and native billing units, request/cancel/
+no-retry controls, aliases/OpenAPI/discovery/monitoring and Try It Out. Stable
+workspace parity passed (4,492 tests), frontend regressions/types/builds and
+production browser smoke passed. Remaining: native video jobs and realtime,
+then overall final review. Details: 2026-10-15-NATIVE_RERANK_API.md.

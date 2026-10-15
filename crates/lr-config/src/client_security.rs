@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum NativeOperation {
     Ocr,
+    Rerank,
 }
 
 /// Default-off constraints on native LLM traffic. These do not grant access.

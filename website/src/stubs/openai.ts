@@ -190,6 +190,21 @@ class OpenAI {
   post<T = any>(path: string, opts?: { body?: unknown; signal?: AbortSignal; maxRetries?: number }): ApiPromise<T> {
     return apiPromise<T>(async () => {
       if (opts?.signal?.aborted) throw new DOMException('Cancelled', 'AbortError')
+      if (path.replace(/\/+$/, '') === '/rerank') {
+        const clientId = [...mockClientSecrets.entries()].find(([, secret]) => secret === this.apiKey)?.[0]
+        const client = mockData.clients.find(client => client.id === clientId)
+        const security = clientId ? mockClientSecurity.get(clientId) : null
+        if (!client?.enabled || security?.hasCredential === false || (security?.expiry && Date.now() >= Date.parse(security.expiry))) throw new DemoApiError(401, 'Demo client credential is inactive')
+        if (!mockNativeOperations.get(client.id)?.includes('rerank')) throw new DemoApiError(400, 'Enable Allow rerank for this demo client in Settings')
+        const privacy = mockClientPrivacy.get(client.id)
+        if (privacy?.local_only || privacy?.no_retention) throw new DemoApiError(400, 'Strict privacy does not permit this native rerank chain')
+        const body = opts?.body as { model?: string; query?: string; documents?: string[]; top_n?: number; return_documents?: boolean }
+        if (!body?.model?.includes('/') || !body.query?.trim() || !body.documents?.length || body.documents.length > 128 || body.documents.some(document => typeof document !== 'string' || !document.trim())) throw new DemoApiError(400, 'Provide an explicit model, query and candidate documents')
+        const count = body.top_n ?? body.documents.length
+        if (!Number.isInteger(count) || count < 1 || count > body.documents.length) throw new DemoApiError(400, 'Invalid top_n')
+        const data = { id: 'rerank-demo', results: body.documents.slice(0, count).map((text, index) => ({ index, relevance_score: 0.9 - index * 0.005, ...(body.return_documents ? { document: { text } } : {}) })), extensions: { 'localrouter.rerank': { demo: true, notice: 'Illustrative ordering only; no model scored these documents.', cost_usd: null, cost_source: 'unknown' } } }
+        return { data: data as T, response: new Response(JSON.stringify(data), { headers: { 'content-type': 'application/json' } }) }
+      }
       if (path.replace(/\/+$/, '') === '/ocr') {
         const clientId = [...mockClientSecrets.entries()].find(([, secret]) => secret === this.apiKey)?.[0]
         const client = mockData.clients.find(client => client.id === clientId)

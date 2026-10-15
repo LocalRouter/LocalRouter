@@ -275,6 +275,19 @@ impl RateLimiterManager {
     /// Every configured window, with ordinary usage only. Native reservation
     /// adds the durable batch ledger transactionally; do not include it twice.
     /// Configuration-only check: tool charges lack a reliable upper bound.
+    pub fn has_token_limits(&self, key_id: &str) -> bool {
+        self.api_key_limiters.get(key_id).is_some_and(|limits| {
+            limits.iter().any(|limit| {
+                matches!(
+                    limit.limit_type,
+                    RateLimitType::InputTokens
+                        | RateLimitType::OutputTokens
+                        | RateLimitType::TotalTokens
+                )
+            })
+        })
+    }
+
     pub fn has_cost_limits(&self, key_id: &str) -> bool {
         self.api_key_limiters.get(key_id).is_some_and(|limits| {
             limits

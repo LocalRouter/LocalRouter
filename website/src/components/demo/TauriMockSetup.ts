@@ -1444,7 +1444,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   },
   'set_client_native_operations': (args: SetClientNativeOperationsParams): NativeOperation[] => {
     if (!mockData.clients.some(client => client.id === args.clientId)) throw 'Client not found'
-    if (new Set(args.allowedOperations).size !== args.allowedOperations.length || args.allowedOperations.some(operation => operation !== 'ocr')) throw 'Invalid native operation grants'
+    if (new Set(args.allowedOperations).size !== args.allowedOperations.length || args.allowedOperations.some(operation => !['ocr', 'rerank'].includes(operation))) throw 'Invalid native operation grants'
     mockNativeOperations.set(args.clientId, [...args.allowedOperations])
     return [...args.allowedOperations]
   },
@@ -3578,6 +3578,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     return [openai, anthropic, gemini, ollama, ollaya]
   },
   'get_api_path_support': (args): ApiPathSupport => ({
+    rerank: ['llmgateway', 'cohere'].includes(mockData.providers.find(provider => provider.instance_name === args?.instanceName)?.provider_type ?? '') ? 'supported' : 'not_supported',
     ocr: ['llmgateway', 'mistral'].includes(mockData.providers.find(provider => provider.instance_name === args?.instanceName)?.provider_type ?? '') ? 'supported' : 'not_supported',
     search: ['llmgateway', 'perplexity'].includes(mockData.providers.find(provider => provider.instance_name === args?.instanceName)?.provider_type ?? '') ? 'supported' : 'not_supported',
     batches: ['openai', 'openrouter'].includes(mockData.providers.find(provider => provider.instance_name === args?.instanceName)?.provider_type ?? '') ? 'supported' : 'not_supported',

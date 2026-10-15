@@ -11,6 +11,7 @@ pub(crate) struct NativeDispatch<'a> {
     strategy: &'a str,
     started: std::time::Instant,
     pub success: bool,
+    pub input_tokens: u64,
 }
 impl<'a> NativeDispatch<'a> {
     pub fn new(
@@ -28,6 +29,7 @@ impl<'a> NativeDispatch<'a> {
             strategy,
             started: std::time::Instant::now(),
             success: false,
+            input_tokens: 0,
         }
     }
 }
@@ -42,7 +44,7 @@ impl Drop for NativeDispatch<'_> {
                     provider: self.provider,
                     model: self.model,
                     strategy_id: self.strategy,
-                    input_tokens: 0,
+                    input_tokens: self.input_tokens,
                     output_tokens: 0,
                     cost_usd: 0.0,
                     latency_ms: latency,
@@ -83,6 +85,20 @@ impl Router {
                 .any(|limit| limit.enabled && limit.limit_type == lr_config::RateLimitType::Cost)
         {
             return Err(AppError::InvalidParams("Native operation charges cannot be reliably bounded before dispatch; cost-limited/free-only requests are unsupported".into()));
+        }
+        if operation == NativeOperation::Rerank
+            && (self.rate_limiter.has_token_limits(client_id)
+                || strategy.rate_limits.iter().any(|limit| {
+                    limit.enabled
+                        && matches!(
+                            limit.limit_type,
+                            lr_config::RateLimitType::InputTokens
+                                | lr_config::RateLimitType::OutputTokens
+                                | lr_config::RateLimitType::TotalTokens
+                        )
+                }))
+        {
+            return Err(AppError::InvalidParams("Native rerank billing units cannot satisfy configured token ceilings; use explicit request quotas".into()));
         }
         Ok(strategy)
     }
@@ -129,6 +145,61 @@ impl Router {
         self.authorize_native_operation(client_id, NativeOperation::Ocr)?;
         let mut dispatch = NativeDispatch::new(self, client_id, &provider, &model, &strategy.id);
         let result = instance.ocr(request).await;
+        dispatch.success = result.is_ok();
+        result
+    }
+    pub async fn rerank(
+        &self,
+        client_id: &str,
+        mut request: lr_providers::rerank::RerankRequest,
+    ) -> AppResult<lr_providers::rerank::RerankResponse> {
+        let strategy = self.authorize_native_operation(client_id, NativeOperation::Rerank)?;
+        request.validate()?;
+        let (provider, model) = Self::parse_model_string(&request.model);
+        if provider.is_empty() || provider == "localrouter" || model.is_empty() {
+            return Err(AppError::InvalidParams(
+                "Rerank requires an explicit qualified provider/model".into(),
+            ));
+        }
+        if !strategy.is_model_allowed(&provider, &model) {
+            return Err(AppError::InvalidParams(
+                "Rerank model is not permitted by the current strategy".into(),
+            ));
+        }
+        self.require_enabled_model(&provider, &model)?;
+        let instance = self
+            .provider_registry
+            .get_provider(&provider)
+            .ok_or_else(|| AppError::InvalidParams("Rerank provider is unavailable".into()))?;
+        let protocol = instance.rerank_protocol().ok_or_else(|| {
+            AppError::InvalidParams("Provider has no verified native Rerank mapping".into())
+        })?;
+        request.model = model.clone();
+        request.wire_body(protocol)?;
+        self.check_client_rate_limits(client_id).await?;
+        self.check_strategy_rate_limits(&strategy, &provider, &model)?;
+        self.rate_limiter
+            .record_api_key_usage(
+                client_id,
+                &UsageInfo {
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cost_usd: 0.0,
+                },
+            )
+            .await?;
+        self.authorize_native_operation(client_id, NativeOperation::Rerank)?;
+        let mut dispatch = NativeDispatch::new(self, client_id, &provider, &model, &strategy.id);
+        let result = instance.rerank(request).await;
+        if let Ok(response) = &result {
+            dispatch.input_tokens = response
+                .meta
+                .as_ref()
+                .and_then(|m| m.get("billed_units"))
+                .and_then(|u| u.get("input_tokens"))
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+        }
         dispatch.success = result.is_ok();
         result
     }

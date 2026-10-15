@@ -49,6 +49,7 @@ use utoipa::OpenApi;
         crate::routes::embeddings::embeddings,
         crate::routes::search::search,
         crate::routes::ocr::ocr,
+        crate::routes::rerank::rerank,
 
         // Moderations endpoints
         crate::routes::moderations::moderations,
@@ -171,6 +172,10 @@ use utoipa::OpenApi;
             crate::types::ContentPart,
             lr_providers::documents::FileInput,
             lr_providers::ocr::OcrRequest,
+            lr_providers::rerank::RerankRequest,
+            lr_providers::rerank::RerankResponse,
+            lr_providers::rerank::RerankResult,
+            lr_providers::rerank::RankedDocument,
             lr_providers::ocr::OcrDocument,
             lr_providers::ocr::OcrPages,
             lr_providers::ocr::OcrResponse,

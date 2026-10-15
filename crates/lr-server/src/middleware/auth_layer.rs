@@ -131,7 +131,7 @@ where
                 || path == "/chat/completions"
                 || path == "/completions"
                 || path == "/responses"
-                || path == "/search" || path == "/ocr" || path == "/embeddings"
+                || path == "/search" || path == "/ocr" || path == "/rerank" || path == "/embeddings"
                 || path == "/moderations"
                 || path == "/systemone"
                 || path == "/decisions"
