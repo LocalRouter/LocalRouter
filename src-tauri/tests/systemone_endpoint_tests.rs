@@ -137,6 +137,8 @@ async fn start_replay_test_server(
     provider_registry.register_factory(Arc::new(OpenAICompatibleProviderFactory));
     provider_registry.register_factory(Arc::new(OllamaProviderFactory));
     provider_registry.register_factory(Arc::new(TestGatewayFactory));
+    provider_registry
+        .register_factory(Arc::new(messages_endpoint_cases::TestNativeMessagesFactory));
     for (name, provider_type, cfg) in upstreams {
         let cfg: HashMap<String, String> =
             cfg.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
@@ -2686,3 +2688,6 @@ async fn exact_cache_decisions_refresh_replaces_the_same_typed_input_entry() {
     }
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
+
+#[path = "fixtures/messages_endpoint_cases.rs"]
+mod messages_endpoint_cases;

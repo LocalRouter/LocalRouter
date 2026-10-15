@@ -1886,6 +1886,8 @@ pub async fn get_feature_endpoint_matrix() -> Result<lr_providers::FeatureEndpoi
 /// to emulate that path on top of a different upstream API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiPathSupport {
+    pub messages: lr_providers::SupportLevel,
+    pub messages_count_tokens: lr_providers::SupportLevel,
     pub chat_completions: lr_providers::SupportLevel,
     pub completions: lr_providers::SupportLevel,
     pub responses: lr_providers::SupportLevel,
@@ -1902,6 +1904,18 @@ pub async fn get_api_path_support(
         .ok_or_else(|| format!("Provider instance '{}' not found", instance_name))?;
 
     Ok(ApiPathSupport {
+        messages: if provider.supports_native_messages() {
+            lr_providers::SupportLevel::Supported
+        } else if provider.supports_chat() {
+            lr_providers::SupportLevel::Translated
+        } else {
+            lr_providers::SupportLevel::NotSupported
+        },
+        messages_count_tokens: if provider.supports_native_message_count() {
+            lr_providers::SupportLevel::Supported
+        } else {
+            lr_providers::SupportLevel::NotSupported
+        },
         chat_completions: provider.api_path_support("chat_completions"),
         completions: provider.api_path_support("completions"),
         responses: provider.api_path_support("responses"),

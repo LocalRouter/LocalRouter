@@ -389,6 +389,7 @@ impl CohereUsage {
             completion_tokens,
             total_tokens: prompt_tokens + completion_tokens,
             prompt_tokens_details: cached.map(|c| PromptTokensDetails {
+                anthropic_cache_creation_1h_tokens: None,
                 cached_tokens: Some(c),
                 cache_creation_tokens: None,
                 cache_read_tokens: None,

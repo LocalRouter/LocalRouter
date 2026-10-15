@@ -266,6 +266,7 @@ mod tests {
             completion_tokens: 0,
             total_tokens: 1000,
             prompt_tokens_details: Some(crate::PromptTokensDetails {
+                anthropic_cache_creation_1h_tokens: None,
                 cached_tokens: Some(500),
                 cache_read_tokens: None,
                 cache_creation_tokens: Some(500),

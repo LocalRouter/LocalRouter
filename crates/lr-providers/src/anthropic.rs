@@ -36,6 +36,7 @@ const CACHE_WRITE_MULTIPLIER: f64 = 1.25;
 
 pub struct AnthropicProvider {
     client: ClientWithMiddleware,
+    native_client: ClientWithMiddleware,
     api_key: String,
     base_url: String,
 }
@@ -53,6 +54,7 @@ impl AnthropicProvider {
 
         Ok(Self {
             client,
+            native_client: crate::http_client::native_client()?,
             api_key,
             base_url: base_url.trim_end_matches('/').to_string(),
         })
@@ -421,8 +423,8 @@ impl AnthropicProvider {
             input_cost_per_1k: input,
             output_cost_per_1k: output,
             reasoning_cost_per_1k: None,
-            cache_read_cost_per_1k: Some(input * CACHE_READ_MULTIPLIER),
-            cache_write_cost_per_1k: Some(input * CACHE_WRITE_MULTIPLIER),
+            cache_read_cost_per_1k: (input > 0.0).then_some(input * CACHE_READ_MULTIPLIER),
+            cache_write_cost_per_1k: (input > 0.0).then_some(input * CACHE_WRITE_MULTIPLIER),
             currency: "USD".to_string(),
         }
     }
@@ -542,12 +544,10 @@ impl ModelProvider for AnthropicProvider {
                 input_cost_per_1k: catalog_model.pricing.prompt_cost_per_1k(),
                 output_cost_per_1k: catalog_model.pricing.completion_cost_per_1k(),
                 reasoning_cost_per_1k: catalog_model.pricing.reasoning_cost_per_1k(),
-                cache_read_cost_per_1k: catalog_model.pricing.cache_read_cost_per_1k().or(Some(
-                    catalog_model.pricing.prompt_cost_per_1k() * CACHE_READ_MULTIPLIER,
-                )),
-                cache_write_cost_per_1k: catalog_model.pricing.cache_write_cost_per_1k().or(Some(
-                    catalog_model.pricing.prompt_cost_per_1k() * CACHE_WRITE_MULTIPLIER,
-                )),
+                // Current models have different cache-read multipliers. A
+                // missing catalog cache rate is unknown, not a universal 0.1x.
+                cache_read_cost_per_1k: catalog_model.pricing.cache_read_cost_per_1k(),
+                cache_write_cost_per_1k: catalog_model.pricing.cache_write_cost_per_1k(),
                 currency: catalog_model.pricing.currency.to_string(),
             });
         }
@@ -555,6 +555,38 @@ impl ModelProvider for AnthropicProvider {
         // Fallback to hardcoded pricing
         tracing::debug!("Using fallback pricing for Anthropic model: {}", model);
         Ok(Self::get_model_pricing(model))
+    }
+
+    fn supports_native_messages(&self) -> bool {
+        true
+    }
+
+    fn supports_native_message_count(&self) -> bool {
+        true
+    }
+
+    async fn native_messages(
+        &self,
+        request: &crate::messages::MessagesRequest,
+        headers: &crate::messages::MessagesHeaders,
+        operation: crate::messages::MessagesOperation,
+    ) -> AppResult<reqwest::Response> {
+        let body = operation.body(request)?;
+        // The configured provider supplies authentication. The header type
+        // cannot contain the caller's key, workspace or SDK diagnostics.
+        let response = headers
+            .apply(
+                self.native_client
+                    .post(format!("{}/{}", self.base_url, operation.path())),
+            )
+            .header("x-api-key", &self.api_key)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|error| {
+                AppError::Provider(format!("Native Messages request failed: {error}"))
+            })?;
+        Ok(response)
     }
 
     async fn complete(&self, request: CompletionRequest) -> AppResult<CompletionResponse> {
@@ -1371,7 +1403,7 @@ impl AnthropicStreamUsage {
 /// with reads and writes broken out as parts of it (`cached_tokens` /
 /// `cache_read_tokens`, `cache_creation_tokens`), the same shape as every
 /// other provider, so cost charges each part at its own rate.
-fn token_usage(
+pub(crate) fn token_usage(
     input_tokens: u32,
     output_tokens: u32,
     cache_creation: Option<u32>,
@@ -1386,6 +1418,7 @@ fn token_usage(
         completion_tokens: output_tokens,
         total_tokens: prompt_tokens.saturating_add(output_tokens),
         prompt_tokens_details: has_cache.then_some(super::PromptTokensDetails {
+            anthropic_cache_creation_1h_tokens: None,
             cached_tokens: cache_read,
             cache_creation_tokens: cache_creation,
             cache_read_tokens: cache_read,
@@ -1784,6 +1817,7 @@ mod tests {
             prediction: None,
             reasoning_effort: None,
             pre_computed_routing: None,
+            native_messages: None,
         }
     }
 

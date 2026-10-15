@@ -221,7 +221,7 @@ impl Router {
             strategy,
             policy,
             request,
-            lr_providers::EndpointType::Chat,
+            request.endpoint_type(),
         )
         .await
     }

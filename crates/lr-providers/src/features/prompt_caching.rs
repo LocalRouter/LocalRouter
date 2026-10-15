@@ -210,6 +210,7 @@ impl FeatureAdapter for PromptCachingAdapter {
         // Add cache details to TokenUsage
         if response.usage.prompt_tokens_details.is_none() {
             response.usage.prompt_tokens_details = Some(crate::PromptTokensDetails {
+                anthropic_cache_creation_1h_tokens: None,
                 cached_tokens: None,
                 cache_creation_tokens: Some(metrics.cache_creation_input_tokens),
                 cache_read_tokens: Some(metrics.cache_read_input_tokens),
@@ -336,6 +337,7 @@ mod tests {
             prediction: None,
             reasoning_effort: None,
             pre_computed_routing: None,
+            native_messages: None,
         };
 
         let breakpoints = PromptCachingAdapter::determine_cache_breakpoints(&request);
@@ -407,6 +409,7 @@ mod tests {
             prediction: None,
             reasoning_effort: None,
             pre_computed_routing: None,
+            native_messages: None,
         };
 
         let breakpoints = PromptCachingAdapter::determine_cache_breakpoints(&request);
@@ -475,6 +478,7 @@ mod tests {
             prediction: None,
             reasoning_effort: None,
             pre_computed_routing: None,
+            native_messages: None,
         };
 
         let params = HashMap::new();
@@ -527,6 +531,7 @@ mod tests {
             prediction: None,
             reasoning_effort: None,
             pre_computed_routing: None,
+            native_messages: None,
         };
 
         let params = HashMap::new();

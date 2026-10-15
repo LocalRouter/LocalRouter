@@ -1276,6 +1276,7 @@ impl GeminiUsageMetadata {
             },
             prompt_tokens_details: self.cached_content_token_count.map(|cached| {
                 super::PromptTokensDetails {
+                    anthropic_cache_creation_1h_tokens: None,
                     cached_tokens: Some(cached),
                     cache_creation_tokens: None,
                     cache_read_tokens: None,
@@ -1751,6 +1752,7 @@ mod tests {
             prediction: None,
             reasoning_effort: None,
             pre_computed_routing: None,
+            native_messages: None,
         };
 
         let response = provider.complete(request).await.unwrap();

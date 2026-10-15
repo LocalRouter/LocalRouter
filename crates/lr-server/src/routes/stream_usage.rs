@@ -225,6 +225,7 @@ impl StreamTracker {
                 let details =
                     sum.prompt_tokens_details
                         .get_or_insert(lr_providers::PromptTokensDetails {
+                            anthropic_cache_creation_1h_tokens: None,
                             cached_tokens: None,
                             cache_creation_tokens: None,
                             cache_read_tokens: None,
@@ -237,6 +238,10 @@ impl StreamTracker {
                 details.cache_read_tokens = add(details.cache_read_tokens, d.cache_read_tokens);
                 details.cache_creation_tokens =
                     add(details.cache_creation_tokens, d.cache_creation_tokens);
+                details.anthropic_cache_creation_1h_tokens = add(
+                    details.anthropic_cache_creation_1h_tokens,
+                    d.anthropic_cache_creation_1h_tokens,
+                );
             }
             sum
         }))

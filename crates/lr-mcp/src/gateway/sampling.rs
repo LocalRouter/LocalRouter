@@ -55,6 +55,7 @@ pub fn convert_sampling_to_chat_request(
         tool_choice: sampling_req.tool_choice,
         extensions: None,
         pre_computed_routing: None,
+        native_messages: None,
         n: None,
         logit_bias: None,
         parallel_tool_calls: None,

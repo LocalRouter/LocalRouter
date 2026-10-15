@@ -63,6 +63,7 @@ fn standard_completion_request() -> localrouter::providers::CompletionRequest {
         prediction: None,
         reasoning_effort: None,
         pre_computed_routing: None,
+        native_messages: None,
     }
 }
 

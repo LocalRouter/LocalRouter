@@ -37,6 +37,7 @@ import { SpeechPanel } from "./speech-panel"
 import { TranscribePanel } from "./transcribe-panel"
 import { SystemOnePanel } from "./systemone-panel"
 import { DecisionsPanel } from "./decisions-panel"
+import { MessagesPanel } from "./messages-panel"
 import type {
   ApiPathSupport,
   GetApiPathSupportParams,
@@ -46,11 +47,12 @@ import type {
 } from "@/types/tauri-commands"
 
 /** Sections in display order; the first available one opens by default. */
-const SECTION_ORDER = ["chat", "decisions", "systemone", "images", "embeddings", "speech", "transcribe"] as const
+const SECTION_ORDER = ["chat", "messages", "decisions", "systemone", "images", "embeddings", "speech", "transcribe"] as const
 type Section = (typeof SECTION_ORDER)[number]
 
 /** The endpoint each non-chat section calls. */
 const SECTION_ENDPOINTS: Record<Exclude<Section, "chat">, string> = {
+  messages: "/v1/messages",
   systemone: "/v1/systemone",
   decisions: "/v1/decisions",
   images: "/v1/images/generations",
@@ -585,12 +587,14 @@ export function LlmTab({ initialReplay, initialMode, initialProvider, initialCli
       ? selectedProvider || null
       : providerModels.find(m => m.id === selectedModel)?.provider ?? null
   const [sectionAvailable, setSectionAvailable] = useState<Record<Section, boolean> | null>(null)
+  const [messagesPathSupport, setMessagesPathSupport] = useState<ApiPathSupport | null>(null)
   // Image edits are a mode of the Images section, not a section of their own.
   const [imageEditsAvailable, setImageEditsAvailable] = useState<boolean | null>(null)
 
   useEffect(() => {
     let cancelled = false
     if (!availabilityProvider) {
+      setMessagesPathSupport(null)
       setSectionAvailable(null)
       setImageEditsAvailable(null)
       return
@@ -605,6 +609,7 @@ export function LlmTab({ initialReplay, initialMode, initialProvider, initialCli
     ])
       .then(([paths, features]) => {
         if (cancelled) return
+        setMessagesPathSupport(paths)
         const endpointLevel = (path: string) =>
           features.endpoints.find(e => e.endpoint === path)?.support
         const available = {
@@ -621,6 +626,7 @@ export function LlmTab({ initialReplay, initialMode, initialProvider, initialCli
       })
       .catch(() => {
         if (!cancelled) {
+          setMessagesPathSupport(null)
           setSectionAvailable(null)
           setImageEditsAvailable(null)
         }
@@ -986,6 +992,7 @@ export function LlmTab({ initialReplay, initialMode, initialProvider, initialCli
             <MessageSquare className="h-3 w-3" />
             Chat
           </TabsTrigger>
+          <TabsTrigger value="messages" className="flex items-center gap-1" disabled={sectionDisabled("messages")} title={sectionDisabled("messages") ? unavailableTitle : undefined}><MessageSquare className="h-3 w-3" />Messages</TabsTrigger>
           <TabsTrigger value="decisions" className="flex items-center gap-1" disabled={sectionDisabled("decisions")} title={sectionDisabled("decisions") ? unavailableTitle : undefined}><Scale className="h-3 w-3" />Decisions</TabsTrigger>
           <TabsTrigger value="systemone" className="flex items-center gap-1" disabled={sectionDisabled("systemone")} title={sectionDisabled("systemone") ? unavailableTitle : undefined}>
             <Scale className="h-3 w-3" />
@@ -1063,6 +1070,7 @@ export function LlmTab({ initialReplay, initialMode, initialProvider, initialCli
           />
         </TabsContent>
 
+        <TabsContent value="messages" className="flex-1 min-h-0 mt-4"><MessagesPanel key={`${mode}-${selectedClientId}-${selectedProvider}`} openaiClient={openaiClient} isReady={isReady()} selectedModel={getModelWithProvider()} pathSupport={messagesPathSupport} /></TabsContent>
         <TabsContent value="decisions" className="flex-1 min-h-0 mt-4"><DecisionsPanel key={`${mode}-${selectedClientId}-${selectedProvider}`} openaiClient={openaiClient} isReady={isReady()} selectedModel={getModelWithProvider()} /></TabsContent>
         <TabsContent value="systemone" className="flex-1 min-h-0 mt-4">
           <SystemOnePanel

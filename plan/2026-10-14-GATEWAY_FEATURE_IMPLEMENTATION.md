@@ -8,7 +8,7 @@
 - [x] P1 Session affinity, classifier reuse and prompt-cache accounting.
 - [x] P1 Local replay and model/policy evaluation (promoted by user).
 - [x] P2 Opt-in exact response cache.
-- [ ] P2 Native Anthropic Messages ingress.
+- [x] P2 Native Anthropic Messages ingress.
 - [ ] P2 Native discounted Files/Batches lifecycle.
 - [ ] P2/P3 Privacy profiles and client-key hygiene.
 - [ ] P3 Versioned named routes and deterministic rules.
@@ -124,3 +124,7 @@ Plan Review, Test Coverage Review and Bug Hunt are complete. Stable 1.99.0 with 
 ## P2 exact response cache
 
 Implemented default-off bounded memory-only response caching with credential/client/config/provider/model/endpoint isolation, current policy enforcement, post-approval insertion, invalidation and explicit bypass/refresh. Chat, Completions, text Responses and eligible native decisions preserve served usage while reporting zero new resolved-model spend; separately charged classifiers remain accounted. Settings, monitor, Tauri contracts and demo mocks are synchronized. Eleven cache HTTP fixtures, 4,276 workspace tests (69 ignored), stable Clippy/fmt, 68 frontend tests, types and both production builds pass. See `2026-10-14-EXACT_RESPONSE_CACHE.md`.
+
+## P2 native Anthropic Messages
+
+Implemented native Messages create/count ingress, local SDK API-key auth, preserved direct Anthropic blocks/signatures/SSE and a validated Chat translation subset with ordinary client tool history. Shared policy, routing, budgets, accounting, MCP and monitoring remain authoritative; unsupported protected/side-effect semantics fail before dispatch. Strict session pins and unambiguous native model resolution prevent moving bound history. Native payloads bypass exact caching, retention is bounded, and cache TTL accounting preserves known versus unknown rates. Try It Out, setup guidance, capability commands/types, demo and OpenAPI are synchronized. Final stable CI passes: 4,330 workspace tests (69 ignored), Clippy/fmt, ten native HTTP fixtures, 72 frontend regressions, types and both builds. See `2026-10-15-NATIVE_ANTHROPIC_MESSAGES.md`.

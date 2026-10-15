@@ -56,6 +56,25 @@ pub async fn chat_completions(
     client_auth: Option<Extension<ClientAuthContext>>,
     GatewayJson(request): GatewayJson<ChatCompletionRequest>,
 ) -> ApiResult<Response> {
+    chat_completions_with_endpoint(
+        state,
+        auth,
+        client_auth,
+        request,
+        "/v1/chat/completions",
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn chat_completions_with_endpoint(
+    state: AppState,
+    auth: AuthContext,
+    client_auth: Option<Extension<ClientAuthContext>>,
+    request: ChatCompletionRequest,
+    endpoint: &'static str,
+    monitor_request: Option<serde_json::Value>,
+) -> ApiResult<Response> {
     // Emit LLM request event to trigger tray icon indicator
     state.emit_event("llm-request", "chat");
 
@@ -63,12 +82,13 @@ pub async fn chat_completions(
     let session_id = uuid::Uuid::new_v4().to_string();
 
     // Emit monitor event for traffic inspection
-    let request_json = serde_json::to_value(&request).unwrap_or_default();
+    let request_json =
+        monitor_request.unwrap_or_else(|| serde_json::to_value(&request).unwrap_or_default());
     let mut llm_guard = super::monitor_helpers::emit_llm_call(
         &state,
         client_auth.as_ref(),
         Some(&session_id),
-        "/v1/chat/completions",
+        endpoint,
         &request.model,
         request.stream,
         &request_json,
@@ -88,7 +108,7 @@ pub async fn chat_completions(
         client_auth.as_ref(),
         request,
         &mut llm_guard,
-        "/v1/chat/completions",
+        endpoint,
         session_id.clone(),
         super::pipeline::PipelineCaps::chat(),
     )
@@ -878,7 +898,7 @@ pub(crate) async fn check_free_tier_fallback(
 /// previously this lived in two near-duplicate functions
 /// (`handle_non_streaming` + `handle_non_streaming_parallel`).
 #[allow(clippy::too_many_arguments)]
-async fn handle_non_streaming(
+pub(crate) async fn handle_non_streaming(
     state: AppState,
     auth: AuthContext,
     client_auth: Option<Extension<ClientAuthContext>>,

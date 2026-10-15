@@ -103,6 +103,7 @@ impl lr_memory::CompactionLlm for RouterCompactionLlm {
                 Some("none".to_string())
             },
             pre_computed_routing: None,
+            native_messages: None,
         };
 
         // Serialize request for monitor event observability

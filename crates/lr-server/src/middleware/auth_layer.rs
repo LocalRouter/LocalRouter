@@ -45,7 +45,7 @@ impl<S> Service<Request<Body>> for AuthService<S>
 where
     S: Service<Request<Body>, Response = Response<Body>> + Clone + Send + 'static,
     S::Future: Send + 'static,
-    S::Error: Into<Box<dyn std::error::Error + Send + Sync>> + 'static,
+    S::Error: Into<Box<dyn std::error::Error + Send + Sync>> + Send + 'static,
 {
     type Response = Response<Body>;
     type Error = S::Error;
@@ -64,9 +64,54 @@ where
         let mut inner = std::mem::replace(&mut self.inner, replacement);
 
         Box::pin(async move {
+            let native = matches!(
+                req.uri().path(),
+                "/v1/messages" | "/v1/messages/count_tokens"
+            );
+            let result:Result<Response<Body>,S::Error>=async move {
             // Skip authentication for OPTIONS requests (CORS preflight)
             if req.method() == tauri::http::Method::OPTIONS {
                 return inner.call(req).await;
+            }
+
+            // Anthropic SDKs use x-api-key. Normalize it into the existing
+            // client-secret validator only on native Messages routes; this is
+            // never an upstream provider credential.
+            if matches!(
+                req.uri().path(),
+                "/v1/messages" | "/v1/messages/count_tokens"
+            ) {
+                if req.headers().get_all("x-api-key").iter().count() > 1
+                    || req.headers().get_all("authorization").iter().count() > 1
+                {
+                    return Ok(create_error_response(
+                        StatusCode::UNAUTHORIZED,
+                        "authentication_error",
+                        "Repeated authentication headers",
+                    ));
+                }
+                if !req.headers().contains_key("authorization") {
+                    if let Some(key) = req.headers().get("x-api-key") {
+                        let bearer = key
+                            .to_str()
+                            .ok()
+                            .filter(|v| {
+                                !v.is_empty() && !v.bytes().any(|b| b.is_ascii_whitespace())
+                            })
+                            .and_then(|v| {
+                                tauri::http::HeaderValue::from_str(&format!("Bearer {v}")).ok()
+                            });
+                        let Some(bearer) = bearer else {
+                            return Ok(create_error_response(
+                                StatusCode::UNAUTHORIZED,
+                                "authentication_error",
+                                "Invalid x-api-key header",
+                            ));
+                        };
+                        req.headers_mut()
+                            .insert(tauri::http::header::AUTHORIZATION, bearer);
+                    }
+                }
             }
 
             // Check if this is a protected route
@@ -280,6 +325,18 @@ where
             let mut resp = inner.call(req).await?;
             resp.extensions_mut().insert(LoggedClientId(logged_id));
             Ok(resp)
+            }.await;
+            let response = match result {
+                Ok(response) => response,
+                Err(error) => return Err(error),
+            };
+            if native
+                && (response.status().is_client_error() || response.status().is_server_error())
+            {
+                Ok(crate::routes::messages::native_error_response(response).await)
+            } else {
+                Ok(response)
+            }
         })
     }
 }

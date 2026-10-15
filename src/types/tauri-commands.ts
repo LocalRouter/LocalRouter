@@ -4618,6 +4618,8 @@ export interface GetProviderFeatureSupportParams {
  * Rust: src-tauri/src/ui/commands_providers.rs - ApiPathSupport struct
  */
 export interface ApiPathSupport {
+  messages: SupportLevel
+  messages_count_tokens: SupportLevel
   chat_completions: SupportLevel
   completions: SupportLevel
   responses: SupportLevel

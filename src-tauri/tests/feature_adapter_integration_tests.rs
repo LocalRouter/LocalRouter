@@ -79,6 +79,7 @@ fn test_structured_outputs_person_schema_openai() {
         prediction: None,
         reasoning_effort: None,
         pre_computed_routing: None,
+        native_messages: None,
     };
 
     // Adapt request
@@ -294,6 +295,7 @@ fn test_prompt_caching_anthropic_request() {
         prediction: None,
         reasoning_effort: None,
         pre_computed_routing: None,
+        native_messages: None,
     };
 
     // Adapt request
@@ -346,6 +348,7 @@ fn test_prompt_caching_cost_savings_calculation() {
             completion_tokens: 50,
             total_tokens: 1150,
             prompt_tokens_details: Some(PromptTokensDetails {
+                anthropic_cache_creation_1h_tokens: None,
                 cached_tokens: None,
                 cache_creation_tokens: Some(500), // Created 500 tokens
                 cache_read_tokens: Some(500),     // Read 500 cached tokens
@@ -425,6 +428,7 @@ fn test_logprobs_openai_request() {
         prediction: None,
         reasoning_effort: None,
         pre_computed_routing: None,
+        native_messages: None,
     };
 
     // Adapt request
@@ -568,6 +572,7 @@ fn test_logprobs_various_top_values() {
             prediction: None,
             reasoning_effort: None,
             pre_computed_routing: None,
+            native_messages: None,
         };
 
         let result = adapter.adapt_request(&mut request, &params);
@@ -644,6 +649,7 @@ fn test_json_mode_openai() {
         prediction: None,
         reasoning_effort: None,
         pre_computed_routing: None,
+        native_messages: None,
     };
 
     // Adapt request
@@ -701,6 +707,7 @@ fn test_json_mode_anthropic() {
         prediction: None,
         reasoning_effort: None,
         pre_computed_routing: None,
+        native_messages: None,
     };
 
     // Adapt request
@@ -868,6 +875,7 @@ fn test_json_mode_all_providers() {
             prediction: None,
             reasoning_effort: None,
             pre_computed_routing: None,
+            native_messages: None,
         };
 
         let result = adapter.adapt_request(&mut request, &HashMap::new());
@@ -952,6 +960,7 @@ fn test_structured_outputs_with_prompt_caching() {
         prediction: None,
         reasoning_effort: None,
         pre_computed_routing: None,
+        native_messages: None,
     };
 
     // Apply both adapters
@@ -1023,6 +1032,7 @@ fn test_json_mode_with_logprobs() {
         prediction: None,
         reasoning_effort: None,
         pre_computed_routing: None,
+        native_messages: None,
     };
 
     // Apply both adapters

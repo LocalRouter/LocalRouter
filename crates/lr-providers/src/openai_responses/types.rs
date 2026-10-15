@@ -245,6 +245,7 @@ impl ResponsesUsage {
             },
             prompt_tokens_details: self.input_tokens_details.as_ref().map(|d| {
                 crate::PromptTokensDetails {
+                    anthropic_cache_creation_1h_tokens: None,
                     cached_tokens: Some(d.cached_tokens),
                     cache_creation_tokens: None,
                     cache_read_tokens: None,

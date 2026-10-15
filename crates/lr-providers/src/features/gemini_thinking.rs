@@ -191,6 +191,7 @@ mod tests {
             prediction: None,
             reasoning_effort: None,
             pre_computed_routing: None,
+            native_messages: None,
         };
 
         let mut params = HashMap::new();

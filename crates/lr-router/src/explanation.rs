@@ -123,7 +123,7 @@ impl Router {
             model,
             request,
             priority,
-            EndpointType::Chat,
+            request.endpoint_type(),
         )
     }
 
@@ -209,6 +209,13 @@ impl Router {
             result.exclusions.push("auto_router_disabled".into());
         }
         let instance = self.provider_registry.get_provider(provider);
+        if let Some(instance) = instance.as_ref() {
+            if lr_providers::messages::validate_dispatch(instance.as_ref(), request).is_err() {
+                result
+                    .exclusions
+                    .push("messages_transport_unsupported".into());
+            }
+        }
         if instance.is_none() {
             result.exclusions.push(
                 if self.provider_registry.is_provider_enabled(provider) == Some(false) {

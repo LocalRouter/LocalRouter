@@ -138,6 +138,7 @@ fn create_test_request(model: &str) -> CompletionRequest {
         prediction: None,
         reasoning_effort: None,
         pre_computed_routing: None,
+        native_messages: None,
     }
 }
 

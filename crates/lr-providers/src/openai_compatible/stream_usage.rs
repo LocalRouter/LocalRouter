@@ -115,6 +115,7 @@ pub(crate) fn parse_openai_usage(value: &Value) -> Option<TokenUsage> {
         completion_tokens,
         total_tokens,
         prompt_tokens_details: cached.map(|cached| PromptTokensDetails {
+            anthropic_cache_creation_1h_tokens: None,
             cached_tokens: Some(cached),
             cache_creation_tokens: None,
             cache_read_tokens: None,

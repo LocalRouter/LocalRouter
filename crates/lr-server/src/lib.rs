@@ -281,6 +281,11 @@ fn build_app(state: AppState, enable_cors: bool, shutdown: CancellationToken) ->
         .route("/openapi.yaml", get(serve_openapi_yaml))
         // Routes with /v1 prefix (all protected by blanket `/v1/` check in auth layer)
         .route("/v1/chat/completions", post(routes::chat_completions))
+        .route("/v1/messages", post(routes::messages::create_message))
+        .route(
+            "/v1/messages/count_tokens",
+            post(routes::messages::count_tokens),
+        )
         .route("/v1/completions", post(routes::completions))
         .route("/v1/responses", post(routes::create_response))
         .route("/v1/embeddings", post(routes::embeddings))

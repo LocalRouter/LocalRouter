@@ -144,6 +144,8 @@ pub mod listing_metadata;
 pub mod llamacpp;
 pub mod lmstudio;
 pub mod localai;
+pub mod messages;
+pub mod messages_stream;
 pub mod mistral;
 pub mod model_settings;
 pub mod oauth;
@@ -199,6 +201,29 @@ pub trait ModelProvider: Send + Sync {
 
     /// Sends a chat completion request
     async fn complete(&self, request: CompletionRequest) -> AppResult<CompletionResponse>;
+
+    /// Raw native transport. Callers must go through the router's current
+    /// policy, accounting and dispatch budgets before using this operation.
+    /// Format-compatible chat support does not imply this capability.
+    fn supports_native_messages(&self) -> bool {
+        false
+    }
+
+    fn supports_native_message_count(&self) -> bool {
+        false
+    }
+
+    async fn native_messages(
+        &self,
+        _request: &messages::MessagesRequest,
+        _headers: &messages::MessagesHeaders,
+        _operation: messages::MessagesOperation,
+    ) -> AppResult<reqwest::Response> {
+        Err(AppError::InvalidParams(format!(
+            "Provider '{}' does not support native Anthropic Messages",
+            self.name()
+        )))
+    }
 
     /// Sends a streaming chat completion request
     async fn stream_complete(
@@ -491,6 +516,11 @@ pub trait ModelProvider: Send + Sync {
     /// Responses API (OAuth'd ChatGPT Plus/Pro) invert that.
     fn api_path_support(&self, path: &str) -> SupportLevel {
         match path {
+            "messages" if self.supports_native_messages() => SupportLevel::Supported,
+            "messages" if self.supports_chat() => SupportLevel::Translated,
+            "messages_count_tokens" if self.supports_native_message_count() => {
+                SupportLevel::Supported
+            }
             "chat_completions" => SupportLevel::Supported,
             "completions" => SupportLevel::Translated,
             "responses" => SupportLevel::Translated,
@@ -562,6 +592,35 @@ pub fn default_feature_support(
     let has_images = provider.supports_image_generation();
 
     let endpoints = vec![
+        EndpointSupport {
+            name: "Anthropic Messages".into(),
+            endpoint: "/v1/messages".into(),
+            support: if provider.supports_native_messages() {
+                SupportLevel::Supported
+            } else if has_chat {
+                SupportLevel::Translated
+            } else {
+                SupportLevel::NotSupported
+            },
+            notes: Some(
+                if provider.supports_native_messages() {
+                    "Native blocks, signatures, client tool history and SSE"
+                } else {
+                    "Validated text/image/client-tool subset; native-only semantics fail explicitly"
+                }
+                .into(),
+            ),
+        },
+        EndpointSupport {
+            name: "Count Messages Tokens".into(),
+            endpoint: "/v1/messages/count_tokens".into(),
+            support: if provider.supports_native_message_count() {
+                SupportLevel::Supported
+            } else {
+                SupportLevel::NotSupported
+            },
+            notes: Some("Provider token-count estimate; explicit provider/model required".into()),
+        },
         EndpointSupport {
             name: "Chat Completions".into(),
             endpoint: "/v1/chat/completions".into(),
@@ -1196,6 +1255,8 @@ pub type CoreCapability = Capability;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EndpointType {
     Chat,
+    /// Native Messages or an explicitly validated chat translation.
+    Messages,
     Embedding,
     Transcription,
     Translation,
@@ -1213,7 +1274,7 @@ impl EndpointType {
             return true; // Unknown capabilities — try everything
         }
         match self {
-            EndpointType::Chat => {
+            EndpointType::Chat | EndpointType::Messages => {
                 capabilities.contains(&Capability::Chat)
                     || capabilities.contains(&Capability::Completion)
             }
@@ -1236,6 +1297,9 @@ impl EndpointType {
     pub fn is_supported_by_provider(&self, provider: &dyn ModelProvider) -> bool {
         match self {
             EndpointType::Chat => provider.supports_chat(),
+            EndpointType::Messages => {
+                provider.supports_native_messages() || provider.supports_chat()
+            }
             EndpointType::Embedding => provider.supports_embeddings(),
             EndpointType::Transcription => provider.supports_transcription(),
             EndpointType::Translation => provider.supports_audio_translation(),
@@ -1415,6 +1479,12 @@ impl PricingInfo {
         // Never charge more cache tokens than the prompt has
         let read = read.min(prompt);
         let write = write.min(prompt - read);
+        // Native Anthropic reports the one-hour share separately. Its verified
+        // rate is 2x base input, rather than the five-minute 1.25x write rate.
+        let one_hour = details
+            .and_then(|d| d.anthropic_cache_creation_1h_tokens)
+            .unwrap_or(0) as u64;
+        let one_hour = one_hour.min(write);
         let uncached = prompt - read - write;
         let per_token = |per_1k: f64| per_1k / 1000.0;
         uncached as f64 * per_token(self.input_cost_per_1k)
@@ -1423,7 +1493,8 @@ impl PricingInfo {
                     self.cache_read_cost_per_1k
                         .unwrap_or(self.input_cost_per_1k),
                 )
-            + write as f64
+            + one_hour as f64 * per_token(self.input_cost_per_1k * 2.0)
+            + (write - one_hour) as f64
                 * per_token(
                     self.cache_write_cost_per_1k
                         .unwrap_or(self.input_cost_per_1k),
@@ -1591,9 +1662,22 @@ pub struct CompletionRequest {
     /// Pre-computed policy routing (set by chat pipeline, never serialized)
     #[serde(skip)]
     pub pre_computed_routing: Option<PreComputedRouting>,
+
+    /// Native Messages history is never deserialized from Chat input or sent
+    /// as a vendor extension. The Messages ingress installs it after scanning.
+    #[serde(skip)]
+    pub native_messages: Option<Box<messages::MessagesContext>>,
 }
 
 impl CompletionRequest {
+    pub fn endpoint_type(&self) -> EndpointType {
+        if self.native_messages.is_some() {
+            EndpointType::Messages
+        } else {
+            EndpointType::Chat
+        }
+    }
+
     /// Consume LocalRouter-only control metadata before forwarding upstream.
     pub fn without_routing_metadata(mut self) -> Self {
         if let Some(extensions) = self.extensions.as_mut() {
@@ -1647,6 +1731,7 @@ impl CompletionRequest {
             prediction: None,
             reasoning_effort: None,
             pre_computed_routing: None,
+            native_messages: None,
         }
     }
 }
@@ -2086,6 +2171,9 @@ pub mod usage_estimate {
 /// All fields are optional to maintain compatibility across providers.
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct PromptTokensDetails {
+    /// Verified native Anthropic one-hour cache writes (part of creation).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anthropic_cache_creation_1h_tokens: Option<u32>,
     /// Number of cached tokens (tokens already in cache)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cached_tokens: Option<u32>,
@@ -2926,6 +3014,7 @@ mod tests {
             completion_tokens: 200,
             total_tokens: 1200,
             prompt_tokens_details: Some(PromptTokensDetails {
+                anthropic_cache_creation_1h_tokens: None,
                 cached_tokens: Some(500),
                 cache_creation_tokens: Some(300),
                 cache_read_tokens: Some(200),
@@ -2983,6 +3072,7 @@ mod tests {
             completion_tokens: 300,
             total_tokens: 1300,
             prompt_tokens_details: Some(PromptTokensDetails {
+                anthropic_cache_creation_1h_tokens: None,
                 cached_tokens: Some(500),
                 cache_creation_tokens: Some(200),
                 cache_read_tokens: Some(200),
@@ -3067,6 +3157,7 @@ mod tests {
     fn test_prompt_tokens_details_partial_fields() {
         // Test that PromptTokensDetails with some None values works correctly
         let details = PromptTokensDetails {
+            anthropic_cache_creation_1h_tokens: None,
             cached_tokens: Some(100),
             cache_creation_tokens: None,
             cache_read_tokens: Some(50),
@@ -3274,6 +3365,7 @@ mod pricing_cost_tests {
 
     fn cached(cached: Option<u32>, read: Option<u32>, write: Option<u32>) -> PromptTokensDetails {
         PromptTokensDetails {
+            anthropic_cache_creation_1h_tokens: None,
             cached_tokens: cached,
             cache_creation_tokens: write,
             cache_read_tokens: read,

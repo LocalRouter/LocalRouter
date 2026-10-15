@@ -1626,6 +1626,13 @@ export function HowToConnect({
                 </div>
               </div>
 
+              <div className="rounded-lg border p-4 space-y-3">
+                <p className="text-sm font-medium">Anthropic Messages API</p>
+                <p className="text-xs text-muted-foreground">Use this root URL as the Anthropic SDK base URL and the client secret above as its API key. The SDK calls /v1/messages. Native Anthropic providers preserve signed thinking and client tool history; other chat providers accept a validated subset.</p>
+                <CopyableCode value={baseUrl} />
+                <p className="text-xs text-muted-foreground">Use an explicit provider/model for native tool or thinking history. Provider-side tools, file references and unsupported native options return an error. Token counting is available on verified native providers at /v1/messages/count_tokens.</p>
+              </div>
+
               {models.length > 0 && (
                 <div className="rounded-lg border p-4 space-y-3">
                   <div>

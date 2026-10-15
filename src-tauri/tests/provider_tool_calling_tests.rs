@@ -113,6 +113,7 @@ fn test_completion_request_with_tools() {
         prediction: None,
         reasoning_effort: None,
         pre_computed_routing: None,
+        native_messages: None,
     };
 
     assert!(request.tools.is_some());

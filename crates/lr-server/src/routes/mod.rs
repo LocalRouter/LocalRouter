@@ -12,6 +12,8 @@ pub mod helpers;
 pub mod images;
 pub mod mcp;
 pub mod mcp_ws;
+pub mod messages;
+pub(crate) mod messages_stream;
 pub mod models;
 pub mod moderations;
 pub mod monitor_helpers;

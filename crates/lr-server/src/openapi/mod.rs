@@ -24,6 +24,8 @@ use utoipa::OpenApi;
     paths(
         // Chat endpoints
         crate::routes::chat::chat_completions,
+        crate::routes::messages::create_message,
+        crate::routes::messages::count_tokens,
         crate::routes::responses::create_response,
 
         // Completions endpoints
@@ -88,6 +90,15 @@ use utoipa::OpenApi;
         lr_providers::replay::ReplayTools,
             lr_providers::response_cache::CacheOptions,
             lr_providers::response_cache::CacheMode,
+            lr_providers::messages::MessagesRequest,
+            lr_providers::messages::MessagesInput,
+            lr_providers::messages::CountMessageTokensRequest,
+            lr_providers::messages::MessagesResponse,
+            lr_providers::messages::MessagesUsage,
+            lr_providers::messages::MessagesCacheCreation,
+            lr_providers::messages::CountMessageTokensResponse,
+            crate::routes::messages::MessagesErrorResponse,
+            crate::routes::messages::MessagesErrorDetail,
         lr_providers::session::SessionOptions,
         lr_providers::session::PromptCacheAccounting,
             lr_router::explanation::RouteExplanation,
@@ -250,6 +261,14 @@ struct SecurityAddon;
 impl utoipa::Modify for SecurityAddon {
     fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
         if let Some(components) = openapi.components.as_mut() {
+            components.add_security_scheme(
+                "anthropic_api_key",
+                utoipa::openapi::security::SecurityScheme::ApiKey(
+                    utoipa::openapi::security::ApiKey::Header(
+                        utoipa::openapi::security::ApiKeyValue::new("x-api-key"),
+                    ),
+                ),
+            );
             // Add bearer authentication for API key-based endpoints
             components.add_security_scheme(
                 "bearer_auth",

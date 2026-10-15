@@ -63,6 +63,7 @@ pub fn standard_completion_request() -> CompletionRequest {
         prediction: None,
         reasoning_effort: None,
         pre_computed_routing: None,
+        native_messages: None,
     }
 }
 
@@ -105,6 +106,7 @@ pub fn standard_streaming_request() -> CompletionRequest {
         prediction: None,
         reasoning_effort: None,
         pre_computed_routing: None,
+        native_messages: None,
     }
 }
 

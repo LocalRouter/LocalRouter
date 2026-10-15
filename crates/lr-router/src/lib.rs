@@ -22,6 +22,7 @@ pub mod decision_routing;
 pub mod endpoint_cache;
 pub mod explanation;
 pub mod free_tier;
+mod messages;
 pub mod rate_limit;
 pub mod response_cache;
 mod systemone;
@@ -909,7 +910,7 @@ impl Router {
                 client_id,
                 &final_provider,
                 &request,
-                lr_providers::EndpointType::Chat,
+                request.endpoint_type(),
             )?;
             let mut modified_request = modified_request.without_routing_metadata();
             modified_request.model = final_model.clone();
@@ -920,14 +921,18 @@ impl Router {
             let observation = self.adaptive_measurements.begin(
                 &final_provider,
                 &final_model,
-                lr_providers::EndpointType::Chat,
+                request.endpoint_type(),
                 self.provider_registry.routing_revision(),
             );
             let first_output_deadline =
                 adaptive::current_turn().and_then(|turn| turn.attempt_deadline());
             let stream = match adaptive::dispatch_in_turn(async {
                 adaptive::reserve_inference_dispatch()?;
-                provider_instance.stream_complete(modified_request).await
+                lr_providers::messages_stream::dispatch_stream(
+                    provider_instance.as_ref(),
+                    modified_request,
+                )
+                .await
             })
             .await
             {
@@ -1275,7 +1280,7 @@ impl Router {
             Ok((_, strategy)) => self.deadline_routing_error(
                 &strategy,
                 request,
-                lr_providers::EndpointType::Chat,
+                request.endpoint_type(),
                 "total_deadline_exceeded",
             ),
             Err(error) => error,
@@ -1418,12 +1423,8 @@ impl Router {
                 "Selected provider does not support gateway routing controls".into(),
             ));
         }
-        let (modified_request, explicit_session_handle) = self.provider_session_request(
-            client_id,
-            provider,
-            &request,
-            lr_providers::EndpointType::Chat,
-        )?;
+        let (modified_request, explicit_session_handle) =
+            self.provider_session_request(client_id, provider, &request, request.endpoint_type())?;
         let mut modified_request = modified_request.without_routing_metadata();
         modified_request.model = model.to_string();
 
@@ -1507,11 +1508,16 @@ impl Router {
         let mut observation = self.adaptive_measurements.begin(
             provider,
             model,
-            lr_providers::EndpointType::Chat,
+            request.endpoint_type(),
             self.provider_registry.routing_revision(),
         );
         // Execute the completion
-        let mut response = match provider_instance.complete(modified_request).await {
+        let mut response = match lr_providers::messages::dispatch_complete(
+            provider_instance.as_ref(),
+            modified_request,
+        )
+        .await
+        {
             Ok(resp) => resp,
             Err(e) => {
                 // Mark provider unhealthy for infrastructure errors (not content/policy/rate-limit)
@@ -1665,16 +1671,11 @@ impl Router {
                 strategy,
                 auto_config,
                 &request,
-                lr_providers::EndpointType::Chat,
+                request.endpoint_type(),
             ))
             .await
             .map_err(|reason| {
-                self.deadline_routing_error(
-                    strategy,
-                    &request,
-                    lr_providers::EndpointType::Chat,
-                    reason,
-                )
+                self.deadline_routing_error(strategy, &request, request.endpoint_type(), reason)
             })??;
         let (selected_models, scored_candidates, session_handle) = self.order_auto_models(
             client_id,
@@ -1682,7 +1683,7 @@ impl Router {
             &request,
             &selected_models,
             routing_decision.as_ref(),
-            lr_providers::EndpointType::Chat,
+            request.endpoint_type(),
         )?;
 
         if selected_models.is_empty() {
@@ -1758,7 +1759,7 @@ impl Router {
                         self.deadline_routing_error(
                             strategy,
                             &request,
-                            lr_providers::EndpointType::Chat,
+                            request.endpoint_type(),
                             reason,
                         )
                     })?;
@@ -1853,7 +1854,7 @@ impl Router {
                         self.adaptive_measurements.record_infrastructure_failure(
                             provider,
                             model,
-                            lr_providers::EndpointType::Chat,
+                            request.endpoint_type(),
                             attempt_revision,
                             auto_config.adaptive_routing.infrastructure_cooldown,
                         );
@@ -1870,7 +1871,7 @@ impl Router {
                         self.endpoint_cache.record_unsupported(
                             provider,
                             model,
-                            lr_providers::EndpointType::Chat,
+                            request.endpoint_type(),
                         );
                     }
 
@@ -2011,16 +2012,11 @@ impl Router {
                 strategy,
                 auto_config,
                 &request,
-                lr_providers::EndpointType::Chat,
+                request.endpoint_type(),
             ))
             .await
             .map_err(|reason| {
-                self.deadline_routing_error(
-                    strategy,
-                    &request,
-                    lr_providers::EndpointType::Chat,
-                    reason,
-                )
+                self.deadline_routing_error(strategy, &request, request.endpoint_type(), reason)
             })??;
         let (selected_models, scored_candidates, session_handle) = self.order_auto_models(
             client_id,
@@ -2028,7 +2024,7 @@ impl Router {
             &request,
             &selected_models,
             routing_decision.as_ref(),
-            lr_providers::EndpointType::Chat,
+            request.endpoint_type(),
         )?;
 
         if selected_models.is_empty() {
@@ -2101,7 +2097,7 @@ impl Router {
                         self.deadline_routing_error(
                             strategy,
                             &request,
-                            lr_providers::EndpointType::Chat,
+                            request.endpoint_type(),
                             reason,
                         )
                     })?;
@@ -2176,7 +2172,7 @@ impl Router {
                 client_id,
                 provider,
                 &request,
-                lr_providers::EndpointType::Chat,
+                request.endpoint_type(),
             )?;
             let mut modified_request = modified_request.without_routing_metadata();
             modified_request.model = model.clone();
@@ -2189,24 +2185,23 @@ impl Router {
                 .preflight(self.request_pricing(provider, model))
                 .await
                 .map_err(|reason| {
-                    self.deadline_routing_error(
-                        strategy,
-                        &request,
-                        lr_providers::EndpointType::Chat,
-                        reason,
-                    )
+                    self.deadline_routing_error(strategy, &request, request.endpoint_type(), reason)
                 })?;
             let observation = self.adaptive_measurements.begin(
                 provider,
                 model,
-                lr_providers::EndpointType::Chat,
+                request.endpoint_type(),
                 self.provider_registry.routing_revision(),
             );
             let first_output_deadline = budget.attempt_deadline();
             match budget
                 .dispatch(async {
                     adaptive::reserve_inference_dispatch()?;
-                    provider_instance.stream_complete(modified_request).await
+                    lr_providers::messages_stream::dispatch_stream(
+                        provider_instance.as_ref(),
+                        modified_request,
+                    )
+                    .await
                 })
                 .await
             {
@@ -2290,7 +2285,7 @@ impl Router {
                         self.endpoint_cache.record_unsupported(
                             provider,
                             model,
-                            lr_providers::EndpointType::Chat,
+                            request.endpoint_type(),
                         );
                     }
 
@@ -2443,7 +2438,12 @@ impl Router {
             request.model = model_name.clone();
 
             // Try the completion
-            match provider_instance.complete(request.clone()).await {
+            match lr_providers::messages::dispatch_complete(
+                provider_instance.as_ref(),
+                request.clone(),
+            )
+            .await
+            {
                 Ok(response) => {
                     info!(
                         "Prioritized model succeeded: provider='{}', model='{}'",
@@ -2707,7 +2707,7 @@ impl Router {
                 client_id,
                 &provider,
                 &request,
-                lr_providers::EndpointType::Chat,
+                request.endpoint_type(),
             )?;
             let mut modified_request = modified_request.without_routing_metadata();
             modified_request.model = model.clone();
@@ -2718,14 +2718,18 @@ impl Router {
             let observation = self.adaptive_measurements.begin(
                 &provider,
                 &model,
-                lr_providers::EndpointType::Chat,
+                request.endpoint_type(),
                 self.provider_registry.routing_revision(),
             );
             let first_output_deadline =
                 adaptive::current_turn().and_then(|turn| turn.attempt_deadline());
             let stream = match adaptive::dispatch_in_turn(async {
                 adaptive::reserve_inference_dispatch()?;
-                provider_instance.stream_complete(modified_request).await
+                lr_providers::messages_stream::dispatch_stream(
+                    provider_instance.as_ref(),
+                    modified_request,
+                )
+                .await
             })
             .await
             {
@@ -2865,7 +2869,7 @@ impl Router {
             client_id,
             &final_provider,
             &request,
-            lr_providers::EndpointType::Chat,
+            request.endpoint_type(),
         )?;
         let mut modified_request = modified_request.without_routing_metadata();
         modified_request.model = final_model.clone();
@@ -2876,14 +2880,18 @@ impl Router {
         let observation = self.adaptive_measurements.begin(
             &final_provider,
             &final_model,
-            lr_providers::EndpointType::Chat,
+            request.endpoint_type(),
             self.provider_registry.routing_revision(),
         );
         let first_output_deadline =
             adaptive::current_turn().and_then(|turn| turn.attempt_deadline());
         let stream = match adaptive::dispatch_in_turn(async {
             adaptive::reserve_inference_dispatch()?;
-            provider_instance.stream_complete(modified_request).await
+            lr_providers::messages_stream::dispatch_stream(
+                provider_instance.as_ref(),
+                modified_request,
+            )
+            .await
         })
         .await
         {
@@ -4104,6 +4112,7 @@ mod tests {
             prediction: None,
             reasoning_effort: None,
             pre_computed_routing: None,
+            native_messages: None,
         };
 
         let result = router.complete("invalid-key-id", request).await;

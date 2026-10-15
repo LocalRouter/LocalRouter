@@ -19,7 +19,7 @@
 import { mockIPC, mockWindows, clearMocks } from '@tauri-apps/api/mocks'
 import { emit } from '@tauri-apps/api/event'
 import type { InvokeArgs } from '@tauri-apps/api/core'
-import type { McpConnectionDiscovery, SkillSourceInfo } from '@app/types/tauri-commands'
+import type { ApiPathSupport, McpConnectionDiscovery, SkillSourceInfo } from '@app/types/tauri-commands'
 import { toast } from 'sonner'
 import { mockReplay } from './mockReplay'
 import { mockData } from './mockData'
@@ -569,6 +569,8 @@ function openaiFeatureSupport(instanceName: string): ProviderFeatureSupport {
     provider_type: 'openai',
     provider_instance: instanceName,
     endpoints: [
+      { name: 'Anthropic Messages', endpoint: '/v1/messages', support: 'translated', notes: 'Validated text/image/client-tool translation subset' },
+      { name: 'Count Messages Tokens', endpoint: '/v1/messages/count_tokens', support: 'not_supported', notes: 'Requires a verified native token-count transport' },
       { name: 'Chat Completions', endpoint: '/v1/chat/completions', support: 'supported', notes: 'Send messages and receive AI responses' },
       { name: 'Completions (legacy)', endpoint: '/v1/completions', support: 'supported', notes: 'Converted to chat completions internally by LocalRouter' },
       { name: 'Streaming', endpoint: '/v1/chat/completions', support: 'supported', notes: 'Server-sent events for real-time token streaming' },
@@ -3307,6 +3309,9 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'get_provider_feature_support': (args): ProviderFeatureSupport => {
     const base = openaiFeatureSupport(args?.instanceName || 'openai')
     const instance = mockData.providers.find(p => p.instance_name === args?.instanceName)
+    if (instance?.provider_type === 'anthropic') {
+      base.endpoints = base.endpoints.map(endpoint => endpoint.endpoint === '/v1/messages' || endpoint.endpoint === '/v1/messages/count_tokens' ? { ...endpoint, support: 'supported' as const, notes: 'Verified native Anthropic transport' } : endpoint)
+    }
     const decisionOnlyTypes = ['typesafe', 'ollaya', 'laya', 'kev', 'von', 'decider', 'systemone_compatible']
     return instance && decisionOnlyTypes.includes(instance.provider_type)
       ? systemOneFeatureSupport(base, instance.provider_type, instance.instance_name)
@@ -3320,6 +3325,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       provider_type: 'anthropic',
       provider_instance: 'anthropic',
       endpoints: openai.endpoints.map(e => {
+        if (e.name === 'Anthropic Messages' || e.name === 'Count Messages Tokens') return { ...e, support: 'supported' as const, notes: 'Verified native Anthropic transport' }
         if (e.name === 'Embeddings') return { ...e, support: 'not_supported' as const, notes: 'Anthropic does not offer an embeddings API' }
         if (e.name === 'Image Generation') return { ...e, support: 'not_supported' as const, notes: 'Anthropic does not offer image generation' }
         if (e.name === 'Audio Transcription' || e.name === 'Audio Speech (TTS)') return { ...e, support: 'not_implemented' as const, notes: 'Anthropic does not offer audio endpoints' }
@@ -3386,7 +3392,9 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
 
     return [openai, anthropic, gemini, ollama, ollaya]
   },
-  'get_api_path_support': () => ({
+  'get_api_path_support': (args): ApiPathSupport => ({
+    messages: mockData.providers.find(provider => provider.instance_name === args?.instanceName)?.provider_type === 'anthropic' ? 'supported' : 'translated',
+    messages_count_tokens: mockData.providers.find(provider => provider.instance_name === args?.instanceName)?.provider_type === 'anthropic' ? 'supported' : 'not_supported',
     chat_completions: 'supported' as const,
     completions: 'translated' as const,
     responses: 'translated' as const,
@@ -5238,6 +5246,20 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
           responses: { '200': { description: 'Ordered typed answers or refusals', content: { 'application/json': { schema: { '$ref': '#/components/schemas/DecisionResponse' } } } }, '400': { description: 'Invalid request or unsupported image input' }, '403': { description: 'Access denied' }, '429': { description: 'Rate limited' } },
         },
       },
+      '/v1/messages': {
+        post: {
+          summary: 'Anthropic Messages', operationId: 'create_message', tags: ['messages'],
+          requestBody: { required: true, content: { 'application/json': { schema: { '$ref': '#/components/schemas/MessagesRequest' } } } },
+          responses: { '200': { description: 'Native Messages response or Messages SSE; validated translation on compatible chat providers' }, '400': { description: 'Invalid request or unsupported native semantics' }, '401': { description: 'Invalid local client secret' }, '429': { description: 'Rate limited' } },
+        },
+      },
+      '/v1/messages/count_tokens': {
+        post: {
+          summary: 'Count Messages input tokens', operationId: 'count_tokens', tags: ['messages'],
+          requestBody: { required: true, content: { 'application/json': { schema: { '$ref': '#/components/schemas/CountMessageTokensRequest' } } } },
+          responses: { '200': { description: 'Native provider token-count estimate without generation' }, '400': { description: 'Invalid request or unsupported token-count transport' }, '401': { description: 'Invalid local client secret' } },
+        },
+      },
       '/health': {
         get: {
           summary: 'Health check',
@@ -5249,6 +5271,8 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     },
     components: {
       schemas: {
+        MessagesRequest: { type: 'object', required: ['model', 'max_tokens', 'messages'], properties: { model: { type: 'string' }, max_tokens: { type: 'integer', minimum: 0 }, messages: { type: 'array', minItems: 1 }, system: { oneOf: [{ type: 'string' }, { type: 'array' }] }, stream: { type: 'boolean' } } },
+        CountMessageTokensRequest: { type: 'object', required: ['model', 'messages'], properties: { model: { type: 'string' }, messages: { type: 'array', minItems: 1 }, system: { oneOf: [{ type: 'string' }, { type: 'array' }] }, tools: { type: 'array' }, tool_choice: { type: 'object' }, thinking: { type: 'object' } } },
         ChatCompletionRequest: { type: 'object', properties: { model: { type: 'string' }, messages: { type: 'array' } } },
         DecisionRequest: { type: 'object', required: ['model', 'input', 'questions'], properties: { model: { type: 'string' }, input: { oneOf: [{ type: 'string' }, { type: 'array' }] }, questions: { type: 'array', minItems: 1, maxItems: 200, items: { type: 'object', properties: { type: { type: 'string', enum: ['predicate', 'choice', 'score'] }, name: { type: 'string' }, instructions: { type: 'string' }, choices: { type: 'array' }, levels: { type: 'array' } } } } } },
         DecisionResponse: { type: 'object', required: ['model', 'answers', 'usage'], properties: { model: { type: 'string' }, answers: { type: 'array', items: { type: 'object' } }, usage: { type: 'object' } } },

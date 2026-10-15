@@ -427,7 +427,8 @@ impl crate::Router {
         model: &str,
         request: &lr_providers::CompletionRequest,
     ) -> Option<CacheTicket> {
-        if request.stream
+        if request.native_messages.is_some()
+            || request.stream
             || request.tools.as_ref().is_some_and(|t| !t.is_empty())
             || request.tool_choice.is_some()
             || request.messages.iter().any(|m| {

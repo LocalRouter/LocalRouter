@@ -128,6 +128,19 @@ pub fn extended_client() -> AppResult<ClientWithMiddleware> {
         .map_err(|e| AppError::Provider(format!("Failed to create HTTP client: {}", e)))
 }
 
+/// Native gateway transports retain upstream statuses and never replay a
+/// credential-bearing request at a redirect target.
+pub fn native_client() -> AppResult<ClientWithMiddleware> {
+    Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(300))
+        .redirect(reqwest::redirect::Policy::none())
+        .no_gzip()
+        .build()
+        .map(with_middleware)
+        .map_err(|e| AppError::Provider(format!("Failed to create native HTTP client: {e}")))
+}
+
 /// Format a reqwest streaming error with the full cause chain.
 ///
 /// `reqwest::Error` Display only shows the top-level kind (e.g.

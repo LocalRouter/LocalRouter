@@ -1996,6 +1996,7 @@ pub(crate) fn convert_to_provider_request(
         prediction: request.prediction.clone(),
         reasoning_effort: request.reasoning_effort.clone(),
         pre_computed_routing: None,
+        native_messages: None,
     })
 }
 

@@ -1586,7 +1586,7 @@ impl ModelProvider for OpenAIProvider {
         if self.is_chatgpt_backend() {
             match path {
                 "responses" => L::Supported,
-                "chat_completions" | "completions" => L::Translated,
+                "chat_completions" | "completions" | "messages" => L::Translated,
                 _ => L::NotSupported,
             }
         } else {
@@ -1595,7 +1595,7 @@ impl ModelProvider for OpenAIProvider {
                 // OpenAI does expose /responses natively on its platform
                 // API, but LocalRouter currently proxies it through the
                 // translation layer, so report it as translated.
-                "responses" => L::Translated,
+                "responses" | "messages" => L::Translated,
                 _ => L::NotSupported,
             }
         }
@@ -1975,6 +1975,7 @@ mod tests {
             prediction: None,
             reasoning_effort: None,
             pre_computed_routing: None,
+            native_messages: None,
         }
     }
 
