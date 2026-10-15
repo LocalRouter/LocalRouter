@@ -170,3 +170,12 @@ separate from generated answers and existing MCP mediation. Stable workspace
 Clippy/fmt/tests passed (111 suites, 4,451 passed, 69 ignored, zero failures); all
 72 frontend regressions, app/demo types/builds and production Chrome smoke passed.
 The previous native tool slice is a56c5fac. Documents/OCR is the next pending phase.
+
+Native document input increment is implemented and validated: bounded inline
+Chat/Responses files, OpenRouter explicit native PDF parser, LLM Gateway Google
+native mappings, local extracted-text mode, protected provenance, sequential
+scans and explicit rejection of unsupported opaque policies, fallback/replay/cache/
+session protections, stream usage accounting and Try It Out Documents. Stable
+workspace parity passed (4,466 tests), frontend regressions/types/builds and
+production browser smoke passed. Explicit OCR is still pending under
+plan/2026-10-15-EXPLICIT_BOUNDED_OCR.md, so document/OCR remains unchecked.

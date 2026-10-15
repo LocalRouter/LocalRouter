@@ -127,6 +127,7 @@ pub mod batches;
 pub mod cerebras;
 pub mod cohere;
 pub mod deepinfra;
+pub mod documents;
 pub mod embedded;
 pub mod factory;
 pub mod fastflowlm;
@@ -206,6 +207,13 @@ pub trait ModelProvider: Send + Sync {
     /// Sends a chat completion request
     async fn complete(&self, request: CompletionRequest) -> AppResult<CompletionResponse>;
 
+    /// Native inline file transport; text-only chat compatibility is separate.
+    fn document_protocol(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Option<documents::DocumentProtocol> {
+        None
+    }
     fn search_protocol(&self) -> Option<search::SearchProtocol> {
         None
     }
@@ -1702,6 +1710,9 @@ pub struct CompletionRequest {
     /// Derived by gateway ingress, never accepted from CompletionRequest JSON.
     #[serde(skip)]
     pub server_tools: Option<Box<server_tools::ServerToolsContext>>,
+    /// Protected document provenance survives routing but never enters wire JSON.
+    #[serde(skip)]
+    pub documents: Option<Box<documents::DocumentContext>>,
 }
 
 impl CompletionRequest {
@@ -1724,6 +1735,9 @@ impl CompletionRequest {
             extensions.remove(privacy::INTERNAL_EXTENSION);
             extensions.remove(privacy::ROUTE_CLIENT_EXTENSION);
             extensions.remove(server_tools::INGRESS_EXTENSION);
+            extensions.remove(documents::OPTIONS_EXTENSION);
+            extensions.remove(documents::PROVENANCE_EXTENSION);
+            extensions.remove(documents::METADATA_EXTENSION);
             if extensions.is_empty() {
                 self.extensions = None;
             }
@@ -1771,6 +1785,7 @@ impl CompletionRequest {
             pre_computed_routing: None,
             native_messages: None,
             server_tools: None,
+            documents: None,
         }
     }
 }
@@ -1877,6 +1892,7 @@ pub struct ImageUrl {
 pub enum ContentPart {
     Text { text: String },
     ImageUrl { image_url: ImageUrl },
+    File { file: documents::FileInput },
 }
 
 /// Message content - either simple text or multimodal parts
@@ -1896,7 +1912,7 @@ impl ChatMessageContent {
                 .iter()
                 .filter_map(|part| match part {
                     ContentPart::Text { text } => Some(text.clone()),
-                    ContentPart::ImageUrl { .. } => None,
+                    ContentPart::ImageUrl { .. } | ContentPart::File { .. } => None,
                 })
                 .collect::<Vec<_>>()
                 .join("\n"),
@@ -2164,6 +2180,9 @@ pub mod usage_estimate {
                         match p {
                             ContentPart::Text { text } => chars += text.len() as u64,
                             ContentPart::ImageUrl { .. } => tokens += IMAGE_TOKENS,
+                            // Opaque files have no text-token estimate. Native
+                            // document dispatch requires authoritative usage.
+                            ContentPart::File { .. } => {}
                         }
                     }
                 }

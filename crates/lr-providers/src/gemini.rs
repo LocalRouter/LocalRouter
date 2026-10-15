@@ -1765,6 +1765,7 @@ mod tests {
             pre_computed_routing: None,
             native_messages: None,
             server_tools: None,
+            documents: None,
         };
 
         let response = provider.complete(request).await.unwrap();

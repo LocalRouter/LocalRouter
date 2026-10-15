@@ -137,6 +137,9 @@ async fn start_replay_test_server(
     provider_registry.register_factory(Arc::new(OpenAICompatibleProviderFactory));
     provider_registry.register_factory(Arc::new(OllamaProviderFactory));
     provider_registry.register_factory(Arc::new(TestGatewayFactory));
+    provider_registry.register_factory(Arc::new(
+        documents_endpoint_cases::TestDocumentGatewayFactory,
+    ));
     provider_registry
         .register_factory(Arc::new(messages_endpoint_cases::TestNativeMessagesFactory));
     provider_registry.register_factory(Arc::new(batches_endpoint_cases::TestNativeBatchFactory(
@@ -2715,3 +2718,6 @@ mod upstream_tools_endpoint_cases;
 
 #[path = "fixtures/ranked_search_endpoint_cases.rs"]
 mod ranked_search_endpoint_cases;
+
+#[path = "fixtures/documents_endpoint_cases.rs"]
+mod documents_endpoint_cases;

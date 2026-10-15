@@ -132,7 +132,9 @@ pub fn emit_llm_call(
     stream: bool,
     request_body: &serde_json::Value,
 ) -> LlmCallGuard {
-    let public_request = crate::upstream_tools::public_representation(request_body);
+    let public_request = crate::documents::public_representation(
+        &crate::upstream_tools::public_representation(request_body),
+    );
     let request_body = &public_request;
     let (client_id, client_name) = resolve_client(state, client_auth);
 

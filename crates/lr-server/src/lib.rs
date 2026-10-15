@@ -3,6 +3,7 @@
 //! Provides OpenAI-compatible HTTP API endpoints using Axum.
 
 pub mod batch_jobs;
+pub mod documents;
 pub mod manager;
 pub mod mcp_request_metrics;
 pub mod middleware;
@@ -397,7 +398,9 @@ fn build_app(state: AppState, enable_cors: bool, shutdown: CancellationToken) ->
 
     // Apply 16MB body limit to main routes BEFORE merging audio routes
     // (audio routes need 25MB for file uploads — see below)
-    router = router.layer(RequestBodyLimitLayer::new(16 * 1024 * 1024));
+    router = router
+        .layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024))
+        .layer(RequestBodyLimitLayer::new(16 * 1024 * 1024));
 
     // Audio upload routes with 25MB body limit (audio files can be up to 25MB per OpenAI spec)
     // Merged AFTER the 16MB limit so the global limit doesn't override the audio-specific one.

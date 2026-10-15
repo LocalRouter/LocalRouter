@@ -168,6 +168,9 @@ use utoipa::OpenApi;
             crate::types::ChatMessage,
             crate::types::MessageContent,
             crate::types::ContentPart,
+            lr_providers::documents::FileInput,
+            lr_providers::documents::DocumentOptions,
+            lr_providers::documents::DocumentMode,
             crate::types::ImageUrl,
 
             // Tool types (request)

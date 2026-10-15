@@ -37,6 +37,8 @@ where
             .map_err(|error| ApiErrorResponse::from(error).into_response())?;
         lr_providers::replay::normalize_ingress(&mut value)
             .map_err(|error| ApiErrorResponse::from(error).into_response())?;
+        crate::documents::normalize_ingress(&mut value, &path)
+            .map_err(|error| ApiErrorResponse::from(error).into_response())?;
         crate::upstream_tools::normalize_ingress(&mut value, &path)
             .map_err(|error| ApiErrorResponse::from(error).into_response())?;
         lr_providers::session::normalize_ingress(&mut value, session.as_deref())

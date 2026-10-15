@@ -493,7 +493,7 @@ async fn handle_mcp_via_llm(
         // client disconnects and the sender is dropped with the stream)
         use parking_lot::Mutex;
         use std::sync::Arc;
-        let tracker = Arc::new(Mutex::new(StreamTracker::default()));
+        let tracker = Arc::new(Mutex::new(StreamTracker::for_messages(&request.messages)));
         let (completion_tx, completion_rx) = tokio::sync::oneshot::channel::<()>();
         let completion_tx = Arc::new(Mutex::new(Some(completion_tx)));
 
@@ -726,6 +726,9 @@ async fn handle_mcp_via_llm(
                         let server_parts: Vec<crate::types::ContentPart> = parts
                             .iter()
                             .map(|part| match part {
+                                lr_providers::ContentPart::File { file } => {
+                                    crate::types::ContentPart::File { file: file.clone() }
+                                }
                                 lr_providers::ContentPart::Text { text } => {
                                     crate::types::ContentPart::Text { text: text.clone() }
                                 }
@@ -983,7 +986,8 @@ pub(crate) async fn handle_non_streaming(
         Err(e) => {
             // Record failure metrics + access log + monitor error event.
             let err_text = e.to_string();
-            let api_err: ApiErrorResponse = e.into();
+            let api_err = ApiErrorResponse::from(e)
+                .without_retry_if(crate::documents::has_native_files(&request));
             if let Some(metadata) = api_err
                 .error
                 .extensions
@@ -1137,6 +1141,9 @@ async fn build_non_streaming_response(
                         let server_parts: Vec<crate::types::ContentPart> = parts
                             .into_iter()
                             .map(|part| match part {
+                                lr_providers::ContentPart::File { file } => {
+                                    crate::types::ContentPart::File { file }
+                                }
                                 lr_providers::ContentPart::Text { text } => {
                                     crate::types::ContentPart::Text { text }
                                 }
@@ -1326,7 +1333,8 @@ async fn handle_streaming(
         Err(e) => {
             // Record failure metrics
             let err_text = e.to_string();
-            let api_err: ApiErrorResponse = e.into();
+            let api_err = ApiErrorResponse::from(e)
+                .without_retry_if(crate::documents::has_native_files(&request));
             if let Some(metadata) = api_err
                 .error
                 .extensions
@@ -1388,7 +1396,7 @@ async fn handle_streaming(
     // Track what the stream produced; finalize once it ends
     use parking_lot::Mutex;
     use std::sync::Arc;
-    let tracker = Arc::new(Mutex::new(StreamTracker::default()));
+    let tracker = Arc::new(Mutex::new(StreamTracker::for_messages(&request.messages)));
     let include_usage = request
         .stream_options
         .as_ref()
@@ -1611,7 +1619,8 @@ async fn handle_streaming_parallel(
         }
         Err(e) => {
             let err_text = e.to_string();
-            let api_err: ApiErrorResponse = e.into();
+            let api_err = ApiErrorResponse::from(e)
+                .without_retry_if(crate::documents::has_native_files(&request));
             if let Some(metadata) = api_err
                 .error
                 .extensions

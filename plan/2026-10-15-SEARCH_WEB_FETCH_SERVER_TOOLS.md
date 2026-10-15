@@ -13,7 +13,7 @@
 - [x] Test Coverage Review: add meaningful boundary/error/isolation coverage for changed paths.
 - [x] Bug Hunt: inspect remote/local execution confusion, SSRF, ignored constraints, duplicate calls, stale authorization, citation loss, payload retention, unknown spend and fallback after side effects.
 - [x] Update/pin Rust stable; run exact workspace Clippy, fmt and tests, frontend types/unit regressions and both production builds. Use the isolated Cargo target to avoid unrelated repository-wide cleanup.
-- [ ] Commit and normal push validated changes and automatic catalog updates, preserving unrelated work. Continue document inputs/OCR, rerank and video/realtime until the approved roadmap is complete.
+- [x] Commit and normal push validated changes and automatic catalog updates, preserving unrelated work. Continue document inputs/OCR, rerank and video/realtime until the approved roadmap is complete.
 
 The user approved all core and later roadmap additions and promoted replay to P1. Named-route versions are completed and pushed as 09c0c2d0; privacy/key hygiene is f51e2b29. This phase extends those policies rather than granting implicit new tool permissions.
 
@@ -147,3 +147,5 @@ Search/server tools are ready for normal commit/push. The remaining approved wor
 is documents/OCR, rerank, and video/realtime, followed by the master final review.
 
 Final browser recheck after tab wrapping/search-only controls passed; screenshot /private/tmp/localrouter-ranked-search-ui-final.png was inspected. Official Perplexity pricing documentation additionally confirms request-based (not per-query/token) billing; actual response fees remain unknown and are not fabricated from that public rate card.
+
+Ranked Search API committed and normally pushed as 92f20a23. Search phase is complete; documents/OCR continues under plan/2026-10-15-DOCUMENT_INPUTS_AND_OCR.md.

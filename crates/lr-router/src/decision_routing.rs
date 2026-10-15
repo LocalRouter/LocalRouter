@@ -251,6 +251,9 @@ impl Router {
         request: &CompletionRequest,
         endpoint: lr_providers::EndpointType,
     ) -> PreComputedRouting {
+        if request.has_file_inputs() {
+            return fallback(policy, "opaque_documents_require_explicit_model");
+        }
         let mut scoped_request = request.clone();
         if self
             .prepare_privacy_request(client_id, &mut scoped_request)

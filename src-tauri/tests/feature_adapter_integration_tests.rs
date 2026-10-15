@@ -82,6 +82,7 @@ fn test_structured_outputs_person_schema_openai() {
         pre_computed_routing: None,
         native_messages: None,
         server_tools: None,
+        documents: None,
     };
 
     // Adapt request
@@ -305,6 +306,7 @@ fn test_prompt_caching_anthropic_request() {
         pre_computed_routing: None,
         native_messages: None,
         server_tools: None,
+        documents: None,
     };
 
     // Adapt request
@@ -441,6 +443,7 @@ fn test_logprobs_openai_request() {
         pre_computed_routing: None,
         native_messages: None,
         server_tools: None,
+        documents: None,
     };
 
     // Adapt request
@@ -588,6 +591,7 @@ fn test_logprobs_various_top_values() {
             pre_computed_routing: None,
             native_messages: None,
             server_tools: None,
+            documents: None,
         };
 
         let result = adapter.adapt_request(&mut request, &params);
@@ -667,6 +671,7 @@ fn test_json_mode_openai() {
         pre_computed_routing: None,
         native_messages: None,
         server_tools: None,
+        documents: None,
     };
 
     // Adapt request
@@ -727,6 +732,7 @@ fn test_json_mode_anthropic() {
         pre_computed_routing: None,
         native_messages: None,
         server_tools: None,
+        documents: None,
     };
 
     // Adapt request
@@ -899,6 +905,7 @@ fn test_json_mode_all_providers() {
             pre_computed_routing: None,
             native_messages: None,
             server_tools: None,
+            documents: None,
         };
 
         let result = adapter.adapt_request(&mut request, &HashMap::new());
@@ -987,6 +994,7 @@ fn test_structured_outputs_with_prompt_caching() {
         pre_computed_routing: None,
         native_messages: None,
         server_tools: None,
+        documents: None,
     };
 
     // Apply both adapters
@@ -1061,6 +1069,7 @@ fn test_json_mode_with_logprobs() {
         pre_computed_routing: None,
         native_messages: None,
         server_tools: None,
+        documents: None,
     };
 
     // Apply both adapters

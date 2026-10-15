@@ -536,6 +536,21 @@ impl ModelProvider for OpenAICompatibleProvider {
         crate::search::read_response(response, request.max_results.unwrap_or(10)).await
     }
 
+    fn document_protocol(
+        &self,
+        request: &CompletionRequest,
+    ) -> Option<crate::documents::DocumentProtocol> {
+        (self.gateway_kind == Some(GatewayKind::Llmgateway)
+            && request.native_messages.is_none()
+            && request
+                .model
+                .split_once('/')
+                .is_some_and(|(provider, model)| {
+                    matches!(provider, "google" | "google-vertex") && model.starts_with("gemini-")
+                }))
+        .then_some(crate::documents::DocumentProtocol::LlmGatewayGoogle)
+    }
+
     fn server_tools_protocol(
         &self,
         request: &CompletionRequest,
@@ -777,8 +792,9 @@ impl ModelProvider for OpenAICompatibleProvider {
     }
 
     async fn complete(&self, request: CompletionRequest) -> AppResult<CompletionResponse> {
+        let native_documents = crate::documents::native_input(self, &request)?;
         let native_tools = request.server_tools.clone();
-        let transport = if native_tools.is_some() {
+        let transport = if native_tools.is_some() || native_documents {
             crate::http_client::native_client()?
         } else {
             self.client.clone()
@@ -793,12 +809,15 @@ impl ModelProvider for OpenAICompatibleProvider {
                 "This provider does not support gateway routing controls".into(),
             ));
         }
-        let preferences = if self.gateway_kind.is_some() {
+        let mut preferences = if self.gateway_kind.is_some() {
             self.gateway_preferences.effective_for_chat(&request)?
         } else {
             self.gateway_preferences
                 .effective(request.extensions.as_ref())?
         };
+        if native_documents {
+            preferences.allow_fallbacks = Some(false);
+        }
         let prompt_cache_key = crate::session::cache_key(&request);
         let openai_request = OpenAIChatRequest {
             service_tier: request.service_tier.filter(|_| self.gateway_kind.is_none()),
@@ -864,10 +883,14 @@ impl ModelProvider for OpenAICompatibleProvider {
             return Err(crate::http_client::response_error(response).await);
         }
 
-        let raw: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| AppError::Provider(e.to_string()))?;
+        let raw: serde_json::Value = if native_documents {
+            crate::messages::read_json_response(response, 8 * 1024 * 1024).await?
+        } else {
+            response
+                .json()
+                .await
+                .map_err(|e| AppError::Provider(e.to_string()))?
+        };
         let attribution = self
             .gateway_kind
             .map(|kind| GatewayAttribution::from_wire(kind, &raw, preferences));
@@ -915,8 +938,9 @@ impl ModelProvider for OpenAICompatibleProvider {
         &self,
         request: CompletionRequest,
     ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>> {
+        let native_documents = crate::documents::native_input(self, &request)?;
         let native_tools = request.server_tools.clone();
-        let transport = if native_tools.is_some() {
+        let transport = if native_tools.is_some() || native_documents {
             crate::http_client::native_client()?
         } else {
             self.client.clone()
@@ -931,13 +955,16 @@ impl ModelProvider for OpenAICompatibleProvider {
                 "This provider does not support gateway routing controls".into(),
             ));
         }
-        let preferences = if self.gateway_kind.is_some() {
+        let mut preferences = if self.gateway_kind.is_some() {
             self.gateway_preferences.effective_for_chat(&request)?
         } else {
             self.gateway_preferences
                 .effective(request.extensions.as_ref())?
         };
         let gateway_kind = self.gateway_kind;
+        if native_documents {
+            preferences.allow_fallbacks = Some(false);
+        }
         let prompt_cache_key = crate::session::cache_key(&request);
         let openai_request = OpenAIChatRequest {
             service_tier: request.service_tier.filter(|_| self.gateway_kind.is_none()),
@@ -1009,7 +1036,18 @@ impl ModelProvider for OpenAICompatibleProvider {
         // Use flat_map to handle multiple SSE events in a single byte chunk
         // Buffer incomplete lines across HTTP chunks
 
-        let lines = crate::sse_lines::line_batches(response.bytes_stream());
+        let lines: Pin<Box<dyn Stream<Item = AppResult<Vec<String>>> + Send>> = if native_documents
+        {
+            crate::sse_lines::document_line_batches(response)
+        } else {
+            Box::pin(
+                crate::sse_lines::line_batches(response.bytes_stream()).map(|result| {
+                    result.map_err(|e| {
+                        AppError::Provider(crate::http_client::format_stream_error(&e))
+                    })
+                }),
+            )
+        };
         let mut latest_attribution: Option<GatewayAttribution> = None;
         let stream = lines.flat_map(move |result| {
             let chunks: Vec<AppResult<CompletionChunk>> = match result {
@@ -1090,9 +1128,7 @@ impl ModelProvider for OpenAICompatibleProvider {
 
                     parsed_chunks
                 }
-                Err(e) => vec![Err(AppError::Provider(
-                    crate::http_client::format_stream_error(&e),
-                ))],
+                Err(e) => vec![Err(e)],
             };
 
             futures::stream::iter(chunks)

@@ -67,6 +67,7 @@ pub fn standard_completion_request() -> CompletionRequest {
         pre_computed_routing: None,
         native_messages: None,
         server_tools: None,
+        documents: None,
     }
 }
 
@@ -112,6 +113,7 @@ pub fn standard_streaming_request() -> CompletionRequest {
         pre_computed_routing: None,
         native_messages: None,
         server_tools: None,
+        documents: None,
     }
 }
 

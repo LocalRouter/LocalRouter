@@ -19,6 +19,7 @@ use lr_types::{AppError, AppResult};
 
 pub mod adaptive;
 pub mod decision_routing;
+mod documents;
 pub mod endpoint_cache;
 pub mod explanation;
 pub mod free_tier;
@@ -862,6 +863,7 @@ impl Router {
     ) -> AppResult<(CompletionResponse, Option<serde_json::Value>)> {
         let mut request = request;
         self.prepare_upstream_tools(client_id, &mut request)?;
+        self.prepare_document_request(client_id, &mut request)?;
         let (_client, mut strategy) = self.validate_client_and_strategy(client_id)?;
         strategy.free_tier_only = false;
 
@@ -892,6 +894,7 @@ impl Router {
     )> {
         let mut request = request;
         self.prepare_upstream_tools(client_id, &mut request)?;
+        self.prepare_document_request(client_id, &mut request)?;
         let (_client, mut strategy) = self.validate_client_and_strategy(client_id)?;
         strategy.free_tier_only = false;
 
@@ -1451,6 +1454,9 @@ impl Router {
                         | lr_providers::privacy::INTERNAL_EXTENSION
                         | lr_providers::privacy::ROUTE_CLIENT_EXTENSION
                         | lr_providers::server_tools::INGRESS_EXTENSION
+                        | lr_providers::documents::OPTIONS_EXTENSION
+                        | lr_providers::documents::METADATA_EXTENSION
+                        | lr_providers::documents::PROVENANCE_EXTENSION
                 ) {
                     continue;
                 }
@@ -1919,7 +1925,10 @@ impl Router {
                     last_error = Some(router_error.clone());
 
                     // Continue to next model on retryable errors
-                    if request.server_tools.is_some() || !router_error.should_retry() {
+                    if request.server_tools.is_some()
+                        || request.has_file_inputs()
+                        || !router_error.should_retry()
+                    {
                         error!(
                             "Non-retryable error encountered: {}",
                             router_error.to_log_string()
@@ -2333,7 +2342,10 @@ impl Router {
                     last_error = Some(router_error.clone());
 
                     // Continue to next model on retryable errors
-                    if request.server_tools.is_some() || !router_error.should_retry() {
+                    if request.server_tools.is_some()
+                        || request.has_file_inputs()
+                        || !router_error.should_retry()
+                    {
                         error!(
                             "Non-retryable error encountered: {}",
                             router_error.to_log_string()
@@ -2532,7 +2544,8 @@ impl Router {
                             | AppError::Internal(_)
                     );
 
-                    if request.server_tools.is_some() || !should_retry {
+                    if request.server_tools.is_some() || request.has_file_inputs() || !should_retry
+                    {
                         // Non-retryable error (e.g., validation error) - fail immediately
                         warn!("Non-retryable error, stopping retry attempts");
                         return Err(e);
@@ -2587,6 +2600,7 @@ impl Router {
         let mut request = request;
         self.prepare_privacy_request(client_id, &mut request)?;
         self.prepare_upstream_tools(client_id, &mut request)?;
+        self.prepare_document_request(client_id, &mut request)?;
         lr_providers::session::prepare_turn(&mut request)?;
         debug!(
             "Routing completion request for client '{}', model '{}'",
@@ -2704,6 +2718,7 @@ impl Router {
         let mut request = request;
         self.prepare_privacy_request(client_id, &mut request)?;
         self.prepare_upstream_tools(client_id, &mut request)?;
+        self.prepare_document_request(client_id, &mut request)?;
         lr_providers::session::prepare_turn(&mut request)?;
         debug!(
             "Routing streaming completion request for client '{}', model '{}'",
@@ -4155,6 +4170,7 @@ mod tests {
             pre_computed_routing: None,
             native_messages: None,
             server_tools: None,
+            documents: None,
         };
 
         let result = router.complete("invalid-key-id", request).await;

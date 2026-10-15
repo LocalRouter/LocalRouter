@@ -197,6 +197,10 @@ fn chat_content_to_items(content: &ChatMessageContent, is_output: bool) -> Vec<C
                         Some(ContentItem::InputText { text: text.clone() })
                     }
                 }
+                ContentPart::File { file } => Some(ContentItem::InputFile {
+                    file_data: file.file_data.clone(),
+                    filename: file.filename.clone(),
+                }),
                 ContentPart::ImageUrl { image_url } => Some(ContentItem::InputImage {
                     image_url: image_url.url.clone(),
                     detail: image_url.detail.clone(),
@@ -278,6 +282,7 @@ mod tests {
             pre_computed_routing: None,
             native_messages: None,
             server_tools: None,
+            documents: None,
         }
     }
 

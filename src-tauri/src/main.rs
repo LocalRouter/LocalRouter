@@ -107,6 +107,7 @@ impl lr_memory::CompactionLlm for RouterCompactionLlm {
             pre_computed_routing: None,
             native_messages: None,
             server_tools: None,
+            documents: None,
         };
 
         // Serialize request for monitor event observability

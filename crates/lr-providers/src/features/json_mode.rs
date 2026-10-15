@@ -297,6 +297,7 @@ mod tests {
             pre_computed_routing: None,
             native_messages: None,
             server_tools: None,
+            documents: None,
         };
 
         let mut params = HashMap::new();
@@ -352,6 +353,7 @@ mod tests {
             pre_computed_routing: None,
             native_messages: None,
             server_tools: None,
+            documents: None,
         };
 
         let params = HashMap::new();
@@ -406,6 +408,7 @@ mod tests {
             pre_computed_routing: None,
             native_messages: None,
             server_tools: None,
+            documents: None,
         };
 
         let mut params = HashMap::new();

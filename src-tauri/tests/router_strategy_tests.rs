@@ -143,6 +143,7 @@ fn create_test_request(model: &str) -> CompletionRequest {
         pre_computed_routing: None,
         native_messages: None,
         server_tools: None,
+        documents: None,
     }
 }
 

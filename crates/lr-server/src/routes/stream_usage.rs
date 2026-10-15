@@ -16,6 +16,7 @@ use super::finalize::{FinalizeInputs, StreamingFinalizeSummary};
 #[derive(Default, Debug)]
 pub(crate) struct StreamTracker {
     routing_metadata: Option<serde_json::Value>,
+    documents: Option<serde_json::Value>,
     prompt_cache: std::collections::HashMap<String, lr_providers::session::PromptCacheAccounting>,
     gateway_costs: std::collections::HashMap<String, Option<f64>>,
     gateway_attribution: Option<serde_json::Value>,
@@ -63,7 +64,25 @@ pub(crate) struct StreamTotals {
 }
 
 impl StreamTracker {
+    pub fn for_messages(messages: &[crate::types::ChatMessage]) -> Self {
+        let native = messages.iter().any(|m|matches!(&m.content,Some(crate::types::MessageContent::Parts(parts)) if parts.iter().any(|p|matches!(p,crate::types::ContentPart::File{..}))));
+        Self::for_native_documents(native)
+    }
+    pub fn for_native_documents(native: bool) -> Self {
+        Self {
+            documents: native
+                .then(|| serde_json::json!({"mode":"native","input_usage_reported":false})),
+            ..Self::default()
+        }
+    }
     pub fn observe(&mut self, chunk: &CompletionChunk) {
+        if let Some(metadata) = chunk
+            .extensions
+            .as_ref()
+            .and_then(|e| e.get(lr_providers::documents::METADATA_EXTENSION))
+        {
+            self.documents = Some(metadata.clone());
+        }
         if let Some(accounting) = chunk
             .extensions
             .as_ref()
@@ -163,6 +182,13 @@ impl StreamTracker {
                 .try_fold(0.0, |sum, r| r.estimated_net_savings_usd.map(|v| sum + v))
                 .filter(|v| v.is_finite());
             extensions.insert(lr_providers::session::ACCOUNTING.into(),serde_json::json!({"read_tokens":reports.iter().map(|r|u64::from(r.read_tokens)).sum::<u64>(),"write_tokens":reports.iter().map(|r|u64::from(r.write_tokens)).sum::<u64>(),"uncached_tokens":reports.iter().map(|r|u64::from(r.uncached_tokens)).sum::<u64>(),"estimated_net_savings_usd":savings,"source":"provider_tokens_pricing_estimate"}));
+        }
+        if let Some(metadata) = &self.documents {
+            let mut metadata = metadata.clone();
+            if !self.usage.is_empty() {
+                metadata["input_usage_reported"] = serde_json::json!(true);
+            }
+            extensions.insert(lr_providers::documents::METADATA_EXTENSION.into(), metadata);
         }
         if let Some(metadata) = &self.routing_metadata {
             extensions.insert("localrouter.routing".into(), metadata.clone());
@@ -416,6 +442,30 @@ impl Drop for FinalizeOnDrop {
 mod tests {
     use super::*;
     use lr_providers::{ChunkChoice, ChunkDelta, FunctionCallDelta, ToolCallDelta};
+
+    #[test]
+    fn cancelled_document_stream_keeps_unknown_input_usage_until_native_usage_arrives() {
+        let mut tracker = StreamTracker::for_native_documents(true);
+        assert!(lr_providers::documents::input_usage_unknown(
+            tracker.response_extensions().as_ref()
+        ));
+        let mut frame = chunk(Some("result"), None);
+        tracker.observe(&frame);
+        assert!(lr_providers::documents::input_usage_unknown(
+            tracker.response_extensions().as_ref()
+        ));
+        frame.usage = Some(TokenUsage {
+            prompt_tokens: 77,
+            completion_tokens: 2,
+            total_tokens: 79,
+            prompt_tokens_details: None,
+            completion_tokens_details: None,
+        });
+        tracker.observe(&frame);
+        assert!(!lr_providers::documents::input_usage_unknown(
+            tracker.response_extensions().as_ref()
+        ));
+    }
 
     #[test]
     fn prompt_cache_snapshots_are_not_multiplied_and_unknown_rates_stay_unknown() {

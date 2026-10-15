@@ -190,6 +190,16 @@ class OpenAI {
   post<T = any>(path: string, opts?: { body?: unknown; signal?: AbortSignal; maxRetries?: number }): ApiPromise<T> {
     return apiPromise<T>(async () => {
       if (opts?.signal?.aborted) throw new DOMException('Cancelled', 'AbortError')
+      if (path.replace(/\/+$/, '') === '/chat/completions') {
+        const clientId = [...mockClientSecrets.entries()].find(([, secret]) => secret === this.apiKey)?.[0]
+        const client = mockData.clients.find(client => client.id === clientId)
+        const security = clientId ? mockClientSecurity.get(clientId) : null
+        if (!client?.enabled || security?.hasCredential === false || (security?.expiry && Date.now() >= Date.parse(security.expiry))) throw new DemoApiError(401, 'Demo client credential is inactive')
+        const body = opts?.body as { model?: string; extensions?: Record<string, unknown> } | undefined
+        if (!body?.extensions?.['localrouter.documents']) throw new DemoError()
+        const data = { id: 'document-demo', model: body.model, choices: [{ message: { role: 'assistant', content: 'Illustrative document response. The demo does not send or analyze the selected file.' }, finish_reason: 'stop', index: 0 }], extensions: { 'localrouter.document_processing': { demo: true, cost_usd: null, input_usage_reported: false } } }
+        return { data: data as T, response: new Response(JSON.stringify(data), { headers: { 'content-type': 'application/json' } }) }
+      }
       if (path.replace(/\/+$/, '') === '/search') {
         const clientId = [...mockClientSecrets.entries()].find(([, secret]) => secret === this.apiKey)?.[0]
         const client = mockData.clients.find(client => client.id === clientId)

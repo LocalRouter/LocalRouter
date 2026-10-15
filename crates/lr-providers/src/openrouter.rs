@@ -220,6 +220,16 @@ impl OpenRouterProvider {
 #[async_trait]
 #[allow(dead_code)]
 impl ModelProvider for OpenRouterProvider {
+    fn document_protocol(
+        &self,
+        request: &CompletionRequest,
+    ) -> Option<crate::documents::DocumentProtocol> {
+        request
+            .native_messages
+            .is_none()
+            .then_some(crate::documents::DocumentProtocol::OpenRouterNative)
+    }
+
     fn server_tools_protocol(
         &self,
         request: &CompletionRequest,
@@ -334,7 +344,11 @@ impl ModelProvider for OpenRouterProvider {
     }
 
     async fn complete(&self, request: CompletionRequest) -> AppResult<CompletionResponse> {
-        let preferences = self.gateway_preferences.effective_for_chat(&request)?;
+        let native_documents = crate::documents::native_input(self, &request)?;
+        let mut preferences = self.gateway_preferences.effective_for_chat(&request)?;
+        if native_documents {
+            preferences.allow_fallbacks = Some(false);
+        }
         let url = format!("{}/chat/completions", self.base_url);
 
         let openrouter_request = OpenRouterRequest {
@@ -365,9 +379,12 @@ impl ModelProvider for OpenRouterProvider {
                 None,
             )?;
         }
+        if native_documents {
+            body["plugins"] = serde_json::json!([{"id":"file-parser","pdf":{"engine":"native"}}]);
+        }
         let gateway_headers = preferences.apply(GatewayKind::Openrouter, &mut body)?;
         let response = self
-            .build_post_request(&url, request.server_tools.is_some())?
+            .build_post_request(&url, request.server_tools.is_some() || native_documents)?
             .headers(gateway_headers)
             .json(&body)
             .send()
@@ -378,10 +395,14 @@ impl ModelProvider for OpenRouterProvider {
             return Err(crate::http_client::response_error(response).await);
         }
 
-        let raw: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| AppError::Provider(e.to_string()))?;
+        let raw: serde_json::Value = if native_documents {
+            crate::messages::read_json_response(response, 8 * 1024 * 1024).await?
+        } else {
+            response
+                .json()
+                .await
+                .map_err(|e| AppError::Provider(e.to_string()))?
+        };
         let attribution = GatewayAttribution::from_wire(GatewayKind::Openrouter, &raw, preferences);
         let openrouter_response: OpenRouterResponse = serde_json::from_value(raw)
             .map_err(|e| AppError::Provider(format!("Invalid gateway response: {e}")))?;
@@ -416,7 +437,11 @@ impl ModelProvider for OpenRouterProvider {
         &self,
         request: CompletionRequest,
     ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>> {
-        let preferences = self.gateway_preferences.effective_for_chat(&request)?;
+        let native_documents = crate::documents::native_input(self, &request)?;
+        let mut preferences = self.gateway_preferences.effective_for_chat(&request)?;
+        if native_documents {
+            preferences.allow_fallbacks = Some(false);
+        }
         let url = format!("{}/chat/completions", self.base_url);
 
         let openrouter_request = OpenRouterRequest {
@@ -447,9 +472,12 @@ impl ModelProvider for OpenRouterProvider {
                 None,
             )?;
         }
+        if native_documents {
+            body["plugins"] = serde_json::json!([{"id":"file-parser","pdf":{"engine":"native"}}]);
+        }
         let gateway_headers = preferences.apply(GatewayKind::Openrouter, &mut body)?;
         let response = self
-            .build_post_request(&url, request.server_tools.is_some())?
+            .build_post_request(&url, request.server_tools.is_some() || native_documents)?
             .headers(gateway_headers)
             .json(&body)
             .send()
@@ -465,7 +493,18 @@ impl ModelProvider for OpenRouterProvider {
             return Err(crate::http_client::response_error(response).await);
         }
 
-        let lines = crate::sse_lines::line_batches(response.bytes_stream());
+        let lines: Pin<Box<dyn Stream<Item = AppResult<Vec<String>>> + Send>> = if native_documents
+        {
+            crate::sse_lines::document_line_batches(response)
+        } else {
+            Box::pin(
+                crate::sse_lines::line_batches(response.bytes_stream()).map(|result| {
+                    result.map_err(|e| {
+                        AppError::Provider(crate::http_client::format_stream_error(&e))
+                    })
+                }),
+            )
+        };
         let mut latest_attribution: Option<GatewayAttribution> = None;
         let stream = lines.flat_map(move |result| {
             let chunks: Vec<AppResult<CompletionChunk>> = match result {
@@ -534,9 +573,7 @@ impl ModelProvider for OpenRouterProvider {
 
                     parsed_chunks
                 }
-                Err(e) => vec![Err(AppError::Provider(
-                    crate::http_client::format_stream_error(&e),
-                ))],
+                Err(e) => vec![Err(e)],
             };
 
             futures::stream::iter(chunks)
@@ -1064,6 +1101,7 @@ mod tests {
             pre_computed_routing: None,
             native_messages: None,
             server_tools: None,
+            documents: None,
         };
 
         let response = provider.complete(request).await.unwrap();

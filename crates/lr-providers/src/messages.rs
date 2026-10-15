@@ -218,7 +218,25 @@ impl MessagesContext {
 
 /// Router transport boundary. Ordinary Chat calls keep their existing path;
 /// native calls retain their envelope instead of rebuilding it from messages.
+/// Document provenance is local metadata, never an upstream request parameter.
 pub async fn dispatch_complete(
+    provider: &dyn crate::ModelProvider,
+    request: crate::CompletionRequest,
+) -> AppResult<crate::CompletionResponse> {
+    let documents = request.documents.clone();
+    let mut response = dispatch_complete_inner(provider, request).await?;
+    if let Some(context) = documents {
+        let mut metadata = context.metadata();
+        metadata["input_usage_reported"] = serde_json::json!(true);
+        response
+            .extensions
+            .get_or_insert_with(Default::default)
+            .insert(crate::documents::METADATA_EXTENSION.into(), metadata);
+    }
+    Ok(response)
+}
+
+async fn dispatch_complete_inner(
     provider: &dyn crate::ModelProvider,
     request: crate::CompletionRequest,
 ) -> AppResult<crate::CompletionResponse> {

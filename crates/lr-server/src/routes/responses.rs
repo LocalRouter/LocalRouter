@@ -294,6 +294,7 @@ pub async fn create_response(
         })
         .unwrap_or(false);
 
+    let native_documents = provider_request.has_file_inputs();
     if req.stream {
         let (stream, routing_metadata) = if use_mcp_via_llm {
             let (client, _strategy) = client_for_routing
@@ -321,7 +322,9 @@ pub async fn create_response(
             {
                 Ok(s) => (s, None),
                 Err(e) => {
-                    return Err(llm_guard.capture_err(ApiErrorResponse::from(e)));
+                    return Err(llm_guard.capture_err(
+                        ApiErrorResponse::from(e).without_retry_if(native_documents),
+                    ));
                 }
             }
         } else {
@@ -332,7 +335,9 @@ pub async fn create_response(
             {
                 Ok((s, routing_meta)) => (s, routing_meta),
                 Err(e) => {
-                    return Err(llm_guard.capture_err(ApiErrorResponse::from(e)));
+                    return Err(llm_guard.capture_err(
+                        ApiErrorResponse::from(e).without_retry_if(native_documents),
+                    ));
                 }
             }
         };
@@ -400,14 +405,18 @@ pub async fn create_response(
                 req.previous_response_id.clone(),
             )
             .await
-            .map_err(|e| llm_guard.capture_err(ApiErrorResponse::from(e)))?;
+            .map_err(|e| {
+                llm_guard.capture_err(ApiErrorResponse::from(e).without_retry_if(native_documents))
+            })?;
         (c, None)
     } else {
         let (completion, routing_meta) = state
             .router
             .complete(&auth.api_key_id, provider_request)
             .await
-            .map_err(|e| llm_guard.capture_err(ApiErrorResponse::from(e)))?;
+            .map_err(|e| {
+                llm_guard.capture_err(ApiErrorResponse::from(e).without_retry_if(native_documents))
+            })?;
         (completion, routing_meta)
     };
 
@@ -645,6 +654,9 @@ fn provider_msg_to_server(m: &ChatMessage) -> ServerChatMessage {
             let mapped: Vec<ServerContentPart> = parts
                 .iter()
                 .map(|p| match p {
+                    lr_providers::ContentPart::File { file } => {
+                        ServerContentPart::File { file: file.clone() }
+                    }
                     lr_providers::ContentPart::Text { text } => {
                         ServerContentPart::Text { text: text.clone() }
                     }
@@ -698,7 +710,14 @@ fn provider_tool_to_server(t: &lr_providers::Tool) -> ServerTool {
 
 fn response_item_to_server_message(item: &Value) -> Option<ServerChatMessage> {
     let obj = item.as_object()?;
-    let kind = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    let kind = obj
+        .get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or(if obj.contains_key("role") {
+            "message"
+        } else {
+            ""
+        });
     match kind {
         "message" => {
             let role = obj
@@ -780,6 +799,14 @@ fn content_from_response_parts(content: &Value) -> ServerMessageContent {
                     parts.push(ServerContentPart::Text {
                         text: text.to_string(),
                     });
+                }
+            }
+            Some("input_file") => {
+                // The ingress normalizer already validated the complete shape.
+                if let Ok(file) = serde_json::from_value::<lr_providers::documents::FileInput>(
+                    serde_json::json!({"filename":obj.get("filename"),"file_data":obj.get("file_data")}),
+                ) {
+                    parts.push(ServerContentPart::File { file });
                 }
             }
             Some("input_image") => {
@@ -933,7 +960,7 @@ fn build_stream_response(
     let mut model_name_observed: Option<String> = None;
     // Usage, provider and generated characters; finalizes from what was
     // produced so far if the client disconnects mid-stream
-    let tracker = std::sync::Arc::new(parking_lot::Mutex::new(StreamTracker::default()));
+    let tracker = std::sync::Arc::new(parking_lot::Mutex::new(StreamTracker::for_native_documents(merged_messages.iter().any(|m|matches!(&m.content,lr_providers::ChatMessageContent::Parts(parts) if parts.iter().any(|p|matches!(p,lr_providers::ContentPart::File{..})))))));
     let mut abandoned = FinalizeOnDrop::new(
         AbandonedStream {
             state: state.clone(),
@@ -1378,6 +1405,7 @@ fn select_wire_body(
     if body.is_object() {
         for key in [
             lr_providers::gateway::EXTENSION,
+            lr_providers::documents::METADATA_EXTENSION,
             "localrouter.routing",
             lr_providers::session::ACCOUNTING,
             lr_providers::response_cache::EXTENSION,

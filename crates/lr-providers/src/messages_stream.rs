@@ -15,6 +15,34 @@ pub async fn dispatch_stream(
     provider: &dyn ModelProvider,
     request: CompletionRequest,
 ) -> AppResult<CompletionStream> {
+    let documents = request.documents.clone();
+    let mut stream = dispatch_stream_inner(provider, request).await?;
+    let Some(context) = documents else {
+        return Ok(stream);
+    };
+    let mut metadata = context.metadata();
+    let needs_usage = context.mode == crate::documents::DocumentMode::Native;
+    Ok(Box::pin(async_stream::try_stream! {
+        let mut reported=false;
+        let mut emitted=false;
+        while let Some(chunk)=stream.next().await {
+            let mut chunk=chunk?;
+            reported |= chunk.usage.is_some();
+            metadata["input_usage_reported"] = json!(reported || !needs_usage);
+            if !emitted || chunk.usage.is_some() || chunk.choices.iter().any(|choice|choice.finish_reason.is_some()) {
+                chunk.extensions.get_or_insert_with(Default::default).insert(crate::documents::METADATA_EXTENSION.into(),metadata.clone());
+                emitted=true;
+            }
+            yield chunk;
+        }
+        if needs_usage && !reported {Err(AppError::Provider("Document stream ended without reported input usage; do not retry this dispatch automatically".into()))?;}
+    }))
+}
+
+async fn dispatch_stream_inner(
+    provider: &dyn ModelProvider,
+    request: CompletionRequest,
+) -> AppResult<CompletionStream> {
     let Some(context) = request.native_messages.as_ref() else {
         return provider.stream_complete(request).await;
     };

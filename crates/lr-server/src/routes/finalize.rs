@@ -31,7 +31,14 @@ pub(crate) fn estimate_token_count(messages: &[ChatMessage]) -> u64 {
         .iter()
         .map(|msg| match &msg.content {
             Some(MessageContent::Text(text)) => (text.len() / 4).max(1) as u64,
-            Some(MessageContent::Parts(parts)) => parts.len() as u64 * 100,
+            Some(MessageContent::Parts(parts)) => parts
+                .iter()
+                .map(|part| match part {
+                    crate::types::ContentPart::Text { text } => (text.len() / 4).max(1) as u64,
+                    crate::types::ContentPart::ImageUrl { .. } => 100,
+                    crate::types::ContentPart::File { .. } => 0,
+                })
+                .sum(),
             None => 0,
         })
         .sum()
@@ -248,6 +255,7 @@ pub(crate) struct FinalizeInputs<'a> {
 /// latency figures.
 pub(crate) struct FinalizeMetrics {
     pub cost: f64,
+    pub cost_known: bool,
     /// Not read by callers today but surfaced here so future streaming
     /// finalize paths can reuse the same figure without recomputing.
     #[allow(dead_code)]
@@ -312,8 +320,18 @@ pub(crate) async fn finalize_metrics_and_monitor(
 
     // Cached prompt tokens and reasoning tokens are charged at their own
     // rates
-    let cost = lr_providers::gateway::reported_cost(response.extensions.as_ref())
-        .unwrap_or_else(|| pricing.cost(&charged_usage(prompt_tokens, &response.usage)));
+    let reported_cost = lr_providers::gateway::reported_cost(response.extensions.as_ref());
+    let cost_known = reported_cost.is_some()
+        || !lr_providers::documents::input_usage_unknown(response.extensions.as_ref());
+    // Numeric aggregate metrics store only known subtotals. Public accounting
+    // remains unknown when opaque input usage was never reported.
+    let cost = reported_cost.unwrap_or_else(|| {
+        if cost_known {
+            pricing.cost(&charged_usage(prompt_tokens, &response.usage))
+        } else {
+            0.0
+        }
+    });
 
     let strategy_id = state
         .client_manager
@@ -363,16 +381,20 @@ pub(crate) async fn finalize_metrics_and_monitor(
     // on_metrics_recorded callback (fed by record_success above) — no
     // direct record_tokens call here or it would double-count.
 
-    if let Err(e) = state.access_logger.log_success(
-        &auth.api_key_id,
-        &response.provider,
-        &response.model,
-        prompt_tokens as u64,
-        response.usage.completion_tokens as u64,
-        cost,
-        latency_ms,
-        generation_id,
-    ) {
+    if let Err(e) = if cost_known {
+        state.access_logger.log_success(
+            &auth.api_key_id,
+            &response.provider,
+            &response.model,
+            prompt_tokens as u64,
+            response.usage.completion_tokens as u64,
+            cost,
+            latency_ms,
+            generation_id,
+        )
+    } else {
+        Ok(())
+    } {
         tracing::warn!("Failed to write access log: {}", e);
     }
 
@@ -421,6 +443,7 @@ pub(crate) async fn finalize_metrics_and_monitor(
     if inputs.skip_monitor_completion {
         return FinalizeMetrics {
             cost,
+            cost_known,
             latency_ms,
             pricing,
             completed_at,
@@ -435,7 +458,7 @@ pub(crate) async fn finalize_metrics_and_monitor(
         prompt_tokens as u64,
         response.usage.completion_tokens as u64,
         reasoning_tokens,
-        Some(cost),
+        cost_known.then_some(cost),
         latency_ms,
         finish_reason,
         &content_preview,
@@ -444,6 +467,7 @@ pub(crate) async fn finalize_metrics_and_monitor(
 
     FinalizeMetrics {
         cost,
+        cost_known,
         latency_ms,
         pricing,
         completed_at,
@@ -589,7 +613,7 @@ pub(crate) fn update_response_body_and_record_generation(
         created_at,
         finish_reason: finish_reason.unwrap_or_else(|| "unknown".to_string()),
         tokens,
-        cost: Some(CostDetails {
+        cost: metrics.cost_known.then_some(CostDetails {
             prompt_cost,
             completion_cost,
             reasoning_cost: None,
@@ -614,7 +638,10 @@ fn upstream_ledger_entry(
     cached_tokens: Option<u64>,
     cost: f64,
 ) -> Option<lr_usage::LedgerEntry> {
-    if lr_providers::response_cache::is_hit(response.extensions.as_ref()) {
+    if lr_providers::response_cache::is_hit(response.extensions.as_ref())
+        || (lr_providers::documents::input_usage_unknown(response.extensions.as_ref())
+            && lr_providers::gateway::reported_cost(response.extensions.as_ref()).is_none())
+    {
         return None;
     }
     Some(lr_usage::LedgerEntry {

@@ -16,6 +16,7 @@ pub struct ApiErrorResponse {
     pub error: Box<ErrorResponse>,
     /// Optional retry-after header value (seconds)
     pub retry_after_secs: Option<u64>,
+    no_retry: bool,
 }
 
 impl ApiErrorResponse {
@@ -28,7 +29,13 @@ impl ApiErrorResponse {
             status,
             error: Box::new(ErrorResponse::new(error_type, message)),
             retry_after_secs: None,
+            no_retry: false,
         }
+    }
+
+    pub fn without_retry_if(mut self, condition: bool) -> Self {
+        self.no_retry |= condition;
+        self
     }
 
     pub fn bad_request(message: impl Into<String>) -> Self {
@@ -93,17 +100,20 @@ impl ApiErrorResponse {
 
 impl IntoResponse for ApiErrorResponse {
     fn into_response(self) -> Response {
-        if let Some(retry_after) = self.retry_after_secs {
-            let mut response = (self.status, Json(self.error)).into_response();
+        let mut response = (self.status, Json(self.error)).into_response();
+        if self.no_retry {
+            response.headers_mut().insert(
+                "x-should-retry",
+                axum::http::HeaderValue::from_static("false"),
+            );
+        } else if let Some(retry_after) = self.retry_after_secs {
             response.headers_mut().insert(
                 "retry-after",
                 axum::http::HeaderValue::from_str(&retry_after.to_string())
                     .unwrap_or_else(|_| axum::http::HeaderValue::from_static("60")),
             );
-            response
-        } else {
-            (self.status, Json(self.error)).into_response()
         }
+        response
     }
 }
 

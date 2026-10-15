@@ -1087,6 +1087,7 @@ pub(crate) async fn run_guardrails_scan(
         return Ok(None);
     };
     let body = serde_json::to_value(request).unwrap_or_default();
+    let (body, _) = crate::documents::scan_projection(&body).map_err(ApiErrorResponse::from)?;
     Ok(guardrails_scan_request(state, &client_ctx.client_id, &request.model, &body).await)
 }
 
@@ -1516,6 +1517,7 @@ pub(crate) async fn run_secret_scan_check(
         return Ok(());
     };
     let body = serde_json::to_value(request).unwrap_or_default();
+    let (body, _) = crate::documents::scan_projection(&body).map_err(ApiErrorResponse::from)?;
     match scan_request_for_secrets(state, &client_ctx.client_id, &request.model, &body).await {
         SecretScanOutcome::Allow => Ok(()),
         SecretScanOutcome::Deny(message) => Err(ApiErrorResponse::forbidden(message)),
@@ -1869,6 +1871,9 @@ pub(crate) fn convert_to_provider_request(
                     let provider_parts: Vec<ProviderContentPart> = parts
                         .iter()
                         .map(|part| match part {
+                            crate::types::ContentPart::File { file } => {
+                                ProviderContentPart::File { file: file.clone() }
+                            }
                             crate::types::ContentPart::Text { text } => {
                                 ProviderContentPart::Text { text: text.clone() }
                             }
@@ -1983,6 +1988,7 @@ pub(crate) fn convert_to_provider_request(
             .clone()
             .map(|mut extensions| {
                 extensions.remove(lr_providers::server_tools::INGRESS_EXTENSION);
+                extensions.remove(lr_providers::documents::PROVENANCE_EXTENSION);
                 extensions
             })
             .filter(|extensions| !extensions.is_empty()),
@@ -2007,6 +2013,8 @@ pub(crate) fn convert_to_provider_request(
         reasoning_effort: request.reasoning_effort.clone(),
         pre_computed_routing: None,
         native_messages: None,
+        documents: crate::documents::context(request.extensions.as_ref())
+            .map_err(ApiErrorResponse::from)?,
         server_tools: crate::upstream_tools::context(request.extensions.as_ref())
             .map_err(ApiErrorResponse::from)?,
     })
@@ -2158,6 +2166,59 @@ pub(crate) async fn run_turn_pipeline(
             .prepare_upstream_tools(&auth.api_key_id, &mut projection)
             .map_err(ApiErrorResponse::from)?;
     }
+    if crate::documents::has_native_files(&chat_req) {
+        let mut document_projection = convert_to_provider_request(&chat_req)?;
+        if lr_types::is_duplicate_hop()
+            || state
+                .config_manager
+                .get()
+                .clients
+                .iter()
+                .any(|client| client.id == auth.api_key_id && client.is_mcp_via_llm())
+        {
+            return Err(ApiErrorResponse::bad_request(
+                "Native documents cannot be combined with automatic MCP or duplicate gateway hops",
+            ));
+        }
+        state
+            .router
+            .prepare_document_request(&auth.api_key_id, &mut document_projection)
+            .map_err(ApiErrorResponse::from)?;
+        let (_, opaque) =
+            crate::documents::scan_projection(&serde_json::to_value(&chat_req).unwrap_or_default())
+                .map_err(ApiErrorResponse::from)?;
+        if opaque {
+            let config = state.config_manager.get();
+            let client = state.client_manager.get_client(&auth.api_key_id);
+            let secret_action = client
+                .as_ref()
+                .and_then(|c| c.secret_scanning.action.as_ref())
+                .unwrap_or(&config.secret_scanning.action);
+            let secret_required = *secret_action == lr_config::SecretScanAction::Ask
+                && state
+                    .secret_scanner
+                    .read()
+                    .as_ref()
+                    .is_some_and(|scanner| scanner.has_rules());
+            let actions = merge_guardrail_category_actions(
+                client
+                    .as_ref()
+                    .and_then(|c| c.guardrails.category_actions.as_deref()),
+                &config.guardrails.category_actions,
+            );
+            let guardrails_required = config.guardrails.scan_requests
+                && !actions.is_empty()
+                && !guardrails_allow_everything(&actions)
+                && state
+                    .safety_engine
+                    .read()
+                    .as_ref()
+                    .is_some_and(|engine| engine.has_models());
+            if secret_required || guardrails_required {
+                return Err(ApiErrorResponse::bad_request("Opaque PDFs cannot satisfy the configured document scans; supply extracted UTF-8 text first"));
+            }
+        }
+    }
     // Stage 1: validate
     if let Err(e) = validate_request(&chat_req) {
         super::monitor_helpers::emit_validation_error(
@@ -2176,7 +2237,8 @@ pub(crate) async fn run_turn_pipeline(
     // active stage on this exact request. Resolve routing so it can be
     // forwarded, but skip rate limits, scans, prompts and rewrites.
     let is_duplicate = lr_types::is_duplicate_hop();
-    let caps = if is_duplicate {
+    let native_files = crate::documents::has_native_files(&chat_req);
+    let caps = if is_duplicate || native_files {
         PipelineCaps {
             allow_compression: false,
             allow_decision_routing: false,

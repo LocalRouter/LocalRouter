@@ -71,6 +71,29 @@ where
     })
 }
 
+/// Bound each retained native document frame before accumulating its bytes.
+pub(crate) fn document_line_batches(
+    response: reqwest::Response,
+) -> Pin<Box<dyn Stream<Item = lr_types::AppResult<Vec<String>>> + Send>> {
+    Box::pin(async_stream::try_stream! {
+        let mut bytes = response.bytes_stream();
+        let mut partial = Vec::new();
+        while let Some(read) = bytes.next().await {
+            let read = read.map_err(|e|lr_types::AppError::Provider(crate::http_client::format_stream_error(&e)))?;
+            let mut lines = Vec::new();
+            for byte in read {
+                if byte == b'\n' { lines.push(decode(&std::mem::take(&mut partial))); }
+                else {
+                    if partial.len() >= 2 * 1024 * 1024 { Err(lr_types::AppError::Provider("Document SSE line exceeds 2 MiB".into()))?; }
+                    partial.push(byte);
+                }
+            }
+            if !lines.is_empty() { yield lines; }
+        }
+        if !partial.is_empty() { yield vec![decode(&partial)]; }
+    })
+}
+
 struct LineState<S, E> {
     inner: Pin<Box<S>>,
     /// Bytes after the last `\n` seen so far.
@@ -245,5 +268,25 @@ mod tests {
         let stream = reads_split_at(body, &[3, 9, 12]);
         let got: Vec<String> = lines(stream).map(|r| r.expect("line")).collect().await;
         assert_eq!(got, vec!["data: 1", "data: 2"]);
+    }
+}
+
+#[cfg(test)]
+mod document_bounds_tests {
+    use super::*;
+    #[tokio::test]
+    async fn native_document_stream_rejects_an_unterminated_oversized_line() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_string("x".repeat(2 * 1024 * 1024 + 1)),
+            )
+            .mount(&server)
+            .await;
+        let response = reqwest::get(server.uri()).await.unwrap();
+        let mut lines = document_line_batches(response);
+        let error = lines.next().await.unwrap().unwrap_err();
+        assert!(error.to_string().contains("2 MiB"));
     }
 }

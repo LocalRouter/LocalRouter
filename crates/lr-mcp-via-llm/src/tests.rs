@@ -197,6 +197,7 @@ mod tool_injection_tests {
             pre_computed_routing: None,
             native_messages: None,
             server_tools: None,
+            documents: None,
         }
     }
 
@@ -609,6 +610,7 @@ mod manager_tests {
             pre_computed_routing: None,
             native_messages: None,
             server_tools: None,
+            documents: None,
         }
     }
 

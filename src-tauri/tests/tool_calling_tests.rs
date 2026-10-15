@@ -103,6 +103,7 @@ fn test_completion_request_with_tools() {
         pre_computed_routing: None,
         native_messages: None,
         server_tools: None,
+        documents: None,
     };
 
     // Verify tools are present
