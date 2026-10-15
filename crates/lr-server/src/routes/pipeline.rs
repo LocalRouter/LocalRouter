@@ -2188,35 +2188,7 @@ pub(crate) async fn run_turn_pipeline(
             crate::documents::scan_projection(&serde_json::to_value(&chat_req).unwrap_or_default())
                 .map_err(ApiErrorResponse::from)?;
         if opaque {
-            let config = state.config_manager.get();
-            let client = state.client_manager.get_client(&auth.api_key_id);
-            let secret_action = client
-                .as_ref()
-                .and_then(|c| c.secret_scanning.action.as_ref())
-                .unwrap_or(&config.secret_scanning.action);
-            let secret_required = *secret_action == lr_config::SecretScanAction::Ask
-                && state
-                    .secret_scanner
-                    .read()
-                    .as_ref()
-                    .is_some_and(|scanner| scanner.has_rules());
-            let actions = merge_guardrail_category_actions(
-                client
-                    .as_ref()
-                    .and_then(|c| c.guardrails.category_actions.as_deref()),
-                &config.guardrails.category_actions,
-            );
-            let guardrails_required = config.guardrails.scan_requests
-                && !actions.is_empty()
-                && !guardrails_allow_everything(&actions)
-                && state
-                    .safety_engine
-                    .read()
-                    .as_ref()
-                    .is_some_and(|engine| engine.has_models());
-            if secret_required || guardrails_required {
-                return Err(ApiErrorResponse::bad_request("Opaque PDFs cannot satisfy the configured document scans; supply extracted UTF-8 text first"));
-            }
+            crate::documents::enforce_opaque_scan_policy(state, &auth.api_key_id)?;
         }
     }
     // Stage 1: validate

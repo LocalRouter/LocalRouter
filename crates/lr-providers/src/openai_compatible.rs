@@ -536,6 +536,28 @@ impl ModelProvider for OpenAICompatibleProvider {
         crate::search::read_response(response, request.max_results.unwrap_or(10)).await
     }
 
+    fn ocr_protocol(&self) -> Option<crate::ocr::OcrProtocol> {
+        (self.gateway_kind == Some(GatewayKind::Llmgateway))
+            .then_some(crate::ocr::OcrProtocol::LlmGateway)
+    }
+    async fn ocr(&self, request: crate::ocr::OcrRequest) -> AppResult<crate::ocr::OcrResponse> {
+        if self.ocr_protocol().is_none() {
+            return Err(AppError::InvalidParams(
+                "Provider has no verified OCR mapping".into(),
+            ));
+        }
+        let mut preferences = self.gateway_preferences.clone();
+        preferences.allow_fallbacks = None;
+        if preferences != GatewayPreferences::default() {
+            return Err(AppError::InvalidParams(
+                "Configured gateway controls have no verified OCR mapping".into(),
+            ));
+        }
+        let body = request.wire_body(crate::ocr::OcrProtocol::LlmGateway)?;
+        let response=self.apply_headers(crate::http_client::native_client()?.post(format!("{}/ocr",self.base_url)).json(&body)).header("X-No-Fallback","true").send().await.map_err(|_|AppError::Provider("OCR dispatch failed; remote outcome/charges may be unknown and the dispatch is not retried".into()))?;
+        request.read_response(response).await
+    }
+
     fn document_protocol(
         &self,
         request: &CompletionRequest,

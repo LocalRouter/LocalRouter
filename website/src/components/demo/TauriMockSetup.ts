@@ -19,12 +19,12 @@
 import { mockIPC, mockWindows, clearMocks } from '@tauri-apps/api/mocks'
 import { emit } from '@tauri-apps/api/event'
 import type { InvokeArgs } from '@tauri-apps/api/core'
-import type { UpstreamToolsPolicy, GetClientUpstreamToolsParams, SetClientUpstreamToolsParams, AutoModelConfig, NamedRouteStatus, NamedRouteVersions, RouteSnapshot, GetNamedRouteParams, MutateNamedRouteParams, ClientPrivacyStatus, GetClientPrivacyParams, SetClientPrivacyParams, AttestProviderPrivacyParams, ClientSecurityStatus, GetClientSecurityParams, SetClientSecurityParams, RevokeClientCredentialsParams, ApiPathSupport, McpConnectionDiscovery, SkillSourceInfo } from '@app/types/tauri-commands'
+import type { NativeOperation, GetClientNativeOperationsParams, SetClientNativeOperationsParams, UpstreamToolsPolicy, GetClientUpstreamToolsParams, SetClientUpstreamToolsParams, AutoModelConfig, NamedRouteStatus, NamedRouteVersions, RouteSnapshot, GetNamedRouteParams, MutateNamedRouteParams, ClientPrivacyStatus, GetClientPrivacyParams, SetClientPrivacyParams, AttestProviderPrivacyParams, ClientSecurityStatus, GetClientSecurityParams, SetClientSecurityParams, RevokeClientCredentialsParams, ApiPathSupport, McpConnectionDiscovery, SkillSourceInfo } from '@app/types/tauri-commands'
 import { toast } from 'sonner'
 import { mockReplay } from './mockReplay'
 import { mockData } from './mockData'
 
-import { mockUpstreamTools, mockClientPrivacy, mockClientSecurity, mockClientSecrets } from './mockClientPolicies'
+import { mockNativeOperations, mockUpstreamTools, mockClientPrivacy, mockClientSecurity, mockClientSecrets } from './mockClientPolicies'
 import { routingPolicyIssue } from '@app/components/strategy/routing-policy-status'
 import { matchesFilter } from '@app/views/monitor/monitor-events'
 import type { MonitorEventFilter, MonitorEventSummary } from '@app/types/tauri-commands'
@@ -1438,6 +1438,16 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     }
     return null
   },
+  'get_client_native_operations': (args: GetClientNativeOperationsParams): NativeOperation[] => {
+    if (!mockData.clients.some(client => client.id === args.clientId)) throw 'Client not found'
+    return [...(mockNativeOperations.get(args.clientId) ?? [])]
+  },
+  'set_client_native_operations': (args: SetClientNativeOperationsParams): NativeOperation[] => {
+    if (!mockData.clients.some(client => client.id === args.clientId)) throw 'Client not found'
+    if (new Set(args.allowedOperations).size !== args.allowedOperations.length || args.allowedOperations.some(operation => operation !== 'ocr')) throw 'Invalid native operation grants'
+    mockNativeOperations.set(args.clientId, [...args.allowedOperations])
+    return [...args.allowedOperations]
+  },
   'get_client_upstream_tools': (args: GetClientUpstreamToolsParams): UpstreamToolsPolicy => {
     if (!mockData.clients.some(client => client.id === args.clientId)) throw 'Client not found'
     return structuredClone(mockUpstreamTools.get(args.clientId) ?? { allowed_tools: [], max_tool_calls: 8, default_search_model: null })
@@ -1531,6 +1541,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       mockClientSecurity.delete(id)
       mockClientPrivacy.delete(id)
       mockUpstreamTools.delete(id)
+      mockNativeOperations.delete(id)
       mockData.clients.splice(idx, 1)
       toast.success('Client deleted (demo)')
       setTimeout(() => emit('clients-changed', {}), 10)
@@ -3567,6 +3578,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     return [openai, anthropic, gemini, ollama, ollaya]
   },
   'get_api_path_support': (args): ApiPathSupport => ({
+    ocr: ['llmgateway', 'mistral'].includes(mockData.providers.find(provider => provider.instance_name === args?.instanceName)?.provider_type ?? '') ? 'supported' : 'not_supported',
     search: ['llmgateway', 'perplexity'].includes(mockData.providers.find(provider => provider.instance_name === args?.instanceName)?.provider_type ?? '') ? 'supported' : 'not_supported',
     batches: ['openai', 'openrouter'].includes(mockData.providers.find(provider => provider.instance_name === args?.instanceName)?.provider_type ?? '') ? 'supported' : 'not_supported',
     native_batch_cancel: mockData.providers.find(provider => provider.instance_name === args?.instanceName)?.provider_type === 'openai',

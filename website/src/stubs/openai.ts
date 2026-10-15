@@ -1,5 +1,5 @@
 import { mockData } from '../components/demo/mockData'
-import { mockUpstreamTools, mockClientPrivacy, mockClientSecurity, mockClientSecrets } from '../components/demo/mockClientPolicies'
+import { mockNativeOperations, mockUpstreamTools, mockClientPrivacy, mockClientSecurity, mockClientSecrets } from '../components/demo/mockClientPolicies'
 // Stub for openai package in demo mode
 // Bundled fixtures only; API operations without a demo fixture remain unavailable.
 
@@ -190,6 +190,22 @@ class OpenAI {
   post<T = any>(path: string, opts?: { body?: unknown; signal?: AbortSignal; maxRetries?: number }): ApiPromise<T> {
     return apiPromise<T>(async () => {
       if (opts?.signal?.aborted) throw new DOMException('Cancelled', 'AbortError')
+      if (path.replace(/\/+$/, '') === '/ocr') {
+        const clientId = [...mockClientSecrets.entries()].find(([, secret]) => secret === this.apiKey)?.[0]
+        const client = mockData.clients.find(client => client.id === clientId)
+        const security = clientId ? mockClientSecurity.get(clientId) : null
+        if (!client?.enabled || security?.hasCredential === false || (security?.expiry && Date.now() >= Date.parse(security.expiry))) throw new DemoApiError(401, 'Demo client credential is inactive')
+        if (!mockNativeOperations.get(client.id)?.includes('ocr')) throw new DemoApiError(400, 'Enable Allow OCR for this demo client in Settings')
+        const privacy = mockClientPrivacy.get(client.id)
+        if (privacy?.local_only || privacy?.no_retention) throw new DemoApiError(400, 'Strict privacy does not permit this native OCR chain')
+        const body = opts?.body as { model?: string; pages?: number[] | string }
+        if (!body?.model?.endsWith('/mistral-ocr-latest')) throw new DemoApiError(400, 'Select a qualified native OCR model')
+        const range = typeof body.pages === 'string' ? /^(\d+)-(\d+)$/.exec(body.pages) : null
+        const indices = Array.isArray(body.pages) ? body.pages : range && Number(range[2]) >= Number(range[1]) && Number(range[2]) - Number(range[1]) < 20 ? Array.from({ length: Number(range[2]) - Number(range[1]) + 1 }, (_, i) => Number(range[1]) + i) : []
+        if (!indices.length || indices.length > 20 || new Set(indices).size !== indices.length || indices.some(index => !Number.isInteger(index) || index < 0 || index > 9999)) throw new DemoApiError(400, 'Select 1–20 unique zero-based pages')
+        const data = { model: body.model, pages: indices.map(index => ({ index, markdown: `Demo OCR fixture for page index ${index}. The selected file was not sent or processed.`, images: [], dimensions: null })), usage_info: { pages_processed: 0, doc_size_bytes: null }, extensions: { 'localrouter.ocr': { demo: true, requested_pages: indices, cost_usd: null, cost_source: 'unknown' } } }
+        return { data: data as T, response: new Response(JSON.stringify(data), { headers: { 'content-type': 'application/json' } }) }
+      }
       if (path.replace(/\/+$/, '') === '/chat/completions') {
         const clientId = [...mockClientSecrets.entries()].find(([, secret]) => secret === this.apiKey)?.[0]
         const client = mockData.clients.find(client => client.id === clientId)

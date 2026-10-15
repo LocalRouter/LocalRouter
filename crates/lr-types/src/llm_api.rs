@@ -29,6 +29,8 @@ pub enum LlmApi {
     Embeddings,
     /// Ranked retrieval, without a generated answer.
     Search,
+    /// Explicit page-bounded document extraction.
+    Ocr,
     /// Moderations (`/moderations`).
     Moderations,
     /// Image generation and edits (`/images/*`).
@@ -60,6 +62,8 @@ impl LlmApi {
             Some(Self::Decisions)
         } else if path.ends_with("/systemone") {
             Some(Self::SystemOne)
+        } else if path.ends_with("/ocr") {
+            Some(Self::Ocr)
         } else if path.ends_with("/search") {
             Some(Self::Search)
         } else if path.ends_with("/embeddings") {
@@ -101,6 +105,8 @@ mod tests {
             ("/v1/decisions", LlmApi::Decisions),
             ("/decisions", LlmApi::Decisions),
             ("/v1/embeddings", LlmApi::Embeddings),
+            ("/v1/ocr", LlmApi::Ocr),
+            ("/ocr", LlmApi::Ocr),
             ("/v1/moderations", LlmApi::Moderations),
             ("/v1/images/generations", LlmApi::Images),
             ("/v1/audio/speech", LlmApi::Audio),

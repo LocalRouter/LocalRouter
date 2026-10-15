@@ -1928,6 +1928,7 @@ pub async fn get_feature_endpoint_matrix() -> Result<lr_providers::FeatureEndpoi
 /// to emulate that path on top of a different upstream API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiPathSupport {
+    pub ocr: lr_providers::SupportLevel,
     pub search: lr_providers::SupportLevel,
     pub messages: lr_providers::SupportLevel,
     pub messages_count_tokens: lr_providers::SupportLevel,
@@ -1951,6 +1952,11 @@ pub async fn get_api_path_support(
 
     let native_batch = provider.native_batch_kind();
     Ok(ApiPathSupport {
+        ocr: if provider.ocr_protocol().is_some() {
+            lr_providers::SupportLevel::Supported
+        } else {
+            lr_providers::SupportLevel::NotSupported
+        },
         search: if provider.search_protocol().is_some() {
             lr_providers::SupportLevel::Supported
         } else {

@@ -2,6 +2,13 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+/// Explicit grants for standalone native provider operations.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeOperation {
+    Ocr,
+}
+
 /// Default-off constraints on native LLM traffic. These do not grant access.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
@@ -25,6 +32,8 @@ impl ClientPrivacyConfig {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct ClientSecurityConfig {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub native_operations: Vec<NativeOperation>,
     #[serde(
         default,
         skip_serializing_if = "crate::UpstreamToolsPolicy::is_default"
@@ -42,6 +51,15 @@ impl ClientSecurityConfig {
     }
     pub fn validate(&self) -> Result<(), String> {
         self.upstream_tools.validate()?;
+        let mut unique = std::collections::HashSet::new();
+        if self
+            .native_operations
+            .iter()
+            .any(|operation| !unique.insert(*operation))
+        {
+            return Err("Native operation grants must be unique".into());
+        }
+
         if self
             .review_idle_after_days
             .is_some_and(|days| !(1..=3650).contains(&days))
@@ -78,6 +96,25 @@ impl crate::Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_operations_are_default_off_and_duplicate_or_unknown_grants_reject() {
+        let old: ClientSecurityConfig = serde_json::from_str("{}").unwrap();
+        assert!(old.native_operations.is_empty());
+        assert!(serde_json::to_value(&old)
+            .unwrap()
+            .get("native_operations")
+            .is_none());
+        let mut config = old;
+        config.native_operations = vec![NativeOperation::Ocr];
+        assert!(config.validate().is_ok());
+        config.native_operations.push(NativeOperation::Ocr);
+        assert!(config.validate().is_err());
+        assert!(serde_json::from_str::<ClientSecurityConfig>(
+            r#"{"native_operations":["unknown"]}"#
+        )
+        .is_err());
+    }
+
     #[test]
     fn expiry_has_an_exact_boundary_and_review_is_advisory() {
         let now = Utc::now();

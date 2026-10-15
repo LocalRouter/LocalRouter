@@ -64,5 +64,6 @@ Verified contracts:
 - https://openrouter.ai/docs/guides/overview/multimodal/pdfs
 - https://docs.llmgateway.io/features/documents
 
-Explicit OCR is a separate operation under development; this native document
-path never silently selects a paid OCR engine.
+Explicit OCR is a separate default-off operation; see [OCR](OCR.md) for page
+selection and native protocol limits. This native document path never silently
+selects a paid OCR engine.

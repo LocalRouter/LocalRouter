@@ -48,6 +48,7 @@ use utoipa::OpenApi;
         // Embeddings endpoints
         crate::routes::embeddings::embeddings,
         crate::routes::search::search,
+        crate::routes::ocr::ocr,
 
         // Moderations endpoints
         crate::routes::moderations::moderations,
@@ -169,6 +170,12 @@ use utoipa::OpenApi;
             crate::types::MessageContent,
             crate::types::ContentPart,
             lr_providers::documents::FileInput,
+            lr_providers::ocr::OcrRequest,
+            lr_providers::ocr::OcrDocument,
+            lr_providers::ocr::OcrPages,
+            lr_providers::ocr::OcrResponse,
+            lr_providers::ocr::OcrPage,
+            lr_providers::ocr::OcrUsage,
             lr_providers::documents::DocumentOptions,
             lr_providers::documents::DocumentMode,
             crate::types::ImageUrl,

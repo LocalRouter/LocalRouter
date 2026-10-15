@@ -4,15 +4,15 @@
 - [x] Add bounded typed file content with inline data, MIME/encoding validation and provenance. Support verified native document protocols; unsupported models, file IDs, formats, URL/reference semantics and conversions must reject explicitly. Keep existing native Messages document bytes/ordering/citations intact.
 - [x] Add an explicit native processing policy for gateway documents so an omitted parser option cannot trigger an unexpected third-party OCR chain. Preserve current permissions, privacy, budget and scan/approval behavior. Do not treat opaque PDF bytes as inspected plain text or silently drop a document before classification.
 - [x] Reuse existing MCP resources/extraction workflows for optional local extraction. Support bounded locally supplied extracted text with clear provenance; do not automatically install an extractor, fetch documents or create a knowledge-base service. Add a bundled local PDF parser only if the audit establishes a bounded safe implementation worth the dependency.
-- [ ] Add an explicit OCR API for verified direct Mistral and LLM Gateway protocols, with default-off per-client authorization, explicit bounded pages, per-page provenance/usage and unknown-fee handling. Keep returned markdown/images as untrusted data. No implicit whole-document paid OCR or hidden inference fallback.
-- [ ] Preserve normal/streaming file/citation metadata where supported. Disable unsafe cache, affinity, classifier reuse, automatic MCP/batch/replay re-execution and unsupported continuation state. Apply native dispatch controls and avoid retries/redirects after an ambiguous OCR dispatch.
-- [ ] Add model/protocol eligibility discovery, OpenAPI annotations/schemas/registration, monitoring and Try It Out. Synchronize any Tauri commands, TS responses/camelCase parameters, typed invokes and demo handlers. Use bundled icons and assets only.
-- [ ] Add meaningful malformed/oversized/opaque input, unsupported conversion, permissions/privacy/budget, page/filename provenance, normal/streaming, cancellation/no-retry and live HTTP/schema regressions without paid provider calls.
-- [ ] Plan Review: compare every promised mapping and limit with the implementation; finish omitted behavior and document explicit unsupported mappings.
-- [ ] Test Coverage Review: add coverage for uncovered isolation, boundary and error behavior in new/changed paths.
-- [ ] Bug Hunt: inspect opaque scan bypasses, PDF parser billing, retention, file ownership, content injection, provenance loss, retries, response allocations, cancellation and stale permissions.
-- [ ] Update stable, pin actual compiler PATH/RUSTC, then run exact workspace Clippy/fmt/tests, relevant frontend regressions, both type checks/production builds and browser smoke. Use /private/tmp/localrouter-gateway-validation.
-- [ ] Commit and normal push completed validated changes and automatic catalog updates while preserving unrelated user changes. Continue rerank and video/realtime, then finish the master final review.
+- [x] Add an explicit OCR API for verified direct Mistral and LLM Gateway protocols, with default-off per-client authorization, explicit bounded pages, per-page provenance/usage and unknown-fee handling. Keep returned markdown/images as untrusted data. No implicit whole-document paid OCR or hidden inference fallback.
+- [x] Preserve normal/streaming file/citation metadata where supported. Disable unsafe cache, affinity, classifier reuse, automatic MCP/batch/replay re-execution and unsupported continuation state. Apply native dispatch controls and avoid retries/redirects after an ambiguous OCR dispatch.
+- [x] Add model/protocol eligibility discovery, OpenAPI annotations/schemas/registration, monitoring and Try It Out. Synchronize any Tauri commands, TS responses/camelCase parameters, typed invokes and demo handlers. Use bundled icons and assets only.
+- [x] Add meaningful malformed/oversized/opaque input, unsupported conversion, permissions/privacy/budget, page/filename provenance, normal/streaming, cancellation/no-retry and live HTTP/schema regressions without paid provider calls.
+- [x] Plan Review: compare every promised mapping and limit with the implementation; finish omitted behavior and document explicit unsupported mappings.
+- [x] Test Coverage Review: add coverage for uncovered isolation, boundary and error behavior in new/changed paths.
+- [x] Bug Hunt: inspect opaque scan bypasses, PDF parser billing, retention, file ownership, content injection, provenance loss, retries, response allocations, cancellation and stale permissions.
+- [x] Update stable, pin actual compiler PATH/RUSTC, then run exact workspace Clippy/fmt/tests, relevant frontend regressions, both type checks/production builds and browser smoke. Use /private/tmp/localrouter-gateway-validation.
+- [x] Commit and normal push completed validated changes and automatic catalog updates while preserving unrelated user changes. Continue rerank and video/realtime, then finish the master final review.
 
 The approved roadmap requests native document pass-through and optional extraction,
 not a hosted knowledge base. Native Messages already validates and preserves
@@ -115,3 +115,12 @@ regressions and production Chrome smoke passed. Screenshot inspected:
 The final review also closed malformed Responses item shapes that could have
 dropped an attachment. Explicit OCR proceeds under
 2026-10-15-EXPLICIT_BOUNDED_OCR.md; overall document/OCR remains pending.
+
+Explicit OCR is complete: independent default-off native-operation grant,
+bounded inline PDF/PNG/JPEG, explicit selected pages, Mistral/LLM Gateway native
+transports, aliases/OpenAPI/discovery/monitoring, source/page provenance, unknown
+fees, quota/cancellation/no-retry controls and Try It Out. Full stable parity
+passed (4,481 tests), with frontend regressions/types/builds and production
+browser smoke. Earlier "OCR pending" notes describe the native-input increment;
+this final entry closes that remaining work. See EXPLICIT_BOUNDED_OCR for evidence
+and deliberate unsupported mappings. Continue rerank and video/realtime.

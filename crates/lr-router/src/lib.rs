@@ -24,6 +24,7 @@ pub mod endpoint_cache;
 pub mod explanation;
 pub mod free_tier;
 mod messages;
+mod native_operations;
 mod privacy;
 pub mod rate_limit;
 pub mod response_cache;

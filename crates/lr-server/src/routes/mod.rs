@@ -19,6 +19,7 @@ pub mod models;
 pub mod moderations;
 pub mod monitor_helpers;
 pub mod oauth;
+pub mod ocr;
 pub mod pipeline;
 pub mod responses;
 pub mod search;

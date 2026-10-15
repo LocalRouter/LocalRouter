@@ -212,6 +212,15 @@ struct MistralModelCapabilities {
 #[async_trait]
 #[allow(dead_code)]
 impl ModelProvider for MistralProvider {
+    fn ocr_protocol(&self) -> Option<crate::ocr::OcrProtocol> {
+        Some(crate::ocr::OcrProtocol::Mistral)
+    }
+    async fn ocr(&self, request: crate::ocr::OcrRequest) -> AppResult<crate::ocr::OcrResponse> {
+        let body = request.wire_body(crate::ocr::OcrProtocol::Mistral)?;
+        let response=crate::http_client::native_client()?.post(format!("{}/ocr",self.effective_base_url())).bearer_auth(&self.api_key).json(&body).send().await.map_err(|_|AppError::Provider("OCR dispatch failed; remote outcome/charges may be unknown and the dispatch is not retried".into()))?;
+        request.read_response(response).await
+    }
+
     fn name(&self) -> &str {
         "mistral"
     }

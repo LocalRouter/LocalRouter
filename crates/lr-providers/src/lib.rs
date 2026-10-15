@@ -151,6 +151,7 @@ pub mod messages_stream;
 pub mod mistral;
 pub mod model_settings;
 pub mod oauth;
+pub mod ocr;
 pub mod ollama;
 pub mod openai;
 pub mod openai_compatible;
@@ -214,6 +215,15 @@ pub trait ModelProvider: Send + Sync {
     ) -> Option<documents::DocumentProtocol> {
         None
     }
+    fn ocr_protocol(&self) -> Option<ocr::OcrProtocol> {
+        None
+    }
+    async fn ocr(&self, _request: ocr::OcrRequest) -> AppResult<ocr::OcrResponse> {
+        Err(AppError::InvalidParams(
+            "Provider has no native OCR API".into(),
+        ))
+    }
+
     fn search_protocol(&self) -> Option<search::SearchProtocol> {
         None
     }

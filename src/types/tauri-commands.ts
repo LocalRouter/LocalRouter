@@ -249,6 +249,9 @@ export interface ProviderPrivacyAssessment {
 }
 /** Rust: src-tauri/src/ui/commands_clients.rs - ClientPrivacyProvider */
 export interface ClientPrivacyProvider { instance_name: string; enabled: boolean; assessment: ProviderPrivacyAssessment }
+/** Rust: crates/lr-config/src/client_security.rs - NativeOperation */
+export type NativeOperation = 'ocr'
+
 /** Rust: crates/lr-config/src/upstream_tools.rs - UpstreamToolsPolicy */
 export interface UpstreamToolsPolicy {
   default_search_model: string | null
@@ -4685,6 +4688,7 @@ export interface GetProviderFeatureSupportParams {
  * Rust: src-tauri/src/ui/commands_providers.rs - ApiPathSupport struct
  */
 export interface ApiPathSupport {
+  ocr: SupportLevel
   search: SupportLevel
   messages: SupportLevel
   messages_count_tokens: SupportLevel
@@ -4966,7 +4970,7 @@ export type LlmApi =
   | 'system_one'
   | 'decisions'
   | 'embeddings'
-  | 'search'
+  | 'search' | 'ocr'
   | 'moderations'
   | 'images'
   | 'audio'
@@ -5211,3 +5215,8 @@ export interface SetClientUpstreamToolsParams {
   allowedTools: ('web_search' | 'web_fetch')[]
   maxToolCalls: number | null
 }
+
+/** Params for get_client_native_operations */
+export interface GetClientNativeOperationsParams { clientId: string }
+/** Params for set_client_native_operations */
+export interface SetClientNativeOperationsParams { clientId: string; allowedOperations: NativeOperation[] }

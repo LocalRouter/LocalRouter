@@ -13,7 +13,7 @@
 - [x] P2/P3 Privacy profiles and client-key hygiene.
 - [x] P3 Versioned named routes and deterministic rules.
 - [x] P3 Search/web fetch and upstream server tools.
-- [ ] P3 PDF/document inputs and OCR.
+- [x] P3 PDF/document inputs and OCR.
 - [ ] P3 Rerank API.
 - [ ] Later Video jobs and realtime sessions.
 - [ ] Plan Review: compare implemented behavior with each requirement and finish omissions.
@@ -179,3 +179,12 @@ session protections, stream usage accounting and Try It Out Documents. Stable
 workspace parity passed (4,466 tests), frontend regressions/types/builds and
 production browser smoke passed. Explicit OCR is still pending under
 plan/2026-10-15-EXPLICIT_BOUNDED_OCR.md, so document/OCR remains unchecked.
+
+Explicit bounded OCR completes P3 document/OCR: direct Mistral and LLM Gateway,
+independent default-off client grant, authenticated aliases/OpenAPI/discovery,
+strict explicit page selection and source provenance, native page usage with
+unknown fees, policy/quota/cancellation/no-retry enforcement and Try It Out.
+Full stable parity passed (4,481 tests, zero failures), frontend checks/builds/
+regressions and production Chrome smoke passed. Remaining: native rerank, video
+jobs and realtime sessions, then overall final review. Rerank's saved plan is
+plan/2026-10-15-NATIVE_RERANK_API.md. Document commit 472f2885 is green in CI.

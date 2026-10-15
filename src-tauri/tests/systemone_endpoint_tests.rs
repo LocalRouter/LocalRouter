@@ -2721,3 +2721,6 @@ mod ranked_search_endpoint_cases;
 
 #[path = "fixtures/documents_endpoint_cases.rs"]
 mod documents_endpoint_cases;
+
+#[path = "fixtures/ocr_endpoint_cases.rs"]
+mod ocr_endpoint_cases;

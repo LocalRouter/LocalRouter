@@ -322,6 +322,66 @@ pub async fn set_client_upstream_tools(
     Ok(policy)
 }
 
+/// Standalone native operations are independent of retrieval and MCP tools.
+#[tauri::command]
+pub async fn get_client_native_operations(
+    client_id: String,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<Vec<lr_config::NativeOperation>, String> {
+    config_manager
+        .get()
+        .clients
+        .into_iter()
+        .find(|client| client.id == client_id)
+        .map(|client| client.security.native_operations)
+        .ok_or_else(|| "Client not found".into())
+}
+#[tauri::command]
+pub async fn set_client_native_operations(
+    client_id: String,
+    allowed_operations: Vec<lr_config::NativeOperation>,
+    config_manager: State<'_, ConfigManager>,
+    client_manager: State<'_, Arc<lr_clients::ClientManager>>,
+    app: tauri::AppHandle,
+) -> Result<Vec<lr_config::NativeOperation>, String> {
+    let mut security = config_manager
+        .get()
+        .clients
+        .into_iter()
+        .find(|client| client.id == client_id)
+        .ok_or_else(|| "Client not found".to_owned())?
+        .security;
+    security.native_operations = allowed_operations.clone();
+    security.validate()?;
+    config_manager
+        .update(|config| {
+            if let Some(client) = config
+                .clients
+                .iter_mut()
+                .find(|client| client.id == client_id)
+            {
+                client.security.native_operations = allowed_operations.clone();
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    let security = config_manager
+        .get()
+        .clients
+        .into_iter()
+        .find(|client| client.id == client_id)
+        .ok_or_else(|| "Client not found".to_owned())?
+        .security;
+    client_manager
+        .set_security(&client_id, security)
+        .map_err(|e| e.to_string())?;
+    config_manager
+        .save()
+        .await
+        .map_err(|e| format!("Policy is active in this session but could not be saved: {e}"))?;
+    app.emit("clients-changed", ()).map_err(|e| e.to_string())?;
+    Ok(allowed_operations)
+}
+
 /// Client information for display
 ///
 /// NOTE: This struct does NOT contain the client secret. The secret is stored

@@ -1,3 +1,4 @@
+import { NativeOperationsPanel } from "./native-operations-panel"
 import { UpstreamToolsPanel } from "./upstream-tools-panel"
 
 import { ClientPrivacyPanel } from "./privacy-panel"
@@ -166,6 +167,7 @@ export function ClientSettingsTab({ client, onUpdate, onDelete }: SettingsTabPro
       <ClientSecurityPanel clientId={client.id} enabled={client.enabled} onUpdate={onUpdate} />
       <ClientPrivacyPanel key={client.id} clientId={client.id} onUpdate={onUpdate} />
       <UpstreamToolsPanel key={`tools-${client.id}`} clientId={client.id} onUpdate={onUpdate} />
+      <NativeOperationsPanel key={`operations-${client.id}`} clientId={client.id} onUpdate={onUpdate} />
       {/* Client Name */}
       <Card>
         <CardHeader>

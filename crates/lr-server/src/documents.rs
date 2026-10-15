@@ -229,6 +229,45 @@ pub fn has_native_files(request: &crate::types::ChatCompletionRequest) -> bool {
     request.messages.iter().any(|m|matches!(&m.content,Some(crate::types::MessageContent::Parts(parts)) if parts.iter().any(|p|matches!(p,crate::types::ContentPart::File{..}))))
 }
 
+/// Opaque bytes cannot satisfy content inspection policies; the user must
+/// supply extracted text first. Shared by native files and explicit OCR.
+pub fn enforce_opaque_scan_policy(
+    state: &crate::state::AppState,
+    client_id: &str,
+) -> crate::middleware::error::ApiResult<()> {
+    use crate::routes::pipeline::{guardrails_allow_everything, merge_guardrail_category_actions};
+    let config = state.config_manager.get();
+    let client = state.client_manager.get_client(client_id);
+    let secret_action = client
+        .as_ref()
+        .and_then(|c| c.secret_scanning.action.as_ref())
+        .unwrap_or(&config.secret_scanning.action);
+    let secret_required = *secret_action == lr_config::SecretScanAction::Ask
+        && state
+            .secret_scanner
+            .read()
+            .as_ref()
+            .is_some_and(|scanner| scanner.has_rules());
+    let actions = merge_guardrail_category_actions(
+        client
+            .as_ref()
+            .and_then(|c| c.guardrails.category_actions.as_deref()),
+        &config.guardrails.category_actions,
+    );
+    let guardrails_required = config.guardrails.scan_requests
+        && !actions.is_empty()
+        && !guardrails_allow_everything(&actions)
+        && state
+            .safety_engine
+            .read()
+            .as_ref()
+            .is_some_and(|engine| engine.has_models());
+    if secret_required || guardrails_required {
+        return Err(crate::middleware::error::ApiErrorResponse::bad_request("Opaque documents cannot satisfy the configured content scans; supply extracted UTF-8 text first"));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

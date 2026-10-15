@@ -2688,6 +2688,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::attest_provider_privacy,
             ui::commands::set_client_privacy,
             ui::commands::get_client_upstream_tools,
+            ui::commands::get_client_native_operations,
+            ui::commands::set_client_native_operations,
             ui::commands::set_client_upstream_tools,
             ui::commands::set_client_security,
             ui::commands::revoke_client_credentials,
