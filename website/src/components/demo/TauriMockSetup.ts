@@ -195,6 +195,7 @@ function mockUsageWindow(
     slots,
     current_slot: Math.min(slots.length - 1, Math.floor((now - start) / slotSecs)),
     slot_secs: slotSecs,
+    slots_basis: apiUsd !== null ? 'traffic' : 'readings',
     api_equivalent_usd: apiUsd,
     plan_share_usd: planShare,
     history: [{ ended_at: start, peak_percent: 81 }],

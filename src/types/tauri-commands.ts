@@ -4034,6 +4034,13 @@ export type UsageDataSource =
 /** Rust: crates/lr-usage/src/view.rs - PaceStatus enum */
 export type UsagePaceStatus = 'ok' | 'warning' | 'over'
 
+/**
+ * Rust: crates/lr-usage/src/view.rs - SlotBasis enum. What a window's slots
+ * come from: the traffic LocalRouter saw (scaled to the reported usage), or
+ * the rises between usage readings.
+ */
+export type UsageSlotBasis = 'traffic' | 'readings'
+
 /** Rust: crates/lr-usage/src/tracker.rs - PastWindow struct */
 export interface UsagePastWindow {
   ended_at: number
@@ -4062,6 +4069,8 @@ export interface UsageWindowView {
   slots: number[]
   current_slot: number
   slot_secs: number | null
+  /** What `slots` is derived from; `null` without slots. */
+  slots_basis: UsageSlotBasis | null
   api_equivalent_usd: number | null
   plan_share_usd: number | null
   history: UsagePastWindow[]

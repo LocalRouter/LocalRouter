@@ -192,6 +192,7 @@ mod tests {
             slots: vec![],
             current_slot: 0,
             slot_secs: None,
+            slots_basis: None,
             api_equivalent_usd: None,
             plan_share_usd: None,
             history: vec![],

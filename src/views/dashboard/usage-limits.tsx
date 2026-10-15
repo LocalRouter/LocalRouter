@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { toast } from 'sonner'
-import { Gauge, KeyRound, OctagonAlert, RefreshCw, Settings2 } from 'lucide-react'
+import { Gauge, KeyRound, OctagonAlert, RefreshCw, RotateCcw, Settings2 } from 'lucide-react'
 import ProviderIcon from '@/components/ProviderIcon'
 import { Button } from '@/components/ui/Button'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
@@ -16,9 +16,10 @@ import type {
 } from '@/types/tauri-commands'
 import {
   awaitingLimits,
+  breakdownHint,
+  breakdownSummary,
   displayTitle,
   formatAgo,
-  formatClock,
   formatCount,
   formatDuration,
   formatPercent,
@@ -28,10 +29,12 @@ import {
   paceSummary,
   quotaDetails,
   quotaShortLabel,
+  resetDetail,
   routedSpend,
-  slotHeights,
   SOURCE_LABEL,
   visibleAccounts,
+  windowBreakdown,
+  type WindowBreakdown,
 } from './usage-format'
 import { useUsageLimits } from './use-usage-limits'
 import { CollapsibleSection, useCollapsed } from './collapsible-section'
@@ -133,7 +136,7 @@ export function UsageLimits({ className, onOpenSettings }: UsageLimitsProps) {
             ) : accounts.length === 0 ? (
               <p className="text-xs text-muted-foreground">No usage seen yet.</p>
             ) : (
-              <div className="grid gap-2 [grid-template-columns:repeat(auto-fill,minmax(270px,1fr))]">
+              <div className="grid gap-2 [grid-template-columns:repeat(auto-fill,minmax(300px,1fr))]">
                 {[...subscriptions, ...others].map((a) => (
                   <AccountCard
                     key={a.id}
@@ -269,16 +272,12 @@ function AccountCard({
           <TooltipContent className="max-w-xs text-xs">
             {a.login_label && <>{a.login_label} · </>}
             {a.kind === 'subscription' ? 'Subscription' : 'API usage'}
+            {a.monthly_price_usd !== null && <> · {formatUsd(a.monthly_price_usd)}/mo</>}
             {a.plan_overridden && ' · plan set by you'} · via{' '}
             {a.sources.map((s) => SOURCE_LABEL[s]).join(', ') || 'LocalRouter'} · updated{' '}
             {formatAgo(updated, now)}
           </TooltipContent>
         </Tooltip>
-        {a.monthly_price_usd !== null && (
-          <span className="shrink-0 text-[11px] text-muted-foreground">
-            {formatUsd(a.monthly_price_usd)}/mo
-          </span>
-        )}
         <span className="ml-auto">
           <StatusBadge status={a.status} />
         </span>
@@ -292,15 +291,20 @@ function AccountCard({
       ))}
       {a.credits && <CreditsRow credits={a.credits} />}
       {awaitingLimits(a) && (
-        <p className="text-xs text-muted-foreground">
-          No limits reported yet. They show after the next request, or when LocalRouter may ask
-          the provider (Usage settings).
-        </p>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <p className="w-fit text-xs text-muted-foreground" tabIndex={0}>
+              No limits yet
+            </p>
+          </TooltipTrigger>
+          <TooltipContent className="max-w-xs text-xs">
+            They appear after the next request, or when LocalRouter asks the provider (Usage
+            settings).
+          </TooltipContent>
+        </Tooltip>
       )}
       {limitsUnreported(a) && (
-        <p className="text-xs text-muted-foreground">
-          {a.provider_label} does not report rate limits or balance to API clients.
-        </p>
+        <p className="text-xs text-muted-foreground">{a.provider_label} reports no limits</p>
       )}
 
       <RoutedSpend account={a} />
@@ -312,125 +316,131 @@ const ROW = 'grid grid-cols-[4.5rem_1fr_2.75rem_3.5rem] items-center gap-2 text-
 /** Rate limits shown per card (requests first, then tokens). */
 const MAX_QUOTA_ROWS = 4
 
-/** One line: label · meter (even-pace tick, projection shade) · % · reset. */
+/** Time left until a window or limit resets: `↻ 5d 15h` (icon + compact duration). */
+function ResetIn({ seconds }: { seconds: number | null }) {
+  if (seconds === null || seconds <= 0) return <span />
+  return (
+    <span className="flex items-center justify-end gap-0.5 text-[11px] text-muted-foreground tabular-nums">
+      <RotateCcw className="h-2.5 w-2.5 shrink-0" aria-hidden />
+      <span className="sr-only">Resets in </span>
+      {formatDuration(seconds)}
+    </span>
+  )
+}
+
+/**
+ * One window: label, used share and time to reset over the meter (even-pace
+ * tick, projection shade), with the per-hour / per-day bars to the right.
+ */
 function WindowRow({ window: w, now }: { window: UsageWindowView; now: number }) {
   const used = Math.min(100, Math.max(0, w.used_percent))
   const projected =
     w.projected_percent !== null ? Math.min(100, Math.max(used, w.projected_percent)) : null
-  const resetsIn = w.resets_at !== null ? w.resets_at - now / 1000 : null
+  const resetsIn = w.resets_at !== null && !w.stale ? w.resets_at - now / 1000 : null
+  const breakdown = windowBreakdown(w)
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <div className={ROW}>
-          <span className="truncate text-muted-foreground">{shortLabel(w)}</span>
-          <div
-            className="relative h-1.5 overflow-hidden rounded-full bg-muted"
-            role="meter"
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={w.stale ? undefined : Math.round(w.used_percent)}
-            aria-label={`${w.label} usage, ${PACE_LABEL[w.pace]}`}
-          >
-            {!w.stale && projected !== null && projected > used && (
-              <div
-                className={cn('absolute inset-y-0 left-0 rounded-full opacity-25', PACE_FILL[w.pace])}
-                style={{ width: `${projected}%` }}
-              />
-            )}
-            {!w.stale && (
-              <div
-                className={cn('absolute inset-y-0 left-0 rounded-full', PACE_FILL[w.pace])}
-                style={{ width: `${used}%` }}
-              />
-            )}
-            {w.elapsed_fraction !== null && !w.stale && (
-              <div
-                className="absolute inset-y-0 w-0.5 bg-foreground/60"
-                style={{ left: `calc(${Math.min(100, w.elapsed_fraction * 100)}% - 1px)` }}
-              />
-            )}
+        <div className="flex items-center gap-3 text-xs" tabIndex={0}>
+          <div className="min-w-0 flex-1 space-y-1">
+            <div className="grid grid-cols-[1fr_auto_3.75rem] items-baseline gap-2">
+              <span className="truncate text-muted-foreground">{shortLabel(w)}</span>
+              <span
+                className={cn(
+                  'text-right font-semibold tabular-nums',
+                  !w.stale && w.pace !== 'ok' && PACE_TEXT[w.pace],
+                )}
+              >
+                {w.stale ? '—' : formatPercent(w.used_percent)}
+              </span>
+              <ResetIn seconds={resetsIn} />
+            </div>
+            <div
+              className="relative h-1.5 overflow-hidden rounded-full bg-muted"
+              role="meter"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={w.stale ? undefined : Math.round(w.used_percent)}
+              aria-label={`${w.label} usage, ${PACE_LABEL[w.pace]}`}
+            >
+              {!w.stale && projected !== null && projected > used && (
+                <div
+                  className={cn('absolute inset-y-0 left-0 rounded-full opacity-25', PACE_FILL[w.pace])}
+                  style={{ width: `${projected}%` }}
+                />
+              )}
+              {!w.stale && (
+                <div
+                  className={cn('absolute inset-y-0 left-0 rounded-full', PACE_FILL[w.pace])}
+                  style={{ width: `${used}%` }}
+                />
+              )}
+              {w.elapsed_fraction !== null && !w.stale && (
+                <div
+                  className="absolute inset-y-0 w-0.5 bg-foreground/60"
+                  style={{ left: `calc(${Math.min(100, w.elapsed_fraction * 100)}% - 1px)` }}
+                />
+              )}
+            </div>
           </div>
-          <span
-            className={cn(
-              'text-right font-semibold tabular-nums',
-              !w.stale && w.pace !== 'ok' && PACE_TEXT[w.pace],
-            )}
-          >
-            {w.stale ? '—' : formatPercent(w.used_percent)}
-          </span>
-          <span className="text-right text-[11px] text-muted-foreground tabular-nums">
-            {resetsIn !== null && !w.stale ? formatDuration(resetsIn) : ''}
-          </span>
+          {breakdown && <BreakdownBars breakdown={breakdown} />}
         </div>
       </TooltipTrigger>
       <TooltipContent className="max-w-xs space-y-1 text-xs">
         <p className="font-medium">
-          {w.label}: {w.used_percent.toFixed(1)}% · {PACE_LABEL[w.pace]}
+          {w.label} · {w.stale ? 'reset' : `${w.used_percent.toFixed(1)}%`} · {PACE_LABEL[w.pace]}
         </p>
+        {w.resets_at !== null && !w.stale && <p>{resetDetail(w.resets_at, now)}</p>}
         <p>{paceSummary(w, now)}</p>
+        {breakdown && <p className="text-muted-foreground">{breakdownHint(w, breakdown.unit)}</p>}
         {w.elapsed_fraction !== null && !w.stale && (
-          <p className="text-muted-foreground">
-            Tick = even pace ({(w.elapsed_fraction * 100).toFixed(0)}% of the window elapsed);
-            shade = projection.
-          </p>
-        )}
-        {w.resets_at !== null && <p>Resets {formatClock(w.resets_at)}</p>}
-        {w.slots.length > 1 && <SlotBars window={w} />}
-        {w.api_equivalent_usd !== null && w.api_equivalent_usd > 0 && (
-          <p>
-            Requests via LocalRouter in this window: {formatUsd(w.api_equivalent_usd)} at API
-            prices
-          </p>
-        )}
-        {w.history.length > 0 && (
-          <p>
-            Previous window peaked at{' '}
-            {formatPercent(w.history[w.history.length - 1].peak_percent)}
-          </p>
+          <p className="text-muted-foreground">Tick: even pace · shade: projection</p>
         )}
         <p className="text-muted-foreground">
-          {SOURCE_LABEL[w.source]}, {formatAgo(w.updated_at, now)}
+          {SOURCE_LABEL[w.source]} · {formatAgo(w.updated_at, now)}
         </p>
       </TooltipContent>
     </Tooltip>
   )
 }
 
-/** One bar per hour (5-hour windows) or day (weekly), like the status line. */
-function SlotBars({ window: w }: { window: UsageWindowView }) {
-  const heights = slotHeights(w)
-  const start = w.resets_at !== null && w.window_secs !== null ? w.resets_at - w.window_secs : null
-  const daily = (w.slot_secs ?? 0) >= 86_400
+/**
+ * The window's bars, oldest first and ending at the reset: per hour for a
+ * 5-hour window, per day (weekday initials) for a week, per week for a month.
+ * A full bar is twice the even-pace share; spans still ahead are a baseline.
+ */
+function BreakdownBars({ breakdown }: { breakdown: WindowBreakdown }) {
   return (
-    <div className="flex items-end gap-1 pt-1">
-      {heights.map((h, i) => {
-        const slotStart = start !== null && w.slot_secs !== null ? start + i * w.slot_secs : null
-        const label =
-          slotStart !== null
-            ? new Date(slotStart * 1000).toLocaleString(
-                undefined,
-                daily ? { weekday: 'narrow' } : { hour: 'numeric' },
-              )
-            : String(i + 1)
-        return (
-          <div key={i} className="flex w-5 flex-col items-center gap-0.5">
-            <div className="flex h-6 w-full items-end">
-              {h === null ? (
-                <div className="h-px w-full bg-muted-foreground/30" />
-              ) : (
-                <div
-                  className={cn(
-                    'w-full rounded-t-[2px]',
-                    i === w.current_slot ? 'bg-foreground/70' : 'bg-foreground/40',
-                  )}
-                  style={{ height: `${Math.max(8, h * 100)}%` }}
-                />
-              )}
-            </div>
-            <span className="text-[9px] text-muted-foreground">{label}</span>
+    <div
+      className="flex w-28 shrink-0 justify-end gap-0.5"
+      role="img"
+      aria-label={breakdownSummary(breakdown)}
+    >
+      {breakdown.bars.map((b, i) => (
+        <div key={i} className="flex w-3.5 flex-col items-center gap-0.5" aria-hidden>
+          <div className="flex h-6 w-full items-end">
+            {b.height === null ? (
+              <div className="h-px w-full bg-muted-foreground/30" />
+            ) : (
+              <div
+                className={cn(
+                  'w-full rounded-t-[2px]',
+                  b.current ? 'bg-foreground/70' : 'bg-foreground/35',
+                )}
+                style={{ height: `${b.height * 100}%`, minHeight: 2 }}
+              />
+            )}
           </div>
-        )
-      })}
+          <span
+            className={cn(
+              'text-[9px] leading-none tabular-nums',
+              b.current ? 'font-semibold text-foreground' : 'text-muted-foreground',
+            )}
+          >
+            {b.label}
+          </span>
+        </div>
+      ))}
     </div>
   )
 }
@@ -462,11 +472,7 @@ function QuotaRow({ quota: q, now }: { quota: UsageQuotaView; now: number }) {
             )}
           </div>
           <span className="text-right tabular-nums">{formatCount(q.remaining)}</span>
-          <span className="text-right text-[11px] text-muted-foreground tabular-nums">
-            {q.resets_at !== null && q.resets_at > now / 1000
-              ? formatDuration(q.resets_at - now / 1000)
-              : ''}
-          </span>
+          <ResetIn seconds={q.resets_at !== null ? q.resets_at - now / 1000 : null} />
         </div>
       </TooltipTrigger>
       <TooltipContent className="max-w-xs space-y-1 text-xs">
@@ -501,12 +507,7 @@ function CreditsRow({ credits: c }: { credits: NonNullable<UsageAccountView['cre
   )
 }
 
-/**
- * What the requests LocalRouter routed to this account cost at API list
- * prices, over the last 24 hours, 7 days and 30 days. For a subscription this
- * is the value it delivered (compared with its price); for an API key it is
- * the spend LocalRouter caused.
- */
+/** An API key's spend via LocalRouter over the last 24 hours, 7 days and 30 days. */
 function RoutedSpend({ account: a }: { account: UsageAccountView }) {
   const spend = routedSpend(a)
   if (!spend) return null

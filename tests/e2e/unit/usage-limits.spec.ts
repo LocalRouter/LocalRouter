@@ -1,12 +1,16 @@
 import { expect, test } from '@playwright/test'
 import {
+  breakdownHint,
+  breakdownSummary,
   formatDuration,
+  formatDurationLong,
   formatPercent,
   formatUsd,
   headlineWindow,
   paceSummary,
+  resetDetail,
   routedSpend,
-  slotHeights,
+  windowBreakdown,
   usageLabelSeed,
   visibleAccounts,
   awaitingLimits,
@@ -40,6 +44,7 @@ const win = (changes: Partial<UsageWindowView> = {}): UsageWindowView => ({
   slots: [10, 12, 8, 15, 0, 0, 0],
   current_slot: 4,
   slot_secs: 86_400,
+  slots_basis: 'traffic',
   api_equivalent_usd: 120,
   plan_share_usd: 20.7,
   history: [],
@@ -95,14 +100,89 @@ test('pace summary covers projection, eta, limit and reset', () => {
   expect(paceSummary(win({ projected_percent: null }), NOW)).toBe('Too early to project')
 })
 
-test('slot heights scale to twice the even-pace share and mark the future', () => {
-  const h = slotHeights(win())
-  // Even pace per day is 100/7 ≈ 14.3 points; a full bar is 2× that.
-  expect(h[0]).toBeCloseTo(10 / (2 * (100 / 7)))
-  expect(h[4]).toBe(0)
-  expect(h[5]).toBeNull()
-  expect(h[6]).toBeNull()
-  expect(slotHeights(win({ slots: [] }))).toEqual([])
+test('reset times are spelled out for the tooltip', () => {
+  expect(formatDurationLong(30)).toBe('less than a minute')
+  expect(formatDurationLong(60)).toBe('1 minute')
+  expect(formatDurationLong(3600)).toBe('1 hour')
+  expect(formatDurationLong(3 * 3600 + 12 * 60)).toBe('3 hours 12 minutes')
+  expect(formatDurationLong(5 * 86_400 + 15 * 3600 + 59 * 60)).toBe('5 days 15 hours')
+  expect(formatDurationLong(86_400)).toBe('1 day')
+  const reset = nowSecs + 5 * 86_400 + 15 * 3600
+  expect(resetDetail(reset, NOW)).toMatch(/^Resets in 5 days 15 hours · /)
+  expect(resetDetail(nowSecs - 10, NOW)).toMatch(/^Reset /)
+})
+
+/** Unix seconds for a local wall-clock time, so labels do not depend on the TZ. */
+const local = (y: number, mo: number, d: number, h = 0) => new Date(y, mo, d, h).getTime() / 1000
+
+test('weekly windows break down per day, labelled from the first day', () => {
+  // A week from Tue 6 Oct 2026 14:00 (local), now in its fifth day.
+  const start = local(2026, 9, 6, 14)
+  const b = windowBreakdown(win({ resets_at: start + 604_800 }))!
+  expect(b.unit).toBe('day')
+  expect(b.bars.map((x) => x.label).join(' ')).toBe('T W T F S S M')
+  expect(b.bars.map((x) => x.name)).toEqual(['Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun', 'Mon'])
+  // Full bar = twice the even-pace share (100/7 per day).
+  expect(b.bars[0].height).toBeCloseTo(10 / (2 * (100 / 7)))
+  expect(b.bars[0].points).toBe(10)
+  expect(b.bars[4]).toMatchObject({ height: 0, current: true })
+  expect(b.bars[5].height).toBeNull()
+  expect(b.bars[6].height).toBeNull()
+  expect(b.bars.filter((x) => x.current)).toHaveLength(1)
+  expect(breakdownSummary(b)).toBe(
+    'Per day: Tue 10%, Wed 12%, Thu 8%, Fri 15%, Sat 0%, Sun ahead, Mon ahead',
+  )
+  expect(breakdownHint(win(), b.unit)).toContain("LocalRouter's traffic")
+  expect(breakdownHint(win({ slots_basis: 'readings' }), b.unit)).toContain('reading changes')
+})
+
+test('5-hour windows break down per hour, monthly ones per week', () => {
+  const start = local(2026, 9, 10, 9)
+  const five = windowBreakdown(
+    win({
+      id: 'five_hour',
+      resets_at: start + 18_000,
+      window_secs: 18_000,
+      slots: [4, 50, 2, 0, 0],
+      current_slot: 2,
+      slot_secs: 3_600,
+    }),
+  )!
+  expect(five.unit).toBe('hour')
+  expect(five.bars.map((x) => x.label)).toEqual(['09', '10', '11', '12', '13'])
+  expect(five.bars[0].name).toBe('09:00')
+  // 50 points in one hour of a 5-hour window is over twice the pace (40): capped.
+  expect(five.bars[1].height).toBe(1)
+  expect(five.bars[2].current).toBe(true)
+  expect(five.bars[3].height).toBeNull()
+
+  const mStart = local(2026, 9, 1)
+  const days = Array.from({ length: 30 }, (_, i) => (i < 10 ? 2 : 0))
+  const month = windowBreakdown(
+    win({
+      id: 'monthly',
+      resets_at: mStart + 30 * 86_400,
+      window_secs: 30 * 86_400,
+      slots: days,
+      current_slot: 9,
+      slot_secs: 86_400,
+    }),
+  )!
+  expect(month.unit).toBe('week')
+  expect(month.bars.map((x) => x.label)).toEqual(['1', '8', '15', '22', '29'])
+  expect(month.bars[0].name).toBe('Oct 1')
+  expect(month.bars[0].points).toBe(14)
+  // Week 2 holds the current day (day 10): only days up to it count.
+  expect(month.bars[1]).toMatchObject({ points: 6, current: true })
+  expect(month.bars[2].height).toBeNull()
+  // The last, two-day bar is still a bar of its own.
+  expect(month.bars).toHaveLength(5)
+})
+
+test('windows without a known span have no breakdown', () => {
+  expect(windowBreakdown(win({ slots: [] }))).toBeNull()
+  expect(windowBreakdown(win({ resets_at: null }))).toBeNull()
+  expect(windowBreakdown(win({ slot_secs: null }))).toBeNull()
 })
 
 test('visible accounts skip hidden and empty ones; headline prefers weekly', () => {
@@ -137,24 +217,17 @@ test('usage tray labels mirror the backend seeds', () => {
   expect(usageLabelSeed('github-copilot:subscription', 'monthly')).toBe('GHM')
 })
 
-test('routed spend names the periods, and compares a subscription with its plan', () => {
+test('routed spend is shown for API keys only, never as subscription value', () => {
   const spend = {
     last_24h_usd: 0.12, last_7d_usd: 1.3, last_30d_usd: 4.95, month_to_date_usd: 2,
     requests_30d: 312, tokens_30d: 1_200_000, daily_usd: [],
   }
-  expect(routedSpend(account())).toBeNull()
-  const sub = routedSpend(account({ spend, value_multiplier: 4.95 / 200 }))!
-  expect(sub.periods).toEqual([['24h', 0.12], ['7d', 1.3], ['30d', 4.95]])
-  expect(sub.note).toBe('2% of plan')
-  expect(routedSpend(account({ spend, value_multiplier: 4.2 }))!.note).toBe('4.2× plan')
-  expect(sub.hint.join(' ')).toContain('$200.00/mo plan')
-  const noPrice = routedSpend(account({ spend, monthly_price_usd: null }))!
-  expect(noPrice.note).toBeNull()
-  expect(noPrice.hint.join(' ')).toContain('Settings')
-
+  expect(routedSpend(account({ spend, value_multiplier: 4.2 }))).toBeNull()
   const api = account({ kind: 'api', id: 'openai:api', spend, monthly_price_usd: null })
-  expect(routedSpend(api)!.note).toBe('312 req · 30d')
-  expect(routedSpend(api)!.label).toContain('Spend via LocalRouter')
+  const r = routedSpend(api)!
+  expect(r.periods).toEqual([['24h', 0.12], ['7d', 1.3], ['30d', 4.95]])
+  expect(r.note).toBe('312 req · 30d')
+  expect(r.label).toContain('Spend via LocalRouter')
   expect(routedSpend({ ...api, spend: { ...spend, requests_30d: 0 } })).toBeNull()
 })
 

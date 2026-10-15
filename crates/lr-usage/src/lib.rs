@@ -30,7 +30,8 @@ pub use types::{
     AccountKind, AccountRef, CreditsReading, DataSource, QuotaReading, UsageReport, WindowReading,
 };
 pub use view::{
-    PaceStatus, UsageAccountView, UsageQuotaView, UsageSnapshot, UsageSpendView, UsageWindowView,
+    PaceStatus, SlotBasis, UsageAccountView, UsageQuotaView, UsageSnapshot, UsageSpendView,
+    UsageWindowView,
 };
 
 static GLOBAL: OnceLock<Arc<UsageTracker>> = OnceLock::new();

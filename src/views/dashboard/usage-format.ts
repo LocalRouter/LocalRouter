@@ -93,19 +93,110 @@ export const SOURCE_LABEL: Record<UsageDataSource, string> = {
   cli_login: 'CLI login',
 }
 
+/** `5 days 15 hours`, `3 hours 12 minutes`, `45 minutes`: {@link formatDuration} spelled out. */
+export function formatDurationLong(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds))
+  if (s < 60) return 'less than a minute'
+  const d = Math.floor(s / 86_400)
+  const h = Math.floor((s % 86_400) / 3_600)
+  const m = Math.floor((s % 3_600) / 60)
+  const unit = (n: number, name: string) => `${n} ${name}${n === 1 ? '' : 's'}`
+  if (d > 0) return h > 0 ? `${unit(d, 'day')} ${unit(h, 'hour')}` : unit(d, 'day')
+  if (h > 0) return m > 0 ? `${unit(h, 'hour')} ${unit(m, 'minute')}` : unit(h, 'hour')
+  return unit(m, 'minute')
+}
+
+/** Tooltip line for a window's reset: `Resets in 5 days 15 hours · Mon 14:00`. */
+export function resetDetail(resetsAt: number, nowMs: number): string {
+  const left = resetsAt - nowMs / 1000
+  if (left <= 0) return `Reset ${formatClock(resetsAt)}`
+  return `Resets in ${formatDurationLong(left)} · ${formatClock(resetsAt)}`
+}
+
+const WEEKDAY_INITIAL = ['S', 'M', 'T', 'W', 'T', 'F', 'S']
+const WEEKDAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+const MONTH_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+/** Windows with more daily slots than this (monthly) are shown per week. */
+const MAX_DAILY_BARS = 10
+
+export type BreakdownUnit = 'hour' | 'day' | 'week'
+
+export interface BreakdownBar {
+  /** 0–1, where a full bar is twice the even-pace share; `null` while still ahead. */
+  height: number | null
+  /** Percentage points of the window used in this bar's span. */
+  points: number
+  /** Axis label: weekday initial, two-digit hour, or day of month. */
+  label: string
+  /** Spelled-out span start for screen readers: `Tue`, `14:00`, `Oct 8`. */
+  name: string
+  current: boolean
+}
+
+export interface WindowBreakdown {
+  unit: BreakdownUnit
+  bars: BreakdownBar[]
+}
+
 /**
- * Bar heights (0–1) for a window's slots: linear from 0 to twice the
- * even-pace share per slot (a full bar = 2× pace), like the Claude Code
- * status line. Future slots are `null`.
+ * The window split into bars, oldest first and ending at the reset: one per
+ * hour for 5-hour windows, per day for weekly ones (labelled `T W T F S S M`
+ * from the window's first day), per week for monthly ones. Labels use local
+ * time. `null` when the window has no breakdown (unknown start, or stale).
  */
-export function slotHeights(window: UsageWindowView): (number | null)[] {
+export function windowBreakdown(window: UsageWindowView): WindowBreakdown | null {
   const n = window.slots.length
-  if (n === 0) return []
-  const share = 100 / n
-  return window.slots.map((points, i) => {
-    if (i > window.current_slot) return null
-    return Math.min(1, Math.max(0, points / (2 * share)))
-  })
+  if (n < 2 || window.slot_secs === null || window.resets_at === null || window.window_secs === null) {
+    return null
+  }
+  const start = window.resets_at - window.window_secs
+  const daily = window.slot_secs >= 86_400
+  const group = daily && n > MAX_DAILY_BARS ? 7 : 1
+  const unit: BreakdownUnit = group > 1 ? 'week' : daily ? 'day' : 'hour'
+  const share = (100 * group) / n
+  const bars: BreakdownBar[] = []
+  for (let first = 0; first < n; first += group) {
+    const last = Math.min(n, first + group) - 1
+    let points = 0
+    for (let i = first; i <= last && i <= window.current_slot; i++) {
+      points += Math.max(0, window.slots[i])
+    }
+    const at = new Date((start + first * window.slot_secs) * 1000)
+    const hour = String(at.getHours()).padStart(2, '0')
+    bars.push({
+      height: first > window.current_slot ? null : Math.min(1, points / (2 * share)),
+      points,
+      label:
+        unit === 'hour' ? hour : unit === 'day' ? WEEKDAY_INITIAL[at.getDay()] : String(at.getDate()),
+      name:
+        unit === 'hour'
+          ? `${hour}:00`
+          : unit === 'day'
+            ? WEEKDAY_SHORT[at.getDay()]
+            : `${MONTH_SHORT[at.getMonth()]} ${at.getDate()}`,
+      current: window.current_slot >= first && window.current_slot <= last,
+    })
+  }
+  return { unit, bars }
+}
+
+/** Screen-reader summary of a breakdown: `Per day: Tue 8%, Wed 11%, …, Mon ahead`. */
+export function breakdownSummary(breakdown: WindowBreakdown): string {
+  const per = { hour: 'Per hour', day: 'Per day', week: 'Per week' }[breakdown.unit]
+  const parts = breakdown.bars.map((b) =>
+    b.height === null ? `${b.name} ahead` : `${b.name} ${formatPercent(b.points)}`,
+  )
+  return `${per}: ${parts.join(', ')}`
+}
+
+/** Tooltip line saying what the bars are and where they come from. */
+export function breakdownHint(window: UsageWindowView, unit: BreakdownUnit): string {
+  const per = { hour: 'hour', day: 'day', week: 'week' }[unit]
+  if (window.slots_basis === 'traffic') {
+    return `Bars: usage per ${per}, split by LocalRouter's traffic`
+  }
+  return `Bars: usage per ${per}, from reading changes`
 }
 
 /**
@@ -252,49 +343,25 @@ export interface RoutedSpend {
   hint: string[]
 }
 
-/** `4.2× plan` from one plan's worth, `35% of plan` below it. */
-export function planShare(multiplier: number): string {
-  return multiplier >= 1
-    ? `${multiplier.toFixed(1)}× plan`
-    : `${Math.round(multiplier * 100)}% of plan`
-}
-
 /**
- * The cost of the requests LocalRouter routed to an account, at API list
- * prices: spend for an API key, value delivered for a subscription.
+ * What the requests LocalRouter sent with an API key cost at list prices,
+ * over the last 24 hours, 7 days and 30 days. Subscriptions have none: their
+ * card shows the plan's own limits.
  */
 export function routedSpend(account: UsageAccountView): RoutedSpend | null {
   const s = account.spend
-  const subscription = account.kind === 'subscription'
-  if (subscription ? s.last_30d_usd <= 0 : s.requests_30d <= 0) return null
-  const periods: [string, number][] = [
-    ['24h', s.last_24h_usd],
-    ['7d', s.last_7d_usd],
-    ['30d', s.last_30d_usd],
-  ]
-  const traffic = `${formatCount(s.requests_30d)} requests and ${formatCount(s.tokens_30d)} tokens in the last 30 days.`
-  if (subscription) {
-    return {
-      label: 'API-price value via LocalRouter',
-      periods,
-      note: account.value_multiplier !== null ? planShare(account.value_multiplier) : null,
-      hint: [
-        'What the requests LocalRouter sent with this subscription would have cost on the pay-as-you-go API.',
-        account.monthly_price_usd !== null
-          ? `Last 30 days: ${formatUsd(s.last_30d_usd)} against the ${formatUsd(account.monthly_price_usd)}/mo plan.`
-          : 'Set the plan price in Settings › Usage to compare it with the plan.',
-        traffic,
-        'Use outside LocalRouter, such as the provider’s own apps, is not included.',
-      ],
-    }
-  }
+  if (account.kind === 'subscription' || s.requests_30d <= 0) return null
   return {
     label: 'Spend via LocalRouter',
-    periods,
+    periods: [
+      ['24h', s.last_24h_usd],
+      ['7d', s.last_7d_usd],
+      ['30d', s.last_30d_usd],
+    ],
     note: `${formatCount(s.requests_30d)} req · 30d`,
     hint: [
-      'Estimated cost of the requests LocalRouter sent with this API key, at list prices. The bill can differ: discounts, cached tokens and use outside LocalRouter are not reflected.',
-      traffic,
+      'Requests LocalRouter sent with this key, at list prices. The bill may differ.',
+      `${formatCount(s.requests_30d)} requests, ${formatCount(s.tokens_30d)} tokens in 30 days.`,
     ],
   }
 }

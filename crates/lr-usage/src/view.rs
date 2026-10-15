@@ -35,6 +35,17 @@ pub enum PaceStatus {
     Over,
 }
 
+/// What a window's per-slot breakdown is derived from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SlotBasis {
+    /// The API-equivalent cost of the traffic LocalRouter saw in each slot,
+    /// scaled so the slots add up to the reported usage.
+    Traffic,
+    /// The rises between successive usage readings (no traffic seen).
+    Readings,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UsageWindowView {
     pub id: String,
@@ -59,6 +70,9 @@ pub struct UsageWindowView {
     pub slots: Vec<f64>,
     pub current_slot: usize,
     pub slot_secs: Option<i64>,
+    /// What `slots` is derived from; `None` without slots.
+    #[serde(default)]
+    pub slots_basis: Option<SlotBasis>,
     /// API-list-price cost of the traffic LocalRouter saw in this window.
     pub api_equivalent_usd: Option<f64>,
     /// The part of the monthly price this window's usage accounts for.
@@ -362,17 +376,14 @@ fn window_view(
         }
     }
 
-    let (slots, current_slot, slot_secs) = match (start, r.window_secs) {
+    let (slots, slots_basis, current_slot, slot_secs) = match (start, r.window_secs) {
         (Some(start), Some(len)) if !stale => {
             let (n, slot_len) = slot_layout(len);
             let current = (now.saturating_sub(start).max(0) / slot_len).min(n as i64 - 1) as usize;
-            (
-                usage_slots(w, ledger, start, slot_len, n, used, now),
-                current,
-                Some(slot_len),
-            )
+            let (slots, basis) = usage_slots(w, ledger, start, slot_len, n, used, now);
+            (slots, Some(basis), current, Some(slot_len))
         }
-        _ => (Vec::new(), 0, None),
+        _ => (Vec::new(), None, 0, None),
     };
 
     let api_equivalent_usd = start.filter(|_| !stale).map(|s| {
@@ -405,6 +416,7 @@ fn window_view(
         slots,
         current_slot,
         slot_secs,
+        slots_basis,
         api_equivalent_usd,
         plan_share_usd,
         history: w.history.clone(),
@@ -425,7 +437,7 @@ fn usage_slots(
     n: usize,
     used: f64,
     now: i64,
-) -> Vec<f64> {
+) -> (Vec<f64>, SlotBasis) {
     let slot_of = |t: i64| (t.saturating_sub(start).max(0) / slot_len).min(n as i64 - 1) as usize;
     let mut cost = vec![0.0; n];
     // A reset further ahead than the window length (clock skew, bad data)
@@ -437,7 +449,8 @@ fn usage_slots(
     }
     let total: f64 = cost.iter().sum();
     if total > 0.0 {
-        return cost.into_iter().map(|c| c / total * used).collect();
+        let slots = cost.into_iter().map(|c| c / total * used).collect();
+        return (slots, SlotBasis::Traffic);
     }
     let mut slots = vec![0.0; n];
     let mut prev: Option<f64> = None;
@@ -450,7 +463,7 @@ fn usage_slots(
         }
         prev = Some(*p);
     }
-    slots
+    (slots, SlotBasis::Readings)
 }
 
 fn spend_view(ledger: &std::collections::BTreeMap<i64, LedgerEntry>, now: i64) -> UsageSpendView {
@@ -651,6 +664,7 @@ mod tests {
         assert!(w.stale);
         assert!(w.projected_percent.is_none());
         assert!(w.slots.is_empty());
+        assert_eq!(w.slots_basis, None);
     }
 
     #[test]
@@ -677,6 +691,7 @@ mod tests {
         let w = &a.windows[0];
         assert!((w.slots[0] - 10.0).abs() < 1e-9);
         assert!((w.slots[1] - 30.0).abs() < 1e-9);
+        assert_eq!(w.slots_basis, Some(SlotBasis::Traffic));
         assert!((w.api_equivalent_usd.unwrap() - 4.0).abs() < 1e-9);
         assert!((a.spend.last_7d_usd - 4.0).abs() < 1e-9);
         assert!((a.value_multiplier.unwrap() - 4.0 / 200.0).abs() < 1e-9);
@@ -703,6 +718,7 @@ mod tests {
         let w = &t.snapshot_at(now).accounts[0].windows[0];
         assert_eq!(w.slots[0], 0.0);
         assert!((w.slots[1] - 15.0).abs() < 1e-9);
+        assert_eq!(w.slots_basis, Some(SlotBasis::Readings));
     }
 
     #[test]
