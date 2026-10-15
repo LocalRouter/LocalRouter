@@ -38,6 +38,7 @@ import { TranscribePanel } from "./transcribe-panel"
 import { SystemOnePanel } from "./systemone-panel"
 import { DecisionsPanel } from "./decisions-panel"
 import { MessagesPanel } from "./messages-panel"
+import { FilesPanel } from "./files-panel"
 import type {
   ApiPathSupport,
   GetApiPathSupportParams,
@@ -987,6 +988,7 @@ export function LlmTab({ initialReplay, initialMode, initialProvider, initialCli
       {/* Subtabs for Chat, Images, Embeddings */}
       <Tabs value={activeSubtab} onValueChange={setActiveSubtab} className="flex flex-col flex-1 min-h-0">
         <TabsList className="w-fit">
+          <TabsTrigger value="files" disabled={mode !== "client" || !selectedClientId || !!baseUrlOverride}>Files</TabsTrigger>
           <TabsTrigger value="replay" disabled={mode !== "client" || !selectedClientId || !!baseUrlOverride}>Replay / Compare</TabsTrigger>
           <TabsTrigger value="chat" className="flex items-center gap-1" disabled={sectionDisabled("chat")} title={sectionDisabled("chat") ? unavailableTitle : undefined}>
             <MessageSquare className="h-3 w-3" />
@@ -1016,6 +1018,7 @@ export function LlmTab({ initialReplay, initialMode, initialProvider, initialCli
           </TabsTrigger>
         </TabsList>
 
+        <TabsContent value="files" className="mt-4">{mode === "client" && !baseUrlOverride ? <FilesPanel key={selectedClientId} openaiClient={openaiClient} isReady={!!openaiClient} /> : <p>Select client mode to manage local files.</p>}</TabsContent>
         <TabsContent value="replay" className="mt-4">{mode === "client" && !baseUrlOverride ? <ReplayPanel key={selectedClientId} clientId={selectedClientId} models={models} initialInput={initialReplay} /> : <p>Select client mode to run a comparison.</p>}</TabsContent>
         <TabsContent value="chat" className="flex-1 min-h-0 mt-4">
           <ChatPanel

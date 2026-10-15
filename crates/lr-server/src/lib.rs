@@ -271,6 +271,26 @@ fn build_app(state: AppState, enable_cors: bool, shutdown: CancellationToken) ->
         .route("/oauth/token", post(routes::token_endpoint))
         .with_state(oauth_state);
 
+    let file_routes = Router::new()
+        .route(
+            "/v1/files",
+            get(routes::files::list_files).post(routes::files::upload_file),
+        )
+        .route(
+            "/v1/files/{file_id}",
+            get(routes::files::retrieve_file).delete(routes::files::delete_file),
+        )
+        .route(
+            "/v1/files/{file_id}/content",
+            get(routes::files::file_content),
+        )
+        .layer(axum::extract::DefaultBodyLimit::max(
+            lr_batches::MAX_FILE_BYTES + 64 * 1024,
+        ))
+        .layer(axum::middleware::map_response(
+            routes::files::private_response,
+        ));
+
     // Build the Axum router with all routes
     // Support both /v1 prefix and without for OpenAI compatibility
     // Note: GET / is handled by mcp_gateway_get_handler in mcp_routes (content negotiation)
@@ -281,6 +301,7 @@ fn build_app(state: AppState, enable_cors: bool, shutdown: CancellationToken) ->
         .route("/openapi.yaml", get(serve_openapi_yaml))
         // Routes with /v1 prefix (all protected by blanket `/v1/` check in auth layer)
         .route("/v1/chat/completions", post(routes::chat_completions))
+        .merge(file_routes)
         .route("/v1/messages", post(routes::messages::create_message))
         .route(
             "/v1/messages/count_tokens",

@@ -31,6 +31,7 @@ members = [
     "crates/lr-proxy",
     "crates/lr-usage",
     "crates/lr-replay",
+    "crates/lr-batches",
 ]
 resolver = "2"
 
@@ -62,6 +63,7 @@ module_name_repetitions = "allow"
 double_must_use = "allow"
 
 [workspace.dependencies]
+lr-batches = { path = "crates/lr-batches" }
 lr-replay = { path = "crates/lr-replay" }
 # Internal crates
 lr-types = { path = "crates/lr-types" }

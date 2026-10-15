@@ -22,6 +22,11 @@ use utoipa::OpenApi;
         (url = "http://127.0.0.1:3625", description = "Local development server (IPv4)")
     ),
     paths(
+        crate::routes::files::upload_file,
+        crate::routes::files::list_files,
+        crate::routes::files::retrieve_file,
+        crate::routes::files::file_content,
+        crate::routes::files::delete_file,
         // Chat endpoints
         crate::routes::chat::chat_completions,
         crate::routes::messages::create_message,
@@ -74,6 +79,7 @@ use utoipa::OpenApi;
     ),
     components(
         schemas(
+            lr_batches::FileObject, lr_batches::FileList, lr_batches::FileDeleted, crate::routes::files::FileUpload,
             lr_providers::gateway::GatewayPreferences,
             lr_providers::gateway::GatewayMaxPrice,
             lr_providers::gateway::GatewaySort,

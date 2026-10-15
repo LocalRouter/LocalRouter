@@ -1,0 +1,23 @@
+[package]
+name = "lr-batches"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Owned local files and durable native batch lifecycle"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+rusqlite = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+parking_lot = { workspace = true }
+utoipa = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.8"
+
+[lints]
+workspace = true

@@ -2691,3 +2691,6 @@ async fn exact_cache_decisions_refresh_replaces_the_same_typed_input_entry() {
 
 #[path = "fixtures/messages_endpoint_cases.rs"]
 mod messages_endpoint_cases;
+
+#[path = "fixtures/files_endpoint_cases.rs"]
+mod files_endpoint_cases;

@@ -5246,6 +5246,17 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
           responses: { '200': { description: 'Ordered typed answers or refusals', content: { 'application/json': { schema: { '$ref': '#/components/schemas/DecisionResponse' } } } }, '400': { description: 'Invalid request or unsupported image input' }, '403': { description: 'Access denied' }, '429': { description: 'Rate limited' } },
         },
       },
+      '/v1/files': {
+        get: { summary: 'List owned local files', operationId: 'list_files', tags: ['files'], security: [{ BearerAuth: [] }], responses: { '200': { description: 'Only this client’s local files', content: { 'application/json': { schema: { '$ref': '#/components/schemas/FileList' } } } } } },
+        post: { summary: 'Upload local batch JSONL', operationId: 'upload_file', tags: ['files'], security: [{ BearerAuth: [] }], requestBody: { required: true, content: { 'multipart/form-data': { schema: { type: 'object', required: ['file', 'purpose'], properties: { file: { type: 'string', format: 'binary' }, purpose: { type: 'string', enum: ['batch'] } } } } } }, responses: { '200': { description: 'Local upload only; no provider request', content: { 'application/json': { schema: { '$ref': '#/components/schemas/FileObject' } } } }, '400': { description: 'Invalid JSONL or upload controls' }, '413': { description: '16 MiB limit exceeded' }, '507': { description: 'Local storage quota exceeded' } } },
+      },
+      '/v1/files/{file_id}': {
+        get: { summary: 'Retrieve owned file metadata', operationId: 'retrieve_file', tags: ['files'], security: [{ BearerAuth: [] }], parameters: [{ name: 'file_id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Owned file metadata', content: { 'application/json': { schema: { '$ref': '#/components/schemas/FileObject' } } } }, '404': { description: 'Missing, expired or unowned file' } } },
+        delete: { summary: 'Delete owned local file', operationId: 'delete_file', tags: ['files'], security: [{ BearerAuth: [] }], parameters: [{ name: 'file_id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Local file deleted' }, '404': { description: 'Missing or unowned file' }, '409': { description: 'Active job requires this input' } } },
+      },
+      '/v1/files/{file_id}/content': {
+        get: { summary: 'Download original local JSONL', operationId: 'file_content', tags: ['files'], security: [{ BearerAuth: [] }], parameters: [{ name: 'file_id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Original immutable input', content: { 'application/jsonl': { schema: { type: 'string' } } } }, '404': { description: 'Missing, expired or unowned file' } } },
+      },
       '/v1/messages': {
         post: {
           summary: 'Anthropic Messages', operationId: 'create_message', tags: ['messages'],
@@ -5271,6 +5282,8 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     },
     components: {
       schemas: {
+        FileObject: { type: 'object', required: ['id', 'object', 'bytes', 'created_at', 'expires_at', 'filename', 'purpose', 'status'], properties: { id: { type: 'string' }, object: { type: 'string', enum: ['file'] }, bytes: { type: 'integer' }, created_at: { type: 'integer' }, expires_at: { type: 'integer' }, filename: { type: 'string' }, purpose: { type: 'string', enum: ['batch'] }, status: { type: 'string', enum: ['processed'] } } },
+        FileList: { type: 'object', properties: { object: { type: 'string', enum: ['list'] }, data: { type: 'array', items: { '$ref': '#/components/schemas/FileObject' } }, first_id: { type: 'string', nullable: true }, last_id: { type: 'string', nullable: true }, has_more: { type: 'boolean' } } },
         MessagesRequest: { type: 'object', required: ['model', 'max_tokens', 'messages'], properties: { model: { type: 'string' }, max_tokens: { type: 'integer', minimum: 0 }, messages: { type: 'array', minItems: 1 }, system: { oneOf: [{ type: 'string' }, { type: 'array' }] }, stream: { type: 'boolean' } } },
         CountMessageTokensRequest: { type: 'object', required: ['model', 'messages'], properties: { model: { type: 'string' }, messages: { type: 'array', minItems: 1 }, system: { oneOf: [{ type: 'string' }, { type: 'array' }] }, tools: { type: 'array' }, tool_choice: { type: 'object' }, thinking: { type: 'object' } } },
         ChatCompletionRequest: { type: 'object', properties: { model: { type: 'string' }, messages: { type: 'array' } } },

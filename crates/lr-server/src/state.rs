@@ -753,6 +753,9 @@ pub struct FeatureStatsSnapshot {
 /// Server state shared across all handlers
 #[derive(Clone)]
 pub struct AppState {
+    /// Private owned files and durable native batch state; lazy, no startup IO.
+    pub batch_store: Arc<lr_batches::BatchStore>,
+    pub file_upload_slots: Arc<tokio::sync::Semaphore>,
     /// Router for intelligent model selection and routing
     pub router: Arc<Router>,
 
@@ -936,7 +939,10 @@ impl AppState {
         // Wrap notification_tx in Arc before struct init so it can be shared
         let notification_broadcast = Arc::new(notification_tx);
 
+        let batch_root = config_manager.config_path().with_extension("batch-store");
         let result = Self {
+            batch_store: Arc::new(lr_batches::BatchStore::new(batch_root)),
+            file_upload_slots: Arc::new(tokio::sync::Semaphore::new(2)),
             router,
             client_manager,
             token_store,

@@ -5195,6 +5195,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "lr-batches"
+version = "0.0.159"
+dependencies = [
+ "chrono",
+ "parking_lot",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "utoipa",
+ "uuid",
+]
+
+[[package]]
 name = "lr-catalog"
 version = "0.0.159"
 dependencies = [
@@ -5775,6 +5789,7 @@ dependencies = [
  "http-body",
  "if-addrs",
  "lr-api-keys",
+ "lr-batches",
  "lr-catalog",
  "lr-clients",
  "lr-compression",
