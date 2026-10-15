@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { applyInFlight, chartPoints, errorsPeak, inFlightCounts, livePoint, trafficPeak, trafficPoints } from '../../../src/views/dashboard/activity-data'
+import { applyInFlight, chartPoints, inFlightCounts, livePoint, trafficPeak, trafficPoints } from '../../../src/views/dashboard/activity-data'
 import { dockTarget } from '../../../src/views/dashboard/dock'
 import { apiFromPath, llmApiFlow } from '../../../src/views/monitor/llm-api'
 import type { MonitorEventSummary, TrafficTimeline } from '../../../src/types/tauri-commands'
@@ -33,7 +33,7 @@ test('only the bucket containing now is live, and the requests in progress count
   expect(trafficPeak(trafficPoints(timeline([9, 2, 3]), now), { llm: 2, mcp: 0 })).toBe(9)
 })
 
-test('LLM and MCP each reach the requests axis top on their own; errors have their own axis', () => {
+test('LLM, MCP and errors share one axis, topped by the highest of them', () => {
   const points = trafficPoints(
     {
       ...timeline([0]),
@@ -46,11 +46,11 @@ test('LLM and MCP each reach the requests axis top on their own; errors have the
     },
     base + 5_000,
   )
-  expect(trafficPeak(points)).toBe(5)
-  expect(errorsPeak(points)).toBe(7)
+  // Errors span both kinds, so 7 errors top 4 LLM and 5 MCP requests.
+  expect(trafficPeak(points)).toBe(7)
 })
 
-test('the errors axis follows the busiest error bucket, so more errors draw higher', () => {
+test('the errors line keeps gaps where a bucket was not recorded', () => {
   const withErrors = (errors: (number | null)[]): TrafficTimeline => ({
     ...timeline(errors.map(() => 400)),
     buckets: errors.map((value, i) => ({
@@ -62,9 +62,7 @@ test('the errors axis follows the busiest error bucket, so more errors draw high
     })),
   })
   const points = trafficPoints(withErrors([1, 3, null, 2]), base)
-  expect(errorsPeak(points)).toBe(3)
   expect(chartPoints(points).map((row) => row.errorLine)).toEqual([1, 3, null, 2])
-  expect(errorsPeak(trafficPoints(withErrors([0, null]), base))).toBe(0)
 })
 
 test('requests in progress stack on their line, from the previous bucket to the live one', () => {

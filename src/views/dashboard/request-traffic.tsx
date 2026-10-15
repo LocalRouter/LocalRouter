@@ -16,7 +16,6 @@ import type { TimeRange, TrafficTimeline } from '@/types/tauri-commands'
 import {
   chartPoints,
   type ChartPoint,
-  errorsPeak,
   type InFlightCounts,
   niceTicks,
   RANGES,
@@ -43,7 +42,7 @@ const money = new Intl.NumberFormat(undefined, {
  * Series colors (validated with the dataviz palette checker, light and dark,
  * all pairs): LLM requests take categorical slot 1 (blue), MCP requests slot 3
  * (aqua; slot 2's orange is too close to the error red); errors the reserved
- * "critical" status red, labelled in the legend, tooltip and their own axis.
+ * "critical" status red, labelled in the legend and tooltip.
  * Light and dark steps are set as CSS variables on the section.
  */
 const LLM = 'var(--traffic-llm)'
@@ -60,15 +59,12 @@ const PALETTE =
   '[--traffic-llm:#2a78d6] [--traffic-mcp:#1baf7a] [--traffic-error:#d03b3b] [--traffic-in-progress:0.4] dark:[--traffic-llm:#3987e5] dark:[--traffic-mcp:#199e70] dark:[--traffic-in-progress:0.55]'
 
 const AXIS_TICK = { fill: 'hsl(var(--muted-foreground))', fontSize: 10 }
-const ERROR_AXIS_TICK = { ...AXIS_TICK, fill: ERROR }
 const GRID = 'hsl(var(--border))'
 const SURFACE = 'hsl(var(--card))'
 /** Chart height, its top margin and the time axis under the plot. */
 const CHART_HEIGHT = 156
 const CHART_TOP = 14
 const AXIS_HEIGHT = 18
-/** The errors axis, on the right. */
-const ERRORS_AXIS = 'errors'
 
 interface RequestTrafficProps {
   range: TimeRange
@@ -225,7 +221,7 @@ function TrafficLegend() {
         <LineKey color={MCP} /> MCP requests
       </span>
       <span className="flex items-center gap-1.5">
-        <LineKey color={ERROR} /> Errors <span style={{ color: ERROR }}>(right axis)</span>
+        <LineKey color={ERROR} /> Errors
       </span>
     </div>
   )
@@ -327,7 +323,6 @@ export function RequestTraffic({
   const inFlightTotal = inFlight.llm + inFlight.mcp
   const bucketMs = (timeline?.bucket_secs ?? 0) * 1000
   const yTicks = niceTicks(trafficPeak(points, inFlight))
-  const errorTicks = niceTicks(errorsPeak(points))
   // The newest point sits on the plot's right edge: a time label on the last
   // two buckets would run past it.
   const lastTick = points[points.length - 3]?.timestamp ?? -Infinity
@@ -457,20 +452,6 @@ export function RequestTraffic({
                   interval={0}
                   domain={[0, yTicks[yTicks.length - 1]]}
                 />
-                {/* Same tick count as the requests axis, so both share the grid. */}
-                <YAxis
-                  yAxisId={ERRORS_AXIS}
-                  orientation="right"
-                  allowDecimals={false}
-                  tickFormatter={(value) => compact.format(value)}
-                  tick={ERROR_AXIS_TICK}
-                  axisLine={false}
-                  tickLine={false}
-                  width={24}
-                  ticks={errorTicks}
-                  interval={0}
-                  domain={[0, errorTicks[errorTicks.length - 1]]}
-                />
                 <Tooltip
                   cursor={{ stroke: 'hsl(var(--muted-foreground))', strokeWidth: 1 }}
                   content={
@@ -563,13 +544,11 @@ export function RequestTraffic({
                   isAnimationActive={false}
                 />
                 {/*
-                  Errors over the requests lines, on their own axis: each run
-                  of errors rises from zero and falls back to it; no line where
-                  there are none.
+                  Errors over the requests lines: each run of errors rises from
+                  zero and falls back to it; no line where there are none.
                 */}
                 <Line
                   name="Errors"
-                  yAxisId={ERRORS_AXIS}
                   dataKey="errorLine"
                   type="monotone"
                   stroke={ERROR}

@@ -106,7 +106,7 @@ test('time ranges use a compact line chart and the merged Monitor opens request 
   await expect(traffic.getByTestId('traffic-legend').locator(':scope > span')).toHaveText([
     'LLM requests',
     'MCP requests',
-    'Errors (right axis)',
+    'Errors',
   ])
   for (const label of ['Most in progress', 'Finished per', 'in progress now', 'Idle now']) {
     await expect(traffic.getByText(label)).toHaveCount(0)

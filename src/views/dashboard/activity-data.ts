@@ -127,8 +127,9 @@ export function inFlightCounts(events: MonitorEventSummary[]): InFlightCounts {
 }
 
 /**
- * Top of the requests axis: the highest LLM or MCP value of any bucket, the
+ * Top of the axis: the highest LLM, MCP or errors value of any bucket, the
  * live bucket counting its requests in progress now (its provisional value).
+ * Errors cover both kinds, so they can top either requests line.
  */
 export function trafficPeak(points: TrafficPoint[], inFlightNow = NONE_IN_FLIGHT): number {
   return Math.max(
@@ -137,17 +138,10 @@ export function trafficPeak(points: TrafficPoint[], inFlightNow = NONE_IN_FLIGHT
       Math.max(
         (p.llm ?? 0) + (p.live ? inFlightNow.llm : 0),
         (p.mcp ?? 0) + (p.live ? inFlightNow.mcp : 0),
+        p.errors ?? 0,
       ),
     ),
   )
-}
-
-/**
- * Top of the errors axis: the most errors in any bucket. Errors have their
- * own axis so their ups and downs show next to far busier request lines.
- */
-export function errorsPeak(points: TrafficPoint[]): number {
-  return Math.max(0, ...points.map((p) => p.errors ?? 0))
 }
 
 export interface ChartPoint extends TrafficPoint {
