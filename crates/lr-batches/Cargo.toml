@@ -8,8 +8,9 @@ repository.workspace = true
 description = "Owned local files and durable native batch lifecycle"
 
 [dependencies]
+sha2 = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
+serde_json = { workspace = true, features = ["preserve_order"] }
 rusqlite = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }

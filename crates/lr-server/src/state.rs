@@ -940,8 +940,10 @@ impl AppState {
         let notification_broadcast = Arc::new(notification_tx);
 
         let batch_root = config_manager.config_path().with_extension("batch-store");
+        let batch_store = Arc::new(lr_batches::BatchStore::new(batch_root));
+        rate_limiter.set_batch_store(batch_store.clone());
         let result = Self {
-            batch_store: Arc::new(lr_batches::BatchStore::new(batch_root)),
+            batch_store,
             file_upload_slots: Arc::new(tokio::sync::Semaphore::new(2)),
             router,
             client_manager,

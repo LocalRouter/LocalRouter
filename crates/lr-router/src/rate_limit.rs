@@ -65,6 +65,16 @@ impl RateLimiter {
     }
 }
 
+fn batch_metric(kind: RateLimitType) -> lr_batches::BatchMetric {
+    match kind {
+        RateLimitType::Requests => lr_batches::BatchMetric::Requests,
+        RateLimitType::InputTokens => lr_batches::BatchMetric::InputTokens,
+        RateLimitType::OutputTokens => lr_batches::BatchMetric::OutputTokens,
+        RateLimitType::TotalTokens => lr_batches::BatchMetric::TotalTokens,
+        RateLimitType::Cost => lr_batches::BatchMetric::Cost,
+    }
+}
+
 /// All windows of one metric share a single history and record each use once.
 fn retention_window(limiters: &[RateLimiter], limit_type: RateLimitType) -> Duration {
     limiters
@@ -226,6 +236,7 @@ pub struct RateLimiterManager {
     states: Arc<DashMap<String, Arc<RwLock<RateLimiterState>>>>,
     /// Path for persisting state
     persist_path: Option<PathBuf>,
+    batch_store: parking_lot::RwLock<Option<Arc<lr_batches::BatchStore>>>,
 }
 
 impl RateLimiterManager {
@@ -236,7 +247,62 @@ impl RateLimiterManager {
             router_limiters: Arc::new(DashMap::new()),
             states: Arc::new(DashMap::new()),
             persist_path,
+            batch_store: parking_lot::RwLock::new(None),
         }
+    }
+
+    /// Attach the same durable ledger used by native batch submission.
+    pub fn set_batch_store(&self, store: Arc<lr_batches::BatchStore>) {
+        *self.batch_store.write() = Some(store);
+    }
+
+    async fn pending_batch_usage(
+        &self,
+        key_id: &str,
+        window_start: i64,
+    ) -> AppResult<lr_batches::BatchUsage> {
+        let store = self.batch_store.read().clone();
+        let Some(store) = store else {
+            return Ok(lr_batches::BatchUsage::default());
+        };
+        let owner = key_id.to_owned();
+        tokio::task::spawn_blocking(move || store.batch_usage(&owner, window_start))
+            .await
+            .map_err(|_| AppError::Storage("Batch quota task failed".into()))?
+            .map_err(|_| AppError::Storage("Batch quota ledger unavailable".into()))
+    }
+
+    /// Every configured window, with ordinary usage only. Native reservation
+    /// adds the durable batch ledger transactionally; do not include it twice.
+    pub async fn batch_budget_snapshot(
+        &self,
+        key_id: &str,
+    ) -> AppResult<Vec<lr_batches::BatchBudget>> {
+        let Some(limiters) = self.api_key_limiters.get(key_id).map(|v| v.clone()) else {
+            return Ok(Vec::new());
+        };
+        let now = Utc::now();
+        let mut budgets = Vec::new();
+        for limiter in &limiters {
+            let key = RateLimiterKey::ApiKey {
+                key_id: key_id.into(),
+                limit_type: limiter.limit_type,
+            }
+            .to_string();
+            let start = now - limiter.time_window();
+            let state = self.states.get(&key).map(|v| v.value().clone());
+            let ordinary_usage = match state {
+                Some(state) => state.read().await.current_usage(start),
+                None => 0.0,
+            };
+            budgets.push(lr_batches::BatchBudget {
+                metric: batch_metric(limiter.limit_type),
+                window_start: start.timestamp(),
+                limit: limiter.value,
+                ordinary_usage,
+            });
+        }
+        Ok(budgets)
     }
 
     /// Load persisted state from disk
@@ -423,14 +489,25 @@ impl RateLimiterManager {
 
             // Final usage is unknown, but an already exhausted token/cost
             // budget must block the next request just like a request limit.
-            let result = self
+            let mut result = self
                 .check_limiter(
                     &key,
                     limiter,
                     retention_window(&limiters, limiter.limit_type),
                 )
                 .await;
+            let pending = self
+                .pending_batch_usage(key_id, (Utc::now() - limiter.time_window()).timestamp())
+                .await?;
+            let batch_amount = batch_metric(limiter.limit_type)
+                .amount(&pending)
+                .ok_or(AppError::RateLimitExceeded)?;
+            result.current_usage += batch_amount;
+            result.allowed = result.current_usage < limiter.value;
             if !result.allowed {
+                if batch_amount > 0.0 {
+                    result.retry_after_secs = None;
+                }
                 return Ok(result);
             }
         }
@@ -1050,5 +1127,171 @@ mod tests {
                 .unwrap();
             assert_eq!(current, 3.0);
         }
+    }
+    fn batch_job_fixture(store: &lr_batches::BatchStore) -> lr_batches::BatchJob {
+        let file = store
+            .upload("client", "input.jsonl", "batch", b"{\"custom_id\":\"one\",\"method\":\"POST\",\"url\":\"/v1/chat/completions\",\"body\":{\"model\":\"model\"}}\n{\"custom_id\":\"two\",\"method\":\"POST\",\"url\":\"/v1/chat/completions\",\"body\":{\"model\":\"model\"}}\n", 3600)
+            .unwrap();
+        let job = store
+            .create_job(lr_batches::NewBatchJob {
+                owner: "client".into(),
+                input_file_id: file.id,
+                provider_instance: "provider".into(),
+                credential_binding: "a".repeat(64),
+                endpoint: "/v1/chat/completions".into(),
+                model: "model".into(),
+                request_fingerprint: "b".repeat(64),
+                policy_fingerprint: "c".repeat(64),
+                idempotency_key_hash: None,
+                custom_ids: vec!["one".into(), "two".into()],
+            })
+            .unwrap()
+            .0;
+        store
+            .prepare_job(
+                "client",
+                &job.id,
+                job.revision,
+                &job.input_file_id,
+                &job.policy_fingerprint,
+            )
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn native_batch_reservations_share_regular_quota_windows() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(lr_batches::BatchStore::new(
+            directory.path().join("batches"),
+        ));
+        let manager = RateLimiterManager::new(None);
+        manager.set_batch_store(store.clone());
+        manager.add_api_key_limiters(
+            "client".into(),
+            vec![
+                RateLimiter::new(RateLimitType::Requests, 3.0, 60),
+                RateLimiter::new(RateLimitType::Requests, 100.0, 3600),
+                RateLimiter::new(RateLimitType::Cost, 1.0, 86400),
+            ],
+        );
+        let ordinary = UsageInfo {
+            input_tokens: 10,
+            output_tokens: 5,
+            cost_usd: 0.1,
+        };
+        manager
+            .record_api_key_usage("client", &ordinary)
+            .await
+            .unwrap();
+        let budgets = manager.batch_budget_snapshot("client").await.unwrap();
+        assert_eq!(budgets.len(), 3);
+        assert_eq!(budgets[0].ordinary_usage, 1.0);
+        assert_eq!(budgets[1].ordinary_usage, 1.0);
+        let job = batch_job_fixture(&store);
+        store
+            .reserve_batch(
+                "client",
+                &job.id,
+                lr_batches::BatchUsage {
+                    requests: 2,
+                    input_tokens: 100,
+                    output_tokens: 50,
+                    cost_usd: Some(0.02),
+                },
+                &budgets,
+            )
+            .unwrap();
+        let check = manager.check_api_key("client", &ordinary).await.unwrap();
+        assert!(!check.allowed);
+        assert_eq!(check.current_usage, 3.0);
+        assert_eq!(check.retry_after_secs, None);
+        assert!(
+            manager
+                .check_api_key("other-client", &ordinary)
+                .await
+                .unwrap()
+                .allowed
+        );
+        store.reject_unsubmitted("client", &job.id).unwrap();
+        assert!(
+            manager
+                .check_api_key("client", &ordinary)
+                .await
+                .unwrap()
+                .allowed
+        );
+        // Native usage was never copied into the ordinary in-memory ledger.
+        assert_eq!(
+            manager.batch_budget_snapshot("client").await.unwrap()[0].ordinary_usage,
+            1.0
+        );
+    }
+
+    #[tokio::test]
+    async fn batch_unknown_spend_and_corrupt_ledger_fail_closed() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("batches");
+        let store = Arc::new(lr_batches::BatchStore::new(root.clone()));
+        let manager = RateLimiterManager::new(None);
+        manager.set_batch_store(store.clone());
+        manager.add_api_key_limiters(
+            "client".into(),
+            vec![RateLimiter::new(RateLimitType::Cost, 10.0, 60)],
+        );
+        let job = batch_job_fixture(&store);
+        store
+            .reserve_batch(
+                "client",
+                &job.id,
+                lr_batches::BatchUsage {
+                    requests: 2,
+                    input_tokens: 10,
+                    output_tokens: 5,
+                    cost_usd: None,
+                },
+                &[],
+            )
+            .unwrap();
+        let usage = UsageInfo {
+            input_tokens: 0,
+            output_tokens: 0,
+            cost_usd: 0.0,
+        };
+        assert!(matches!(
+            manager.check_api_key("client", &usage).await,
+            Err(AppError::RateLimitExceeded)
+        ));
+        std::fs::write(root.join("batches.sqlite3"), b"damaged database").unwrap();
+        assert!(matches!(
+            manager.check_api_key("client", &usage).await,
+            Err(AppError::Storage(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn regular_quota_checks_do_not_create_batch_payload_storage() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("batches");
+        let manager = RateLimiterManager::new(None);
+        manager.set_batch_store(Arc::new(lr_batches::BatchStore::new(root.clone())));
+        manager.add_api_key_limiters(
+            "client".into(),
+            vec![RateLimiter::new(RateLimitType::Requests, 10.0, 60)],
+        );
+        assert!(
+            manager
+                .check_api_key(
+                    "client",
+                    &UsageInfo {
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        cost_usd: 0.0
+                    }
+                )
+                .await
+                .unwrap()
+                .allowed
+        );
+        assert!(!root.exists());
     }
 }

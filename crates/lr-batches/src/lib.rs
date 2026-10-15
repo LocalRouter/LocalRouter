@@ -1,4 +1,6 @@
 //! Local, owner-scoped payload storage. No network access or provider credentials.
+mod jobs;
+pub use jobs::*;
 use parking_lot::Mutex;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -101,6 +103,7 @@ impl BatchStore {
             fs::set_permissions(&self.root, fs::Permissions::from_mode(0o700))?;
         }
         let path = self.root.join("batches.sqlite3");
+        let mut created_database = false;
         match fs::symlink_metadata(&path) {
             Ok(meta) if meta.file_type().is_symlink() || !meta.is_file() => {
                 return Err(StoreError::Storage(
@@ -117,7 +120,10 @@ impl BatchStore {
                     options.mode(0o600);
                 }
                 match options.open(&path) {
-                    Ok(file) => file.sync_all()?,
+                    Ok(file) => {
+                        file.sync_all()?;
+                        created_database = true;
+                    }
                     Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                         let meta = fs::symlink_metadata(&path)?;
                         if meta.file_type().is_symlink() || !meta.is_file() {
@@ -134,6 +140,17 @@ impl BatchStore {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
         }
+        #[cfg(unix)]
+        if created_database {
+            // Persist the new file and directory entries before a later
+            // mutation intent can be acknowledged as durable.
+            std::fs::File::open(&self.root)?.sync_all()?;
+            if let Some(parent) = self.root.parent().filter(|p| !p.as_os_str().is_empty()) {
+                std::fs::File::open(parent)?.sync_all()?;
+            }
+        }
+        #[cfg(not(unix))]
+        let _ = created_database;
         // Never follow SQLite sidecar symlinks, including a stale WAL from a
         // previous process. The private directory excludes other OS users.
         for suffix in ["-journal", "-wal", "-shm"] {
@@ -165,6 +182,7 @@ impl BatchStore {
                 job_id TEXT NOT NULL, PRIMARY KEY(file_id,job_id)
             );",
         )?;
+        jobs::initialize(&connection)?;
         Ok(connection)
     }
 
