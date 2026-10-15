@@ -1432,6 +1432,7 @@ impl Router {
                         | lr_providers::session::EXTENSION
                         | lr_providers::session::CACHE_KEY
                         | lr_providers::session::CONTROL_TOKEN
+                        | lr_providers::replay::EXTENSION
                 ) {
                     continue;
                 }

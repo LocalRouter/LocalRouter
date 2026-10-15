@@ -1599,6 +1599,7 @@ impl CompletionRequest {
         if let Some(extensions) = self.extensions.as_mut() {
             extensions.remove(session::EXTENSION);
             extensions.remove(session::CONTROL_TOKEN);
+            extensions.remove(replay::EXTENSION);
             if extensions.is_empty() {
                 self.extensions = None;
             }
@@ -3349,3 +3350,5 @@ mod pricing_cost_tests {
 }
 
 pub mod session;
+
+pub mod replay;

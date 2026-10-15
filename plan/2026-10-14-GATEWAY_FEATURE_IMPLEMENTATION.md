@@ -6,7 +6,7 @@
 - [x] P1 Routing explanation and dry-run preview.
 - [x] P1 Adaptive ordering and bounded attempts/deadlines.
 - [x] P1 Session affinity, classifier reuse and prompt-cache accounting.
-- [ ] P1 Local replay and model/policy evaluation (promoted by user).
+- [x] P1 Local replay and model/policy evaluation (promoted by user).
 - [ ] P2 Opt-in exact response cache.
 - [ ] P2 Native Anthropic Messages ingress.
 - [ ] P2 Native discounted Files/Batches lifecycle.
@@ -114,3 +114,9 @@ Plan Review, Test Coverage Review and Bug Hunt caught and fixed buffered chunks 
 Implemented opt-in bounded client/policy/endpoint session state, route-group affinity with fresh eligibility, exact bounded-context classifier reuse, explicit reset/reclassification with stale-result protection, and strict continuation checks before paid classification. Raw session IDs remain local; verified OpenAI Chat/Responses and LLM Gateway chat surfaces receive optional private cache keys. Read-only preview, Tauri client scope, settings, demo and monitor are synchronized. Prompt read/write accounting uses reported tokens and known model rates, with unknown estimates and write premiums preserved; fixed percentage claims were removed. Native/compatible usage detail loss and missing ledger cache-write counts were corrected.
 
 Plan Review, Test Coverage Review and Bug Hunt are complete. Final stable 1.99.0 validation with pinned compiler paths: workspace Clippy/fmt; 4,228 tests passed, 69 ignored across 107 suites; 27 live gateway/routing HTTP fixtures; frontend 62 unit tests, app/website types and both production builds. Details: plan/2026-10-14-SESSION_AFFINITY_CACHE_ACCOUNTING.md. Local replay is next at P1; later slices remain pending.
+
+## P1 local replay and model/policy evaluation
+
+Implemented Replay / Compare in Try It Out, opening complete monitor captures as editable drafts, allowed-model comparisons, current/draft native classifier policies, deterministic checks, cached-only cost previews and explicitly invoked separate judge runs. All inference uses current normal client authentication and the shared HTTP pipeline. Tools/MCP are disabled, sessions are fresh, saved artifacts are bounded/private/atomic, historical imports never resume work and cancelled outcomes can retain unknown spend. Reported/estimated/classifier costs remain separate; unknown prices are not zero-dollar quotes. Dataset/run save/import/export/delete are deliberate local actions.
+
+Plan Review, Test Coverage Review and Bug Hunt are complete. Stable 1.99.0 with pinned compiler paths: workspace Clippy/fmt and 4,255 tests passed, 69 ignored across 109 suites; five replay HTTP fixtures within all 32 gateway/routing contract fixtures; 65 frontend regressions, app/website types and both builds passed. Details: plan/2026-10-14-LOCAL_REPLAY_MODEL_POLICY_EVALUATION.md. Next is P2 exact response caching; later slices remain pending.

@@ -5085,6 +5085,7 @@ dependencies = [
  "lr-oauth",
  "lr-providers",
  "lr-proxy",
+ "lr-replay",
  "lr-router",
  "lr-secret-scanner",
  "lr-server",
@@ -5674,6 +5675,29 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tracing",
+]
+
+[[package]]
+name = "lr-replay"
+version = "0.0.159"
+dependencies = [
+ "chrono",
+ "futures",
+ "lr-config",
+ "lr-providers",
+ "lr-router",
+ "lr-server",
+ "lr-types",
+ "parking_lot",
+ "regex",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

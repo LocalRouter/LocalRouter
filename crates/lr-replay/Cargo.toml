@@ -1,0 +1,30 @@
+[package]
+name = "lr-replay"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Explicit local replay datasets, comparisons and evaluation"
+
+[dependencies]
+lr-config = { workspace = true }
+lr-providers = { workspace = true }
+lr-router = { workspace = true }
+lr-server = { workspace = true }
+lr-types = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+parking_lot = { workspace = true }
+regex = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true, features = ["rt"] }
+reqwest = { workspace = true }
+futures = { workspace = true }
+tracing = { workspace = true }
+tempfile = "3.8"
+
+[lints]
+workspace = true

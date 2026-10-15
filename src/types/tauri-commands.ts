@@ -5034,3 +5034,52 @@ export interface InterceptRule {
 export interface SetMonitorInterceptRuleParams {
   rule: InterceptRule | null
 }
+
+/** Rust: crates/lr-replay/src/types.rs. Nested replay payloads use Rust's snake_case wire fields. */
+export type ReplayEndpoint = 'chat_completions' | 'completions' | 'responses' | 'decisions' | 'system_one'
+export interface ReplayInput { endpoint: ReplayEndpoint; body: Record<string, unknown>; source_event_id: string | null }
+export type ReplayCheck = { kind: 'contains'; text: string; case_sensitive: boolean } | { kind: 'regex'; pattern: string } | { kind: 'json_valid' } | { kind: 'json_pointer'; pointer: string; expected: unknown } | { kind: 'expected_route'; route: string }
+export interface ReplayCase { id: string; name: string; input: ReplayInput; checks: ReplayCheck[] }
+export interface ReplayDataset { id: string; revision: number; name: string; cases: ReplayCase[]; saved_at: string | null }
+export type ReplayTarget = { kind: 'model'; model: string } | { kind: 'policy'; name: string; policy: RoutingPolicy }
+export interface ReplayRunRequest { client_id: string; dataset_id: string | null; cases: ReplayCase[]; targets: ReplayTarget[]; max_output_tokens: number }
+export type ReplayStatus = 'running' | 'completed' | 'cancelled' | 'interrupted'
+export type ReplayResultStatus = 'pending' | 'running' | 'success' | 'error' | 'cancelled'
+export interface ReplayCost { reported_usd: number | null; estimated_usd: number | null; unknown_calls: number; classifier_reported_usd: number | null; classifier_estimated_usd: number | null; classifier_cost_unknown: boolean }
+export interface ReplayCheckResult { kind: string; passed: boolean; detail: string | null }
+export interface ReplayJudgeGrade { score: number; reasoning: string; rubric_fingerprint: string }
+export interface ReplayResultSummary { index: number; case_id: string; case_name: string; target: string; status: ReplayResultStatus; http_request_sent: boolean; http_status: number | null; latency_ms: number | null; input_tokens: number | null; output_tokens: number | null; cost: ReplayCost; checks: ReplayCheckResult[]; error: string | null; judge: ReplayJudgeGrade | null }
+export interface ReplayResult extends Omit<ReplayResultSummary, 'index'> { request: unknown | null; response: unknown | null; policy_snapshot: unknown | null; config_fingerprint: string | null; policy_fingerprint: string | null }
+export interface ReplayRunSummary { id: string; name: string; client_id: string; status: ReplayStatus; started_at: string; finished_at: string | null; stop_reason: string | null; revision: number; judge_of: string | null; judge_model: string | null; results: ReplayResultSummary[] }
+export interface ReplayRun extends Omit<ReplayRunSummary, 'results'> { dataset_id: string | null; cases: ReplayCase[]; targets: ReplayTarget[]; results: ReplayResult[]; judge_rubric: string | null }
+export type ReplayArtifactKind = 'dataset' | 'run'
+export interface ReplayArtifactSummary { id: string; name: string; kind: ReplayArtifactKind; revision: number; saved_at: string; case_count: number; result_count: number; client_id: string | null }
+export interface ReplayArtifact { schema_version: number; summary: ReplayArtifactSummary; value: ReplayDataset | ReplayRun }
+export interface ReplayArtifactList { items: ReplayArtifactSummary[]; issues: { id: string; kind: ReplayArtifactKind; error: string }[] }
+/** Params for replay_read */
+export interface ReplayReadParams { kind: ReplayArtifactKind; id: string }
+/** Params for replay_save_dataset */
+export interface ReplaySaveDatasetParams { dataset: ReplayDataset }
+/** Params for replay_delete */
+export interface ReplayDeleteParams extends ReplayReadParams { revision: number }
+/** Params for replay_start */
+export interface ReplayStartParams { request: ReplayRunRequest }
+/** Params for replay_status, replay_get_run, replay_cancel, replay_save_run */
+export interface ReplayIdParams { id: string }
+/** Params for replay_result */
+export interface ReplayResultParams extends ReplayIdParams { index: number }
+/** Params for replay_judge */
+export interface ReplayJudgeParams extends ReplayIdParams { model: string; rubric: string; indices: number[] }
+/** Params for replay_import */
+export interface ReplayImportParams { json: string }
+
+/** Params for replay_current_policy */
+export interface ReplayCurrentPolicyParams { clientId: string }
+
+/** Rust: crates/lr-replay/src/types.rs - ReplayEstimate */
+export interface ReplayEstimate { case_id: string; target: string; estimated_usd: number | null; warnings: string[] }
+/** Params for replay_preview */
+export type ReplayPreviewParams = ReplayStartParams
+
+/** Params for replay_import_run */
+export type ReplayImportRunParams = ReplayImportParams

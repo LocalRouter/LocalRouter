@@ -10,7 +10,7 @@ import { EventList } from '@/views/monitor/event-list'
 import { EventDetail } from '@/views/monitor/event-detail'
 import { EventFilters } from '@/views/monitor/event-filters'
 import { TryItOutPanel } from '@/views/monitor/try-it-out-panel'
-import type { MonitorEventFilter, InterceptRule } from '@/types/tauri-commands'
+import type { ReplayInput, ReplayDataset, ReplayImportParams, ReplayEndpoint, MonitorEventFilter, InterceptRule } from '@/types/tauri-commands'
 import { DetailDockControls, DockDropPreview, useDetailDock } from './detail-dock'
 
 // Persists the deliberate filter dimensions across app restarts. We do NOT
@@ -51,6 +51,8 @@ interface RequestMonitorProps {
 // Memoized: the traffic chart's live updates re-render the dashboard often.
 export const RequestMonitor = memo(function RequestMonitor({ className }: RequestMonitorProps) {
   const [filter, setFilter] = useState<MonitorEventFilter>(loadPersistedFilter)
+  const [replayDraft, setReplayDraft] = useState<{ input: ReplayInput; clientId?: string } | null>(null)
+  const [replayError, setReplayError] = useState('')
   const [tryItOutOpen, setTryItOutOpen] = useState(false)
   const [interceptRule, setInterceptRule] = useState<InterceptRule | null>(null)
 
@@ -159,8 +161,18 @@ export const RequestMonitor = memo(function RequestMonitor({ className }: Reques
     <EventDetail
       key={selectedId}
       event={selectedEvent}
+      onReplay={() => {
+        if (!selectedEvent) return
+        const data = selectedEvent.data as unknown as Record<string, unknown>
+        const paths: Record<string, ReplayEndpoint> = { '/v1/chat/completions': 'chat_completions', '/v1/completions': 'completions', '/v1/responses': 'responses', '/v1/decisions': 'decisions', '/v1/systemone': 'system_one' }
+        const endpoint = paths[String(data.endpoint)]
+        if (!endpoint || !data.request_body) { setReplayError('A complete supported request body is unavailable. Import or write a standalone request in Replay / Compare.'); return }
+        void invoke<ReplayDataset>('replay_import', { json: JSON.stringify({ name: 'Captured request', cases: [{ id: crypto.randomUUID(), name: 'Captured request', input: { endpoint, body: data.request_body, source_event_id: selectedEvent.id }, checks: [] }] }) } satisfies ReplayImportParams).then(dataset => {
+          setReplayError(''); setReplayDraft({ input: dataset.cases[0].input, clientId: selectedEvent.client_id ?? undefined }); setTryItOutOpen(true)
+        }).catch(e => setReplayError(String(e)))
+      }}
       loading={isDetailLoading}
-      error={detailError}
+      error={replayError || detailError}
       onRetry={retryDetail}
       toolbar={
         <DetailDockControls
@@ -218,7 +230,8 @@ export const RequestMonitor = memo(function RequestMonitor({ className }: Reques
           </ResizablePanel>
           <ResizableHandle withHandle />
           <ResizablePanel defaultSize="40%" minSize="15%">
-            <TryItOutPanel onClose={() => setTryItOutOpen(false)} />
+            {replayError && <p role="alert" className="text-destructive text-xs p-2">{replayError}</p>}
+            <TryItOutPanel key={replayDraft?.input.source_event_id ?? 'manual'} initialReplay={replayDraft?.input} initialClientId={replayDraft?.clientId} onClose={() => { setTryItOutOpen(false); setReplayDraft(null) }} />
           </ResizablePanel>
         </ResizablePanelGroup>
       ) : (

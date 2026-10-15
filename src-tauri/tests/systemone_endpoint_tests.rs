@@ -98,6 +98,14 @@ async fn start_configured_server(
     configure: impl FnOnce(&mut AppConfig),
     normal_token: bool,
 ) -> (String, String) {
+    let (base, secret, _) = start_replay_test_server(upstreams, configure, normal_token).await;
+    (base, secret)
+}
+async fn start_replay_test_server(
+    upstreams: Vec<Upstream>,
+    configure: impl FnOnce(&mut AppConfig),
+    normal_token: bool,
+) -> (String, String, server::state::AppState) {
     let mut test_client = create_test_client("test-api-key", "default");
     let mut config = AppConfig {
         clients: vec![test_client.clone()],
@@ -105,8 +113,12 @@ async fn start_configured_server(
         ..Default::default()
     };
     configure(&mut config);
+    test_client = config.clients[0].clone();
     test_client.strategy_id = config.strategies[0].id.clone();
     config.clients[0] = test_client.clone();
+    if normal_token {
+        config.strategies[0].parent = Some(test_client.id.clone());
+    }
     let tokens = Arc::new(TokenStore::new());
     let clients = Arc::new(ClientManager::with_keychain(
         Vec::new(),
@@ -175,6 +187,7 @@ async fn start_configured_server(
         } else {
             state.get_internal_test_secret()
         },
+        state,
     )
 }
 
@@ -1713,4 +1726,319 @@ async fn session_headers_pin_allowed_models_and_keep_cache_keys_private() {
     assert!(keys.iter().any(|key| key != &keys[0]));
     first.verify().await;
     second.verify().await;
+}
+
+async fn await_replay(manager: &lr_replay::ReplayManager, id: &str) -> lr_replay::ReplayRun {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let run = manager.get(id).unwrap();
+            if run.status != lr_replay::RunStatus::Running {
+                return run;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap()
+}
+fn replay_request() -> lr_replay::ReplayRunRequest {
+    use lr_replay::*;
+    ReplayRunRequest {
+        client_id: "test-api-key".into(),
+        dataset_id: None,
+        max_output_tokens: 32,
+        targets: vec![ReplayTarget::Model {
+            model: "upstream/replay-fixture".into(),
+        }],
+        cases: vec![ReplayCase {
+            id: "one".into(),
+            name: "One".into(),
+            input: ReplayInput {
+                endpoint: ReplayEndpoint::ChatCompletions,
+                body: json!({"messages":[{"role":"user","content":"hello"}],"tools":[{"type":"function","function":{"name":"do_not_execute","parameters":{"type":"object"}}}],"tool_choice":"required"}),
+                source_event_id: None,
+            },
+            checks: vec![],
+        }],
+    }
+}
+#[tokio::test]
+async fn replay_uses_normal_client_auth_and_disables_injected_mcp_on_all_chat_surfaces() {
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST")).and(path("/chat/completions")).respond_with(ResponseTemplate::new(200).set_body_json(json!({"id":"reply","object":"chat.completion","created":1,"model":"replay-fixture","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}))).expect(3).mount(&upstream).await;
+    let (base, _, state) = start_replay_test_server(
+        vec![(
+            "upstream",
+            "openai_compatible",
+            vec![("base_url", upstream.uri()), ("api_key", "fixture".into())],
+        )],
+        |config| {
+            config.clients[0].mcp_mode = localrouter::config::McpMode::ViaLlm;
+            config.strategies[0].model_permissions = localrouter::config::ModelPermissions {
+                global: localrouter::config::PermissionState::Allow,
+                ..Default::default()
+            };
+            config.clients[0].model_permissions = config.strategies[0].model_permissions.clone();
+        },
+        true,
+    )
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let manager = Arc::new(lr_replay::ReplayManager::new(dir.path().join("replay")));
+    let context = lr_replay::RunContext::new(state, format!("{base}/")).unwrap();
+    let mut request = replay_request();
+    request.cases.push(lr_replay::ReplayCase {
+        id: "two".into(),
+        name: "Legacy".into(),
+        input: lr_replay::ReplayInput {
+            endpoint: lr_replay::ReplayEndpoint::Completions,
+            body: json!({"prompt":"hello"}),
+            source_event_id: None,
+        },
+        checks: vec![],
+    });
+    request.cases.push(lr_replay::ReplayCase {
+        id: "three".into(),
+        name: "Responses".into(),
+        input: lr_replay::ReplayInput {
+            endpoint: lr_replay::ReplayEndpoint::Responses,
+            body: json!({"input":"hello","tools":[{"type":"web_search"}]}),
+            source_event_id: None,
+        },
+        checks: vec![],
+    });
+    let id = manager.start(context, request).unwrap();
+    let run = await_replay(&manager, &id).await;
+    assert!(
+        run.results
+            .iter()
+            .all(|r| r.status == lr_replay::ResultStatus::Success),
+        "{:?}",
+        run.results
+    );
+    assert!(!dir.path().join("replay").exists());
+    let requests = upstream.received_requests().await.unwrap();
+    for req in requests.iter().filter(|r| r.method == "POST") {
+        let body: Value = serde_json::from_slice(&req.body).unwrap();
+        assert!(body.get("tools").is_none_or(Value::is_null), "{body}");
+        assert!(body.get("tool_choice").is_none_or(Value::is_null));
+        assert!(body
+            .get("extensions")
+            .is_none_or(|e| e.get("localrouter.replay").is_none()));
+    }
+}
+#[tokio::test]
+async fn replay_cancel_records_unknown_spend_without_retry_and_restart_does_not_resume() {
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_secs(3))
+                .set_body_json(json!({})),
+        )
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let (base, _, state) = start_replay_test_server(
+        vec![(
+            "upstream",
+            "openai_compatible",
+            vec![("base_url", upstream.uri()), ("api_key", "fixture".into())],
+        )],
+        |config| {
+            config.strategies[0].model_permissions = localrouter::config::ModelPermissions {
+                global: localrouter::config::PermissionState::Allow,
+                ..Default::default()
+            };
+            config.clients[0].model_permissions = config.strategies[0].model_permissions.clone();
+        },
+        true,
+    )
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("replay");
+    let manager = Arc::new(lr_replay::ReplayManager::new(root.clone()));
+    let id = manager
+        .start(
+            lr_replay::RunContext::new(state, format!("{base}/")).unwrap(),
+            replay_request(),
+        )
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while upstream
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .all(|r| r.method != "POST")
+        {
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    manager.save_run(&id).unwrap();
+    manager.cancel(&id).unwrap();
+    let run = await_replay(&manager, &id).await;
+    assert_eq!(run.status, lr_replay::RunStatus::Cancelled);
+    assert!(run.results[0].cost.unknown_calls > 0);
+    let restarted = lr_replay::ReplayManager::new(root);
+    assert!(restarted.runs().is_empty());
+    let saved = restarted
+        .store
+        .read(lr_replay::ArtifactKind::Run, &id)
+        .unwrap();
+    let saved: lr_replay::ReplayRun = serde_json::from_value(saved.value).unwrap();
+    assert_eq!(saved.status, lr_replay::RunStatus::Interrupted);
+    assert!(saved.results[0].cost.unknown_calls > 0);
+    sleep(Duration::from_millis(100)).await;
+}
+#[tokio::test]
+async fn replay_does_not_bypass_denied_model_or_revoked_client() {
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&upstream)
+        .await;
+    let (base, _, state) = start_replay_test_server(
+        vec![(
+            "upstream",
+            "openai_compatible",
+            vec![("base_url", upstream.uri()), ("api_key", "fixture".into())],
+        )],
+        |config| {
+            config.clients[0].mcp_mode = localrouter::config::McpMode::ViaLlm;
+            config.strategies[0].model_permissions = localrouter::config::ModelPermissions {
+                global: localrouter::config::PermissionState::Off,
+                ..Default::default()
+            }
+        },
+        true,
+    )
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let manager = Arc::new(lr_replay::ReplayManager::new(dir.path().join("replay")));
+    let context = lr_replay::RunContext::new(state.clone(), format!("{base}/")).unwrap();
+    let id = manager.start(context.clone(), replay_request()).unwrap();
+    let run = await_replay(&manager, &id).await;
+    assert_eq!(run.results[0].status, lr_replay::ResultStatus::Error);
+    assert_eq!(run.results[0].http_status, Some(403));
+    state.client_manager.disable_client("test-api-key").unwrap();
+    assert!(manager.start(context, replay_request()).is_err());
+}
+
+fn allow_replay_fixture(config: &mut AppConfig) {
+    config.strategies[0].model_permissions.global = localrouter::config::PermissionState::Allow;
+    config.clients[0].model_permissions = config.strategies[0].model_permissions.clone();
+}
+#[tokio::test]
+async fn replay_policy_uses_shared_rubric_and_reports_classifier_separately() {
+    let upstream = laya_mock().await;
+    Mock::given(method("POST")).and(path("/v1/systemone")).and(body_partial_json(json!({"questions":{"route":{"type":"choice","criteria":{"fast":"Simple work","deep":"Difficult work"}}}}))).respond_with(ResponseTemplate::new(200).set_body_json(json!({"model":"english","answers":{"route":{"type":"choice","choice":"fast","confidence":0.9,"probabilities":{"fast":0.9,"deep":0.1}}},"usage":{"input_tokens":20,"output_tokens":1}}))).expect(1).mount(&upstream).await;
+    let (base, _, state) = start_replay_test_server(
+        vec![(
+            "native",
+            "systemone_compatible",
+            vec![("base_url", upstream.uri())],
+        )],
+        allow_replay_fixture,
+        true,
+    )
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let manager = Arc::new(lr_replay::ReplayManager::new(dir.path().join("replay")));
+    let mut request = replay_request();
+    request.targets = vec![lr_replay::ReplayTarget::Policy {
+        name: "Draft policy".into(),
+        policy: localrouter::config::RoutingPolicy {
+            enabled: true,
+            decision_model: Some(("native".into(), "english".into())),
+            default_route: "fast".into(),
+            options: vec![
+                localrouter::config::RoutingOption {
+                    id: "fast".into(),
+                    description: "Simple work".into(),
+                    models: vec![],
+                },
+                localrouter::config::RoutingOption {
+                    id: "deep".into(),
+                    description: "Difficult work".into(),
+                    models: vec![],
+                },
+            ],
+            ..Default::default()
+        },
+    }];
+    request.cases[0].checks = vec![lr_replay::TaskCheck::ExpectedRoute {
+        route: "fast".into(),
+    }];
+    let context = lr_replay::RunContext::new(state, format!("{base}/")).unwrap();
+    manager.preview(context.clone(), request.clone()).unwrap();
+    assert!(upstream
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .all(|r| r.method != "POST"));
+    let id = manager.start(context, request).unwrap();
+    let run = await_replay(&manager, &id).await;
+    let result = &run.results[0];
+    assert_eq!(
+        result.status,
+        lr_replay::ResultStatus::Success,
+        "{result:?}"
+    );
+    assert!(result.checks[0].passed);
+    assert_eq!(result.cost.reported_usd, None);
+    assert_eq!(result.cost.estimated_usd, None);
+    assert_eq!(result.cost.unknown_calls, 0);
+    assert_eq!(result.input_tokens, Some(20));
+    assert!(result.policy_fingerprint.is_some());
+}
+#[tokio::test]
+async fn replay_judge_is_a_separate_explicit_run_and_never_automatic() {
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST")).and(path("/chat/completions")).respond_with(ResponseTemplate::new(200).set_body_json(json!({"id":"reply","object":"chat.completion","created":1,"model":"replay-fixture","choices":[{"index":0,"message":{"role":"assistant","content":"{\"score\":0.8,\"reasoning\":\"Accurate\"}"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}))).expect(2).mount(&upstream).await;
+    let (base, _, state) = start_replay_test_server(
+        vec![(
+            "upstream",
+            "openai_compatible",
+            vec![("base_url", upstream.uri()), ("api_key", "fixture".into())],
+        )],
+        allow_replay_fixture,
+        true,
+    )
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let manager = Arc::new(lr_replay::ReplayManager::new(dir.path().join("replay")));
+    let context = lr_replay::RunContext::new(state, format!("{base}/")).unwrap();
+    let id = manager.start(context.clone(), replay_request()).unwrap();
+    let parent = await_replay(&manager, &id).await;
+    assert_eq!(parent.results[0].status, lr_replay::ResultStatus::Success);
+    assert!(parent.results[0].judge.is_none());
+    assert_eq!(
+        upstream
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.method == "POST")
+            .count(),
+        1
+    );
+    let child = manager
+        .judge(
+            context,
+            &id,
+            "upstream/replay-fixture".into(),
+            "Accuracy".into(),
+            vec![0],
+        )
+        .unwrap();
+    let judged = await_replay(&manager, &child).await;
+    assert_eq!(judged.judge_of.as_deref(), Some(id.as_str()));
+    assert_eq!(judged.results[0].judge.as_ref().unwrap().score, 0.8);
+    assert!(manager.get(&id).unwrap().results[0].judge.is_none());
 }

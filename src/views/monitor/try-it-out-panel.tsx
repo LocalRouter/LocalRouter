@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/Button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/Select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { X } from 'lucide-react'
+import type { ReplayInput } from '@/types/tauri-commands'
 import { LlmTab } from '@/views/try-it-out/llm-tab'
 import { McpTab } from '@/views/try-it-out/mcp-tab'
 
@@ -17,16 +18,18 @@ interface Client {
 }
 
 interface TryItOutPanelProps {
+  initialReplay?: ReplayInput
+  initialClientId?: string
   onClose: () => void
 }
 
-export function TryItOutPanel({ onClose }: TryItOutPanelProps) {
+export function TryItOutPanel({ onClose, initialReplay, initialClientId }: TryItOutPanelProps) {
   const [clients, setClients] = useState<Client[]>([])
-  const [selectedClientId, setSelectedClientId] = useState<string | null>(null)
+  const [selectedClientId, setSelectedClientId] = useState<string | null>(initialClientId ?? null)
   const [activeTab, setActiveTab] = useState<string>('llm')
 
   useEffect(() => {
-    invoke<Client[]>('list_clients').then(setClients).catch(() => {})
+    invoke<Client[]>('list_clients').then(values => { setClients(values); const found = values.find(c => c.id === initialClientId || c.client_id === initialClientId); if (found) setSelectedClientId(found.client_id) }).catch(() => {})
   }, [])
 
   const selectedClient = clients.find(c => c.client_id === selectedClientId)
@@ -81,6 +84,7 @@ export function TryItOutPanel({ onClose }: TryItOutPanelProps) {
               <TabsContent value="llm" className="flex-1 overflow-auto mt-0">
                 <LlmTab
                   initialMode="client"
+                  initialReplay={initialReplay}
                   initialClientId={selectedClientId}
                   hideModeSwitcher
                 />
@@ -99,6 +103,7 @@ export function TryItOutPanel({ onClose }: TryItOutPanelProps) {
             <div className="h-full overflow-auto">
               <LlmTab
                 initialMode="client"
+                initialReplay={initialReplay}
                 initialClientId={selectedClientId}
                 hideModeSwitcher
               />

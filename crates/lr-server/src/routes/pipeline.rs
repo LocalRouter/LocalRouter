@@ -312,7 +312,8 @@ pub(crate) async fn apply_model_access_checks(
                             lr_mcp::gateway::firewall::InterceptCategory::Llm,
                         ))
                 {
-                    let is_mcp_via_llm = client.is_mcp_via_llm();
+                    let is_mcp_via_llm = client.is_mcp_via_llm()
+                        && !lr_providers::replay::tools_disabled(request.extensions.as_ref());
 
                     let mut request_json = serde_json::to_value(&request)
                         .map(|mut v| {
@@ -410,7 +411,10 @@ pub(crate) async fn apply_model_access_checks(
         let is_mcp_via_llm_client = client_auth
             .as_ref()
             .and_then(|ext| state.client_manager.get_client(&ext.0.client_id))
-            .is_some_and(|c| c.is_mcp_via_llm());
+            .is_some_and(|c| {
+                c.is_mcp_via_llm()
+                    && !lr_providers::replay::tools_disabled(request.extensions.as_ref())
+            });
 
         let strategy_permission = get_client_with_strategy(state, &auth.api_key_id)
             .ok()

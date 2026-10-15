@@ -270,7 +270,9 @@ pub async fn create_response(
         super::helpers::get_client_with_strategy(&state, &auth.api_key_id).ok();
     let use_mcp_via_llm = client_for_routing
         .as_ref()
-        .map(|(c, _)| c.is_mcp_via_llm())
+        .map(|(c, _)| {
+            c.is_mcp_via_llm() && !lr_providers::replay::tools_disabled(req.extensions.as_ref())
+        })
         .unwrap_or(false);
 
     if req.stream {

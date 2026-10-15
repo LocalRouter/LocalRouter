@@ -16,6 +16,7 @@ tauri-build = { version = "2.2", features = [] }
 
 [dependencies]
 # Internal crates
+lr-replay = { workspace = true }
 lr-types = { workspace = true }
 lr-utils = { workspace = true }
 lr-catalog = { workspace = true }

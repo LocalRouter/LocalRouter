@@ -128,6 +128,7 @@ interface EventDetailProps {
   error?: string | null
   onRetry?: () => void
   /** Controls rendered at the right of the header (dock, close). */
+  onReplay?: () => void
   toolbar?: ReactNode
 }
 
@@ -219,7 +220,7 @@ function DetailTabs({ tabs, active, onChange }: { tabs: DetailTab[]; active: str
   )
 }
 
-export function EventDetail({ event, loading, error, onRetry, toolbar }: EventDetailProps) {
+export function EventDetail({ event, loading, error, onRetry, toolbar, onReplay }: EventDetailProps) {
   const [copied, setCopied] = useState(false)
   const [tab, setTab] = useState(preferredTab)
   const handleCopyEvent = useCallback(() => {
@@ -272,6 +273,7 @@ export function EventDetail({ event, loading, error, onRetry, toolbar }: EventDe
               {copied ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
               {copied ? 'Copied' : 'Copy event'}
             </Button>
+            {type === 'llm_call' && onReplay && <Button variant="ghost" size="sm" onClick={onReplay}>Open in Try It Out</Button>}
             {toolbar}
           </div>
         </div>

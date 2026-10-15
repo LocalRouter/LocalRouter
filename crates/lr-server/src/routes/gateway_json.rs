@@ -32,6 +32,8 @@ where
         let Json(mut value) = Json::<Value>::from_request(request, state)
             .await
             .map_err(IntoResponse::into_response)?;
+        lr_providers::replay::normalize_ingress(&mut value)
+            .map_err(|error| ApiErrorResponse::from(error).into_response())?;
         lr_providers::session::normalize_ingress(&mut value, session.as_deref())
             .map_err(|error| ApiErrorResponse::from(error).into_response())?;
         lr_providers::gateway::reject_raw_controls(&value)

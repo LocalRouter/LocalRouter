@@ -758,6 +758,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             // app.manage(watcher);
 
             // Store managers
+            app.manage(Arc::new(lr_replay::ReplayManager::new(config_manager.config_path().parent().ok_or("Config directory is unavailable")?.join("replay"))));
             app.manage(config_manager.clone());
             app.manage(client_manager.clone());
             app.manage(token_store.clone());
@@ -2522,6 +2523,23 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            ui::commands_replay::replay_current_policy,
+            ui::commands_replay::replay_preview,
+            ui::commands_replay::replay_list,
+            ui::commands_replay::replay_read,
+            ui::commands_replay::replay_save_dataset,
+            ui::commands_replay::replay_delete,
+            ui::commands_replay::replay_start,
+            ui::commands_replay::replay_runs,
+            ui::commands_replay::replay_status,
+            ui::commands_replay::replay_result,
+            ui::commands_replay::replay_get_run,
+            ui::commands_replay::replay_cancel,
+            ui::commands_replay::replay_save_run,
+            ui::commands_replay::replay_judge,
+            ui::commands_replay::replay_import,
+            ui::commands_replay::replay_import_run,
+
             ui::commands::get_config,
             ui::commands::reload_config,
             ui::commands::set_provider_api_key,

@@ -21,6 +21,7 @@ import { emit } from '@tauri-apps/api/event'
 import type { InvokeArgs } from '@tauri-apps/api/core'
 import type { McpConnectionDiscovery, SkillSourceInfo } from '@app/types/tauri-commands'
 import { toast } from 'sonner'
+import { mockReplay } from './mockReplay'
 import { mockData } from './mockData'
 import { routingPolicyIssue } from '@app/components/strategy/routing-policy-status'
 import { matchesFilter } from '@app/views/monitor/monitor-events'
@@ -1256,6 +1257,7 @@ function llamaProcessKey(instanceName: string, model: string) {
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const mockHandlers: Record<string, (args?: any) => unknown> = {
+  ...mockReplay,
   // ============================================================================
   // Setup & Configuration
   // ============================================================================

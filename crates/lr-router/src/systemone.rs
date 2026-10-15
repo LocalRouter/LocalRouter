@@ -288,6 +288,7 @@ impl Router {
         {
             extensions.remove(lr_providers::session::EXTENSION);
             extensions.remove(lr_providers::session::CONTROL_TOKEN);
+            extensions.remove(lr_providers::replay::EXTENSION);
             extensions.remove(lr_providers::session::CACHE_KEY);
         }
         let native = match model {

@@ -28,6 +28,8 @@ import {
 } from "@/components/ui/collapsible"
 import { cn } from "@/lib/utils"
 import { createOpenAIClient } from "@/lib/openai-client"
+import { ReplayPanel } from "./replay-panel"
+import type { ReplayInput } from "@/types/tauri-commands"
 import { ChatPanel } from "./chat-panel"
 import { ImagesPanel } from "./images-panel"
 import { EmbeddingsPanel } from "./embeddings-panel"
@@ -312,6 +314,7 @@ function ModelCombobox({
 }
 
 interface LlmTabProps {
+  initialReplay?: ReplayInput
   initialMode?: TestMode
   initialProvider?: string
   initialClientId?: string
@@ -328,8 +331,8 @@ interface LlmTabProps {
   baseUrlOverride?: string | null
 }
 
-export function LlmTab({ initialMode, initialProvider, initialClientId, hideModeSwitcher, hideProviderSelector, baseUrlOverride }: LlmTabProps) {
-  const [activeSubtab, setActiveSubtab] = useState("chat")
+export function LlmTab({ initialReplay, initialMode, initialProvider, initialClientId, hideModeSwitcher, hideProviderSelector, baseUrlOverride }: LlmTabProps) {
+  const [activeSubtab, setActiveSubtab] = useState(initialReplay ? "replay" : "chat")
   const [mode, setMode] = useState<TestMode>(initialMode ?? "client")
   const [serverPort, setServerPort] = useState<number | null>(null)
 
@@ -978,6 +981,7 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
       {/* Subtabs for Chat, Images, Embeddings */}
       <Tabs value={activeSubtab} onValueChange={setActiveSubtab} className="flex flex-col flex-1 min-h-0">
         <TabsList className="w-fit">
+          <TabsTrigger value="replay" disabled={mode !== "client" || !selectedClientId || !!baseUrlOverride}>Replay / Compare</TabsTrigger>
           <TabsTrigger value="chat" className="flex items-center gap-1" disabled={sectionDisabled("chat")} title={sectionDisabled("chat") ? unavailableTitle : undefined}>
             <MessageSquare className="h-3 w-3" />
             Chat
@@ -1005,6 +1009,7 @@ export function LlmTab({ initialMode, initialProvider, initialClientId, hideMode
           </TabsTrigger>
         </TabsList>
 
+        <TabsContent value="replay" className="mt-4">{mode === "client" && !baseUrlOverride ? <ReplayPanel key={selectedClientId} clientId={selectedClientId} models={models} initialInput={initialReplay} /> : <p>Select client mode to run a comparison.</p>}</TabsContent>
         <TabsContent value="chat" className="flex-1 min-h-0 mt-4">
           <ChatPanel
             key={`${mode}-${selectedClientId}-${selectedProvider}`}

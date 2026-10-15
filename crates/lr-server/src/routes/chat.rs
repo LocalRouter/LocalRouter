@@ -139,7 +139,10 @@ pub async fn chat_completions(
     if let Ok((ref client, _)) = get_client_with_strategy(&state, &auth.api_key_id) {
         // A duplicate hop is forwarded as-is: the first hop already ran
         // the orchestrator (tool injection, agentic loop) for it.
-        if client.is_mcp_via_llm() && !is_duplicate {
+        if client.is_mcp_via_llm()
+            && !is_duplicate
+            && !lr_providers::replay::tools_disabled(request.extensions.as_ref())
+        {
             return handle_mcp_via_llm(
                 state,
                 auth,
