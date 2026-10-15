@@ -28,6 +28,9 @@ pub fn normalize_ingress(value: &mut Value) -> AppResult<()> {
         .as_object_mut()
         .ok_or_else(|| AppError::InvalidParams("Replay request must be an object".into()))?;
     for key in [
+        "max_tool_calls",
+        "stop_server_tools_when",
+        "web_search",
         "tools",
         "tool_choice",
         "parallel_tool_calls",
@@ -35,6 +38,9 @@ pub fn normalize_ingress(value: &mut Value) -> AppResult<()> {
         "function_call",
     ] {
         object.remove(key);
+    }
+    if let Some(extensions) = object.get_mut("extensions").and_then(Value::as_object_mut) {
+        extensions.remove(crate::server_tools::INGRESS_EXTENSION);
     }
     Ok(())
 }

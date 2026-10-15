@@ -277,11 +277,13 @@ mod tests {
             reasoning_effort: None,
             pre_computed_routing: None,
             native_messages: None,
+            server_tools: None,
         }
     }
 
     fn msg(role: &str, content: &str) -> ChatMessage {
         ChatMessage {
+            annotations: None,
             role: role.into(),
             content: ChatMessageContent::Text(content.into()),
             tool_calls: None,
@@ -305,6 +307,7 @@ mod tests {
     fn tool_call_round_trip_preserves_order() {
         let mut messages = vec![msg("user", "weather?")];
         messages.push(ChatMessage {
+            annotations: None,
             role: "assistant".into(),
             content: ChatMessageContent::Text(String::new()),
             tool_calls: Some(vec![ToolCall {
@@ -320,6 +323,7 @@ mod tests {
             reasoning_content: None,
         });
         messages.push(ChatMessage {
+            annotations: None,
             role: "tool".into(),
             content: ChatMessageContent::Text("72F".into()),
             tool_calls: None,

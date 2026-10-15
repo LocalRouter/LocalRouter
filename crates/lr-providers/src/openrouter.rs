@@ -129,9 +129,17 @@ impl OpenRouterProvider {
     }
 
     /// Builds POST request with authentication and routing headers
-    fn build_post_request(&self, url: &str) -> reqwest_middleware::RequestBuilder {
-        let mut req = self
-            .client
+    fn build_post_request(
+        &self,
+        url: &str,
+        server_tools: bool,
+    ) -> AppResult<reqwest_middleware::RequestBuilder> {
+        let client = if server_tools {
+            crate::http_client::native_client()?
+        } else {
+            self.client.clone()
+        };
+        let mut req = client
             .post(url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json");
@@ -144,7 +152,7 @@ impl OpenRouterProvider {
             req = req.header("X-Title", app_name);
         }
 
-        req
+        Ok(req)
     }
 
     /// `GET /models`: the chat models and each model's raw entry (also kept
@@ -212,6 +220,16 @@ impl OpenRouterProvider {
 #[async_trait]
 #[allow(dead_code)]
 impl ModelProvider for OpenRouterProvider {
+    fn server_tools_protocol(
+        &self,
+        request: &CompletionRequest,
+    ) -> Option<crate::server_tools::ServerToolsProtocol> {
+        request
+            .native_messages
+            .is_none()
+            .then_some(crate::server_tools::ServerToolsProtocol::OpenRouter)
+    }
+
     fn supports_no_retention_filter(&self) -> bool {
         true
     }
@@ -340,9 +358,16 @@ impl ModelProvider for OpenRouterProvider {
         };
 
         let mut body = crate::gateway::wire_body(&openrouter_request)?;
+        if let Some(context) = &request.server_tools {
+            context.wire_body(
+                crate::server_tools::ServerToolsProtocol::OpenRouter,
+                &mut body,
+                None,
+            )?;
+        }
         let gateway_headers = preferences.apply(GatewayKind::Openrouter, &mut body)?;
         let response = self
-            .build_post_request(&url)
+            .build_post_request(&url, request.server_tools.is_some())?
             .headers(gateway_headers)
             .json(&body)
             .send()
@@ -415,9 +440,16 @@ impl ModelProvider for OpenRouterProvider {
         };
 
         let mut body = stream_usage::streaming_body(&openrouter_request, "openrouter")?;
+        if let Some(context) = &request.server_tools {
+            context.wire_body(
+                crate::server_tools::ServerToolsProtocol::OpenRouter,
+                &mut body,
+                None,
+            )?;
+        }
         let gateway_headers = preferences.apply(GatewayKind::Openrouter, &mut body)?;
         let response = self
-            .build_post_request(&url)
+            .build_post_request(&url, request.server_tools.is_some())?
             .headers(gateway_headers)
             .json(&body)
             .send()
@@ -993,6 +1025,7 @@ mod tests {
         let request = CompletionRequest {
             model: "openai/gpt-3.5-turbo".to_string(),
             messages: vec![ChatMessage {
+                annotations: None,
                 role: "user".to_string(),
                 content: ChatMessageContent::Text(
                     "Say 'Hello, World!' and nothing else.".to_string(),
@@ -1030,6 +1063,7 @@ mod tests {
             reasoning_effort: None,
             pre_computed_routing: None,
             native_messages: None,
+            server_tools: None,
         };
 
         let response = provider.complete(request).await.unwrap();
@@ -1050,5 +1084,58 @@ mod tests {
             .unwrap();
         assert_openai_stream(&collect(stream).await);
         assert!(asked_for_usage(&received_body(&server).await));
+    }
+    #[tokio::test]
+    async fn server_tools_preserve_citations_and_caps_without_redirect_reexecution() {
+        use wiremock::matchers::{body_partial_json, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        let citation = serde_json::json!({"type":"url_citation","url_citation":{"url":"https://example.com/source","title":"Source","start_index":0,"end_index":2}});
+        Mock::given(method("POST")).and(path("/chat/completions"))
+            .and(body_partial_json(serde_json::json!({"tools":[{"type":"openrouter:web_search"}],"max_tool_calls":2})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id":"search","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"ok","annotations":[citation.clone()]},"finish_reason":"stop"}],
+                "usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2,"server_tool_use":{"web_search_requests":1}}
+            }))).expect(1).mount(&server).await;
+        let provider = OpenRouterProvider::with_base_url("k".into(), server.uri());
+        let mut request = CompletionRequest::new("m", vec![]);
+        request.server_tools = Some(Box::new(crate::server_tools::ServerToolsContext {
+            tools: vec![crate::server_tools::PositionedServerTool {
+                position: 0,
+                definition: crate::server_tools::ServerToolDefinition::OpenRouterWebSearch {
+                    parameters: None,
+                },
+            }],
+            original_tool_count: 1,
+            max_tool_calls: Some(4),
+            forced_type: None,
+            policy_max_tool_calls: Some(2),
+        }));
+        let result = provider.complete(request.clone()).await.unwrap();
+        assert_eq!(
+            result.choices[0].message.annotations.as_ref().unwrap()[0],
+            citation
+        );
+        assert_eq!(
+            result.extensions.as_ref().unwrap()[crate::gateway::EXTENSION]["server_tool_use"]
+                ["web_search_requests"],
+            1
+        );
+        assert!(crate::gateway::reported_cost(result.extensions.as_ref()).is_none());
+        server.verify().await;
+        server.reset().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(307)
+                    .insert_header("location", format!("{}/redirected", server.uri())),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        assert!(provider.complete(request).await.is_err());
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].url.path(), "/chat/completions");
     }
 }

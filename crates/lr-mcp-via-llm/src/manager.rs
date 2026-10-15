@@ -823,6 +823,7 @@ fn response_to_chunk(response: &lr_providers::CompletionResponse) -> lr_provider
         choices: vec![lr_providers::ChunkChoice {
             index: 0,
             delta: lr_providers::ChunkDelta {
+                annotations: None,
                 role: Some("assistant".to_string()),
                 content: choice.and_then(|c| match &c.message.content {
                     lr_providers::ChatMessageContent::Text(t) if !t.is_empty() => Some(t.clone()),

@@ -753,6 +753,7 @@ impl Router {
         let mut context = lr_providers::CompletionRequest::new(
             "localrouter/auto",
             vec![ChatMessage {
+                annotations: None,
                 role: "user".into(),
                 content: ChatMessageContent::Parts(parts),
                 tool_calls: None,
@@ -1193,6 +1194,7 @@ mod tests {
 
     fn msg(text: &str) -> ChatMessage {
         ChatMessage {
+            annotations: None,
             role: "assistant".into(),
             content: ChatMessageContent::Text(text.into()),
             tool_calls: None,

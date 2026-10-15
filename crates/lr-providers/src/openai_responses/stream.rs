@@ -244,6 +244,7 @@ impl StreamState {
             choices: vec![ChunkChoice {
                 index: 0,
                 delta: ChunkDelta {
+                    annotations: None,
                     role: Some("assistant".into()),
                     content: None,
                     tool_calls: None,
@@ -303,6 +304,7 @@ impl StreamState {
             choices: vec![ChunkChoice {
                 index: 0,
                 delta: ChunkDelta {
+                    annotations: None,
                     role: None,
                     content: None,
                     tool_calls: Some(vec![ToolCallDelta {
@@ -336,6 +338,7 @@ impl StreamState {
             choices: vec![ChunkChoice {
                 index: 0,
                 delta: ChunkDelta {
+                    annotations: None,
                     role: None,
                     content: Some(delta),
                     tool_calls: None,
@@ -366,6 +369,7 @@ impl StreamState {
             choices: vec![ChunkChoice {
                 index: 0,
                 delta: ChunkDelta {
+                    annotations: None,
                     role: None,
                     content: None,
                     tool_calls: Some(vec![ToolCallDelta {
@@ -402,6 +406,7 @@ impl StreamState {
             choices: vec![ChunkChoice {
                 index: 0,
                 delta: ChunkDelta {
+                    annotations: None,
                     role: None,
                     content: None,
                     tool_calls: None,
@@ -458,6 +463,7 @@ impl StreamState {
             choices: vec![ChunkChoice {
                 index: 0,
                 delta: ChunkDelta {
+                    annotations: None,
                     role: None,
                     content: None,
                     tool_calls: None,

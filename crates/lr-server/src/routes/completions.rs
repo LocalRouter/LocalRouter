@@ -438,6 +438,7 @@ fn convert_prompt_to_messages(prompt: &PromptInput) -> ApiResult<Vec<ProviderCha
     let messages = prompts
         .into_iter()
         .map(|p| ProviderChatMessage {
+            annotations: None,
             role: "user".to_string(),
             content: ChatMessageContent::Text(p),
             tool_calls: None,
@@ -464,6 +465,7 @@ fn legacy_to_chat_completion_request(
 ) -> ApiResult<crate::types::ChatCompletionRequest> {
     let messages = match &req.prompt {
         PromptInput::Single(p) => vec![crate::types::ChatMessage {
+            annotations: None,
             role: "user".to_string(),
             content: Some(crate::types::MessageContent::Text(p.clone())),
             name: None,
@@ -474,6 +476,7 @@ fn legacy_to_chat_completion_request(
         PromptInput::Multiple(ps) => ps
             .iter()
             .map(|p| crate::types::ChatMessage {
+                annotations: None,
                 role: "user".to_string(),
                 content: Some(crate::types::MessageContent::Text(p.clone())),
                 name: None,
@@ -485,6 +488,7 @@ fn legacy_to_chat_completion_request(
     };
 
     Ok(crate::types::ChatCompletionRequest {
+        max_tool_calls: None,
         model: req.model.clone(),
         messages,
         temperature: req.temperature,

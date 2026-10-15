@@ -29,6 +29,7 @@ fn standard_completion_request() -> localrouter::providers::CompletionRequest {
     localrouter::providers::CompletionRequest {
         model: "test-model".to_string(),
         messages: vec![localrouter::providers::ChatMessage {
+            annotations: None,
             role: "user".to_string(),
             content: ChatMessageContent::Text("Say hello".to_string()),
             tool_calls: None,
@@ -64,6 +65,7 @@ fn standard_completion_request() -> localrouter::providers::CompletionRequest {
         reasoning_effort: None,
         pre_computed_routing: None,
         native_messages: None,
+        server_tools: None,
     }
 }
 

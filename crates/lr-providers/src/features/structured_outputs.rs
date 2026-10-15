@@ -179,6 +179,7 @@ impl FeatureAdapter for StructuredOutputsAdapter {
 
                 // Add to beginning of messages as a system message
                 let system_message = crate::ChatMessage {
+                    annotations: None,
                     role: "system".to_string(),
                     content: crate::ChatMessageContent::Text(schema_prompt),
                     tool_calls: None,
@@ -340,6 +341,7 @@ mod tests {
             reasoning_effort: None,
             pre_computed_routing: None,
             native_messages: None,
+            server_tools: None,
         };
 
         let mut params = HashMap::new();
@@ -400,6 +402,7 @@ mod tests {
             reasoning_effort: None,
             pre_computed_routing: None,
             native_messages: None,
+            server_tools: None,
         };
 
         let mut params = HashMap::new();
@@ -518,6 +521,7 @@ mod tests {
             choices: vec![crate::CompletionChoice {
                 index: 0,
                 message: crate::ChatMessage {
+                    annotations: None,
                     role: "assistant".to_string(),
                     content: crate::ChatMessageContent::Text(
                         r#"{"result": "success"}"#.to_string(),
@@ -579,6 +583,7 @@ mod tests {
             choices: vec![crate::CompletionChoice {
                 index: 0,
                 message: crate::ChatMessage {
+                    annotations: None,
                     role: "assistant".to_string(),
                     content: crate::ChatMessageContent::Text(
                         r#"{"wrong_field": "value"}"#.to_string(),

@@ -538,6 +538,19 @@ fn policy_request(context: &RunContext, input: &ReplayInput) -> Result<Completio
         ReplayEndpoint::ChatCompletions => {
             let mut body = input.body.clone();
             body["model"] = json!("localrouter/auto");
+            let extensions = body
+                .as_object_mut()
+                .ok_or("Replay body must be an object")?
+                .entry("extensions")
+                .or_insert_with(|| json!({}))
+                .as_object_mut()
+                .ok_or("Invalid replay extensions")?;
+            extensions.insert(
+                lr_providers::replay::EXTENSION.into(),
+                json!({"tools":"disabled"}),
+            );
+            lr_providers::replay::normalize_ingress(&mut body)
+                .map_err(|error| error.to_string())?;
             serde_json::from_value(body).map_err(|e| format!("Invalid chat replay input: {e}"))
         }
         ReplayEndpoint::Decisions => {

@@ -149,3 +149,14 @@ Plan Review, Test Coverage Review and Bug Hunt are complete. Rust stable 1.99.0 
 Implemented reusable-strategy alias drafts, immutable publication history, rollback and explicit inactive-history removal, with compare-and-swap edits and permission-free snapshots. Ordered deterministic rules support authenticated clients, tool/image presence, Unicode text size, conservative known-cost conditions and stable opt-in client/session splits. Preview uses the full draft, unknown identity stays unknown, and explanations/replay carry route attribution. Drafts/inactive history do not reset sessions/cache/prepared batches; publication enters effective routing identity, and stale precomputed routing is rejected. UI, Tauri contracts and demo handlers are synchronized.
 
 Plan Review, Test Coverage Review and Bug Hunt are complete. Stable 1.99.0 CI parity passes: Clippy/fmt and 4,430 tests (69 ignored, zero failures), 72 frontend regressions, app/website types/builds and a real browser draft/publish/rollback smoke test. Details: `2026-10-15-VERSIONED_NAMED_ROUTES_RULES.md` and `docs/NAMED_ROUTES.md`. All later features remain authorized and pending.
+
+P3 native provider-executed search/fetch slice is implemented and validated:
+OpenRouter search/fetch and basic LLM Gateway search, default-off client controls,
+verified cap intersection, current permissions/privacy/budget gates, no retry
+following a dispatch, redirect refusal, cache/session bypass, preserved citations
+and tool counters, safe replay and synchronized UI/types/demo settings. See
+plan/2026-10-15-SEARCH_WEB_FETCH_SERVER_TOOLS.md and docs/UPSTREAM_RETRIEVAL_TOOLS.md.
+Exact stable 1.99.0 workspace Clippy/fmt/tests passed (111 suites, 4,443 passed,
+69 ignored, zero failures); all 72 frontend tests, both type checks/builds and
+production Chrome smoke passed. Ranked Search API remains pending, so the master
+search phase and overall roadmap remain unchecked.

@@ -78,6 +78,7 @@ pub fn question_options(question: &SystemOneQuestion) -> Vec<(String, Value)> {
 
 fn chat_message(role: &str, text: String) -> ChatMessage {
     ChatMessage {
+        annotations: None,
         role: role.to_string(),
         content: ChatMessageContent::Text(text),
         tool_calls: None,

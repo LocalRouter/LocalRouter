@@ -548,6 +548,7 @@ impl ModelProvider for GeminiProvider {
             choices: vec![CompletionChoice {
                 index: 0,
                 message: ChatMessage {
+                    annotations: None,
                     role: "assistant".to_string(),
                     content: super::ChatMessageContent::Text(content),
                     tool_calls: if tool_calls.is_empty() {
@@ -775,6 +776,7 @@ impl ModelProvider for GeminiProvider {
                                         choices: vec![ChunkChoice {
                                             index: 0,
                                             delta: ChunkDelta {
+                                                annotations: None,
                                                 role: Some("assistant".to_string()),
                                                 content: if !content.is_empty() {
                                                     Some(content)
@@ -1403,6 +1405,7 @@ mod tests {
         let provider = GeminiProvider::new("test-key".to_string());
         let messages = vec![
             ChatMessage {
+                annotations: None,
                 role: "system".to_string(),
                 content: ChatMessageContent::Text("You are helpful".to_string()),
                 tool_calls: None,
@@ -1411,6 +1414,7 @@ mod tests {
                 reasoning_content: None,
             },
             ChatMessage {
+                annotations: None,
                 role: "user".to_string(),
                 content: ChatMessageContent::Text("Hello".to_string()),
                 tool_calls: None,
@@ -1419,6 +1423,7 @@ mod tests {
                 reasoning_content: None,
             },
             ChatMessage {
+                annotations: None,
                 role: "assistant".to_string(),
                 content: ChatMessageContent::Text("Hi there!".to_string()),
                 tool_calls: None,
@@ -1454,6 +1459,7 @@ mod tests {
         let provider = GeminiProvider::new("test-key".to_string());
         let messages = vec![
             ChatMessage {
+                annotations: None,
                 role: "user".to_string(),
                 content: ChatMessageContent::Text("What's the weather?".to_string()),
                 tool_calls: None,
@@ -1462,6 +1468,7 @@ mod tests {
                 reasoning_content: None,
             },
             ChatMessage {
+                annotations: None,
                 role: "assistant".to_string(),
                 content: ChatMessageContent::Text("".to_string()),
                 tool_calls: Some(vec![ToolCall {
@@ -1503,6 +1510,7 @@ mod tests {
         let provider = GeminiProvider::new("test-key".to_string());
         let messages = vec![
             ChatMessage {
+                annotations: None,
                 role: "user".to_string(),
                 content: ChatMessageContent::Text("What's the weather?".to_string()),
                 tool_calls: None,
@@ -1511,6 +1519,7 @@ mod tests {
                 reasoning_content: None,
             },
             ChatMessage {
+                annotations: None,
                 role: "assistant".to_string(),
                 content: ChatMessageContent::Text("".to_string()),
                 tool_calls: Some(vec![ToolCall {
@@ -1526,6 +1535,7 @@ mod tests {
                 reasoning_content: None,
             },
             ChatMessage {
+                annotations: None,
                 role: "tool".to_string(),
                 content: ChatMessageContent::Text(
                     r#"{"temperature":72,"conditions":"sunny"}"#.to_string(),
@@ -1718,6 +1728,7 @@ mod tests {
         let request = CompletionRequest {
             model: "gemini-1.5-flash".to_string(),
             messages: vec![ChatMessage {
+                annotations: None,
                 role: "user".to_string(),
                 content: ChatMessageContent::Text("Say hello in one word".to_string()),
                 tool_calls: None,
@@ -1753,6 +1764,7 @@ mod tests {
             reasoning_effort: None,
             pre_computed_routing: None,
             native_messages: None,
+            server_tools: None,
         };
 
         let response = provider.complete(request).await.unwrap();

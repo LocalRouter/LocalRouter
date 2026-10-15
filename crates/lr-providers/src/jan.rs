@@ -445,6 +445,7 @@ fn parse_line(line: &str) -> Option<AppResult<CompletionChunk>> {
                 .map(|choice| ChunkChoice {
                     index: choice.index,
                     delta: ChunkDelta {
+                        annotations: None,
                         role: choice.delta.role,
                         content: choice.delta.content,
                         tool_calls: choice.delta.tool_calls,

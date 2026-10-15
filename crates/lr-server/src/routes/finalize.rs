@@ -492,6 +492,7 @@ pub(crate) async fn finalize_streaming_at_end(
         choices: vec![lr_providers::CompletionChoice {
             index: 0,
             message: lr_providers::ChatMessage {
+                annotations: None,
                 role: "assistant".to_string(),
                 content: lr_providers::ChatMessageContent::Text(summary.content_preview.clone()),
                 tool_calls: None,

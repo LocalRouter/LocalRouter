@@ -2709,3 +2709,6 @@ mod credential_security_cases;
 
 #[path = "fixtures/named_routes_endpoint_cases.rs"]
 mod named_routes_endpoint_cases;
+
+#[path = "fixtures/upstream_tools_endpoint_cases.rs"]
+mod upstream_tools_endpoint_cases;

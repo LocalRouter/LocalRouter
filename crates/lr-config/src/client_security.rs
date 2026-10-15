@@ -25,6 +25,11 @@ impl ClientPrivacyConfig {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct ClientSecurityConfig {
+    #[serde(
+        default,
+        skip_serializing_if = "crate::UpstreamToolsPolicy::is_default"
+    )]
+    pub upstream_tools: crate::UpstreamToolsPolicy,
     #[serde(default, skip_serializing_if = "ClientPrivacyConfig::is_default")]
     pub privacy: ClientPrivacyConfig,
     pub credential_expires_at: Option<DateTime<Utc>>,
@@ -36,6 +41,7 @@ impl ClientSecurityConfig {
         self == &Self::default()
     }
     pub fn validate(&self) -> Result<(), String> {
+        self.upstream_tools.validate()?;
         if self
             .review_idle_after_days
             .is_some_and(|days| !(1..=3650).contains(&days))

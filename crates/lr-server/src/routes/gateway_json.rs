@@ -29,12 +29,15 @@ where
         .map(|value| value.to_str().map(str::to_owned))
         .transpose()
         .map_err(|_| ApiErrorResponse::bad_request("Invalid session header").into_response())?;
+        let path = request.uri().path().to_owned();
         let Json(mut value) = Json::<Value>::from_request(request, state)
             .await
             .map_err(IntoResponse::into_response)?;
         lr_providers::response_cache::validate_ingress(&value)
             .map_err(|error| ApiErrorResponse::from(error).into_response())?;
         lr_providers::replay::normalize_ingress(&mut value)
+            .map_err(|error| ApiErrorResponse::from(error).into_response())?;
+        crate::upstream_tools::normalize_ingress(&mut value, &path)
             .map_err(|error| ApiErrorResponse::from(error).into_response())?;
         lr_providers::session::normalize_ingress(&mut value, session.as_deref())
             .map_err(|error| ApiErrorResponse::from(error).into_response())?;

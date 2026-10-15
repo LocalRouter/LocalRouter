@@ -107,9 +107,16 @@ pub struct ChatCompletionRequest {
 
     // Tool calling
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Vec<crate::upstream_tools::PublicChatTool>>)]
     pub tools: Option<Vec<Tool>>,
 
+    /// Total provider-executed calls; accepted only for verified mappings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(minimum = 1, maximum = 30)]
+    pub max_tool_calls: Option<u32>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<crate::upstream_tools::PublicToolChoice>)]
     pub tool_choice: Option<ToolChoice>,
 
     /// Allow concurrent function calling
@@ -214,6 +221,10 @@ pub struct ChatMessage {
     /// Reasoning/thinking content from reasoning models (e.g., o1, Qwen3, DeepSeek-R1)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
+    /// Provider URL citations, preserved in their native annotation shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Vec<Object>>)]
+    pub annotations: Option<Vec<serde_json::Value>>,
 }
 
 /// Tool call in assistant's response
@@ -472,6 +483,10 @@ pub struct ChunkDelta {
     /// Reasoning/thinking content from reasoning models
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
+    /// Provider URL citations, preserved in their native annotation shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Vec<Object>>)]
+    pub annotations: Option<Vec<serde_json::Value>>,
 }
 
 /// Tool call delta for streaming

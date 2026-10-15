@@ -88,6 +88,16 @@ use utoipa::OpenApi;
     ),
     components(
         schemas(
+            crate::upstream_tools::PublicChatTool,
+            crate::upstream_tools::PublicResponseTool,
+            crate::upstream_tools::PublicFunctionTool,
+            crate::upstream_tools::PublicResponseFunctionTool,
+            crate::upstream_tools::PublicToolChoice,
+            crate::upstream_tools::PublicForcedServerTool,
+            lr_providers::server_tools::ServerToolDefinition,
+            lr_providers::server_tools::SearchParameters,
+            lr_providers::server_tools::SearchFilters,
+            lr_providers::server_tools::FetchParameters,
             crate::batch_jobs::types::CreateBatchRequest,
             crate::batch_jobs::types::BatchObject,
             crate::batch_jobs::types::BatchList,
@@ -395,6 +405,26 @@ mod tests {
         assert!(components.security_schemes.contains_key("oauth2"));
     }
 
+    #[test]
+    fn native_tool_unions_and_call_limits_are_exposed_truthfully() {
+        let spec = serde_json::to_value(ApiDoc::openapi()).unwrap();
+        let schemas = &spec["components"]["schemas"];
+        assert!(
+            schemas["PublicChatTool"]["oneOf"].is_array(),
+            "{}",
+            schemas["PublicChatTool"]
+        );
+        assert!(
+            schemas["PublicResponseTool"]["oneOf"].is_array(),
+            "{}",
+            schemas["PublicResponseTool"]
+        );
+        for request in ["ChatCompletionRequest", "CreateResponseRequest"] {
+            let cap = &schemas[request]["properties"]["max_tool_calls"];
+            assert_eq!(cap["maximum"], 30);
+            assert_eq!(cap["minimum"], 1);
+        }
+    }
     #[test]
     fn routing_mode_metadata_key_is_documented_on_chat_and_responses() {
         let spec = serde_json::to_value(ApiDoc::openapi()).unwrap();

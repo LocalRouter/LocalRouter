@@ -449,6 +449,8 @@ struct OpenAIDelta {
     /// Reasoning/thinking content from reasoning models
     #[serde(default, skip_serializing_if = "Option::is_none")]
     reasoning_content: Option<String>,
+    #[serde(default)]
+    annotations: Option<Vec<serde_json::Value>>,
 }
 
 // OpenAI Embeddings API types
@@ -494,6 +496,14 @@ struct OpenAIEmbeddingUsage {
 
 #[async_trait]
 impl ModelProvider for OpenAICompatibleProvider {
+    fn server_tools_protocol(
+        &self,
+        request: &CompletionRequest,
+    ) -> Option<crate::server_tools::ServerToolsProtocol> {
+        (self.gateway_kind == Some(GatewayKind::Llmgateway) && request.native_messages.is_none())
+            .then_some(crate::server_tools::ServerToolsProtocol::LlmGateway)
+    }
+
     fn supports_prompt_cache_key(&self) -> bool {
         self.gateway_kind == Some(crate::gateway::GatewayKind::Llmgateway)
     }
@@ -727,6 +737,12 @@ impl ModelProvider for OpenAICompatibleProvider {
     }
 
     async fn complete(&self, request: CompletionRequest) -> AppResult<CompletionResponse> {
+        let native_tools = request.server_tools.clone();
+        let transport = if native_tools.is_some() {
+            crate::http_client::native_client()?
+        } else {
+            self.client.clone()
+        };
         if request
             .extensions
             .as_ref()
@@ -767,6 +783,18 @@ impl ModelProvider for OpenAICompatibleProvider {
         };
 
         let mut body = crate::gateway::wire_body(&openai_request)?;
+        if let Some(context) = &native_tools {
+            if self.gateway_kind != Some(GatewayKind::Llmgateway) {
+                return Err(AppError::InvalidParams(
+                    "Provider has no verified server-tool mapping".into(),
+                ));
+            }
+            context.wire_body(
+                crate::server_tools::ServerToolsProtocol::LlmGateway,
+                &mut body,
+                None,
+            )?;
+        }
         if self.supports_prompt_cache_key() {
             if let Some(key) = prompt_cache_key {
                 body["prompt_cache_key"] = serde_json::json!(key);
@@ -779,7 +807,7 @@ impl ModelProvider for OpenAICompatibleProvider {
             .unwrap_or_default();
         let req = self
             .apply_headers(
-                self.client
+                transport
                     .post(format!("{}/chat/completions", self.base_url))
                     .header("Content-Type", "application/json")
                     .json(&body),
@@ -847,6 +875,12 @@ impl ModelProvider for OpenAICompatibleProvider {
         &self,
         request: CompletionRequest,
     ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>> {
+        let native_tools = request.server_tools.clone();
+        let transport = if native_tools.is_some() {
+            crate::http_client::native_client()?
+        } else {
+            self.client.clone()
+        };
         if request
             .extensions
             .as_ref()
@@ -891,6 +925,18 @@ impl ModelProvider for OpenAICompatibleProvider {
             &openai_request,
             self.provider_type.as_deref().unwrap_or_default(),
         )?;
+        if let Some(context) = &native_tools {
+            if self.gateway_kind != Some(GatewayKind::Llmgateway) {
+                return Err(AppError::InvalidParams(
+                    "Provider has no verified server-tool mapping".into(),
+                ));
+            }
+            context.wire_body(
+                crate::server_tools::ServerToolsProtocol::LlmGateway,
+                &mut body,
+                None,
+            )?;
+        }
         if self.supports_prompt_cache_key() {
             if let Some(key) = prompt_cache_key {
                 body["prompt_cache_key"] = serde_json::json!(key);
@@ -902,7 +948,7 @@ impl ModelProvider for OpenAICompatibleProvider {
             .unwrap_or_default();
         let req = self
             .apply_headers(
-                self.client
+                transport
                     .post(format!("{}/chat/completions", self.base_url))
                     .header("Content-Type", "application/json")
                     .json(&body),
@@ -973,6 +1019,7 @@ impl ModelProvider for OpenAICompatibleProvider {
                                             .map(|choice| ChunkChoice {
                                                 index: choice.index,
                                                 delta: ChunkDelta {
+                                                    annotations: choice.delta.annotations,
                                                     role: choice.delta.role,
                                                     content: choice.delta.content,
                                                     tool_calls: choice.delta.tool_calls,

@@ -20,6 +20,7 @@ pub fn standard_completion_request() -> CompletionRequest {
         model: "test-model".to_string(),
         messages: vec![
             ChatMessage {
+                annotations: None,
                 role: "system".to_string(),
                 content: ChatMessageContent::Text("You are a helpful assistant.".to_string()),
                 tool_calls: None,
@@ -28,6 +29,7 @@ pub fn standard_completion_request() -> CompletionRequest {
                 reasoning_content: None,
             },
             ChatMessage {
+                annotations: None,
                 role: "user".to_string(),
                 content: ChatMessageContent::Text("Say hello".to_string()),
                 tool_calls: None,
@@ -64,6 +66,7 @@ pub fn standard_completion_request() -> CompletionRequest {
         reasoning_effort: None,
         pre_computed_routing: None,
         native_messages: None,
+        server_tools: None,
     }
 }
 
@@ -72,6 +75,7 @@ pub fn standard_streaming_request() -> CompletionRequest {
     CompletionRequest {
         model: "test-model".to_string(),
         messages: vec![ChatMessage {
+            annotations: None,
             role: "user".to_string(),
             content: ChatMessageContent::Text("Count to 3".to_string()),
             tool_calls: None,
@@ -107,6 +111,7 @@ pub fn standard_streaming_request() -> CompletionRequest {
         reasoning_effort: None,
         pre_computed_routing: None,
         native_messages: None,
+        server_tools: None,
     }
 }
 

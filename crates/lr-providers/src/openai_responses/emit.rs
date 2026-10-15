@@ -37,6 +37,7 @@ pub struct ResponsesEmitter {
     /// to populate the cached `ResponseObject` stored for
     /// `previous_response_id` lookup.
     accumulated_text: String,
+    annotations: Vec<Value>,
     /// Running `output_index` counter for added items.
     next_output_index: i64,
     /// Index within `output[]` assigned to the assistant message.
@@ -66,6 +67,7 @@ impl ResponsesEmitter {
             started: false,
             message_item_added: false,
             accumulated_text: String::new(),
+            annotations: Vec::new(),
             next_output_index: 0,
             message_output_index: None,
             tool_slots: Vec::new(),
@@ -115,6 +117,13 @@ impl ResponsesEmitter {
     fn on_choice(&mut self, choice: crate::ChunkChoice) -> Vec<ResponsesSseFrame> {
         let mut frames = Vec::new();
 
+        if let Some(annotations) = &choice.delta.annotations {
+            for annotation in crate::server_tools::response_annotations(annotations) {
+                if self.annotations.len() < 128 && !self.annotations.contains(&annotation) {
+                    self.annotations.push(annotation);
+                }
+            }
+        }
         if let Some(content) = choice.delta.content {
             if !content.is_empty() {
                 if !self.message_item_added {
@@ -241,7 +250,7 @@ impl ResponsesEmitter {
                         "id": format!("msg_{}", self.response_id),
                         "role": "assistant",
                         "content": [
-                            {"type": "output_text", "text": self.accumulated_text.clone()}
+                            {"type": "output_text", "text": self.accumulated_text.clone(), "annotations": self.annotations}
                         ],
                     },
                 }),
@@ -294,7 +303,7 @@ impl ResponsesEmitter {
                 "id": format!("msg_{}", self.response_id),
                 "role": "assistant",
                 "content": [
-                    {"type": "output_text", "text": self.accumulated_text}
+                    {"type": "output_text", "text": self.accumulated_text, "annotations": self.annotations}
                 ],
             }));
         }
@@ -347,7 +356,7 @@ pub fn completion_to_response_object(
                 "id": format!("msg_{}", response_id),
                 "role": "assistant",
                 "content": [
-                    {"type": "output_text", "text": text}
+                    {"type": "output_text", "text": text, "annotations": crate::server_tools::response_annotations(msg.annotations.as_deref().unwrap_or_default())}
                 ],
             }));
         }
@@ -399,6 +408,7 @@ mod tests {
             choices: vec![ChunkChoice {
                 index: 0,
                 delta: ChunkDelta {
+                    annotations: None,
                     role: None,
                     content: Some(content.into()),
                     tool_calls: None,
@@ -447,6 +457,7 @@ mod tests {
             choices: vec![CompletionChoice {
                 index: 0,
                 message: ChatMessage {
+                    annotations: None,
                     role: "assistant".into(),
                     content: ChatMessageContent::Text("Hi".into()),
                     tool_calls: None,

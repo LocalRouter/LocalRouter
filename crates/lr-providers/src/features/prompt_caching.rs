@@ -294,6 +294,7 @@ mod tests {
             model: "claude-3-opus".to_string(),
             messages: vec![
                 crate::ChatMessage {
+                    annotations: None,
                     role: "system".to_string(),
                     content: ChatMessageContent::Text("You are a helpful assistant.".to_string()),
                     tool_calls: None,
@@ -302,6 +303,7 @@ mod tests {
                     reasoning_content: None,
                 },
                 crate::ChatMessage {
+                    annotations: None,
                     role: "user".to_string(),
                     content: ChatMessageContent::Text("Hello".to_string()),
                     tool_calls: None,
@@ -338,6 +340,7 @@ mod tests {
             reasoning_effort: None,
             pre_computed_routing: None,
             native_messages: None,
+            server_tools: None,
         };
 
         let breakpoints = PromptCachingAdapter::determine_cache_breakpoints(&request);
@@ -350,6 +353,7 @@ mod tests {
             model: "claude-3-opus".to_string(),
             messages: vec![
                 crate::ChatMessage {
+                    annotations: None,
                     role: "system".to_string(),
                     content: ChatMessageContent::Text("System prompt".to_string()),
                     tool_calls: None,
@@ -358,6 +362,7 @@ mod tests {
                     reasoning_content: None,
                 },
                 crate::ChatMessage {
+                    annotations: None,
                     role: "user".to_string(),
                     content: ChatMessageContent::Text("Message 1".to_string()),
                     tool_calls: None,
@@ -366,6 +371,7 @@ mod tests {
                     reasoning_content: None,
                 },
                 crate::ChatMessage {
+                    annotations: None,
                     role: "assistant".to_string(),
                     content: ChatMessageContent::Text("Response 1".to_string()),
                     tool_calls: None,
@@ -374,6 +380,7 @@ mod tests {
                     reasoning_content: None,
                 },
                 crate::ChatMessage {
+                    annotations: None,
                     role: "user".to_string(),
                     content: ChatMessageContent::Text("Message 2".to_string()),
                     tool_calls: None,
@@ -410,6 +417,7 @@ mod tests {
             reasoning_effort: None,
             pre_computed_routing: None,
             native_messages: None,
+            server_tools: None,
         };
 
         let breakpoints = PromptCachingAdapter::determine_cache_breakpoints(&request);
@@ -435,6 +443,7 @@ mod tests {
             model: "claude-3-opus".to_string(),
             messages: vec![
                 crate::ChatMessage {
+                    annotations: None,
                     role: "system".to_string(),
                     content: ChatMessageContent::Text("System prompt".to_string()),
                     tool_calls: None,
@@ -443,6 +452,7 @@ mod tests {
                     reasoning_content: None,
                 },
                 crate::ChatMessage {
+                    annotations: None,
                     role: "user".to_string(),
                     content: ChatMessageContent::Text("User message".to_string()),
                     tool_calls: None,
@@ -479,6 +489,7 @@ mod tests {
             reasoning_effort: None,
             pre_computed_routing: None,
             native_messages: None,
+            server_tools: None,
         };
 
         let params = HashMap::new();
@@ -497,6 +508,7 @@ mod tests {
         let mut request = CompletionRequest {
             model: "gpt-4".to_string(),
             messages: vec![crate::ChatMessage {
+                annotations: None,
                 role: "user".to_string(),
                 content: ChatMessageContent::Text("Hello".to_string()),
                 tool_calls: None,
@@ -532,6 +544,7 @@ mod tests {
             reasoning_effort: None,
             pre_computed_routing: None,
             native_messages: None,
+            server_tools: None,
         };
 
         let params = HashMap::new();

@@ -512,6 +512,10 @@ pub struct GatewayAttribution {
     pub resolved_provider: Option<String>,
     pub region: Option<String>,
     pub service_tier: Option<String>,
+    /// Upstream tool counters are cumulative snapshots, never token usage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Object>)]
+    pub server_tool_use: Option<Value>,
     pub cost_usd: Option<f64>,
     pub cost_source: GatewayCostSource,
     pub cost_scope: GatewayCostScope,
@@ -573,6 +577,14 @@ impl GatewayAttribution {
             region: string(successful.and_then(|a| a.get("region")))
                 .or_else(|| string(body.pointer("/metadata/region"))),
             service_tier: string(body.get("service_tier")),
+            server_tool_use: body
+                .pointer("/usage/server_tool_use")
+                .filter(|value| {
+                    value.as_object().is_some_and(|counts| {
+                        counts.len() <= 32 && counts.values().all(|count| count.as_u64().is_some())
+                    })
+                })
+                .cloned(),
             cost_usd,
             cost_source: if cost_usd.is_some() {
                 GatewayCostSource::Reported
@@ -623,6 +635,10 @@ impl GatewayAttribution {
             .service_tier
             .take()
             .or_else(|| previous.service_tier.clone());
+        self.server_tool_use = self
+            .server_tool_use
+            .take()
+            .or_else(|| previous.server_tool_use.clone());
         self.cost_usd = self.cost_usd.or(previous.cost_usd);
         self.cost_source = if self.cost_usd.is_some() {
             GatewayCostSource::Reported

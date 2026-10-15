@@ -1,3 +1,4 @@
+import { UpstreamToolsPanel } from "./upstream-tools-panel"
 
 import { ClientPrivacyPanel } from "./privacy-panel"
 import { ClientSecurityPanel } from "./security-panel"
@@ -164,6 +165,7 @@ export function ClientSettingsTab({ client, onUpdate, onDelete }: SettingsTabPro
     <div className="space-y-6">
       <ClientSecurityPanel clientId={client.id} enabled={client.enabled} onUpdate={onUpdate} />
       <ClientPrivacyPanel key={client.id} clientId={client.id} onUpdate={onUpdate} />
+      <UpstreamToolsPanel key={`tools-${client.id}`} clientId={client.id} onUpdate={onUpdate} />
       {/* Client Name */}
       <Card>
         <CardHeader>

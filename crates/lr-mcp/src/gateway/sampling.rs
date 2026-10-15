@@ -25,6 +25,7 @@ pub fn convert_sampling_to_chat_request(
         messages.insert(
             0,
             ChatMessage {
+                annotations: None,
                 role: "system".to_string(),
                 content: ChatMessageContent::Text(system_prompt),
                 tool_calls: None,
@@ -56,6 +57,7 @@ pub fn convert_sampling_to_chat_request(
         extensions: None,
         pre_computed_routing: None,
         native_messages: None,
+        server_tools: None,
         n: None,
         logit_bias: None,
         parallel_tool_calls: None,
@@ -85,6 +87,7 @@ fn convert_sampling_message_to_chat(msg: SamplingMessage) -> ChatMessage {
     };
 
     ChatMessage {
+        annotations: None,
         role: msg.role,
         content,
         tool_calls: msg.tool_calls,
@@ -446,6 +449,7 @@ mod tests {
             choices: vec![CompletionChoice {
                 index: 0,
                 message: ChatMessage {
+                    annotations: None,
                     role: "assistant".to_string(),
                     content: ChatMessageContent::Text(String::new()),
                     tool_calls: Some(vec![ToolCall {
@@ -502,6 +506,7 @@ mod tests {
             choices: vec![CompletionChoice {
                 index: 0,
                 message: ChatMessage {
+                    annotations: None,
                     role: "assistant".to_string(),
                     content: ChatMessageContent::Text(
                         "The GuardRails implementation is in crates/lr-guardrails/".to_string(),
@@ -558,6 +563,7 @@ mod tests {
                 choices: vec![CompletionChoice {
                     index: 0,
                     message: ChatMessage {
+                        annotations: None,
                         role: "assistant".to_string(),
                         content: ChatMessageContent::Text("ok".to_string()),
                         tool_calls: None,
@@ -651,6 +657,7 @@ mod tests {
             choices: vec![CompletionChoice {
                 index: 0,
                 message: ChatMessage {
+                    annotations: None,
                     role: "assistant".to_string(),
                     content: ChatMessageContent::Parts(vec![ContentPart::Text {
                         text: "Hello".to_string(),

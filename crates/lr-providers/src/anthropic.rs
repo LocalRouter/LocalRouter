@@ -737,6 +737,7 @@ impl ModelProvider for AnthropicProvider {
             choices: vec![CompletionChoice {
                 index: 0,
                 message: ChatMessage {
+                    annotations: None,
                     role: "assistant".to_string(),
                     content: super::ChatMessageContent::Text(text_content),
                     tool_calls: tool_calls_opt,
@@ -917,6 +918,7 @@ impl ModelProvider for AnthropicProvider {
                                                     choices: vec![ChunkChoice {
                                                         index: 0,
                                                         delta: ChunkDelta {
+                                                            annotations: None,
                                                             role: None,
                                                             content: None,
                                                             tool_calls: Some(vec![ToolCallDelta {
@@ -952,6 +954,7 @@ impl ModelProvider for AnthropicProvider {
                                                     choices: vec![ChunkChoice {
                                                         index: 0,
                                                         delta: ChunkDelta {
+                                                            annotations: None,
                                                             role: None,
                                                             content: Some(text.clone()),
                                                             tool_calls: None,
@@ -972,6 +975,7 @@ impl ModelProvider for AnthropicProvider {
                                                     choices: vec![ChunkChoice {
                                                         index: 0,
                                                         delta: ChunkDelta {
+                                                            annotations: None,
                                                             role: None,
                                                             content: None,
                                                             tool_calls: None,
@@ -1004,6 +1008,7 @@ impl ModelProvider for AnthropicProvider {
                                                     choices: vec![ChunkChoice {
                                                         index: 0,
                                                         delta: ChunkDelta {
+                                                            annotations: None,
                                                             role: None,
                                                             content: None,
                                                             tool_calls: Some(vec![ToolCallDelta {
@@ -1068,6 +1073,7 @@ impl ModelProvider for AnthropicProvider {
                                                     choices: vec![ChunkChoice {
                                                         index: 0,
                                                         delta: ChunkDelta {
+                                                            annotations: None,
                                                             role: None,
                                                             content: None,
                                                             tool_calls: None,
@@ -1449,6 +1455,7 @@ mod tests {
     fn test_convert_messages_with_system() {
         let messages = vec![
             ChatMessage {
+                annotations: None,
                 role: "system".to_string(),
                 content: ChatMessageContent::Text("You are a helpful assistant.".to_string()),
                 tool_calls: None,
@@ -1457,6 +1464,7 @@ mod tests {
                 reasoning_content: None,
             },
             ChatMessage {
+                annotations: None,
                 role: "user".to_string(),
                 content: ChatMessageContent::Text("Hello!".to_string()),
                 tool_calls: None,
@@ -1481,6 +1489,7 @@ mod tests {
     fn test_convert_messages_without_system() {
         let messages = vec![
             ChatMessage {
+                annotations: None,
                 role: "user".to_string(),
                 content: ChatMessageContent::Text("Hello!".to_string()),
                 tool_calls: None,
@@ -1489,6 +1498,7 @@ mod tests {
                 reasoning_content: None,
             },
             ChatMessage {
+                annotations: None,
                 role: "assistant".to_string(),
                 content: ChatMessageContent::Text("Hi there!".to_string()),
                 tool_calls: None,
@@ -1552,6 +1562,7 @@ mod tests {
     fn test_convert_messages_with_tool_calls() {
         let messages = vec![
             ChatMessage {
+                annotations: None,
                 role: "user".to_string(),
                 content: ChatMessageContent::Text("What's the weather?".to_string()),
                 tool_calls: None,
@@ -1560,6 +1571,7 @@ mod tests {
                 reasoning_content: None,
             },
             ChatMessage {
+                annotations: None,
                 role: "assistant".to_string(),
                 content: ChatMessageContent::Text("".to_string()),
                 tool_calls: Some(vec![ToolCall {
@@ -1606,6 +1618,7 @@ mod tests {
     fn test_convert_messages_with_tool_response() {
         let messages = vec![
             ChatMessage {
+                annotations: None,
                 role: "user".to_string(),
                 content: ChatMessageContent::Text("What's the weather?".to_string()),
                 tool_calls: None,
@@ -1614,6 +1627,7 @@ mod tests {
                 reasoning_content: None,
             },
             ChatMessage {
+                annotations: None,
                 role: "assistant".to_string(),
                 content: ChatMessageContent::Text("".to_string()),
                 tool_calls: Some(vec![ToolCall {
@@ -1629,6 +1643,7 @@ mod tests {
                 reasoning_content: None,
             },
             ChatMessage {
+                annotations: None,
                 role: "tool".to_string(),
                 content: ChatMessageContent::Text(
                     r#"{"temperature":72,"conditions":"sunny"}"#.to_string(),
@@ -1818,6 +1833,7 @@ mod tests {
             reasoning_effort: None,
             pre_computed_routing: None,
             native_messages: None,
+            server_tools: None,
         }
     }
 

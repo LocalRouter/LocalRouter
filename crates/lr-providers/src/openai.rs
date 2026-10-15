@@ -1219,6 +1219,7 @@ impl ModelProvider for OpenAIProvider {
                                             .map(|choice| ChunkChoice {
                                                 index: choice.index,
                                                 delta: ChunkDelta {
+                                                    annotations: None,
                                                     role: choice.delta.role,
                                                     content: choice.delta.content,
                                                     tool_calls: choice.delta.tool_calls,
@@ -1957,6 +1958,7 @@ mod tests {
         CompletionRequest {
             model: "gpt-5.5".to_string(),
             messages: vec![ChatMessage {
+                annotations: None,
                 role: "user".to_string(),
                 content: super::super::ChatMessageContent::Text("hi".to_string()),
                 tool_calls: None,
@@ -1992,6 +1994,7 @@ mod tests {
             reasoning_effort: None,
             pre_computed_routing: None,
             native_messages: None,
+            server_tools: None,
         }
     }
 

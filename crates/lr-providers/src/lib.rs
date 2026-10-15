@@ -158,6 +158,7 @@ pub mod openrouter;
 pub mod perplexity;
 pub mod privacy;
 pub mod registry;
+pub mod server_tools;
 pub(crate) mod sse_lines;
 pub mod systemone;
 pub mod togetherai;
@@ -204,13 +205,15 @@ pub trait ModelProvider: Send + Sync {
     /// Sends a chat completion request
     async fn complete(&self, request: CompletionRequest) -> AppResult<CompletionResponse>;
 
-    /// Raw native transport. Callers must go through the router's current
-    /// policy, accounting and dispatch budgets before using this operation.
-    /// Format-compatible chat support does not imply this capability.
-    /// Internal capability only. The public SDK endpoint is enabled only once
-    /// server policy, durable accounting and job lifecycle are integrated.
-    /// True only for an adapter with a verified downstream no-retention filter.
-    /// This does not attest the gateway account's own retention policy.
+    /// Only verified provider/endpoint server-tool protocols opt in.
+    fn server_tools_protocol(
+        &self,
+        _request: &CompletionRequest,
+    ) -> Option<server_tools::ServerToolsProtocol> {
+        None
+    }
+    /// True only for a verified downstream no-retention filter. This does
+    /// not attest the gateway account or third-party tool retention policy.
     fn supports_no_retention_filter(&self) -> bool {
         false
     }
@@ -1686,6 +1689,9 @@ pub struct CompletionRequest {
     /// as a vendor extension. The Messages ingress installs it after scanning.
     #[serde(skip)]
     pub native_messages: Option<Box<messages::MessagesContext>>,
+    /// Derived by gateway ingress, never accepted from CompletionRequest JSON.
+    #[serde(skip)]
+    pub server_tools: Option<Box<server_tools::ServerToolsContext>>,
 }
 
 impl CompletionRequest {
@@ -1707,6 +1713,7 @@ impl CompletionRequest {
             extensions.remove(response_cache::EXTENSION);
             extensions.remove(privacy::INTERNAL_EXTENSION);
             extensions.remove(privacy::ROUTE_CLIENT_EXTENSION);
+            extensions.remove(server_tools::INGRESS_EXTENSION);
             if extensions.is_empty() {
                 self.extensions = None;
             }
@@ -1753,6 +1760,7 @@ impl CompletionRequest {
             reasoning_effort: None,
             pre_computed_routing: None,
             native_messages: None,
+            server_tools: None,
         }
     }
 }
@@ -1955,6 +1963,10 @@ pub struct ChatMessage {
     /// Reasoning/thinking content from reasoning models (e.g., Qwen3, DeepSeek-R1, o1)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
+    /// Provider URL citations, preserved in their native annotation shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Vec<Object>>)]
+    pub annotations: Option<Vec<serde_json::Value>>,
 }
 
 /// Chat completion response
@@ -2274,6 +2286,10 @@ pub struct ChunkDelta {
     /// Reasoning/thinking content delta from reasoning models
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
+    /// Provider URL citations, preserved in their native annotation shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Vec<Object>>)]
+    pub annotations: Option<Vec<serde_json::Value>>,
 }
 
 /// Tool call delta for streaming

@@ -423,6 +423,7 @@ mod helpers {
             choices: vec![CompletionChoice {
                 index: 0,
                 message: ChatMessage {
+                    annotations: None,
                     role: "assistant".to_string(),
                     content: ChatMessageContent::Text(text.unwrap_or("").to_string()),
                     tool_calls,
@@ -495,6 +496,7 @@ mod helpers {
         CompletionRequest {
             model: "mock/test-model".to_string(),
             messages: vec![ChatMessage {
+                annotations: None,
                 role: "user".to_string(),
                 content: ChatMessageContent::Text(user_message.to_string()),
                 tool_calls: None,
@@ -530,6 +532,7 @@ mod helpers {
             reasoning_effort: None,
             pre_computed_routing: None,
             native_messages: None,
+            server_tools: None,
         }
     }
 
@@ -1392,6 +1395,7 @@ mod mixed_tool_tests {
 
         // Phase 2: resume with client tool results
         let client_tool_results = vec![ChatMessage {
+            annotations: None,
             role: "tool".to_string(),
             content: ChatMessageContent::Text("client result".to_string()),
             tool_calls: None,

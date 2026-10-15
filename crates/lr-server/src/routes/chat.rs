@@ -312,6 +312,11 @@ pub(crate) async fn chat_completions_with_endpoint(
 /// and models that inherently perform web searches (e.g. Perplexity Sonar).
 /// Used by both the standard flow and MCP via LLM to determine parallel vs sequential mode.
 fn has_side_effects(request: &ChatCompletionRequest) -> bool {
+    if request.extensions.as_ref().is_some_and(|extensions| {
+        extensions.contains_key(lr_providers::server_tools::INGRESS_EXTENSION)
+    }) {
+        return true;
+    }
     // Non-function tools can trigger real-world actions
     if let Some(tools) = &request.tools {
         if tools.iter().any(|t| t.tool_type != "function") {
@@ -534,6 +539,7 @@ async fn handle_mcp_via_llm(
                                 .map(|c| ChatCompletionChunkChoice {
                                     index: c.index,
                                     delta: ChunkDelta {
+                                        annotations: c.delta.annotations,
                                         role: c.delta.role,
                                         content: c.delta.content,
                                         tool_calls: c.delta.tool_calls.map(|tcs| {
@@ -740,6 +746,7 @@ async fn handle_mcp_via_llm(
                 ChatCompletionChoice {
                     index: choice.index,
                     message: ChatMessage {
+                        annotations: choice.message.annotations.clone(),
                         role: choice.message.role.clone(),
                         content,
                         name: choice.message.name.clone(),
@@ -1165,6 +1172,7 @@ async fn build_non_streaming_response(
                 ChatCompletionChoice {
                     index: choice.index,
                     message: ChatMessage {
+                        annotations: choice.message.annotations,
                         role: choice.message.role,
                         content,
                         name: choice.message.name,
@@ -1453,6 +1461,7 @@ async fn handle_streaming(
                                 ChatCompletionChunkChoice {
                                     index: choice.index,
                                     delta: ChunkDelta {
+                                        annotations: choice.delta.annotations,
                                         role: choice.delta.role,
                                         content: choice.delta.content,
                                         tool_calls,
@@ -1771,6 +1780,7 @@ async fn handle_streaming_parallel(
                                 ChatCompletionChunkChoice {
                                     index: choice.index,
                                     delta: ChunkDelta {
+                                        annotations: choice.delta.annotations,
                                         role: choice.delta.role,
                                         content: choice.delta.content,
                                         tool_calls,
@@ -1992,8 +2002,10 @@ mod tests {
     #[test]
     fn test_validate_request_basic() {
         let request = ChatCompletionRequest {
+            max_tool_calls: None,
             model: "gpt-4".to_string(),
             messages: vec![ChatMessage {
+                annotations: None,
                 role: "user".to_string(),
                 content: Some(MessageContent::Text("Hello".to_string())),
                 name: None,
@@ -2038,8 +2050,10 @@ mod tests {
     #[test]
     fn test_validate_request_empty_model() {
         let request = ChatCompletionRequest {
+            max_tool_calls: None,
             model: "".to_string(),
             messages: vec![ChatMessage {
+                annotations: None,
                 role: "user".to_string(),
                 content: Some(MessageContent::Text("Hello".to_string())),
                 name: None,
@@ -2084,6 +2098,7 @@ mod tests {
     #[test]
     fn test_validate_request_empty_messages() {
         let request = ChatCompletionRequest {
+            max_tool_calls: None,
             model: "gpt-4".to_string(),
             messages: vec![],
             temperature: None,
@@ -2123,8 +2138,10 @@ mod tests {
     #[test]
     fn test_validate_temperature_valid() {
         let request = ChatCompletionRequest {
+            max_tool_calls: None,
             model: "gpt-4".to_string(),
             messages: vec![ChatMessage {
+                annotations: None,
                 role: "user".to_string(),
                 content: Some(MessageContent::Text("Hello".to_string())),
                 name: None,
@@ -2169,8 +2186,10 @@ mod tests {
     #[test]
     fn test_validate_temperature_invalid_high() {
         let request = ChatCompletionRequest {
+            max_tool_calls: None,
             model: "gpt-4".to_string(),
             messages: vec![ChatMessage {
+                annotations: None,
                 role: "user".to_string(),
                 content: Some(MessageContent::Text("Hello".to_string())),
                 name: None,
@@ -2215,8 +2234,10 @@ mod tests {
     #[test]
     fn test_validate_top_k_valid() {
         let request = ChatCompletionRequest {
+            max_tool_calls: None,
             model: "gpt-4".to_string(),
             messages: vec![ChatMessage {
+                annotations: None,
                 role: "user".to_string(),
                 content: Some(MessageContent::Text("Hello".to_string())),
                 name: None,
@@ -2261,8 +2282,10 @@ mod tests {
     #[test]
     fn test_validate_top_k_invalid_zero() {
         let request = ChatCompletionRequest {
+            max_tool_calls: None,
             model: "gpt-4".to_string(),
             messages: vec![ChatMessage {
+                annotations: None,
                 role: "user".to_string(),
                 content: Some(MessageContent::Text("Hello".to_string())),
                 name: None,
@@ -2307,8 +2330,10 @@ mod tests {
     #[test]
     fn test_validate_repetition_penalty_valid() {
         let request = ChatCompletionRequest {
+            max_tool_calls: None,
             model: "gpt-4".to_string(),
             messages: vec![ChatMessage {
+                annotations: None,
                 role: "user".to_string(),
                 content: Some(MessageContent::Text("Hello".to_string())),
                 name: None,
@@ -2353,8 +2378,10 @@ mod tests {
     #[test]
     fn test_validate_repetition_penalty_invalid() {
         let request = ChatCompletionRequest {
+            max_tool_calls: None,
             model: "gpt-4".to_string(),
             messages: vec![ChatMessage {
+                annotations: None,
                 role: "user".to_string(),
                 content: Some(MessageContent::Text("Hello".to_string())),
                 name: None,
@@ -2399,8 +2426,10 @@ mod tests {
     #[test]
     fn test_validate_response_format_json_object_valid() {
         let request = ChatCompletionRequest {
+            max_tool_calls: None,
             model: "gpt-4".to_string(),
             messages: vec![ChatMessage {
+                annotations: None,
                 role: "user".to_string(),
                 content: Some(MessageContent::Text("Hello".to_string())),
                 name: None,
@@ -2447,8 +2476,10 @@ mod tests {
     #[test]
     fn test_validate_response_format_json_object_invalid_type() {
         let request = ChatCompletionRequest {
+            max_tool_calls: None,
             model: "gpt-4".to_string(),
             messages: vec![ChatMessage {
+                annotations: None,
                 role: "user".to_string(),
                 content: Some(MessageContent::Text("Hello".to_string())),
                 name: None,
@@ -2495,8 +2526,10 @@ mod tests {
     #[test]
     fn test_validate_response_format_json_schema_valid() {
         let request = ChatCompletionRequest {
+            max_tool_calls: None,
             model: "gpt-4".to_string(),
             messages: vec![ChatMessage {
+                annotations: None,
                 role: "user".to_string(),
                 content: Some(MessageContent::Text("Hello".to_string())),
                 name: None,
@@ -2549,8 +2582,10 @@ mod tests {
     #[test]
     fn test_validate_response_format_json_schema_invalid_schema() {
         let request = ChatCompletionRequest {
+            max_tool_calls: None,
             model: "gpt-4".to_string(),
             messages: vec![ChatMessage {
+                annotations: None,
                 role: "user".to_string(),
                 content: Some(MessageContent::Text("Hello".to_string())),
                 name: None,
@@ -2598,8 +2633,10 @@ mod tests {
     #[test]
     fn test_convert_to_provider_request_with_extended_params() {
         let request = ChatCompletionRequest {
+            max_tool_calls: None,
             model: "gpt-4".to_string(),
             messages: vec![ChatMessage {
+                annotations: None,
                 role: "user".to_string(),
                 content: Some(MessageContent::Text("Hello".to_string())),
                 name: None,
@@ -2653,6 +2690,7 @@ mod tests {
     fn test_estimate_token_count() {
         let messages = vec![
             ChatMessage {
+                annotations: None,
                 role: "user".to_string(),
                 content: Some(MessageContent::Text("Hello, how are you?".to_string())), // ~20 chars = 5 tokens
                 name: None,
@@ -2661,6 +2699,7 @@ mod tests {
                 reasoning_content: None,
             },
             ChatMessage {
+                annotations: None,
                 role: "assistant".to_string(),
                 content: Some(MessageContent::Text("I'm doing well!".to_string())), // ~15 chars = 3-4 tokens
                 name: None,

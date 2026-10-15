@@ -246,6 +246,7 @@ impl NativeState {
             choices: vec![ChunkChoice {
                 index: 0,
                 delta: ChunkDelta {
+                    annotations: None,
                     role: (kind == "message_start").then(|| "assistant".into()),
                     content: text,
                     tool_calls: None,

@@ -339,6 +339,7 @@ mod tests {
             reasoning_effort: None,
             pre_computed_routing: None,
             native_messages: None,
+            server_tools: None,
         };
 
         let mut params = HashMap::new();
@@ -388,6 +389,7 @@ mod tests {
             reasoning_effort: None,
             pre_computed_routing: None,
             native_messages: None,
+            server_tools: None,
         };
 
         let params = HashMap::new();

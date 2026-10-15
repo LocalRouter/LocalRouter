@@ -48,6 +48,7 @@ pub fn response_to_completion(r: ResponseObject, provider_name: &str) -> Complet
     };
 
     let message = ChatMessage {
+        annotations: None,
         role: "assistant".into(),
         content: ChatMessageContent::Text(text_buf),
         tool_calls: if tool_calls.is_empty() {

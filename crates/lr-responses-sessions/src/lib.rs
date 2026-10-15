@@ -398,6 +398,7 @@ mod tests {
     #[test]
     fn history_serialization_roundtrips() {
         let msgs = vec![ChatMessage {
+            annotations: None,
             role: "user".into(),
             content: lr_providers::ChatMessageContent::Text("hi".into()),
             tool_calls: None,

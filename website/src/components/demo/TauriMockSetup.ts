@@ -19,10 +19,12 @@
 import { mockIPC, mockWindows, clearMocks } from '@tauri-apps/api/mocks'
 import { emit } from '@tauri-apps/api/event'
 import type { InvokeArgs } from '@tauri-apps/api/core'
-import type { AutoModelConfig, NamedRouteStatus, NamedRouteVersions, RouteSnapshot, GetNamedRouteParams, MutateNamedRouteParams, ClientPrivacyStatus, GetClientPrivacyParams, SetClientPrivacyParams, AttestProviderPrivacyParams, ClientSecurityStatus, GetClientSecurityParams, SetClientSecurityParams, RevokeClientCredentialsParams, ApiPathSupport, McpConnectionDiscovery, SkillSourceInfo } from '@app/types/tauri-commands'
+import type { UpstreamToolsPolicy, GetClientUpstreamToolsParams, SetClientUpstreamToolsParams, AutoModelConfig, NamedRouteStatus, NamedRouteVersions, RouteSnapshot, GetNamedRouteParams, MutateNamedRouteParams, ClientPrivacyStatus, GetClientPrivacyParams, SetClientPrivacyParams, AttestProviderPrivacyParams, ClientSecurityStatus, GetClientSecurityParams, SetClientSecurityParams, RevokeClientCredentialsParams, ApiPathSupport, McpConnectionDiscovery, SkillSourceInfo } from '@app/types/tauri-commands'
 import { toast } from 'sonner'
 import { mockReplay } from './mockReplay'
 import { mockData } from './mockData'
+
+const mockUpstreamTools = new Map<string, UpstreamToolsPolicy>()
 import { routingPolicyIssue } from '@app/components/strategy/routing-policy-status'
 import { matchesFilter } from '@app/views/monitor/monitor-events'
 import type { MonitorEventFilter, MonitorEventSummary } from '@app/types/tauri-commands'
@@ -1436,6 +1438,18 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       setTimeout(() => emit('clients-changed', {}), 10)
     }
     return null
+  },
+  'get_client_upstream_tools': (args: GetClientUpstreamToolsParams): UpstreamToolsPolicy => {
+    if (!mockData.clients.some(client => client.id === args.clientId)) throw 'Client not found'
+    return structuredClone(mockUpstreamTools.get(args.clientId) ?? { allowed_tools: [], max_tool_calls: 8 })
+  },
+  'set_client_upstream_tools': (args: SetClientUpstreamToolsParams): UpstreamToolsPolicy => {
+    if (!mockData.clients.some(client => client.id === args.clientId)) throw 'Client not found'
+    if (args.maxToolCalls !== null && (!Number.isInteger(args.maxToolCalls) || args.maxToolCalls < 1 || args.maxToolCalls > 30)) throw 'Step cap must be between 1 and 30'
+    if (new Set(args.allowedTools).size !== args.allowedTools.length || args.allowedTools.some(tool => !['web_search', 'web_fetch'].includes(tool))) throw 'Invalid tool permissions'
+    const policy = { allowed_tools: [...args.allowedTools], max_tool_calls: args.maxToolCalls }
+    mockUpstreamTools.set(args.clientId, policy)
+    return structuredClone(policy)
   },
   'get_client_privacy': (args: GetClientPrivacyParams): ClientPrivacyStatus => clientPrivacyStatus(args.clientId),
   'set_client_privacy': (args: SetClientPrivacyParams): ClientPrivacyStatus => {

@@ -16,6 +16,8 @@ use tokio::sync::Mutex as AsyncMutex;
 use tracing::{debug, error, info};
 use uuid::Uuid;
 
+mod upstream_tools;
+pub use upstream_tools::*;
 mod named_routes;
 pub use named_routes::*;
 mod client_security;

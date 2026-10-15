@@ -53,6 +53,7 @@ fn test_completion_request_with_tools() {
     let request = CompletionRequest {
         model: "gpt-4".to_string(),
         messages: vec![ChatMessage {
+            annotations: None,
             role: "user".to_string(),
             content: ChatMessageContent::Text("What's the weather in San Francisco?".to_string()),
             tool_calls: None,
@@ -101,6 +102,7 @@ fn test_completion_request_with_tools() {
         reasoning_effort: None,
         pre_computed_routing: None,
         native_messages: None,
+        server_tools: None,
     };
 
     // Verify tools are present
@@ -121,6 +123,7 @@ fn test_chat_message_with_tool_calls() {
     };
 
     let message = ChatMessage {
+        annotations: None,
         role: "assistant".to_string(),
         content: ChatMessageContent::Text("".to_string()),
         tool_calls: Some(vec![tool_call]),
@@ -141,6 +144,7 @@ fn test_chat_message_with_tool_calls() {
 #[test]
 fn test_tool_response_message() {
     let message = ChatMessage {
+        annotations: None,
         role: "tool".to_string(),
         content: ChatMessageContent::Text(r#"{"temperature":72,"conditions":"sunny"}"#.to_string()),
         tool_calls: None,
@@ -185,6 +189,7 @@ fn test_parallel_tool_calls() {
     ];
 
     let message = ChatMessage {
+        annotations: None,
         role: "assistant".to_string(),
         content: ChatMessageContent::Text("".to_string()),
         tool_calls: Some(tool_calls),
@@ -212,6 +217,7 @@ fn test_parallel_tool_responses() {
     // Test that responses for multiple tool calls can be sent back
     let responses = [
         ChatMessage {
+            annotations: None,
             role: "tool".to_string(),
             content: ChatMessageContent::Text(
                 r#"{"temperature":72,"conditions":"sunny"}"#.to_string(),
@@ -222,6 +228,7 @@ fn test_parallel_tool_responses() {
             reasoning_content: None,
         },
         ChatMessage {
+            annotations: None,
             role: "tool".to_string(),
             content: ChatMessageContent::Text(
                 r#"{"temperature":45,"conditions":"rainy"}"#.to_string(),
@@ -232,6 +239,7 @@ fn test_parallel_tool_responses() {
             reasoning_content: None,
         },
         ChatMessage {
+            annotations: None,
             role: "tool".to_string(),
             content: ChatMessageContent::Text(
                 r#"{"time":"2026-01-20T15:30:00-08:00"}"#.to_string(),

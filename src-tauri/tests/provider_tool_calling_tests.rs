@@ -12,6 +12,7 @@ use serde_json::json;
 fn test_tool_call_message_structure() {
     // Test that ChatMessage correctly holds tool calls
     let message = ChatMessage {
+        annotations: None,
         role: "assistant".to_string(),
         content: ChatMessageContent::Text("".to_string()),
         tool_calls: Some(vec![
@@ -46,6 +47,7 @@ fn test_tool_call_message_structure() {
 fn test_tool_response_message_structure() {
     // Test that ChatMessage correctly represents tool responses
     let message = ChatMessage {
+        annotations: None,
         role: "tool".to_string(),
         content: ChatMessageContent::Text(r#"{"temperature":72,"conditions":"sunny"}"#.to_string()),
         tool_calls: None,
@@ -65,6 +67,7 @@ fn test_completion_request_with_tools() {
     let request = CompletionRequest {
         model: "gpt-4".to_string(),
         messages: vec![ChatMessage {
+            annotations: None,
             role: "user".to_string(),
             content: ChatMessageContent::Text("What's the weather?".to_string()),
             tool_calls: None,
@@ -114,6 +117,7 @@ fn test_completion_request_with_tools() {
         reasoning_effort: None,
         pre_computed_routing: None,
         native_messages: None,
+        server_tools: None,
     };
 
     assert!(request.tools.is_some());
@@ -169,6 +173,7 @@ fn test_tool_definition_serialization() {
 fn test_message_with_both_content_and_tool_calls() {
     // Some models may return both text content and tool calls
     let message = ChatMessage {
+        annotations: None,
         role: "assistant".to_string(),
         content: ChatMessageContent::Text("Let me check that for you.".to_string()),
         tool_calls: Some(vec![ToolCall {
@@ -194,6 +199,7 @@ fn test_conversation_with_tool_calling_flow() {
     let messages = [
         // 1. User asks a question
         ChatMessage {
+            annotations: None,
             role: "user".to_string(),
             content: ChatMessageContent::Text("What's the weather in Tokyo?".to_string()),
             tool_calls: None,
@@ -203,6 +209,7 @@ fn test_conversation_with_tool_calling_flow() {
         },
         // 2. Assistant decides to use a tool
         ChatMessage {
+            annotations: None,
             role: "assistant".to_string(),
             content: ChatMessageContent::Text("".to_string()),
             tool_calls: Some(vec![ToolCall {
@@ -219,6 +226,7 @@ fn test_conversation_with_tool_calling_flow() {
         },
         // 3. Tool returns a result
         ChatMessage {
+            annotations: None,
             role: "tool".to_string(),
             content: ChatMessageContent::Text(
                 r#"{"temperature":18,"conditions":"cloudy"}"#.to_string(),
@@ -230,6 +238,7 @@ fn test_conversation_with_tool_calling_flow() {
         },
         // 4. Assistant synthesizes the response
         ChatMessage {
+            annotations: None,
             role: "assistant".to_string(),
             content: ChatMessageContent::Text(
                 "In Tokyo, it's currently 18°C and cloudy.".to_string(),

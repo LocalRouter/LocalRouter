@@ -384,6 +384,7 @@ pub fn completion_from_native(body: Value, provider: &str) -> AppResult<crate::C
         choices: vec![crate::CompletionChoice {
             index: 0,
             message: crate::ChatMessage {
+                annotations: None,
                 role: "assistant".into(),
                 content: crate::ChatMessageContent::Text(text),
                 tool_calls: (!tools.is_empty()).then_some(tools),
@@ -731,6 +732,7 @@ impl MessagesRequest {
         result.stream = self.stream;
         if let Some(system) = &self.system {
             result.messages.push(crate::ChatMessage {
+                annotations: None,
                 role: "system".into(),
                 content: translated_content(system)?,
                 tool_calls: None,
@@ -1007,6 +1009,7 @@ fn translate_message(
     pending: &mut std::collections::HashSet<String>,
 ) -> AppResult<()> {
     let plain = |role: String, content: crate::ChatMessageContent| crate::ChatMessage {
+        annotations: None,
         role,
         content,
         tool_calls: None,

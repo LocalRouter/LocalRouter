@@ -1902,6 +1902,7 @@ pub(crate) fn convert_to_provider_request(
             });
 
             Ok(ProviderChatMessage {
+                annotations: None,
                 role: msg.role.clone(),
                 content,
                 tool_calls,
@@ -1977,7 +1978,14 @@ pub(crate) fn convert_to_provider_request(
         top_k: request.top_k,
         seed: request.seed,
         repetition_penalty: request.repetition_penalty,
-        extensions: request.extensions.clone(),
+        extensions: request
+            .extensions
+            .clone()
+            .map(|mut extensions| {
+                extensions.remove(lr_providers::server_tools::INGRESS_EXTENSION);
+                extensions
+            })
+            .filter(|extensions| !extensions.is_empty()),
         // Tool calling (Bug #4 fix)
         tools,
         tool_choice,
@@ -1999,6 +2007,8 @@ pub(crate) fn convert_to_provider_request(
         reasoning_effort: request.reasoning_effort.clone(),
         pre_computed_routing: None,
         native_messages: None,
+        server_tools: crate::upstream_tools::context(request.extensions.as_ref())
+            .map_err(ApiErrorResponse::from)?,
     })
 }
 
@@ -2123,6 +2133,31 @@ pub(crate) async fn run_turn_pipeline(
     caps: PipelineCaps,
 ) -> ApiResult<TurnContext> {
     crate::privacy::check_auxiliaries(state, &auth.api_key_id)?;
+    // Validate tool permissions before classification, compression or any
+    // provider-backed auxiliary. Duplicate hops and MCP loops lack a verified
+    // execution mapping for upstream tools.
+    if crate::upstream_tools::context(chat_req.extensions.as_ref())
+        .map_err(ApiErrorResponse::from)?
+        .is_some()
+    {
+        if lr_types::is_duplicate_hop()
+            || state
+                .config_manager
+                .get()
+                .clients
+                .iter()
+                .any(|client| client.id == auth.api_key_id && client.is_mcp_via_llm())
+        {
+            return Err(ApiErrorResponse::bad_request(
+                "Server tools cannot be combined with automatic MCP or duplicate gateway hops",
+            ));
+        }
+        let mut projection = convert_to_provider_request(&chat_req)?;
+        state
+            .router
+            .prepare_upstream_tools(&auth.api_key_id, &mut projection)
+            .map_err(ApiErrorResponse::from)?;
+    }
     // Stage 1: validate
     if let Err(e) = validate_request(&chat_req) {
         super::monitor_helpers::emit_validation_error(
@@ -2201,6 +2236,9 @@ pub(crate) async fn run_turn_pipeline(
 
     // Stage 5: guardrails (parallel or sequential per caps)
     let guardrail_handle = if caps.parallel_guardrails
+        && !chat_req.extensions.as_ref().is_some_and(|extensions| {
+            extensions.contains_key(lr_providers::server_tools::INGRESS_EXTENSION)
+        })
         && client_auth.is_some()
         && state
             .safety_engine
@@ -2294,6 +2332,7 @@ pub(crate) async fn run_turn_pipeline(
                     .compressed_messages
                     .iter()
                     .map(|m| ChatMessage {
+                        annotations: None,
                         role: m.role.clone(),
                         content: Some(MessageContent::Text(m.content.clone())),
                         name: None,

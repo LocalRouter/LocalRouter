@@ -249,6 +249,12 @@ export interface ProviderPrivacyAssessment {
 }
 /** Rust: src-tauri/src/ui/commands_clients.rs - ClientPrivacyProvider */
 export interface ClientPrivacyProvider { instance_name: string; enabled: boolean; assessment: ProviderPrivacyAssessment }
+/** Rust: crates/lr-config/src/upstream_tools.rs - UpstreamToolsPolicy */
+export interface UpstreamToolsPolicy {
+  allowed_tools: ('web_search' | 'web_fetch')[]
+  max_tool_calls: number | null
+}
+
 /** Rust: src-tauri/src/ui/commands_clients.rs - ClientPrivacyStatus */
 export interface ClientPrivacyStatus {
   local_only: boolean
@@ -5192,3 +5198,12 @@ export interface AttestProviderPrivacyParams { instanceName: string; localExecut
 export interface GetNamedRouteParams { strategyId:string }
 /** Params for mutate_named_route */
 export interface MutateNamedRouteParams { strategyId:string; expectedFingerprint:string; operation:NamedRouteAction }
+
+/** Params for get_client_upstream_tools */
+export interface GetClientUpstreamToolsParams { clientId: string }
+/** Params for set_client_upstream_tools */
+export interface SetClientUpstreamToolsParams {
+  clientId: string
+  allowedTools: ('web_search' | 'web_fetch')[]
+  maxToolCalls: number | null
+}

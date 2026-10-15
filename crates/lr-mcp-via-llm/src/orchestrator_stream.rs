@@ -351,6 +351,7 @@ async fn streaming_loop(
             stream_request.tools = None;
             stream_request.tool_choice = None;
             stream_request.messages.push(ChatMessage {
+                annotations: None,
                 role: "system".to_string(),
                 content: ChatMessageContent::Text(
                     "You have used all available tool call iterations. You cannot call any more tools. \
@@ -528,6 +529,7 @@ async fn streaming_loop(
         };
 
         let accumulated_message = ChatMessage {
+            annotations: None,
             role: accumulated_role,
             content: ChatMessageContent::Text(accumulated_content.clone()),
             tool_calls: tool_calls.clone(),
@@ -674,6 +676,7 @@ async fn streaming_loop(
                             let available: Vec<&str> =
                                 mcp_tool_names.iter().map(|s| s.as_str()).collect();
                             request.messages.push(ChatMessage {
+                                annotations: None,
                                 role: "tool".to_string(),
                                 content: ChatMessageContent::Text(format!(
                                     "Error: tool '{}' does not exist. Available tools: [{}]",
@@ -838,6 +841,7 @@ async fn streaming_loop(
                         let available: Vec<&str> =
                             mcp_tool_names.iter().map(|s| s.as_str()).collect();
                         request.messages.push(ChatMessage {
+                            annotations: None,
                             role: "tool".to_string(),
                             content: ChatMessageContent::Text(format!(
                                 "Error: tool '{}' does not exist. Available tools: [{}]",
@@ -866,6 +870,7 @@ async fn streaming_loop(
                                 e, tool_call.function.arguments
                             );
                             request.messages.push(ChatMessage {
+                                annotations: None,
                                 role: "tool".to_string(),
                                 content: ChatMessageContent::Text(error_content),
                                 tool_calls: None,
@@ -944,6 +949,7 @@ async fn streaming_loop(
                     );
 
                     request.messages.push(ChatMessage {
+                        annotations: None,
                         role: "tool".to_string(),
                         content: ChatMessageContent::Text(result_content),
                         tool_calls: None,
@@ -1084,6 +1090,7 @@ async fn streaming_loop(
             choices: vec![ChunkChoice {
                 index: 0,
                 delta: ChunkDelta {
+                    annotations: None,
                     role: None,
                     content: None,
                     tool_calls: None,
@@ -1193,6 +1200,7 @@ fn build_finish_chunk_with_tools(tool_calls: &[&ToolCall], finish_reason: &str) 
         choices: vec![ChunkChoice {
             index: 0,
             delta: ChunkDelta {
+                annotations: None,
                 role: None,
                 content: None,
                 tool_calls: Some(tool_call_deltas),

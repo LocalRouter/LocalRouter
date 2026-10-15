@@ -257,6 +257,69 @@ pub async fn set_client_privacy(
     privacy_status(&client_id, &config_manager, &registry)
 }
 
+/// Explicit permissions for provider-executed retrieval; function/MCP tools
+/// continue to use their existing independent permissions.
+#[tauri::command]
+pub async fn get_client_upstream_tools(
+    client_id: String,
+    config_manager: State<'_, ConfigManager>,
+) -> Result<lr_config::UpstreamToolsPolicy, String> {
+    config_manager
+        .get()
+        .clients
+        .into_iter()
+        .find(|client| client.id == client_id)
+        .map(|client| client.security.upstream_tools)
+        .ok_or_else(|| "Client not found".into())
+}
+#[tauri::command]
+pub async fn set_client_upstream_tools(
+    client_id: String,
+    allowed_tools: Vec<lr_config::UpstreamToolKind>,
+    max_tool_calls: Option<u32>,
+    config_manager: State<'_, ConfigManager>,
+    client_manager: State<'_, Arc<lr_clients::ClientManager>>,
+    app: tauri::AppHandle,
+) -> Result<lr_config::UpstreamToolsPolicy, String> {
+    let policy = lr_config::UpstreamToolsPolicy {
+        allowed_tools,
+        max_tool_calls,
+    };
+    policy.validate()?;
+    let mut found = false;
+    config_manager
+        .update(|config| {
+            if let Some(client) = config
+                .clients
+                .iter_mut()
+                .find(|client| client.id == client_id)
+            {
+                client.security.upstream_tools = policy.clone();
+                found = true;
+            }
+        })
+        .map_err(|error| error.to_string())?;
+    if !found {
+        return Err("Client not found".into());
+    }
+    let security = config_manager
+        .get()
+        .clients
+        .into_iter()
+        .find(|client| client.id == client_id)
+        .ok_or_else(|| "Client not found".to_owned())?
+        .security;
+    client_manager
+        .set_security(&client_id, security)
+        .map_err(|error| error.to_string())?;
+    config_manager.save().await.map_err(|error| {
+        format!("Policy is active in this session but could not be saved: {error}")
+    })?;
+    app.emit("clients-changed", ())
+        .map_err(|error| error.to_string())?;
+    Ok(policy)
+}
+
 /// Client information for display
 ///
 /// NOTE: This struct does NOT contain the client secret. The secret is stored

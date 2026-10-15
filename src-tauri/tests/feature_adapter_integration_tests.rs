@@ -45,6 +45,7 @@ fn test_structured_outputs_person_schema_openai() {
     let mut request = CompletionRequest {
         model: "gpt-4".to_string(),
         messages: vec![ChatMessage {
+            annotations: None,
             role: "user".to_string(),
             content: ChatMessageContent::Text("Generate a person with name and age".to_string()),
             tool_calls: None,
@@ -80,6 +81,7 @@ fn test_structured_outputs_person_schema_openai() {
         reasoning_effort: None,
         pre_computed_routing: None,
         native_messages: None,
+        server_tools: None,
     };
 
     // Adapt request
@@ -125,6 +127,7 @@ fn test_structured_outputs_response_validation_valid() {
         choices: vec![CompletionChoice {
             index: 0,
             message: ChatMessage {
+                annotations: None,
                 role: "assistant".to_string(),
                 content: ChatMessageContent::Text(
                     r#"{"result": "success", "count": 42}"#.to_string(),
@@ -188,6 +191,7 @@ fn test_structured_outputs_response_validation_invalid() {
         choices: vec![CompletionChoice {
             index: 0,
             message: ChatMessage {
+                annotations: None,
                 role: "assistant".to_string(),
                 content: ChatMessageContent::Text(r#"{"age": 30}"#.to_string()), // Missing 'name'
                 tool_calls: None,
@@ -236,6 +240,7 @@ fn test_prompt_caching_anthropic_request() {
         model: "claude-opus-4-5".to_string(),
         messages: vec![
             ChatMessage {
+                annotations: None,
                 role: "system".to_string(),
                 content: ChatMessageContent::Text("You are a helpful assistant.".to_string()),
                 tool_calls: None,
@@ -244,6 +249,7 @@ fn test_prompt_caching_anthropic_request() {
                 reasoning_content: None,
             },
             ChatMessage {
+                annotations: None,
                 role: "user".to_string(),
                 content: ChatMessageContent::Text("What is the capital of France?".to_string()),
                 tool_calls: None,
@@ -252,6 +258,7 @@ fn test_prompt_caching_anthropic_request() {
                 reasoning_content: None,
             },
             ChatMessage {
+                annotations: None,
                 role: "assistant".to_string(),
                 content: ChatMessageContent::Text("Paris is the capital of France.".to_string()),
                 tool_calls: None,
@@ -260,6 +267,7 @@ fn test_prompt_caching_anthropic_request() {
                 reasoning_content: None,
             },
             ChatMessage {
+                annotations: None,
                 role: "user".to_string(),
                 content: ChatMessageContent::Text("What about Germany?".to_string()),
                 tool_calls: None,
@@ -296,6 +304,7 @@ fn test_prompt_caching_anthropic_request() {
         reasoning_effort: None,
         pre_computed_routing: None,
         native_messages: None,
+        server_tools: None,
     };
 
     // Adapt request
@@ -333,6 +342,7 @@ fn test_prompt_caching_cost_savings_calculation() {
         choices: vec![CompletionChoice {
             index: 0,
             message: ChatMessage {
+                annotations: None,
                 role: "assistant".to_string(),
                 content: ChatMessageContent::Text("Response content".to_string()),
                 tool_calls: None,
@@ -394,6 +404,7 @@ fn test_logprobs_openai_request() {
     let mut request = CompletionRequest {
         model: "gpt-4".to_string(),
         messages: vec![ChatMessage {
+            annotations: None,
             role: "user".to_string(),
             content: ChatMessageContent::Text("Say hello".to_string()),
             tool_calls: None,
@@ -429,6 +440,7 @@ fn test_logprobs_openai_request() {
         reasoning_effort: None,
         pre_computed_routing: None,
         native_messages: None,
+        server_tools: None,
     };
 
     // Adapt request
@@ -483,6 +495,7 @@ fn test_logprobs_response_extraction() {
         choices: vec![CompletionChoice {
             index: 0,
             message: ChatMessage {
+                annotations: None,
                 role: "assistant".to_string(),
                 content: ChatMessageContent::Text("Hello world".to_string()),
                 tool_calls: None,
@@ -538,6 +551,7 @@ fn test_logprobs_various_top_values() {
         let mut request = CompletionRequest {
             model: "gpt-4".to_string(),
             messages: vec![ChatMessage {
+                annotations: None,
                 role: "user".to_string(),
                 content: ChatMessageContent::Text("Test".to_string()),
                 tool_calls: None,
@@ -573,6 +587,7 @@ fn test_logprobs_various_top_values() {
             reasoning_effort: None,
             pre_computed_routing: None,
             native_messages: None,
+            server_tools: None,
         };
 
         let result = adapter.adapt_request(&mut request, &params);
@@ -615,6 +630,7 @@ fn test_json_mode_openai() {
     let mut request = CompletionRequest {
         model: "gpt-4".to_string(),
         messages: vec![ChatMessage {
+            annotations: None,
             role: "user".to_string(),
             content: ChatMessageContent::Text("Generate a JSON object with a greeting".to_string()),
             tool_calls: None,
@@ -650,6 +666,7 @@ fn test_json_mode_openai() {
         reasoning_effort: None,
         pre_computed_routing: None,
         native_messages: None,
+        server_tools: None,
     };
 
     // Adapt request
@@ -673,6 +690,7 @@ fn test_json_mode_anthropic() {
     let mut request = CompletionRequest {
         model: "claude-3-opus".to_string(),
         messages: vec![ChatMessage {
+            annotations: None,
             role: "user".to_string(),
             content: ChatMessageContent::Text("Generate a JSON object".to_string()),
             tool_calls: None,
@@ -708,6 +726,7 @@ fn test_json_mode_anthropic() {
         reasoning_effort: None,
         pre_computed_routing: None,
         native_messages: None,
+        server_tools: None,
     };
 
     // Adapt request
@@ -737,6 +756,7 @@ fn test_json_mode_validation_valid() {
         choices: vec![CompletionChoice {
             index: 0,
             message: ChatMessage {
+                annotations: None,
                 role: "assistant".to_string(),
                 content: ChatMessageContent::Text(
                     r#"{"greeting": "Hello, World!", "count": 42}"#.to_string(),
@@ -793,6 +813,7 @@ fn test_json_mode_validation_invalid() {
         choices: vec![CompletionChoice {
             index: 0,
             message: ChatMessage {
+                annotations: None,
                 role: "assistant".to_string(),
                 content: ChatMessageContent::Text("This is not valid JSON at all".to_string()),
                 tool_calls: None,
@@ -841,6 +862,7 @@ fn test_json_mode_all_providers() {
         let mut request = CompletionRequest {
             model: model.to_string(),
             messages: vec![ChatMessage {
+                annotations: None,
                 role: "user".to_string(),
                 content: ChatMessageContent::Text("Test".to_string()),
                 tool_calls: None,
@@ -876,6 +898,7 @@ fn test_json_mode_all_providers() {
             reasoning_effort: None,
             pre_computed_routing: None,
             native_messages: None,
+            server_tools: None,
         };
 
         let result = adapter.adapt_request(&mut request, &HashMap::new());
@@ -917,6 +940,7 @@ fn test_structured_outputs_with_prompt_caching() {
         model: "claude-3-opus".to_string(),
         messages: vec![
             ChatMessage {
+                annotations: None,
                 role: "system".to_string(),
                 content: ChatMessageContent::Text("You are a helpful assistant.".to_string()),
                 tool_calls: None,
@@ -925,6 +949,7 @@ fn test_structured_outputs_with_prompt_caching() {
                 reasoning_content: None,
             },
             ChatMessage {
+                annotations: None,
                 role: "user".to_string(),
                 content: ChatMessageContent::Text("What is 2+2?".to_string()),
                 tool_calls: None,
@@ -961,6 +986,7 @@ fn test_structured_outputs_with_prompt_caching() {
         reasoning_effort: None,
         pre_computed_routing: None,
         native_messages: None,
+        server_tools: None,
     };
 
     // Apply both adapters
@@ -998,6 +1024,7 @@ fn test_json_mode_with_logprobs() {
     let mut request = CompletionRequest {
         model: "gpt-4".to_string(),
         messages: vec![ChatMessage {
+            annotations: None,
             role: "user".to_string(),
             content: ChatMessageContent::Text("Generate JSON".to_string()),
             tool_calls: None,
@@ -1033,6 +1060,7 @@ fn test_json_mode_with_logprobs() {
         reasoning_effort: None,
         pre_computed_routing: None,
         native_messages: None,
+        server_tools: None,
     };
 
     // Apply both adapters

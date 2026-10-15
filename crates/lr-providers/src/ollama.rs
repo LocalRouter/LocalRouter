@@ -405,6 +405,7 @@ impl OllamaMessage {
         });
 
         ChatMessage {
+            annotations: None,
             role: self.role,
             content: ChatMessageContent::Text(self.content),
             name: None,
@@ -916,6 +917,7 @@ impl ModelProvider for OllamaProvider {
                                     choices: vec![ChunkChoice {
                                         index: 0,
                                         delta: ChunkDelta {
+                                            annotations: None,
                                             role: if is_first {
                                                 Some("assistant".to_string())
                                             } else {
@@ -1453,6 +1455,7 @@ mod tests {
         let mut req = CompletionRequest::new(
             "tev1:0.8b",
             vec![ChatMessage {
+                annotations: None,
                 role: "user".to_string(),
                 content: crate::ChatMessageContent::Text("pick".to_string()),
                 name: None,

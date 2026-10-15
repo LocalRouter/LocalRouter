@@ -54,6 +54,7 @@ impl lr_memory::CompactionLlm for RouterCompactionLlm {
             model: model.to_string(),
             messages: vec![
                 ChatMessage {
+                    annotations: None,
                     role: "system".to_string(),
                     content: ChatMessageContent::Text(
                         lr_memory::compaction::system_prompt().to_string(),
@@ -64,6 +65,7 @@ impl lr_memory::CompactionLlm for RouterCompactionLlm {
                     reasoning_content: None,
                 },
                 ChatMessage {
+                    annotations: None,
                     role: "user".to_string(),
                     content: ChatMessageContent::Text(transcript.to_string()),
                     tool_calls: None,
@@ -104,6 +106,7 @@ impl lr_memory::CompactionLlm for RouterCompactionLlm {
             },
             pre_computed_routing: None,
             native_messages: None,
+            server_tools: None,
         };
 
         // Serialize request for monitor event observability
@@ -2683,6 +2686,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::get_client_privacy,
             ui::commands::attest_provider_privacy,
             ui::commands::set_client_privacy,
+            ui::commands::get_client_upstream_tools,
+            ui::commands::set_client_upstream_tools,
             ui::commands::set_client_security,
             ui::commands::revoke_client_credentials,
             ui::commands::toggle_client_context_management,

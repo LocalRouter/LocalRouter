@@ -106,6 +106,7 @@ fn create_test_request(model: &str) -> CompletionRequest {
     CompletionRequest {
         model: model.to_string(),
         messages: vec![ChatMessage {
+            annotations: None,
             role: "user".to_string(),
             content: ChatMessageContent::Text("test".to_string()),
             tool_calls: None,
@@ -141,6 +142,7 @@ fn create_test_request(model: &str) -> CompletionRequest {
         reasoning_effort: None,
         pre_computed_routing: None,
         native_messages: None,
+        server_tools: None,
     }
 }
 

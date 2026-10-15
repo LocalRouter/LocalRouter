@@ -11,6 +11,7 @@ pub mod privacy;
 pub mod routes;
 pub mod state;
 pub mod types;
+pub mod upstream_tools;
 
 // Re-export manager types for convenience
 pub use manager::{ServerManager, ServerStatus};

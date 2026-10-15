@@ -549,6 +549,7 @@ impl CohereStreamParser {
                 }
                 Some(self.chunk(
                     ChunkDelta {
+                        annotations: None,
                         role: Some("assistant".to_string()),
                         ..empty_delta()
                     },
@@ -563,6 +564,7 @@ impl CohereStreamParser {
                 }
                 Some(self.chunk(
                     ChunkDelta {
+                        annotations: None,
                         content: content.text.clone(),
                         reasoning_content: content.thinking.clone(),
                         ..empty_delta()
@@ -575,6 +577,7 @@ impl CohereStreamParser {
                 let plan = message?.tool_plan.clone()?;
                 Some(self.chunk(
                     ChunkDelta {
+                        annotations: None,
                         reasoning_content: Some(plan),
                         ..empty_delta()
                     },
@@ -656,6 +659,7 @@ impl CohereStreamParser {
     fn tool_chunk(&self, call: ToolCallDelta) -> CompletionChunk {
         self.chunk(
             ChunkDelta {
+                annotations: None,
                 tool_calls: Some(vec![call]),
                 ..empty_delta()
             },
@@ -689,6 +693,7 @@ impl CohereStreamParser {
 
 fn empty_delta() -> ChunkDelta {
     ChunkDelta {
+        annotations: None,
         role: None,
         content: None,
         tool_calls: None,
@@ -972,6 +977,7 @@ impl ModelProvider for CohereProvider {
             choices: vec![CompletionChoice {
                 index: 0,
                 message: ChatMessage {
+                    annotations: None,
                     role: "assistant".to_string(),
                     content: super::ChatMessageContent::Text(text.join("\n")),
                     tool_calls,

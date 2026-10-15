@@ -126,6 +126,7 @@ impl FeatureAdapter for JsonModeAdapter {
                 // For Anthropic/Gemini, add JSON instruction to system message
                 let instruction = Self::create_json_instruction();
                 let system_message = crate::ChatMessage {
+                    annotations: None,
                     role: "system".to_string(),
                     content: crate::ChatMessageContent::Text(instruction),
                     tool_calls: None,
@@ -295,6 +296,7 @@ mod tests {
             reasoning_effort: None,
             pre_computed_routing: None,
             native_messages: None,
+            server_tools: None,
         };
 
         let mut params = HashMap::new();
@@ -349,6 +351,7 @@ mod tests {
             reasoning_effort: None,
             pre_computed_routing: None,
             native_messages: None,
+            server_tools: None,
         };
 
         let params = HashMap::new();
@@ -402,6 +405,7 @@ mod tests {
             reasoning_effort: None,
             pre_computed_routing: None,
             native_messages: None,
+            server_tools: None,
         };
 
         let mut params = HashMap::new();
@@ -429,6 +433,7 @@ mod tests {
             choices: vec![crate::CompletionChoice {
                 index: 0,
                 message: crate::ChatMessage {
+                    annotations: None,
                     role: "assistant".to_string(),
                     content: crate::ChatMessageContent::Text(
                         r#"{"result": "success", "count": 42}"#.to_string(),
@@ -483,6 +488,7 @@ mod tests {
             choices: vec![crate::CompletionChoice {
                 index: 0,
                 message: crate::ChatMessage {
+                    annotations: None,
                     role: "assistant".to_string(),
                     content: crate::ChatMessageContent::Text("This is not valid JSON".to_string()),
                     tool_calls: None,

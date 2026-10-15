@@ -48,6 +48,7 @@ mod session_tests {
         assert!(history.full_messages.is_empty());
 
         let messages = vec![ChatMessage {
+            annotations: None,
             role: "user".to_string(),
             content: ChatMessageContent::Text("hello".to_string()),
             tool_calls: None,
@@ -79,6 +80,7 @@ mod session_tests {
 
         let pending = PendingMixedExecution {
             full_assistant_message: ChatMessage {
+                annotations: None,
                 role: "assistant".to_string(),
                 content: ChatMessageContent::Text(String::new()),
                 tool_calls: None,
@@ -119,6 +121,7 @@ mod session_tests {
         let map = dashmap::DashMap::new();
         let make_pending = |handles: Vec<tokio::task::JoinHandle<_>>| PendingMixedExecution {
             full_assistant_message: ChatMessage {
+                annotations: None,
                 role: "assistant".to_string(),
                 content: ChatMessageContent::Text(String::new()),
                 tool_calls: None,
@@ -193,6 +196,7 @@ mod tool_injection_tests {
             reasoning_effort: None,
             pre_computed_routing: None,
             native_messages: None,
+            server_tools: None,
         }
     }
 
@@ -206,6 +210,7 @@ mod tool_injection_tests {
 
     fn msg(role: &str, text: &str) -> ChatMessage {
         ChatMessage {
+            annotations: None,
             role: role.to_string(),
             content: ChatMessageContent::Text(text.to_string()),
             tool_calls: None,
@@ -553,6 +558,7 @@ mod manager_tests {
 
     fn make_request(tool_call_ids: &[&str]) -> CompletionRequest {
         let mut messages = vec![ChatMessage {
+            annotations: None,
             role: "user".to_string(),
             content: ChatMessageContent::Text("Hi".to_string()),
             tool_calls: None,
@@ -562,6 +568,7 @@ mod manager_tests {
         }];
         for id in tool_call_ids {
             messages.push(ChatMessage {
+                annotations: None,
                 role: "tool".to_string(),
                 content: ChatMessageContent::Text(format!("Result for {}", id)),
                 tool_calls: None,
@@ -601,12 +608,14 @@ mod manager_tests {
             reasoning_effort: None,
             pre_computed_routing: None,
             native_messages: None,
+            server_tools: None,
         }
     }
 
     fn make_pending(client_ids: &[&str]) -> PendingMixedExecution {
         PendingMixedExecution {
             full_assistant_message: ChatMessage {
+                annotations: None,
                 role: "assistant".to_string(),
                 content: ChatMessageContent::Text(String::new()),
                 tool_calls: None,
@@ -933,6 +942,7 @@ mod session_matching_tests {
 
     fn msg(role: &str, text: &str) -> ChatMessage {
         ChatMessage {
+            annotations: None,
             role: role.to_string(),
             content: ChatMessageContent::Text(text.to_string()),
             tool_calls: None,
@@ -1196,6 +1206,7 @@ mod session_matching_manager_tests {
 
     fn msg(role: &str, text: &str) -> ChatMessage {
         ChatMessage {
+            annotations: None,
             role: role.to_string(),
             content: ChatMessageContent::Text(text.to_string()),
             tool_calls: None,

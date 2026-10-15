@@ -348,6 +348,7 @@ async fn run_agentic_loop_inner(
             completion_request.tools = None;
             completion_request.tool_choice = None;
             completion_request.messages.push(ChatMessage {
+                annotations: None,
                 role: "system".to_string(),
                 content: ChatMessageContent::Text(
                     "You have used all available tool call iterations. You cannot call any more tools. \
@@ -561,6 +562,7 @@ async fn run_agentic_loop_inner(
                             let available: Vec<&str> =
                                 mcp_tool_names.iter().map(|s| s.as_str()).collect();
                             request.messages.push(ChatMessage {
+                                annotations: None,
                                 role: "tool".to_string(),
                                 content: ChatMessageContent::Text(format!(
                                     "Error: tool '{}' does not exist. Available tools: [{}]",
@@ -753,6 +755,7 @@ async fn run_agentic_loop_inner(
                         let available: Vec<&str> =
                             mcp_tool_names.iter().map(|s| s.as_str()).collect();
                         request.messages.push(ChatMessage {
+                            annotations: None,
                             role: "tool".to_string(),
                             content: ChatMessageContent::Text(format!(
                                 "Error: tool '{}' does not exist. Available tools: [{}]",
@@ -782,6 +785,7 @@ async fn run_agentic_loop_inner(
                                 e, tool_call.function.arguments
                             );
                             request.messages.push(ChatMessage {
+                                annotations: None,
                                 role: "tool".to_string(),
                                 content: ChatMessageContent::Text(error_content),
                                 tool_calls: None,
@@ -828,6 +832,7 @@ async fn run_agentic_loop_inner(
 
                     // Add tool result message
                     request.messages.push(ChatMessage {
+                        annotations: None,
                         role: "tool".to_string(),
                         content: ChatMessageContent::Text(result_content),
                         tool_calls: None,
@@ -1027,6 +1032,7 @@ pub async fn resume_after_mixed(
     let full_assistant_message = std::mem::replace(
         &mut pending.full_assistant_message,
         ChatMessage {
+            annotations: None,
             role: String::new(),
             content: ChatMessageContent::Text(String::new()),
             tool_calls: None,
@@ -1075,6 +1081,7 @@ pub async fn resume_after_mixed(
                     Err(e) => format!("Error executing tool '{}': {}", tc.function.name, e),
                 };
                 messages.push(ChatMessage {
+                    annotations: None,
                     role: "tool".to_string(),
                     content: ChatMessageContent::Text(content),
                     tool_calls: None,
@@ -1111,6 +1118,7 @@ pub async fn resume_after_mixed(
                                 )
                             {
                                 result_to_push = ChatMessage {
+                                    annotations: None,
                                     content: ChatMessageContent::Text(compressed),
                                     ..client_result.clone()
                                 };
@@ -1127,6 +1135,7 @@ pub async fn resume_after_mixed(
                     tc.function.name
                 );
                 messages.push(ChatMessage {
+                    annotations: None,
                     role: "tool".to_string(),
                     content: ChatMessageContent::Text(format!(
                         "Error: no result received for tool call '{}' (tool: '{}')",
@@ -1717,6 +1726,7 @@ pub(crate) fn inject_server_instructions(request: &mut CompletionRequest, instru
     request.messages.insert(
         insert_idx,
         ChatMessage {
+            annotations: None,
             role: "system".to_string(),
             content: ChatMessageContent::Text(instructions.to_string()),
             tool_calls: None,

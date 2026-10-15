@@ -28,6 +28,7 @@ pub mod rate_limit;
 pub mod response_cache;
 mod route_rules;
 mod systemone;
+mod upstream_tools;
 
 // Re-export commonly used types
 pub use endpoint_cache::EndpointCapabilityCache;
@@ -858,6 +859,8 @@ impl Router {
         client_id: &str,
         request: CompletionRequest,
     ) -> AppResult<(CompletionResponse, Option<serde_json::Value>)> {
+        let mut request = request;
+        self.prepare_upstream_tools(client_id, &mut request)?;
         let (_client, mut strategy) = self.validate_client_and_strategy(client_id)?;
         strategy.free_tier_only = false;
 
@@ -886,6 +889,8 @@ impl Router {
         Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>,
         Option<serde_json::Value>,
     )> {
+        let mut request = request;
+        self.prepare_upstream_tools(client_id, &mut request)?;
         let (_client, mut strategy) = self.validate_client_and_strategy(client_id)?;
         strategy.free_tier_only = false;
 
@@ -1444,6 +1449,7 @@ impl Router {
                         | lr_providers::response_cache::SCOPE
                         | lr_providers::privacy::INTERNAL_EXTENSION
                         | lr_providers::privacy::ROUTE_CLIENT_EXTENSION
+                        | lr_providers::server_tools::INGRESS_EXTENSION
                 ) {
                     continue;
                 }
@@ -1912,7 +1918,7 @@ impl Router {
                     last_error = Some(router_error.clone());
 
                     // Continue to next model on retryable errors
-                    if !router_error.should_retry() {
+                    if request.server_tools.is_some() || !router_error.should_retry() {
                         error!(
                             "Non-retryable error encountered: {}",
                             router_error.to_log_string()
@@ -2326,7 +2332,7 @@ impl Router {
                     last_error = Some(router_error.clone());
 
                     // Continue to next model on retryable errors
-                    if !router_error.should_retry() {
+                    if request.server_tools.is_some() || !router_error.should_retry() {
                         error!(
                             "Non-retryable error encountered: {}",
                             router_error.to_log_string()
@@ -2453,6 +2459,15 @@ impl Router {
             // Update request with this model
             request.model = model_name.clone();
 
+            // Apply the same live tool/privacy checks as direct dispatch.
+            let (mut request, _) = self.provider_session_request(
+                client_id,
+                provider_name,
+                &request,
+                request.endpoint_type(),
+            )?;
+            request.model = model_name.clone();
+            let request = request.without_routing_metadata();
             // Try the completion
             match lr_providers::messages::dispatch_complete(
                 provider_instance.as_ref(),
@@ -2516,7 +2531,7 @@ impl Router {
                             | AppError::Internal(_)
                     );
 
-                    if !should_retry {
+                    if request.server_tools.is_some() || !should_retry {
                         // Non-retryable error (e.g., validation error) - fail immediately
                         warn!("Non-retryable error, stopping retry attempts");
                         return Err(e);
@@ -2570,6 +2585,7 @@ impl Router {
     ) -> AppResult<(CompletionResponse, Option<serde_json::Value>)> {
         let mut request = request;
         self.prepare_privacy_request(client_id, &mut request)?;
+        self.prepare_upstream_tools(client_id, &mut request)?;
         lr_providers::session::prepare_turn(&mut request)?;
         debug!(
             "Routing completion request for client '{}', model '{}'",
@@ -2686,6 +2702,7 @@ impl Router {
     )> {
         let mut request = request;
         self.prepare_privacy_request(client_id, &mut request)?;
+        self.prepare_upstream_tools(client_id, &mut request)?;
         lr_providers::session::prepare_turn(&mut request)?;
         debug!(
             "Routing streaming completion request for client '{}', model '{}'",
@@ -3820,6 +3837,7 @@ mod tests {
             choices: vec![lr_providers::ChunkChoice {
                 index: 0,
                 delta: lr_providers::ChunkDelta {
+                    annotations: None,
                     role: None,
                     content: Some(content.into()),
                     tool_calls: None,
@@ -4135,6 +4153,7 @@ mod tests {
             reasoning_effort: None,
             pre_computed_routing: None,
             native_messages: None,
+            server_tools: None,
         };
 
         let result = router.complete("invalid-key-id", request).await;

@@ -104,8 +104,11 @@ pub struct CreateResponseRequest {
     #[serde(default)]
     pub store: Option<bool>,
     #[serde(default)]
-    #[schema(value_type = Option<Vec<Object>>)]
+    #[schema(value_type = Option<Vec<crate::upstream_tools::PublicResponseTool>>)]
     pub tools: Option<Vec<Value>>,
+    #[serde(default)]
+    #[schema(minimum = 1, maximum = 30)]
+    pub max_tool_calls: Option<u32>,
     #[serde(default)]
     #[schema(value_type = Option<Object>)]
     pub tool_choice: Option<Value>,
@@ -540,6 +543,7 @@ fn build_chat_completion_request(
             messages.insert(
                 0,
                 ServerChatMessage {
+                    annotations: None,
                     role: "system".into(),
                     content: Some(ServerMessageContent::Text(instr.to_string())),
                     name: None,
@@ -554,6 +558,7 @@ fn build_chat_completion_request(
     // Translate input items into ChatMessages.
     let new_messages = match &req.input {
         ResponseInput::Text(s) => vec![ServerChatMessage {
+            annotations: None,
             role: "user".into(),
             content: Some(ServerMessageContent::Text(s.clone())),
             name: None,
@@ -585,6 +590,7 @@ fn build_chat_completion_request(
         .and_then(value_to_server_response_format);
 
     Ok(ChatCompletionRequest {
+        max_tool_calls: None,
         model: req.model.clone(),
         messages,
         temperature: req.temperature,
@@ -668,6 +674,7 @@ fn provider_msg_to_server(m: &ChatMessage) -> ServerChatMessage {
             .collect()
     });
     ServerChatMessage {
+        annotations: None,
         role: m.role.clone(),
         content,
         name: m.name.clone(),
@@ -702,6 +709,7 @@ fn response_item_to_server_message(item: &Value) -> Option<ServerChatMessage> {
             let content = obj.get("content")?;
             let content = Some(content_from_response_parts(content));
             Some(ServerChatMessage {
+                annotations: None,
                 role,
                 content,
                 name: None,
@@ -719,6 +727,7 @@ fn response_item_to_server_message(item: &Value) -> Option<ServerChatMessage> {
                 .unwrap_or("")
                 .to_string();
             Some(ServerChatMessage {
+                annotations: None,
                 role: "assistant".into(),
                 content: None,
                 name: None,
@@ -739,6 +748,7 @@ fn response_item_to_server_message(item: &Value) -> Option<ServerChatMessage> {
                 .unwrap_or("")
                 .to_string();
             Some(ServerChatMessage {
+                annotations: None,
                 role: "tool".into(),
                 content: Some(ServerMessageContent::Text(output)),
                 name: None,
@@ -1149,6 +1159,7 @@ fn build_stream_response(
             if let Some(store) = session_store.as_ref() {
                 let mut merged_all = merged_messages;
                 let assistant_msg = lr_providers::ChatMessage {
+                    annotations: None,
                     role: "assistant".into(),
                     content: lr_providers::ChatMessageContent::Text(assistant_text),
                     tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls) },
@@ -1423,6 +1434,7 @@ mod tests {
             choices: vec![CompletionChoice {
                 index: 0,
                 message: ProvMsg {
+                    annotations: None,
                     role: "assistant".into(),
                     content: ProvContent::Text(content.into()),
                     tool_calls: None,

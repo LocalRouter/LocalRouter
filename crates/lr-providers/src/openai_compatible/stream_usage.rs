@@ -470,6 +470,7 @@ mod tests {
                 vec![ChunkChoice {
                     index: 0,
                     delta: ChunkDelta {
+                        annotations: None,
                         role: None,
                         content: content.map(str::to_string),
                         tool_calls: None,

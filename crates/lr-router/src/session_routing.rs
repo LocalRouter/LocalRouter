@@ -220,7 +220,7 @@ impl Router {
         endpoint: EndpointType,
         route: &str,
     ) -> AppResult<Option<SessionHandle>> {
-        if self.client_privacy(client_id).no_retention {
+        if request.server_tools.is_some() || self.client_privacy(client_id).no_retention {
             if SessionOptions::from_request(request)?
                 .is_some_and(|options| options.require_continuity)
             {
@@ -267,7 +267,7 @@ impl Router {
         context: &Value,
         endpoint: EndpointType,
     ) -> Option<PreComputedRouting> {
-        if self.client_privacy(client_id).no_retention {
+        if request.server_tools.is_some() || self.client_privacy(client_id).no_retention {
             return None;
         }
         let config = self
@@ -300,7 +300,7 @@ impl Router {
         context: &Value,
         endpoint: EndpointType,
     ) -> Option<ClassificationSlot> {
-        if self.client_privacy(client_id).no_retention {
+        if request.server_tools.is_some() || self.client_privacy(client_id).no_retention {
             return None;
         }
         let config = self
@@ -354,10 +354,14 @@ impl Router {
         request: &CompletionRequest,
         endpoint: EndpointType,
     ) -> AppResult<(CompletionRequest, Option<SessionHandle>)> {
+        let mut checked = request.clone();
+        self.prepare_upstream_tools(client_id, &mut checked)?;
+        self.check_upstream_tools_provider(provider, &checked)?;
+        let request = &checked;
         let mut output =
             self.privacy_provider_request(client_id, provider, request.clone(), endpoint)?;
         let mut handle = None;
-        if self.client_privacy(client_id).no_retention {
+        if request.server_tools.is_some() || self.client_privacy(client_id).no_retention {
             if SessionOptions::from_request(request)?
                 .is_some_and(|options| options.require_continuity)
             {
@@ -484,7 +488,7 @@ impl Router {
         request: &CompletionRequest,
         endpoint: EndpointType,
     ) -> AppResult<Option<PreComputedRouting>> {
-        if self.client_privacy(client_id).no_retention {
+        if request.server_tools.is_some() || self.client_privacy(client_id).no_retention {
             if SessionOptions::from_request(request)?
                 .is_some_and(|options| options.require_continuity)
             {
