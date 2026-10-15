@@ -946,7 +946,7 @@ function LlmOverview({ event, data }: { event: MonitorEvent; data: EventData }) 
           ['Answered by', served && <Mono key="s">{served}</Mono>],
           ['Provider', data.provider],
           ['Finish reason', data.finish_reason],
-          ['Messages', data.message_count ? String(data.message_count) : null],
+          [data.client_api === 'search' || data.endpoint.endsWith('/search') ? 'Queries' : 'Messages', data.message_count ? String(data.message_count) : null],
           ['Tools offered', data.tool_count ? String(data.tool_count) : null],
         ]} />
       </Section>

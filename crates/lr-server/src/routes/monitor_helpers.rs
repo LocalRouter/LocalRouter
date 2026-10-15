@@ -140,7 +140,11 @@ pub fn emit_llm_call(
     // `messages`; count questions so the monitor list shows something useful.
     let systemone_questions = request_body.get("questions").and_then(|q| q.as_object());
     let is_systemone = systemone_questions.is_some() && request_body.get("state").is_some();
-    let message_count = if is_systemone {
+    let message_count = if let Some(query) = request_body.get("query") {
+        query
+            .as_array()
+            .map_or_else(|| usize::from(query.is_string()), Vec::len)
+    } else if is_systemone {
         systemone_questions.map(|q| q.len()).unwrap_or(0)
     } else {
         // Chat bodies carry `messages`; Responses bodies carry `input`.

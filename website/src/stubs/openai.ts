@@ -1,5 +1,7 @@
+import { mockData } from '../components/demo/mockData'
+import { mockUpstreamTools, mockClientPrivacy, mockClientSecurity, mockClientSecrets } from '../components/demo/mockClientPolicies'
 // Stub for openai package in demo mode
-// Always throws a demo error when trying to make API calls
+// Bundled fixtures only; API operations without a demo fixture remain unavailable.
 
 class DemoError extends Error {
   constructor() {
@@ -50,9 +52,7 @@ const mockCompletions = {
 
 // Mock models
 const mockModels = {
-  list: async () => {
-    throw new DemoError()
-  },
+  list: async () => ({ object: 'list' as const, data: mockData.models.map(model => ({ id: `${model.provider}/${model.id}`, object: 'model' as const, owned_by: model.provider })) }),
 }
 
 // ---------------------------------------------------------------------------
@@ -186,10 +186,35 @@ class OpenAI {
     this.apiKey = config?.apiKey ?? 'demo-key'
   }
 
-  // Generic request method (the real SDK's `client.post`). Only System One is
-  // simulated; everything else behaves like the other demo stubs.
-  post<T = any>(path: string, opts?: { body?: unknown }): ApiPromise<T> {
+  // Generic request method. System One and ranked search use local fixtures.
+  post<T = any>(path: string, opts?: { body?: unknown; signal?: AbortSignal; maxRetries?: number }): ApiPromise<T> {
     return apiPromise<T>(async () => {
+      if (opts?.signal?.aborted) throw new DOMException('Cancelled', 'AbortError')
+      if (path.replace(/\/+$/, '') === '/search') {
+        const clientId = [...mockClientSecrets.entries()].find(([, secret]) => secret === this.apiKey)?.[0]
+        const client = mockData.clients.find(client => client.id === clientId)
+        const security = clientId ? mockClientSecurity.get(clientId) : null
+        if (!client?.enabled || security?.hasCredential === false || (security?.expiry && Date.now() >= Date.parse(security.expiry))) throw new DemoApiError(401, 'Demo client credential is inactive')
+        const policy = mockUpstreamTools.get(client.id)
+        if (!policy?.allowed_tools.includes('web_search')) throw new DemoApiError(400, 'Enable web search for this demo client in Settings')
+        const privacy = mockClientPrivacy.get(client.id)
+        if (privacy?.local_only || privacy?.no_retention) throw new DemoApiError(400, 'Strict privacy does not permit this upstream search chain')
+
+        const body = opts?.body as { query?: unknown; model?: string; search_type?: unknown } | undefined
+        if (!body || typeof body.query !== 'string' || !body.query.trim()) throw new DemoApiError(400, 'Provide a nonempty search query')
+        const model = body.model || policy.default_search_model
+        if (!model) throw new DemoApiError(400, 'Provide a qualified search model or configure a client search default')
+        if (body.search_type !== undefined && !['web', 'fast', 'people'].includes(String(body.search_type))) throw new DemoApiError(400, 'Unsupported search type')
+        const downstream = model.slice(model.indexOf('/') + 1)
+        const mode = body.search_type ?? (downstream === 'perplexity/perplexity-search-fast' ? 'fast' : 'web')
+        if (downstream !== 'search' && (mode === 'people' || downstream !== `perplexity/perplexity-search${mode === 'fast' ? '-fast' : ''}`)) throw new DemoApiError(400, 'Search model must match the supported search type')
+        const data = {
+          id: 'search-demo', model,
+          results: [{ title: 'LocalRouter repository (demo result)', url: 'https://github.com/LocalRouter/LocalRouter', snippet: 'Illustrative local demo result. This demo does not run a live web search.' }],
+          extensions: { 'localrouter.search': { demo: true, billing_unit: 'request', upstream_requests: 0, cost_usd: null, cost_source: 'unknown' } },
+        }
+        return { data: data as T, response: new Response(JSON.stringify(data), { headers: { 'content-type': 'application/json' } }) }
+      }
       if (path.replace(/\/+$/, '') !== '/systemone') throw new DemoError()
       // Roughly a local decision model's latency.
       await new Promise(resolve => setTimeout(resolve, 350))

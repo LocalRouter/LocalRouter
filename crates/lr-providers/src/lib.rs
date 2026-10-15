@@ -158,6 +158,7 @@ pub mod openrouter;
 pub mod perplexity;
 pub mod privacy;
 pub mod registry;
+pub mod search;
 pub mod server_tools;
 pub(crate) mod sse_lines;
 pub mod systemone;
@@ -204,6 +205,15 @@ pub trait ModelProvider: Send + Sync {
 
     /// Sends a chat completion request
     async fn complete(&self, request: CompletionRequest) -> AppResult<CompletionResponse>;
+
+    fn search_protocol(&self) -> Option<search::SearchProtocol> {
+        None
+    }
+    async fn search(&self, _request: search::SearchRequest) -> AppResult<search::SearchResponse> {
+        Err(AppError::InvalidParams(
+            "Provider has no native ranked search API".into(),
+        ))
+    }
 
     /// Only verified provider/endpoint server-tool protocols opt in.
     fn server_tools_protocol(

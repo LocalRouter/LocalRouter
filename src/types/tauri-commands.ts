@@ -251,6 +251,7 @@ export interface ProviderPrivacyAssessment {
 export interface ClientPrivacyProvider { instance_name: string; enabled: boolean; assessment: ProviderPrivacyAssessment }
 /** Rust: crates/lr-config/src/upstream_tools.rs - UpstreamToolsPolicy */
 export interface UpstreamToolsPolicy {
+  default_search_model: string | null
   allowed_tools: ('web_search' | 'web_fetch')[]
   max_tool_calls: number | null
 }
@@ -4684,6 +4685,7 @@ export interface GetProviderFeatureSupportParams {
  * Rust: src-tauri/src/ui/commands_providers.rs - ApiPathSupport struct
  */
 export interface ApiPathSupport {
+  search: SupportLevel
   messages: SupportLevel
   messages_count_tokens: SupportLevel
   batches: SupportLevel
@@ -4964,6 +4966,7 @@ export type LlmApi =
   | 'system_one'
   | 'decisions'
   | 'embeddings'
+  | 'search'
   | 'moderations'
   | 'images'
   | 'audio'
@@ -5203,6 +5206,7 @@ export interface MutateNamedRouteParams { strategyId:string; expectedFingerprint
 export interface GetClientUpstreamToolsParams { clientId: string }
 /** Params for set_client_upstream_tools */
 export interface SetClientUpstreamToolsParams {
+  defaultSearchModel: string | null
   clientId: string
   allowedTools: ('web_search' | 'web_fetch')[]
   maxToolCalls: number | null

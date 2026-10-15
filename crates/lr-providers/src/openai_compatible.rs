@@ -496,6 +496,46 @@ struct OpenAIEmbeddingUsage {
 
 #[async_trait]
 impl ModelProvider for OpenAICompatibleProvider {
+    fn search_protocol(&self) -> Option<crate::search::SearchProtocol> {
+        (self.gateway_kind == Some(GatewayKind::Llmgateway))
+            .then_some(crate::search::SearchProtocol::LlmGateway)
+    }
+    async fn search(
+        &self,
+        request: crate::search::SearchRequest,
+    ) -> AppResult<crate::search::SearchResponse> {
+        if self.search_protocol().is_none() {
+            return Err(AppError::InvalidParams(
+                "Provider has no verified ranked search mapping".into(),
+            ));
+        }
+        let mut preferences = self.gateway_preferences.clone();
+        if preferences.allow_fallbacks == Some(false) {
+            preferences.allow_fallbacks = None;
+        }
+        if preferences != GatewayPreferences::default() {
+            return Err(AppError::InvalidParams(
+                "Configured gateway controls have no verified ranked search mapping".into(),
+            ));
+        }
+        let body = request.wire_body(crate::search::SearchProtocol::LlmGateway)?;
+        let response = self
+            .apply_headers(
+                crate::http_client::native_client()?
+                    .post(format!("{}/search", self.base_url))
+                    .json(&body),
+            )
+            .header("X-No-Fallback", "true")
+            .send()
+            .await
+            .map_err(|_| {
+                AppError::Provider(
+                    "Search dispatch failed; outcome may be unknown and is not retried".into(),
+                )
+            })?;
+        crate::search::read_response(response, request.max_results.unwrap_or(10)).await
+    }
+
     fn server_tools_protocol(
         &self,
         request: &CompletionRequest,

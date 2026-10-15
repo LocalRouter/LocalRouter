@@ -12,7 +12,7 @@
 - [x] P2 Native discounted Files/Batches lifecycle.
 - [x] P2/P3 Privacy profiles and client-key hygiene.
 - [x] P3 Versioned named routes and deterministic rules.
-- [ ] P3 Search/web fetch and upstream server tools.
+- [x] P3 Search/web fetch and upstream server tools.
 - [ ] P3 PDF/document inputs and OCR.
 - [ ] P3 Rerank API.
 - [ ] Later Video jobs and realtime sessions.
@@ -160,3 +160,13 @@ Exact stable 1.99.0 workspace Clippy/fmt/tests passed (111 suites, 4,443 passed,
 69 ignored, zero failures); all 72 frontend tests, both type checks/builds and
 production Chrome smoke passed. Ranked Search API remains pending, so the master
 search phase and overall roadmap remain unchecked.
+
+Ranked Search API is now implemented and validated, completing the search phase:
+Perplexity/LLM Gateway native contracts, current client default/grant and policy,
+sequential query scans/approvals, bounded response/error reads, request quotas and
+cancellation accounting, unknown fee metadata, SDK no-retry hints, authenticated
+aliases/OpenAPI, capability discovery, monitoring and Try It Out. Native Search is
+separate from generated answers and existing MCP mediation. Stable workspace
+Clippy/fmt/tests passed (111 suites, 4,451 passed, 69 ignored, zero failures); all
+72 frontend regressions, app/demo types/builds and production Chrome smoke passed.
+The previous native tool slice is a56c5fac. Documents/OCR is the next pending phase.

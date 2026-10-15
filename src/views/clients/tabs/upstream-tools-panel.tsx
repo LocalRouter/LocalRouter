@@ -54,6 +54,7 @@ export function UpstreamToolsPanel({
           clientId,
           allowedTools: policy.allowed_tools,
           maxToolCalls: policy.max_tool_calls,
+          defaultSearchModel: policy.default_search_model,
         } satisfies SetClientUpstreamToolsParams,
       )
       setPolicy(value)
@@ -80,6 +81,29 @@ export function UpstreamToolsPanel({
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
+        <label className="block space-y-1 text-sm">
+          Default ranked search model (optional)
+          <Input
+            aria-label="Default ranked search model"
+            placeholder="provider/search or gateway/perplexity/perplexity-search"
+            value={policy?.default_search_model ?? ''}
+            disabled={busy || !policy}
+            onChange={(event) =>
+              setPolicy(
+                (current) =>
+                  current && {
+                    ...current,
+                    default_search_model: event.target.value || null,
+                  },
+              )
+            }
+          />
+          <span className="block text-xs text-muted-foreground">
+            Used only when a /v1/search request omits model. Existing model
+            permissions apply. Direct Perplexity uses its local provider/search
+            route.
+          </span>
+        </label>
         {(['web_search', 'web_fetch'] as const).map((tool) => (
           <label key={tool} className="flex items-center gap-3 text-sm">
             <Checkbox

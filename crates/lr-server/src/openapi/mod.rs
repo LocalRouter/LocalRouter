@@ -47,6 +47,7 @@ use utoipa::OpenApi;
 
         // Embeddings endpoints
         crate::routes::embeddings::embeddings,
+        crate::routes::search::search,
 
         // Moderations endpoints
         crate::routes::moderations::moderations,
@@ -88,6 +89,11 @@ use utoipa::OpenApi;
     ),
     components(
         schemas(
+            lr_providers::search::SearchRequest,
+            lr_providers::search::SearchQuery,
+            lr_providers::search::SearchType,
+            lr_providers::search::SearchResponse,
+            lr_providers::search::SearchResult,
             crate::upstream_tools::PublicChatTool,
             crate::upstream_tools::PublicResponseTool,
             crate::upstream_tools::PublicFunctionTool,

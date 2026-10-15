@@ -24,7 +24,7 @@ import { toast } from 'sonner'
 import { mockReplay } from './mockReplay'
 import { mockData } from './mockData'
 
-const mockUpstreamTools = new Map<string, UpstreamToolsPolicy>()
+import { mockUpstreamTools, mockClientPrivacy, mockClientSecurity, mockClientSecrets } from './mockClientPolicies'
 import { routingPolicyIssue } from '@app/components/strategy/routing-policy-status'
 import { matchesFilter } from '@app/views/monitor/monitor-events'
 import type { MonitorEventFilter, MonitorEventSummary } from '@app/types/tauri-commands'
@@ -1298,7 +1298,6 @@ function validateDemoRoute(snapshot:RouteSnapshot) {
     }
   }
 }
-const mockClientPrivacy = new Map<string, { local_only: boolean; no_retention: boolean; metadata_only: boolean }>()
 function clientPrivacyStatus(clientId: string): ClientPrivacyStatus {
   const client = mockData.clients.find(c => c.id === clientId || c.client_id === clientId)
   if (!client) throw 'Client not found'
@@ -1324,7 +1323,6 @@ function clientPrivacyStatus(clientId: string): ClientPrivacyStatus {
     }),
   }
 }
-const mockClientSecurity = new Map<string, { expiry: string | null; reviewDays: number | null; hasCredential: boolean }>()
 function clientSecurityStatus(clientId: string): ClientSecurityStatus {
   const client = mockData.clients.find(client => client.id === clientId || client.client_id === clientId)
   if (!client) throw 'Client not found'
@@ -1429,6 +1427,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     setTimeout(() => emit('clients-changed', {}), 10)
     // Return tuple [secret, clientInfo] as expected by the wizard
     const secret = `lr_demo_${generateId()}_${generateId()}`
+    mockClientSecrets.set(newClient.id, secret)
     return [secret, newClient]
   },
   'update_client_name': (args) => {
@@ -1441,13 +1440,14 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   },
   'get_client_upstream_tools': (args: GetClientUpstreamToolsParams): UpstreamToolsPolicy => {
     if (!mockData.clients.some(client => client.id === args.clientId)) throw 'Client not found'
-    return structuredClone(mockUpstreamTools.get(args.clientId) ?? { allowed_tools: [], max_tool_calls: 8 })
+    return structuredClone(mockUpstreamTools.get(args.clientId) ?? { allowed_tools: [], max_tool_calls: 8, default_search_model: null })
   },
   'set_client_upstream_tools': (args: SetClientUpstreamToolsParams): UpstreamToolsPolicy => {
     if (!mockData.clients.some(client => client.id === args.clientId)) throw 'Client not found'
     if (args.maxToolCalls !== null && (!Number.isInteger(args.maxToolCalls) || args.maxToolCalls < 1 || args.maxToolCalls > 30)) throw 'Step cap must be between 1 and 30'
     if (new Set(args.allowedTools).size !== args.allowedTools.length || args.allowedTools.some(tool => !['web_search', 'web_fetch'].includes(tool))) throw 'Invalid tool permissions'
-    const policy = { allowed_tools: [...args.allowedTools], max_tool_calls: args.maxToolCalls }
+    if (args.defaultSearchModel !== null && (!args.defaultSearchModel.includes('/') || args.defaultSearchModel.length > 512 || /\s/.test(args.defaultSearchModel) || args.defaultSearchModel.startsWith('/') || args.defaultSearchModel.endsWith('/'))) throw 'Default search model must be a qualified provider/model'
+    const policy = { allowed_tools: [...args.allowedTools], max_tool_calls: args.maxToolCalls, default_search_model: args.defaultSearchModel }
     mockUpstreamTools.set(args.clientId, policy)
     return structuredClone(policy)
   },
@@ -1479,6 +1479,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'revoke_client_credentials': (args: RevokeClientCredentialsParams): ClientSecurityStatus => {
     const client = mockData.clients.find(client => client.id === args.clientId || client.client_id === args.clientId)
     if (!client) throw 'Client not found'
+    mockClientSecrets.delete(client.id)
     client.enabled = false
     const previous = mockClientSecurity.get(client.id)
     mockClientSecurity.set(client.id, { expiry: previous?.expiry ?? null, reviewDays: previous?.reviewDays ?? null, hasCredential: false })
@@ -1525,6 +1526,11 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'delete_client': (args) => {
     const idx = mockData.clients.findIndex(c => c.client_id === args?.clientId || c.id === args?.id)
     if (idx !== -1) {
+      const id = mockData.clients[idx].id
+      mockClientSecrets.delete(id)
+      mockClientSecurity.delete(id)
+      mockClientPrivacy.delete(id)
+      mockUpstreamTools.delete(id)
       mockData.clients.splice(idx, 1)
       toast.success('Client deleted (demo)')
       setTimeout(() => emit('clients-changed', {}), 10)
@@ -1550,9 +1556,17 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     const previous = mockClientSecurity.get(client.id)
     mockClientSecurity.set(client.id, { expiry: previous?.expiry ?? null, reviewDays: previous?.reviewDays ?? null, hasCredential: true })
     setTimeout(() => emit('clients-changed', {}), 10)
-    return `demo-secret-${generateId()}`
+    const secret = `lr_demo_${generateId()}_${generateId()}`
+    mockClientSecrets.set(client.id, secret)
+    return secret
   },
-  'get_client_value': () => null,
+  'get_client_value': (args): string | null => {
+    const client = mockData.clients.find(client => client.id === args?.id || client.client_id === args?.id)
+    if (!client || !(mockClientSecurity.get(client.id)?.hasCredential ?? true)) return null
+    let secret = mockClientSecrets.get(client.id)
+    if (!secret) { secret = `lr_demo_${generateId()}_${generateId()}`; mockClientSecrets.set(client.id, secret) }
+    return secret
+  },
 
   // Client mode, template, and guardrails
   'get_client_guardrails_config': (args) => {
@@ -3553,6 +3567,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     return [openai, anthropic, gemini, ollama, ollaya]
   },
   'get_api_path_support': (args): ApiPathSupport => ({
+    search: ['llmgateway', 'perplexity'].includes(mockData.providers.find(provider => provider.instance_name === args?.instanceName)?.provider_type ?? '') ? 'supported' : 'not_supported',
     batches: ['openai', 'openrouter'].includes(mockData.providers.find(provider => provider.instance_name === args?.instanceName)?.provider_type ?? '') ? 'supported' : 'not_supported',
     native_batch_cancel: mockData.providers.find(provider => provider.instance_name === args?.instanceName)?.provider_type === 'openai',
     native_batch_cleanup: mockData.providers.find(provider => provider.instance_name === args?.instanceName)?.provider_type === 'openrouter',
@@ -5395,6 +5410,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
           responses: { '200': { description: 'Successful response' } },
         },
       },
+      '/v1/search': { post: { summary: 'Search ranked page results', operationId: 'search', tags: ['search'], security: [{ BearerAuth: [] }], description: 'Explicit client search permission and qualified model/default required. Known Perplexity and LLM Gateway native adapters; request fees can be unknown.', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['query'], properties: { model: { type: 'string' }, query: { type: 'string' }, max_results: { type: 'integer', minimum: 1, maximum: 50 } } } } } }, responses: { '200': { description: 'Ranked page results and explicit unknown request fee' } } } },
       '/v1/embeddings': {
         post: {
           summary: 'Create embeddings',

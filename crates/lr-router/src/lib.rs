@@ -27,6 +27,7 @@ mod privacy;
 pub mod rate_limit;
 pub mod response_cache;
 mod route_rules;
+mod search;
 mod systemone;
 mod upstream_tools;
 

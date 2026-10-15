@@ -11,6 +11,7 @@ export const LLM_API_LABELS: Record<LlmApi, string> = {
   system_one: 'System One',
   decisions: 'Decisions',
   embeddings: 'Embeddings',
+  search: 'Ranked search',
   moderations: 'Moderations',
   images: 'Images',
   audio: 'Audio',
@@ -28,6 +29,7 @@ export const LLM_API_SHORT: Record<LlmApi, string> = {
   system_one: 'System One',
   decisions: 'Decisions',
   embeddings: 'Embeddings',
+  search: 'Ranked search',
   moderations: 'Moderation',
   images: 'Images',
   audio: 'Audio',
@@ -46,6 +48,7 @@ export function apiFromPath(path: string | null | undefined): LlmApi | null {
   if (p.endsWith('/api/chat') || p.endsWith('/api/generate')) return 'ollama_chat'
   if (p.endsWith('/decisions')) return 'decisions'
   if (p.endsWith('/systemone')) return 'system_one'
+  if (p.endsWith('/search')) return 'search'
   if (p.endsWith('/embeddings')) return 'embeddings'
   if (p.endsWith('/moderations')) return 'moderations'
   if (p.includes('/images/')) return 'images'

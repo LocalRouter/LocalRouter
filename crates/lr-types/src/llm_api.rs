@@ -27,6 +27,8 @@ pub enum LlmApi {
     Decisions,
     /// Embeddings (`/embeddings`).
     Embeddings,
+    /// Ranked retrieval, without a generated answer.
+    Search,
     /// Moderations (`/moderations`).
     Moderations,
     /// Image generation and edits (`/images/*`).
@@ -58,6 +60,8 @@ impl LlmApi {
             Some(Self::Decisions)
         } else if path.ends_with("/systemone") {
             Some(Self::SystemOne)
+        } else if path.ends_with("/search") {
+            Some(Self::Search)
         } else if path.ends_with("/embeddings") {
             Some(Self::Embeddings)
         } else if path.ends_with("/moderations") {

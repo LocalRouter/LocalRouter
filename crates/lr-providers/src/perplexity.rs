@@ -144,6 +144,28 @@ struct OpenAIStreamChoice {
 #[async_trait]
 #[allow(dead_code)]
 impl ModelProvider for PerplexityProvider {
+    fn search_protocol(&self) -> Option<crate::search::SearchProtocol> {
+        Some(crate::search::SearchProtocol::Perplexity)
+    }
+    async fn search(
+        &self,
+        request: crate::search::SearchRequest,
+    ) -> AppResult<crate::search::SearchResponse> {
+        let body = request.wire_body(crate::search::SearchProtocol::Perplexity)?;
+        let response = crate::http_client::native_client()?
+            .post(format!("{}/search", self.base_url))
+            .bearer_auth(&self.api_key)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|_| {
+                AppError::Provider(
+                    "Search dispatch failed; outcome may be unknown and is not retried".into(),
+                )
+            })?;
+        crate::search::read_response(response, request.max_results.unwrap_or(10)).await
+    }
+
     fn name(&self) -> &str {
         "perplexity"
     }
@@ -452,5 +474,46 @@ mod tests {
             .unwrap();
         assert_openai_stream(&collect(stream).await);
         assert!(!asked_for_usage(&received_body(&server).await));
+    }
+    #[tokio::test]
+    async fn ranked_search_uses_native_wire_provenance_and_never_reposts_redirects() {
+        use wiremock::matchers::{body_partial_json, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let mock = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/search")).and(body_partial_json(serde_json::json!({"query":["first","second"],"max_results":2})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"id":"native-search","results":[{"title":"Primary","url":"https://example.com","snippet":"Untrusted page content"}],"extensions":{"localrouter.search":{"cost_source":"free"}}}))).expect(1).mount(&mock).await;
+        let provider = PerplexityProvider::with_base_url("fixture".into(), mock.uri()).unwrap();
+        let request: crate::search::SearchRequest = serde_json::from_value(
+            serde_json::json!({"model":"search","query":["first","second"],"max_results":2}),
+        )
+        .unwrap();
+        let response = provider.search(request.clone()).await.unwrap();
+        assert_eq!(
+            response.results[0].snippet.as_deref(),
+            Some("Untrusted page content")
+        );
+        assert_eq!(
+            response.extensions.as_ref().unwrap()["localrouter.search"]["cost_source"],
+            "unknown"
+        );
+        let requests = mock.received_requests().await.unwrap();
+        assert!(requests[0]
+            .body_json::<serde_json::Value>()
+            .unwrap()
+            .get("model")
+            .is_none());
+        mock.verify().await;
+        mock.reset().await;
+        Mock::given(method("POST"))
+            .and(path("/search"))
+            .respond_with(
+                ResponseTemplate::new(307)
+                    .insert_header("location", format!("{}/reposted", mock.uri())),
+            )
+            .expect(1)
+            .mount(&mock)
+            .await;
+        assert!(provider.search(request).await.is_err());
+        assert_eq!(mock.received_requests().await.unwrap().len(), 1);
     }
 }

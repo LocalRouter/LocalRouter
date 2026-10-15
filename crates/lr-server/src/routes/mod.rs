@@ -21,6 +21,7 @@ pub mod monitor_helpers;
 pub mod oauth;
 pub mod pipeline;
 pub mod responses;
+pub mod search;
 pub(crate) mod stream_usage;
 pub mod systemone;
 

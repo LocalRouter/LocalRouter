@@ -2712,3 +2712,6 @@ mod named_routes_endpoint_cases;
 
 #[path = "fixtures/upstream_tools_endpoint_cases.rs"]
 mod upstream_tools_endpoint_cases;
+
+#[path = "fixtures/ranked_search_endpoint_cases.rs"]
+mod ranked_search_endpoint_cases;

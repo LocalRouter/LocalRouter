@@ -373,6 +373,8 @@ async fn test_all_api_routes_require_auth() {
         // Completions
         ("POST", "/completions"),
         ("POST", "/v1/completions"),
+        ("POST", "/search"),
+        ("POST", "/v1/search"),
         // Embeddings
         ("POST", "/embeddings"),
         ("POST", "/v1/embeddings"),

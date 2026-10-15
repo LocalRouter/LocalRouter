@@ -276,12 +276,14 @@ pub async fn get_client_upstream_tools(
 pub async fn set_client_upstream_tools(
     client_id: String,
     allowed_tools: Vec<lr_config::UpstreamToolKind>,
+    default_search_model: Option<String>,
     max_tool_calls: Option<u32>,
     config_manager: State<'_, ConfigManager>,
     client_manager: State<'_, Arc<lr_clients::ClientManager>>,
     app: tauri::AppHandle,
 ) -> Result<lr_config::UpstreamToolsPolicy, String> {
     let policy = lr_config::UpstreamToolsPolicy {
+        default_search_model,
         allowed_tools,
         max_tool_calls,
     };

@@ -79,5 +79,67 @@ Primary contracts reviewed 2026-10-15:
 - https://openrouter.ai/docs/guides/features/server-tools/web-fetch
 - https://docs.llmgateway.io/features/web-search
 
-Ranked `/v1/search` is a separate retrieval API and is tracked in the implementation
-plan. This document describes model-triggered provider tools only.
+## Ranked Search API
+
+`POST /v1/search` and `/search` return ranked page records rather than generated
+answers. They require the same explicit client web-search grant. Configure a
+qualified default ranked search model in Client Settings, or provide one per call.
+A default is a preference and never grants model access.
+
+For a configured direct Perplexity instance named `perplexity-account`:
+
+```json
+{
+  "model": "perplexity-account/search",
+  "query": ["first related query", "second related query"],
+  "search_type": "fast",
+  "max_results": 5,
+  "max_tokens_per_page": 1000
+}
+```
+
+`search` here is a local capability route, not an invented upstream model: the
+adapter calls Perplexity `/search` without a model field. Direct Perplexity supports
+web, fast and people modes; web/fast results are capped at 20 and people at 50.
+Direct context-size shorthand is rejected; use explicit content token bounds.
+
+For LLM Gateway, use `gateway/perplexity/perplexity-search` or
+`gateway/perplexity/perplexity-search-fast`, with the matching explicit search type
+when supplied. A fast model also selects fast mode when type is omitted. People
+search and unsupported models are rejected. Automatic model selection and arbitrary
+gateway routing controls have no verified ranked-search mapping in this version.
+
+Queries accept a string or 1–5 related strings, each up to 4096 UTF-8 bytes. Result,
+content-token, date, domain and country/language options are validated before a
+search dispatch and checked again by the adapter. Date filters use MM/DD/YYYY.
+Domain lists accept either included hosts or excluded hosts prefixed with `-`, not
+both. URLs and URL credentials are not accepted as domain filters.
+
+The response preserves the upstream id, ranked order, URLs, snippets and dates.
+LocalRouter does not fetch a result URL. Results are untrusted content. Response
+reads are limited to 4 MiB, with a separate 64 KiB limit for upstream error bodies.
+A result rejected after dispatch may still have incurred a provider fee.
+
+Ranked search performs one HTTP operation without retries, redirects, classifiers,
+response caching or affinity. Guardrails and secret scans run sequentially on the
+queries through the shared pipeline. Chat-specific approval rewrites are rejected
+rather than silently sending an unapproved original query. Automatic MCP and
+duplicate hops are unsupported. Configured MCP mediation remains independent.
+
+Requests and unsuccessful/cancelled dispatches contribute to normal request
+quotas. Unknown request fees cannot satisfy cost ceilings or free-only routing, so
+those requests fail before dispatch. Tokenless metric rows do not establish a zero
+provider bill: the response and monitor preserve unknown cost explicitly. Strict
+privacy rejects unverified retrieval chains. SDK error responses after the dispatch
+boundary include `x-should-retry: false`; Try It Out also disables SDK retries.
+
+Try It Out → Search uses client mode, an explicit model or its client default, and
+shows ranked sources separately from model-written answers. The website's result
+fixture is clearly labeled as a demo and makes no external search request. It uses
+fake local demo credentials and the saved demo search permission/privacy settings.
+
+Primary ranked-search contracts and billing basis:
+
+- https://docs.llmgateway.io/v1_search
+- https://docs.perplexity.ai/api-reference/search-post
+- https://docs.perplexity.ai/docs/getting-started/pricing
