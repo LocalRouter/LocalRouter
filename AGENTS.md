@@ -364,11 +364,15 @@ snapshot (registered `CatalogOnly`), so refresh it via step 1. The in-code
 
 ## Environment
 
-**Dev**: `~/.localrouter-dev/`
-**Prod**:
-- macOS: `~/Library/Application Support/LocalRouter/`
-- Linux: `~/.localrouter/`
-- Windows: `%APPDATA%\LocalRouter\`
+Config and data directory (`lr_utils::paths::config_dir`), the same on every
+platform, under the user's home directory:
+
+**Dev** (debug builds): `~/.localrouter-dev/`
+**Prod** (release builds): `~/.localrouter/` (Windows: `%USERPROFILE%\.localrouter\`)
+**Override**: `LOCALROUTER_ENV=<name>` uses `~/.localrouter-<name>/`
+
+`settings.yaml` holds the config. On macOS, `~/Library/Application Support/LocalRouter/`
+is not the live data directory.
 
 ---
 
