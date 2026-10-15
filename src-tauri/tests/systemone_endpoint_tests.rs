@@ -2730,3 +2730,6 @@ mod rerank_endpoint_cases;
 
 #[path = "fixtures/videos_endpoint_cases.rs"]
 mod videos_endpoint_cases;
+
+#[path = "fixtures/realtime_endpoint_cases.rs"]
+mod realtime_endpoint_cases;

@@ -86,17 +86,19 @@ impl Router {
         {
             return Err(AppError::InvalidParams("Native operation charges cannot be reliably bounded before dispatch; cost-limited/free-only requests are unsupported".into()));
         }
-        if matches!(operation, NativeOperation::Rerank | NativeOperation::Video)
-            && (self.rate_limiter.has_token_limits(client_id)
-                || strategy.rate_limits.iter().any(|limit| {
-                    limit.enabled
-                        && matches!(
-                            limit.limit_type,
-                            lr_config::RateLimitType::InputTokens
-                                | lr_config::RateLimitType::OutputTokens
-                                | lr_config::RateLimitType::TotalTokens
-                        )
-                }))
+        if matches!(
+            operation,
+            NativeOperation::Rerank | NativeOperation::Video | NativeOperation::Realtime
+        ) && (self.rate_limiter.has_token_limits(client_id)
+            || strategy.rate_limits.iter().any(|limit| {
+                limit.enabled
+                    && matches!(
+                        limit.limit_type,
+                        lr_config::RateLimitType::InputTokens
+                            | lr_config::RateLimitType::OutputTokens
+                            | lr_config::RateLimitType::TotalTokens
+                    )
+            }))
         {
             return Err(AppError::InvalidParams("Native operation billing units cannot satisfy configured token ceilings; use explicit request quotas".into()));
         }

@@ -9,6 +9,7 @@ pub mod mcp_request_metrics;
 pub mod middleware;
 pub mod openapi;
 pub mod privacy;
+pub mod realtime;
 pub mod routes;
 pub mod state;
 pub mod types;
@@ -360,6 +361,10 @@ fn build_app(state: AppState, enable_cors: bool, shutdown: CancellationToken) ->
         .route("/v1/search", post(routes::search::search))
         .route("/v1/ocr", post(routes::ocr::ocr))
         .route("/v1/rerank", post(routes::rerank::rerank))
+        .route("/v1/realtime", get(realtime::upgrade))
+        .route("/v1/realtime/client_secrets", post(realtime::client_secret))
+        .route("/realtime", get(realtime::upgrade))
+        .route("/realtime/client_secrets", post(realtime::client_secret))
         .route("/v1/videos", post(video_jobs::create).get(video_jobs::list))
         .route(
             "/v1/videos/{video_id}",

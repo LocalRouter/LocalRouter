@@ -755,6 +755,7 @@ pub struct FeatureStatsSnapshot {
 pub struct AppState {
     /// Private owned files and durable native batch state; lazy, no startup IO.
     pub batch_store: Arc<lr_batches::BatchStore>,
+    pub realtime_tickets: Arc<crate::realtime::tickets::Tickets>,
     pub video_io: Arc<tokio::sync::Semaphore>,
     pub batch_runtime: Arc<crate::batch_jobs::BatchRuntime>,
     pub file_upload_slots: Arc<tokio::sync::Semaphore>,
@@ -946,6 +947,7 @@ impl AppState {
         rate_limiter.set_batch_store(batch_store.clone());
         let result = Self {
             batch_store,
+            realtime_tickets: Arc::new(crate::realtime::tickets::Tickets::default()),
             video_io: Arc::new(tokio::sync::Semaphore::new(4)),
             batch_runtime: Arc::new(crate::batch_jobs::BatchRuntime::default()),
             file_upload_slots: Arc::new(tokio::sync::Semaphore::new(2)),

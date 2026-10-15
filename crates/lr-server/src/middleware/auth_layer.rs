@@ -74,6 +74,20 @@ where
                 return inner.call(req).await;
             }
 
+            match crate::realtime::authenticate_ticket(&state,&mut req) {
+                Ok(Some(ticket))=>{
+                    let owner=ticket.owner.clone();
+                    req.extensions_mut().insert(AuthContext{credential_scope:Some(ticket.credential_tag.clone()),api_key_id:owner.clone(),model_selection:None});
+                    req.extensions_mut().insert(ClientAuthContext{client_id:owner.clone()});
+                    req.extensions_mut().insert(ticket);
+                    let mut response=inner.call(req).await?;
+                    response.extensions_mut().insert(LoggedClientId(owner));
+                    return Ok(response);
+                }
+                Ok(None)=>{},
+                Err(error)=>return Ok(axum::response::IntoResponse::into_response(error)),
+            }
+
             // Anthropic SDKs use x-api-key. Normalize it into the existing
             // client-secret validator only on native Messages routes; this is
             // never an upstream provider credential.
@@ -131,7 +145,7 @@ where
                 || path == "/chat/completions"
                 || path == "/completions"
                 || path == "/responses"
-                || path == "/search" || path == "/ocr" || path == "/rerank" || path == "/videos" || path.starts_with("/videos/") || path == "/embeddings"
+                || path == "/realtime" || path == "/realtime/client_secrets" || path == "/search" || path == "/ocr" || path == "/rerank" || path == "/videos" || path.starts_with("/videos/") || path == "/embeddings"
                 || path == "/moderations"
                 || path == "/systemone"
                 || path == "/decisions"

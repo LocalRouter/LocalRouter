@@ -35,6 +35,8 @@ pub enum LlmApi {
     Rerank,
     /// Native asynchronous video jobs.
     Video,
+    /// Native JSON realtime WebSocket sessions.
+    Realtime,
     /// Moderations (`/moderations`).
     Moderations,
     /// Image generation and edits (`/images/*`).
@@ -66,6 +68,8 @@ impl LlmApi {
             Some(Self::Decisions)
         } else if path.ends_with("/systemone") {
             Some(Self::SystemOne)
+        } else if path.ends_with("/realtime") {
+            Some(Self::Realtime)
         } else if path.ends_with("/videos") || path.contains("/videos/") {
             Some(Self::Video)
         } else if path.ends_with("/rerank") {

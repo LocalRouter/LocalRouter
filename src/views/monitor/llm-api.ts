@@ -14,6 +14,7 @@ export const LLM_API_LABELS: Record<LlmApi, string> = {
   search: 'Ranked search',
   ocr: 'Document OCR',
   rerank: 'Rerank',
+  realtime: 'Realtime',
   video: 'Video jobs',
   moderations: 'Moderations',
   images: 'Images',
@@ -35,6 +36,7 @@ export const LLM_API_SHORT: Record<LlmApi, string> = {
   search: 'Ranked search',
   ocr: 'Document OCR',
   rerank: 'Rerank',
+  realtime: 'Realtime',
   video: 'Video jobs',
   moderations: 'Moderation',
   images: 'Images',
@@ -54,6 +56,7 @@ export function apiFromPath(path: string | null | undefined): LlmApi | null {
   if (p.endsWith('/api/chat') || p.endsWith('/api/generate')) return 'ollama_chat'
   if (p.endsWith('/decisions')) return 'decisions'
   if (p.endsWith('/systemone')) return 'system_one'
+  if (p.endsWith('/realtime')) return 'realtime'
   if (p.endsWith('/videos') || p.includes('/videos/')) return 'video'
   if (p.endsWith('/rerank')) return 'rerank'
   if (p.endsWith('/ocr')) return 'ocr'

@@ -4,11 +4,11 @@
 - [x] Compare those features with current LocalRouter code and recent plans.
 - [x] Separate existing capabilities, upstream compatibility gaps, and proposed native additions.
 - [x] Prioritize a phased roadmap with implementation locations and acceptance criteria.
-- [ ] For each selected feature, create its own implementation plan before changing application code.
-- [ ] Plan review after implementation: compare every promised behavior and edge case with the implementation and complete missing work.
-- [ ] Test coverage review after implementation: add meaningful coverage for new paths, errors, security boundaries, and migrations.
-- [ ] Bug hunt after implementation: inspect streaming, retries, concurrency, policy precedence, cancellation, and cost accounting.
-- [ ] Commit and push each completed, validated implementation and any automatic catalog update, preserving unrelated changes.
+- [x] For each selected feature, create its own implementation plan before changing application code.
+- [x] Plan review after implementation: compare every promised behavior and edge case with the implementation and complete missing work.
+- [x] Test coverage review after implementation: add meaningful coverage for new paths, errors, security boundaries, and migrations.
+- [x] Bug hunt after implementation: inspect streaming, retries, concurrency, policy precedence, cancellation, and cost accounting.
+- [x] Commit and push each completed, validated implementation and any automatic catalog update, preserving unrelated changes.
 
 Research date: **2026-10-14**. Implementation was approved on 2026-10-14, with local replay promoted to P1; execution is tracked in plan/2026-10-14-GATEWAY_FEATURE_IMPLEMENTATION.md. Current documentation establishes feature availability; only dated announcements below establish recency. Enterprise restrictions and availability may change. Estimates are relative engineering size, not delivery commitments: S = contained change, M = cross-layer feature, L = new API/lifecycle or substantial routing work.
 
@@ -174,3 +174,14 @@ Only this plan is changed by this task; no gateway/application behavior is imple
 Research delivery checks: updated rustup stable (1.99.0), verified the actual rustup compiler path, and ran the required workspace Clippy (`-D warnings`), formatting check, and workspace tests; all passed. Tests: 4,144 passed, 69 ignored, zero failures. Plan structure, required final review steps, key local file references, and whitespace were checked. No application code or tests were added by this research task.
 
 User approved the full proposed roadmap on 2026-10-14, with local replay promoted to P1. Execution is tracked in plan/2026-10-14-GATEWAY_FEATURE_IMPLEMENTATION.md.
+
+## Implementation followup completed — 2026-10-15
+
+All selected roadmap additions, including the later native Video and Realtime
+lifecycles, are implemented. Local replay was delivered at P1 as requested.
+The saved execution ledger is 2026-10-14-GATEWAY_FEATURE_IMPLEMENTATION.md;
+it records each increment and its own plan/review/tests. Final stable workspace
+parity passed (4,522 tests, 69 ignored, zero failures), as did all 72 frontend
+regressions, both type checks/builds and production browser validation. Native
+provider limits and unknown fees remain explicit rather than claiming full
+cross-provider parity. Excluded telemetry/business proposals remain excluded.

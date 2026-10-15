@@ -536,6 +536,26 @@ impl ModelProvider for OpenAICompatibleProvider {
         crate::search::read_response(response, request.max_results.unwrap_or(10)).await
     }
 
+    fn realtime_transport(&self) -> AppResult<Option<crate::realtime::RealtimeTransport>> {
+        if self.gateway_kind != Some(GatewayKind::Llmgateway) {
+            return Ok(None);
+        }
+        let mut preferences = self.gateway_preferences.clone();
+        preferences.allow_fallbacks = None;
+        if preferences != GatewayPreferences::default() {
+            return Err(AppError::InvalidParams(
+                "Configured gateway controls have no verified realtime mapping".into(),
+            ));
+        }
+        let request = self
+            .apply_headers(self.client.get(&self.base_url))
+            .build()
+            .map_err(|_| AppError::Config("Invalid realtime request headers".into()))?;
+        let mut headers = request.headers().clone();
+        headers.insert("x-no-fallback", "true".parse().unwrap());
+        crate::realtime::RealtimeTransport::new(&self.base_url, headers).map(Some)
+    }
+
     fn video_transport(&self) -> AppResult<Option<crate::videos::VideoTransport>> {
         if self.gateway_kind != Some(GatewayKind::Llmgateway) {
             return Ok(None);

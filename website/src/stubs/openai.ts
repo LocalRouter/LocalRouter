@@ -226,6 +226,16 @@ class OpenAI {
   post<T = any>(path: string, opts?: { body?: unknown; signal?: AbortSignal; maxRetries?: number; headers?: Record<string, string> }): ApiPromise<T> {
     return apiPromise<T>(async () => {
       if (opts?.signal?.aborted) throw new DOMException('Cancelled', 'AbortError')
+      if (path.replace(/\/+$/, '') === '/realtime/client_secrets') {
+        const client = nativeDemoClient(this.apiKey)
+        if (!mockNativeOperations.get(client.id)?.includes('realtime')) throw new DemoApiError(400, 'Enable Allow realtime sessions for this demo client in Settings')
+        const privacy = mockClientPrivacy.get(client.id)
+        if (privacy?.local_only || privacy?.no_retention) throw new DemoApiError(400, 'Strict privacy does not permit native realtime sessions')
+        const body = opts?.body as { session?: { type?: string; model?: string } } | undefined
+        if (body?.session?.type !== 'realtime' || !body.session.model?.includes('/') || body.session.model.includes('auto')) throw new DemoApiError(400, 'Provide an explicit qualified realtime model')
+        const data = { value: `ek_lr_demo_${crypto.randomUUID()}`, expires_at: Math.floor(Date.now()/1000)+60, session: body.session, extensions: { 'localrouter.realtime': { demo: true } } }
+        return { data: data as T, response: new Response(JSON.stringify(data), { headers: { 'content-type': 'application/json' } }) }
+      }
       if (path.replace(/\/+$/, '') === '/videos') {
         const client = nativeDemoClient(this.apiKey)
         if (!mockNativeOperations.get(client.id)?.includes('video')) throw new DemoApiError(400, 'Enable Allow video generation for this demo client in Settings')

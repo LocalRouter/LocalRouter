@@ -9,6 +9,7 @@ pub enum NativeOperation {
     Ocr,
     Rerank,
     Video,
+    Realtime,
 }
 
 /// Default-off constraints on native LLM traffic. These do not grant access.

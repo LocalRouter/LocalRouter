@@ -8,6 +8,7 @@ repository.workspace = true
 description = "Axum HTTP server, routes, middleware, and OpenAPI for LocalRouter"
 
 [dependencies]
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
 sha2 = { workspace = true }
 lr-batches = { workspace = true }
 lr-types = { workspace = true }

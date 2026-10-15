@@ -250,7 +250,7 @@ export interface ProviderPrivacyAssessment {
 /** Rust: src-tauri/src/ui/commands_clients.rs - ClientPrivacyProvider */
 export interface ClientPrivacyProvider { instance_name: string; enabled: boolean; assessment: ProviderPrivacyAssessment }
 /** Rust: crates/lr-config/src/client_security.rs - NativeOperation */
-export type NativeOperation = 'ocr' | 'rerank' | 'video'
+export type NativeOperation = 'ocr' | 'rerank' | 'video' | 'realtime'
 
 /** Rust: crates/lr-config/src/upstream_tools.rs - UpstreamToolsPolicy */
 export interface UpstreamToolsPolicy {
@@ -4688,6 +4688,7 @@ export interface GetProviderFeatureSupportParams {
  * Rust: src-tauri/src/ui/commands_providers.rs - ApiPathSupport struct
  */
 export interface ApiPathSupport {
+  realtime: SupportLevel
   videos: SupportLevel
   rerank: SupportLevel
   ocr: SupportLevel
@@ -4972,7 +4973,7 @@ export type LlmApi =
   | 'system_one'
   | 'decisions'
   | 'embeddings'
-  | 'search' | 'ocr' | 'rerank' | 'video'
+  | 'search' | 'ocr' | 'rerank' | 'video' | 'realtime'
   | 'moderations'
   | 'images'
   | 'audio'

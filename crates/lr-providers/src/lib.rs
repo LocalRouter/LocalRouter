@@ -159,6 +159,7 @@ pub mod openai_responses;
 pub mod openrouter;
 pub mod perplexity;
 pub mod privacy;
+pub mod realtime;
 pub mod registry;
 pub mod rerank;
 pub mod search;
@@ -217,6 +218,10 @@ pub trait ModelProvider: Send + Sync {
     ) -> Option<documents::DocumentProtocol> {
         None
     }
+    fn realtime_transport(&self) -> AppResult<Option<realtime::RealtimeTransport>> {
+        Ok(None)
+    }
+
     fn video_transport(&self) -> AppResult<Option<videos::VideoTransport>> {
         Ok(None)
     }

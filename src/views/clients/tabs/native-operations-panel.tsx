@@ -70,7 +70,7 @@ export function NativeOperationsPanel({
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        {(['ocr', 'rerank', 'video'] as const).map((operation) => (
+        {(['ocr', 'rerank', 'video', 'realtime'] as const).map((operation) => (
           <label key={operation} className="flex items-center gap-2 text-sm">
             <Checkbox
               checked={operations?.includes(operation) ?? false}
@@ -93,10 +93,15 @@ export function NativeOperationsPanel({
                 ocr: 'Allow OCR',
                 rerank: 'Allow rerank',
                 video: 'Allow video generation',
+                realtime: 'Allow realtime sessions',
               }[operation]
             }
           </label>
         ))}
+        <p className="text-xs text-muted-foreground">
+          Realtime relays native audio and events without per-turn content
+          inspection. Blocking content-scan policies refuse these sessions.
+        </p>
         <Button disabled={busy || !operations} onClick={() => void save()}>
           {busy ? 'Saving…' : 'Save operation permissions'}
         </Button>

@@ -1444,7 +1444,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   },
   'set_client_native_operations': (args: SetClientNativeOperationsParams): NativeOperation[] => {
     if (!mockData.clients.some(client => client.id === args.clientId)) throw 'Client not found'
-    if (new Set(args.allowedOperations).size !== args.allowedOperations.length || args.allowedOperations.some(operation => !['ocr', 'rerank', 'video'].includes(operation))) throw 'Invalid native operation grants'
+    if (new Set(args.allowedOperations).size !== args.allowedOperations.length || args.allowedOperations.some(operation => !['ocr', 'rerank', 'video', 'realtime'].includes(operation))) throw 'Invalid native operation grants'
     mockNativeOperations.set(args.clientId, [...args.allowedOperations])
     return [...args.allowedOperations]
   },
@@ -3578,6 +3578,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     return [openai, anthropic, gemini, ollama, ollaya]
   },
   'get_api_path_support': (args): ApiPathSupport => ({
+    realtime: ['llmgateway', 'openai'].includes(mockData.providers.find(provider => provider.instance_name === args?.instanceName)?.provider_type ?? '') ? 'supported' : 'not_supported',
     videos: ['llmgateway', 'openai'].includes(mockData.providers.find(provider => provider.instance_name === args?.instanceName)?.provider_type ?? '') ? 'supported' : 'not_supported',
     rerank: ['llmgateway', 'cohere'].includes(mockData.providers.find(provider => provider.instance_name === args?.instanceName)?.provider_type ?? '') ? 'supported' : 'not_supported',
     ocr: ['llmgateway', 'mistral'].includes(mockData.providers.find(provider => provider.instance_name === args?.instanceName)?.provider_type ?? '') ? 'supported' : 'not_supported',

@@ -16,12 +16,12 @@
 - [x] P3 PDF/document inputs and OCR.
 - [x] P3 Rerank API.
 - [x] Later native Video jobs.
-- [ ] Later native realtime sessions.
-- [ ] Plan Review: compare implemented behavior with each requirement and finish omissions.
-- [ ] Test Coverage Review: add meaningful edge, error, isolation and migration tests.
-- [ ] Bug Hunt: review policy precedence, streaming, cancellation, signatures, billing, persistence and retries.
-- [ ] Validate with updated rustup stable, explicitly pinned compiler PATH/RUSTC, workspace Clippy/fmt/tests, frontend types/build and relevant UI checks.
-- [ ] Commit and push completed validated changes and automatic catalog updates, preserving unrelated work.
+- [x] Later native realtime sessions.
+- [x] Plan Review: compare implemented behavior with each requirement and finish omissions.
+- [x] Test Coverage Review: add meaningful edge, error, isolation and migration tests.
+- [x] Bug Hunt: review policy precedence, streaming, cancellation, signatures, billing, persistence and retries.
+- [x] Validate with updated rustup stable, explicitly pinned compiler PATH/RUSTC, workspace Clippy/fmt/tests, frontend types/build and relevant UI checks.
+- [x] Commit and push completed validated changes and automatic catalog updates, preserving unrelated work.
 
 User authorization (2026-10-14): implement all proposed core and later candidate features in priority order; promote local replay to P1. This excludes the roadmap's “Do not prioritize” business/telemetry features. Use incremental complete commits, and retain the remaining checklist until every authorized feature is complete. Repository documentation remains in plan/.
 
@@ -206,3 +206,36 @@ verified completed/failed asset deletion where available, job-fee snapshots,
 OpenAPI/discovery/monitoring and client Try It Out. Stable workspace parity passed
 (4,507 tests, zero failures), frontend checks/builds and production Chrome smoke
 passed. Realtime and the overall final review remain pending.
+
+## Final approved roadmap review — 2026-10-15
+
+Native realtime completes the final selected feature: public OpenAI API-key and
+LLM Gateway WebSocket mappings, independent default-off grant, owner/model-bound
+single-use local browser tickets, real text/base64-audio event relay and native
+response cancellation, current permission/credential/provider binding checks,
+manual response/traffic/time/concurrency caps, native response-ID usage snapshots,
+OpenAPI/discovery/monitoring and client Try It Out. Ticket creation is not counted
+as inference. Connection/response request quotas are checked before native IO;
+unsupported cost/token ceilings and opaque blocking content policies reject.
+
+Final Plan Review compared every selected feature with the original research
+roadmap and each saved implementation plan. Test Coverage Review and Bug Hunt
+covered defaults/migrations, ownership, credentials, policy precedence, streaming,
+continuations, caching/replay, retries, asynchronous mutations and unknown fees.
+P1 local replay remains ahead of the P2 cache/Messages/batches work. Existing
+provider discovery, guardrails, compression, MCP and local engines are extended;
+the excluded telemetry/business/platform proposals are not introduced.
+
+Final exact stable CI parity passed on Rust 1.99.0 with confirmed compiler paths:
+workspace Clippy (-D warnings), fmt check, and 111 suites with 4,522 passed,
+69 ignored and zero failures. All 72 frontend regressions, app/demo type checks,
+both production builds and a production Chrome realtime smoke passed. Native
+protocol tests made no paid provider calls. The preceding video commit 7a1ea8f2
+is pushed and green in cloud CI. All task changes and automatic catalog updates
+are included in normal validated commits; unrelated release drafts are preserved.
+
+Supported native limits remain deliberate: video exposes unsupported remote
+cancellation honestly and never repeats an uncertain create; realtime is a
+120-second JSON WebSocket relay with manual response caps and no automatic
+reconnect. Unknown native fees are not zero-dollar quotes. See docs/VIDEO_JOBS.md
+and docs/REALTIME.md for the exact supported contracts and limits.
