@@ -212,6 +212,20 @@ impl OpenRouterProvider {
 #[async_trait]
 #[allow(dead_code)]
 impl ModelProvider for OpenRouterProvider {
+    fn native_batch_kind(&self) -> Option<crate::batches::NativeBatchKind> {
+        Some(crate::batches::NativeBatchKind::Openrouter)
+    }
+    fn native_batch_transport(&self) -> AppResult<Option<crate::batches::NativeBatchTransport>> {
+        crate::batches::NativeBatchTransport::openrouter(
+            &self.base_url,
+            &self.api_key,
+            self.gateway_preferences.clone(),
+            self.app_name.as_deref(),
+            self.app_url.as_deref(),
+        )
+        .map(Some)
+    }
+
     fn name(&self) -> &str {
         "openrouter"
     }

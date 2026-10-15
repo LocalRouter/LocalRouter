@@ -624,6 +624,22 @@ fn audio_mime_type(file_name: &str) -> String {
 #[async_trait]
 #[allow(dead_code)]
 impl ModelProvider for OpenAIProvider {
+    fn native_batch_kind(&self) -> Option<crate::batches::NativeBatchKind> {
+        (matches!(self.auth, ProviderAuth::ApiKey(_)) && !self.is_chatgpt_backend())
+            .then_some(crate::batches::NativeBatchKind::Openai)
+    }
+    fn native_batch_transport(&self) -> AppResult<Option<crate::batches::NativeBatchTransport>> {
+        if self.is_chatgpt_backend() {
+            return Ok(None);
+        }
+        match &self.auth {
+            ProviderAuth::ApiKey(key) => {
+                crate::batches::NativeBatchTransport::openai(&self.base_url, key).map(Some)
+            }
+            ProviderAuth::OAuth(_) => Ok(None),
+        }
+    }
+
     fn supports_systemone(&self) -> bool {
         matches!(self.auth, ProviderAuth::ApiKey(_))
     }

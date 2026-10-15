@@ -123,6 +123,7 @@ pub struct PullProgress {
 }
 
 pub mod anthropic;
+pub mod batches;
 pub mod cerebras;
 pub mod cohere;
 pub mod deepinfra;
@@ -205,6 +206,16 @@ pub trait ModelProvider: Send + Sync {
     /// Raw native transport. Callers must go through the router's current
     /// policy, accounting and dispatch budgets before using this operation.
     /// Format-compatible chat support does not imply this capability.
+    /// Internal capability only. The public SDK endpoint is enabled only once
+    /// server policy, durable accounting and job lifecycle are integrated.
+    fn native_batch_kind(&self) -> Option<batches::NativeBatchKind> {
+        None
+    }
+
+    fn native_batch_transport(&self) -> AppResult<Option<batches::NativeBatchTransport>> {
+        Ok(None)
+    }
+
     fn supports_native_messages(&self) -> bool {
         false
     }
