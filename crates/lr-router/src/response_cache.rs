@@ -354,6 +354,10 @@ impl crate::Router {
         if matches!(client, "internal-test" | "memory-service") || lr_types::is_duplicate_hop() {
             return None;
         }
+        if self.client_privacy(client).no_retention {
+            self.response_cache.bypass(client);
+            return None;
+        }
         let config = self.config_manager.get();
         let strategy = config
             .clients

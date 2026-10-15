@@ -109,6 +109,9 @@ async fn store_result(
             "Native results exceed the submitted manifest",
         ));
     }
+    if state.config_manager.client_privacy(&job.owner).no_retention {
+        return Ok(());
+    }
     let store = state.batch_store.clone();
     let saved = job.clone();
     blocking(move || store.store_batch_result(&saved.owner, &saved.id, kind, &bytes)).await?;

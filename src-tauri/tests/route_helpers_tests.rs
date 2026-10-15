@@ -25,6 +25,7 @@ fn create_test_client(id: &str, name: &str, enabled: bool, strategy_id: &str) ->
         id: id.to_string(),
         name: name.to_string(),
         enabled,
+        security: Default::default(),
         allowed_llm_providers: vec![],
         mcp_server_access: McpServerAccess::None,
         context_management_enabled: None,

@@ -156,6 +156,7 @@ pub mod openai_compatible;
 pub mod openai_responses;
 pub mod openrouter;
 pub mod perplexity;
+pub mod privacy;
 pub mod registry;
 pub(crate) mod sse_lines;
 pub mod systemone;
@@ -208,6 +209,11 @@ pub trait ModelProvider: Send + Sync {
     /// Format-compatible chat support does not imply this capability.
     /// Internal capability only. The public SDK endpoint is enabled only once
     /// server policy, durable accounting and job lifecycle are integrated.
+    /// True only for an adapter with a verified downstream no-retention filter.
+    /// This does not attest the gateway account's own retention policy.
+    fn supports_no_retention_filter(&self) -> bool {
+        false
+    }
     fn native_batch_kind(&self) -> Option<batches::NativeBatchKind> {
         None
     }
@@ -1697,6 +1703,7 @@ impl CompletionRequest {
             extensions.remove(replay::EXTENSION);
             extensions.remove(response_cache::SCOPE);
             extensions.remove(response_cache::EXTENSION);
+            extensions.remove(privacy::INTERNAL_EXTENSION);
             if extensions.is_empty() {
                 self.extensions = None;
             }

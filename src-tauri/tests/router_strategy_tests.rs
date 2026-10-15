@@ -53,6 +53,7 @@ fn create_test_config(
         name: "Test Client".to_string(),
         enabled: true,
         strategy_id: strategy_id.to_string(),
+        security: Default::default(),
         allowed_llm_providers: vec![],
         mcp_server_access: McpServerAccess::None,
         roots: None,
@@ -531,6 +532,7 @@ async fn test_disabled_client_returns_unauthorized() {
         name: "Test Client".to_string(),
         enabled: false, // Disabled
         strategy_id: "test-strategy".to_string(),
+        security: Default::default(),
         allowed_llm_providers: vec![],
         mcp_server_access: McpServerAccess::None,
         roots: None,
@@ -595,6 +597,7 @@ async fn test_client_with_missing_strategy() {
         name: "Test Client".to_string(),
         enabled: true,
         strategy_id: "non-existent-strategy".to_string(), // References non-existent strategy
+        security: Default::default(),
         allowed_llm_providers: vec![],
         mcp_server_access: McpServerAccess::None,
         roots: None,
@@ -1219,6 +1222,7 @@ fn create_free_tier_config(
         name: "Test Client".to_string(),
         enabled: true,
         strategy_id: strategy_id.to_string(),
+        security: Default::default(),
         allowed_llm_providers: vec![],
         mcp_server_access: McpServerAccess::None,
         roots: None,

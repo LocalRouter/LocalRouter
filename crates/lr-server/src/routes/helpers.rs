@@ -85,15 +85,17 @@ pub fn get_enabled_client(state: &AppState, client_id: &str) -> HelperResult<Cli
         })?
         .clone();
 
-    if !client.enabled {
+    if !client.credentials_active() {
         emit_access_denied(
             state,
             client_id,
             "client_disabled",
-            "Client is disabled",
+            "Client is disabled or its credential has expired",
             403,
         );
-        return Err(ApiErrorResponse::forbidden("Client is disabled"));
+        return Err(ApiErrorResponse::forbidden(
+            "Client is disabled or its credential has expired",
+        ));
     }
 
     Ok(client)
@@ -145,15 +147,17 @@ pub fn get_client_with_strategy(
         })?
         .clone();
 
-    if !client.enabled {
+    if !client.credentials_active() {
         emit_access_denied(
             state,
             client_id,
             "client_disabled",
-            "Client is disabled",
+            "Client is disabled or its credential has expired",
             403,
         );
-        return Err(ApiErrorResponse::forbidden("Client is disabled"));
+        return Err(ApiErrorResponse::forbidden(
+            "Client is disabled or its credential has expired",
+        ));
     }
 
     let strategy = config
@@ -207,15 +211,17 @@ pub fn get_enabled_client_from_manager(state: &AppState, client_id: &str) -> Hel
         ApiErrorResponse::unauthorized("Client not found")
     })?;
 
-    if !client.enabled {
+    if !client.credentials_active() {
         emit_access_denied(
             state,
             client_id,
             "client_disabled",
-            "Client is disabled",
+            "Client is disabled or its credential has expired",
             403,
         );
-        return Err(ApiErrorResponse::forbidden("Client is disabled"));
+        return Err(ApiErrorResponse::forbidden(
+            "Client is disabled or its credential has expired",
+        ));
     }
 
     Ok(client)

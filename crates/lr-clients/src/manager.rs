@@ -162,7 +162,7 @@ impl ClientManager {
         };
 
         // Check if client is enabled
-        if !client.enabled {
+        if !client.credentials_active() {
             return Ok(None);
         }
 
@@ -182,7 +182,17 @@ impl ClientManager {
                     // Mark client as used
                     drop(clients);
                     let mut clients = self.clients.write();
-                    if let Some(client) = clients.iter_mut().find(|c| c.id == client_id) {
+                    if let Some(client) = clients
+                        .iter_mut()
+                        .find(|c| c.id == client_id && c.credentials_active())
+                    {
+                        // Rotation/revocation may occur while upgrading the lock.
+                        let current = self.keychain.get(CLIENT_SERVICE, &client.id)?;
+                        if !current.is_some_and(|current| {
+                            bool::from(current.as_bytes().ct_eq(client_secret.as_bytes()))
+                        }) {
+                            return Ok(None);
+                        }
                         client.mark_used();
                         Ok(Some(client.clone()))
                     } else {
@@ -194,6 +204,31 @@ impl ClientManager {
             }
             _ => Ok(None),
         }
+    }
+
+    /// Commit token issuance under the same client lock used by rotation and
+    /// revocation, rechecking the credential after the OAuth handler's preflight.
+    pub fn issue_oauth_token(
+        &self,
+        client_id: &str,
+        secret: &str,
+        tokens: &crate::TokenStore,
+    ) -> AppResult<Option<(String, i64)>> {
+        use subtle::ConstantTimeEq;
+        let clients = self.clients.read();
+        let Some(client) = clients
+            .iter()
+            .find(|client| client.id == client_id && client.credentials_active())
+        else {
+            return Ok(None);
+        };
+        let current = self.keychain.get(CLIENT_SERVICE, &client.id)?;
+        if !current.is_some_and(|current| bool::from(current.as_bytes().ct_eq(secret.as_bytes()))) {
+            return Ok(None);
+        }
+        let token = tokens.generate_token(client.id.clone())?;
+        drop(clients);
+        Ok(Some(token))
     }
 
     /// Get the secret for a client by internal ID
@@ -232,7 +267,7 @@ impl ClientManager {
         let mut found_client_id: Option<String> = None;
 
         for client in clients.iter() {
-            if !client.enabled {
+            if !client.credentials_active() {
                 continue;
             }
 
@@ -256,7 +291,16 @@ impl ClientManager {
 
         if let Some(client_id) = found_client_id {
             let mut clients = self.clients.write();
-            if let Some(client) = clients.iter_mut().find(|c| c.id == client_id) {
+            if let Some(client) = clients
+                .iter_mut()
+                .find(|c| c.id == client_id && c.credentials_active())
+            {
+                let current = self.keychain.get(CLIENT_SERVICE, &client.id)?;
+                if !current
+                    .is_some_and(|current| bool::from(current.as_bytes().ct_eq(secret.as_bytes())))
+                {
+                    return Ok(None);
+                }
                 client.mark_used();
                 return Ok(Some(client.clone()));
             }
@@ -271,7 +315,7 @@ impl ClientManager {
 
         clients
             .iter()
-            .find(|c| c.id == client_id && c.enabled)
+            .find(|c| c.id == client_id && c.credentials_active())
             .map(|c| {
                 c.allowed_llm_providers.is_empty()
                     || c.allowed_llm_providers.contains(&provider_name.to_string())
@@ -285,7 +329,7 @@ impl ClientManager {
 
         clients
             .iter()
-            .find(|c| c.id == client_id && c.enabled)
+            .find(|c| c.id == client_id && c.credentials_active())
             .map(|c| c.mcp_permissions.resolve_server(server_id).is_enabled())
             .unwrap_or(false)
     }
@@ -493,8 +537,51 @@ impl ClientManager {
     ///
     /// This updates the client metadata while preserving keychain secrets.
     /// Use this after config changes to keep ClientManager in sync.
-    pub fn sync_clients(&self, clients: Vec<Client>) {
-        *self.clients.write() = clients;
+    pub fn sync_clients(&self, mut clients: Vec<Client>) {
+        let mut current = self.clients.write();
+        for client in &mut clients {
+            if let Some(old) = current.iter().find(|old| old.id == client.id) {
+                client.last_used = client.last_used.max(old.last_used);
+            }
+        }
+        *current = clients;
+    }
+
+    pub fn set_security(
+        &self,
+        client_id: &str,
+        security: lr_config::ClientSecurityConfig,
+    ) -> AppResult<()> {
+        security.validate().map_err(AppError::Config)?;
+        let mut clients = self.clients.write();
+        let client = clients
+            .iter_mut()
+            .find(|c| c.id == client_id)
+            .ok_or_else(|| AppError::Config("Client not found".into()))?;
+        client.security = security;
+        Ok(())
+    }
+
+    /// Permanently discard this secret and disable the client. Re-enabling
+    /// alone cannot resurrect the old credential; rotation creates a new one.
+    pub fn revoke_credentials(&self, client_id: &str) -> AppResult<()> {
+        let mut clients = self.clients.write();
+        let client = clients
+            .iter_mut()
+            .find(|c| c.id == client_id)
+            .ok_or_else(|| AppError::Config("Client not found".into()))?;
+        client.enabled = false;
+        if self.keychain.get(CLIENT_SERVICE, client_id)?.is_none() {
+            return Ok(());
+        }
+        self.keychain
+            .delete(CLIENT_SERVICE, client_id)
+            .map_err(|error| {
+                AppError::Config(format!(
+                    "Credential removal failed; client remains disabled: {error}"
+                ))
+            })?;
+        Ok(())
     }
 
     /// Rotate the secret for a client
@@ -505,14 +592,11 @@ impl ClientManager {
     /// # Returns
     /// The new secret string
     pub fn rotate_secret(&self, client_id: &str) -> AppResult<String> {
-        // Verify the client exists
-        {
-            let clients = self.clients.read();
-            if !clients.iter().any(|c| c.id == client_id) {
-                return Err(AppError::Config(format!("Client not found: {}", client_id)));
-            }
+        // Serialize rotation with verification's final check and revocation.
+        let clients = self.clients.write();
+        if !clients.iter().any(|c| c.id == client_id) {
+            return Err(AppError::Config(format!("Client not found: {}", client_id)));
         }
-
         tracing::info!("Rotating client secret: {}", client_id);
 
         // Generate a new secret
@@ -527,7 +611,7 @@ impl ClientManager {
             })?;
 
         tracing::info!("Successfully rotated client secret in keychain");
-
+        drop(clients);
         Ok(new_secret)
     }
 }
@@ -803,5 +887,133 @@ mod tests {
         manager.enable_client(&client_id).expect("Failed to enable");
         let client = manager.get_client(&client_id).unwrap();
         assert!(client.enabled);
+    }
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+    use chrono::{Duration, Utc};
+    #[test]
+    fn credential_change_between_initial_lookup_and_auth_commit_is_rejected() {
+        struct RotatingLookup {
+            inner: lr_api_keys::MockKeychain,
+            first: std::sync::atomic::AtomicBool,
+        }
+        impl lr_api_keys::keychain_trait::KeychainStorage for RotatingLookup {
+            fn store(&self, service: &str, account: &str, secret: &str) -> AppResult<()> {
+                self.inner.store(service, account, secret)
+            }
+            fn delete(&self, service: &str, account: &str) -> AppResult<()> {
+                self.inner.delete(service, account)
+            }
+            fn get(&self, service: &str, account: &str) -> AppResult<Option<String>> {
+                let snapshot = self.inner.get(service, account)?;
+                if self.first.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                    self.inner.store(service, account, "replacement-secret")?;
+                }
+                Ok(snapshot)
+            }
+        }
+        for oauth in [false, true] {
+            let keychain = Arc::new(RotatingLookup {
+                inner: lr_api_keys::MockKeychain::new(),
+                first: std::sync::atomic::AtomicBool::new(true),
+            });
+            let manager = ClientManager::with_keychain(vec![], keychain);
+            let client = Client::new_with_strategy("race".into(), "strategy".into());
+            let id = client.id.clone();
+            let secret = manager.add_client_with_secret(client).unwrap();
+            let result = if oauth {
+                manager.verify_credentials(&id, &secret)
+            } else {
+                manager.verify_secret(&secret)
+            };
+            assert!(result.unwrap().is_none());
+            assert!(manager.get_client(&id).unwrap().last_used.is_none());
+        }
+    }
+    #[test]
+    fn oauth_issuance_rechecks_a_secret_rotated_after_preflight() {
+        let manager =
+            ClientManager::with_keychain(vec![], Arc::new(lr_api_keys::MockKeychain::new()));
+        let client = Client::new_with_strategy("oauth-race".into(), "strategy".into());
+        let id = client.id.clone();
+        let original = manager.add_client_with_secret(client).unwrap();
+        assert!(manager
+            .verify_credentials(&id, &original)
+            .unwrap()
+            .is_some());
+        let replacement = manager.rotate_secret(&id).unwrap();
+        let tokens = crate::TokenStore::new();
+        assert!(manager
+            .issue_oauth_token(&id, &original, &tokens)
+            .unwrap()
+            .is_none());
+        let (token, _) = manager
+            .issue_oauth_token(&id, &replacement, &tokens)
+            .unwrap()
+            .unwrap();
+        assert_eq!(tokens.verify_token(&token), Some(id.clone()));
+        manager.disable_client(&id).unwrap();
+        assert!(manager
+            .issue_oauth_token(&id, &replacement, &tokens)
+            .unwrap()
+            .is_none());
+    }
+    #[test]
+    fn expired_credentials_cannot_authenticate_and_failed_attempts_do_not_mark_usage() {
+        let manager =
+            ClientManager::with_keychain(vec![], Arc::new(lr_api_keys::MockKeychain::new()));
+        let client = Client::new_with_strategy("expiry".into(), "strategy".into());
+        let id = client.id.clone();
+        let secret = manager.add_client_with_secret(client).unwrap();
+        assert!(manager.verify_secret(&secret).unwrap().is_some());
+        let previous = manager.get_client(&id).unwrap().last_used;
+        manager
+            .set_security(
+                &id,
+                lr_config::ClientSecurityConfig {
+                    credential_expires_at: Some(Utc::now() - Duration::seconds(1)),
+                    review_idle_after_days: Some(30),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(manager.verify_secret(&secret).unwrap().is_none());
+        assert!(manager.verify_credentials(&id, &secret).unwrap().is_none());
+        assert_eq!(manager.get_client(&id).unwrap().last_used, previous);
+        assert!(manager.get_client(&id).unwrap().enabled);
+    }
+    #[test]
+    fn revoked_secret_is_not_resurrected_by_reenable_and_rotation_creates_a_new_credential() {
+        let manager =
+            ClientManager::with_keychain(vec![], Arc::new(lr_api_keys::MockKeychain::new()));
+        let client = Client::new_with_strategy("revoke".into(), "strategy".into());
+        let id = client.id.clone();
+        let secret = manager.add_client_with_secret(client).unwrap();
+        manager.revoke_credentials(&id).unwrap();
+        assert!(manager.get_secret(&id).unwrap().is_none());
+        manager.enable_client(&id).unwrap();
+        assert!(manager.verify_secret(&secret).unwrap().is_none());
+        let rotated = manager.rotate_secret(&id).unwrap();
+        assert_ne!(secret, rotated);
+        assert!(manager.verify_secret(&rotated).unwrap().is_some());
+        assert!(manager.verify_secret(&secret).unwrap().is_none());
+    }
+    #[test]
+    fn metadata_sync_preserves_newer_observed_use_and_applies_revocation_policy() {
+        let manager =
+            ClientManager::with_keychain(vec![], Arc::new(lr_api_keys::MockKeychain::new()));
+        let client = Client::new_with_strategy("sync".into(), "strategy".into());
+        let id = client.id.clone();
+        let secret = manager.add_client_with_secret(client.clone()).unwrap();
+        manager.verify_secret(&secret).unwrap().unwrap();
+        let used = manager.get_client(&id).unwrap().last_used;
+        let mut saved = client;
+        saved.enabled = false;
+        manager.sync_clients(vec![saved]);
+        assert_eq!(manager.get_client(&id).unwrap().last_used, used);
+        assert!(manager.verify_secret(&secret).unwrap().is_none());
     }
 }

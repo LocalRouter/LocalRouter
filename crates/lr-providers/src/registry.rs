@@ -534,6 +534,7 @@ impl ProviderRegistry {
         provider_type: String,
         config: HashMap<String, String>,
     ) -> AppResult<()> {
+        crate::privacy::validate_config(&config)?;
         info!(
             "Creating provider instance '{}' of type '{}'",
             instance_name, provider_type
@@ -649,6 +650,7 @@ impl ProviderRegistry {
         provider_type: String,
         config: HashMap<String, String>,
     ) -> AppResult<()> {
+        crate::privacy::validate_config(&config)?;
         info!(
             "Updating provider instance '{}' of type '{}'",
             instance_name, provider_type

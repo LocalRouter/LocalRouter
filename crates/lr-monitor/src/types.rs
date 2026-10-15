@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 /// A monitor event captured from the request pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MonitorEvent {
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub payload_redacted: bool,
     /// Unique event ID (e.g., "mon-<uuid>")
     pub id: String,
 
@@ -43,6 +45,8 @@ pub struct MonitorEvent {
 /// Lightweight summary for list views (avoids sending full data).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MonitorEventSummary {
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub payload_redacted: bool,
     pub id: String,
     pub sequence: u64,
     pub timestamp: DateTime<Utc>,
@@ -837,6 +841,10 @@ pub struct MonitorStats {
     /// exceeds this, independently of `max_capacity`.
     pub max_bytes: usize,
     pub events_by_type: std::collections::HashMap<MonitorEventType, usize>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 #[cfg(test)]

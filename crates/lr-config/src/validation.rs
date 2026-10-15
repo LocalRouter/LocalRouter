@@ -24,6 +24,17 @@ fn looks_like_localrouter_key(api_key: &str) -> bool {
 
 /// Validate the entire configuration
 pub fn validate_config(config: &AppConfig) -> AppResult<()> {
+    for client in &config.clients {
+        if client.security.privacy.restricted()
+            && (client.llm_mode != crate::LlmMode::Gateway || client.is_mcp_via_llm())
+        {
+            return Err(AppError::Config(format!("Client '{}': restricted privacy requires native gateway mode without automatic MCP", client.name)));
+        }
+        client
+            .security
+            .validate()
+            .map_err(|message| AppError::Config(format!("Client '{}': {message}", client.name)))?;
+    }
     // Validate server configuration
     validate_server_config(config)?;
 

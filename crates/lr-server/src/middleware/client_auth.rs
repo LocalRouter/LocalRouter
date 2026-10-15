@@ -203,6 +203,19 @@ pub async fn client_auth_middleware(mut req: Request, next: Next) -> Response {
         }
     };
 
+    // OAuth tokens cannot outlive current client revocation or key expiry.
+    if !state
+        .client_manager
+        .get_client(&client_id)
+        .is_some_and(|client| client.credentials_active())
+    {
+        return mcp_unauthorized_response("Client credential is expired or disabled");
+    }
+
+    if let Err(error) = crate::privacy::check_ingress(&state, &client_id, req.uri().path()) {
+        return axum::response::IntoResponse::into_response(error);
+    }
+
     // Create auth context
     let logged_id = client_id.clone();
     let auth_context = ClientAuthContext { client_id };

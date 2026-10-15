@@ -2703,3 +2703,6 @@ mod files_endpoint_cases;
 
 #[path = "fixtures/batches_endpoint_cases.rs"]
 mod batches_endpoint_cases;
+
+#[path = "fixtures/credential_security_cases.rs"]
+mod credential_security_cases;

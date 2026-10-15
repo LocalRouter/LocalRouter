@@ -998,6 +998,11 @@ impl AppState {
             monitor_store: Arc::new(lr_monitor::MonitorEventStore::new(1000)),
         };
 
+        let capture_config = result.config_manager.clone();
+        result.monitor_store.set_payload_policy(move |client| {
+            client.is_some_and(|id| capture_config.client_privacy(id).redact_payloads())
+        });
+
         // Wire MCP via LLM monitor callbacks
         let monitor = result.monitor_store.clone();
         result.mcp_via_llm_manager.set_monitor_emit(Arc::new(

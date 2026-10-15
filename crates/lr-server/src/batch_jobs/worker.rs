@@ -75,6 +75,17 @@ pub(crate) async fn bound_context(
     {
         return Err(conflict("Native model permission binding changed"));
     }
+    if check_policy {
+        state
+            .router
+            .check_provider_privacy(&job.owner, &job.provider_instance, false)
+            .map_err(ApiErrorResponse::from)?;
+        if state.config_manager.client_privacy(&job.owner).no_retention {
+            return Err(conflict(
+                "No-retention policy does not allow persistent batch submission",
+            ));
+        }
+    }
     if check_policy && context::seal(state, auth, &context)?.fingerprint != job.policy_fingerprint {
         return Err(conflict("Policy changed after preparation; cancel this undispatched job and prepare a new snapshot"));
     }
@@ -137,6 +148,11 @@ async fn run(
     guard: &BatchWorkerGuard,
 ) -> ApiResult<()> {
     running(guard)?;
+    if state.config_manager.client_privacy(&job.owner).no_retention {
+        return Err(conflict(
+            "No-retention policy does not allow preparing/submitting persistent jobs",
+        ));
+    }
     let mut context = bound_context(state, auth, &job, false).await?;
     if job.phase == BatchPhase::Draft {
         context::verify_model(&context, &job.endpoint).await?;

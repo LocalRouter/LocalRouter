@@ -19,6 +19,7 @@ fn test_config() -> AppConfig {
                 id: "test_client".to_string(),
                 name: "Test Client".to_string(),
                 enabled: true,
+                security: Default::default(),
                 allowed_llm_providers: vec![],
                 mcp_server_access: McpServerAccess::Specific(vec![
                     "filesystem".to_string(),
@@ -65,6 +66,7 @@ fn test_config() -> AppConfig {
                 id: "disabled_client".to_string(),
                 name: "Disabled Client".to_string(),
                 enabled: false,
+                security: Default::default(),
                 allowed_llm_providers: vec![],
                 mcp_server_access: McpServerAccess::Specific(vec!["github".to_string()]),
                 context_management_enabled: None,
@@ -108,6 +110,7 @@ fn test_config() -> AppConfig {
                 id: "no_mcp_client".to_string(),
                 name: "No MCP Client".to_string(),
                 enabled: true,
+                security: Default::default(),
                 allowed_llm_providers: vec!["openai".to_string()],
                 mcp_server_access: McpServerAccess::None,
                 context_management_enabled: None,

@@ -101,6 +101,10 @@ pub async fn preview_routing_policy(
     } else {
         lr_providers::EndpointType::Chat
     };
+    state
+        .router
+        .prepare_privacy_request(client_id, &mut request)
+        .map_err(|error| error.to_string())?;
     let context = lr_router::decision_routing::routing_context(
         &request.messages,
         request.metadata.as_ref(),

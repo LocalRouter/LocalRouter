@@ -74,6 +74,7 @@ impl crate::Router {
             self.check_client_rate_limits(client_id).await?;
         }
         self.require_enabled_model(&provider, &model)?;
+        self.check_provider_privacy(client_id, &provider, false)?;
         let instance = self
             .provider_registry
             .get_provider(&provider)

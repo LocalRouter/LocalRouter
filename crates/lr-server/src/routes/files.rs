@@ -23,10 +23,10 @@ pub(crate) fn owner(state: &AppState, auth: &AuthContext) -> ApiResult<String> {
     let client = state
         .client_manager
         .get_client(&auth.api_key_id)
-        .filter(|c| c.enabled)
+        .filter(|c| c.credentials_active())
         .ok_or_else(|| {
             ApiErrorResponse::forbidden(
-                "Persistent files require a currently enabled client credential",
+                "Persistent files require a currently enabled, unexpired client credential",
             )
         })?;
     Ok(client.id)
@@ -79,6 +79,11 @@ pub async fn upload_file(
     mut multipart: Multipart,
 ) -> ApiResult<Json<FileObject>> {
     let client = owner(&state, &auth)?;
+    if state.config_manager.client_privacy(&client).no_retention {
+        return Err(ApiErrorResponse::forbidden(
+            "No-retention policy does not allow new persistent uploads",
+        ));
+    }
     let _permit = state
         .file_upload_slots
         .clone()

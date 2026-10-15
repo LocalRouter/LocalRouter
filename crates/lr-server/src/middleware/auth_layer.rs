@@ -319,6 +319,7 @@ where
 
             // Insert auth context into request extensions
             let logged_id = auth_context.api_key_id.clone();
+            if let Err(error)=crate::privacy::check_ingress(&state,&auth_context.api_key_id,req.uri().path()) {return Ok(axum::response::IntoResponse::into_response(error));}
             req.extensions_mut().insert(auth_context);
 
             // Call the inner service

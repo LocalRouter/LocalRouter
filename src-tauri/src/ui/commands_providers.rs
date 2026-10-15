@@ -356,6 +356,48 @@ pub async fn update_provider_instance(
     Ok(())
 }
 
+/// Explicit review binds evidence to current credentials, origin and settings.
+#[tauri::command]
+pub async fn attest_provider_privacy(
+    instance_name: String,
+    local_execution: bool,
+    no_retention: bool,
+    source: String,
+    expires_at: Option<i64>,
+    registry: State<'_, Arc<ProviderRegistry>>,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    let kind = registry
+        .get_provider_type_for_instance(&instance_name)
+        .ok_or_else(|| "Provider not found".to_owned())?;
+    if registry.get_factory(&kind).is_some_and(|factory| {
+        factory.category() == lr_providers::factory::ProviderCategory::Subscription
+    }) {
+        return Err(
+            "This subscription account has no verified stable privacy-evidence binding".into(),
+        );
+    }
+    let mut config = registry
+        .get_provider_config(&instance_name)
+        .ok_or_else(|| "Provider not found".to_owned())?;
+    let evidence = lr_providers::privacy::ProviderPrivacyAttestation {
+        local_execution,
+        no_retention,
+        source,
+        reviewed_at: chrono::Utc::now().timestamp(),
+        expires_at,
+    };
+    let sealed = lr_providers::privacy::seal_attestation(&kind, &config, evidence)
+        .map_err(|error| error.to_string())?;
+    config.insert(
+        lr_providers::privacy::ATTESTATION_CONFIG.into(),
+        sealed.clone(),
+    );
+    update_provider_instance(registry, config_manager, app, instance_name, kind, config).await?;
+    Ok(sealed)
+}
+
 /// Rename a provider instance
 ///
 /// # Arguments

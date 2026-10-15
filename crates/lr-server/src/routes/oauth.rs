@@ -355,8 +355,11 @@ pub async fn token_endpoint(
     };
 
     // Generate access token
-    match state.token_store.generate_token(client.id.clone()) {
-        Ok((access_token, expires_in)) => {
+    match state
+        .client_manager
+        .issue_oauth_token(&client.id, &client_secret, &state.token_store)
+    {
+        Ok(Some((access_token, expires_in))) => {
             tracing::info!("Generated OAuth token for client: {}", client.id);
 
             (
@@ -369,6 +372,11 @@ pub async fn token_endpoint(
             )
                 .into_response()
         }
+        Ok(None) => (
+            StatusCode::UNAUTHORIZED,
+            Json(TokenErrorResponse::invalid_client()),
+        )
+            .into_response(),
         Err(e) => {
             tracing::error!("Error generating access token: {}", e);
             state.monitor_store.push(

@@ -48,6 +48,7 @@ impl Default for SessionStore {
     }
 }
 pub(crate) struct ClassificationSlot {
+    client_id: String,
     entry: Arc<Mutex<Entry>>,
     generation: u64,
     context: String,
@@ -138,6 +139,7 @@ impl Router {
         fingerprint(json!([
             self.sessions.salt,
             client_id,
+            self.client_privacy(client_id),
             options.id,
             strategy,
             self.provider_registry.routing_revision(),
@@ -218,6 +220,14 @@ impl Router {
         endpoint: EndpointType,
         route: &str,
     ) -> AppResult<Option<SessionHandle>> {
+        if self.client_privacy(client_id).no_retention {
+            if SessionOptions::from_request(request)?
+                .is_some_and(|options| options.require_continuity)
+            {
+                return Err(reset_required());
+            }
+            return Ok(None);
+        }
         let options = SessionOptions::from_request(request)?;
         let Some(options) = options else {
             return Ok(None);
@@ -257,6 +267,9 @@ impl Router {
         context: &Value,
         endpoint: EndpointType,
     ) -> Option<PreComputedRouting> {
+        if self.client_privacy(client_id).no_retention {
+            return None;
+        }
         let config = self
             .session_config(strategy)
             .filter(|c| c.classifier_reuse)?;
@@ -287,6 +300,9 @@ impl Router {
         context: &Value,
         endpoint: EndpointType,
     ) -> Option<ClassificationSlot> {
+        if self.client_privacy(client_id).no_retention {
+            return None;
+        }
         let config = self
             .session_config(strategy)
             .filter(|c| c.classifier_reuse)?;
@@ -302,6 +318,7 @@ impl Router {
             state.classifier_generation
         };
         Some(ClassificationSlot {
+            client_id: client_id.into(),
             entry,
             generation,
             context: fingerprint(context.clone()),
@@ -318,6 +335,9 @@ impl Router {
         let Some(slot) = slot else {
             return;
         };
+        if self.client_privacy(&slot.client_id).no_retention {
+            return;
+        }
         let mut entry = slot.entry.lock();
         if entry.classifier_generation == slot.generation {
             entry.at = Instant::now();
@@ -334,8 +354,20 @@ impl Router {
         request: &CompletionRequest,
         endpoint: EndpointType,
     ) -> AppResult<(CompletionRequest, Option<SessionHandle>)> {
-        let mut output = request.clone();
+        let mut output =
+            self.privacy_provider_request(client_id, provider, request.clone(), endpoint)?;
         let mut handle = None;
+        if self.client_privacy(client_id).no_retention {
+            if SessionOptions::from_request(request)?
+                .is_some_and(|options| options.require_continuity)
+            {
+                return Err(reset_required());
+            }
+            if let Some(extensions) = output.extensions.as_mut() {
+                extensions.remove(lr_providers::session::CACHE_KEY);
+            }
+            return Ok((output, None));
+        }
         let options = SessionOptions::from_request(request)?;
         let supports = self
             .provider_registry
@@ -452,6 +484,14 @@ impl Router {
         request: &CompletionRequest,
         endpoint: EndpointType,
     ) -> AppResult<Option<PreComputedRouting>> {
+        if self.client_privacy(client_id).no_retention {
+            if SessionOptions::from_request(request)?
+                .is_some_and(|options| options.require_continuity)
+            {
+                return Err(reset_required());
+            }
+            return Ok(None);
+        }
         let Some(options) = SessionOptions::from_request(request)?.filter(|o| o.require_continuity)
         else {
             return Ok(None);

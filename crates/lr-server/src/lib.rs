@@ -7,6 +7,7 @@ pub mod manager;
 pub mod mcp_request_metrics;
 pub mod middleware;
 pub mod openapi;
+pub mod privacy;
 pub mod routes;
 pub mod state;
 pub mod types;

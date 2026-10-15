@@ -19,7 +19,7 @@
 import { mockIPC, mockWindows, clearMocks } from '@tauri-apps/api/mocks'
 import { emit } from '@tauri-apps/api/event'
 import type { InvokeArgs } from '@tauri-apps/api/core'
-import type { ApiPathSupport, McpConnectionDiscovery, SkillSourceInfo } from '@app/types/tauri-commands'
+import type { ClientPrivacyStatus, GetClientPrivacyParams, SetClientPrivacyParams, AttestProviderPrivacyParams, ClientSecurityStatus, GetClientSecurityParams, SetClientSecurityParams, RevokeClientCredentialsParams, ApiPathSupport, McpConnectionDiscovery, SkillSourceInfo } from '@app/types/tauri-commands'
 import { toast } from 'sonner'
 import { mockReplay } from './mockReplay'
 import { mockData } from './mockData'
@@ -1259,6 +1259,41 @@ function llamaProcessKey(instanceName: string, model: string) {
  * matches the corresponding type (e.g., RoutingPolicyPreview, ClientInfo, etc.)
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
+const mockClientPrivacy = new Map<string, { local_only: boolean; no_retention: boolean; metadata_only: boolean }>()
+function clientPrivacyStatus(clientId: string): ClientPrivacyStatus {
+  const client = mockData.clients.find(c => c.id === clientId || c.client_id === clientId)
+  if (!client) throw 'Client not found'
+  const policy = mockClientPrivacy.get(client.id) ?? { local_only: false, no_retention: false, metadata_only: false }
+  return { ...policy, effective_metadata_only: policy.metadata_only || policy.no_retention,
+    providers: mockData.providers.map(provider => {
+      const raw = (provider as { config?: Record<string,string> }).config?.localrouter_privacy_attestation
+      let proof: import('@app/types/tauri-commands').ProviderPrivacyAttestation | undefined
+      try { proof = raw ? JSON.parse(raw).attestation : undefined } catch { /* invalid evidence is unknown */ }
+      if (proof?.expires_at && proof.expires_at <= Date.now()/1000) proof = undefined
+      const managed = ['ollaya','laya','von','kev','decider','llamacpp_embedded'].includes(provider.provider_type)
+      const config = (provider as { config?: Record<string,string> }).config
+      const loopback = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?=[:/]|$)/.test(config?.base_url ?? '')
+      const local = managed || (loopback && !!proof?.local_execution)
+      const allowed = (!policy.local_only || local) && (!policy.no_retention || !!proof?.no_retention)
+      return { instance_name: provider.instance_name, enabled: provider.enabled, assessment: {
+        allowed, requires_gateway_zdr: policy.no_retention && provider.provider_type === 'openrouter',
+        local_execution: managed ? 'managed_local_engine' : local ? 'user_attestation' : 'unknown',
+        no_retention: proof?.no_retention ? 'user_attestation' : 'unknown', source: proof?.source ?? null,
+        reviewed_at: proof?.reviewed_at ?? null, expires_at: proof?.expires_at ?? null,
+        reason: allowed ? null : 'Provider evidence does not meet this privacy policy',
+      } }
+    }),
+  }
+}
+const mockClientSecurity = new Map<string, { expiry: string | null; reviewDays: number | null; hasCredential: boolean }>()
+function clientSecurityStatus(clientId: string): ClientSecurityStatus {
+  const client = mockData.clients.find(client => client.id === clientId || client.client_id === clientId)
+  if (!client) throw 'Client not found'
+  const policy = mockClientSecurity.get(client.id) ?? { expiry: null, reviewDays: null, hasCredential: true }
+  const last = client.last_used ?? null
+  return { enabled: client.enabled, has_credential: policy.hasCredential, credential_active: client.enabled && policy.hasCredential && (!policy.expiry || Date.now() < Date.parse(policy.expiry)), credential_expires_at: policy.expiry, review_idle_after_days: policy.reviewDays, last_used: last, idle_review_due: policy.reviewDays !== null && Date.now() - Date.parse(last ?? client.created_at) >= policy.reviewDays * 86400000 }
+}
+
 const mockHandlers: Record<string, (args?: any) => unknown> = {
   ...mockReplay,
   // ============================================================================
@@ -1365,6 +1400,40 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     }
     return null
   },
+  'get_client_privacy': (args: GetClientPrivacyParams): ClientPrivacyStatus => clientPrivacyStatus(args.clientId),
+  'set_client_privacy': (args: SetClientPrivacyParams): ClientPrivacyStatus => {
+    const client = mockData.clients.find(c => c.id === args.clientId || c.client_id === args.clientId)
+    if (!client) throw 'Client not found'
+    if ((args.localOnly || args.noRetention) && (client.llm_mode !== 'gateway' || client.mcp_mode === 'via_llm')) throw 'Restricted privacy requires native gateway mode without automatic MCP'
+    mockClientPrivacy.set(client.id, { local_only: args.localOnly, no_retention: args.noRetention, metadata_only: args.metadataOnly })
+    return clientPrivacyStatus(client.id)
+  },
+  'attest_provider_privacy': (args: AttestProviderPrivacyParams): string => {
+    const provider = mockData.providers.find(p => p.instance_name === args.instanceName)
+    if (!provider) throw 'Provider not found'
+    if (!args.source.trim() || args.source.length > 1024 || (args.expiresAt !== null && args.expiresAt <= Date.now()/1000)) throw 'Invalid privacy evidence'
+    const sealed = JSON.stringify({ attestation: { local_execution: args.localExecution, no_retention: args.noRetention, source: args.source, reviewed_at: Math.floor(Date.now()/1000), expires_at: args.expiresAt }, salt: 'demo', binding: 'demo' })
+    Object.assign(provider, { config: { ...(provider as { config?: Record<string,string> }).config, localrouter_privacy_attestation: sealed } })
+    return sealed
+  },
+  'get_client_security': (args: GetClientSecurityParams): ClientSecurityStatus => clientSecurityStatus(args.clientId),
+  'set_client_security': (args: SetClientSecurityParams): ClientSecurityStatus => {
+    const client = mockData.clients.find(client => client.id === args.clientId || client.client_id === args.clientId)
+    if (!client) throw 'Client not found'
+    if (args.reviewIdleAfterDays !== null && (!Number.isInteger(args.reviewIdleAfterDays) || args.reviewIdleAfterDays < 1 || args.reviewIdleAfterDays > 3650)) throw 'Idle review must be between 1 and 3650 days'
+    if (args.credentialExpiresAt !== null && !Number.isFinite(Date.parse(args.credentialExpiresAt))) throw 'Invalid credential expiry'
+    mockClientSecurity.set(client.id, { expiry: args.credentialExpiresAt, reviewDays: args.reviewIdleAfterDays, hasCredential: mockClientSecurity.get(client.id)?.hasCredential ?? true })
+    return clientSecurityStatus(client.id)
+  },
+  'revoke_client_credentials': (args: RevokeClientCredentialsParams): ClientSecurityStatus => {
+    const client = mockData.clients.find(client => client.id === args.clientId || client.client_id === args.clientId)
+    if (!client) throw 'Client not found'
+    client.enabled = false
+    const previous = mockClientSecurity.get(client.id)
+    mockClientSecurity.set(client.id, { expiry: previous?.expiry ?? null, reviewDays: previous?.reviewDays ?? null, hasCredential: false })
+    setTimeout(() => emit('clients-changed', {}), 10)
+    return clientSecurityStatus(client.id)
+  },
   'toggle_client_enabled': (args) => {
     const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.id)
     if (client) {
@@ -1424,9 +1493,13 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     setTimeout(() => emit('clients-changed', {}), 10)
     return [`demo-secret-${newId}`, cloned]
   },
-  'rotate_client_secret': () => {
+  'rotate_client_secret': (args): string => {
+    const client = mockData.clients.find(client => client.id === args?.clientId || client.client_id === args?.clientId)
+    if (!client) throw 'Client not found'
+    const previous = mockClientSecurity.get(client.id)
+    mockClientSecurity.set(client.id, { expiry: previous?.expiry ?? null, reviewDays: previous?.reviewDays ?? null, hasCredential: true })
     setTimeout(() => emit('clients-changed', {}), 10)
-    return { secret: `demo-secret-${generateId()}` }
+    return `demo-secret-${generateId()}`
   },
   'get_client_value': () => null,
 

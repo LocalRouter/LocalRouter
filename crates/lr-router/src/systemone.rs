@@ -114,8 +114,17 @@ impl Router {
         &self,
         client_id: &str,
         strategy: &lr_config::Strategy,
-        request: SystemOneRequest,
+        mut request: SystemOneRequest,
     ) -> AppResult<SystemOneResponse> {
+        let mut privacy_view = self.decision_routing_request(&request);
+        self.prepare_privacy_request(client_id, &mut privacy_view)?;
+        if let Some(extensions) = privacy_view.extensions {
+            request.extra.insert(
+                "extensions".into(),
+                serde_json::to_value(extensions)
+                    .map_err(|_| AppError::InvalidParams("Invalid privacy context".into()))?,
+            );
+        }
         let extensions = request
             .extra
             .get("extensions")
@@ -295,6 +304,7 @@ impl Router {
             extensions.remove(lr_providers::response_cache::EXTENSION);
             extensions.remove(lr_providers::response_cache::SCOPE);
             extensions.remove(lr_providers::session::CACHE_KEY);
+            extensions.remove(lr_providers::privacy::INTERNAL_EXTENSION);
         }
         if request
             .extra

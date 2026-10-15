@@ -174,7 +174,7 @@ pub async fn create_response(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     client_auth: Option<Extension<ClientAuthContext>>,
-    GatewayJson(req): GatewayJson<CreateResponseRequest>,
+    GatewayJson(mut req): GatewayJson<CreateResponseRequest>,
 ) -> ApiResult<Response> {
     // Correlate logs/monitor events across the turn.
     let session_id = Uuid::new_v4().to_string();
@@ -183,6 +183,18 @@ pub async fn create_response(
     let created_at_dt = Utc::now();
     let created_at = created_at_dt.timestamp();
 
+    let no_retention = state
+        .config_manager
+        .client_privacy(&auth.api_key_id)
+        .no_retention;
+    if no_retention && (req.store == Some(true) || req.previous_response_id.is_some()) {
+        return Err(ApiErrorResponse::bad_request(
+            "No-retention Responses require store=false and a fresh explicit history",
+        ));
+    }
+    if no_retention {
+        req.store = Some(false);
+    }
     let request_json = serde_json::to_value(&req).unwrap_or(Value::Null);
     let mut llm_guard = super::monitor_helpers::emit_llm_call(
         &state,
@@ -194,8 +206,12 @@ pub async fn create_response(
         &request_json,
     );
 
-    let store_flag = req.store.unwrap_or(true);
-    let session_store = responses_session_store(&state);
+    let store_flag = !no_retention && req.store.unwrap_or(true);
+    let session_store = if no_retention {
+        None
+    } else {
+        responses_session_store(&state)
+    };
     let retention = {
         let cfg = state.config_manager.get();
         RetentionConfig {

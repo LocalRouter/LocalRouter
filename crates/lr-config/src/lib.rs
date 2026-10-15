@@ -16,6 +16,8 @@ use tokio::sync::Mutex as AsyncMutex;
 use tracing::{debug, error, info};
 use uuid::Uuid;
 
+mod client_security;
+pub use client_security::*;
 mod response_cache;
 pub use response_cache::*;
 mod adaptive_routing;
@@ -131,6 +133,7 @@ impl ConfigManager {
         let config_path = self.config_path.clone();
         let config_arc = self.config.clone();
         let app_handle = self.app_handle.clone();
+        let client_sync_callback = self.client_sync_callback.clone();
 
         // Capture the Tokio runtime handle for spawning tasks from the file watcher thread
         let runtime_handle = tokio::runtime::Handle::current();
@@ -147,6 +150,7 @@ impl ConfigManager {
                             let config_path_clone = config_path.clone();
                             let config_arc_clone = config_arc.clone();
                             let app_handle_clone = app_handle.clone();
+                            let client_sync_callback = client_sync_callback.clone();
 
                             // Use the captured runtime handle to spawn the task
                             runtime_handle.spawn(async move {
@@ -154,6 +158,9 @@ impl ConfigManager {
                                     Ok(new_config) => {
                                         // Update in-memory config
                                         *config_arc_clone.write() = new_config.clone();
+                                        if let Some(callback) = client_sync_callback {
+                                            callback(new_config.clients.clone());
+                                        }
 
                                         info!("Configuration reloaded successfully");
 
@@ -200,6 +207,18 @@ impl ConfigManager {
     /// Get a read-only copy of the configuration
     pub fn get(&self) -> AppConfig {
         self.config.read().clone()
+    }
+
+    /// Read only one client's privacy policy without cloning credentials or
+    /// unrelated provider/model configuration for each monitor update.
+    pub fn client_privacy(&self, client_id: &str) -> ClientPrivacyConfig {
+        self.config
+            .read()
+            .clients
+            .iter()
+            .find(|client| client.id == client_id)
+            .map(|client| client.security.privacy.clone())
+            .unwrap_or_default()
     }
 
     /// Update configuration with a function
@@ -305,6 +324,7 @@ impl ConfigManager {
             name,
             enabled: true,
             strategy_id: strategy.id.clone(),
+            security: Default::default(),
             allowed_llm_providers: Vec::new(),
             mcp_server_access: McpServerAccess::None,
             context_management_enabled: None,

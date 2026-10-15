@@ -3475,6 +3475,11 @@ impl ClientMode {
 /// 2. OAuth Client Credentials: Get temporary token via POST /oauth/token
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Client {
+    #[serde(
+        default,
+        skip_serializing_if = "crate::ClientSecurityConfig::is_default"
+    )]
+    pub security: crate::ClientSecurityConfig,
     /// Unique identifier (internal, UUID)
     pub id: String,
 
@@ -5050,6 +5055,7 @@ impl Client {
             id,
             name,
             enabled: true,
+            security: Default::default(),
             allowed_llm_providers: Vec::new(),
             mcp_server_access: McpServerAccess::None,
             context_management_enabled: None,

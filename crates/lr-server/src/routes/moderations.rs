@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 use super::helpers::{check_llm_access_with_state, get_enabled_client};
+use crate::middleware::client_auth::ClientAuthContext;
 use crate::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::state::{AppState, AuthContext};
 use crate::types::{ModerationInput, ModerationRequest, ModerationResponse, ModerationResult};
@@ -38,6 +39,7 @@ use lr_guardrails::{SafetyCategory, SafetyCheckResult, ScanDirection};
 pub async fn moderations(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
+    client_auth: Option<Extension<ClientAuthContext>>,
     Json(request): Json<ModerationRequest>,
 ) -> ApiResult<Response> {
     // Emit event
@@ -50,7 +52,7 @@ pub async fn moderations(
     let request_json = serde_json::to_value(&request).unwrap_or_default();
     let mut llm_guard = super::monitor_helpers::emit_llm_call(
         &state,
-        None,
+        client_auth.as_ref(),
         Some(&session_id),
         "/v1/moderations",
         request.model.as_deref().unwrap_or("localrouter-guardrails"),
@@ -122,7 +124,7 @@ pub async fn moderations(
     if texts.is_empty() || texts.iter().all(|t| t.is_empty()) {
         super::monitor_helpers::emit_validation_error(
             &state,
-            None,
+            client_auth.as_ref(),
             Some(&session_id),
             "/v1/moderations",
             Some("input"),

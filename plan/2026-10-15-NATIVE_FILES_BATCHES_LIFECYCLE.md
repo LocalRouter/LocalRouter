@@ -16,7 +16,7 @@
 - [x] Test Coverage Review: add meaningful uncovered edge/error/recovery tests.
 - [x] Bug Hunt: review duplicate submission, durable state transitions, ownership, cleanup, partial billing, reservation release, cancellation and unbounded retention.
 - [x] Update stable and pin actual compiler PATH/RUSTC; run exact workspace Clippy/fmt/tests, frontend types/unit/build checks and live API/OpenAPI fixtures.
-- [ ] Commit and push completed validated changes and automatic catalog updates, preserving unrelated work.
+- [x] Commit and push completed validated changes and automatic catalog updates, preserving unrelated work.
 
 This supersedes the unsafe native-policy exceptions and unverified provider assumptions in `2026-03-15-API-FILES-BATCHES.md`. Native batch payloads must pass LocalRouter policy before leaving the process. An asynchronous provider job is a distinct execution contract: automatic MCP loops, mutable route selection and privileged internal test tokens cannot silently bypass submission policy. Unsupported combinations are explicit capability errors.
 
@@ -127,7 +127,7 @@ Native transport validation passed with updated rustup stable 1.99.0 and actual 
 - [x] Test Coverage Review: fill meaningful error/recovery/isolation coverage gaps.
 - [x] Bug Hunt: inspect duplicate creates, lost acknowledgements, input/snapshot mismatch, cost/receipt ordering, cleanup and unbounded payloads/workers.
 - [x] Run exact updated stable CI with pinned compiler, frontend types/unit/builds and live HTTP/OpenAPI fixtures.
-- [ ] Commit and push completed validated SDK lifecycle changes, then continue privacy/key hygiene and every remaining authorized roadmap phase.
+- [x] Commit and push completed validated SDK lifecycle changes, then continue privacy/key hygiene and every remaining authorized roadmap phase.
 
 Native cost estimates must retain their provenance; zero is only for a known zero, and a reported BYOK gateway fee does not erase the upstream inference estimate. Provider APIs may omit per-row usage or partial results: keep aggregate evidence and unavailable values explicit. Normal SDK retries without an explicit idempotency key remain distinct caller operations; the UI must use a stable generated key for a submission/retry and disable automatic SDK mutation retries. Never silently deduplicate intentionally separate identical jobs by prompt hash.
 
@@ -146,3 +146,5 @@ Seven loopback cases passed before the final shutdown fixture: direct OpenAI lif
 
 
 Final SDK Plan Review, Test Coverage Review and Bug Hunt completed. The full workspace run exposed a stale-idle status race; SDK objects now observe the worker lease before a coherent transactional job/results/accounting/reservation snapshot. The final updated stable 1.99.0 run used `/Users/matus/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc` through pinned PATH/RUSTC: workspace Clippy with warnings denied, fmt check and all 111 test suites pass (4,395 passed, 69 ignored, zero failures). All eight native SDK loopback fixtures pass, including shutdown/abandoned approvals, real per-row approvals/edits/denial, original account binding, nonce reconciliation, local GET, owned outputs, BYOK billing and cleanup. Frontend TypeScript, all 72 unit tests and app/website production builds pass. Unknown native counts are explicit in the UI. Batch usage is exposed as a separate authoritative journal-derived asynchronous summary instead of inventing synchronous zero-cost/latency samples. Verified price ceilings are a documented conservative subset; unsupported providers/controls/quotes remain explicit failures or unknowns. The validated SDK slice is ready for its normal commit/push, followed by the remaining roadmap.
+
+Validated SDK lifecycle committed and normally pushed to origin/master as `5e93031c`. Continue privacy profiles/client-key hygiene and every remaining authorized phase.

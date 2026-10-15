@@ -589,8 +589,10 @@ pub(crate) async fn check_model_firewall_for(
     let Some(client) = state.client_manager.get_client(&client_ctx.client_id) else {
         return Ok(None);
     };
-    if !client.enabled {
-        return Err(ApiErrorResponse::forbidden("Client is disabled"));
+    if !client.credentials_active() {
+        return Err(ApiErrorResponse::forbidden(
+            "Client is disabled or its credential has expired",
+        ));
     }
 
     // Skip firewall for localrouter/auto (handled during routing)
@@ -1117,7 +1119,7 @@ pub async fn guardrails_scan_request(
 
     let config = state.config_manager.get();
     let client = match state.client_manager.get_client(&client_ctx.client_id) {
-        Some(c) if c.enabled => c,
+        Some(c) if c.credentials_active() => c,
         Some(_) => return None,
         None => {
             // Client not found (e.g. internal-test) — no guardrails
@@ -2120,6 +2122,7 @@ pub(crate) async fn run_turn_pipeline(
     session_id: String,
     caps: PipelineCaps,
 ) -> ApiResult<TurnContext> {
+    crate::privacy::check_auxiliaries(state, &auth.api_key_id)?;
     // Stage 1: validate
     if let Err(e) = validate_request(&chat_req) {
         super::monitor_helpers::emit_validation_error(

@@ -1,3 +1,4 @@
+import { ProviderPrivacySettings, PRIVACY_ATTESTATION_KEY } from "@/components/providers/privacy-attestation-settings"
 import { useState, useEffect, useCallback, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { open } from "@tauri-apps/plugin-shell"
@@ -933,6 +934,7 @@ export function ProvidersPanel({
 
                   <TabsContent value="settings">
                     <div className="space-y-6">
+                      <ProviderPrivacySettings instanceName={selectedId ?? ""} key={selectedId} value={editConfig[PRIVACY_ATTESTATION_KEY] || ""} disabled={configLoading} onChange={value => handleConfigFieldChange(PRIVACY_ATTESTATION_KEY,value)} />
                       {/* Inline Edit Fields */}
                       {selectedTypeForEdit && (
                         <Card>

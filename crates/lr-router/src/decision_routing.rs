@@ -234,6 +234,14 @@ impl Router {
         request: &CompletionRequest,
         endpoint: lr_providers::EndpointType,
     ) -> PreComputedRouting {
+        let mut scoped_request = request.clone();
+        if self
+            .prepare_privacy_request(client_id, &mut scoped_request)
+            .is_err()
+        {
+            return fallback(policy, "invalid_privacy_policy");
+        }
+        let request = &scoped_request;
         let start = Instant::now();
         if let Err(error) = policy.validate() {
             return fallback(policy, format!("invalid_policy: {error}"));

@@ -36,6 +36,227 @@ fn guardrails_active_for(client: &lr_config::Client, config: &lr_config::AppConf
     ))
 }
 
+/// Metadata only: no secret or credential fingerprint is returned.
+#[derive(Debug, Clone, Serialize)]
+pub struct ClientSecurityStatus {
+    pub enabled: bool,
+    pub has_credential: bool,
+    pub credential_active: bool,
+    pub credential_expires_at: Option<String>,
+    pub review_idle_after_days: Option<u32>,
+    pub last_used: Option<String>,
+    pub idle_review_due: bool,
+}
+fn security_status(
+    client_id: &str,
+    manager: &lr_clients::ClientManager,
+) -> Result<ClientSecurityStatus, String> {
+    let client = manager
+        .get_client(client_id)
+        .ok_or_else(|| "Client not found".to_owned())?;
+    let has_credential = manager
+        .get_secret(client_id)
+        .map_err(|e| e.to_string())?
+        .is_some();
+    Ok(ClientSecurityStatus {
+        enabled: client.enabled,
+        has_credential,
+        credential_active: has_credential && client.credentials_active(),
+        credential_expires_at: client
+            .security
+            .credential_expires_at
+            .map(|date| date.to_rfc3339()),
+        review_idle_after_days: client.security.review_idle_after_days,
+        last_used: client.last_used.map(|date| date.to_rfc3339()),
+        idle_review_due: client.idle_review_due_at(chrono::Utc::now()),
+    })
+}
+#[tauri::command]
+pub async fn get_client_security(
+    client_id: String,
+    client_manager: State<'_, Arc<lr_clients::ClientManager>>,
+) -> Result<ClientSecurityStatus, String> {
+    security_status(&client_id, &client_manager)
+}
+#[tauri::command]
+pub async fn set_client_security(
+    client_id: String,
+    credential_expires_at: Option<String>,
+    review_idle_after_days: Option<u32>,
+    client_manager: State<'_, Arc<lr_clients::ClientManager>>,
+    config_manager: State<'_, ConfigManager>,
+    token_store: State<'_, Arc<lr_clients::TokenStore>>,
+    app: tauri::AppHandle,
+) -> Result<ClientSecurityStatus, String> {
+    let expiry = credential_expires_at
+        .map(|text| {
+            chrono::DateTime::parse_from_rfc3339(&text)
+                .map(|date| date.with_timezone(&chrono::Utc))
+                .map_err(|_| "Credential expiry must be a valid ISO timestamp".to_owned())
+        })
+        .transpose()?;
+    let mut security = client_manager
+        .get_client(&client_id)
+        .ok_or_else(|| "Client not found".to_owned())?
+        .security;
+    security.credential_expires_at = expiry;
+    security.review_idle_after_days = review_idle_after_days;
+    security.validate()?;
+    client_manager
+        .set_security(&client_id, security.clone())
+        .map_err(|e| e.to_string())?;
+    if !client_manager
+        .get_client(&client_id)
+        .is_some_and(|client| client.credentials_active())
+    {
+        token_store.revoke_client_tokens(&client_id);
+    }
+    let mut found = false;
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.clients.iter_mut().find(|client| client.id == client_id) {
+                client.security.credential_expires_at = expiry;
+                client.security.review_idle_after_days = review_idle_after_days;
+                found = true;
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    if !found {
+        return Err("Client not found in configuration".into());
+    }
+    config_manager.save().await.map_err(|e| e.to_string())?;
+    app.emit("clients-changed", ()).map_err(|e| e.to_string())?;
+    security_status(&client_id, &client_manager)
+}
+#[tauri::command]
+pub async fn revoke_client_credentials(
+    client_id: String,
+    client_manager: State<'_, Arc<lr_clients::ClientManager>>,
+    config_manager: State<'_, ConfigManager>,
+    token_store: State<'_, Arc<lr_clients::TokenStore>>,
+    app: tauri::AppHandle,
+) -> Result<ClientSecurityStatus, String> {
+    // Deny first, even if a later disk/keychain operation fails.
+    client_manager
+        .disable_client(&client_id)
+        .map_err(|e| e.to_string())?;
+    token_store.revoke_client_tokens(&client_id);
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.clients.iter_mut().find(|client| client.id == client_id) {
+                client.enabled = false;
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    // Persist disabled state before removing the secret so restart also denies.
+    config_manager.save().await.map_err(|e| e.to_string())?;
+    client_manager
+        .revoke_credentials(&client_id)
+        .map_err(|e| e.to_string())?;
+    app.emit("clients-changed", ()).map_err(|e| e.to_string())?;
+    security_status(&client_id, &client_manager)
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ClientPrivacyProvider {
+    pub instance_name: String,
+    pub enabled: bool,
+    pub assessment: lr_providers::privacy::ProviderPrivacyAssessment,
+}
+#[derive(Debug, Clone, Serialize)]
+pub struct ClientPrivacyStatus {
+    pub local_only: bool,
+    pub no_retention: bool,
+    pub metadata_only: bool,
+    pub effective_metadata_only: bool,
+    pub providers: Vec<ClientPrivacyProvider>,
+}
+fn privacy_status(
+    client_id: &str,
+    config: &ConfigManager,
+    registry: &lr_providers::registry::ProviderRegistry,
+) -> Result<ClientPrivacyStatus, String> {
+    if !config
+        .get()
+        .clients
+        .iter()
+        .any(|client| client.id == client_id)
+    {
+        return Err("Client not found".into());
+    }
+    let policy = config.client_privacy(client_id);
+    let mut providers = registry
+        .get_provider_names()
+        .into_iter()
+        .map(|name| ClientPrivacyProvider {
+            enabled: registry.is_provider_enabled(&name) == Some(true),
+            assessment: registry.privacy_assessment(&name, &policy),
+            instance_name: name,
+        })
+        .collect::<Vec<_>>();
+    providers.sort_by(|a, b| a.instance_name.cmp(&b.instance_name));
+    Ok(ClientPrivacyStatus {
+        local_only: policy.local_only,
+        no_retention: policy.no_retention,
+        metadata_only: policy.metadata_only,
+        effective_metadata_only: policy.redact_payloads(),
+        providers,
+    })
+}
+#[tauri::command]
+pub async fn get_client_privacy(
+    client_id: String,
+    config_manager: State<'_, ConfigManager>,
+    registry: State<'_, Arc<lr_providers::registry::ProviderRegistry>>,
+) -> Result<ClientPrivacyStatus, String> {
+    privacy_status(&client_id, &config_manager, &registry)
+}
+#[tauri::command]
+pub async fn set_client_privacy(
+    client_id: String,
+    local_only: bool,
+    no_retention: bool,
+    metadata_only: bool,
+    config_manager: State<'_, ConfigManager>,
+    client_manager: State<'_, Arc<lr_clients::ClientManager>>,
+    registry: State<'_, Arc<lr_providers::registry::ProviderRegistry>>,
+    app: tauri::AppHandle,
+) -> Result<ClientPrivacyStatus, String> {
+    let policy = lr_config::ClientPrivacyConfig {
+        local_only,
+        no_retention,
+        metadata_only,
+    };
+    let mut found = false;
+    config_manager
+        .update(|cfg| {
+            if let Some(client) = cfg.clients.iter_mut().find(|client| client.id == client_id) {
+                client.security.privacy = policy;
+                found = true;
+            }
+        })
+        .map_err(|error| error.to_string())?;
+    if !found {
+        return Err("Client not found".into());
+    }
+    let security = config_manager
+        .get()
+        .clients
+        .into_iter()
+        .find(|client| client.id == client_id)
+        .ok_or_else(|| "Client not found".to_owned())?
+        .security;
+    client_manager
+        .set_security(&client_id, security)
+        .map_err(|error| error.to_string())?;
+    config_manager.save().await.map_err(|error| {
+        format!("Policy is active in this session but could not be saved: {error}")
+    })?;
+    app.emit("clients-changed", ())
+        .map_err(|error| error.to_string())?;
+    privacy_status(&client_id, &config_manager, &registry)
+}
+
 /// Client information for display
 ///
 /// NOTE: This struct does NOT contain the client secret. The secret is stored
@@ -315,10 +536,13 @@ pub async fn create_client(
 #[tauri::command]
 pub async fn delete_client(
     client_id: String,
+    token_store: State<'_, Arc<lr_clients::TokenStore>>,
     client_manager: State<'_, Arc<lr_clients::ClientManager>>,
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
+    token_store.revoke_client_tokens(&client_id);
+
     tracing::info!("Deleting client: {}", client_id);
 
     // Delete from client manager (removes from keychain and in-memory)
@@ -445,6 +669,7 @@ pub async fn clone_client(
         name: clone_name,
         enabled: source_client.enabled,
         strategy_id: new_strategy_id,
+        security: Default::default(),
         allowed_llm_providers: Vec::new(),
         mcp_server_access: lr_config::McpServerAccess::None,
         context_management_enabled: source_client.context_management_enabled,
@@ -625,11 +850,16 @@ pub async fn update_client_name(
 #[tauri::command]
 pub async fn toggle_client_enabled(
     client_id: String,
+    token_store: State<'_, Arc<lr_clients::TokenStore>>,
     enabled: bool,
     client_manager: State<'_, Arc<lr_clients::ClientManager>>,
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
+    if !enabled {
+        token_store.revoke_client_tokens(&client_id);
+    }
+
     tracing::info!("Setting client {} enabled: {}", client_id, enabled);
 
     // Update in client manager
@@ -688,10 +918,13 @@ pub async fn toggle_client_enabled(
 #[tauri::command]
 pub async fn rotate_client_secret(
     client_id: String,
+    token_store: State<'_, Arc<lr_clients::TokenStore>>,
     client_manager: State<'_, Arc<lr_clients::ClientManager>>,
     config_manager: State<'_, ConfigManager>,
     provider_registry: State<'_, Arc<lr_providers::registry::ProviderRegistry>>,
 ) -> Result<String, String> {
+    token_store.revoke_client_tokens(&client_id);
+
     tracing::info!("Rotating secret for client: {}", client_id);
 
     let new_secret = client_manager

@@ -225,6 +225,47 @@ export type McpMode = 'off' | 'gateway' | 'via_llm'
  * Client information returned from list_clients and create_client.
  * Rust: src-tauri/src/ui/commands_clients.rs - ClientInfo struct
  */
+/** Rust: src-tauri/src/ui/commands_clients.rs - ClientSecurityStatus */
+export interface ClientSecurityStatus {
+  enabled: boolean
+  has_credential: boolean
+  credential_active: boolean
+  credential_expires_at: string | null
+  review_idle_after_days: number | null
+  last_used: string | null
+  idle_review_due: boolean
+}
+
+/** Rust: crates/lr-providers/src/privacy.rs - ProviderPrivacyAssessment */
+export interface ProviderPrivacyAssessment {
+  allowed: boolean
+  requires_gateway_zdr: boolean
+  local_execution: 'managed_local_engine' | 'user_attestation' | 'unknown'
+  no_retention: 'managed_local_engine' | 'user_attestation' | 'unknown'
+  source: string | null
+  reviewed_at: number | null
+  expires_at: number | null
+  reason: string | null
+}
+/** Rust: src-tauri/src/ui/commands_clients.rs - ClientPrivacyProvider */
+export interface ClientPrivacyProvider { instance_name: string; enabled: boolean; assessment: ProviderPrivacyAssessment }
+/** Rust: src-tauri/src/ui/commands_clients.rs - ClientPrivacyStatus */
+export interface ClientPrivacyStatus {
+  local_only: boolean
+  no_retention: boolean
+  metadata_only: boolean
+  effective_metadata_only: boolean
+  providers: ClientPrivacyProvider[]
+}
+/** Rust: crates/lr-providers/src/privacy.rs - ProviderPrivacyAttestation */
+export interface ProviderPrivacyAttestation {
+  local_execution: boolean
+  no_retention: boolean
+  source: string
+  reviewed_at: number
+  expires_at: number | null
+}
+
 export interface ClientInfo {
   id: string
   name: string
@@ -4904,6 +4945,7 @@ export type LlmApi =
 
 /** Rust: crates/lr-monitor/src/types.rs - MonitorEventSummary */
 export interface MonitorEventSummary {
+  payload_redacted?: boolean
   id: string
   sequence: number
   timestamp: string
@@ -4931,6 +4973,7 @@ export interface MonitorEventSummary {
 
 /** Rust: crates/lr-monitor/src/types.rs - MonitorEvent */
 export interface MonitorEvent {
+  payload_redacted?: boolean
   id: string
   sequence: number
   timestamp: string
@@ -5106,3 +5149,21 @@ export interface ResponseCacheConfig { enabled: boolean; ttl_secs: number; max_e
 export interface ResponseCacheStats { entries: number; bytes: number; hits: number; misses: number; bypasses: number; evictions: number; upstream_requests_avoided: number; avoided_cost_estimate_usd: number | null }
 /** Params for get_response_cache_stats and clear_response_cache */
 export interface ResponseCacheClientParams { clientId?: string | null }
+
+/** Params for get_client_security */
+export interface GetClientSecurityParams { clientId: string }
+/** Params for set_client_security */
+export interface SetClientSecurityParams {
+  clientId: string
+  credentialExpiresAt: string | null
+  reviewIdleAfterDays: number | null
+}
+/** Params for revoke_client_credentials */
+export interface RevokeClientCredentialsParams { clientId: string }
+
+/** Params for get_client_privacy */
+export interface GetClientPrivacyParams { clientId: string }
+/** Params for set_client_privacy */
+export interface SetClientPrivacyParams { clientId: string; localOnly: boolean; noRetention: boolean; metadataOnly: boolean }
+/** Params for attest_provider_privacy; response is a sealed configuration document. */
+export interface AttestProviderPrivacyParams { instanceName: string; localExecution: boolean; noRetention: boolean; source: string; expiresAt: number | null }

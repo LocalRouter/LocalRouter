@@ -141,6 +141,11 @@ pub async fn create(
             return Ok(Json(object(&state, job).await?));
         }
     }
+    if state.config_manager.client_privacy(&client).no_retention {
+        return Err(ApiErrorResponse::forbidden(
+            "No-retention policy does not allow new persistent batch jobs",
+        ));
+    }
     let _slot = state.batch_runtime.try_preflight().ok_or_else(|| {
         ApiErrorResponse::rate_limited("Two native validations are already running")
     })?;

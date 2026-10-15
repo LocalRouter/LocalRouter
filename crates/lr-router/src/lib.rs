@@ -23,6 +23,7 @@ pub mod endpoint_cache;
 pub mod explanation;
 pub mod free_tier;
 mod messages;
+mod privacy;
 pub mod rate_limit;
 pub mod response_cache;
 mod systemone;
@@ -1013,7 +1014,7 @@ impl Router {
             })?
             .clone();
 
-        if !client.enabled {
+        if !client.credentials_active() {
             warn!("Client '{}' is disabled", client_id);
             return Err(AppError::Unauthorized);
         }
@@ -1440,6 +1441,7 @@ impl Router {
                         | lr_providers::replay::EXTENSION
                         | lr_providers::response_cache::EXTENSION
                         | lr_providers::response_cache::SCOPE
+                        | lr_providers::privacy::INTERNAL_EXTENSION
                 ) {
                     continue;
                 }
@@ -2553,6 +2555,7 @@ impl Router {
         request: CompletionRequest,
     ) -> AppResult<(CompletionResponse, Option<serde_json::Value>)> {
         let mut request = request;
+        self.prepare_privacy_request(client_id, &mut request)?;
         lr_providers::session::prepare_turn(&mut request)?;
         debug!(
             "Routing completion request for client '{}', model '{}'",
@@ -2668,6 +2671,7 @@ impl Router {
         Option<serde_json::Value>,
     )> {
         let mut request = request;
+        self.prepare_privacy_request(client_id, &mut request)?;
         lr_providers::session::prepare_turn(&mut request)?;
         debug!(
             "Routing streaming completion request for client '{}', model '{}'",
@@ -2952,6 +2956,7 @@ impl Router {
         request: EmbeddingRequest,
     ) -> AppResult<EmbeddingResponse> {
         self.require_enabled_model(provider, model)?;
+        self.check_provider_privacy(client_id, provider, false)?;
         // Get provider instance from registry
         let provider_instance = self
             .provider_registry
@@ -3298,6 +3303,7 @@ impl Router {
         request: AudioTranscriptionRequest,
     ) -> AppResult<AudioTranscriptionResponse> {
         self.require_enabled_model(provider, model)?;
+        self.check_provider_privacy(client_id, provider, false)?;
         let provider_instance = self
             .provider_registry
             .get_provider(provider)
@@ -3409,6 +3415,7 @@ impl Router {
         request: AudioTranslationRequest,
     ) -> AppResult<AudioTranslationResponse> {
         self.require_enabled_model(provider, model)?;
+        self.check_provider_privacy(client_id, provider, false)?;
         let provider_instance = self
             .provider_registry
             .get_provider(provider)
@@ -3519,6 +3526,7 @@ impl Router {
         request: SpeechRequest,
     ) -> AppResult<SpeechResponse> {
         self.require_enabled_model(provider, model)?;
+        self.check_provider_privacy(client_id, provider, false)?;
         let provider_instance = self
             .provider_registry
             .get_provider(provider)

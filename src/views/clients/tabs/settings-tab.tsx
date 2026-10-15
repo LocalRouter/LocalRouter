@@ -1,4 +1,6 @@
 
+import { ClientPrivacyPanel } from "./privacy-panel"
+import { ClientSecurityPanel } from "./security-panel"
 import { useState, useEffect, useRef, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
@@ -160,6 +162,8 @@ export function ClientSettingsTab({ client, onUpdate, onDelete }: SettingsTabPro
 
   return (
     <div className="space-y-6">
+      <ClientSecurityPanel clientId={client.id} enabled={client.enabled} onUpdate={onUpdate} />
+      <ClientPrivacyPanel key={client.id} clientId={client.id} onUpdate={onUpdate} />
       {/* Client Name */}
       <Card>
         <CardHeader>

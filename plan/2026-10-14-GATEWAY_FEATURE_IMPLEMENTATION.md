@@ -9,8 +9,8 @@
 - [x] P1 Local replay and model/policy evaluation (promoted by user).
 - [x] P2 Opt-in exact response cache.
 - [x] P2 Native Anthropic Messages ingress.
-- [ ] P2 Native discounted Files/Batches lifecycle.
-- [ ] P2/P3 Privacy profiles and client-key hygiene.
+- [x] P2 Native discounted Files/Batches lifecycle.
+- [x] P2/P3 Privacy profiles and client-key hygiene.
 - [ ] P3 Versioned named routes and deterministic rules.
 - [ ] P3 Search/web fetch and upstream server tools.
 - [ ] P3 PDF/document inputs and OCR.
@@ -134,3 +134,12 @@ P2 Files/Batches is in progress under `2026-10-15-NATIVE_FILES_BATCHES_LIFECYCLE
 P2 Files/Batches journal foundation now adds explicit draft/prepared snapshots, owner-scoped idempotency, durable one-time upload/submit intents, bounded known-job cancellation intents, current-client quota reservations and idempotent per-row receipts. Ordinary quota checks include pending native work and fail closed on unknown spend/unavailable ledger. All 4,355 Rust tests, stable Clippy/fmt and frontend checks pass. Provider adapters, SDK job routes, aggregate pricing/result retention/cleanup and job UI remain in progress, with no discounted endpoint enabled prematurely.
 
 P2 native batch transport foundation is complete: direct OpenAI API-key Files/Batches and a separate ordered OpenRouter inline adapter, bounded redirects-disabled IO, credential bindings, safe diagnostics, explicit capabilities and documented cancellation/cleanup/partial-result limitations. Twelve loopback tests and the full stable suite (4,367 tests), frontend regressions and production builds pass. Public SDK orchestration, aggregate billing/result lifecycle and management UI are still being implemented; native batch execution is not advertised as complete.
+
+
+P2 native Files/Batches SDK lifecycle completed and pushed in `5e93031c`. The owned SDK API and job UI now support sealed per-row policy validation/edits, native OpenAI/OpenRouter submission, durable quota/storage reservations, account-bound reconciliation, known/unknown BYOK/native billing, owned results, explicit cancellation/cleanup and bounded watching. All 4,395 workspace tests (69 ignored), stable Clippy/fmt, eight SDK loopback fixtures, frontend types/72 regressions and both builds pass. Unknown prices and unsupported provider operations are explicit; no synchronous batch emulation or automatic uncertain create retry. Next: privacy profiles and client-key hygiene under the saved detailed plan. All later roadmap items remain authorized and pending.
+
+## P2/P3 privacy profiles and key hygiene
+
+Implemented independent local-execution/no-retention constraints and metadata-only capture, credential-bound reviewed provider evidence, fail-closed unsupported paths, cache/session/Responses/file/job policy, absolute credential expiry, advisory idle review and deliberate revocation. Secret verification and OAuth issuance recheck current credentials under rotation/revocation locks; existing OAuth checks live client expiry. UI, Tauri contracts and demo mocks are synchronized. Existing history/artifacts are preserved for explicit cleanup. Direct safety scans, proxy/MCP, image/audio/moderation and unverified native gateway control mappings are explicitly unavailable under strict profiles. Details: `2026-10-15-PRIVACY_PROFILES_KEY_HYGIENE.md` and `docs/PRIVACY_PROFILES.md`.
+
+Plan Review, Test Coverage Review and Bug Hunt are complete. Rust stable 1.99.0 exact CI parity passed: Clippy/fmt and 4,412 workspace tests (69 ignored, zero failures); 72 frontend regressions, app/demo types and both production builds passed. Next saved plan: `2026-10-15-VERSIONED_NAMED_ROUTES_RULES.md`. All remaining P3/later features remain authorized and pending.

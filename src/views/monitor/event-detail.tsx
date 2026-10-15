@@ -243,6 +243,10 @@ export function EventDetail({ event, loading, error, onRetry, toolbar, onReplay 
     )
   }
 
+  if (event.payload_redacted) {
+    return <div className="space-y-3 p-4"><p className="text-sm font-medium">Payload capture was disabled for this event.</p><p className="text-xs text-muted-foreground">Request bodies, responses, previews, findings and raw errors were not retained. Usage and lifecycle metadata remain available.</p><pre className="overflow-auto whitespace-pre-wrap break-all text-xs">{JSON.stringify(event, null, 2)}</pre></div>
+  }
+
   const data = event.data as EventData
   const type = data.type as string
   const tabs = eventTabs(event)

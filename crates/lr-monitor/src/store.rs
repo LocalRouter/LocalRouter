@@ -14,6 +14,8 @@ use crate::types::*;
 pub type EventEmitter = Arc<dyn Fn(&str, String) + Send + Sync>;
 
 /// Callback told the number of requests in progress whenever it changes.
+pub type PayloadPolicy = Arc<dyn Fn(Option<&str>) -> bool + Send + Sync>;
+
 pub type PendingListener = Arc<dyn Fn(usize) + Send + Sync>;
 
 /// Default ceiling on the memory the store may hold.
@@ -71,6 +73,7 @@ pub struct MonitorEventStore {
     max_capacity: AtomicUsize,
     max_bytes: AtomicUsize,
     next_sequence: AtomicU64,
+    payload_policy: RwLock<Option<PayloadPolicy>>,
     emitter: RwLock<Option<EventEmitter>>,
     pending_listener: RwLock<Option<PendingListener>>,
 }
@@ -92,6 +95,7 @@ impl MonitorEventStore {
             max_capacity: AtomicUsize::new(max_capacity.max(1)),
             max_bytes: AtomicUsize::new(max_bytes.max(1)),
             next_sequence: AtomicU64::new(1),
+            payload_policy: RwLock::new(None),
             emitter: RwLock::new(None),
             pending_listener: RwLock::new(None),
         }
@@ -118,6 +122,21 @@ impl MonitorEventStore {
                 }
                 None => break,
             }
+        }
+    }
+
+    /// Applies to new events only. Existing captures are untouched; callers
+    /// must expose a separate, explicit user cleanup action for old history.
+    pub fn set_payload_policy<F: Fn(Option<&str>) -> bool + Send + Sync + 'static>(
+        &self,
+        policy: F,
+    ) {
+        *self.payload_policy.write() = Some(Arc::new(policy));
+    }
+    fn new_event_payload_policy(&self, event: &mut MonitorEvent) {
+        let policy = self.payload_policy.read().clone();
+        if policy.is_some_and(|policy| policy(event.client_id.as_deref())) {
+            crate::privacy::redact(event);
         }
     }
 
@@ -169,7 +188,8 @@ impl MonitorEventStore {
         let id = format!("mon-{}", Uuid::new_v4());
         let sequence = self.next_sequence.fetch_add(1, Ordering::Relaxed);
 
-        let event = MonitorEvent {
+        let mut event = MonitorEvent {
+            payload_redacted: false,
             id: id.clone(),
             sequence,
             timestamp: Utc::now(),
@@ -182,6 +202,7 @@ impl MonitorEventStore {
             duration_ms,
         };
 
+        self.new_event_payload_policy(&mut event);
         let summary = to_summary(&event);
         let size = event_size(&event);
 
@@ -218,7 +239,13 @@ impl MonitorEventStore {
         let before = events.pending_requests;
         if let Some(stored) = events.queue.iter_mut().rev().find(|s| s.event.id == id) {
             let was_pending = is_pending_request(&stored.event);
+            let was_redacted = stored.event.payload_redacted;
             updater(&mut stored.event);
+            // An event created without capture stays protected even if its
+            // client later selects full capture. Old full captures are unchanged.
+            if was_redacted {
+                crate::privacy::redact(&mut stored.event);
+            }
             let is_pending = is_pending_request(&stored.event);
             let updated_summary = to_summary(&stored.event);
 
@@ -446,6 +473,68 @@ mod tests {
         )
     }
 
+    #[test]
+    fn capture_policy_is_new_only_client_scoped_and_sticky_through_completion() {
+        let store = make_store(100);
+        let old = push_llm_call(&store, "old-model");
+        store.set_payload_policy(|client| client == Some("client-1"));
+        let protected = push_llm_call(&store, "new-model");
+        let other = store.push(
+            MonitorEventType::InternalError,
+            Some("client-2".into()),
+            None,
+            None,
+            MonitorEventData::InternalError {
+                error_type: "example".into(),
+                message: "other-client-detail".into(),
+                status_code: 500,
+            },
+            EventStatus::Error,
+            None,
+        );
+        let original = store.get(&old).unwrap();
+        assert!(!original.payload_redacted);
+        assert!(original.session_id.is_some());
+        assert!(!store.get(&other).unwrap().payload_redacted);
+        assert_eq!(store.pending_requests(), 2);
+        store.set_payload_policy(|_| false);
+        store.update(&protected, |event| {
+            event.status = EventStatus::Complete;
+            if let MonitorEventData::LlmCall {
+                response_body,
+                content_preview,
+                output_tokens,
+                cost_usd,
+                ..
+            } = &mut event.data
+            {
+                *response_body = Some(serde_json::json!({"secret":"late-payload"}));
+                *content_preview = Some("late-payload".into());
+                *output_tokens = Some(25);
+                *cost_usd = Some(0.1);
+            } else {
+                panic!("typed event lifecycle was lost");
+            }
+        });
+        let event = store.get(&protected).unwrap();
+        assert!(event.payload_redacted);
+        assert!(event.session_id.is_none());
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(!json.contains("late-payload"));
+        if let MonitorEventData::LlmCall {
+            output_tokens,
+            cost_usd,
+            ..
+        } = event.data
+        {
+            assert_eq!(output_tokens, Some(25));
+            assert_eq!(cost_usd, Some(0.1));
+        } else {
+            panic!("typed lifecycle was lost");
+        }
+        assert_eq!(store.pending_requests(), 1);
+        assert!(!store.get(&old).unwrap().payload_redacted);
+    }
     #[test]
     fn test_push_and_get() {
         let store = make_store(100);

@@ -14,6 +14,7 @@ use super::helpers::{
     check_llm_access_with_state, check_strategy_permission, get_client_with_strategy,
     get_enabled_client, validate_strategy_model_access,
 };
+use crate::middleware::client_auth::ClientAuthContext;
 use crate::middleware::error::{ApiErrorResponse, ApiResult};
 use crate::state::{AppState, AuthContext};
 use crate::types::{ImageData, ImageGenerationRequest, ImageGenerationResponse};
@@ -39,6 +40,7 @@ use crate::types::{ImageData, ImageGenerationRequest, ImageGenerationResponse};
 pub async fn image_generations(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
+    client_auth: Option<Extension<ClientAuthContext>>,
     Json(mut request): Json<ImageGenerationRequest>,
 ) -> ApiResult<Response> {
     // Emit LLM request event to trigger tray icon indicator
@@ -51,7 +53,7 @@ pub async fn image_generations(
     let request_json = serde_json::to_value(&request).unwrap_or_default();
     let mut llm_guard = super::monitor_helpers::emit_llm_call(
         &state,
-        None,
+        client_auth.as_ref(),
         Some(&session_id),
         "/v1/images/generations",
         &request.model,
@@ -69,7 +71,7 @@ pub async fn image_generations(
     if let Err(e) = validate_request(&request) {
         super::monitor_helpers::emit_validation_error(
             &state,
-            None,
+            client_auth.as_ref(),
             Some(&session_id),
             "/v1/images/generations",
             e.error.error.param.as_deref(),
@@ -97,7 +99,7 @@ pub async fn image_generations(
     if request.model == "localrouter/auto" {
         super::monitor_helpers::emit_validation_error(
             &state,
-            None,
+            client_auth.as_ref(),
             Some(&session_id),
             "/v1/images/generations",
             Some("model"),
@@ -119,7 +121,7 @@ pub async fn image_generations(
         } else {
             super::monitor_helpers::emit_validation_error(
                 &state,
-                None,
+                client_auth.as_ref(),
                 Some(&session_id),
                 "/v1/images/generations",
                 Some("model"),
@@ -139,7 +141,7 @@ pub async fn image_generations(
         None => {
             super::monitor_helpers::emit_validation_error(
                 &state,
-                None,
+                client_auth.as_ref(),
                 Some(&session_id),
                 "/v1/images/generations",
                 Some("model"),
@@ -382,6 +384,7 @@ pub struct ImageEditForm {
 pub async fn image_edits(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
+    client_auth: Option<Extension<ClientAuthContext>>,
     mut multipart: axum::extract::Multipart,
 ) -> ApiResult<Response> {
     const ENDPOINT: &str = "/v1/images/edits";
@@ -392,7 +395,7 @@ pub async fn image_edits(
     let bad = |state: &AppState, param: Option<&str>, msg: String| {
         super::monitor_helpers::emit_validation_error(
             state,
-            None,
+            client_auth.as_ref(),
             Some(&session_id),
             ENDPOINT,
             param,
@@ -542,7 +545,7 @@ pub async fn image_edits(
     });
     let mut llm_guard = super::monitor_helpers::emit_llm_call(
         &state,
-        None,
+        client_auth.as_ref(),
         Some(&session_id),
         ENDPOINT,
         &model,

@@ -212,6 +212,9 @@ impl OpenRouterProvider {
 #[async_trait]
 #[allow(dead_code)]
 impl ModelProvider for OpenRouterProvider {
+    fn supports_no_retention_filter(&self) -> bool {
+        true
+    }
     fn native_batch_kind(&self) -> Option<crate::batches::NativeBatchKind> {
         Some(crate::batches::NativeBatchKind::Openrouter)
     }

@@ -35,6 +35,7 @@ fn create_test_client(id: &str, strategy_id: &str) -> Client {
         id: id.to_string(),
         name: "Test Client".to_string(),
         enabled: true,
+        security: Default::default(),
         allowed_llm_providers: vec![],
         mcp_server_access: lr_config::McpServerAccess::None,
         context_management_enabled: None,

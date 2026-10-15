@@ -338,7 +338,7 @@ fn find_client_by_id<'a>(client_id: &str, config: &'a AppConfig) -> AppResult<&'
             ))
         })?;
 
-    if !client.enabled {
+    if !client.credentials_active() {
         return Err(AppError::Config(format!(
             "Client '{}' is disabled. Enable it in config.yaml",
             client_id
@@ -353,7 +353,7 @@ fn find_first_enabled_client(config: &AppConfig) -> AppResult<&Client> {
     config
         .clients
         .iter()
-        .find(|c| c.enabled && c.mcp_permissions.has_any_access())
+        .find(|c| c.credentials_active() && c.mcp_permissions.has_any_access())
         .ok_or_else(|| {
             AppError::Config(
                 "No enabled clients with MCP servers found. Configure a client in config.yaml"
@@ -385,6 +385,7 @@ mod tests {
                 id: "test_client".to_string(),
                 name: "Test Client".to_string(),
                 enabled: true,
+                security: Default::default(),
                 allowed_llm_providers: vec![],
                 mcp_server_access: McpServerAccess::Specific(vec!["filesystem".to_string()]),
                 context_management_enabled: None,
@@ -428,6 +429,7 @@ mod tests {
                 id: "disabled_client".to_string(),
                 name: "Disabled Client".to_string(),
                 enabled: false,
+                security: Default::default(),
                 allowed_llm_providers: vec![],
                 mcp_server_access: McpServerAccess::Specific(vec!["web".to_string()]),
                 context_management_enabled: None,
@@ -471,6 +473,7 @@ mod tests {
                 id: "no_mcp_client".to_string(),
                 name: "No MCP Client".to_string(),
                 enabled: true,
+                security: Default::default(),
                 allowed_llm_providers: vec![],
                 mcp_server_access: McpServerAccess::None,
                 context_management_enabled: None,

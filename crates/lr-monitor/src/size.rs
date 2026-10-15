@@ -377,6 +377,7 @@ mod tests {
 
     fn llm_event(request_body: Value) -> MonitorEvent {
         MonitorEvent {
+            payload_redacted: false,
             id: "mon-1".to_string(),
             sequence: 1,
             timestamp: chrono::Utc::now(),
@@ -478,6 +479,7 @@ mod tests {
     #[test]
     fn event_size_is_small_for_scalar_only_events() {
         let event = MonitorEvent {
+            payload_redacted: false,
             id: "mon-2".to_string(),
             sequence: 2,
             timestamp: chrono::Utc::now(),

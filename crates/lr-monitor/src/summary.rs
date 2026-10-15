@@ -3,6 +3,9 @@ use crate::types::{EventStatus, MonitorEvent, MonitorEventData, MonitorEventSumm
 /// Generate a one-line summary string from event data for list display.
 /// For combined events, the summary changes based on status (pending vs complete/error).
 pub fn generate_summary(event: &MonitorEvent) -> String {
+    if event.payload_redacted {
+        return format!("{:?}: payloads not retained", event.event_type);
+    }
     match &event.data {
         // LLM Call (combined)
         MonitorEventData::LlmCall {
@@ -413,6 +416,7 @@ pub fn generate_summary(event: &MonitorEvent) -> String {
 pub fn to_summary(event: &MonitorEvent) -> MonitorEventSummary {
     let (question, answer) = crate::preview::question_and_answer(&event.data);
     MonitorEventSummary {
+        payload_redacted: event.payload_redacted,
         id: event.id.clone(),
         sequence: event.sequence,
         timestamp: event.timestamp,

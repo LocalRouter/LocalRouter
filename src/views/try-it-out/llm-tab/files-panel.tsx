@@ -68,7 +68,7 @@ export function FilesPanel({
     )
     if (!mounted.current) return
     setFiles((previous) => (after ? [...previous, ...page.data] : page.data))
-    setCursor(page.has_more ? (page.data.at(-1)?.id ?? null) : null)
+    setCursor(page.has_more ? (page.data[page.data.length - 1]?.id ?? null) : null)
   }
 
   return (

@@ -195,6 +195,30 @@ impl Router {
             execution_priority: priority,
             observed_performance: observed,
         };
+        let mut force_privacy_zdr = false;
+        if let Some(value) = request
+            .extensions
+            .as_ref()
+            .and_then(|extensions| extensions.get(lr_providers::privacy::INTERNAL_EXTENSION))
+        {
+            match serde_json::from_value::<lr_config::ClientPrivacyConfig>(value.clone()) {
+                Ok(policy) => {
+                    let assessment = self.provider_registry.privacy_assessment(provider, &policy);
+                    force_privacy_zdr = assessment.requires_gateway_zdr;
+                    if !assessment.allowed {
+                        result.exclusions.push("privacy_policy_unverified".into());
+                    }
+                    if assessment.requires_gateway_zdr
+                        && !matches!(endpoint, EndpointType::Chat | EndpointType::Messages)
+                    {
+                        result
+                            .exclusions
+                            .push("privacy_controls_unsupported".into());
+                    }
+                }
+                Err(_) => result.exclusions.push("invalid_privacy_policy".into()),
+            }
+        }
         if !strategy.is_model_allowed(provider, model) {
             result.exclusions.push("model_not_allowed".into());
         }
@@ -232,6 +256,25 @@ impl Router {
                 // No prompt copy: routing-control preflight needs scalar options only.
                 let mut controls = CompletionRequest::new(model, Vec::new());
                 controls.extensions = request.extensions.clone();
+                if force_privacy_zdr {
+                    let required = GatewayPreferences {
+                        zdr: Some(true),
+                        data_collection: Some(lr_providers::gateway::DataCollection::Deny),
+                        ..Default::default()
+                    };
+                    match required.effective(controls.extensions.as_ref()) {
+                        Ok(effective) => {
+                            controls
+                                .extensions
+                                .get_or_insert_with(Default::default)
+                                .insert(
+                                    lr_providers::gateway::EXTENSION.into(),
+                                    serde_json::to_value(effective).unwrap(),
+                                );
+                        }
+                        Err(_) => result.exclusions.push("privacy_controls_conflict".into()),
+                    }
+                }
                 controls.service_tier = request.service_tier.clone();
                 controls.reasoning_effort = request.reasoning_effort.clone();
                 let known_native = self.provider_registry.model_has_capability(
