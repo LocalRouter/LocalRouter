@@ -7,7 +7,6 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Separator } from '@/components/ui/separator'
 import { Search, Crosshair, Filter, CircleAlert } from 'lucide-react'
 import { InfoTooltip } from '@/components/ui/info-tooltip'
-import { cn } from '@/lib/utils'
 import type { MonitorEventFilter, MonitorEventType, InterceptCategory, InterceptRule, ClientInfo } from '@/types/tauri-commands'
 
 interface EventFiltersProps {
@@ -118,13 +117,18 @@ export function EventFilters({ filter, onFilterChange, interceptRule, onIntercep
   const allGroupsSelected = selectedGroups.length === ALL_TYPE_GROUP_KEYS.length
   const someGroupsSelected = selectedGroups.length > 0 && !allGroupsSelected
 
-  const typeFilterLabel = allGroupsSelected
+  // Failed events of any type: the backend sets `status: error` on failed
+  // LLM and MCP calls and on every error event (auth, rate limit, validation…).
+  const failedOnly = filter.status === 'error'
+
+  const typesLabel = allGroupsSelected
     ? 'All Events'
     : selectedGroups.length === 0
       ? 'No Events'
       : selectedGroups.length === 1
         ? TYPE_GROUPS.find(g => g.key === selectedGroups[0])!.label
         : `${selectedGroups.length} types`
+  const typeFilterLabel = failedOnly ? `${typesLabel} · Failed` : typesLabel
 
   const toggleCategory = (value: InterceptCategory) => {
     setCategories(prev =>
@@ -156,10 +160,6 @@ export function EventFilters({ filter, onFilterChange, interceptRule, onIntercep
     setInterceptPopoverOpen(false)
   }
 
-  // Failed events of any type: the backend sets `status: error` on failed
-  // LLM and MCP calls and on every error event (auth, rate limit, validation…).
-  const errorsOnly = filter.status === 'error'
-
   const interceptLabel = interceptRule
     ? `Intercepting (${interceptRule.categories.length})`
     : 'Intercept'
@@ -169,11 +169,16 @@ export function EventFilters({ filter, onFilterChange, interceptRule, onIntercep
       <Popover open={typeFilterOpen} onOpenChange={setTypeFilterOpen}>
         <PopoverTrigger asChild>
           <Button
-            variant={allGroupsSelected ? 'ghost' : 'secondary'}
+            variant={allGroupsSelected && !failedOnly ? 'ghost' : 'secondary'}
+            data-testid="event-type-filter"
             size="sm"
             className="h-7 text-xs gap-1"
           >
-            <Filter className="h-3 w-3" />
+            {failedOnly ? (
+              <CircleAlert className="h-3 w-3 text-red-600 dark:text-red-400" />
+            ) : (
+              <Filter className="h-3 w-3" />
+            )}
             {typeFilterLabel}
           </Button>
         </PopoverTrigger>
@@ -202,20 +207,21 @@ export function EventFilters({ filter, onFilterChange, interceptRule, onIntercep
               </div>
             ))}
           </div>
+          <Separator className="my-2" />
+          <div className="flex items-center gap-2 py-0.5" title="Only events of these types that failed">
+            <Checkbox
+              id="type-failed-only"
+              checked={failedOnly}
+              onCheckedChange={(checked) => onFilterChange({ ...filter, status: checked ? 'error' : null })}
+              className="h-3.5 w-3.5"
+            />
+            <label htmlFor="type-failed-only" className="text-xs cursor-pointer flex items-center gap-1">
+              <CircleAlert className="h-3 w-3 text-red-600 dark:text-red-400" />
+              Failed only
+            </label>
+          </div>
         </PopoverContent>
       </Popover>
-
-      <Button
-        variant={errorsOnly ? 'secondary' : 'ghost'}
-        size="sm"
-        className="h-7 text-xs gap-1"
-        aria-pressed={errorsOnly}
-        title="Show only events that failed"
-        onClick={() => onFilterChange({ ...filter, status: errorsOnly ? null : 'error' })}
-      >
-        <CircleAlert className={cn('h-3 w-3', errorsOnly && 'text-red-600 dark:text-red-400')} />
-        Errors only
-      </Button>
 
       <div className="relative flex-1 max-w-[200px]">
         <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />

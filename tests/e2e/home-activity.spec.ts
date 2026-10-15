@@ -11,13 +11,18 @@ async function reloadTraffic(page: Page) {
   await page.getByRole('button', { name: 'last 10 minutes', exact: true }).click()
 }
 
+/** The monitor's "Failed only" filter, in the event types popover (opened by this). */
+async function failedOnly(page: Page) {
+  await page.getByRole('region', { name: 'Request monitor' }).getByTestId('event-type-filter').click()
+  return page.getByRole('checkbox', { name: 'Failed only' })
+}
+
 /** Re-read the monitor's event snapshot (a filter change reloads it). */
 async function reloadMonitor(page: Page) {
-  const errorsOnly = page
-    .getByRole('region', { name: 'Request monitor' })
-    .getByRole('button', { name: 'Errors only' })
-  await errorsOnly.click()
-  await errorsOnly.click()
+  const toggle = await failedOnly(page)
+  await toggle.click()
+  await toggle.click()
+  await page.keyboard.press('Escape')
 }
 
 /** Serve a fixed 10-second timeline whose newest bucket is the open one. */
@@ -97,11 +102,11 @@ test('time ranges use a compact line chart and the merged Monitor opens request 
   await expect(traffic.locator('.recharts-area-curve')).toHaveCount(0)
   await expect(traffic.locator('.recharts-bar-rectangle')).toHaveCount(0)
   await expect(traffic.getByTestId('traffic-now')).toHaveCount(0)
-  // A static legend names every line.
+  // A static legend names every line; errors are read off their own axis.
   await expect(traffic.getByTestId('traffic-legend').locator(':scope > span')).toHaveText([
     'LLM requests',
     'MCP requests',
-    'Errors',
+    'Errors (right axis)',
   ])
   for (const label of ['Most in progress', 'Finished per', 'in progress now', 'Idle now']) {
     await expect(traffic.getByText(label)).toHaveCount(0)
@@ -267,20 +272,47 @@ test('requests in progress stack on their line, and errors run from zero back to
   await expect(traffic.getByRole('img')).toHaveAttribute('aria-label', /[1-9]\d* in progress now/)
   // In progress is drawn dashed, not only lighter.
   await expect(traffic.locator(IN_PROGRESS).first()).toHaveAttribute('stroke-dasharray', /\d/)
-  // The lighter segment runs from the previous bucket's point on the LLM line
-  // to above the live bucket's point: finished so far plus in progress.
+  // The lighter segment is shown from the previous bucket's point on the LLM
+  // line to above the live bucket's point (finished so far plus in progress),
+  // bending like the line and never dipping under it.
   const coords = (d: string) => d.match(/-?\d+(\.\d+)?/g)!.map(Number)
   const line = coords((await traffic.locator(LLM_LINE).getAttribute('d'))!)
   const [liveX, liveY] = line.slice(-2)
   // The last curve segment is `C cp1 cp2 end`: the previous point ends the one before.
-  const [prevX, prevY] = line.slice(-8, -6)
-  const [fromX, fromY, toX, toY] = coords(
-    (await traffic.locator(IN_PROGRESS).first().getAttribute('d'))!,
-  )
-  expect(fromX).toBeCloseTo(prevX)
-  expect(fromY).toBeCloseTo(prevY)
+  const [prevX] = line.slice(-8, -6)
+  const segment = coords((await traffic.locator(IN_PROGRESS).first().getAttribute('d'))!)
+  const [toX, toY] = segment.slice(-2)
   expect(toX).toBeCloseTo(liveX)
   expect(toY).toBeLessThan(liveY)
+  const clip = await traffic
+    .locator(IN_PROGRESS)
+    .first()
+    .evaluate((path) => {
+      const rect = path.closest('g[clip-path]')
+      const id = rect?.getAttribute('clip-path')?.match(/url\(#(.+)\)/)?.[1]
+      return id ? Number(document.getElementById(id)?.querySelector('rect')?.getAttribute('x')) : null
+    })
+  expect(clip).toBeCloseTo(prevX)
+  const gaps = await traffic.locator('.recharts-surface').evaluate(
+    (svg, { from, to, llm, inProgress }) => {
+      const sample = (path: SVGPathElement) => {
+        const points: { x: number; y: number }[] = []
+        const length = path.getTotalLength()
+        for (let i = 0; i <= 400; i++) points.push(path.getPointAtLength((length * i) / 400))
+        return points.filter((p) => p.x > from + 1 && p.x < to - 1)
+      }
+      const solid = sample(svg.querySelector(llm) as SVGPathElement)
+      const dashed = sample(svg.querySelector(inProgress) as SVGPathElement)
+      // SVG y grows downward: the dashed curve's y is at most the line's.
+      return dashed.map((d) => {
+        const nearest = solid.reduce((a, b) => (Math.abs(b.x - d.x) < Math.abs(a.x - d.x) ? b : a))
+        return d.y - nearest.y
+      })
+    },
+    { from: prevX, to: liveX, llm: LLM_LINE, inProgress: IN_PROGRESS },
+  )
+  expect(gaps.length).toBeGreaterThan(0)
+  for (const gap of gaps) expect(gap).toBeLessThanOrEqual(0.5)
   // The errors line rises from zero around each run of errors and is not
   // drawn elsewhere: two runs, two pieces, each from zero back to zero.
   const pieces = traffic.locator(ERRORS_LINE)
@@ -521,10 +553,12 @@ test('the errors filter shows only failed events, live ones included, and is rem
       .length as number
   })
   expect(failed).toBeGreaterThan(1)
-  const errorsOnly = monitor.getByRole('button', { name: 'Errors only' })
-  await expect(errorsOnly).toHaveAttribute('aria-pressed', 'false')
-  await errorsOnly.click()
-  await expect(errorsOnly).toHaveAttribute('aria-pressed', 'true')
+  const toggle = await failedOnly(page)
+  await expect(toggle).not.toBeChecked()
+  await toggle.click()
+  await expect(toggle).toBeChecked()
+  await page.keyboard.press('Escape')
+  await expect(monitor.getByTestId('event-type-filter')).toContainText('Failed')
   // Failed LLM calls and error events of every type, nothing that succeeded.
   await expect(rows).toHaveCount(failed)
   await expect(monitor).not.toContainText('filesystem__read_file')
@@ -566,9 +600,11 @@ test('the errors filter shows only failed events, live ones included, and is rem
   // Remembered across reloads, like the other filters.
   await page.reload()
   const reloaded = page.getByRole('region', { name: 'Request monitor' })
-  await expect(reloaded.getByRole('button', { name: 'Errors only' })).toHaveAttribute('aria-pressed', 'true')
   await expect(reloaded.locator('tbody tr')).toHaveCount(failed)
-  await reloaded.getByRole('button', { name: 'Errors only' }).click()
+  const reloadedToggle = await failedOnly(page)
+  await expect(reloadedToggle).toBeChecked()
+  await reloadedToggle.click()
+  await page.keyboard.press('Escape')
   await expect(reloaded).toContainText('filesystem__read_file')
 })
 
