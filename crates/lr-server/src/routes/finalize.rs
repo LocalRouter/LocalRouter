@@ -346,24 +346,17 @@ pub(crate) async fn finalize_metrics_and_monitor(
                 .get_provider_type_for_instance(&response.provider)
                 .and_then(|t| lr_usage::account_for_provider_type(&t))
         });
-    if let Some((tracker, account)) = lr_usage::global().zip(usage_account) {
-        tracker.record_request(
-            &account,
-            lr_usage::LedgerEntry {
-                requests: 1,
-                input_tokens: prompt_tokens as u64,
-                output_tokens: response.usage.completion_tokens as u64,
-                cache_read_tokens: cached_tokens.unwrap_or(0),
-                cache_write_tokens: response
-                    .usage
-                    .prompt_tokens_details
-                    .as_ref()
-                    .and_then(|d| d.cache_creation_tokens)
-                    .map(u64::from)
-                    .unwrap_or(0),
-                cost_usd: cost,
-            },
-        );
+    if let Some(((tracker, account), entry)) =
+        lr_usage::global()
+            .zip(usage_account)
+            .zip(upstream_ledger_entry(
+                response,
+                prompt_tokens,
+                cached_tokens,
+                cost,
+            ))
+    {
+        tracker.record_request(&account, entry);
     }
 
     // Tray graph tokens flow through the metrics collector's
@@ -611,4 +604,46 @@ pub(crate) fn update_response_body_and_record_generation(
     };
 
     state.generation_tracker.record(details.id.clone(), details);
+}
+
+/// Local response reuse is a served client request, not upstream account usage.
+fn upstream_ledger_entry(
+    response: &lr_providers::CompletionResponse,
+    prompt_tokens: u32,
+    cached_tokens: Option<u64>,
+    cost: f64,
+) -> Option<lr_usage::LedgerEntry> {
+    if lr_providers::response_cache::is_hit(response.extensions.as_ref()) {
+        return None;
+    }
+    Some(lr_usage::LedgerEntry {
+        requests: 1,
+        input_tokens: prompt_tokens as u64,
+        output_tokens: response.usage.completion_tokens as u64,
+        cache_read_tokens: cached_tokens.unwrap_or(0),
+        cache_write_tokens: response
+            .usage
+            .prompt_tokens_details
+            .as_ref()
+            .and_then(|d| d.cache_creation_tokens)
+            .map(u64::from)
+            .unwrap_or(0),
+        cost_usd: cost,
+    })
+}
+#[cfg(test)]
+mod response_cache_ledger_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn free_upstream_calls_consume_account_usage_but_local_cache_hits_do_not() {
+        let mut response:lr_providers::CompletionResponse=serde_json::from_value(json!({"id":"reply","object":"chat.completion","created":1,"model":"m","provider":"p","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}})).unwrap();
+        let upstream = upstream_ledger_entry(&response, 10, Some(3), 0.0).unwrap();
+        assert_eq!(upstream.requests, 1);
+        assert_eq!(upstream.input_tokens, 10);
+        assert_eq!(upstream.output_tokens, 2);
+        assert_eq!(upstream.cache_read_tokens, 3);
+        response.extensions=Some([(lr_providers::response_cache::EXTENSION.into(),json!({"hit":true,"upstream_spend_usd":0.0,"billed_input_tokens":0,"billed_output_tokens":0}))].into_iter().collect());
+        assert!(upstream_ledger_entry(&response, 10, Some(3), 0.0).is_none());
+    }
 }

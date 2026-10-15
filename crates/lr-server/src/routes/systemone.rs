@@ -229,6 +229,24 @@ pub(crate) async fn handle_decision(
         request.questions.len(),
     );
 
+    if let Some(scope) = auth.credential_scope.as_ref().filter(|_| {
+        !is_duplicate
+            && state
+                .client_manager
+                .get_client(&auth.api_key_id)
+                .is_some_and(|client| !client.is_mcp_via_llm())
+    }) {
+        request
+            .extra
+            .entry("extensions")
+            .or_insert_with(|| serde_json::json!({}))
+            .as_object_mut()
+            .ok_or_else(|| ApiErrorResponse::bad_request("extensions must be an object"))?
+            .insert(
+                lr_providers::response_cache::SCOPE.into(),
+                serde_json::json!({"credential":scope,"endpoint":endpoint}),
+            );
+    }
     let outcome = match state
         .router
         .systemone(&auth.api_key_id, request.clone())
@@ -299,6 +317,14 @@ pub(crate) async fn handle_decision(
         }
     };
 
+    let mut response = response;
+    if request.decisions.is_some() {
+        lr_providers::systemone::decisions::DecisionResponse::from_systemone(&response, &request)
+            .map_err(|e| llm_guard.capture_err(ApiErrorResponse::bad_gateway(e)))?;
+    }
+    state
+        .router
+        .commit_decision_cache(&auth.api_key_id, &mut response);
     if let Some(metadata) = response
         .extra
         .get("extensions")

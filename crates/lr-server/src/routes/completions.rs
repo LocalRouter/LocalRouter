@@ -742,6 +742,10 @@ async fn build_non_streaming_response(
     llm_event_id: String,
     routing_metadata: Option<serde_json::Value>,
 ) -> ApiResult<Response> {
+    let mut response = response;
+    state
+        .router
+        .commit_chat_cache(&auth.api_key_id, &mut response);
     // Legacy `/v1/completions` charges the full prompt_tokens from
     // the provider (single-shot prompt — no chat-style incremental
     // accounting). The shared finalize helper handles

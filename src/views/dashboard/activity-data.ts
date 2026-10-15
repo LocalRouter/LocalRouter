@@ -127,9 +127,8 @@ export function inFlightCounts(events: MonitorEventSummary[]): InFlightCounts {
 }
 
 /**
- * Top of the shared count axis: the highest LLM, MCP or errors value of any
- * bucket, the live bucket counting its requests in progress now (its
- * provisional value).
+ * Top of the requests axis: the highest LLM or MCP value of any bucket, the
+ * live bucket counting its requests in progress now (its provisional value).
  */
 export function trafficPeak(points: TrafficPoint[], inFlightNow = NONE_IN_FLIGHT): number {
   return Math.max(
@@ -138,10 +137,17 @@ export function trafficPeak(points: TrafficPoint[], inFlightNow = NONE_IN_FLIGHT
       Math.max(
         (p.llm ?? 0) + (p.live ? inFlightNow.llm : 0),
         (p.mcp ?? 0) + (p.live ? inFlightNow.mcp : 0),
-        p.errors ?? 0,
       ),
     ),
   )
+}
+
+/**
+ * Top of the errors axis: the most errors in any bucket. Errors have their
+ * own axis so their ups and downs show next to far busier request lines.
+ */
+export function errorsPeak(points: TrafficPoint[]): number {
+  return Math.max(0, ...points.map((p) => p.errors ?? 0))
 }
 
 export interface ChartPoint extends TrafficPoint {
@@ -149,9 +155,10 @@ export interface ChartPoint extends TrafficPoint {
   llmLine: number | null
   mcpLine: number | null
   /**
-   * The in-progress segments, stacked on the LLM and MCP lines: from the
-   * previous bucket's value to the live bucket's finished plus in progress
-   * now. `null` everywhere else, and when none of that kind are running.
+   * The in-progress segments, stacked on the LLM and MCP lines: the line's
+   * values up to the live bucket, which counts finished plus in progress now,
+   * so the curve matches its line; only the last segment (previous bucket to
+   * the live one) is drawn. `null` when none of that kind are running.
    */
   llmInProgress: number | null
   mcpInProgress: number | null
@@ -168,12 +175,11 @@ export function chartPoints(points: TrafficPoint[], inFlightNow = NONE_IN_FLIGHT
   const hasErrors = (p: TrafficPoint | undefined) => Boolean(p?.errors)
   const liveIndex = points.findIndex((p) => p.live)
   const live = points[liveIndex]
-  /** The segment's value at bucket `i`: its start before the live bucket, its top at it. */
+  /** The segment's curve at bucket `i`: the line before the live bucket, its top at it. */
   const inProgress = (i: number, kind: 'llm' | 'mcp'): number | null => {
-    if (!live || inFlightNow[kind] === 0) return null
+    if (!live || inFlightNow[kind] === 0 || i > liveIndex) return null
     if (i === liveIndex) return (live[kind] ?? 0) + inFlightNow[kind]
-    if (i === liveIndex - 1) return points[i][kind]
-    return null
+    return points[i][kind]
   }
   return points.map((p, i) => ({
     ...p,

@@ -7,7 +7,7 @@
 - [x] P1 Adaptive ordering and bounded attempts/deadlines.
 - [x] P1 Session affinity, classifier reuse and prompt-cache accounting.
 - [x] P1 Local replay and model/policy evaluation (promoted by user).
-- [ ] P2 Opt-in exact response cache.
+- [x] P2 Opt-in exact response cache.
 - [ ] P2 Native Anthropic Messages ingress.
 - [ ] P2 Native discounted Files/Batches lifecycle.
 - [ ] P2/P3 Privacy profiles and client-key hygiene.
@@ -120,3 +120,7 @@ Plan Review, Test Coverage Review and Bug Hunt are complete. Final stable 1.99.0
 Implemented Replay / Compare in Try It Out, opening complete monitor captures as editable drafts, allowed-model comparisons, current/draft native classifier policies, deterministic checks, cached-only cost previews and explicitly invoked separate judge runs. All inference uses current normal client authentication and the shared HTTP pipeline. Tools/MCP are disabled, sessions are fresh, saved artifacts are bounded/private/atomic, historical imports never resume work and cancelled outcomes can retain unknown spend. Reported/estimated/classifier costs remain separate; unknown prices are not zero-dollar quotes. Dataset/run save/import/export/delete are deliberate local actions.
 
 Plan Review, Test Coverage Review and Bug Hunt are complete. Stable 1.99.0 with pinned compiler paths: workspace Clippy/fmt and 4,255 tests passed, 69 ignored across 109 suites; five replay HTTP fixtures within all 32 gateway/routing contract fixtures; 65 frontend regressions, app/website types and both builds passed. Details: plan/2026-10-14-LOCAL_REPLAY_MODEL_POLICY_EVALUATION.md. Next is P2 exact response caching; later slices remain pending.
+
+## P2 exact response cache
+
+Implemented default-off bounded memory-only response caching with credential/client/config/provider/model/endpoint isolation, current policy enforcement, post-approval insertion, invalidation and explicit bypass/refresh. Chat, Completions, text Responses and eligible native decisions preserve served usage while reporting zero new resolved-model spend; separately charged classifiers remain accounted. Settings, monitor, Tauri contracts and demo mocks are synchronized. Eleven cache HTTP fixtures, 4,276 workspace tests (69 ignored), stable Clippy/fmt, 68 frontend tests, types and both production builds pass. See `2026-10-14-EXACT_RESPONSE_CACHE.md`.

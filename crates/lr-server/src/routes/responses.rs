@@ -392,6 +392,10 @@ pub async fn create_response(
         (completion, routing_meta)
     };
 
+    let mut completion = completion;
+    state
+        .router
+        .commit_chat_cache(&auth.api_key_id, &mut completion);
     // The upstream's prompt tokens (the whole prompt, history included,
     // which is what it bills); estimated only when it reports none
     let prompt_tokens = if completion.usage.prompt_tokens > 0 {
@@ -1345,7 +1349,12 @@ fn select_wire_body(
     let mut body = native_raw
         .unwrap_or_else(|| completion_to_response_object(completion, response_id, created_at));
     if body.is_object() {
-        for key in [lr_providers::gateway::EXTENSION, "localrouter.routing"] {
+        for key in [
+            lr_providers::gateway::EXTENSION,
+            "localrouter.routing",
+            lr_providers::session::ACCOUNTING,
+            lr_providers::response_cache::EXTENSION,
+        ] {
             if let Some(metadata) = completion
                 .extensions
                 .as_ref()

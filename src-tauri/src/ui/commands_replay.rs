@@ -147,7 +147,7 @@ pub fn replay_import(json: String) -> Result<ReplayDataset, String> {
 #[tauri::command]
 pub fn replay_current_policy(
     client_id: String,
-    config: State<'_, Arc<lr_config::ConfigManager>>,
+    config: State<'_, lr_config::ConfigManager>,
 ) -> Result<Option<lr_config::RoutingPolicy>, String> {
     let cfg = config.get();
     let client = cfg
@@ -209,4 +209,16 @@ pub fn replay_import_run(
     manager: State<'_, Arc<ReplayManager>>,
 ) -> Result<ReplayRunSummary, String> {
     manager.import_run(&json)
+}
+
+#[tauri::command]
+pub fn get_response_cache_stats(
+    client_id: Option<String>,
+    router: State<'_, Arc<lr_router::Router>>,
+) -> lr_router::response_cache::CacheStats {
+    router.response_cache_stats(client_id.as_deref())
+}
+#[tauri::command]
+pub fn clear_response_cache(client_id: Option<String>, router: State<'_, Arc<lr_router::Router>>) {
+    router.clear_response_cache(client_id.as_deref());
 }

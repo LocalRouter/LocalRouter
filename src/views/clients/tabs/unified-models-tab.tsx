@@ -14,6 +14,7 @@
  * 4. Routing policies
  */
 
+import { ResponseCacheEditor } from '@/components/strategy/ResponseCacheEditor'
 import { SessionRoutingEditor } from '@/components/strategy/SessionRoutingEditor'
 import { AdaptiveRoutingEditor } from '@/components/strategy/AdaptiveRoutingEditor'
 import { useState, useEffect, useCallback, useRef } from "react"
@@ -51,6 +52,7 @@ interface StrategyModelPermissions {
 }
 
 interface StrategyConfig {
+  response_cache?: import('@/types/tauri-commands').ResponseCacheConfig
   id: string
   name: string
   parent: string | null
@@ -317,6 +319,7 @@ export function UnifiedModelsTab({
           rateLimits: pending.rate_limits || null,
           freeTierOnly: pending.free_tier_only ?? null,
           freeTierFallback: pending.free_tier_fallback ?? null,
+          responseCache: pending.response_cache ?? null,
         })
         onUpdate()
       } catch (error) {
@@ -766,6 +769,22 @@ export function UnifiedModelsTab({
       </Card>
       )}
 
+      {!restricted && <ResponseCacheEditor clientId={client.id} value={strategy.response_cache} readOnly={saving}
+        onSave={async response_cache => {
+          if (updateTimeoutRef.current) clearTimeout(updateTimeoutRef.current)
+          const pending = pendingUpdatesRef.current
+          setSaving(true)
+          try {
+            await invoke('update_strategy', { strategyId: strategy.id, responseCache: response_cache, name: pending?.name,
+              allowedModels: pending?.allowed_models, modelPermissions: pending?.model_permissions,
+              autoConfig: pending?.auto_config, rateLimits: pending?.rate_limits,
+              freeTierOnly: pending?.free_tier_only, freeTierFallback: pending?.free_tier_fallback } satisfies import('@/types/tauri-commands').UpdateStrategyParams)
+            pendingUpdatesRef.current = null
+            await loadData()
+            onUpdate()
+          } finally { setSaving(false) }
+        }} />}
+
       {!restricted && autoConfig && <AdaptiveRoutingEditor value={autoConfig.adaptive_routing} readOnly={saving}
         onSave={async adaptive_routing => {
           const pending = pendingUpdatesRef.current
@@ -777,7 +796,7 @@ export function UnifiedModelsTab({
             await invoke('update_strategy', { strategyId: strategy.id, name: pending?.name,
               allowedModels: pending?.allowed_models, modelPermissions: pending?.model_permissions,
               autoConfig: { ...latestAuto, adaptive_routing }, rateLimits: pending?.rate_limits,
-              freeTierOnly: pending?.free_tier_only, freeTierFallback: pending?.free_tier_fallback } satisfies import('@/types/tauri-commands').UpdateStrategyParams)
+              responseCache: pending?.response_cache, freeTierOnly: pending?.free_tier_only, freeTierFallback: pending?.free_tier_fallback } satisfies import('@/types/tauri-commands').UpdateStrategyParams)
             pendingUpdatesRef.current = null
             await loadData()
             onUpdate()
@@ -794,7 +813,7 @@ export function UnifiedModelsTab({
             await invoke('update_strategy', { strategyId: strategy.id, name: pending?.name,
               allowedModels: pending?.allowed_models, modelPermissions: pending?.model_permissions,
               autoConfig: { ...latestAuto, session_routing }, rateLimits: pending?.rate_limits,
-              freeTierOnly: pending?.free_tier_only, freeTierFallback: pending?.free_tier_fallback } satisfies import('@/types/tauri-commands').UpdateStrategyParams)
+              responseCache: pending?.response_cache, freeTierOnly: pending?.free_tier_only, freeTierFallback: pending?.free_tier_fallback } satisfies import('@/types/tauri-commands').UpdateStrategyParams)
             pendingUpdatesRef.current = null
             await loadData()
             onUpdate()

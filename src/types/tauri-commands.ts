@@ -443,6 +443,7 @@ export type StrategyRateLimitInput = Omit<StrategyRateLimit, 'enabled'> & { enab
 export type FreeTierFallback = 'off' | 'ask' | 'allow'
 
 export interface Strategy {
+  response_cache?: ResponseCacheConfig
   id: string
   name: string
   parent?: string | null
@@ -2744,6 +2745,7 @@ export interface RecoverClientStrategyParams {
 
 /** Params for update_strategy */
 export interface UpdateStrategyParams {
+  responseCache?: ResponseCacheConfig | null
   strategyId: string
   modelPermissions?: ModelPermissions | null
   name?: string | null
@@ -5083,3 +5085,10 @@ export type ReplayPreviewParams = ReplayStartParams
 
 /** Params for replay_import_run */
 export type ReplayImportRunParams = ReplayImportParams
+
+/** Rust: crates/lr-config/src/response_cache.rs */
+export interface ResponseCacheConfig { enabled: boolean; ttl_secs: number; max_entries: number; max_bytes: number }
+/** Rust: crates/lr-router/src/response_cache.rs - CacheStats */
+export interface ResponseCacheStats { entries: number; bytes: number; hits: number; misses: number; bypasses: number; evictions: number; upstream_requests_avoided: number; avoided_cost_estimate_usd: number | null }
+/** Params for get_response_cache_stats and clear_response_cache */
+export interface ResponseCacheClientParams { clientId?: string | null }

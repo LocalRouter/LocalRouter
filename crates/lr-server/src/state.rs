@@ -1375,6 +1375,8 @@ fn mask_api_key(key: &str) -> String {
 /// This is attached to requests after authentication middleware
 #[derive(Clone)]
 pub struct AuthContext {
+    /// Process-salted fingerprint of the authenticated credential; never serialized.
+    pub credential_scope: Option<String>,
     pub api_key_id: String,
     pub model_selection: Option<ModelSelection>, // Legacy, kept for backward compatibility
 }

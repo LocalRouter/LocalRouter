@@ -1600,6 +1600,8 @@ impl CompletionRequest {
             extensions.remove(session::EXTENSION);
             extensions.remove(session::CONTROL_TOKEN);
             extensions.remove(replay::EXTENSION);
+            extensions.remove(response_cache::SCOPE);
+            extensions.remove(response_cache::EXTENSION);
             if extensions.is_empty() {
                 self.extensions = None;
             }
@@ -3352,3 +3354,4 @@ mod pricing_cost_tests {
 pub mod session;
 
 pub mod replay;
+pub mod response_cache;

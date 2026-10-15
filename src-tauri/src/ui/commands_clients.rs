@@ -414,6 +414,7 @@ pub async fn clone_client(
     // Clone the strategy
     let new_strategy = if let Some(src_strategy) = source_strategy {
         lr_config::Strategy {
+            response_cache: Default::default(),
             id: new_strategy_id.clone(),
             name: lr_config::client_strategy_name(&clone_name),
             parent: Some(new_client_id.clone()),
@@ -1165,6 +1166,8 @@ pub async fn create_strategy(
 #[tauri::command]
 pub async fn update_strategy(
     strategy_id: String,
+    response_cache: Option<lr_config::ResponseCacheConfig>,
+    router: State<'_, Arc<lr_router::Router>>,
     name: Option<String>,
     allowed_models: Option<lr_config::AvailableModelsSelection>,
     model_permissions: Option<lr_config::ModelPermissions>,
@@ -1184,10 +1187,16 @@ pub async fn update_strategy(
         policy.validate()?;
     }
 
+    if let Some(settings) = &response_cache {
+        settings.validate()?;
+    }
     let mut found = false;
     config_manager
         .update(|cfg| {
             if let Some(strategy) = cfg.strategies.iter_mut().find(|s| s.id == strategy_id) {
+                if let Some(settings) = response_cache {
+                    strategy.response_cache = settings;
+                }
                 if let Some(new_name) = name {
                     strategy.name = new_name;
                 }
@@ -1219,6 +1228,15 @@ pub async fn update_strategy(
         return Err(format!("Strategy not found: {}", strategy_id));
     }
 
+    // Invalidate retained payloads and in-flight insertions when client policy changes.
+    for client in config_manager
+        .get()
+        .clients
+        .iter()
+        .filter(|c| c.strategy_id == strategy_id)
+    {
+        router.clear_response_cache(Some(&client.id));
+    }
     // Persist to disk
     config_manager.save().await.map_err(|e| e.to_string())?;
 

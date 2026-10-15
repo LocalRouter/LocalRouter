@@ -274,6 +274,9 @@ impl Router {
             &session_request,
             EndpointType::SystemOne,
         )?;
+        let cache_ticket = model
+            .and_then(|model| self.decision_cache_ticket(client_id, provider, model, &request));
+        let expected_answers = request.questions.keys().cloned().collect::<Vec<_>>();
         if let Some(metadata) = request
             .extra
             .get_mut("metadata")
@@ -289,7 +292,17 @@ impl Router {
             extensions.remove(lr_providers::session::EXTENSION);
             extensions.remove(lr_providers::session::CONTROL_TOKEN);
             extensions.remove(lr_providers::replay::EXTENSION);
+            extensions.remove(lr_providers::response_cache::EXTENSION);
+            extensions.remove(lr_providers::response_cache::SCOPE);
             extensions.remove(lr_providers::session::CACHE_KEY);
+        }
+        if request
+            .extra
+            .get("extensions")
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(|extensions| extensions.is_empty())
+        {
+            request.extra.remove("extensions");
         }
         let native = match model {
             Some(m) => provider_instance.supports_systemone_model(m).await,
@@ -327,6 +340,14 @@ impl Router {
             provider_instance
                 .validate_systemone_gateway_options(&request)
                 .await?;
+            if let (Some(ticket), Some(model)) = (&cache_ticket, model) {
+                if let Some(response) = self
+                    .decision_cache_hit(ticket, client_id, provider, model, free_tier_only)
+                    .await
+                {
+                    return Ok(response);
+                }
+            }
             let prepared_pricing = if let Some(model) = model {
                 Some(self.request_pricing(provider, model).await)
             } else {
@@ -429,6 +450,37 @@ impl Router {
                 free_tier_only,
             )
             .await;
+            if let Some(ticket) = cache_ticket {
+                if expected_answers
+                    .iter()
+                    .all(|name| response.answers.contains_key(name))
+                    && !response.answers.is_empty()
+                    && response.extra.get("error").is_none()
+                {
+                    let reference = self.cache_reference_cost(
+                        client_id,
+                        provider,
+                        &pricing_model,
+                        reported,
+                        cost,
+                        (cached == 0 || pricing.cache_read_cost_per_1k.is_some())
+                            && (cache_write == 0 || pricing.cache_write_cost_per_1k.is_some()),
+                    );
+                    if let Some(token) = self.response_cache.defer(ticket, reference) {
+                        if let Some(extensions) = response
+                            .extra
+                            .entry("extensions")
+                            .or_insert_with(|| serde_json::json!({}))
+                            .as_object_mut()
+                        {
+                            extensions.insert(
+                                lr_providers::response_cache::PENDING.into(),
+                                serde_json::json!(token),
+                            );
+                        }
+                    }
+                }
+            }
             return Ok(response);
         }
 

@@ -217,6 +217,10 @@ fn validate_strategies(config: &AppConfig) -> AppResult<()> {
     // Check for duplicate strategy IDs
     let mut ids = HashSet::new();
     for strategy in &config.strategies {
+        strategy
+            .response_cache
+            .validate()
+            .map_err(AppError::Config)?;
         if !ids.insert(&strategy.id) {
             return Err(AppError::Config(format!(
                 "Duplicate strategy ID: {}",
@@ -843,6 +847,7 @@ mod tests {
 
     fn make_strategy(name: &str) -> Strategy {
         Strategy {
+            response_cache: Default::default(),
             id: uuid::Uuid::new_v4().to_string(),
             name: name.to_string(),
             parent: None,

@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { applyInFlight, chartPoints, inFlightCounts, livePoint, trafficPeak, trafficPoints } from '../../../src/views/dashboard/activity-data'
+import { applyInFlight, chartPoints, errorsPeak, inFlightCounts, livePoint, trafficPeak, trafficPoints } from '../../../src/views/dashboard/activity-data'
 import { dockTarget } from '../../../src/views/dashboard/dock'
 import { apiFromPath, llmApiFlow } from '../../../src/views/monitor/llm-api'
 import type { MonitorEventSummary, TrafficTimeline } from '../../../src/types/tauri-commands'
@@ -33,20 +33,38 @@ test('only the bucket containing now is live, and the requests in progress count
   expect(trafficPeak(trafficPoints(timeline([9, 2, 3]), now), { llm: 2, mcp: 0 })).toBe(9)
 })
 
-test('LLM, MCP and errors each reach the axis top on their own, not summed', () => {
+test('LLM and MCP each reach the requests axis top on their own; errors have their own axis', () => {
   const points = trafficPoints(
     {
       ...timeline([0]),
       buckets: [
         {
           timestamp: base / 1000,
-          counts: { llm_requests: 4, llm_errors: 3, mcp_requests: 5, mcp_errors: 3, cost_usd: 0 },
+          counts: { llm_requests: 4, llm_errors: 3, mcp_requests: 5, mcp_errors: 4, cost_usd: 0 },
         },
       ],
     },
     base + 5_000,
   )
-  expect(trafficPeak(points)).toBe(6)
+  expect(trafficPeak(points)).toBe(5)
+  expect(errorsPeak(points)).toBe(7)
+})
+
+test('the errors axis follows the busiest error bucket, so more errors draw higher', () => {
+  const withErrors = (errors: (number | null)[]): TrafficTimeline => ({
+    ...timeline(errors.map(() => 400)),
+    buckets: errors.map((value, i) => ({
+      timestamp: base / 1000 + i * 10,
+      counts:
+        value === null
+          ? null
+          : { llm_requests: 400, llm_errors: value, mcp_requests: 0, mcp_errors: 0, cost_usd: 0 },
+    })),
+  })
+  const points = trafficPoints(withErrors([1, 3, null, 2]), base)
+  expect(errorsPeak(points)).toBe(3)
+  expect(chartPoints(points).map((row) => row.errorLine)).toEqual([1, 3, null, 2])
+  expect(errorsPeak(trafficPoints(withErrors([0, null]), base))).toBe(0)
 })
 
 test('requests in progress stack on their line, from the previous bucket to the live one', () => {
@@ -62,12 +80,13 @@ test('requests in progress stack on their line, from the previous bucket to the 
   // The lines stay at what finished; the live bucket's line is finished so far.
   expect(rows.map((row) => row.llmLine)).toEqual([5, 3, 1])
   expect(rows.map((row) => row.mcpLine)).toEqual([0, 2, 4])
-  // 3 before, 1 finished and 1 running now: the segment runs from 3 to 2.
-  expect(rows.map((row) => row.llmInProgress)).toEqual([null, 3, 2])
+  // 3 before, 1 finished and 1 running now: the segment's curve follows the
+  // line and ends at 2 (only its last part, from 3 to 2, is drawn).
+  expect(rows.map((row) => row.llmInProgress)).toEqual([5, 3, 2])
   // Nothing of that kind running: no segment.
   expect(rows.map((row) => row.mcpInProgress)).toEqual([null, null, null])
   const both = chartPoints(trafficPoints(withMcp([5, 3, 1], [0, 2, 4]), now), { llm: 0, mcp: 3 })
-  expect(both.map((row) => row.mcpInProgress)).toEqual([null, 2, 7])
+  expect(both.map((row) => row.mcpInProgress)).toEqual([0, 2, 7])
   expect(both.map((row) => row.llmInProgress)).toEqual([null, null, null])
   // A stale timeline has no live bucket, so nothing is in progress on it.
   const stale = chartPoints(trafficPoints(timeline([4]), base + 7 * 24 * 3_600_000), { llm: 9, mcp: 9 })

@@ -1499,7 +1499,7 @@ async fn streaming_total_deadline_preserves_errors_on_all_surfaces_without_resta
                 if body["model"]=="primary" {primary.fetch_add(1,Ordering::SeqCst);} else {fallback.fetch_add(1,Ordering::SeqCst);}
                 let first=json!({"id":"partial","object":"chat.completion.chunk","created":1,"model":"primary","choices":[{"index":0,"delta":{"content":"partial answer"},"finish_reason":null}]});
                 let chunks=futures::stream::once(async move {Ok::<_,std::io::Error>(axum::body::Bytes::from(format!("data: {first}\n\n")))})
-                    .chain(futures::stream::once(async {tokio::time::sleep(std::time::Duration::from_secs(2)).await;Ok::<_,std::io::Error>(axum::body::Bytes::from("data: [DONE]\n\n"))}));
+                    .chain(futures::stream::once(async {tokio::time::sleep(std::time::Duration::from_secs(3)).await;Ok::<_,std::io::Error>(axum::body::Bytes::from("data: [DONE]\n\n"))}));
                 axum::response::Response::builder().header("Content-Type","text/event-stream").body(axum::body::Body::from_stream(chunks)).unwrap()
             }
         }));
@@ -1508,7 +1508,7 @@ async fn streaming_total_deadline_preserves_errors_on_all_surfaces_without_resta
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
-    let (base, token) = start_configured_server(
+    let (base, token, state) = start_replay_test_server(
         vec![(
             "gw",
             "llmgateway",
@@ -1520,7 +1520,7 @@ async fn streaming_total_deadline_preserves_errors_on_all_surfaces_without_resta
                 ("gw".into(), "primary".into()),
                 ("gw".into(), "fallback".into()),
             ];
-            auto.adaptive_routing.total_timeout_ms = Some(500);
+            auto.adaptive_routing.total_timeout_ms = Some(1000);
             config.pricing_overrides.insert(
                 "llmgateway".into(),
                 ["primary", "fallback"]
@@ -1540,6 +1540,14 @@ async fn streaming_total_deadline_preserves_errors_on_all_surfaces_without_resta
         true,
     )
     .await;
+    // This fixture targets expiry after the first stream event. Warm model
+    // discovery separately so parallel suite startup cannot consume its budget
+    // before headers; cold preflight expiry is covered by the bounded tests.
+    state
+        .provider_registry
+        .list_provider_models_cached("gw")
+        .await
+        .unwrap();
     for (route, input) in [
         (
             "/v1/chat/completions",
@@ -2041,4 +2049,640 @@ async fn replay_judge_is_a_separate_explicit_run_and_never_automatic() {
     assert_eq!(judged.judge_of.as_deref(), Some(id.as_str()));
     assert_eq!(judged.results[0].judge.as_ref().unwrap().score, 0.8);
     assert!(manager.get(&id).unwrap().results[0].judge.is_none());
+}
+
+async fn exact_cache_fixture(
+    expected: u64,
+    enabled: bool,
+) -> (MockServer, String, String, server::state::AppState) {
+    let upstream = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"data":[{"id":"cache-fixture"}]})),
+        )
+        .mount(&upstream)
+        .await;
+    Mock::given(method("POST")).and(path("/chat/completions")).and(body_partial_json(json!({"stream":false}))).respond_with(ResponseTemplate::new(200).set_body_json(json!({"id":"original-paid","object":"chat.completion","created":1,"model":"cache-fixture","choices":[{"index":0,"message":{"role":"assistant","content":"Cached answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3,"cost":0.02},"provider":"fixture-inference"}))).expect(expected).mount(&upstream).await;
+    let (base, secret, state) = start_replay_test_server(
+        vec![(
+            "cached",
+            "llmgateway",
+            vec![("base_url", upstream.uri()), ("api_key", "fixture".into())],
+        )],
+        |config| {
+            allow_replay_fixture(config);
+            config.strategies[0].response_cache.enabled = enabled;
+            let mut strategy = config.strategies[0].clone();
+            strategy.id = "other-strategy".into();
+            strategy.parent = Some("other-client".into());
+            let mut client = create_test_client("other-client", "other-strategy");
+            client.model_permissions = strategy.model_permissions.clone();
+            config.clients.push(client);
+            config.strategies.push(strategy);
+        },
+        true,
+    )
+    .await;
+    state
+        .provider_registry
+        .list_provider_models_cached("cached")
+        .await
+        .unwrap();
+    (upstream, base, secret, state)
+}
+fn exact_cache_chat() -> Value {
+    json!({"model":"cached/cache-fixture","messages":[{"role":"user","content":"hello"}],"max_tokens":32})
+}
+#[tokio::test]
+async fn exact_cache_hits_have_fresh_ids_zero_spend_and_endpoint_isolation() {
+    let (_upstream, base, secret, state) = exact_cache_fixture(5, true).await;
+    use localrouter::router::rate_limit::RateLimitType;
+    state.rate_limiter.add_api_key_limiters(
+        "test-api-key".into(),
+        vec![
+            localrouter::router::rate_limit::RateLimiter::new(RateLimitType::Cost, 100.0, 60),
+            localrouter::router::rate_limit::RateLimiter::new(RateLimitType::Requests, 100.0, 60),
+            localrouter::router::rate_limit::RateLimiter::new(
+                RateLimitType::TotalTokens,
+                10000.0,
+                60,
+            ),
+        ],
+    );
+    for (route, body) in [
+        ("/v1/chat/completions", exact_cache_chat()),
+        (
+            "/v1/completions",
+            json!({"model":"cached/cache-fixture","prompt":"hello","max_tokens":32}),
+        ),
+        (
+            "/v1/responses",
+            json!({"model":"cached/cache-fixture","input":"hello","max_output_tokens":32}),
+        ),
+    ] {
+        let first = post(&base, route, &secret, &body).await;
+        assert_eq!(first.status(), 200);
+        let first: Value = first.json().await.unwrap();
+        let second = post(&base, route, &secret, &body).await;
+        assert_eq!(second.status(), 200);
+        let second: Value = second.json().await.unwrap();
+        let receipt = &second["extensions"]["localrouter.response_cache"];
+        assert_eq!(receipt["hit"], true, "{route}: {second}");
+        assert_eq!(receipt["upstream_spend_usd"], 0.0);
+        assert_eq!(receipt["billed_input_tokens"], 0);
+        assert_ne!(first["id"], second["id"]);
+        assert!(!second
+            .to_string()
+            .contains("localrouter.response_cache_scope"));
+    }
+    let used = state
+        .rate_limiter
+        .get_api_key_usage("test-api-key", RateLimitType::Cost)
+        .await
+        .unwrap()
+        .0;
+    assert!((used - 0.06).abs() < 1e-10, "{used}");
+    assert_eq!(
+        state
+            .rate_limiter
+            .get_api_key_usage("test-api-key", RateLimitType::TotalTokens)
+            .await
+            .unwrap()
+            .0,
+        9.0
+    );
+    assert_eq!(
+        state
+            .rate_limiter
+            .get_api_key_usage("test-api-key", RateLimitType::Requests)
+            .await
+            .unwrap()
+            .0,
+        6.0
+    );
+    let mut bypass = exact_cache_chat();
+    bypass["extensions"] = json!({"localrouter.response_cache":{"mode":"bypass"}});
+    assert_eq!(
+        post(&base, "/v1/chat/completions", &secret, &bypass)
+            .await
+            .status(),
+        200
+    );
+    bypass["extensions"]["localrouter.response_cache"]["mode"] = json!("refresh");
+    assert_eq!(
+        post(&base, "/v1/chat/completions", &secret, &bypass)
+            .await
+            .status(),
+        200
+    );
+    let stats = state.router.response_cache_stats(Some("test-api-key"));
+    assert_eq!(stats.hits, 3);
+    assert_eq!(stats.entries, 3);
+    assert!(stats.avoided_cost_estimate_usd.is_some());
+}
+#[tokio::test]
+async fn exact_cache_partitioning_survives_rotation_and_rechecks_revocation() {
+    let (upstream, base, secret, state) = exact_cache_fixture(4, true).await;
+    let other = state.config_manager.get().clients[1].clone();
+    let other_secret = state.client_manager.add_client_with_secret(other).unwrap();
+    let body = exact_cache_chat();
+    for key in [&secret, &other_secret] {
+        for _ in 0..2 {
+            assert_eq!(
+                post(&base, "/v1/chat/completions", key, &body)
+                    .await
+                    .status(),
+                200
+            );
+        }
+    }
+    assert_eq!(
+        upstream
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.method == "POST")
+            .count(),
+        2
+    );
+    let rotated = state.client_manager.rotate_secret("other-client").unwrap();
+    assert_eq!(
+        post(&base, "/v1/chat/completions", &other_secret, &body)
+            .await
+            .status(),
+        401
+    );
+    for _ in 0..2 {
+        assert_eq!(
+            post(&base, "/v1/chat/completions", &rotated, &body)
+                .await
+                .status(),
+            200
+        );
+    }
+    state
+        .config_manager
+        .update(|c| {
+            c.strategies[1].model_permissions.global = localrouter::config::PermissionState::Off
+        })
+        .unwrap();
+    assert_eq!(
+        post(&base, "/v1/chat/completions", &rotated, &body)
+            .await
+            .status(),
+        403
+    );
+    state
+        .config_manager
+        .update(|c| {
+            c.strategies[1].model_permissions.global = localrouter::config::PermissionState::Allow;
+            c.strategies[1].response_cache.enabled = false;
+        })
+        .unwrap();
+    assert_eq!(
+        post(&base, "/v1/chat/completions", &rotated, &body)
+            .await
+            .status(),
+        200
+    );
+    state.provider_registry.remove_provider("cached").unwrap();
+    assert_ne!(
+        post(&base, "/v1/chat/completions", &secret, &body)
+            .await
+            .status(),
+        200
+    );
+    state.client_manager.disable_client("test-api-key").unwrap();
+    assert_eq!(
+        post(&base, "/v1/chat/completions", &secret, &body)
+            .await
+            .status(),
+        401
+    );
+}
+#[tokio::test]
+async fn exact_cache_is_off_by_default_and_replay_or_session_requests_always_bypass() {
+    let (_upstream, base, secret, state) = exact_cache_fixture(6, true).await;
+    for controls in [
+        json!({"localrouter.replay":{"tools":"disabled"}}),
+        json!({"localrouter.session":{"id":"private-session"}}),
+    ] {
+        let mut body = exact_cache_chat();
+        body["extensions"] = controls;
+        for _ in 0..2 {
+            let response = post(&base, "/v1/chat/completions", &secret, &body).await;
+            assert_eq!(response.status(), 200);
+            let response: Value = response.json().await.unwrap();
+            assert!(response["extensions"]["localrouter.response_cache"].is_null());
+        }
+    }
+    state
+        .config_manager
+        .update(|config| config.strategies[0].response_cache.enabled = false)
+        .unwrap();
+    for _ in 0..2 {
+        assert_eq!(
+            post(&base, "/v1/chat/completions", &secret, &exact_cache_chat())
+                .await
+                .status(),
+            200
+        );
+    }
+    assert_eq!(state.router.response_cache_stats(None).entries, 0);
+    let mut spoof = exact_cache_chat();
+    spoof["extensions"] = json!({"localrouter.response_cache_scope":{"credential":"forged","endpoint":"/v1/chat/completions"}});
+    assert_eq!(
+        post(&base, "/v1/chat/completions", &secret, &spoof)
+            .await
+            .status(),
+        400
+    );
+}
+#[tokio::test]
+async fn exact_cache_native_decisions_keep_served_usage_but_do_not_reuse_upstream_request_ids() {
+    let upstream = laya_mock().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-typesafe-request-id", "original-request")
+                .set_body_json(native_answer()),
+        )
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let (base, secret, state) = start_replay_test_server(
+        vec![(
+            "native",
+            "systemone_compatible",
+            vec![("base_url", upstream.uri())],
+        )],
+        |config| {
+            allow_replay_fixture(config);
+            config.strategies[0].response_cache.enabled = true;
+        },
+        true,
+    )
+    .await;
+    let body = decision_body("native/english");
+    let first = post(&base, "/v1/systemone", &secret, &body).await;
+    assert_eq!(first.status(), 200);
+    assert_eq!(first.headers()["x-typesafe-request-id"], "original-request");
+    let second = post(&base, "/v1/systemone", &secret, &body).await;
+    assert_eq!(second.status(), 200);
+    assert!(second.headers().get("x-typesafe-request-id").is_none());
+    let body: Value = second.json().await.unwrap();
+    assert_eq!(
+        body["extensions"]["localrouter.response_cache"]["hit"], true,
+        "{body}"
+    );
+    assert_eq!(body["usage"]["input_tokens"], 120);
+    assert_eq!(
+        body["extensions"]["localrouter.response_cache"]["billed_input_tokens"],
+        0
+    );
+    assert_eq!(state.router.response_cache_stats(None).hits, 1);
+}
+
+#[tokio::test]
+async fn exact_cache_does_not_store_tool_requests_or_streams() {
+    let (upstream, base, secret, state) = exact_cache_fixture(2, true).await;
+    let chunk = json!({"id":"stream","object":"chat.completion.chunk","created":1,"model":"cache-fixture","choices":[{"index":0,"delta":{"content":"Text"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3,"cost":0.02}});
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(body_partial_json(json!({"stream":true})))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "text/event-stream")
+                .set_body_string(format!("data: {chunk}\n\ndata: [DONE]\n\n")),
+        )
+        .expect(2)
+        .mount(&upstream)
+        .await;
+    let mut tools = exact_cache_chat();
+    tools["tools"] = json!([{"type":"function","function":{"name":"external_action","parameters":{"type":"object"}}}]);
+    for _ in 0..2 {
+        let response = post(&base, "/v1/chat/completions", &secret, &tools).await;
+        assert_eq!(response.status(), 200);
+    }
+    let mut stream = exact_cache_chat();
+    stream["stream"] = json!(true);
+    for _ in 0..2 {
+        let response = post(&base, "/v1/chat/completions", &secret, &stream).await;
+        assert_eq!(response.status(), 200);
+        let body = response.text().await.unwrap();
+        assert!(body.contains("[DONE]"));
+        assert!(!body.contains("localrouter.response_cache_pending"));
+    }
+    assert_eq!(state.router.response_cache_stats(None).entries, 0);
+}
+#[tokio::test]
+async fn exact_cache_rechecks_current_request_quota_before_serving_a_hit() {
+    let (_upstream, base, secret, state) = exact_cache_fixture(1, true).await;
+    state.rate_limiter.add_api_key_limiters(
+        "test-api-key".into(),
+        vec![localrouter::router::rate_limit::RateLimiter::new(
+            localrouter::router::rate_limit::RateLimitType::Requests,
+            1.0,
+            60,
+        )],
+    );
+    assert_eq!(
+        post(&base, "/v1/chat/completions", &secret, &exact_cache_chat())
+            .await
+            .status(),
+        200
+    );
+    let response = post(&base, "/v1/chat/completions", &secret, &exact_cache_chat()).await;
+    assert_eq!(response.status(), 429);
+    assert_eq!(state.router.response_cache_stats(None).hits, 0);
+}
+
+#[tokio::test]
+async fn exact_cache_cannot_revive_a_model_disabled_in_the_provider_registry() {
+    let (_upstream, base, secret, state) = exact_cache_fixture(1, true).await;
+    let body = exact_cache_chat();
+    for _ in 0..2 {
+        assert_eq!(
+            post(&base, "/v1/chat/completions", &secret, &body)
+                .await
+                .status(),
+            200
+        );
+    }
+    assert_eq!(state.router.response_cache_stats(None).hits, 1);
+    state
+        .provider_registry
+        .set_model_settings(
+            "cached",
+            localrouter::config::ProviderModelSettings {
+                entries: vec![localrouter::config::ModelEntry {
+                    id: "cache-fixture".into(),
+                    enabled: Some(false),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_ne!(
+        post(&base, "/v1/chat/completions", &secret, &body)
+            .await
+            .status(),
+        200
+    );
+    assert_eq!(state.router.response_cache_stats(None).hits, 1);
+}
+#[tokio::test]
+async fn exact_cache_requires_fresh_approval_when_a_temporary_grant_expires() {
+    let (_upstream, base, secret, state) = exact_cache_fixture(1, true).await;
+    state
+        .config_manager
+        .update(|config| {
+            config.strategies[0].model_permissions.global =
+                localrouter::config::PermissionState::Ask
+        })
+        .unwrap();
+    state.model_approval_tracker.add_approval(
+        "test-api-key",
+        "cached",
+        "cache-fixture",
+        Duration::from_secs(60),
+    );
+    assert_eq!(
+        post(&base, "/v1/chat/completions", &secret, &exact_cache_chat())
+            .await
+            .status(),
+        200
+    );
+    assert_eq!(state.router.response_cache_stats(None).entries, 1);
+    state.model_approval_tracker.add_approval(
+        "test-api-key",
+        "cached",
+        "cache-fixture",
+        Duration::ZERO,
+    );
+    let request = {
+        let base = base.clone();
+        let secret = secret.clone();
+        tokio::spawn(async move {
+            post(&base, "/v1/chat/completions", &secret, &exact_cache_chat()).await
+        })
+    };
+    let pending = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if let Some(pending) = state
+                .mcp_gateway
+                .firewall_manager
+                .list_pending()
+                .into_iter()
+                .next()
+            {
+                break pending;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(state.router.response_cache_stats(None).hits, 0);
+    state
+        .mcp_gateway
+        .firewall_manager
+        .submit_response(
+            &pending.request_id,
+            localrouter::mcp::gateway::firewall::FirewallApprovalAction::Deny,
+            None,
+        )
+        .unwrap();
+    assert_eq!(request.await.unwrap().status(), 403);
+    state.model_approval_tracker.add_approval(
+        "test-api-key",
+        "cached",
+        "cache-fixture",
+        Duration::from_secs(60),
+    );
+    let response = post(&base, "/v1/chat/completions", &secret, &exact_cache_chat()).await;
+    assert_eq!(response.status(), 200);
+    let response: Value = response.json().await.unwrap();
+    assert_eq!(
+        response["extensions"]["localrouter.response_cache"]["hit"],
+        true
+    );
+    assert_eq!(state.router.response_cache_stats(None).hits, 1);
+}
+
+#[tokio::test]
+async fn exact_cache_zero_model_spend_does_not_hide_fresh_classifier_charges() {
+    let (_upstream, base, secret, state) = exact_cache_fixture(1, true).await;
+    let classifier = laya_mock().await;
+    Mock::given(method("POST")).and(path("/v1/systemone")).respond_with(ResponseTemplate::new(200).set_body_json(json!({"model":"english","answers":{"route":{"type":"choice","choice":"fast","confidence":0.9,"probabilities":{"fast":0.9,"deep":0.1}}},"usage":{"input_tokens":3,"output_tokens":1,"cost":0.01}}))).expect(2).mount(&classifier).await;
+    state
+        .provider_registry
+        .create_provider(
+            "classifier".into(),
+            "systemone_compatible".into(),
+            [("base_url".into(), classifier.uri())]
+                .into_iter()
+                .collect(),
+        )
+        .await
+        .unwrap();
+    state
+        .provider_registry
+        .list_provider_models_cached("classifier")
+        .await
+        .unwrap();
+    state
+        .config_manager
+        .update(|config| {
+            let auto = config.strategies[0].auto_config.as_mut().unwrap();
+            auto.prioritized_models = vec![("cached".into(), "cache-fixture".into())];
+            auto.routing_policy = Some(localrouter::config::RoutingPolicy {
+                enabled: true,
+                decision_model: Some(("classifier".into(), "english".into())),
+                default_route: "fast".into(),
+                options: vec![
+                    localrouter::config::RoutingOption {
+                        id: "fast".into(),
+                        description: "Simple".into(),
+                        models: vec![],
+                    },
+                    localrouter::config::RoutingOption {
+                        id: "deep".into(),
+                        description: "Complex".into(),
+                        models: vec![],
+                    },
+                ],
+                ..Default::default()
+            });
+        })
+        .unwrap();
+    state.rate_limiter.add_api_key_limiters(
+        "test-api-key".into(),
+        vec![localrouter::router::rate_limit::RateLimiter::new(
+            localrouter::router::rate_limit::RateLimitType::Cost,
+            100.0,
+            60,
+        )],
+    );
+    let mut body = exact_cache_chat();
+    body["model"] = json!("localrouter/auto");
+    let first = post(&base, "/v1/chat/completions", &secret, &body).await;
+    assert_eq!(first.status(), 200);
+    let second = post(&base, "/v1/chat/completions", &secret, &body).await;
+    assert_eq!(second.status(), 200);
+    let response: Value = second.json().await.unwrap();
+    assert_eq!(
+        response["extensions"]["localrouter.response_cache"]["scope"], "resolved_model_call",
+        "{response}"
+    );
+    assert_eq!(
+        response["extensions"]["localrouter.response_cache"]["upstream_spend_usd"],
+        0.0
+    );
+    assert_eq!(
+        response["extensions"]["localrouter.routing"]["decision_routing"]["classifier_cost_usd"],
+        0.01
+    );
+    let used = state
+        .rate_limiter
+        .get_api_key_usage(
+            "test-api-key",
+            localrouter::router::rate_limit::RateLimitType::Cost,
+        )
+        .await
+        .unwrap()
+        .0;
+    assert!((used - 0.04).abs() < 1e-10, "{used}");
+}
+
+#[tokio::test]
+async fn exact_cache_native_vendor_fields_are_preserved_in_keys_without_sidecar_collisions() {
+    let upstream = laya_mock().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .respond_with(|request: &Request| {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            let mut answer = native_answer();
+            if body["_original_decisions"] == "second" {
+                answer["answers"]["dept"]["choice"] = json!("tech");
+                answer["answers"]["dept"]["probabilities"] = json!({"billing":0.05,"tech":0.95});
+            }
+            ResponseTemplate::new(200).set_body_json(answer)
+        })
+        .expect(2)
+        .mount(&upstream)
+        .await;
+    let (base, secret, _state) = start_replay_test_server(
+        vec![(
+            "native",
+            "systemone_compatible",
+            vec![("base_url", upstream.uri())],
+        )],
+        |config| {
+            allow_replay_fixture(config);
+            config.strategies[0].response_cache.enabled = true;
+        },
+        true,
+    )
+    .await;
+    for (parameter, expected) in [("first", "billing"), ("second", "tech")] {
+        let mut body = decision_body("native/english");
+        body["_original_decisions"] = json!(parameter);
+        for _ in 0..2 {
+            let response = post(&base, "/v1/systemone", &secret, &body).await;
+            assert_eq!(response.status(), 200);
+            let answer: Value = response.json().await.unwrap();
+            assert_eq!(answer["answers"]["dept"]["choice"], expected);
+        }
+    }
+}
+#[tokio::test]
+async fn exact_cache_decisions_refresh_replaces_the_same_typed_input_entry() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let upstream = MockServer::start().await;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = calls.clone();
+    Mock::given(method("GET")).and(path("/v1/models")).respond_with(ResponseTemplate::new(200).set_body_json(json!({"data":[{"id":"decider","architecture":{"output_modalities":["decision"],"input_modalities":["text"]}}]}))).mount(&upstream).await;
+    Mock::given(method("POST")).and(path("/v1/decisions")).respond_with(move |_:&Request| {let value=observed.fetch_add(1,Ordering::SeqCst)==0;ResponseTemplate::new(200).set_body_json(json!({"model":"decider","answers":[{"type":"choice","name":"pick","choice":value,"confidence":0.9,"probabilities":[{"value":value,"probability":0.9},{"value":!value,"probability":0.1}]}],"usage":{"input_tokens":3,"output_tokens":1,"total_tokens":4}}))}).expect(2).mount(&upstream).await;
+    let (base, secret, _state) = start_replay_test_server(
+        vec![(
+            "native",
+            "llmgateway",
+            vec![
+                ("base_url", format!("{}/v1", upstream.uri())),
+                ("api_key", "fixture".into()),
+            ],
+        )],
+        |config| {
+            allow_replay_fixture(config);
+            config.strategies[0].response_cache.enabled = true;
+        },
+        true,
+    )
+    .await;
+    let mut body = json!({"model":"native/decider","input":"choose","questions":[{"type":"choice","name":"pick","instructions":"Pick one","choices":[{"value":true},{"value":false}]}]});
+    for (mode, expected, hit) in [
+        ("use", true, false),
+        ("use", true, true),
+        ("refresh", false, false),
+        ("use", false, true),
+    ] {
+        body["extensions"] = json!({"localrouter.response_cache":{"mode":mode}});
+        let response = post(&base, "/v1/decisions", &secret, &body).await;
+        assert_eq!(response.status(), 200);
+        let answer: Value = response.json().await.unwrap();
+        assert_eq!(answer["answers"][0]["choice"], expected, "{answer}");
+        assert_eq!(
+            answer["extensions"]["localrouter.response_cache"]["hit"]
+                .as_bool()
+                .unwrap_or(false),
+            hit,
+            "{answer}"
+        );
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
 }

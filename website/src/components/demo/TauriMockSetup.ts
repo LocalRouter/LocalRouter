@@ -3142,6 +3142,8 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     toast.success(`Strategy "${args?.name}" created (demo)`)
     return newStrategy
   },
+  'get_response_cache_stats': (): import('@app/types/tauri-commands').ResponseCacheStats => ({ entries: 0, bytes: 0, hits: 0, misses: 0, bypasses: 0, evictions: 0, upstream_requests_avoided: 0, avoided_cost_estimate_usd: null }),
+  'clear_response_cache': (): void => {},
   'update_strategy': (args) => {
     const strategy = mockData.strategies.find(s => s.id === args?.strategyId || s.id === args?.id)
     if (strategy) {
@@ -3149,7 +3151,8 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       if (args?.name !== undefined && args.name !== null) strategy.name = args.name
       if (args?.modelPermissions !== undefined && args.modelPermissions !== null) (strategy as Record<string, unknown>).model_permissions = args.modelPermissions
       if (args?.allowedModels !== undefined && args.allowedModels !== null) strategy.allowed_models = args.allowedModels
-      if (args?.autoConfig !== undefined) strategy.auto_config = args.autoConfig
+      if (args?.autoConfig !== undefined && args.autoConfig !== null) strategy.auto_config = args.autoConfig
+      if (args?.responseCache !== undefined && args.responseCache !== null) (strategy as Record<string, unknown>).response_cache = args.responseCache
       if (args?.rateLimits !== undefined && args.rateLimits !== null) strategy.rate_limits = args.rateLimits.map((limit: import('@app/types/tauri-commands').StrategyRateLimitInput) => ({ ...limit, enabled: limit.enabled ?? true }))
       if (args?.freeTierOnly !== undefined && args.freeTierOnly !== null) (strategy as Record<string, unknown>).free_tier_only = args.freeTierOnly
       if (args?.freeTierFallback !== undefined && args.freeTierFallback !== null) (strategy as Record<string, unknown>).free_tier_fallback = args.freeTierFallback

@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useState } from 'react'
+import { type ReactNode, useEffect, useId, useState } from 'react'
 import {
   CartesianGrid,
   ComposedChart,
@@ -16,6 +16,7 @@ import type { TimeRange, TrafficTimeline } from '@/types/tauri-commands'
 import {
   chartPoints,
   type ChartPoint,
+  errorsPeak,
   type InFlightCounts,
   niceTicks,
   RANGES,
@@ -42,8 +43,8 @@ const money = new Intl.NumberFormat(undefined, {
  * Series colors (validated with the dataviz palette checker, light and dark,
  * all pairs): LLM requests take categorical slot 1 (blue), MCP requests slot 3
  * (aqua; slot 2's orange is too close to the error red); errors the reserved
- * "critical" status red, labelled in the legend and tooltip. Light and dark
- * steps are set as CSS variables on the section.
+ * "critical" status red, labelled in the legend, tooltip and their own axis.
+ * Light and dark steps are set as CSS variables on the section.
  */
 const LLM = 'var(--traffic-llm)'
 const MCP = 'var(--traffic-mcp)'
@@ -59,19 +60,15 @@ const PALETTE =
   '[--traffic-llm:#2a78d6] [--traffic-mcp:#1baf7a] [--traffic-error:#d03b3b] [--traffic-in-progress:0.4] dark:[--traffic-llm:#3987e5] dark:[--traffic-mcp:#199e70] dark:[--traffic-in-progress:0.55]'
 
 const AXIS_TICK = { fill: 'hsl(var(--muted-foreground))', fontSize: 10 }
+const ERROR_AXIS_TICK = { ...AXIS_TICK, fill: ERROR }
 const GRID = 'hsl(var(--border))'
 const SURFACE = 'hsl(var(--card))'
-/** Chart height, and the plot inside it (less the top margin and time axis). */
+/** Chart height, its top margin and the time axis under the plot. */
 const CHART_HEIGHT = 156
 const CHART_TOP = 14
 const AXIS_HEIGHT = 18
-const PLOT_HEIGHT = CHART_HEIGHT - CHART_TOP - AXIS_HEIGHT
-/**
- * Lowest drawn error peak, in px: a single error next to busy traffic would
- * otherwise be a flat smear on the baseline. The tooltip carries the exact
- * number.
- */
-const MIN_ERROR_PEAK = 8
+/** The errors axis, on the right. */
+const ERRORS_AXIS = 'errors'
 
 interface RequestTrafficProps {
   range: TimeRange
@@ -228,7 +225,7 @@ function TrafficLegend() {
         <LineKey color={MCP} /> MCP requests
       </span>
       <span className="flex items-center gap-1.5">
-        <LineKey color={ERROR} /> Errors
+        <LineKey color={ERROR} /> Errors <span style={{ color: ERROR }}>(right axis)</span>
       </span>
     </div>
   )
@@ -258,6 +255,32 @@ function ErrorsCurve(props: CurveProps) {
       {runs.map((points) => (
         <Curve key={points[0].x} {...props} pathRef={undefined} points={points} />
       ))}
+    </g>
+  )
+}
+
+/**
+ * A requests-in-progress segment: the curve through its line's values and
+ * the live bucket's finished plus in progress, so it bends like the line it
+ * continues, clipped to the last segment (previous bucket to the live one).
+ */
+function InProgressCurve(props: CurveProps) {
+  const id = useId()
+  const drawn = (props.points ?? []).filter(
+    (point) => (point as { value?: number | null }).value != null,
+  )
+  const from = drawn[drawn.length - 2]?.x
+  if (from == null) return null
+  return (
+    <g>
+      <defs>
+        <clipPath id={id}>
+          <rect x={from} y={-CHART_HEIGHT} width={10_000} height={3 * CHART_HEIGHT} />
+        </clipPath>
+      </defs>
+      <g clipPath={`url(#${id})`}>
+        <Curve {...props} pathRef={undefined} />
+      </g>
     </g>
   )
 }
@@ -304,9 +327,7 @@ export function RequestTraffic({
   const inFlightTotal = inFlight.llm + inFlight.mcp
   const bucketMs = (timeline?.bucket_secs ?? 0) * 1000
   const yTicks = niceTicks(trafficPeak(points, inFlight))
-  const errorFloor = (yTicks[yTicks.length - 1] * MIN_ERROR_PEAK) / PLOT_HEIGHT
-  const errorPeak = (p: ChartPoint) =>
-    p.errorLine ? Math.max(p.errorLine, errorFloor) : p.errorLine
+  const errorTicks = niceTicks(errorsPeak(points))
   // The newest point sits on the plot's right edge: a time label on the last
   // two buckets would run past it.
   const lastTick = points[points.length - 3]?.timestamp ?? -Infinity
@@ -410,7 +431,7 @@ export function RequestTraffic({
             >
               <ComposedChart
                 data={rows}
-                margin={{ top: CHART_TOP, right: 16, left: 0, bottom: 0 }}
+                margin={{ top: CHART_TOP, right: 4, left: 0, bottom: 0 }}
                 accessibilityLayer
               >
                 <CartesianGrid vertical={false} stroke={GRID} strokeWidth={1} />
@@ -436,6 +457,20 @@ export function RequestTraffic({
                   interval={0}
                   domain={[0, yTicks[yTicks.length - 1]]}
                 />
+                {/* Same tick count as the requests axis, so both share the grid. */}
+                <YAxis
+                  yAxisId={ERRORS_AXIS}
+                  orientation="right"
+                  allowDecimals={false}
+                  tickFormatter={(value) => compact.format(value)}
+                  tick={ERROR_AXIS_TICK}
+                  axisLine={false}
+                  tickLine={false}
+                  width={24}
+                  ticks={errorTicks}
+                  interval={0}
+                  domain={[0, errorTicks[errorTicks.length - 1]]}
+                />
                 <Tooltip
                   cursor={{ stroke: 'hsl(var(--muted-foreground))', strokeWidth: 1 }}
                   content={
@@ -446,12 +481,13 @@ export function RequestTraffic({
                 {/*
                   Each requests line, and under it the requests of its kind
                   in progress now stacked on top: a lighter, dashed segment from the
-                  previous bucket to finished plus in progress at the live one.
+                  previous bucket to finished plus in progress at the live one,
+                  bending with the line it continues.
                 */}
                 <Line
                   name="LLM requests in progress"
                   dataKey="llmInProgress"
-                  type="linear"
+                  type="monotone"
                   stroke={LLM}
                   strokeOpacity={IN_PROGRESS_OPACITY}
                   strokeDasharray={IN_PROGRESS_DASH}
@@ -461,6 +497,7 @@ export function RequestTraffic({
                   dot={false}
                   activeDot={false}
                   className="traffic-in-progress"
+                  shape={<InProgressCurve />}
                   isAnimationActive={false}
                 />
                 <Line
@@ -489,7 +526,7 @@ export function RequestTraffic({
                 <Line
                   name="MCP requests in progress"
                   dataKey="mcpInProgress"
-                  type="linear"
+                  type="monotone"
                   stroke={MCP}
                   strokeOpacity={IN_PROGRESS_OPACITY}
                   strokeDasharray={IN_PROGRESS_DASH}
@@ -499,6 +536,7 @@ export function RequestTraffic({
                   dot={false}
                   activeDot={false}
                   className="traffic-in-progress"
+                  shape={<InProgressCurve />}
                   isAnimationActive={false}
                 />
                 <Line
@@ -525,13 +563,14 @@ export function RequestTraffic({
                   isAnimationActive={false}
                 />
                 {/*
-                  Errors over the requests lines, drawn the same way: each run
+                  Errors over the requests lines, on their own axis: each run
                   of errors rises from zero and falls back to it; no line where
                   there are none.
                 */}
                 <Line
                   name="Errors"
-                  dataKey={errorPeak}
+                  yAxisId={ERRORS_AXIS}
+                  dataKey="errorLine"
                   type="monotone"
                   stroke={ERROR}
                   strokeWidth={2}

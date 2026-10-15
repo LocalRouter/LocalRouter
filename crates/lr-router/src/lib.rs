@@ -23,6 +23,7 @@ pub mod endpoint_cache;
 pub mod explanation;
 pub mod free_tier;
 pub mod rate_limit;
+pub mod response_cache;
 mod systemone;
 
 // Re-export commonly used types
@@ -495,6 +496,7 @@ enum MatchKind {
 
 /// Router for handling completion requests with API key-based model selection
 pub struct Router {
+    response_cache: response_cache::ResponseCache,
     config_manager: Arc<ConfigManager>,
     provider_registry: Arc<ProviderRegistry>,
     rate_limiter: Arc<RateLimiterManager>,
@@ -592,6 +594,7 @@ impl Router {
         metrics_collector: Arc<lr_monitoring::metrics::MetricsCollector>,
     ) -> Self {
         Self {
+            response_cache: Default::default(),
             config_manager,
             provider_registry,
             rate_limiter,
@@ -616,6 +619,7 @@ impl Router {
         free_tier_manager: Arc<FreeTierManager>,
     ) -> Self {
         Self {
+            response_cache: Default::default(),
             config_manager,
             provider_registry,
             rate_limiter,
@@ -1433,6 +1437,8 @@ impl Router {
                         | lr_providers::session::CACHE_KEY
                         | lr_providers::session::CONTROL_TOKEN
                         | lr_providers::replay::EXTENSION
+                        | lr_providers::response_cache::EXTENSION
+                        | lr_providers::response_cache::SCOPE
                 ) {
                     continue;
                 }
@@ -1487,6 +1493,15 @@ impl Router {
         }
 
         provider_instance.validate_gateway_options(&request)?;
+        let cache_ticket = self.chat_cache_ticket(client_id, provider, model, &request);
+        if let Some(ticket) = &cache_ticket {
+            if let Some(response) = self
+                .chat_cache_hit(ticket, client_id, provider, model, free_tier_only)
+                .await
+            {
+                return Ok(response);
+            }
+        }
         let pricing = self.request_pricing(provider, model).await;
         adaptive::reserve_inference_dispatch()?;
         let mut observation = self.adaptive_measurements.begin(
@@ -1557,7 +1572,34 @@ impl Router {
         response.model = model.to_string();
 
         accounting.await;
-
+        if let Some(ticket) = cache_ticket {
+            if response_cache::cacheable_chat_response(&response) {
+                let details = response.usage.prompt_tokens_details.as_ref();
+                let rates_known = details.is_none_or(|d| {
+                    (d.cache_read_tokens.or(d.cached_tokens).unwrap_or(0) == 0
+                        || pricing.cache_read_cost_per_1k.is_some())
+                        && (d.cache_creation_tokens.unwrap_or(0) == 0
+                            || pricing.cache_write_cost_per_1k.is_some())
+                });
+                let reference = self.cache_reference_cost(
+                    client_id,
+                    provider,
+                    model,
+                    reported_cost,
+                    cost,
+                    rates_known,
+                );
+                if let Some(token) = self.response_cache.defer(ticket, reference) {
+                    response
+                        .extensions
+                        .get_or_insert_with(Default::default)
+                        .insert(
+                            lr_providers::response_cache::PENDING.into(),
+                            serde_json::json!(token),
+                        );
+                }
+            }
+        }
         Ok(response)
     }
 
@@ -1780,8 +1822,10 @@ impl Router {
                     if let Some(handle) = &session_handle {
                         handle.record(provider, model);
                     }
-                    self.free_tier_manager.clear_backoff(provider, model);
-                    attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "success", "duration_ms": attempt_ms,"cost_usd":lr_providers::gateway::reported_cost(response.extensions.as_ref()),"cost_source":if lr_providers::gateway::reported_cost(response.extensions.as_ref()).is_some(){"reported"}else{"unknown"}}));
+                    if !lr_providers::response_cache::is_hit(response.extensions.as_ref()) {
+                        self.free_tier_manager.clear_backoff(provider, model);
+                    }
+                    attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": if lr_providers::response_cache::is_hit(response.extensions.as_ref()) {"cache_hit"} else {"success"}, "duration_ms": attempt_ms,"cost_usd":lr_providers::gateway::reported_cost(response.extensions.as_ref()),"cost_source":if lr_providers::response_cache::is_hit(response.extensions.as_ref()) {"local_cache"} else if lr_providers::gateway::reported_cost(response.extensions.as_ref()).is_some(){"reported"}else{"unknown"}}));
                     let mut routing_meta = build_routing_metadata(
                         routing_decision.as_ref(),
                         &candidate_models,

@@ -180,6 +180,7 @@ where
             if bearer_token == state.internal_test_secret.as_str() {
                 tracing::debug!("internal-test token detected - bypassing API key restrictions");
                 let auth_context = AuthContext {
+                    credential_scope: None,
                     api_key_id: "internal-test".to_string(),
                     model_selection: None,
                 };
@@ -205,6 +206,9 @@ where
                             "Client authenticated"
                         );
 
+                        let credential_scope = lr_router::explanation::fingerprint(
+                            serde_json::json!({"process":state.internal_test_secret.as_str(),"credential":bearer_token}),
+                        );
                         // Also inject ClientAuthContext for guardrails and other client-aware features
                         req.extensions_mut().insert(ClientAuthContext {
                             client_id: client.id.clone(),
@@ -212,6 +216,7 @@ where
 
                         // Use the client's ID for routing
                         AuthContext {
+                            credential_scope: Some(credential_scope),
                             api_key_id: client.id.clone(),
                             model_selection: None,
                         }

@@ -1033,6 +1033,10 @@ async fn build_non_streaming_response(
     llm_event_id: String,
     routing_metadata: Option<serde_json::Value>,
 ) -> ApiResult<Response> {
+    let mut response = response;
+    state
+        .router
+        .commit_chat_cache(&auth.api_key_id, &mut response);
     // For chat messages, calculate incremental token count (last message only)
     // instead of cumulative (all conversation history).
     // The upstream's prompt tokens (the whole prompt, which is what it

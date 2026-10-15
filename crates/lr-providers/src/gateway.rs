@@ -643,9 +643,21 @@ impl GatewayAttribution {
     }
 }
 pub fn reported_cost_value(extensions: Option<&Value>) -> Option<f64> {
-    extensions?.get(EXTENSION)?.get("cost_usd").and_then(amount)
+    let extensions = extensions?;
+    if extensions
+        .get(crate::response_cache::EXTENSION)
+        .and_then(|value| value.get("hit"))
+        .and_then(Value::as_bool)
+        == Some(true)
+    {
+        return Some(0.0);
+    }
+    extensions.get(EXTENSION)?.get("cost_usd").and_then(amount)
 }
 pub fn reported_cost(extensions: Option<&HashMap<String, Value>>) -> Option<f64> {
+    if crate::response_cache::is_hit(extensions) {
+        return Some(0.0);
+    }
     extensions?.get(EXTENSION)?.get("cost_usd").and_then(amount)
 }
 

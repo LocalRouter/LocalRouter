@@ -2329,6 +2329,21 @@ pub(crate) async fn run_turn_pipeline(
     if let Some(routing) = decision_routing {
         provider_request.pre_computed_routing = Some(routing);
     }
+    if let Some(scope) = auth.credential_scope.as_ref().filter(|_| {
+        !is_duplicate
+            && state
+                .client_manager
+                .get_client(&auth.api_key_id)
+                .is_some_and(|client| !client.is_mcp_via_llm())
+    }) {
+        provider_request
+            .extensions
+            .get_or_insert_with(Default::default)
+            .insert(
+                lr_providers::response_cache::SCOPE.into(),
+                serde_json::json!({"credential":scope,"endpoint":endpoint}),
+            );
+    }
 
     Ok(TurnContext {
         chat_req,

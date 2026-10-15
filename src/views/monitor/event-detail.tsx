@@ -1,3 +1,4 @@
+import { localCacheReceipt } from '@/utils/response-cache'
 import { gatewayAttribution } from '@/utils/gateway'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
@@ -716,6 +717,7 @@ function ResponseError({ error }: { error: unknown }) {
 function LlmResponseContent({ data, status }: { data: EventData; status: EventStatus }) {
   const body = data.response_body as Record<string, unknown> | undefined
   const gateway = gatewayAttribution(body)
+  const exact = localCacheReceipt(body)
   const cacheValue = (body?.extensions as Record<string, unknown> | undefined)?.['localrouter.prompt_cache']
   const cache = cacheValue && typeof cacheValue === 'object' && !Array.isArray(cacheValue) ? cacheValue as Record<string, unknown> : null
   const cacheNumber = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value : null
@@ -730,6 +732,15 @@ function LlmResponseContent({ data, status }: { data: EventData; status: EventSt
   return (
     <>
       <ResponseError error={data.error ?? body?.error} />
+      {exact?.hit === true && <Disclosure title="Local exact response cache">
+        <Field label="New spend for the reused model call" value="$0" />
+        <Field label="Billed input / output tokens" value="0 / 0" />
+        <Field label="Cached response age" value={`${cacheNumber(exact.age_ms) ?? 'Unknown'} ms`} />
+        <Field label="Avoided cost estimate" value={cacheNumber(exact.avoided_cost_estimate_usd) != null ? `$${Number(exact.avoided_cost_estimate_usd).toFixed(6)}` : 'Unknown'} />
+        <JsonTree data={exact.served_usage} label="Original served usage" />
+        <JsonTree data={exact.original_gateway} label="Original upstream provenance" />
+        <p className="text-muted-foreground">The model response came from this local cache. Served tokens are not newly billed to this model. Current routing classifiers and safety checks can have separate spend.</p>
+      </Disclosure>}
       {gateway && <Disclosure title="Upstream gateway routing">
         <Field label="Inference provider" value={gateway.inference_provider ?? 'Unknown'} />
         {gateway.resolved_provider && <Field label="Initially resolved provider" value={gateway.resolved_provider} />}

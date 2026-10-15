@@ -86,6 +86,8 @@ use utoipa::OpenApi;
         lr_router::adaptive::AttemptCosts,
         lr_providers::replay::ReplayOptions,
         lr_providers::replay::ReplayTools,
+            lr_providers::response_cache::CacheOptions,
+            lr_providers::response_cache::CacheMode,
         lr_providers::session::SessionOptions,
         lr_providers::session::PromptCacheAccounting,
             lr_router::explanation::RouteExplanation,
