@@ -37,7 +37,7 @@ import {
 } from "@/components/ui/alert-dialog"
 import LegacySelect from "@/components/ui/Select"
 import KeyValueInput from "@/components/ui/KeyValueInput"
-import { McpServerTemplates, McpServerTemplate, MCP_SERVER_TEMPLATES } from "@/components/mcp/McpServerTemplates"
+import { McpServerTemplates, McpServerTemplate, MCP_SERVER_TEMPLATES, initialTemplateFieldValues } from "@/components/mcp/McpServerTemplates"
 import { McpOAuthModal } from "@/components/mcp/McpOAuthModal"
 import { CustomMcpDiscovery } from "@/components/mcp/CustomMcpDiscovery"
 import { MarketplaceSearchPanel, McpServerListing } from "@/components/add-resource"
@@ -322,12 +322,7 @@ export function McpServersPanel({
         }
         setAuthMethod(template.authMethod === "oauth_browser" ? "oauth_browser" : "none")
 
-        // Initialize template field values from defaults
-        const initialValues: Record<string, string> = {}
-        template.fields?.forEach(field => {
-          initialValues[field.id] = field.defaultValue || ""
-        })
-        setTemplateFieldValues(initialValues)
+        setTemplateFieldValues(initialTemplateFieldValues(template))
       }
     }
   }, [initialAddTemplateId])
@@ -402,12 +397,7 @@ export function McpServersPanel({
       setAuthMethod("none")
     }
 
-    // Initialize template field values from defaults
-    const initialValues: Record<string, string> = {}
-    template.fields?.forEach(field => {
-      initialValues[field.id] = field.defaultValue || ""
-    })
-    setTemplateFieldValues(initialValues)
+    setTemplateFieldValues(initialTemplateFieldValues(template))
 
     // Switch to configure page
     setDialogPage("configure")
@@ -504,6 +494,11 @@ export function McpServersPanel({
         }
       } else if (authMethod === "oauth_browser") {
         authConfig = { type: "oauth_browser" }
+      }
+      const bearerField = template?.fields?.find(field => field.type === "bearer")
+      if (bearerField) {
+        const token = (templateFieldValues[bearerField.id] || "").trim()
+        if (token) authConfig = { type: "bearer_token", token }
       }
 
       const newServer = await invoke<{ id: string }>("create_mcp_server", {

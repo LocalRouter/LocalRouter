@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 88" fill="none">
+  <defs>
+    <linearGradient id="vc-grad" x1="8" y1="4" x2="72" y2="86" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ff6b6b"/>
+      <stop offset="1" stop-color="#ffa657"/>
+    </linearGradient>
+  </defs>
+  <g stroke="url(#vc-grad)" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Larynx body: closed vase silhouette -->
+    <path d="M14 28
+             C14 14 24 6 40 6
+             C56 6 66 14 66 28
+             C66 46 60 62 50 62
+             L30 62
+             C20 62 14 46 14 28 Z"/>
+    <!-- Y inside: vocal folds + stem -->
+    <path d="M24 22 L40 38 L56 22"/>
+    <path d="M40 38 L40 52"/>
+    <!-- Two tracheal rings -->
+    <path d="M22 72 L58 72"/>
+    <path d="M28 82 L52 82"/>
+  </g>
+</svg>

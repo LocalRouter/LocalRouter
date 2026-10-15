@@ -10,6 +10,8 @@ test('service names resolve their own bundled logos before shorter brand names',
     ['GitHub MCP Server', 'github.png'],
     ['OpenAI ChatGPT Plus', 'openai.png'],
     ['pi', 'pi.svg'],
+    ['vocalcord', 'vocalcord.svg'],
+    ['netget', 'netget.svg'],
   ]) {
     expect(resolveServiceIcon(service), service).toBe(file)
   }

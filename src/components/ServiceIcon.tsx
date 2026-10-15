@@ -89,6 +89,8 @@ const ICON_MAP: Record<string, string | null> = {
   jira: 'jira.png',
   atlassian: 'atlassian.svg',
   datadog: 'datadog.png',
+  vocalcord: 'vocalcord.svg', // official asset; see public/icons/SOURCES.md
+  netget: 'netget.svg', // official asset; see public/icons/SOURCES.md
   notion: 'notion.png',
   confluence: 'confluence.png',
   'google-drive': 'google-drive.png',

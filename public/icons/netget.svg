@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <style>
+    .top { fill: #087e80; } .layer { fill: #2364a2; }
+    @media (prefers-color-scheme: dark) { .top { fill: #63c5bf; } .layer { fill: #7db9e7; } }
+  </style>
+  <rect class="top" x="4" y="5" width="56" height="13" rx="4"/>
+  <rect class="layer" x="4" y="22" width="56" height="13" rx="4"/>
+  <rect class="layer" x="4" y="39" width="56" height="13" rx="4" opacity=".65"/>
+  <rect class="layer" x="4" y="55" width="56" height="5" rx="2.5" opacity=".35"/>
+</svg>

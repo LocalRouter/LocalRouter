@@ -3,16 +3,18 @@ import { invoke } from '@tauri-apps/api/core'
 import ServiceIcon from '../ServiceIcon'
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '../ui/tooltip'
 import { cn } from '@/lib/utils'
+import { generateVocalCordApiKey } from '@/utils/vocalcord-api-key'
 import type { AvailableRuntimes } from '@/types/tauri-commands'
 
-export type McpTemplateCategory = 'version_control' | 'productivity' | 'files_data' | 'databases' | 'search_web' | 'cloud_infra' | 'utilities' | 'development'
+export type McpTemplateCategory = 'sponsored' | 'version_control' | 'productivity' | 'files_data' | 'databases' | 'search_web' | 'cloud_infra' | 'utilities' | 'development'
 
 export interface TemplateField {
   /** For env_var: the env var key. For arg: used as {{id}} placeholder in args */
   id: string
   label: string
   placeholder: string
-  type: 'env_var' | 'arg' | 'query'
+  /** bearer: the value becomes the server's bearer-token auth. */
+  type: 'env_var' | 'arg' | 'query' | 'bearer'
   /** Comma-separated choices for query fields. */
   options?: { value: string; label: string }[]
   secret?: boolean
@@ -20,7 +22,19 @@ export interface TemplateField {
   required?: boolean
   helpText?: string
   defaultValue?: string
+  /** Produces a fresh default each time the form opens; takes precedence over defaultValue. */
+  generateDefault?: () => string
 }
+
+/** Initial form values for a template's fields. */
+export function initialTemplateFieldValues(template: McpServerTemplate): Record<string, string> {
+  const values: Record<string, string> = {}
+  template.fields?.forEach(field => {
+    values[field.id] = field.generateDefault?.() ?? field.defaultValue ?? ''
+  })
+  return values
+}
+
 
 export interface McpServerTemplate {
   id: string
@@ -47,6 +61,44 @@ export interface McpServerTemplate {
 const HOME_DIR_PLACEHOLDER = '{{HOME_DIR}}'
 
 export const MCP_SERVER_TEMPLATES: McpServerTemplate[] = [
+  // === From the LocalRouter team ===
+  {
+    id: 'vocalcord',
+    name: 'VocalCord',
+    description: 'Lets your agents message you, and you message them back, over email, Telegram, Discord, Slack, and more.',
+    category: 'sponsored',
+    icon: 'vocalcord',
+    transport: 'Sse',
+    url: 'https://api.vocalcord.io/mcp',
+    authMethod: 'bearer',
+    fields: [
+      {
+        id: 'api_key',
+        label: 'API Key',
+        type: 'bearer',
+        placeholder: 'vc_...',
+        secret: true,
+        generateDefault: generateVocalCordApiKey,
+        helpText: 'A new key has been generated for you; no sign-up needed. To reach an existing VocalCord account, paste its key instead.',
+      },
+    ],
+    setupInstructions: 'The first message your agent sends sets up the account; reply from any channel to verify it.',
+    docsUrl: 'https://vocalcord.io',
+  },
+  {
+    id: 'netget',
+    name: 'NetGet',
+    description: 'Spin up LLM-driven stub servers for 280+ network protocols (HTTP, DNS, SSH, SMTP, and more) from your agent.',
+    category: 'sponsored',
+    icon: 'netget',
+    transport: 'Stdio',
+    command: 'npx',
+    args: ['-y', '@smotana/netget', '--mcp'],
+    authMethod: 'none',
+    setupInstructions: 'Install Node.js. The servers NetGet starts are driven by its own LLM, a local Ollama by default.',
+    docsUrl: 'https://netget.net',
+  },
+
   // === Version Control & Code ===
   {
     id: 'github',
@@ -430,6 +482,7 @@ interface McpServerTemplatesProps {
 
 // Category metadata for display
 const CATEGORY_INFO: Record<McpTemplateCategory, { title: string; description: string }> = {
+  sponsored: { title: 'Sponsored', description: 'Also made by the LocalRouter team' },
   version_control: { title: 'Version Control', description: 'Git repositories, code hosting, and version control systems' },
   productivity: { title: 'Productivity & Collaboration', description: 'Team communication, project management, and documentation' },
   files_data: { title: 'Files & Data', description: 'Local file access and note-taking systems' },
@@ -442,6 +495,7 @@ const CATEGORY_INFO: Record<McpTemplateCategory, { title: string; description: s
 
 // Order categories for display
 const CATEGORY_ORDER: McpTemplateCategory[] = [
+  'sponsored',
   'version_control',
   'productivity',
   'files_data',

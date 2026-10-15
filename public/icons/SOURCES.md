@@ -45,3 +45,10 @@ Vercel starter mark, so it is not used as Kev branding.
 Services without official bundled branding use the existing provider or MCP
 category icon. This also applies when a bundled logo cannot load; emoji and
 symbol substitutes are not used.
+
+## VocalCord and NetGet MCP templates
+
+Both projects are made by the LocalRouter team. Assets are copied without modification.
+
+- `vocalcord.svg`: official VocalCord logo, served as https://vocalcord.io/favicon.svg (retrieved 2026-10-15, SHA-256 `f9697e083a55d925e8eb222ffa434dc323bfcb05f708dddfdfecdee4137acfcb`).
+- `netget.svg`: official NetGet logo, served as https://netget.net/favicon.svg (upstream [site/favicon.svg](https://github.com/smotanacom/netget/blob/4e28f76fc2b24c96c110819455a48fbd4effde0a/site/favicon.svg), AGPL-3.0; retrieved 2026-10-15, SHA-256 `765111a04773983166e35a477b08dfc482149bdb5c312c3f21106cb96ed48116`).
