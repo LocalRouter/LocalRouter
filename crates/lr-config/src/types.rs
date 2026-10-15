@@ -236,6 +236,11 @@ pub struct AutoModelConfig {
         skip_serializing_if = "crate::AdaptiveRoutingConfig::is_default"
     )]
     pub adaptive_routing: crate::AdaptiveRoutingConfig,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::SessionRoutingConfig::is_default"
+    )]
+    pub session_routing: crate::SessionRoutingConfig,
 }
 
 impl Default for AutoModelConfig {
@@ -248,6 +253,7 @@ impl Default for AutoModelConfig {
             available_models: Vec::new(),
             routing_policy: None,
             adaptive_routing: Default::default(),
+            session_routing: Default::default(),
         }
     }
 }

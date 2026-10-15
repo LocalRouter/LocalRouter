@@ -714,6 +714,10 @@ function ResponseError({ error }: { error: unknown }) {
 function LlmResponseContent({ data, status }: { data: EventData; status: EventStatus }) {
   const body = data.response_body as Record<string, unknown> | undefined
   const gateway = gatewayAttribution(body)
+  const cacheValue = (body?.extensions as Record<string, unknown> | undefined)?.['localrouter.prompt_cache']
+  const cache = cacheValue && typeof cacheValue === 'object' && !Array.isArray(cacheValue) ? cacheValue as Record<string, unknown> : null
+  const cacheNumber = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value : null
+  const netCacheSavings = cacheNumber(cache?.estimated_net_savings_usd)
   const messages = capturedResponseMessages(body, data.raw_response)
   const visibleMessages = messages.filter(message => contentText(message.content) || (message.tool_calls as unknown[] | undefined)?.length)
   const reasoning = messages.map(message => message.reasoning_content).filter(Boolean).join('\n') || extractReasoning(body)
@@ -732,6 +736,13 @@ function LlmResponseContent({ data, status }: { data: EventData; status: EventSt
         <Field label={gateway.cost_scope === 'request_total' ? 'Gateway-reported request total' : gateway.cost_scope === 'upstream_call' ? 'Gateway-reported upstream call cost' : 'Gateway-reported cost'} value={gateway.cost_source === 'reported' ? `$${gateway.cost_usd}` : 'Unknown (catalog estimates may apply)'} />
         <JsonTree data={gateway.applied_preferences} label="Applied restrictions" />
         {gateway.routing.length > 0 && <JsonTree data={gateway.routing} label="Upstream attempts" />}
+      </Disclosure>}
+      {cache && <Disclosure title="Provider prompt cache">
+        <Field label="Read tokens" value={String(cacheNumber(cache.read_tokens) ?? 'Unknown')} />
+        <Field label="Write tokens" value={String(cacheNumber(cache.write_tokens) ?? 'Unknown')} />
+        <Field label="Uncached tokens" value={String(cacheNumber(cache.uncached_tokens) ?? 'Unknown')} />
+        <Field label="Estimated net savings" value={netCacheSavings != null ? `$${netCacheSavings.toFixed(6)}` : 'Unknown rates'} />
+        <p className="text-muted-foreground">Provider prompt reuse. Net savings use model rates and can be negative when cache writes cost more.</p>
       </Disclosure>}
       {systemOne ? <SystemOneAnswersList data={data} /> : visibleMessages.length > 0 ? (
         <div className="space-y-2">
@@ -1002,6 +1013,7 @@ function RoutingInfoView({ info }: { info: EventData }) {
           ]} />
         </Section>
       )}
+      {info.session && <Section title="Session affinity"><JsonTree data={info.session} /></Section>}
       {(info.inference_dispatches != null || info.attempt_costs) && <Section title="Upstream attempts"><Properties items={[
         ['Inference calls', info.inference_dispatches != null ? String(info.inference_dispatches) : null],
         ['Failed-call cost', info.failed_call_costs],

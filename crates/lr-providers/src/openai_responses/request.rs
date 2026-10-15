@@ -158,7 +158,7 @@ pub fn translate_completion_request(req: &CompletionRequest, store: bool) -> Res
         stream: req.stream,
         include,
         service_tier: req.service_tier.clone(),
-        prompt_cache_key: None,
+        prompt_cache_key: crate::session::cache_key(req),
         text,
         previous_response_id: None,
     }

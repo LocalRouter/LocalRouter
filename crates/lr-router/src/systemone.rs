@@ -58,6 +58,22 @@ impl Router {
         client_id: &str,
         request: SystemOneRequest,
     ) -> AppResult<SystemOneResponse> {
+        let mut request = request;
+        let mut session_context = self.decision_routing_request(&request);
+        lr_providers::session::prepare_turn(&mut session_context)?;
+        if let Some(token) = session_context
+            .extensions
+            .as_ref()
+            .and_then(|e| e.get(lr_providers::session::CONTROL_TOKEN))
+        {
+            request
+                .extra
+                .entry("extensions")
+                .or_insert_with(|| serde_json::json!({}))
+                .as_object_mut()
+                .ok_or_else(|| AppError::InvalidParams("extensions must be an object".into()))?
+                .insert(lr_providers::session::CONTROL_TOKEN.into(), token.clone());
+        }
         debug!(
             "Routing System One request for client '{}', model {:?}",
             client_id, request.model
@@ -247,12 +263,32 @@ impl Router {
                 "Selected provider does not support gateway routing controls".into(),
             ));
         }
+        let mut session_request = self.decision_routing_request(&request);
+        lr_providers::session::prepare_turn(&mut session_request)?;
+        if request.model.as_deref() != Some("localrouter/auto") {
+            session_request.model = format!("{provider}/{}", model.unwrap_or("default"));
+        }
+        let (_, explicit_session_handle) = self.provider_session_request(
+            client_id,
+            provider,
+            &session_request,
+            EndpointType::SystemOne,
+        )?;
         if let Some(metadata) = request
             .extra
             .get_mut("metadata")
             .and_then(serde_json::Value::as_object_mut)
         {
             metadata.remove("localrouter.mode");
+        }
+        if let Some(extensions) = request
+            .extra
+            .get_mut("extensions")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            extensions.remove(lr_providers::session::EXTENSION);
+            extensions.remove(lr_providers::session::CONTROL_TOKEN);
+            extensions.remove(lr_providers::session::CACHE_KEY);
         }
         let native = match model {
             Some(m) => provider_instance.supports_systemone_model(m).await,
@@ -321,6 +357,9 @@ impl Router {
             };
             observation.success();
             drop(observation);
+            if let Some(handle) = &explicit_session_handle {
+                handle.record(provider, model.unwrap_or(response.model.as_str()));
+            }
             response.provider = provider.to_string();
             response.backend = SystemOneBackend::Native;
 
@@ -404,15 +443,20 @@ impl Router {
                 provider
             ))
         })?;
-        self.emulate_systemone(
-            client_id,
-            provider,
-            model,
-            provider_instance.as_ref(),
-            request,
-            free_tier_only,
-        )
-        .await
+        let response = self
+            .emulate_systemone(
+                client_id,
+                provider,
+                model,
+                provider_instance.as_ref(),
+                request,
+                free_tier_only,
+            )
+            .await?;
+        if let Some(handle) = &explicit_session_handle {
+            handle.record(provider, model);
+        }
+        Ok(response)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -711,6 +755,7 @@ impl Router {
                 strategy,
                 auto_config,
                 &routing_request,
+                EndpointType::SystemOne,
             ))
             .await
             .map_err(|reason| {
@@ -720,14 +765,15 @@ impl Router {
                     EndpointType::SystemOne,
                     reason,
                 )
-            })?;
-        let (selected_models, scored_candidates) = self.order_auto_models(
+            })??;
+        let (selected_models, scored_candidates, session_handle) = self.order_auto_models(
+            client_id,
             strategy,
             &routing_request,
             &selected_models,
             routing_decision.as_ref(),
             EndpointType::SystemOne,
-        );
+        )?;
         if selected_models.is_empty() {
             return Err(AppError::Router(
                 "No models configured for auto-routing".into(),
@@ -903,6 +949,9 @@ impl Router {
                     attempts.push(
                         serde_json::json!({"provider":provider,"model":model,"outcome":"success"}),
                     );
+                    if let Some(handle) = &session_handle {
+                        handle.record(provider, model);
+                    }
                     let mut metadata = super::build_routing_metadata(
                         routing_decision.as_ref(),
                         &candidate_models,
@@ -911,6 +960,9 @@ impl Router {
                     );
                     metadata["attempt_costs"] = serde_json::json!(budget.costs());
                     metadata["inference_dispatches"] = serde_json::json!(budget.dispatch_count());
+                    if let Some(handle) = &session_handle {
+                        metadata["session"] = handle.metadata();
+                    }
                     metadata["explanation"] = initial_explanation.clone();
                     if let Some(decision) = &routing_decision {
                         metadata["classifier_latency_ms"] = serde_json::json!(decision.latency_ms);
@@ -1882,8 +1934,10 @@ mod tests {
                 &strategy,
                 strategy.auto_config.as_ref().unwrap(),
                 &req,
+                EndpointType::Chat,
             )
-            .await;
+            .await
+            .unwrap();
         assert_eq!(
             models,
             vec![
@@ -1913,8 +1967,10 @@ mod tests {
                         &strategy,
                         strategy.auto_config.as_ref().unwrap(),
                         &req,
+                        EndpointType::Chat,
                     )
                     .await
+                    .unwrap()
             }
         };
 

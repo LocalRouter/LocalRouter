@@ -18,9 +18,22 @@ where
     type Rejection = Response;
 
     async fn from_request(request: Request, state: &S) -> Result<Self, Self::Rejection> {
-        let Json(value) = Json::<Value>::from_request(request, state)
+        let session = [
+            "x-session-id",
+            "x-session-affinity",
+            "session_id",
+            "session-id",
+        ]
+        .into_iter()
+        .find_map(|name| request.headers().get(name))
+        .map(|value| value.to_str().map(str::to_owned))
+        .transpose()
+        .map_err(|_| ApiErrorResponse::bad_request("Invalid session header").into_response())?;
+        let Json(mut value) = Json::<Value>::from_request(request, state)
             .await
             .map_err(IntoResponse::into_response)?;
+        lr_providers::session::normalize_ingress(&mut value, session.as_deref())
+            .map_err(|error| ApiErrorResponse::from(error).into_response())?;
         lr_providers::gateway::reject_raw_controls(&value)
             .map_err(|error| ApiErrorResponse::from(error).into_response())?;
         serde_json::from_value(value).map(Self).map_err(|error| {

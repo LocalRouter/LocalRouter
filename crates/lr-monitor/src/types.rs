@@ -767,6 +767,10 @@ pub struct RoutingAttempt {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AutoRoutingInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attempt_costs: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inference_dispatches: Option<usize>,

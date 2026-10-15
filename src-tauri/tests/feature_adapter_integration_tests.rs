@@ -371,19 +371,9 @@ fn test_prompt_caching_cost_savings_calculation() {
     assert_eq!(data.data["cache_creation_input_tokens"], 500);
     assert_eq!(data.data["cache_read_input_tokens"], 500);
 
-    // Verify cost savings calculation
-    // Cache read: 0.1x cost = 90% savings
-    // Full cost: 100 + 500 + 500 = 1100 tokens
-    // Cached cost: 100 + 500 + (500 * 0.1) = 650 tokens
-    // Savings: (1100 - 650) / 1100 = ~41%
-    let savings_str = data.data["cache_savings_percent"].as_str().unwrap();
-    // Parse "41.0%" -> 41.0
-    let savings: f64 = savings_str.trim_end_matches('%').parse().unwrap();
-    assert!(
-        savings > 40.0 && savings < 42.0,
-        "Cache savings should be ~41%, got {}",
-        savings
-    );
+    // Token reuse is known; a discount needs the selected model's rates.
+    assert!(data.data["cache_savings_percent"].is_null());
+    assert_eq!(data.data["savings_source"], "requires_provider_pricing");
 }
 
 // ============================================================================

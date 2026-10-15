@@ -63,8 +63,8 @@ export async function persistRoutingPolicy(strategyId: string, policy: RoutingPo
   await invoke('update_strategy', { strategyId, autoConfig: { ...autoConfig, routing_policy: policy }, modelPermissions } satisfies UpdateStrategyParams)
 }
 
-export function RoutingPolicyEditor({ strategyId, value, onSave, readOnly = false }: {
-  strategyId: string; value: RoutingPolicy | null | undefined; onSave: (policy: RoutingPolicy) => Promise<void>; readOnly?: boolean
+export function RoutingPolicyEditor({ strategyId, clientId, value, onSave, readOnly = false }: {
+  strategyId: string; clientId?: string; value: RoutingPolicy | null | undefined; onSave: (policy: RoutingPolicy) => Promise<void>; readOnly?: boolean
 }) {
   const [draft, setDraft] = useState<RoutingPolicy>(() => value ?? { ...routingTemplate('workflow'), enabled: false })
   const previewRequest = useRef(0)
@@ -74,6 +74,7 @@ export function RoutingPolicyEditor({ strategyId, value, onSave, readOnly = fals
   const [testing, setTesting] = useState(false)
   const [prompt, setPrompt] = useState('Plan a safe database migration. Do not change files yet.')
   const [mode, setMode] = useState('')
+  const [sessionId, setSessionId] = useState('')
   const [result, setResult] = useState<RoutingPolicyPreview | null>(null)
   const [error, setError] = useState<string | null>(null)
   const lastSavedPolicy = useRef<string | null>(null)
@@ -116,7 +117,7 @@ export function RoutingPolicyEditor({ strategyId, value, onSave, readOnly = fals
     const requestId = ++previewRequest.current
     setTesting(true); setError(null); setResult(null)
     try {
-      const params: PreviewRoutingPolicyParams = { strategyId, policy: executeClassifier ? { ...draft, enabled: true } : draft, prompt, mode: mode || null, executeClassifier }
+      const params: PreviewRoutingPolicyParams = { strategyId, clientId, requestJson: sessionId ? JSON.stringify({model: 'localrouter/auto', messages: [{role: 'user', content: prompt}], extensions: {'localrouter.session': {id: sessionId}}}) : undefined, policy: executeClassifier ? { ...draft, enabled: true } : draft, prompt, mode: mode || null, executeClassifier }
       const response = await invoke<RoutingPolicyPreview>('preview_routing_policy', { ...params } satisfies PreviewRoutingPolicyParams)
       if (requestId === previewRequest.current) setResult(response)
     } catch (e) { if (requestId === previewRequest.current) setError(String(e)) } finally { if (requestId === previewRequest.current) setTesting(false) }
@@ -171,6 +172,7 @@ export function RoutingPolicyEditor({ strategyId, value, onSave, readOnly = fals
       ] as const).map(([key, label, min, max, step]) => <div key={key} className="space-y-2"><Label>{label}</Label><Input aria-label={label} type="number" min={min} max={max} step={step} value={draft[key]} onChange={e => change({ [key]: Number(e.target.value) })} disabled={disabled} /></div>)}
         <p className="text-xs text-muted-foreground col-span-full">Context characters bound what the decision model sees: the latest request, then as many recent history messages as fit. A longer request is shortened to its beginning and end, with the middle omitted, and leaves no room for history.</p></div>}
       <div className="border-t pt-4 space-y-3"><Label>Try this policy</Label><Input aria-label="Routing test prompt" value={prompt} onChange={e => setPrompt(e.target.value)} /><Input aria-label="Test client mode" placeholder="Client mode (optional), e.g. plan" value={mode} onChange={e => setMode(e.target.value)} />
+        <Input aria-label="Test session id" placeholder="Session id (optional, private to this client and saved policy)" value={sessionId} onChange={event => setSessionId(event.target.value)} />
         <Button variant="outline" disabled={testing} onClick={() => preview(false)}>{testing && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}Preview routes</Button>
         <Button variant="outline" disabled={testing || readOnly || draft.mode !== 'semantic'} onClick={() => preview(true)}>Test classifier</Button>
         <p className="text-xs text-muted-foreground">Preview uses cached local information. Testing runs the selected decision model.</p>
@@ -178,6 +180,7 @@ export function RoutingPolicyEditor({ strategyId, value, onSave, readOnly = fals
           {result.decision && <p><strong>{result.decision.route}</strong> · {result.decision.source} · {result.decision.latency_ms} ms</p>}
           {result.decision?.classifier_cost_usd != null && <p className="text-xs">Classifier cost: {result.decision.classifier_cost_estimated ? 'estimated ' : ''}${result.decision.classifier_cost_usd.toFixed(6)}</p>}
           <p>{result.explanation.classifier_required ? 'Route unknown until the classifier runs.' : result.explanation.reason.replace(/_/g, ' ')}</p>
+          {result.explanation.session && <pre className="text-xs whitespace-pre-wrap break-words">{JSON.stringify(result.explanation.session, null, 2)}</pre>}
           {result.explanation.no_route && <p className="text-destructive">No eligible candidate under the known filters.</p>}
           {result.explanation.routes.map(route => <div key={route.route} className="space-y-1"><strong>{route.route}</strong>{route.candidates.map(candidate => <div key={`${candidate.provider}/${candidate.model}`} className="text-xs">
             {candidate.execution_priority + 1}. {candidate.provider}/{candidate.model} (configured {candidate.priority + 1}) · {candidate.eligible ? 'Eligible, subject to runtime checks' : candidate.exclusions.map(reason => reason.replace(/_/g, ' ')).join(', ')}

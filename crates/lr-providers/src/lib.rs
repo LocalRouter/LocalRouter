@@ -401,6 +401,10 @@ pub trait ModelProvider: Send + Sync {
     }
 
     /// Namespaced upstream routing controls are never silently dropped.
+    fn supports_prompt_cache_key(&self) -> bool {
+        false
+    }
+
     fn supports_gateway_options(&self) -> bool {
         false
     }
@@ -1592,6 +1596,13 @@ pub struct CompletionRequest {
 impl CompletionRequest {
     /// Consume LocalRouter-only control metadata before forwarding upstream.
     pub fn without_routing_metadata(mut self) -> Self {
+        if let Some(extensions) = self.extensions.as_mut() {
+            extensions.remove(session::EXTENSION);
+            extensions.remove(session::CONTROL_TOKEN);
+            if extensions.is_empty() {
+                self.extensions = None;
+            }
+        }
         if let Some(metadata) = self.metadata.as_mut() {
             metadata.remove("localrouter.mode");
             if metadata.is_empty() {
@@ -3336,3 +3347,5 @@ mod pricing_cost_tests {
         assert_eq!(p.cache_write_cost_per_1k, None);
     }
 }
+
+pub mod session;

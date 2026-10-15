@@ -288,6 +288,7 @@ async fn wrap_stream_with_usage_tracking(
         .map(|(p, _)| p.to_string())
         .unwrap_or_default();
 
+    let cache_pricing = pricing.clone();
     let recorder = Arc::new(StreamUsageRecorder {
         state: parking_lot::Mutex::new(StreamUsageState::default()),
         record: parking_lot::Mutex::new(count_usage.then(|| StreamUsageSink {
@@ -307,6 +308,17 @@ async fn wrap_stream_with_usage_tracking(
         chunk_result.map(|mut chunk| {
             chunk.model = resolved_model.clone();
             chunk.provider = Some(provider.clone());
+            if let Some(accounting) = chunk.usage.as_ref().and_then(|usage| {
+                lr_providers::session::prompt_cache_accounting(&cache_pricing, usage)
+            }) {
+                chunk
+                    .extensions
+                    .get_or_insert_with(Default::default)
+                    .insert(
+                        lr_providers::session::ACCOUNTING.into(),
+                        serde_json::json!(accounting),
+                    );
+            }
             recorder_map.observe(&chunk);
             chunk
         })
@@ -487,6 +499,7 @@ pub struct Router {
     provider_registry: Arc<ProviderRegistry>,
     rate_limiter: Arc<RateLimiterManager>,
     metrics_collector: Arc<lr_monitoring::metrics::MetricsCollector>,
+    sessions: session_routing::SessionStore,
     decision_slots: tokio::sync::Semaphore,
     adaptive_measurements: Arc<adaptive::AdaptiveMeasurements>,
     free_tier_manager: Arc<FreeTierManager>,
@@ -583,6 +596,7 @@ impl Router {
             provider_registry,
             rate_limiter,
             metrics_collector,
+            sessions: Default::default(),
             decision_slots: tokio::sync::Semaphore::new(8),
             adaptive_measurements: Arc::new(adaptive::AdaptiveMeasurements::default()),
             free_tier_manager: Arc::new(FreeTierManager::new(None)),
@@ -606,6 +620,7 @@ impl Router {
             provider_registry,
             rate_limiter,
             metrics_collector,
+            sessions: Default::default(),
             decision_slots: tokio::sync::Semaphore::new(8),
             adaptive_measurements: Arc::new(adaptive::AdaptiveMeasurements::default()),
             free_tier_manager,
@@ -886,7 +901,13 @@ impl Router {
                 })?;
             let pricing = self.request_pricing(&final_provider, &final_model).await;
             let free_tier = self.free_tier_usage(&final_provider, &final_model);
-            let mut modified_request = request.without_routing_metadata();
+            let (modified_request, explicit_session_handle) = self.provider_session_request(
+                client_id,
+                &final_provider,
+                &request,
+                lr_providers::EndpointType::Chat,
+            )?;
+            let mut modified_request = modified_request.without_routing_metadata();
             modified_request.model = final_model.clone();
             let prompt_estimate = lr_providers::usage_estimate::prompt_tokens(
                 &modified_request.messages,
@@ -916,6 +937,9 @@ impl Router {
                     return Err(e);
                 }
             };
+            if let Some(handle) = &explicit_session_handle {
+                handle.record(&final_provider, &final_model);
+            }
             let stream = adaptive::observe_stream(
                 stream,
                 observation,
@@ -1390,13 +1414,25 @@ impl Router {
                 "Selected provider does not support gateway routing controls".into(),
             ));
         }
-        let mut modified_request = request.clone().without_routing_metadata();
+        let (modified_request, explicit_session_handle) = self.provider_session_request(
+            client_id,
+            provider,
+            &request,
+            lr_providers::EndpointType::Chat,
+        )?;
+        let mut modified_request = modified_request.without_routing_metadata();
         modified_request.model = model.to_string();
 
         // Apply feature adapters if extensions are present
         if let Some(ref extensions) = request.extensions {
             for (feature_name, feature_params) in extensions {
-                if feature_name == lr_providers::gateway::EXTENSION {
+                if matches!(
+                    feature_name.as_str(),
+                    lr_providers::gateway::EXTENSION
+                        | lr_providers::session::EXTENSION
+                        | lr_providers::session::CACHE_KEY
+                        | lr_providers::session::CONTROL_TOKEN
+                ) {
                     continue;
                 }
                 // Check if provider supports this feature
@@ -1475,6 +1511,20 @@ impl Router {
 
         observation.success();
         drop(observation);
+        if let Some(handle) = &explicit_session_handle {
+            handle.record(provider, model);
+        }
+        if let Some(accounting) =
+            lr_providers::session::prompt_cache_accounting(&pricing, &response.usage)
+        {
+            response
+                .extensions
+                .get_or_insert_with(Default::default)
+                .insert(
+                    lr_providers::session::ACCOUNTING.into(),
+                    serde_json::json!(accounting),
+                );
+        }
 
         let reported_cost = lr_providers::gateway::reported_cost(response.extensions.as_ref());
         let cost = reported_cost.unwrap_or_else(|| pricing.cost(&response.usage));
@@ -1517,18 +1567,22 @@ impl Router {
         strategy: &lr_config::Strategy,
         auto_config: &lr_config::AutoModelConfig,
         request: &CompletionRequest,
-    ) -> (
+        endpoint: lr_providers::EndpointType,
+    ) -> AppResult<(
         Vec<(String, String)>,
         Option<lr_providers::PreComputedRouting>,
-    ) {
+    )> {
+        let bound = self.bound_routing_decision(client_id, strategy, request, endpoint)?;
         let Some(policy) = auto_config.routing_policy.as_ref().filter(|p| p.enabled) else {
-            return (auto_config.prioritized_models.clone(), None);
+            return Ok((auto_config.prioritized_models.clone(), bound));
         };
-        let decision = match &request.pre_computed_routing {
+        let decision = match bound.as_ref().or(request.pre_computed_routing.as_ref()) {
             Some(d) => d.clone(),
             None => {
-                self.evaluate_routing_policy(client_id, strategy, policy, request)
-                    .await
+                self.evaluate_routing_policy_for_endpoint(
+                    client_id, strategy, policy, request, endpoint,
+                )
+                .await
             }
         };
         let models = decision_routing::route_models(
@@ -1536,7 +1590,7 @@ impl Router {
             &auto_config.prioritized_models,
             &decision.route,
         );
-        (models, Some(decision))
+        Ok((models, Some(decision)))
     }
 
     /// Complete with auto-routing (localrouter/auto virtual model)
@@ -1568,6 +1622,7 @@ impl Router {
                 strategy,
                 auto_config,
                 &request,
+                lr_providers::EndpointType::Chat,
             ))
             .await
             .map_err(|reason| {
@@ -1577,14 +1632,15 @@ impl Router {
                     lr_providers::EndpointType::Chat,
                     reason,
                 )
-            })?;
-        let (selected_models, scored_candidates) = self.order_auto_models(
+            })??;
+        let (selected_models, scored_candidates, session_handle) = self.order_auto_models(
+            client_id,
             strategy,
             &request,
             &selected_models,
             routing_decision.as_ref(),
             lr_providers::EndpointType::Chat,
-        );
+        )?;
 
         if selected_models.is_empty() {
             return Err(AppError::Router(
@@ -1599,6 +1655,9 @@ impl Router {
         );
 
         let mut initial_metadata = serde_json::json!({});
+        if let Some(handle) = &session_handle {
+            initial_metadata["session"] = handle.metadata();
+        }
         self.attach_routing_explanation(
             &mut initial_metadata,
             strategy,
@@ -1717,6 +1776,9 @@ impl Router {
                 Ok(response) => {
                     let attempt_ms = attempt_start.elapsed().as_millis() as u64;
                     info!("Auto-routing succeeded with {}/{}", provider, model);
+                    if let Some(handle) = &session_handle {
+                        handle.record(provider, model);
+                    }
                     self.free_tier_manager.clear_backoff(provider, model);
                     attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "success", "duration_ms": attempt_ms,"cost_usd":lr_providers::gateway::reported_cost(response.extensions.as_ref()),"cost_source":if lr_providers::gateway::reported_cost(response.extensions.as_ref()).is_some(){"reported"}else{"unknown"}}));
                     let mut routing_meta = build_routing_metadata(
@@ -1904,6 +1966,7 @@ impl Router {
                 strategy,
                 auto_config,
                 &request,
+                lr_providers::EndpointType::Chat,
             ))
             .await
             .map_err(|reason| {
@@ -1913,14 +1976,15 @@ impl Router {
                     lr_providers::EndpointType::Chat,
                     reason,
                 )
-            })?;
-        let (selected_models, scored_candidates) = self.order_auto_models(
+            })??;
+        let (selected_models, scored_candidates, session_handle) = self.order_auto_models(
+            client_id,
             strategy,
             &request,
             &selected_models,
             routing_decision.as_ref(),
             lr_providers::EndpointType::Chat,
-        );
+        )?;
 
         if selected_models.is_empty() {
             return Err(AppError::Router(
@@ -1935,6 +1999,9 @@ impl Router {
         );
 
         let mut initial_metadata = serde_json::json!({});
+        if let Some(handle) = &session_handle {
+            initial_metadata["session"] = handle.metadata();
+        }
         self.attach_routing_explanation(
             &mut initial_metadata,
             strategy,
@@ -2060,7 +2127,13 @@ impl Router {
                     "Selected provider does not support gateway routing controls".into(),
                 ));
             }
-            let mut modified_request = request.clone().without_routing_metadata();
+            let (modified_request, _explicit_session_handle) = self.provider_session_request(
+                client_id,
+                provider,
+                &request,
+                lr_providers::EndpointType::Chat,
+            )?;
+            let mut modified_request = modified_request.without_routing_metadata();
             modified_request.model = model.clone();
 
             let prompt_estimate = lr_providers::usage_estimate::prompt_tokens(
@@ -2104,6 +2177,9 @@ impl Router {
                         "Auto-routing streaming succeeded with {}/{}",
                         provider, model
                     );
+                    if let Some(handle) = &session_handle {
+                        handle.record(provider, model);
+                    }
                     self.free_tier_manager.clear_backoff(provider, model);
                     attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "success"}));
                     let mut routing_meta = build_routing_metadata(
@@ -2431,6 +2507,8 @@ impl Router {
         client_id: &str,
         request: CompletionRequest,
     ) -> AppResult<(CompletionResponse, Option<serde_json::Value>)> {
+        let mut request = request;
+        lr_providers::session::prepare_turn(&mut request)?;
         debug!(
             "Routing completion request for client '{}', model '{}'",
             client_id, request.model
@@ -2544,6 +2622,8 @@ impl Router {
         Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>,
         Option<serde_json::Value>,
     )> {
+        let mut request = request;
+        lr_providers::session::prepare_turn(&mut request)?;
         debug!(
             "Routing streaming completion request for client '{}', model '{}'",
             client_id, request.model
@@ -2578,7 +2658,13 @@ impl Router {
                     "Selected provider does not support gateway routing controls".into(),
                 ));
             }
-            let mut modified_request = request.clone().without_routing_metadata();
+            let (modified_request, explicit_session_handle) = self.provider_session_request(
+                client_id,
+                &provider,
+                &request,
+                lr_providers::EndpointType::Chat,
+            )?;
+            let mut modified_request = modified_request.without_routing_metadata();
             modified_request.model = model.clone();
             let prompt_estimate = lr_providers::usage_estimate::prompt_tokens(
                 &modified_request.messages,
@@ -2608,6 +2694,9 @@ impl Router {
                     return Err(e);
                 }
             };
+            if let Some(handle) = &explicit_session_handle {
+                handle.record(&provider, &model);
+            }
             let stream = adaptive::observe_stream(
                 stream,
                 observation,
@@ -2727,7 +2816,13 @@ impl Router {
                 "Selected provider does not support gateway routing controls".into(),
             ));
         }
-        let mut modified_request = request.clone().without_routing_metadata();
+        let (modified_request, explicit_session_handle) = self.provider_session_request(
+            client_id,
+            &final_provider,
+            &request,
+            lr_providers::EndpointType::Chat,
+        )?;
+        let mut modified_request = modified_request.without_routing_metadata();
         modified_request.model = final_model.clone();
         let prompt_estimate = lr_providers::usage_estimate::prompt_tokens(
             &modified_request.messages,
@@ -2757,6 +2852,9 @@ impl Router {
                 return Err(e);
             }
         };
+        if let Some(handle) = &explicit_session_handle {
+            handle.record(&final_provider, &final_model);
+        }
         let stream = adaptive::observe_stream(
             stream,
             observation,
@@ -4121,3 +4219,5 @@ mod tests {
         );
     }
 }
+
+mod session_routing;

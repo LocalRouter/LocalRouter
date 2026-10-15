@@ -413,12 +413,7 @@ struct OpenAIChoice {
     logprobs: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Deserialize)]
-struct OpenAIUsage {
-    prompt_tokens: u32,
-    completion_tokens: u32,
-    total_tokens: u32,
-}
+type OpenAIUsage = TokenUsage;
 
 #[derive(Debug, Deserialize)]
 struct OpenAIStreamChunk {
@@ -499,6 +494,9 @@ struct OpenAIEmbeddingUsage {
 
 #[async_trait]
 impl ModelProvider for OpenAICompatibleProvider {
+    fn supports_prompt_cache_key(&self) -> bool {
+        self.gateway_kind == Some(crate::gateway::GatewayKind::Llmgateway)
+    }
     fn name(&self) -> &str {
         &self.name
     }
@@ -745,6 +743,7 @@ impl ModelProvider for OpenAICompatibleProvider {
             self.gateway_preferences
                 .effective(request.extensions.as_ref())?
         };
+        let prompt_cache_key = crate::session::cache_key(&request);
         let openai_request = OpenAIChatRequest {
             service_tier: request.service_tier.filter(|_| self.gateway_kind.is_none()),
             model: request.model.clone(),
@@ -768,6 +767,11 @@ impl ModelProvider for OpenAICompatibleProvider {
         };
 
         let mut body = crate::gateway::wire_body(&openai_request)?;
+        if self.supports_prompt_cache_key() {
+            if let Some(key) = prompt_cache_key {
+                body["prompt_cache_key"] = serde_json::json!(key);
+            }
+        }
         let gateway_headers = self
             .gateway_kind
             .map(|kind| preferences.apply(kind, &mut body))
@@ -830,13 +834,7 @@ impl ModelProvider for OpenAICompatibleProvider {
             model: openai_response.model,
             provider: self.name().to_string(),
             choices,
-            usage: TokenUsage {
-                prompt_tokens: openai_response.usage.prompt_tokens,
-                completion_tokens: openai_response.usage.completion_tokens,
-                total_tokens: openai_response.usage.total_tokens,
-                prompt_tokens_details: None,
-                completion_tokens_details: None,
-            },
+            usage: openai_response.usage,
             system_fingerprint: None,
             service_tier: attribution.as_ref().and_then(|a| a.service_tier.clone()),
             extensions: attribution.map(GatewayAttribution::extensions),
@@ -866,6 +864,7 @@ impl ModelProvider for OpenAICompatibleProvider {
                 .effective(request.extensions.as_ref())?
         };
         let gateway_kind = self.gateway_kind;
+        let prompt_cache_key = crate::session::cache_key(&request);
         let openai_request = OpenAIChatRequest {
             service_tier: request.service_tier.filter(|_| self.gateway_kind.is_none()),
             model: request.model.clone(),
@@ -892,6 +891,11 @@ impl ModelProvider for OpenAICompatibleProvider {
             &openai_request,
             self.provider_type.as_deref().unwrap_or_default(),
         )?;
+        if self.supports_prompt_cache_key() {
+            if let Some(key) = prompt_cache_key {
+                body["prompt_cache_key"] = serde_json::json!(key);
+            }
+        }
         let gateway_headers = gateway_kind
             .map(|kind| preferences.apply(kind, &mut body))
             .transpose()?

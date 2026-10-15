@@ -14,6 +14,7 @@
  * 4. Routing policies
  */
 
+import { SessionRoutingEditor } from '@/components/strategy/SessionRoutingEditor'
 import { AdaptiveRoutingEditor } from '@/components/strategy/AdaptiveRoutingEditor'
 import { useState, useEffect, useCallback, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
@@ -782,8 +783,25 @@ export function UnifiedModelsTab({
             onUpdate()
           } finally { setSaving(false) }
         }} />}
+      {!restricted && autoConfig && <SessionRoutingEditor value={autoConfig.session_routing} readOnly={saving}
+        onSave={async session_routing => {
+          const pending = pendingUpdatesRef.current
+          const latestAuto = pending?.auto_config === undefined ? autoConfig : pending.auto_config
+          if (!latestAuto) throw new Error('Auto router settings changed. Reload before saving.')
+          if (updateTimeoutRef.current) clearTimeout(updateTimeoutRef.current)
+          setSaving(true)
+          try {
+            await invoke('update_strategy', { strategyId: strategy.id, name: pending?.name,
+              allowedModels: pending?.allowed_models, modelPermissions: pending?.model_permissions,
+              autoConfig: { ...latestAuto, session_routing }, rateLimits: pending?.rate_limits,
+              freeTierOnly: pending?.free_tier_only, freeTierFallback: pending?.free_tier_fallback } satisfies import('@/types/tauri-commands').UpdateStrategyParams)
+            pendingUpdatesRef.current = null
+            await loadData()
+            onUpdate()
+          } finally { setSaving(false) }
+        }} />}
 
-      {!restricted && autoConfig && <RoutingPolicyEditor strategyId={strategy.id} value={autoConfig.routing_policy} readOnly={saving}
+      {!restricted && autoConfig && <RoutingPolicyEditor clientId={client.client_id} strategyId={strategy.id} value={autoConfig.routing_policy} readOnly={saving}
         onSave={async policy => {
           // Flush prior auto-list edits before persisting the complete policy.
           if (updateTimeoutRef.current) clearTimeout(updateTimeoutRef.current)

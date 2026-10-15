@@ -3131,6 +3131,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
         prioritized_models: [],
         available_models: [],
         routing_policy: null,
+        session_routing: { enabled: false, classifier_reuse: false, forward_cache_key: false, ttl_secs: 900 },
       },
       rate_limits: args?.rateLimits || [],
       free_tier_only: args?.freeTierOnly ?? false,

@@ -16,6 +16,7 @@ use super::finalize::{FinalizeInputs, StreamingFinalizeSummary};
 #[derive(Default, Debug)]
 pub(crate) struct StreamTracker {
     routing_metadata: Option<serde_json::Value>,
+    prompt_cache: std::collections::HashMap<String, lr_providers::session::PromptCacheAccounting>,
     gateway_costs: std::collections::HashMap<String, Option<f64>>,
     gateway_attribution: Option<serde_json::Value>,
     /// Generated text (for monitor previews).
@@ -63,6 +64,14 @@ pub(crate) struct StreamTotals {
 
 impl StreamTracker {
     pub fn observe(&mut self, chunk: &CompletionChunk) {
+        if let Some(accounting) = chunk
+            .extensions
+            .as_ref()
+            .and_then(|e| e.get(lr_providers::session::ACCOUNTING))
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+        {
+            self.prompt_cache.insert(chunk.id.clone(), accounting);
+        }
         if let Some(metadata) = chunk
             .extensions
             .as_ref()
@@ -147,6 +156,14 @@ impl StreamTracker {
         &self,
     ) -> Option<std::collections::HashMap<String, serde_json::Value>> {
         let mut extensions = self.gateway_extensions().unwrap_or_default();
+        if !self.prompt_cache.is_empty() {
+            let reports: Vec<_> = self.prompt_cache.values().collect();
+            let savings = reports
+                .iter()
+                .try_fold(0.0, |sum, r| r.estimated_net_savings_usd.map(|v| sum + v))
+                .filter(|v| v.is_finite());
+            extensions.insert(lr_providers::session::ACCOUNTING.into(),serde_json::json!({"read_tokens":reports.iter().map(|r|u64::from(r.read_tokens)).sum::<u64>(),"write_tokens":reports.iter().map(|r|u64::from(r.write_tokens)).sum::<u64>(),"uncached_tokens":reports.iter().map(|r|u64::from(r.uncached_tokens)).sum::<u64>(),"estimated_net_savings_usd":savings,"source":"provider_tokens_pricing_estimate"}));
+        }
         if let Some(metadata) = &self.routing_metadata {
             extensions.insert("localrouter.routing".into(), metadata.clone());
         }
@@ -395,6 +412,33 @@ mod tests {
     use super::*;
     use lr_providers::{ChunkChoice, ChunkDelta, FunctionCallDelta, ToolCallDelta};
 
+    #[test]
+    fn prompt_cache_snapshots_are_not_multiplied_and_unknown_rates_stay_unknown() {
+        let mut tracker = StreamTracker::default();
+        let mut frame = chunk(None, None);
+        frame.extensions=Some([(lr_providers::session::ACCOUNTING.into(),serde_json::json!({"read_tokens":5,"write_tokens":2,"uncached_tokens":3,"estimated_net_savings_usd":-0.01,"source":"provider_tokens_pricing_estimate"}))].into_iter().collect());
+        tracker.observe(&frame);
+        tracker.observe(&frame);
+        let snapshot = tracker.response_extensions().unwrap();
+        assert_eq!(
+            snapshot[lr_providers::session::ACCOUNTING]["read_tokens"],
+            5
+        );
+        frame.id = "next-call".into();
+        frame
+            .extensions
+            .as_mut()
+            .unwrap()
+            .get_mut(lr_providers::session::ACCOUNTING)
+            .unwrap()["estimated_net_savings_usd"] = serde_json::Value::Null;
+        tracker.observe(&frame);
+        let snapshot = tracker.response_extensions().unwrap();
+        assert_eq!(
+            snapshot[lr_providers::session::ACCOUNTING]["read_tokens"],
+            10
+        );
+        assert!(snapshot[lr_providers::session::ACCOUNTING]["estimated_net_savings_usd"].is_null());
+    }
     fn chunk(content: Option<&str>, finish: Option<&str>) -> CompletionChunk {
         CompletionChunk {
             id: "c".into(),

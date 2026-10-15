@@ -354,7 +354,13 @@ pub(crate) async fn finalize_metrics_and_monitor(
                 input_tokens: prompt_tokens as u64,
                 output_tokens: response.usage.completion_tokens as u64,
                 cache_read_tokens: cached_tokens.unwrap_or(0),
-                cache_write_tokens: 0,
+                cache_write_tokens: response
+                    .usage
+                    .prompt_tokens_details
+                    .as_ref()
+                    .and_then(|d| d.cache_creation_tokens)
+                    .map(u64::from)
+                    .unwrap_or(0),
                 cost_usd: cost,
             },
         );

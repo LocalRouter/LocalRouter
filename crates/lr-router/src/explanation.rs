@@ -40,6 +40,8 @@ pub struct RouteExplanation {
 }
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct RoutingExplanation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<Value>,
     pub policy_fingerprint: String,
     pub config_fingerprint: String,
     pub active_route: Option<String>,
@@ -70,6 +72,12 @@ pub fn fingerprint(value: Value) -> String {
         Sha256::digest(canonical(value).to_string().as_bytes())
     )
 }
+
+type AutoModelSelection = (
+    Vec<(String, String)>,
+    Vec<CandidateExplanation>,
+    Option<crate::session_routing::SessionHandle>,
+);
 
 impl Router {
     /// Same cached endpoint rules as execution, without writing negative entries.
@@ -504,14 +512,149 @@ impl Router {
         }
         candidates
     }
+    /// Apply only a cached session preference; never create/reset a live session.
+    pub fn apply_session_preview(
+        &self,
+        client_id: &str,
+        strategy: &Strategy,
+        request: &CompletionRequest,
+        endpoint: EndpointType,
+        explanation: &mut RoutingExplanation,
+    ) -> lr_types::AppResult<()> {
+        let mut session = self.preview_session(client_id, strategy, request, endpoint)?;
+        let pin = session
+            .as_ref()
+            .and_then(|s| s.get("pin"))
+            .filter(|pin| pin["eligible"] == true)
+            .and_then(|pin| {
+                Some((
+                    pin["provider"].as_str()?.to_string(),
+                    pin["model"].as_str()?.to_string(),
+                    pin["route"].as_str()?.to_string(),
+                ))
+            });
+        let bound = lr_providers::session::SessionOptions::from_request(request)?
+            .is_some_and(|o| o.require_continuity);
+        let pinned_route_name = pin.as_ref().map(|(_, _, route)| route.clone());
+        if let Some((provider, model, pinned_route)) = pin {
+            let policy = strategy
+                .auto_config
+                .as_ref()
+                .and_then(|a| a.routing_policy.as_ref())
+                .cloned()
+                .unwrap_or_default();
+            let baseline = strategy
+                .auto_config
+                .as_ref()
+                .map(|a| a.prioritized_models.as_slice())
+                .unwrap_or_default();
+            if explanation
+                .active_route
+                .as_ref()
+                .is_some_and(|route| route != &pinned_route)
+            {
+                if let Some(session) = session.as_mut() {
+                    session["status"] = json!("route_would_change");
+                }
+            }
+            for route in &mut explanation.routes {
+                if route.route != pinned_route {
+                    continue;
+                }
+                let groups: Vec<_> = if policy.enabled {
+                    [route.route.as_str(), policy.default_route.as_str()]
+                        .into_iter()
+                        .filter_map(|id| policy.options.iter().find(|o| o.id == id))
+                        .map(|o| {
+                            if o.models.is_empty() {
+                                baseline
+                            } else {
+                                o.models.as_slice()
+                            }
+                        })
+                        .chain(std::iter::once(baseline))
+                        .collect()
+                } else {
+                    vec![baseline]
+                };
+                let group = |p: &str, m: &str| {
+                    groups
+                        .iter()
+                        .position(|g| g.iter().any(|(gp, gm)| gp == p && gm == m))
+                        .unwrap_or(groups.len())
+                };
+                let Some(index) = route
+                    .candidates
+                    .iter()
+                    .position(|c| c.provider == provider && c.model == model)
+                else {
+                    continue;
+                };
+                let pin_group = group(&provider, &model);
+                let unsupported_gateway = self
+                    .provider_registry
+                    .get_provider(&provider)
+                    .is_some_and(|p| p.supports_gateway_options());
+                if bound
+                    && (unsupported_gateway
+                        || route
+                            .candidates
+                            .iter()
+                            .any(|c| c.eligible && group(&c.provider, &c.model) < pin_group))
+                {
+                    explanation.no_route = true;
+                    if let Some(session) = session.as_mut() {
+                        session["continuity_status"] =
+                            json!("reset_required_or_unsupported_gateway");
+                    }
+                    continue;
+                }
+                if bound {
+                    route
+                        .candidates
+                        .retain(|c| c.provider == provider && c.model == model);
+                } else {
+                    let first = route
+                        .candidates
+                        .iter()
+                        .position(|c| group(&c.provider, &c.model) == pin_group)
+                        .unwrap_or(index);
+                    let candidate = route.candidates.remove(index);
+                    route.candidates.insert(first, candidate);
+                }
+                for (index, candidate) in route.candidates.iter_mut().enumerate() {
+                    candidate.execution_priority = index;
+                }
+            }
+        }
+        if bound {
+            explanation.classifier_required = false;
+            if let Some(route) = pinned_route_name.filter(|route| {
+                !explanation.no_route && explanation.routes.iter().any(|r| &r.route == route)
+            }) {
+                explanation
+                    .routes
+                    .retain(|candidate| candidate.route == route);
+                explanation.active_route = Some(route);
+                explanation.reason = "provider_bound_session".into();
+            } else {
+                explanation.no_route = true;
+                explanation.reason = "session_reset_required".into();
+            }
+        }
+        explanation.session = session;
+        Ok(())
+    }
+
     pub(crate) fn order_auto_models(
         &self,
+        client_id: &str,
         strategy: &Strategy,
         request: &CompletionRequest,
         models: &[(String, String)],
         decision: Option<&PreComputedRouting>,
         endpoint: EndpointType,
-    ) -> (Vec<(String, String)>, Vec<CandidateExplanation>) {
+    ) -> lr_types::AppResult<AutoModelSelection> {
         let policy = strategy
             .auto_config
             .as_ref()
@@ -521,12 +664,65 @@ impl Router {
         let route = decision
             .map(|decision| decision.route.as_str())
             .unwrap_or("baseline");
-        let reports = self.ranked_candidates(strategy, &policy, route, models, request, endpoint);
-        let models = reports
+        let mut reports =
+            self.ranked_candidates(strategy, &policy, route, models, request, endpoint);
+        let mut models: Vec<(String, String)> = reports
             .iter()
             .map(|candidate| (candidate.provider.clone(), candidate.model.clone()))
             .collect();
-        (models, reports)
+        let handle = self.session_handle(client_id, strategy, request, endpoint, route)?;
+        if let Some(handle) = &handle {
+            let baseline = strategy
+                .auto_config
+                .as_ref()
+                .map(|a| a.prioritized_models.as_slice())
+                .unwrap_or_default();
+            let groups: Vec<&[(String, String)]> = if policy.enabled {
+                [route, policy.default_route.as_str()]
+                    .into_iter()
+                    .filter_map(|id| policy.options.iter().find(|o| o.id == id))
+                    .map(|o| {
+                        if o.models.is_empty() {
+                            baseline
+                        } else {
+                            o.models.as_slice()
+                        }
+                    })
+                    .chain(std::iter::once(baseline))
+                    .collect()
+            } else {
+                vec![baseline]
+            };
+            handle.prioritize(
+                &mut models,
+                |p, m| {
+                    reports
+                        .iter()
+                        .any(|r| r.provider == p && r.model == m && r.eligible)
+                },
+                |p, m| {
+                    groups
+                        .iter()
+                        .position(|g| g.iter().any(|(gp, gm)| gp == p && gm == m))
+                        .unwrap_or(groups.len())
+                },
+            )?;
+            reports.retain(|r| {
+                models
+                    .iter()
+                    .any(|(p, m)| p == &r.provider && m == &r.model)
+            });
+            reports.sort_by_key(|r| {
+                models
+                    .iter()
+                    .position(|(p, m)| p == &r.provider && m == &r.model)
+                    .unwrap_or(usize::MAX)
+            });
+            for (index, report) in reports.iter_mut().enumerate() {
+                report.execution_priority = index;
+            }
+        }
+        Ok((models, reports, handle))
     }
 
     pub(crate) fn attach_routing_explanation(
@@ -648,9 +844,10 @@ impl Router {
             .iter()
             .all(|route| route.candidates.iter().all(|candidate| !candidate.eligible));
         RoutingExplanation {
+            session: None,
             policy_fingerprint: fingerprint(json!(policy)),
             config_fingerprint: fingerprint(
-                json!({"provider_revision":self.provider_registry.routing_revision(),"adaptive":strategy.auto_config.as_ref().map(|auto| &auto.adaptive_routing),"policy":policy,"permissions":strategy.model_permissions,"free_tier_only":strategy.free_tier_only,"limits":strategy.rate_limits,"routes":projection}),
+                json!({"provider_revision":self.provider_registry.routing_revision(),"adaptive":strategy.auto_config.as_ref().map(|auto| &auto.adaptive_routing),"session_routing":strategy.auto_config.as_ref().map(|auto| &auto.session_routing),"policy":policy,"permissions":strategy.model_permissions,"free_tier_only":strategy.free_tier_only,"limits":strategy.rate_limits,"routes":projection}),
             ),
             active_route: policy
                 .enabled

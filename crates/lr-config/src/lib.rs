@@ -414,3 +414,6 @@ impl ConfigManager {
         })
     }
 }
+
+mod session_routing;
+pub use session_routing::SessionRoutingConfig;

@@ -1,8 +1,7 @@
 //! Prompt Caching feature adapter
 //!
 //! This adapter enables prompt caching to reduce costs for repeated context.
-//! Anthropic charges 90% less for cached tokens (5-minute TTL) and 50% less
-//! for cache hits within 1 hour.
+//! Read/write rates and retention depend on the selected provider and model.
 //!
 //! Supported providers:
 //! - Anthropic: Native support via cache_control in messages
@@ -26,10 +25,8 @@
 //! }
 //! ```
 //!
-//! Cost Savings:
-//! - Cache creation: Same cost as regular input tokens
-//! - Cache hits (< 5 min): 90% discount (0.1x cost)
-//! - Cache hits (< 1 hour): 50% discount (0.5x cost)
+//! Savings are calculated from current model pricing in localrouter.prompt_cache.
+//! Unknown rates remain unknown; cache writes may add a premium.
 
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -101,30 +98,6 @@ impl PromptCachingAdapter {
         }
 
         breakpoints
-    }
-
-    /// Calculate cache savings percentage
-    fn calculate_cache_savings(
-        cache_creation_tokens: u32,
-        cache_read_tokens: u32,
-        regular_input_tokens: u32,
-    ) -> f64 {
-        let total_input = cache_creation_tokens + cache_read_tokens + regular_input_tokens;
-        if total_input == 0 {
-            return 0.0;
-        }
-
-        // Cache creation: 1x cost (no savings)
-        // Cache read: 0.1x cost (90% savings)
-        // Regular: 1x cost (no savings)
-
-        let full_cost = total_input as f64;
-        let cached_cost = (cache_creation_tokens as f64)
-            + (cache_read_tokens as f64 * 0.1)
-            + (regular_input_tokens as f64);
-
-        let savings = (full_cost - cached_cost) / full_cost * 100.0;
-        savings.clamp(0.0, 100.0)
     }
 
     /// Extract cache metrics from response extensions
@@ -234,13 +207,6 @@ impl FeatureAdapter for PromptCachingAdapter {
             None => return Ok(None),
         };
 
-        // Update TokenUsage with cache details
-        let cache_savings = Self::calculate_cache_savings(
-            metrics.cache_creation_input_tokens,
-            metrics.cache_read_input_tokens,
-            metrics.input_tokens,
-        );
-
         // Add cache details to TokenUsage
         if response.usage.prompt_tokens_details.is_none() {
             response.usage.prompt_tokens_details = Some(crate::PromptTokensDetails {
@@ -257,7 +223,8 @@ impl FeatureAdapter for PromptCachingAdapter {
                 "cache_creation_input_tokens": metrics.cache_creation_input_tokens,
                 "cache_read_input_tokens": metrics.cache_read_input_tokens,
                 "input_tokens": metrics.input_tokens,
-                "cache_savings_percent": format!("{:.1}%", cache_savings),
+                "cache_savings_percent": null,
+                "savings_source": "requires_provider_pricing",
                 "cache_hit": metrics.cache_read_input_tokens > 0,
             }),
         )))
@@ -271,7 +238,7 @@ impl FeatureAdapter for PromptCachingAdapter {
 
     fn help_text(&self) -> &str {
         "Enable prompt caching to reduce costs for repeated context. \
-         Anthropic charges 90% less for cached tokens (5-minute TTL). \
+         Read and write prices depend on the selected provider/model. \
          Automatically determines optimal cache breakpoints. \
          Supported by Anthropic Claude 3+ models."
     }
@@ -446,27 +413,6 @@ mod tests {
         // Should cache system message (0) and second-to-last message (2)
         assert!(breakpoints.contains(&0));
         assert!(breakpoints.contains(&2));
-    }
-
-    #[test]
-    fn test_calculate_cache_savings_full_cache_hit() {
-        // All tokens from cache
-        let savings = PromptCachingAdapter::calculate_cache_savings(0, 1000, 0);
-        assert!((savings - 90.0).abs() < 0.1); // ~90% savings
-    }
-
-    #[test]
-    fn test_calculate_cache_savings_cache_creation() {
-        // All tokens are cache creation (first time)
-        let savings = PromptCachingAdapter::calculate_cache_savings(1000, 0, 0);
-        assert!((savings - 0.0).abs() < 0.1); // 0% savings on creation
-    }
-
-    #[test]
-    fn test_calculate_cache_savings_mixed() {
-        // 500 cached, 500 regular
-        let savings = PromptCachingAdapter::calculate_cache_savings(0, 500, 500);
-        assert!((savings - 45.0).abs() < 1.0); // ~45% savings
     }
 
     #[test]

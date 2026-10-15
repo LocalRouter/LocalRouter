@@ -5,7 +5,7 @@
 - [x] P1 Advanced gateway options: typed configuration/request options, policy intersection, upstream attribution/costs and UI.
 - [x] P1 Routing explanation and dry-run preview.
 - [x] P1 Adaptive ordering and bounded attempts/deadlines.
-- [ ] P1 Session affinity, classifier reuse and prompt-cache accounting.
+- [x] P1 Session affinity, classifier reuse and prompt-cache accounting.
 - [ ] P1 Local replay and model/policy evaluation (promoted by user).
 - [ ] P2 Opt-in exact response cache.
 - [ ] P2 Native Anthropic Messages ingress.
@@ -108,3 +108,9 @@ Next implementation plan saved before code: plan/2026-10-14-ADAPTIVE_ROUTING_BOU
 Implemented opt-in cost/TTFT/throughput/load ordering with bounded passive samples, minimum observations, deterministic cold starts and preserved route groups. Attempts count actual dispatches, including translated decisions; total deadlines cover classification, preflight and streams. MCP tool turns share one deadline and dispatch/cost counter, pin their selected model before tool execution and stop expired tool workers. Provider Retry-After and typed infrastructure errors survive native and compatible transports. Preview/monitor show scores, attempts and partial known/unknown costs. Configuration, UI, TypeScript and demo contracts are synchronized.
 
 Plan Review, Test Coverage Review and Bug Hunt caught and fixed buffered chunks bypassing expiry, independent MCP step budgets, lost completed accounting on cancellation and oversized async-wrapper futures. Stable 1.99.0 validation with pinned compiler PATH/RUSTC passed: workspace Clippy/fmt, 4,215 tests passed/69 ignored across 107 suites, all 26 live HTTP fixtures, 62 frontend unit tests, app/website types and both production builds. Details: plan/2026-10-14-ADAPTIVE_ROUTING_BOUNDS.md. All later slices remain pending.
+
+## P1 session affinity and prompt-cache review
+
+Implemented opt-in bounded client/policy/endpoint session state, route-group affinity with fresh eligibility, exact bounded-context classifier reuse, explicit reset/reclassification with stale-result protection, and strict continuation checks before paid classification. Raw session IDs remain local; verified OpenAI Chat/Responses and LLM Gateway chat surfaces receive optional private cache keys. Read-only preview, Tauri client scope, settings, demo and monitor are synchronized. Prompt read/write accounting uses reported tokens and known model rates, with unknown estimates and write premiums preserved; fixed percentage claims were removed. Native/compatible usage detail loss and missing ledger cache-write counts were corrected.
+
+Plan Review, Test Coverage Review and Bug Hunt are complete. Final stable 1.99.0 validation with pinned compiler paths: workspace Clippy/fmt; 4,228 tests passed, 69 ignored across 107 suites; 27 live gateway/routing HTTP fixtures; frontend 62 unit tests, app/website types and both production builds. Details: plan/2026-10-14-SESSION_AFFINITY_CACHE_ACCOUNTING.md. Local replay is next at P1; later slices remain pending.

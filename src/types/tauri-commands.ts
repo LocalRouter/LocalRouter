@@ -365,6 +365,7 @@ export interface RoutingCandidateExplanation {
 }
 /** Rust: lr-router/src/explanation.rs */
 export interface RoutingExplanation {
+  session?: Record<string, unknown> | null
   policy_fingerprint: string
   config_fingerprint: string
   active_route: string | null
@@ -404,6 +405,13 @@ export interface ObservedPerformance {
   throughput_samples: number
   retry_after_ms: number | null
 }
+/** Rust: lr-config/src/session_routing.rs */
+export interface SessionRoutingConfig {
+  enabled: boolean
+  classifier_reuse: boolean
+  forward_cache_key: boolean
+  ttl_secs: number
+}
 export interface AutoModelConfig {
   permission: PermissionState
   model_name: string
@@ -411,6 +419,7 @@ export interface AutoModelConfig {
   available_models: [string, string][]
   routing_policy?: RoutingPolicy | null
   adaptive_routing?: AdaptiveRoutingConfig
+  session_routing?: SessionRoutingConfig
 }
 
 /**
@@ -3100,6 +3109,7 @@ export interface CancelInlineOAuthFlowParams {
 
 /** Params for preview_routing_policy. Rust: commands_decision_routing.rs */
 export interface PreviewRoutingPolicyParams {
+  clientId?: string | null
   strategyId: string
   policy: RoutingPolicy
   prompt: string
@@ -4932,6 +4942,8 @@ export interface RoutingAttempt {
 
 /** Rust: crates/lr-monitor/src/types.rs - AutoRoutingInfo */
 export interface AutoRoutingInfo {
+  session?: Record<string, unknown> | null
+  scope?: string | null
   attempt_costs?: { reported_usd: number | null; estimated_usd: number | null; unknown_calls: number } | null
   inference_dispatches?: number | null
   failed_call_costs?: string | null

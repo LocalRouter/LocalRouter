@@ -456,6 +456,8 @@ struct ChatGptModelEntry {
 
 #[derive(Debug, Serialize)]
 struct OpenAIChatRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_cache_key: Option<String>,
     model: String,
     messages: Vec<ChatMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -526,12 +528,7 @@ struct OpenAIChoice {
     logprobs: Option<super::Logprobs>,
 }
 
-#[derive(Debug, Deserialize)]
-struct OpenAIUsage {
-    prompt_tokens: u32,
-    completion_tokens: u32,
-    total_tokens: u32,
-}
+type OpenAIUsage = TokenUsage;
 
 #[derive(Debug, Deserialize)]
 struct OpenAIStreamChunk {
@@ -712,6 +709,9 @@ impl ModelProvider for OpenAIProvider {
         })
     }
 
+    fn supports_prompt_cache_key(&self) -> bool {
+        true
+    }
     fn name(&self) -> &str {
         "openai"
     }
@@ -1010,6 +1010,7 @@ impl ModelProvider for OpenAIProvider {
         }
 
         let openai_request = OpenAIChatRequest {
+            prompt_cache_key: crate::session::cache_key(&request),
             model: request.model.clone(),
             messages: request.messages.clone(),
             temperature: request.temperature,
@@ -1072,13 +1073,7 @@ impl ModelProvider for OpenAIProvider {
                     logprobs: choice.logprobs,
                 })
                 .collect(),
-            usage: TokenUsage {
-                prompt_tokens: openai_response.usage.prompt_tokens,
-                completion_tokens: openai_response.usage.completion_tokens,
-                total_tokens: openai_response.usage.total_tokens,
-                prompt_tokens_details: None,
-                completion_tokens_details: None,
-            },
+            usage: openai_response.usage,
             system_fingerprint: openai_response.system_fingerprint,
             service_tier: openai_response.service_tier,
             extensions: None,
@@ -1131,6 +1126,7 @@ impl ModelProvider for OpenAIProvider {
         }
 
         let openai_request = OpenAIChatRequest {
+            prompt_cache_key: crate::session::cache_key(&request),
             model: request.model.clone(),
             messages: request.messages.clone(),
             temperature: request.temperature,

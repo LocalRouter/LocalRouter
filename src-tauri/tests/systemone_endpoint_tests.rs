@@ -875,6 +875,8 @@ async fn decisions_translates_text_to_legacy_and_rejects_images() {
         "GatewayRoutingAttempt",
         "RoutingExplanation",
         "CandidateExplanation",
+        "SessionOptions",
+        "PromptCacheAccounting",
     ] {
         assert!(spec["components"]["schemas"][schema].is_object());
     }
@@ -1545,4 +1547,170 @@ async fn streaming_total_deadline_preserves_errors_on_all_surfaces_without_resta
     }
     assert_eq!(primary_calls.load(Ordering::SeqCst), 3);
     assert_eq!(fallback_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn session_headers_pin_allowed_models_and_keep_cache_keys_private() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let first = MockServer::start().await;
+    let second = MockServer::start().await;
+    for server in [&first, &second] {
+        Mock::given(method("GET"))
+            .and(path("/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data":[{"id":"test"}]})))
+            .mount(server)
+            .await;
+    }
+    let reply = json!({"id":"reply","object":"chat.completion","created":1,"model":"test","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4,"prompt_tokens_details":{"cached_tokens":1,"cache_creation_tokens":1},"cost":0.02}});
+    let calls = Arc::new(AtomicUsize::new(0));
+    let upstream_calls = calls.clone();
+    let first_reply = reply.clone();
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(move |_: &Request| {
+            if upstream_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                ResponseTemplate::new(500)
+            } else {
+                ResponseTemplate::new(200).set_body_json(first_reply.clone())
+            }
+        })
+        .expect(3)
+        .mount(&first)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(reply))
+        .expect(2)
+        .mount(&second)
+        .await;
+    let (base, token) = start_configured_server(
+        vec![
+            (
+                "first",
+                "llmgateway",
+                vec![("base_url", first.uri()), ("api_key", "key".into())],
+            ),
+            (
+                "second",
+                "llmgateway",
+                vec![("base_url", second.uri()), ("api_key", "key".into())],
+            ),
+        ],
+        |config| {
+            let auto = config.strategies[0].auto_config.as_mut().unwrap();
+            auto.prioritized_models = vec![
+                ("first".into(), "test".into()),
+                ("second".into(), "test".into()),
+            ];
+            auto.session_routing.enabled = true;
+            auto.session_routing.forward_cache_key = true;
+        },
+        true,
+    )
+    .await;
+    let body = json!({"model":"localrouter/auto","messages":[{"role":"user","content":"hello"}]});
+    let response = reqwest::Client::new()
+        .post(format!("{base}/v1/chat/completions"))
+        .bearer_auth(&token)
+        .header("x-session-id", "session-a")
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let value: Value = response.json().await.unwrap();
+    assert_eq!(
+        value["extensions"]["localrouter.routing"]["attempts"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()["provider"],
+        "second"
+    );
+    assert_eq!(
+        value["extensions"]["localrouter.prompt_cache"]["read_tokens"],
+        1
+    );
+    assert_eq!(
+        value["extensions"]["localrouter.prompt_cache"]["write_tokens"],
+        1
+    );
+    let mut same = body.clone();
+    same["extensions"] = json!({"localrouter.session":{"id":"session-a"}});
+    let value: Value = post(&base, "/v1/chat/completions", &token, &same)
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        value["extensions"]["localrouter.routing"]["attempts"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()["provider"],
+        "second"
+    );
+    assert_eq!(
+        value["extensions"]["localrouter.routing"]["session"]["status"],
+        "hit"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let mut independent = same.clone();
+    independent["extensions"]["localrouter.session"]["id"] = json!("session-b");
+    let value: Value = post(&base, "/v1/chat/completions", &token, &independent)
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        value["extensions"]["localrouter.routing"]["attempts"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()["provider"],
+        "first"
+    );
+    same["extensions"]["localrouter.session"]["reset"] = json!(true);
+    let value: Value = post(&base, "/v1/chat/completions", &token, &same)
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        value["extensions"]["localrouter.routing"]["attempts"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()["provider"],
+        "first"
+    );
+    let mut bound = body;
+    bound["extensions"] =
+        json!({"localrouter.session":{"id":"session-a","require_continuity":true}});
+    assert_eq!(
+        post(&base, "/v1/chat/completions", &token, &bound)
+            .await
+            .status(),
+        400
+    );
+    let mut keys = Vec::new();
+    for server in [&first, &second] {
+        for request in server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.method.as_str() == "POST")
+        {
+            let wire: Value = serde_json::from_slice(&request.body).unwrap();
+            assert!(!wire.to_string().contains("session-a"));
+            assert!(!wire.to_string().contains("session-b"));
+            let key = wire["prompt_cache_key"].as_str().unwrap();
+            assert_eq!(key.len(), 64);
+            keys.push(key.to_string());
+        }
+    }
+    assert!(keys.iter().any(|key| key != &keys[0]));
+    first.verify().await;
+    second.verify().await;
 }

@@ -424,6 +424,7 @@ async fn run_agentic_loop_inner(
         if request.model == "localrouter/auto" {
             request.model = format!("{}/{}", response.provider, response.model);
             request.pre_computed_routing = None;
+            lr_providers::session::consume_turn_controls(&mut request);
         }
 
         // Complete the per-iteration LlmCall event with response data

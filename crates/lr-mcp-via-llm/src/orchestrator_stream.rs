@@ -507,6 +507,7 @@ async fn streaming_loop(
             if let Some(model) = &resolved_model {
                 request.model = model.clone();
                 request.pre_computed_routing = None;
+                lr_providers::session::consume_turn_controls(&mut request);
             }
         }
         let tool_calls = if accumulated_tool_calls.is_empty() {
