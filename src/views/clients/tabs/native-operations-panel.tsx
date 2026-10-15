@@ -65,8 +65,9 @@ export function NativeOperationsPanel({
       <CardHeader>
         <CardTitle>Native provider operations</CardTitle>
         <CardDescription>
-          Allow explicit provider operations over supplied content. Existing
-          model permissions still apply; provider fees may apply.
+          Allow this client to extract text from documents (OCR), rank documents
+          by relevance, generate video, or open live text/audio sessions.
+          A supported provider is required, and provider fees may apply.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">

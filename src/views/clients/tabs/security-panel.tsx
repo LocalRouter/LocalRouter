@@ -118,8 +118,8 @@ export function ClientSecurityPanel({
       <CardHeader>
         <CardTitle>Credential lifetime and review</CardTitle>
         <CardDescription>
-          Expiry blocks new authenticated access. Idle review is advisory and
-          does not automatically revoke a key.
+          Set when this client's credentials expire and review when they were
+          last used. Idle review alone does not revoke access.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">

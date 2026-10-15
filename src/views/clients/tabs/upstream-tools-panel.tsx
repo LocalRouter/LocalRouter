@@ -76,8 +76,9 @@ export function UpstreamToolsPanel({
       <CardHeader>
         <CardTitle>Provider search and web fetch</CardTitle>
         <CardDescription>
-          Allow retrieval executed by an upstream provider. Existing model
-          permissions still apply.
+          Allow this client to ask supported providers to search the web or
+          retrieve web pages. Queries and URLs are sent to the provider, and
+          provider fees may apply.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">

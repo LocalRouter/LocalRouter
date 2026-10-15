@@ -76,8 +76,9 @@ export function ClientPrivacyPanel({
       <CardHeader>
         <CardTitle>Privacy profile</CardTitle>
         <CardDescription>
-          Route requirements use configured evidence. Current permissions and
-          endpoint support also apply.
+          Restrict requests to local providers or providers with reviewed
+          no-retention evidence, and choose whether new monitor records include
+          request and response content.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">

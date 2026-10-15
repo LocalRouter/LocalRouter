@@ -164,10 +164,6 @@ export function ClientSettingsTab({ client, onUpdate, onDelete }: SettingsTabPro
 
   return (
     <div className="space-y-6">
-      <ClientSecurityPanel clientId={client.id} enabled={client.enabled} onUpdate={onUpdate} />
-      <ClientPrivacyPanel key={client.id} clientId={client.id} onUpdate={onUpdate} />
-      <UpstreamToolsPanel key={`tools-${client.id}`} clientId={client.id} onUpdate={onUpdate} />
-      <NativeOperationsPanel key={`operations-${client.id}`} clientId={client.id} onUpdate={onUpdate} />
       {/* Client Name */}
       <Card>
         <CardHeader>
@@ -286,6 +282,11 @@ export function ClientSettingsTab({ client, onUpdate, onDelete }: SettingsTabPro
           </div>
         </CardContent>
       </Card>
+
+      <ClientSecurityPanel clientId={client.id} enabled={client.enabled} onUpdate={onUpdate} />
+      <ClientPrivacyPanel key={client.id} clientId={client.id} onUpdate={onUpdate} />
+      <UpstreamToolsPanel key={`tools-${client.id}`} clientId={client.id} onUpdate={onUpdate} />
+      <NativeOperationsPanel key={`operations-${client.id}`} clientId={client.id} onUpdate={onUpdate} />
 
       <AlertDialog open={showRotateDialog} onOpenChange={setShowRotateDialog}>
         <AlertDialogContent>

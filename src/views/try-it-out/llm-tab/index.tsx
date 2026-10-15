@@ -51,32 +51,19 @@ import type {
   GetApiPathSupportParams,
   GetProviderFeatureSupportParams,
   ProviderFeatureSupport,
-  SupportLevel,
+  NativeOperation,
+  UpstreamToolsPolicy,
+  GetClientNativeOperationsParams,
+  GetClientUpstreamToolsParams,
 } from "@/types/tauri-commands"
 
-/** Sections in display order; the first available one opens by default. */
-const SECTION_ORDER = ["chat", "messages", "decisions", "systemone", "images", "search", "documents", "ocr", "rerank", "videos", "realtime", "embeddings", "speech", "transcribe"] as const
-type Section = (typeof SECTION_ORDER)[number]
+import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger, DropdownMenuRadioGroup, DropdownMenuRadioItem } from "@/components/ui/dropdown-menu"
+import { modelProviders, visibleTryItOutSections, sectionNavigation, type ProviderSupport, type TryItOutSection } from "@/utils/try-it-out-sections"
 
-/** The endpoint each non-chat section calls. */
-const SECTION_ENDPOINTS: Record<Exclude<Section, "chat">, string> = {
-  messages: "/v1/messages",
-  systemone: "/v1/systemone",
-  decisions: "/v1/decisions",
-  images: "/v1/images/generations",
-  embeddings: "/v1/embeddings",
-  search: "/v1/search",
-  documents: "/v1/chat/completions",
-  ocr: "/v1/ocr",
-  rerank: "/v1/rerank",
-  videos: "/v1/videos",
-  realtime: "/v1/realtime",
-  speech: "/v1/audio/speech",
-  transcribe: "/v1/audio/transcriptions",
+const SECTION_ICONS: Partial<Record<TryItOutSection, typeof MessageSquare>> = {
+  chat: MessageSquare, messages: MessageSquare, decisions: Scale, systemone: Scale,
+  images: ImageIcon, embeddings: Hash, speech: Volume2, transcribe: Mic, search: Search,
 }
-
-const isAvailable = (level: SupportLevel | undefined) =>
-  level !== "not_supported" && level !== "not_implemented"
 
 interface ServerConfig {
   host: string
@@ -530,16 +517,23 @@ export function LlmTab({ initialReplay, initialMode, initialProvider, initialCli
     })
   }, [getAuthToken, serverPort, baseUrlOverride])
 
+  const modelScope = JSON.stringify([mode, selectedClientId, selectedProvider, baseUrlOverride])
+  const [loadedModelScope, setLoadedModelScope] = useState("")
+  const modelRequest = useRef(0)
+
   // Fetch models using OpenAI SDK
   const fetchModels = useCallback(async () => {
     if (!openaiClient) return
 
+    const request = ++modelRequest.current
     setLoadingModels(true)
     setModelLoadError(null)
     try {
       const response = await openaiClient.models.list()
+      if (request !== modelRequest.current) return
       const modelsList = response.data || []
       setModels(modelsList.map(m => ({ id: m.id, object: m.object, owned_by: m.owned_by })))
+      setLoadedModelScope(modelScope)
 
       // Auto-select first model if none selected or current selection not in new list
       // Use functional update to avoid selectedModel dependency and race conditions
@@ -549,13 +543,15 @@ export function LlmTab({ initialReplay, initialMode, initialProvider, initialCli
         return prev
       })
     } catch (error) {
+      if (request !== modelRequest.current) return
       console.error("Failed to fetch models:", error)
+      setLoadedModelScope("")
       const msg = error instanceof Error ? error.message : String(error)
       setModelLoadError(msg)
     } finally {
-      setLoadingModels(false)
+      if (request === modelRequest.current) setLoadingModels(false)
     }
-  }, [openaiClient])
+  }, [openaiClient, modelScope])
 
   // Fetch models when auth changes
   useEffect(() => {
@@ -563,6 +559,7 @@ export function LlmTab({ initialReplay, initialMode, initialProvider, initialCli
       // For direct mode, filter to provider's models
       const filtered = providerModels.filter(m => m.provider === selectedProvider)
       setModels(filtered.map(m => ({ id: m.id, object: "model", owned_by: m.provider })))
+      setLoadedModelScope(modelScope)
       setSelectedModel(prev => {
         if (filtered.length === 0) return ""
         if (!prev || !filtered.some(m => m.id === prev)) return filtered[0].id
@@ -572,6 +569,7 @@ export function LlmTab({ initialReplay, initialMode, initialProvider, initialCli
     } else if (mode === "all" && serverPort) {
       // For "all" mode, show all provider models in a single combined dropdown
       setModels(providerModels.map(m => ({ id: m.id, object: "model", owned_by: m.provider })))
+      setLoadedModelScope(modelScope)
       setSelectedModel(prev => {
         if (providerModels.length === 0) return ""
         if (!prev || !providerModels.some(m => m.id === prev)) return providerModels[0].id
@@ -581,6 +579,7 @@ export function LlmTab({ initialReplay, initialMode, initialProvider, initialCli
     } else if (openaiClient) {
       fetchModels()
     }
+    return () => { modelRequest.current += 1 }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, selectedProvider, serverPort, providerModels, openaiClient, fetchModels])
 
@@ -594,77 +593,70 @@ export function LlmTab({ initialReplay, initialMode, initialProvider, initialCli
     }
   }, [mode, refreshIncrementalModels, fetchModels])
 
-  // Which sections the provider behind the current selection can serve.
-  // Unknown (client mode without a resolved provider) means all.
-  const availabilityProvider =
-    mode === "direct"
-      ? selectedProvider || null
-      : providerModels.find(m => m.id === selectedModel)?.provider ?? null
-  const [sectionAvailable, setSectionAvailable] = useState<Record<Section, boolean> | null>(null)
-  const [messagesPathSupport, setMessagesPathSupport] = useState<ApiPathSupport | null>(null)
-  // Image edits are a mode of the Images section, not a section of their own.
-  const [imageEditsAvailable, setImageEditsAvailable] = useState<boolean | null>(null)
+  const providerNames = useMemo(() => providers.map(provider => provider.instance_name), [providers])
+  const selectedProviders = loadedModelScope === modelScope ? modelProviders(selectedModel, providerNames, providerModels) : []
+  const availabilityProvider = mode === "direct" ? selectedProvider : selectedProviders.length === 1 ? selectedProviders[0] : undefined
+  const localClient = mode === "client" && !!selectedClientId && !baseUrlOverride
+  // Native panels select their own model. Check every allowed model's provider,
+  // rather than hiding a native operation because the chat selection cannot do it.
+  const candidateNames = (loadedModelScope === modelScope ? models : []).flatMap(model => {
+    const names = modelProviders(model.id, providerNames, providerModels)
+    return names.length ? names : [null]
+  })
+  const supportNames = [...new Set([...candidateNames, availabilityProvider].filter((name): name is string => !!name))].sort()
+  const supportKey = JSON.stringify(supportNames)
+  const [supportSnapshot, setSupportSnapshot] = useState<{ key: string; reports: Record<string, ProviderSupport> } | null>(null)
+  const reports = supportSnapshot?.key === supportKey ? supportSnapshot.reports : {}
+  const selectedSupport = availabilityProvider ? reports[availabilityProvider] : undefined
+  const messagesPathSupport = selectedSupport?.paths ?? null
+  const imageEditsLevel = selectedSupport?.features?.endpoints.find(endpoint => endpoint.endpoint === "/v1/images/edits")?.support
+  const imageEditsAvailable = imageEditsLevel === undefined ? null : imageEditsLevel !== "not_supported" && imageEditsLevel !== "not_implemented"
 
   useEffect(() => {
     let cancelled = false
-    if (!availabilityProvider) {
-      setMessagesPathSupport(null)
-      setSectionAvailable(null)
-      setImageEditsAvailable(null)
-      return
-    }
-    Promise.all([
-      invoke<ApiPathSupport>("get_api_path_support", {
-        instanceName: availabilityProvider,
-      } satisfies GetApiPathSupportParams),
-      invoke<ProviderFeatureSupport>("get_provider_feature_support", {
-        instanceName: availabilityProvider,
-      } satisfies GetProviderFeatureSupportParams),
-    ])
-      .then(([paths, features]) => {
-        if (cancelled) return
-        setMessagesPathSupport(paths)
-        const endpointLevel = (path: string) =>
-          features.endpoints.find(e => e.endpoint === path)?.support
-        const available = {
-          chat:
-            isAvailable(paths.chat_completions) ||
-            isAvailable(paths.responses) ||
-            isAvailable(paths.completions),
-        } as Record<Section, boolean>
-        for (const [section, path] of Object.entries(SECTION_ENDPOINTS)) {
-          available[section as Section] = isAvailable(endpointLevel(path))
-        }
-        available.search = mode === "client" && !baseUrlOverride
-        available.documents = mode === "client" && !baseUrlOverride
-        available.ocr = mode === "client" && !baseUrlOverride
-        available.rerank = mode === "client" && !baseUrlOverride
-        available.realtime = mode === "client" && !baseUrlOverride
-        available.videos = mode === "client" && !baseUrlOverride
-        setSectionAvailable(available)
-        setImageEditsAvailable(isAvailable(endpointLevel("/v1/images/edits")))
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setMessagesPathSupport(null)
-          setSectionAvailable(null)
-          setImageEditsAvailable(null)
-        }
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [availabilityProvider, mode, baseUrlOverride])
+    const names: string[] = JSON.parse(supportKey)
+    void Promise.all(names.map(async instanceName => {
+      const [paths, features] = await Promise.allSettled([
+        invoke<ApiPathSupport>("get_api_path_support", { instanceName } satisfies GetApiPathSupportParams),
+        invoke<ProviderFeatureSupport>("get_provider_feature_support", { instanceName } satisfies GetProviderFeatureSupportParams),
+      ])
+      return [instanceName, {
+        paths: paths.status === "fulfilled" ? paths.value : undefined,
+        features: features.status === "fulfilled" ? features.value : undefined,
+      }] as const
+    })).then(entries => {
+      if (!cancelled) setSupportSnapshot({ key: supportKey, reports: Object.fromEntries(entries) })
+    })
+    return () => { cancelled = true }
+  }, [supportKey])
 
-  // Open the first available section when the current one is not.
+  const [permissionSnapshot, setPermissionSnapshot] = useState<{ clientId: string; nativeOperations?: NativeOperation[]; upstreamTools?: UpstreamToolsPolicy } | null>(null)
   useEffect(() => {
-    if (!sectionAvailable || sectionAvailable[activeSubtab as Section] !== false) return
-    const first = SECTION_ORDER.find(s => sectionAvailable[s])
-    if (first) setActiveSubtab(first)
-  }, [sectionAvailable, activeSubtab])
-
-  const sectionDisabled = (section: Section) => sectionAvailable?.[section] === false
-  const unavailableTitle = "Not available for this provider"
+    if (!localClient) return
+    let cancelled = false
+    void Promise.allSettled([
+      invoke<NativeOperation[]>("get_client_native_operations", { clientId: selectedClientId } satisfies GetClientNativeOperationsParams),
+      invoke<UpstreamToolsPolicy>("get_client_upstream_tools", { clientId: selectedClientId } satisfies GetClientUpstreamToolsParams),
+    ]).then(([operations, tools]) => {
+      if (!cancelled) setPermissionSnapshot({
+        clientId: selectedClientId,
+        nativeOperations: operations.status === "fulfilled" ? operations.value : undefined,
+        upstreamTools: tools.status === "fulfilled" ? tools.value : undefined,
+      })
+    })
+    return () => { cancelled = true }
+  }, [localClient, selectedClientId])
+  const permissions = localClient && permissionSnapshot?.clientId === selectedClientId ? permissionSnapshot : undefined
+  const visibleSections = visibleTryItOutSections({
+    localClient, selected: selectedSupport,
+    candidates: candidateNames.map(name => name ? reports[name] : undefined),
+    nativeOperations: permissions?.nativeOperations, upstreamTools: permissions?.upstreamTools,
+  })
+  const navigation = sectionNavigation(visibleSections, activeSubtab)
+  const availableSection = navigation.selected?.id ?? ""
+  useEffect(() => {
+    if (activeSubtab !== availableSection) setActiveSubtab(availableSection)
+  }, [activeSubtab, availableSection])
 
   const getModeDescription = () => {
     switch (mode) {
@@ -1005,45 +997,28 @@ export function LlmTab({ initialReplay, initialMode, initialProvider, initialCli
         </CardContent>
       </Card>
 
-      {/* Subtabs for Chat, Images, Embeddings */}
-      <Tabs value={activeSubtab} onValueChange={setActiveSubtab} className="flex flex-col flex-1 min-h-0 min-w-0 max-w-full">
-        <TabsList className="h-auto w-full max-w-full flex-wrap justify-start gap-1 shrink-0">
-          <TabsTrigger value="batches">Batches</TabsTrigger>
-          <TabsTrigger value="files" disabled={mode !== "client" || !selectedClientId || !!baseUrlOverride}>Files</TabsTrigger>
-          <TabsTrigger value="replay" disabled={mode !== "client" || !selectedClientId || !!baseUrlOverride}>Replay / Compare</TabsTrigger>
-          <TabsTrigger value="chat" className="flex items-center gap-1" disabled={sectionDisabled("chat")} title={sectionDisabled("chat") ? unavailableTitle : undefined}>
-            <MessageSquare className="h-3 w-3" />
-            Chat
-          </TabsTrigger>
-          <TabsTrigger value="messages" className="flex items-center gap-1" disabled={sectionDisabled("messages")} title={sectionDisabled("messages") ? unavailableTitle : undefined}><MessageSquare className="h-3 w-3" />Messages</TabsTrigger>
-          <TabsTrigger value="decisions" className="flex items-center gap-1" disabled={sectionDisabled("decisions")} title={sectionDisabled("decisions") ? unavailableTitle : undefined}><Scale className="h-3 w-3" />Decisions</TabsTrigger>
-          <TabsTrigger value="systemone" className="flex items-center gap-1" disabled={sectionDisabled("systemone")} title={sectionDisabled("systemone") ? unavailableTitle : undefined}>
-            <Scale className="h-3 w-3" />
-            System One
-          </TabsTrigger>
-          <TabsTrigger value="images" className="flex items-center gap-1" disabled={sectionDisabled("images")} title={sectionDisabled("images") ? unavailableTitle : undefined}>
-            <ImageIcon className="h-3 w-3" />
-            Images
-          </TabsTrigger>
-          <TabsTrigger value="realtime" disabled={mode !== "client" || !!baseUrlOverride}>Realtime</TabsTrigger>
-          <TabsTrigger value="videos" disabled={mode !== "client" || !!baseUrlOverride}>Video</TabsTrigger>
-          <TabsTrigger value="rerank" disabled={mode !== "client" || !!baseUrlOverride}>Rerank</TabsTrigger>
-          <TabsTrigger value="ocr" disabled={mode !== "client" || !!baseUrlOverride}>OCR</TabsTrigger>
-          <TabsTrigger value="documents" disabled={mode !== "client" || !!baseUrlOverride}>Documents</TabsTrigger>
-          <TabsTrigger value="search" className="flex items-center gap-1" disabled={mode !== "client" || !!baseUrlOverride} title="Ranked search uses a client with explicit search permission"><Search className="h-3 w-3" />Search</TabsTrigger>
-          <TabsTrigger value="embeddings" className="flex items-center gap-1" disabled={sectionDisabled("embeddings")} title={sectionDisabled("embeddings") ? unavailableTitle : undefined}>
-            <Hash className="h-3 w-3" />
-            Embeddings
-          </TabsTrigger>
-          <TabsTrigger value="speech" className="flex items-center gap-1" disabled={sectionDisabled("speech")} title={sectionDisabled("speech") ? unavailableTitle : undefined}>
-            <Volume2 className="h-3 w-3" />
-            Speech
-          </TabsTrigger>
-          <TabsTrigger value="transcribe" className="flex items-center gap-1" disabled={sectionDisabled("transcribe")} title={sectionDisabled("transcribe") ? unavailableTitle : undefined}>
-            <Mic className="h-3 w-3" />
-            Transcribe
-          </TabsTrigger>
-        </TabsList>
+      <Tabs value={availableSection} onValueChange={setActiveSubtab} className="flex flex-col flex-1 min-h-0 min-w-0 max-w-full">
+        <div className="flex flex-wrap items-center gap-1 rounded-lg bg-muted p-1 shrink-0" aria-label="Available API panels">
+          <TabsList aria-label="Try It Out panels" className="h-auto max-w-full flex-wrap justify-start gap-1 p-0">
+            {navigation.tabs.map(section => {
+              const Icon = SECTION_ICONS[section.id]
+              return <TabsTrigger key={section.id} value={section.id} className="flex items-center gap-1">
+                {Icon && <Icon className="h-3 w-3" />}{section.label}
+              </TabsTrigger>
+            })}
+          </TabsList>
+          {navigation.more.length > 0 && <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="sm" className="h-7 px-3">More<ChevronDown className="ml-1 h-3 w-3" /></Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="max-h-[min(24rem,var(--radix-dropdown-menu-content-available-height))] overflow-y-auto">
+              <DropdownMenuRadioGroup value={availableSection} onValueChange={setActiveSubtab}>
+                {navigation.more.map(section => <DropdownMenuRadioItem key={section.id} value={section.id}>{section.label}</DropdownMenuRadioItem>)}
+              </DropdownMenuRadioGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>}
+          {visibleSections.length === 0 && <p className="px-2 text-sm text-muted-foreground">No supported panels are available for this selection.</p>}
+        </div>
 
         <TabsContent value="batches" className="mt-4">{mode === "client" && !baseUrlOverride ? <BatchesPanel key={selectedClientId} openaiClient={openaiClient} isReady={!!openaiClient} /> : <p>Select client mode to manage native batches.</p>}</TabsContent>
         <TabsContent value="files" className="mt-4">{mode === "client" && !baseUrlOverride ? <FilesPanel key={selectedClientId} openaiClient={openaiClient} isReady={!!openaiClient} /> : <p>Select client mode to manage local files.</p>}</TabsContent>
