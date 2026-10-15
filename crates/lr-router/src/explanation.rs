@@ -20,6 +20,12 @@ pub struct CandidateExplanation {
     pub retry_after_secs: Option<u64>,
     pub gateway_preferences: Option<GatewayPreferences>,
     pub pricing: Option<PriceEstimate>,
+    pub ordering: String,
+    pub score: Option<f64>,
+    pub estimated_request_cost_usd: Option<f64>,
+    pub estimated_output_tokens: u32,
+    pub execution_priority: usize,
+    pub observed_performance: crate::adaptive::ObservedPerformance,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct PriceEstimate {
@@ -123,6 +129,43 @@ impl Router {
         priority: usize,
         endpoint: EndpointType,
     ) -> CandidateExplanation {
+        let input_tokens = lr_providers::usage_estimate::prompt_tokens(
+            &request.messages,
+            request.tools.as_deref(),
+        );
+        self.assess_candidate_with_input_tokens(
+            strategy,
+            provider,
+            model,
+            request,
+            priority,
+            endpoint,
+            input_tokens,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn assess_candidate_with_input_tokens(
+        &self,
+        strategy: &Strategy,
+        provider: &str,
+        model: &str,
+        request: &CompletionRequest,
+        priority: usize,
+        endpoint: EndpointType,
+        input_tokens: u64,
+    ) -> CandidateExplanation {
+        let adaptive = strategy
+            .auto_config
+            .as_ref()
+            .map(|auto| auto.adaptive_routing.clone())
+            .unwrap_or_default();
+        let observed = self.adaptive_measurements.snapshot(
+            provider,
+            model,
+            endpoint,
+            &adaptive,
+            self.provider_registry.routing_revision(),
+        );
         let mut result = CandidateExplanation {
             provider: provider.into(),
             model: model.into(),
@@ -133,6 +176,16 @@ impl Router {
             retry_after_secs: None,
             gateway_preferences: None,
             pricing: None,
+            ordering: serde_json::to_value(adaptive.ordering)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .into(),
+            score: None,
+            estimated_request_cost_usd: None,
+            estimated_output_tokens: request.max_tokens.unwrap_or(1024),
+            execution_priority: priority,
+            observed_performance: observed,
         };
         if !strategy.is_model_allowed(provider, model) {
             result.exclusions.push("model_not_allowed".into());
@@ -293,11 +346,187 @@ impl Router {
                     && price.input_per_million >= 0.0
                     && price.output_per_million >= 0.0
             });
+        let tier = result
+            .gateway_preferences
+            .as_ref()
+            .and_then(|prefs| prefs.service_tier.as_deref())
+            .or(request.service_tier.as_deref());
+        if tier.is_some_and(|tier| !matches!(tier, "default" | "auto")) {
+            result.pricing = None;
+            result.unknown_checks.push("service_tier_pricing".into());
+        }
+        if let Some(pricing) = &result.pricing {
+            let input = input_tokens;
+            result.estimated_request_cost_usd = Some(
+                (pricing.input_per_million * input as f64
+                    + pricing.output_per_million * result.estimated_output_tokens as f64)
+                    / 1_000_000.0,
+            )
+            .filter(|value| value.is_finite());
+        }
+        if adaptive.infrastructure_cooldown && result.observed_performance.retry_after_ms.is_some()
+        {
+            result.exclusions.push("infrastructure_cooldown".into());
+            result.retry_after_secs = result
+                .observed_performance
+                .retry_after_ms
+                .map(|ms| ms.div_ceil(1000));
+        }
         if result.pricing.is_none() {
             result.unknown_checks.push("pricing".into());
         }
         result.eligible = result.exclusions.is_empty();
+        if result.eligible {
+            result.score = crate::adaptive::ordering_score(
+                adaptive.ordering,
+                &result.observed_performance,
+                result.estimated_request_cost_usd,
+                priority,
+            );
+        }
         result
+    }
+
+    pub(crate) fn deadline_routing_error(
+        &self,
+        strategy: &Strategy,
+        request: &CompletionRequest,
+        endpoint: EndpointType,
+        reason: &str,
+    ) -> lr_types::AppError {
+        let policy = strategy
+            .auto_config
+            .as_ref()
+            .and_then(|auto| auto.routing_policy.as_ref())
+            .cloned()
+            .unwrap_or_default();
+        let decision = self.deterministic_routing_decision(strategy, &policy, request);
+        let mut metadata = super::build_routing_metadata(decision.as_ref(), &[], Vec::new(), None);
+        let mut explanation = self.routing_explanation_for_endpoint(
+            strategy,
+            &policy,
+            request,
+            decision.as_ref(),
+            endpoint,
+        );
+        explanation.reason = reason.into();
+        metadata["explanation"] = json!(explanation);
+        metadata["outcome"] = json!(reason);
+        if let Some(actual) = &request.pre_computed_routing {
+            metadata["classifier_latency_ms"] = json!(actual.latency_ms);
+            metadata["classifier_cost_usd"] = json!(actual.classifier_cost_usd);
+            metadata["classifier_cost_estimated"] = json!(actual.classifier_cost_estimated);
+        }
+        lr_types::AppError::RoutingFailure {
+            error: Box::new(lr_types::AppError::RoutingDeadlineExceeded { scope: "total" }),
+            explanation: Box::new(metadata),
+        }
+    }
+
+    pub(crate) fn ranked_candidates(
+        &self,
+        strategy: &Strategy,
+        policy: &RoutingPolicy,
+        route: &str,
+        models: &[(String, String)],
+        request: &CompletionRequest,
+        endpoint: EndpointType,
+    ) -> Vec<CandidateExplanation> {
+        let baseline = strategy
+            .auto_config
+            .as_ref()
+            .map(|auto| auto.prioritized_models.as_slice())
+            .unwrap_or_default();
+        let groups: Vec<&[(String, String)]> = if policy.enabled {
+            [route, policy.default_route.as_str()]
+                .into_iter()
+                .filter_map(|id| policy.options.iter().find(|option| option.id == id))
+                .map(|option| {
+                    if option.models.is_empty() {
+                        baseline
+                    } else {
+                        option.models.as_slice()
+                    }
+                })
+                .chain(std::iter::once(baseline))
+                .collect()
+        } else {
+            vec![baseline]
+        };
+        let group = |candidate: &CandidateExplanation| {
+            groups
+                .iter()
+                .position(|models| {
+                    models.iter().any(|(provider, model)| {
+                        provider == &candidate.provider && model == &candidate.model
+                    })
+                })
+                .unwrap_or(groups.len())
+        };
+        let input_tokens = lr_providers::usage_estimate::prompt_tokens(
+            &request.messages,
+            request.tools.as_deref(),
+        );
+        let mut candidates: Vec<_> = models
+            .iter()
+            .enumerate()
+            .map(|(priority, (provider, model))| {
+                self.assess_candidate_with_input_tokens(
+                    strategy,
+                    provider,
+                    model,
+                    request,
+                    priority,
+                    endpoint,
+                    input_tokens,
+                )
+            })
+            .collect();
+        if strategy.auto_config.as_ref().is_none_or(|auto| {
+            auto.adaptive_routing.ordering == lr_config::CandidateOrdering::Priority
+        }) {
+            return candidates;
+        }
+        candidates.sort_by(|a, b| {
+            group(a)
+                .cmp(&group(b))
+                .then_with(|| b.eligible.cmp(&a.eligible))
+                .then_with(|| match (a.score, b.score) {
+                    (Some(a), Some(b)) => a.total_cmp(&b),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    _ => std::cmp::Ordering::Equal,
+                })
+                .then(a.priority.cmp(&b.priority))
+        });
+        for (execution_priority, candidate) in candidates.iter_mut().enumerate() {
+            candidate.execution_priority = execution_priority;
+        }
+        candidates
+    }
+    pub(crate) fn order_auto_models(
+        &self,
+        strategy: &Strategy,
+        request: &CompletionRequest,
+        models: &[(String, String)],
+        decision: Option<&PreComputedRouting>,
+        endpoint: EndpointType,
+    ) -> (Vec<(String, String)>, Vec<CandidateExplanation>) {
+        let policy = strategy
+            .auto_config
+            .as_ref()
+            .and_then(|auto| auto.routing_policy.as_ref())
+            .cloned()
+            .unwrap_or_default();
+        let route = decision
+            .map(|decision| decision.route.as_str())
+            .unwrap_or("baseline");
+        let reports = self.ranked_candidates(strategy, &policy, route, models, request, endpoint);
+        let models = reports
+            .iter()
+            .map(|candidate| (candidate.provider.clone(), candidate.model.clone()))
+            .collect();
+        (models, reports)
     }
 
     pub(crate) fn attach_routing_explanation(
@@ -315,7 +544,7 @@ impl Router {
             .unwrap_or(&default_policy);
         metadata["explanation"] =
             json!(self.routing_explanation(strategy, policy, request, decision));
-        if let Some(decision) = decision {
+        if let Some(decision) = decision.or(request.pre_computed_routing.as_ref()) {
             metadata["classifier_latency_ms"] = json!(decision.latency_ms);
             metadata["classifier_cost_usd"] = json!(decision.classifier_cost_usd);
             metadata["classifier_cost_estimated"] = json!(decision.classifier_cost_estimated);
@@ -407,28 +636,21 @@ impl Router {
         };
         let routes: Vec<RouteExplanation> = routes
             .into_iter()
-            .map(|(route, models)| RouteExplanation {
-                route,
-                candidates: models
-                    .iter()
-                    .enumerate()
-                    .map(|(priority, (provider, model))| {
-                        self.assess_candidate(
-                            strategy, provider, model, request, priority, endpoint,
-                        )
-                    })
-                    .collect(),
+            .map(|(route, models)| {
+                let candidates =
+                    self.ranked_candidates(strategy, policy, &route, &models, request, endpoint);
+                RouteExplanation { route, candidates }
             })
             .collect();
         // No credentials, prompts, raw headers or transient cooldown data enter this digest.
-        let projection: Vec<Value> = routes.iter().map(|route| json!({"route":route.route,"models":route.candidates.iter().map(|candidate| json!({"provider":candidate.provider,"model":candidate.model,"provider_type":self.provider_registry.get_provider_type_for_instance(&candidate.provider),"provider_enabled":self.provider_registry.is_provider_enabled(&candidate.provider),"gateway_preferences":candidate.gateway_preferences,"capabilities":self.provider_registry.get_model_capabilities(&candidate.provider,&candidate.model),"disabled":self.provider_registry.is_model_disabled(&candidate.provider,&candidate.model)})).collect::<Vec<_>>()})).collect();
+        let projection: Vec<Value> = routes.iter().map(|route| json!({"route":route.route,"models":route.candidates.iter().map(|candidate| json!({"provider":candidate.provider,"model":candidate.model,"provider_type":self.provider_registry.get_provider_type_for_instance(&candidate.provider),"provider_enabled":self.provider_registry.is_provider_enabled(&candidate.provider),"gateway_preferences":candidate.gateway_preferences,"pricing":candidate.pricing,"capabilities":self.provider_registry.get_model_capabilities(&candidate.provider,&candidate.model),"disabled":self.provider_registry.is_model_disabled(&candidate.provider,&candidate.model)})).collect::<Vec<_>>()})).collect();
         let no_route = routes
             .iter()
             .all(|route| route.candidates.iter().all(|candidate| !candidate.eligible));
         RoutingExplanation {
             policy_fingerprint: fingerprint(json!(policy)),
             config_fingerprint: fingerprint(
-                json!({"policy":policy,"permissions":strategy.model_permissions,"free_tier_only":strategy.free_tier_only,"limits":strategy.rate_limits,"routes":projection}),
+                json!({"provider_revision":self.provider_registry.routing_revision(),"adaptive":strategy.auto_config.as_ref().map(|auto| &auto.adaptive_routing),"policy":policy,"permissions":strategy.model_permissions,"free_tier_only":strategy.free_tier_only,"limits":strategy.rate_limits,"routes":projection}),
             ),
             active_route: policy
                 .enabled

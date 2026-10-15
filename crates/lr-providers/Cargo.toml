@@ -8,6 +8,7 @@ repository.workspace = true
 description = "AI model provider implementations for LocalRouter"
 
 [dependencies]
+httpdate = "1"
 lr-types = { workspace = true }
 lr-catalog = { workspace = true }
 lr-utils = { workspace = true }

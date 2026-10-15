@@ -29,6 +29,7 @@ use crate::session::{McpViaLlmSession, PendingMixedExecution};
 /// Extracted from a `Client` so background tasks can call `handle_request_with_skills`.
 #[derive(Clone)]
 pub(crate) struct GatewayPermissions {
+    pub deadline: Option<tokio::time::Instant>,
     pub client_id: String,
     pub session_key: String,
     pub mcp_permissions: lr_config::McpPermissions,
@@ -48,6 +49,7 @@ pub(crate) struct GatewayPermissions {
 impl GatewayPermissions {
     pub fn from_client_and_session(client: &Client, session_key: String) -> Self {
         Self {
+            deadline: lr_router::adaptive::current_turn().and_then(|turn| turn.deadline()),
             client_id: client.id.clone(),
             session_key,
             mcp_permissions: client.mcp_permissions.clone(),
@@ -105,6 +107,58 @@ pub type TransformedRequestCallback =
     Option<Box<dyn FnOnce(serde_json::Value, Vec<String>) + Send>>;
 
 pub async fn run_agentic_loop(
+    gateway: Arc<McpGateway>,
+    router: &Router,
+    client: &Client,
+    session: Arc<RwLock<McpViaLlmSession>>,
+    request: CompletionRequest,
+    config: &McpViaLlmConfig,
+    allowed_servers: Vec<String>,
+    guardrail_gate: Option<crate::manager::GuardrailGate>,
+    initial_usage_entries: Option<Vec<lr_providers::TokenUsage>>,
+    memory_service: Option<Arc<lr_memory::MemoryService>>,
+    on_transformed_request: TransformedRequestCallback,
+    monitor_session_id: Option<String>,
+    monitor_emit: Option<crate::manager::MonitorEmitFn>,
+    monitor_update: Option<crate::manager::MonitorUpdateFn>,
+    llm_call_event_id: Option<String>,
+) -> Result<OrchestratorResult, McpViaLlmError> {
+    let turn = router.auto_turn_budget(&client.id, &request);
+    let fallback = turn
+        .as_ref()
+        .map(|_| turn_fallback_metadata(router, &client.id, &request));
+    let future = Box::pin(run_agentic_loop_inner(
+        gateway,
+        router,
+        client,
+        session,
+        request,
+        config,
+        allowed_servers,
+        guardrail_gate,
+        initial_usage_entries,
+        memory_service,
+        on_transformed_request,
+        monitor_session_id,
+        monitor_emit,
+        monitor_update,
+        llm_call_event_id,
+    ));
+    if let Some(turn) = turn {
+        let mut result = run_with_turn_budget(turn.clone(), fallback.unwrap(), future).await?;
+        match &mut result {
+            OrchestratorResult::Complete(response) => turn.apply_response(response),
+            OrchestratorResult::PendingMixed {
+                client_response, ..
+            } => turn.apply_response(client_response),
+        }
+        Ok(result)
+    } else {
+        future.await
+    }
+}
+
+async fn run_agentic_loop_inner(
     gateway: Arc<McpGateway>,
     router: &Router,
     client: &Client,
@@ -367,6 +421,10 @@ pub async fn run_agentic_loop(
             .complete(&client.id, completion_request)
             .await
             .map_err(McpViaLlmError::from)?;
+        if request.model == "localrouter/auto" {
+            request.model = format!("{}/{}", response.provider, response.model);
+            request.pre_computed_routing = None;
+        }
 
         // Complete the per-iteration LlmCall event with response data
         if !iter_event_id.is_empty() {
@@ -1146,7 +1204,7 @@ pub async fn execute_mcp_tool_background(
         })),
     };
 
-    let timeout = std::time::Duration::from_secs(TOOL_EXECUTION_TIMEOUT_SECS);
+    let timeout = tool_timeout(permissions)?;
     let response = match tokio::time::timeout(
         timeout,
         gateway.handle_request_with_skills(
@@ -1666,4 +1724,120 @@ pub(crate) fn inject_server_instructions(request: &mut CompletionRequest, instru
             reasoning_content: None,
         },
     );
+}
+
+pub(crate) fn turn_fallback_metadata(
+    router: &Router,
+    client_id: &str,
+    request: &CompletionRequest,
+) -> serde_json::Value {
+    match router.turn_deadline_error(client_id, request) {
+        lr_types::AppError::RoutingFailure { explanation, .. }
+        | lr_types::AppError::RoutingExhausted { explanation, .. } => *explanation,
+        _ => serde_json::json!({"candidate_models":[],"attempts":[],"total_attempts":0}),
+    }
+}
+pub(crate) async fn run_with_turn_budget<F, T>(
+    turn: Arc<lr_router::adaptive::TurnBudget>,
+    fallback: serde_json::Value,
+    future: F,
+) -> Result<T, McpViaLlmError>
+where
+    F: std::future::Future<Output = Result<T, McpViaLlmError>>,
+{
+    let deadline = turn.deadline();
+    let result = lr_router::adaptive::within_turn(turn.clone(), async move {
+        if let Some(deadline) = deadline {
+            if tokio::time::Instant::now() >= deadline {
+                return Err(McpViaLlmError::Router(
+                    lr_types::AppError::RoutingDeadlineExceeded { scope: "total" },
+                ));
+            }
+            let result = tokio::time::timeout_at(deadline, future).await;
+            if tokio::time::Instant::now() >= deadline {
+                Err(McpViaLlmError::Router(
+                    lr_types::AppError::RoutingDeadlineExceeded { scope: "total" },
+                ))
+            } else {
+                result.unwrap_or_else(|_| {
+                    Err(McpViaLlmError::Router(
+                        lr_types::AppError::RoutingDeadlineExceeded { scope: "total" },
+                    ))
+                })
+            }
+        } else {
+            future.await
+        }
+    })
+    .await;
+    match result {
+        Err(McpViaLlmError::Router(error)) => {
+            Err(McpViaLlmError::Router(turn.annotate_error(error, fallback)))
+        }
+        result => result,
+    }
+}
+pub(crate) fn tool_timeout(
+    permissions: &GatewayPermissions,
+) -> Result<std::time::Duration, String> {
+    let ordinary = std::time::Duration::from_secs(TOOL_EXECUTION_TIMEOUT_SECS);
+    if let Some(deadline) = permissions.deadline {
+        deadline
+            .checked_duration_since(tokio::time::Instant::now())
+            .map(|remaining| remaining.min(ordinary))
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| "Routing deadline exceeded before tool execution".into())
+    } else {
+        Ok(ordinary)
+    }
+}
+
+#[cfg(test)]
+mod turn_budget_tests {
+    use super::*;
+    #[tokio::test]
+    async fn expired_turn_stops_before_tools_and_preserves_routing_metadata() {
+        let turn = lr_router::adaptive::TurnBudget::new(
+            &lr_config::AdaptiveRoutingConfig {
+                total_timeout_ms: Some(100),
+                ..Default::default()
+            },
+            150,
+        );
+        let result: Result<(), McpViaLlmError> =
+            run_with_turn_budget(turn, json!({"selected_route":"test"}), async {
+                panic!("expired turn started work");
+            })
+            .await;
+        let Err(McpViaLlmError::Router(lr_types::AppError::RoutingFailure { explanation, .. })) =
+            result
+        else {
+            panic!("missing structured failure")
+        };
+        assert_eq!(explanation["scope"], "mcp_turn");
+        assert_eq!(explanation["selected_route"], "test");
+        assert_eq!(explanation["inference_dispatches"], 0);
+    }
+    #[tokio::test]
+    async fn tool_permission_context_keeps_deadline_outside_task_local_scope() {
+        let turn = lr_router::adaptive::TurnBudget::new(
+            &lr_config::AdaptiveRoutingConfig {
+                total_timeout_ms: Some(100),
+                ..Default::default()
+            },
+            150,
+        );
+        let client = Client::new_with_strategy("test".into(), "default".into());
+        let permissions = lr_router::adaptive::within_turn(turn, async {
+            GatewayPermissions::from_client_and_session(&client, "session".into())
+        })
+        .await;
+        assert!(tool_timeout(&permissions).is_err());
+        let mut ordinary = permissions;
+        ordinary.deadline = None;
+        assert_eq!(
+            tool_timeout(&ordinary).unwrap(),
+            std::time::Duration::from_secs(TOOL_EXECUTION_TIMEOUT_SECS)
+        );
+    }
 }

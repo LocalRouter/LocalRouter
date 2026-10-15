@@ -356,6 +356,12 @@ export interface RoutingCandidateExplanation {
   retry_after_secs: number | null
   gateway_preferences: import('./gateway').GatewayPreferences | null
   pricing: { input_per_million: number; output_per_million: number; source: string } | null
+  ordering: CandidateOrdering
+  score: number | null
+  estimated_request_cost_usd: number | null
+  estimated_output_tokens: number
+  execution_priority: number
+  observed_performance: ObservedPerformance
 }
 /** Rust: lr-router/src/explanation.rs */
 export interface RoutingExplanation {
@@ -378,12 +384,33 @@ export interface RoutingPolicyPreview {
  * Auto routing configuration for localrouter/auto virtual model.
  * Rust: crates/lr-config/src/types.rs - AutoModelConfig struct
  */
+export type CandidateOrdering = 'priority' | 'estimated_cost' | 'observed_ttft' | 'observed_throughput' | 'least_in_flight'
+/** Rust: lr-config/src/adaptive_routing.rs */
+export interface AdaptiveRoutingConfig {
+  ordering: CandidateOrdering
+  min_samples: number
+  observation_window_secs: number
+  max_attempts: number | null
+  attempt_timeout_ms: number | null
+  total_timeout_ms: number | null
+  infrastructure_cooldown: boolean
+}
+/** Rust: lr-router/src/adaptive.rs */
+export interface ObservedPerformance {
+  in_flight: number | null
+  ttft_ms: number | null
+  output_tokens_per_second: number | null
+  ttft_samples: number
+  throughput_samples: number
+  retry_after_ms: number | null
+}
 export interface AutoModelConfig {
   permission: PermissionState
   model_name: string
   prioritized_models: [string, string][]
   available_models: [string, string][]
   routing_policy?: RoutingPolicy | null
+  adaptive_routing?: AdaptiveRoutingConfig
 }
 
 /**
@@ -391,11 +418,13 @@ export interface AutoModelConfig {
  * Rust: crates/lr-config/src/types.rs - StrategyRateLimit struct
  */
 export interface StrategyRateLimit {
-  limit_type: 'requests' | 'tokens' | 'cost'
+  limit_type: 'requests' | 'input_tokens' | 'output_tokens' | 'total_tokens' | 'cost'
   value: number
-  time_window_seconds: number
-  enabled?: boolean
+  time_window: 'minute' | 'hour' | 'day'
+  enabled: boolean
 }
+/** Rust defaults enabled to true on input; serialized responses always include it. */
+export type StrategyRateLimitInput = Omit<StrategyRateLimit, 'enabled'> & { enabled?: boolean }
 
 /**
  * Strategy configuration.
@@ -2711,7 +2740,7 @@ export interface UpdateStrategyParams {
   name?: string | null
   allowedModels?: AvailableModelsSelection | null
   autoConfig?: AutoModelConfig | null
-  rateLimits?: StrategyRateLimit[] | null
+  rateLimits?: StrategyRateLimitInput[] | null
   freeTierOnly?: boolean | null
   freeTierFallback?: FreeTierFallback | null
 }
@@ -4890,6 +4919,8 @@ export interface MonitorEvent {
 
 /** Rust: crates/lr-monitor/src/types.rs - RoutingAttempt */
 export interface RoutingAttempt {
+  cost_usd?: number | null
+  cost_source?: string | null
   exclusions?: string[]
   unknown_checks?: string[]
   provider: string
@@ -4901,6 +4932,9 @@ export interface RoutingAttempt {
 
 /** Rust: crates/lr-monitor/src/types.rs - AutoRoutingInfo */
 export interface AutoRoutingInfo {
+  attempt_costs?: { reported_usd: number | null; estimated_usd: number | null; unknown_calls: number } | null
+  inference_dispatches?: number | null
+  failed_call_costs?: string | null
   explanation?: RoutingExplanation | null
   classifier_latency_ms?: number | null
   classifier_cost_usd?: number | null

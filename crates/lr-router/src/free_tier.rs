@@ -386,6 +386,7 @@ pub struct FreeTierManager {
     credit_trackers: DashMap<String, RwLock<CreditTracker>>,
     /// Per provider-model backoff tracking (in-memory only)
     backoffs: DashMap<String, RwLock<ProviderBackoff>>,
+    server_retry_after: DashMap<String, Instant>,
     /// Per-provider cost-based backoff (persisted)
     cost_backoffs: DashMap<String, RwLock<CostBackoff>>,
     /// Persistence path
@@ -399,6 +400,7 @@ impl FreeTierManager {
             rate_trackers: DashMap::new(),
             credit_trackers: DashMap::new(),
             backoffs: DashMap::new(),
+            server_retry_after: DashMap::new(),
             cost_backoffs: DashMap::new(),
             persist_path,
         }
@@ -987,30 +989,62 @@ impl FreeTierManager {
         );
     }
 
+    /// An explicit server hint has unknown quota scope: pause this local
+    /// provider instance across models/endpoints, without probing it.
+    pub fn record_server_retry_after(&self, provider: &str, seconds: u64) {
+        let until = Instant::now() + Duration::from_secs(seconds.min(86_400));
+        self.server_retry_after
+            .entry(provider.into())
+            .and_modify(|current| *current = (*current).max(until))
+            .or_insert(until);
+    }
+
     /// Check if a provider-model is currently in backoff
     pub fn is_in_backoff(&self, provider_instance: &str, model: &str) -> Option<BackoffInfo> {
-        let key = Self::backoff_key(provider_instance, model);
-        let entry = self.backoffs.get(&key)?;
-        let backoff = entry.read();
-
-        let available_at = backoff.available_at?;
         let now = Instant::now();
-        if now >= available_at {
-            // Backoff expired
-            return None;
-        }
-
-        let remaining = available_at - now;
-        let reason = if backoff.is_credit_exhausted {
-            format!("credits exhausted (available in {}s)", remaining.as_secs())
-        } else {
-            format!("rate limited (available in {}s)", remaining.as_secs())
+        let provider_until = self
+            .server_retry_after
+            .get(provider_instance)
+            .map(|value| *value)
+            .filter(|until| *until > now);
+        let model_info = self
+            .backoffs
+            .get(&Self::backoff_key(provider_instance, model))
+            .and_then(|entry| {
+                let state = entry.read();
+                state
+                    .available_at
+                    .filter(|until| *until > now)
+                    .map(|until| (until, state.is_credit_exhausted))
+            });
+        let (available_at, label) = match (provider_until, model_info) {
+            (Some(provider), Some((model, credits))) if model > provider => (
+                model,
+                if credits {
+                    "credits exhausted"
+                } else {
+                    "rate limited"
+                },
+            ),
+            (Some(provider), _) => (provider, "upstream Retry-After"),
+            (None, Some((model, credits))) => (
+                model,
+                if credits {
+                    "credits exhausted"
+                } else {
+                    "rate limited"
+                },
+            ),
+            _ => return None,
         };
-
+        let remaining = available_at.saturating_duration_since(now);
+        let retry_after_secs = remaining
+            .as_secs()
+            .saturating_add(u64::from(remaining.subsec_nanos() > 0));
         Some(BackoffInfo {
             available_at,
-            retry_after_secs: remaining.as_secs(),
-            reason,
+            retry_after_secs,
+            reason: format!("{label} (available in {retry_after_secs}s)"),
         })
     }
 
@@ -1049,6 +1083,7 @@ impl FreeTierManager {
         if let Some(entry) = self.credit_trackers.get(provider_instance) {
             *entry.write() = CreditTracker::default();
         }
+        self.server_retry_after.remove(provider_instance);
         // Clear all backoffs for this provider
         let prefix = format!("{}::", provider_instance);
         self.backoffs.retain(|k, _| !k.starts_with(&prefix));
@@ -2727,5 +2762,28 @@ mod tests {
         // reset_usage should also clear cost backoff
         manager.reset_usage("groq");
         assert!(manager.check_cost_backoff("groq").is_none());
+    }
+}
+
+#[cfg(test)]
+mod server_retry_tests {
+    use super::*;
+    #[test]
+    fn explicit_hint_covers_models_and_does_not_weaken_existing_delay() {
+        let manager = FreeTierManager::new(None);
+        manager.record_server_retry_after("gateway", 30);
+        manager.record_server_retry_after("gateway", 1);
+        assert!(
+            manager
+                .is_in_backoff("gateway", "other-model")
+                .unwrap()
+                .retry_after_secs
+                >= 29
+        );
+        manager.clear_backoff("gateway", "model-that-finished");
+        assert!(manager.is_in_backoff("gateway", "other-model").is_some());
+        assert!(manager.is_in_backoff("another-account", "model").is_none());
+        manager.reset_usage("gateway");
+        assert!(manager.is_in_backoff("gateway", "model").is_none());
     }
 }

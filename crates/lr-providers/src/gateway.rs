@@ -642,6 +642,9 @@ impl GatewayAttribution {
         .collect()
     }
 }
+pub fn reported_cost_value(extensions: Option<&Value>) -> Option<f64> {
+    extensions?.get(EXTENSION)?.get("cost_usd").and_then(amount)
+}
 pub fn reported_cost(extensions: Option<&HashMap<String, Value>>) -> Option<f64> {
     extensions?.get(EXTENSION)?.get("cost_usd").and_then(amount)
 }

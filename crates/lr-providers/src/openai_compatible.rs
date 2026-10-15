@@ -789,15 +789,7 @@ impl ModelProvider for OpenAICompatibleProvider {
 
         let status = response.status();
         if !status.is_success() {
-            let error_text = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "Unknown error".to_string());
-
-            return Err(crate::http_client::classify_openai_error(
-                status,
-                &error_text,
-            ));
+            return Err(crate::http_client::response_error(response).await);
         }
 
         let raw: serde_json::Value = response
@@ -920,15 +912,7 @@ impl ModelProvider for OpenAICompatibleProvider {
 
         let status = response.status();
         if !status.is_success() {
-            let error_text = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "Unknown error".to_string());
-
-            return Err(crate::http_client::classify_openai_error(
-                status,
-                &error_text,
-            ));
+            return Err(crate::http_client::response_error(response).await);
         }
 
         // Parse SSE (Server-Sent Events) stream
@@ -1095,15 +1079,7 @@ impl ModelProvider for OpenAICompatibleProvider {
 
         let status = response.status();
         if !status.is_success() {
-            let error_text = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "Unknown error".to_string());
-
-            return Err(crate::http_client::classify_openai_error(
-                status,
-                &error_text,
-            ));
+            return Err(crate::http_client::response_error(response).await);
         }
 
         let openai_response: OpenAIEmbeddingResponse = response

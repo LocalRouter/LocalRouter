@@ -723,11 +723,17 @@ async fn provider_error_mapping() {
         (429, "rate"),
         (422, "status"),
         (529, "provider"),
+        (429, "retry"),
+        (503, "retry_unavailable"),
     ] {
         let mock = MockServer::start().await;
+        let mut reply = ResponseTemplate::new(status).set_body_string(r#"{"detail":"x"}"#);
+        if check.starts_with("retry") {
+            reply = reply.insert_header("Retry-After", "9");
+        }
         Mock::given(method("POST"))
             .and(path("/v1/systemone"))
-            .respond_with(ResponseTemplate::new(status).set_body_string(r#"{"detail":"x"}"#))
+            .respond_with(reply)
             .mount(&mock)
             .await;
         let provider =
@@ -747,7 +753,21 @@ async fn provider_error_mapping() {
                     message,
                 },
             ) => message == r#"{"detail":"x"}"#,
-            ("provider", AppError::Provider(_)) => true,
+            ("provider", AppError::ProviderUnavailable { status: 529, .. }) => true,
+            (
+                "retry",
+                AppError::RateLimitWithRetryAfter {
+                    retry_after_secs: 9,
+                },
+            ) => true,
+            (
+                "retry_unavailable",
+                AppError::ProviderUnavailable {
+                    status: 503,
+                    retry_after_secs: Some(9),
+                    ..
+                },
+            ) => true,
             _ => false,
         };
         assert!(ok, "status {status} mapped to {err:?}");
@@ -1121,7 +1141,7 @@ async fn successful_auto_route_explanations_reach_normal_and_streaming_clients()
     Mock::given(method("POST")).and(path("/chat/completions"))
         .and(body_partial_json(json!({"stream":false})))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id":"route-normal","object":"chat.completion","created":1,"model":"test","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4,"cost":0.02}}))).expect(3).mount(&mock).await;
-    let content = json!({"id":"route-stream","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]});
+    let content = json!({"id":"route-stream","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4,"cost":0.02}});
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
         .and(body_partial_json(json!({"stream":true})))
@@ -1169,6 +1189,28 @@ async fn successful_auto_route_explanations_reach_normal_and_streaming_clients()
                 // Responses preserves it in response.completed.
                 assert!(raw.contains("localrouter.routing"), "{path}: {raw}");
                 assert!(raw.contains("config_fingerprint"), "{path}: {raw}");
+                let final_trace = raw
+                    .lines()
+                    .filter_map(|line| line.strip_prefix("data: "))
+                    .filter_map(|data| serde_json::from_str::<Value>(data).ok())
+                    .filter_map(|frame| {
+                        frame
+                            .get("response")
+                            .unwrap_or(&frame)
+                            .get("extensions")
+                            .and_then(|extensions| extensions.get("localrouter.routing"))
+                            .cloned()
+                    })
+                    .next_back()
+                    .unwrap();
+                assert_eq!(
+                    final_trace["attempt_costs"]["reported_usd"], 0.02,
+                    "{path}: {raw}"
+                );
+                assert_eq!(
+                    final_trace["attempt_costs"]["unknown_calls"], 0,
+                    "{path}: {raw}"
+                );
             } else {
                 let value: Value = serde_json::from_str(&raw).unwrap();
                 let facts = &value["extensions"]["localrouter.routing"];
@@ -1260,4 +1302,247 @@ async fn permanent_auto_route_failures_retain_status_and_trace_without_fallback(
         .filter(|request| request.method == "POST")
         .all(|request| request.body_json::<Value>().unwrap()["model"] == "test"));
     mock.verify().await;
+}
+
+#[tokio::test]
+async fn bounded_http_attempts_keep_server_retry_after_and_do_not_repeat_an_account() {
+    let limited = MockServer::start().await;
+    let ready = MockServer::start().await;
+    for server in [&limited, &ready] {
+        Mock::given(method("GET"))
+            .and(path("/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data":[{"id":"test"}]})))
+            .mount(server)
+            .await;
+    }
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .insert_header("Retry-After", "7")
+                .set_body_json(json!({"error":{"message":"quota","type":"rate_limit_error"}})),
+        )
+        .expect(1)
+        .mount(&limited)
+        .await;
+    Mock::given(method("POST")).and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id":"ready","object":"chat.completion","created":1,"model":"test","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4,"cost":0.02}})))
+        .expect(1).mount(&ready).await;
+    let (base, token) = start_configured_server(
+        vec![
+            (
+                "limited",
+                "llmgateway",
+                vec![
+                    ("base_url", limited.uri()),
+                    ("api_key", "limited-key".into()),
+                ],
+            ),
+            (
+                "ready",
+                "llmgateway",
+                vec![("base_url", ready.uri()), ("api_key", "ready-key".into())],
+            ),
+        ],
+        |config| {
+            let auto = config.strategies[0].auto_config.as_mut().unwrap();
+            auto.prioritized_models = vec![
+                ("limited".into(), "test".into()),
+                ("ready".into(), "test".into()),
+            ];
+            auto.adaptive_routing.max_attempts = Some(1);
+        },
+        true,
+    )
+    .await;
+    let body = json!({"model":"localrouter/auto","messages":[{"role":"user","content":"hello"}],"extensions":{"localrouter.gateway":{"allow_fallbacks":false}}});
+    let first = post(&base, "/v1/chat/completions", &token, &body).await;
+    assert_eq!(first.status(), 502);
+    let error: Value = first.json().await.unwrap();
+    assert_eq!(
+        error["extensions"]["localrouter.routing"]["inference_dispatches"],
+        1
+    );
+    let second = post(&base, "/v1/chat/completions", &token, &body).await;
+    assert_eq!(second.status(), 200);
+    let value: Value = second.json().await.unwrap();
+    let trace = &value["extensions"]["localrouter.routing"];
+    assert_eq!(trace["inference_dispatches"], 1);
+    assert_eq!(trace["attempts"][0]["outcome"], "backoff");
+    let seconds = trace["explanation"]["routes"][0]["candidates"][0]["retry_after_secs"]
+        .as_u64()
+        .unwrap();
+    assert!((1..=7).contains(&seconds));
+    assert_eq!(trace["attempt_costs"]["reported_usd"], 0.02);
+    limited.verify().await;
+    ready.verify().await;
+}
+
+#[tokio::test]
+async fn bounded_http_attempt_timeout_can_fall_back_but_total_deadline_cannot() {
+    let slow = MockServer::start().await;
+    let ready = MockServer::start().await;
+    for server in [&slow, &ready] {
+        Mock::given(method("GET"))
+            .and(path("/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data":[{"id":"test"}]})))
+            .mount(server)
+            .await;
+    }
+    let reply = json!({"id":"ready","object":"chat.completion","created":1,"model":"test","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4,"cost":0.02}});
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_secs(2))
+                .set_body_json(reply.clone()),
+        )
+        .mount(&slow)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(reply))
+        .expect(1)
+        .mount(&ready)
+        .await;
+    for total in [false, true] {
+        let (base, token) = start_configured_server(
+            vec![
+                (
+                    "slow",
+                    "llmgateway",
+                    vec![("base_url", slow.uri()), ("api_key", "slow-key".into())],
+                ),
+                (
+                    "ready",
+                    "llmgateway",
+                    vec![("base_url", ready.uri()), ("api_key", "ready-key".into())],
+                ),
+            ],
+            move |config| {
+                let auto = config.strategies[0].auto_config.as_mut().unwrap();
+                auto.prioritized_models = vec![
+                    ("slow".into(), "test".into()),
+                    ("ready".into(), "test".into()),
+                ];
+                auto.adaptive_routing.max_attempts = Some(2);
+                if total {
+                    auto.adaptive_routing.total_timeout_ms = Some(500);
+                } else {
+                    auto.adaptive_routing.attempt_timeout_ms = Some(500);
+                }
+                config.pricing_overrides.insert(
+                    "llmgateway".into(),
+                    [(
+                        "test".into(),
+                        localrouter::config::ModelPricingOverride {
+                            input_per_million: 0.0,
+                            output_per_million: 0.0,
+                        },
+                    )]
+                    .into_iter()
+                    .collect(),
+                );
+            },
+            true,
+        )
+        .await;
+        let response=post(&base,"/v1/chat/completions",&token,&json!({"model":"localrouter/auto","messages":[{"role":"user","content":"hello"}],"extensions":{"localrouter.gateway":{"allow_fallbacks":false}}})).await;
+        if total {
+            assert_eq!(response.status(), 504);
+            let value: Value = response.json().await.unwrap();
+            assert_eq!(value["error"]["code"], "deadline_exceeded");
+            assert!(value["extensions"]["localrouter.routing"].is_object());
+        } else {
+            assert_eq!(response.status(), 200);
+            let value: Value = response.json().await.unwrap();
+            let trace = &value["extensions"]["localrouter.routing"];
+            assert_eq!(trace["inference_dispatches"], 2);
+            assert_eq!(trace["attempt_costs"]["unknown_calls"], 1);
+            assert_eq!(trace["attempt_costs"]["reported_usd"], 0.02);
+        }
+    }
+    ready.verify().await;
+}
+
+#[tokio::test]
+async fn streaming_total_deadline_preserves_errors_on_all_surfaces_without_restarting() {
+    use futures::StreamExt;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    let primary_calls = Arc::new(AtomicUsize::new(0));
+    let fallback_calls = Arc::new(AtomicUsize::new(0));
+    let primary = primary_calls.clone();
+    let fallback = fallback_calls.clone();
+    let app=axum::Router::new()
+        .route("/models",axum::routing::get(||async {axum::Json(json!({"data":[{"id":"primary"},{"id":"fallback"}]}))}))
+        .route("/chat/completions",axum::routing::post(move |axum::Json(body):axum::Json<Value>| {
+            let primary=primary.clone();let fallback=fallback.clone();
+            async move {
+                if body["model"]=="primary" {primary.fetch_add(1,Ordering::SeqCst);} else {fallback.fetch_add(1,Ordering::SeqCst);}
+                let first=json!({"id":"partial","object":"chat.completion.chunk","created":1,"model":"primary","choices":[{"index":0,"delta":{"content":"partial answer"},"finish_reason":null}]});
+                let chunks=futures::stream::once(async move {Ok::<_,std::io::Error>(axum::body::Bytes::from(format!("data: {first}\n\n")))})
+                    .chain(futures::stream::once(async {tokio::time::sleep(std::time::Duration::from_secs(2)).await;Ok::<_,std::io::Error>(axum::body::Bytes::from("data: [DONE]\n\n"))}));
+                axum::response::Response::builder().header("Content-Type","text/event-stream").body(axum::body::Body::from_stream(chunks)).unwrap()
+            }
+        }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let (base, token) = start_configured_server(
+        vec![(
+            "gw",
+            "llmgateway",
+            vec![("base_url", upstream), ("api_key", "k".into())],
+        )],
+        |config| {
+            let auto = config.strategies[0].auto_config.as_mut().unwrap();
+            auto.prioritized_models = vec![
+                ("gw".into(), "primary".into()),
+                ("gw".into(), "fallback".into()),
+            ];
+            auto.adaptive_routing.total_timeout_ms = Some(500);
+            config.pricing_overrides.insert(
+                "llmgateway".into(),
+                ["primary", "fallback"]
+                    .into_iter()
+                    .map(|model| {
+                        (
+                            model.into(),
+                            localrouter::config::ModelPricingOverride {
+                                input_per_million: 0.0,
+                                output_per_million: 0.0,
+                            },
+                        )
+                    })
+                    .collect(),
+            );
+        },
+        true,
+    )
+    .await;
+    for (route, input) in [
+        (
+            "/v1/chat/completions",
+            json!({"messages":[{"role":"user","content":"hello"}]}),
+        ),
+        ("/v1/completions", json!({"prompt":"hello"})),
+        ("/v1/responses", json!({"input":"hello","store":false})),
+    ] {
+        let mut body = input;
+        body["model"] = json!("localrouter/auto");
+        body["stream"] = json!(true);
+        let response = post(&base, route, &token, &body).await;
+        assert_eq!(response.status(), 200, "{route}");
+        let text = response.text().await.unwrap();
+        assert!(text.contains("partial answer"), "{route}: {text}");
+        assert!(text.contains("deadline_exceeded"), "{route}: {text}");
+        assert!(text.contains("localrouter.routing"), "{route}: {text}");
+    }
+    assert_eq!(primary_calls.load(Ordering::SeqCst), 3);
+    assert_eq!(fallback_calls.load(Ordering::SeqCst), 0);
 }

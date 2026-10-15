@@ -109,6 +109,7 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
 ] }
 
 [dev-dependencies]
+axum = { workspace = true }
 serial_test = { workspace = true }
 wiremock = "0.6"
 regex = "1.10"

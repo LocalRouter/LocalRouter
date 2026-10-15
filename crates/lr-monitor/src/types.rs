@@ -739,6 +739,10 @@ pub struct FlaggedCategory {
 /// A single routing attempt during auto-routing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoutingAttempt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_source: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exclusions: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -762,6 +766,12 @@ pub struct RoutingAttempt {
 /// Auto-routing metadata for LLM call monitor events.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AutoRoutingInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt_costs: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inference_dispatches: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed_call_costs: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub explanation: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

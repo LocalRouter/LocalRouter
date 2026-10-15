@@ -316,6 +316,11 @@ pub fn map_systemone_error(status: u16, body: String) -> AppError {
             status,
             message: body,
         },
+        500..=599 => AppError::ProviderUnavailable {
+            status,
+            message: format!("API error ({status}): {body}"),
+            retry_after_secs: None,
+        },
         _ => AppError::Provider(format!("API error ({status}): {body}")),
     }
 }
@@ -444,6 +449,8 @@ impl ModelProvider for SystemOneProvider {
             .await
             .map_err(|e| AppError::Provider(format!("connection to {url} failed: {e}")))?;
 
+        let retry_after =
+            crate::http_client::retry_after(resp.headers(), std::time::SystemTime::now());
         let status = resp.status().as_u16();
         let request_id = resp
             .headers()
@@ -456,7 +463,10 @@ impl ModelProvider for SystemOneProvider {
             .map_err(|e| AppError::Provider(format!("failed to read response: {e}")))?;
 
         if !(200..300).contains(&status) {
-            return Err(map_systemone_error(status, body));
+            return Err(crate::http_client::with_retry_after(
+                map_systemone_error(status, body),
+                retry_after,
+            ));
         }
 
         let mut parsed: SystemOneResponse = serde_json::from_str(&body).map_err(|e| {
@@ -558,7 +568,7 @@ mod tests {
         }
         assert!(matches!(
             map_systemone_error(529, "overloaded".into()),
-            AppError::Provider(_)
+            AppError::ProviderUnavailable { .. }
         ));
     }
 

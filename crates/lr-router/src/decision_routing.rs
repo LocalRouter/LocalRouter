@@ -221,7 +221,10 @@ impl Router {
         let context = routing_context(&request.messages, request.metadata.as_ref(), policy);
         let omitted = context["omitted_messages"].as_u64().unwrap_or_default();
         let Ok(_permit) = self.decision_slots.try_acquire() else {
-            return fallback(policy, "classifier_busy");
+            let mut result = fallback(policy, "classifier_busy");
+            result.latency_ms = start.elapsed().as_millis() as u64;
+            result.context_omitted = omitted;
+            return result;
         };
         let work = async {
             let instance = self
@@ -250,27 +253,41 @@ impl Router {
                 .await
                 .map_err(|e| e.to_string())
         };
-        let mut result =
-            match tokio::time::timeout(Duration::from_millis(policy.timeout_ms), work).await {
-                Ok(Ok(response)) => {
-                    let mut decision = answer_decision(policy, response.answers.get("route"));
-                    decision.classifier_cost_usd = response.cost_usd;
-                    let reported = response
-                        .extra
-                        .get("extensions")
-                        .and_then(|extensions| extensions.get(lr_providers::gateway::EXTENSION))
-                        .and_then(|attribution| attribution.get("cost_usd"))
-                        .and_then(Value::as_f64)
-                        .is_some();
-                    decision.classifier_cost_estimated = response.cost_usd.map(|_| !reported);
-                    decision
-                }
-                Ok(Err(e)) => {
-                    tracing::warn!("Decision routing failed: {e}");
-                    fallback(policy, "decision_provider_error")
-                }
-                Err(_) => fallback(policy, "decision_timeout"),
-            };
+        let timeout_ms = strategy
+            .auto_config
+            .as_ref()
+            .and_then(|auto| auto.adaptive_routing.total_timeout_ms)
+            .map_or(policy.timeout_ms, |total| total.min(policy.timeout_ms));
+        let remaining = Duration::from_millis(timeout_ms).saturating_sub(start.elapsed());
+        let deadline = tokio::time::Instant::now() + remaining;
+        let work = crate::adaptive::with_inference_deadline(Some(deadline), work);
+        let mut result = match tokio::time::timeout_at(deadline, work).await {
+            Ok(Ok(response)) => {
+                let mut decision = answer_decision(policy, response.answers.get("route"));
+                decision.classifier_cost_usd = response.cost_usd;
+                let reported = response
+                    .extra
+                    .get("extensions")
+                    .and_then(|extensions| extensions.get(lr_providers::gateway::EXTENSION))
+                    .and_then(|attribution| attribution.get("cost_usd"))
+                    .and_then(Value::as_f64)
+                    .is_some();
+                decision.classifier_cost_estimated = response.cost_usd.map(|_| !reported);
+                decision
+            }
+            Ok(Err(e)) => {
+                tracing::warn!("Decision routing failed: {e}");
+                fallback(
+                    policy,
+                    if e.contains("deadline exceeded") {
+                        "decision_timeout"
+                    } else {
+                        "decision_provider_error"
+                    },
+                )
+            }
+            Err(_) => fallback(policy, "decision_timeout"),
+        };
         result.latency_ms = start.elapsed().as_millis() as u64;
         result.context_omitted = omitted;
         self.metrics_collector

@@ -76,7 +76,8 @@ export function RoutingPolicyEditor({ strategyId, value, onSave, readOnly = fals
   const [mode, setMode] = useState('')
   const [result, setResult] = useState<RoutingPolicyPreview | null>(null)
   const [error, setError] = useState<string | null>(null)
-  useEffect(() => { setDraft(value ?? { ...routingTemplate('workflow'), enabled: false }); setResult(null) }, [value, strategyId])
+  const lastSavedPolicy = useRef<string | null>(null)
+  useEffect(() => { const key = JSON.stringify([strategyId, value ?? null]); if (lastSavedPolicy.current === key) return; lastSavedPolicy.current = key; setDraft(value ?? { ...routingTemplate('workflow'), enabled: false }); setResult(null) }, [value, strategyId])
   useEffect(() => {
     let active = true
     let generation = 0
@@ -179,7 +180,9 @@ export function RoutingPolicyEditor({ strategyId, value, onSave, readOnly = fals
           <p>{result.explanation.classifier_required ? 'Route unknown until the classifier runs.' : result.explanation.reason.replace(/_/g, ' ')}</p>
           {result.explanation.no_route && <p className="text-destructive">No eligible candidate under the known filters.</p>}
           {result.explanation.routes.map(route => <div key={route.route} className="space-y-1"><strong>{route.route}</strong>{route.candidates.map(candidate => <div key={`${candidate.provider}/${candidate.model}`} className="text-xs">
-            {candidate.priority + 1}. {candidate.provider}/{candidate.model} · {candidate.eligible ? 'Eligible, subject to runtime checks' : candidate.exclusions.map(reason => reason.replace(/_/g, ' ')).join(', ')}
+            {candidate.execution_priority + 1}. {candidate.provider}/{candidate.model} (configured {candidate.priority + 1}) · {candidate.eligible ? 'Eligible, subject to runtime checks' : candidate.exclusions.map(reason => reason.replace(/_/g, ' ')).join(', ')}
+            {` · ${candidate.ordering.replace(/_/g, ' ')} · score ${candidate.score ?? 'unknown'}`}
+            {candidate.estimated_request_cost_usd !== null && ` · estimated $${candidate.estimated_request_cost_usd.toFixed(6)} with ${candidate.estimated_output_tokens} output tokens`}
             {candidate.retry_after_secs !== null && ` · cooldown ${candidate.retry_after_secs}s`}
           </div>)}</div>)}
           <p className="text-xs text-muted-foreground">Provider readiness, current quotas and actual upstream identity/cost still require runtime checks.</p>

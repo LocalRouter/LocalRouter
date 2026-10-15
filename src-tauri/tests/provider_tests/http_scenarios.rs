@@ -75,8 +75,10 @@ async fn test_429_rate_limit() {
 
     assert!(result.is_err());
     match result.unwrap_err() {
-        AppError::RateLimitExceeded => {} // Expected
-        other => panic!("Expected RateLimitExceeded error, got: {:?}", other),
+        AppError::RateLimitWithRetryAfter {
+            retry_after_secs: 60,
+        } => {}
+        other => panic!("Expected retained retry hint, got: {:?}", other),
     }
 }
 
@@ -102,8 +104,15 @@ async fn test_500_internal_server_error() {
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(
-        matches!(err, AppError::Provider(_)),
-        "Expected Provider error for 500"
+        matches!(
+            err,
+            AppError::ProviderUnavailable {
+                status: 500,
+                retry_after_secs: None,
+                ..
+            }
+        ),
+        "Expected transient ProviderUnavailable error for 500"
     );
 }
 

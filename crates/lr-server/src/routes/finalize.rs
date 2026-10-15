@@ -411,7 +411,12 @@ pub(crate) async fn finalize_metrics_and_monitor(
         .and_then(|d| d.reasoning_tokens.or(d.thinking_tokens))
         .map(|t| t as u64);
 
-    if let Some(meta) = routing_metadata {
+    if let Some(meta) = response
+        .extensions
+        .as_ref()
+        .and_then(|extensions| extensions.get("localrouter.routing"))
+        .or(routing_metadata)
+    {
         super::monitor_helpers::update_llm_call_routing(state, llm_event_id, meta);
     }
     if inputs.skip_monitor_completion {

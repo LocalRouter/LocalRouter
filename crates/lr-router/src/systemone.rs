@@ -287,27 +287,49 @@ impl Router {
         }
         if native {
             request.model = model.map(str::to_string);
+            provider_instance
+                .validate_systemone_gateway_options(&request)
+                .await?;
+            let prepared_pricing = if let Some(model) = model {
+                Some(self.request_pricing(provider, model).await)
+            } else {
+                None
+            };
+            super::adaptive::reserve_inference_dispatch()?;
+            let mut observation = self.adaptive_measurements.begin(
+                provider,
+                model.unwrap_or("default"),
+                EndpointType::SystemOne,
+                self.provider_registry.routing_revision(),
+            );
             let mut response = match provider_instance.systemone(request).await {
                 Ok(resp) => resp,
                 Err(e) => {
+                    self.record_retry_hint(provider, model.unwrap_or("default"), &e);
                     let label = model.unwrap_or("default");
                     if matches!(
                         RouterError::classify(&e, provider, label),
                         RouterError::Unreachable { .. }
                     ) {
+                        observation.infrastructure_failure(
+                            super::adaptive::current_infrastructure_cooldown(),
+                        );
                         self.report_provider_failure(provider, &e.to_string());
                     }
                     return Err(e);
                 }
             };
+            observation.success();
+            drop(observation);
             response.provider = provider.to_string();
             response.backend = SystemOneBackend::Native;
 
             let pricing_model = model.unwrap_or(response.model.as_str()).to_string();
-            let pricing = self
-                .provider_registry
-                .get_pricing(provider, &pricing_model)
-                .await;
+            let pricing = if let Some(pricing) = prepared_pricing {
+                pricing
+            } else {
+                self.request_pricing(provider, &pricing_model).await
+            };
             let input = response.usage.input_tokens.unwrap_or(0);
             let output = response.usage.output_tokens.unwrap_or(0);
             let cached = response
@@ -336,6 +358,8 @@ impl Router {
                         * pricing
                             .cache_write_cost_per_1k
                             .unwrap_or(pricing.input_cost_per_1k);
+            let gateway_cost =
+                lr_providers::gateway::reported_cost_value(response.extra.get("extensions"));
             let native_cost = response
                 .usage
                 .extra
@@ -351,7 +375,9 @@ impl Router {
                         .or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok()))
                 })
                 .filter(|v| v.is_finite() && *v >= 0.0);
-            let cost = native_cost.unwrap_or(estimated_cost);
+            let reported = gateway_cost.or(native_cost);
+            let cost = reported.unwrap_or(estimated_cost);
+            super::adaptive::record_completed_cost(cost, reported.is_some());
             response.cost_usd = Some(cost);
             self.record_systemone_usage(
                 client_id,
@@ -400,33 +426,18 @@ impl Router {
         cost: f64,
         free_tier_only: bool,
     ) {
-        let usage = UsageInfo {
-            input_tokens,
-            output_tokens,
-            cost_usd: cost,
-        };
-        if let Err(e) = self
-            .rate_limiter
-            .record_api_key_usage(client_id, &usage)
-            .await
-        {
-            warn!("Failed to record usage for client '{}': {}", client_id, e);
-        }
-        let free_tier = self.free_tier_usage(provider, model);
-        self.free_tier_manager.record_usage(
+        self.completed_usage(
+            client_id,
             provider,
-            &free_tier.kind,
-            free_tier.model_is_free,
-            input_tokens + output_tokens,
-            cost,
-        );
-        if free_tier_only {
-            if cost > 0.0 {
-                self.free_tier_manager.record_cost_trigger(provider);
-            } else {
-                self.free_tier_manager.record_cost_free(provider);
-            }
-        }
+            model,
+            UsageInfo {
+                input_tokens,
+                output_tokens,
+                cost_usd: cost,
+            },
+            free_tier_only,
+        )
+        .await;
     }
 
     /// Answer a System One request with a chat model.
@@ -448,7 +459,7 @@ impl Router {
         free_tier_only: bool,
     ) -> AppResult<SystemOneResponse> {
         let cfg = self.config_manager.get().systemone.clone();
-        let pricing = self.provider_registry.get_pricing(provider, model).await;
+        let pricing = self.request_pricing(provider, model).await;
 
         let mut usage = SystemOneUsage {
             input_tokens: Some(0),
@@ -693,9 +704,30 @@ impl Router {
             ));
         }
         let routing_request = self.decision_routing_request(&request);
-        let (selected_models, routing_decision) = self
-            .select_models_for_auto_routing(client_id, strategy, auto_config, &routing_request)
-            .await;
+        let mut budget = super::adaptive::RoutingBudget::new(&auto_config.adaptive_routing);
+        let (selected_models, routing_decision) = budget
+            .preflight(self.select_models_for_auto_routing(
+                client_id,
+                strategy,
+                auto_config,
+                &routing_request,
+            ))
+            .await
+            .map_err(|reason| {
+                self.deadline_routing_error(
+                    strategy,
+                    &routing_request,
+                    EndpointType::SystemOne,
+                    reason,
+                )
+            })?;
+        let (selected_models, scored_candidates) = self.order_auto_models(
+            strategy,
+            &routing_request,
+            &selected_models,
+            routing_decision.as_ref(),
+            EndpointType::SystemOne,
+        );
         if selected_models.is_empty() {
             return Err(AppError::Router(
                 "No models configured for auto-routing".into(),
@@ -707,13 +739,14 @@ impl Router {
             .map(|(provider, model)| format!("{provider}/{model}"))
             .collect();
         let policy = auto_config.routing_policy.clone().unwrap_or_default();
-        let initial_explanation = serde_json::json!(self.routing_explanation_for_endpoint(
+        let mut initial_explanation = serde_json::json!(self.routing_explanation_for_endpoint(
             strategy,
             &policy,
             &routing_request,
             routing_decision.as_ref(),
             EndpointType::SystemOne
         ));
+        initial_explanation["routes"][0]["candidates"] = serde_json::json!(scored_candidates);
         let mut attempts = Vec::new();
         info!(
             "Auto-routing System One for client '{}' with {} prioritized models",
@@ -723,6 +756,11 @@ impl Router {
 
         let mut last_error = None;
         for (idx, (provider, model)) in selected_models.iter().enumerate() {
+            if let Some(reason) = budget.exhausted() {
+                attempts
+                    .push(serde_json::json!({"provider":provider,"model":model,"outcome":reason}));
+                break;
+            }
             let assessment = self.assess_candidate(
                 strategy,
                 provider,
@@ -738,9 +776,17 @@ impl Router {
             if let Some(instance) = self.provider_registry.get_provider(provider) {
                 let mut candidate_request = request.clone();
                 candidate_request.model = Some(model.clone());
-                if let Err(error) = instance
-                    .validate_systemone_gateway_options(&candidate_request)
+                if let Err(error) = budget
+                    .preflight(instance.validate_systemone_gateway_options(&candidate_request))
                     .await
+                    .map_err(|reason| {
+                        self.deadline_routing_error(
+                            strategy,
+                            &routing_request,
+                            EndpointType::SystemOne,
+                            reason,
+                        )
+                    })?
                 {
                     debug!("Skipping {provider}/{model}: {error}");
                     attempts.push(serde_json::json!({"provider":provider,"model":model,"outcome":"gateway_constraints_ineligible"}));
@@ -755,15 +801,33 @@ impl Router {
                 let Some(instance) = self.provider_registry.get_provider(provider) else {
                     continue;
                 };
-                if !instance.supports_decisions() || !instance.supports_systemone_model(model).await
+                if !instance.supports_decisions()
+                    || !budget
+                        .preflight(instance.supports_systemone_model(model))
+                        .await
+                        .map_err(|reason| {
+                            self.deadline_routing_error(
+                                strategy,
+                                &routing_request,
+                                EndpointType::SystemOne,
+                                reason,
+                            )
+                        })?
                 {
                     attempts.push(serde_json::json!({"provider":provider,"model":model,"outcome":"image_protocol_unsupported"}));
                     continue;
                 }
-                if let Ok(models) = self
-                    .provider_registry
-                    .list_provider_models_cached(provider)
+                if let Ok(models) = budget
+                    .preflight(self.provider_registry.list_provider_models_cached(provider))
                     .await
+                    .map_err(|reason| {
+                        self.deadline_routing_error(
+                            strategy,
+                            &routing_request,
+                            EndpointType::SystemOne,
+                            reason,
+                        )
+                    })?
                 {
                     if models.iter().any(|m| {
                         m.id == *model
@@ -790,7 +854,15 @@ impl Router {
             }
             if strategy.free_tier_only {
                 if matches!(
-                    self.classify_for_free_tier(provider, model).await,
+                    budget
+                        .preflight(self.classify_for_free_tier(provider, model))
+                        .await
+                        .map_err(|reason| self.deadline_routing_error(
+                            strategy,
+                            &routing_request,
+                            EndpointType::SystemOne,
+                            reason
+                        ))?,
                     free_tier::ModelFreeStatus::NotFree
                 ) {
                     attempts.push(
@@ -812,14 +884,15 @@ impl Router {
                 continue;
             }
 
-            match self
-                .execute_systemone_request(
+            let attempt_revision = self.provider_registry.routing_revision();
+            match budget
+                .dispatch(self.execute_systemone_request(
                     client_id,
                     provider,
                     Some(model),
                     request.clone(),
                     strategy.free_tier_only,
-                )
+                ))
                 .await
             {
                 Ok(mut response) => {
@@ -836,6 +909,8 @@ impl Router {
                         attempts,
                         Some(idx),
                     );
+                    metadata["attempt_costs"] = serde_json::json!(budget.costs());
+                    metadata["inference_dispatches"] = serde_json::json!(budget.dispatch_count());
                     metadata["explanation"] = initial_explanation.clone();
                     if let Some(decision) = &routing_decision {
                         metadata["classifier_latency_ms"] = serde_json::json!(decision.latency_ms);
@@ -855,7 +930,29 @@ impl Router {
                     return Ok(response);
                 }
                 Err(e) => {
+                    if matches!(e, AppError::RoutingDeadlineExceeded { .. }) {
+                        self.adaptive_measurements.record_infrastructure_failure(
+                            provider,
+                            model,
+                            EndpointType::SystemOne,
+                            attempt_revision,
+                            auto_config.adaptive_routing.infrastructure_cooldown,
+                        );
+                    }
                     let router_error = RouterError::classify(&e, provider, model);
+                    if let RouterError::RateLimited {
+                        retry_after_secs, ..
+                    } = &router_error
+                    {
+                        self.free_tier_manager.record_rate_limit_error(
+                            provider,
+                            model,
+                            429,
+                            Some(*retry_after_secs),
+                            None,
+                            false,
+                        );
+                    }
                     attempts.push(serde_json::json!({"provider":provider,"model":model,"outcome":router_error.outcome_str()}));
                     warn!(
                         "Auto-routing System One attempt failed: {}",
@@ -879,6 +976,9 @@ impl Router {
                             None,
                         );
                         metadata["explanation"] = initial_explanation;
+                        metadata["attempt_costs"] = serde_json::json!(budget.costs());
+                        metadata["inference_dispatches"] =
+                            serde_json::json!(budget.dispatch_count());
                         return Err(AppError::RoutingFailure {
                             error: Box::new(e),
                             explanation: Box::new(metadata),
@@ -907,6 +1007,18 @@ impl Router {
             None,
         );
         metadata["explanation"] = initial_explanation;
+        metadata["attempt_costs"] = serde_json::json!(budget.costs());
+        metadata["inference_dispatches"] = serde_json::json!(budget.dispatch_count());
+        metadata["failed_call_costs"] = serde_json::json!("unknown");
+        if budget
+            .deadline
+            .is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
+        {
+            return Err(AppError::RoutingFailure {
+                error: Box::new(AppError::RoutingDeadlineExceeded { scope: "total" }),
+                explanation: Box::new(metadata),
+            });
+        }
         Err(AppError::RoutingExhausted {
             message: format!(
                 "All auto-routing System One models failed. Last error: {}",
@@ -960,6 +1072,7 @@ mod tests {
     struct MockProvider {
         kind: Kind,
         chat_calls: Arc<AtomicUsize>,
+        native_calls: Arc<AtomicUsize>,
     }
 
     fn msg(text: &str) -> ChatMessage {
@@ -1101,6 +1214,7 @@ mod tests {
             self.supports_systemone() || model == "jev-native"
         }
         async fn systemone(&self, request: SystemOneRequest) -> AppResult<SystemOneResponse> {
+            self.native_calls.fetch_add(1, Ordering::SeqCst);
             if self.kind == Kind::SlowNative {
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             }
@@ -1138,6 +1252,7 @@ mod tests {
         kind: Kind,
         type_name: &'static str,
         chat_calls: Arc<AtomicUsize>,
+        native_calls: Arc<AtomicUsize>,
     }
 
     impl ProviderFactory for MockFactory {
@@ -1170,6 +1285,7 @@ mod tests {
             Ok(Arc::new(MockProvider {
                 kind: self.kind,
                 chat_calls: self.chat_calls.clone(),
+                native_calls: self.native_calls.clone(),
             }))
         }
         fn validate_config(&self, _config: &HashMap<String, String>) -> AppResult<()> {
@@ -1181,6 +1297,7 @@ mod tests {
         router: Router,
         client_id: String,
         chat_calls: Arc<AtomicUsize>,
+        native_calls: Arc<AtomicUsize>,
     }
 
     /// Router with the given provider instances (name, kind) and one client
@@ -1191,6 +1308,7 @@ mod tests {
         mutate: impl FnOnce(&mut AppConfig),
     ) -> Harness {
         let chat_calls = Arc::new(AtomicUsize::new(0));
+        let native_calls = Arc::new(AtomicUsize::new(0));
         let registry = Arc::new(ProviderRegistry::new());
         for (i, (name, kind)) in instances.iter().enumerate() {
             let type_name: &'static str = Box::leak(format!("mock{i}").into_boxed_str());
@@ -1198,6 +1316,7 @@ mod tests {
                 kind: *kind,
                 type_name,
                 chat_calls: chat_calls.clone(),
+                native_calls: native_calls.clone(),
             }));
             registry
                 .create_provider(name.to_string(), type_name.to_string(), HashMap::new())
@@ -1237,6 +1356,7 @@ mod tests {
             router,
             client_id,
             chat_calls,
+            native_calls,
         }
     }
 
@@ -2104,5 +2224,331 @@ mod tests {
         );
         assert!(h.router.free_tier_usage("p", "m1").model_is_free);
         assert!(!h.router.free_tier_usage("p", "m2").model_is_free);
+    }
+    #[tokio::test]
+    async fn adaptive_cost_sorting_keeps_selected_default_and_baseline_groups_separate() {
+        let h = harness(
+            &[
+                ("selected_unknown", Kind::ChatJson),
+                ("selected_known", Kind::ChatJson),
+                ("default", Kind::ChatJson),
+                ("baseline", Kind::ChatJson),
+            ],
+            &[("baseline", "m1")],
+            |config| {
+                let mut policy = routing_policy("missing");
+                policy.mode = lr_config::RoutingPolicyMode::ClientMode;
+                policy
+                    .options
+                    .iter_mut()
+                    .find(|option| option.id == "thorough")
+                    .unwrap()
+                    .models = vec![
+                    ("selected_unknown".into(), "m1".into()),
+                    ("selected_known".into(), "m1".into()),
+                ];
+                policy
+                    .options
+                    .iter_mut()
+                    .find(|option| option.id == "routine")
+                    .unwrap()
+                    .models = vec![("default".into(), "m1".into())];
+                let auto = config
+                    .strategies
+                    .last_mut()
+                    .unwrap()
+                    .auto_config
+                    .as_mut()
+                    .unwrap();
+                auto.routing_policy = Some(policy);
+                auto.adaptive_routing.ordering = lr_config::CandidateOrdering::EstimatedCost;
+                for (provider, price) in [("mock1", 20.0), ("mock2", 1.0), ("mock3", 0.0)] {
+                    config.pricing_overrides.insert(
+                        provider.into(),
+                        [(
+                            "m1".into(),
+                            lr_config::ModelPricingOverride {
+                                input_per_million: price,
+                                output_per_million: price,
+                            },
+                        )]
+                        .into_iter()
+                        .collect(),
+                    );
+                }
+            },
+        )
+        .await;
+        let mut request = CompletionRequest::new("localrouter/auto", vec![msg("explain")]);
+        request.metadata = Some(
+            [("localrouter.mode".into(), "plan".into())]
+                .into_iter()
+                .collect(),
+        );
+        let (response, metadata) = h.router.complete(&h.client_id, request).await.unwrap();
+        assert_eq!(response.provider, "selected_known");
+        let metadata = metadata.unwrap();
+        let candidates = metadata["explanation"]["routes"][0]["candidates"]
+            .as_array()
+            .unwrap();
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| candidate["provider"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["selected_known", "selected_unknown", "default", "baseline"]
+        );
+        assert!(candidates[1]["score"].is_null());
+        assert_eq!(candidates[0]["priority"], 1);
+        assert_eq!(metadata["inference_dispatches"], 1);
+    }
+
+    #[tokio::test]
+    async fn least_load_ordering_counts_other_endpoint_work_for_the_same_model() {
+        let h = harness(
+            &[("busy", Kind::ChatJson), ("available", Kind::ChatJson)],
+            &[("busy", "m1"), ("available", "m1")],
+            |config| {
+                config
+                    .strategies
+                    .last_mut()
+                    .unwrap()
+                    .auto_config
+                    .as_mut()
+                    .unwrap()
+                    .adaptive_routing
+                    .ordering = lr_config::CandidateOrdering::LeastInFlight;
+            },
+        )
+        .await;
+        let busy = h.router.adaptive_measurements.begin(
+            "busy",
+            "m1",
+            EndpointType::SystemOne,
+            h.router.provider_registry.routing_revision(),
+        );
+        let (response, _) = h
+            .router
+            .complete(
+                &h.client_id,
+                CompletionRequest::new("localrouter/auto", vec![msg("hello")]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.provider, "available");
+        drop(busy);
+    }
+
+    #[tokio::test]
+    async fn native_timeout_consumes_one_dispatch_and_does_not_escape_attempt_limit() {
+        let h = harness(
+            &[("slow", Kind::SlowNative), ("fast", Kind::Native)],
+            &[("slow", "m1"), ("fast", "m1")],
+            |config| {
+                let settings = &mut config
+                    .strategies
+                    .last_mut()
+                    .unwrap()
+                    .auto_config
+                    .as_mut()
+                    .unwrap()
+                    .adaptive_routing;
+                settings.max_attempts = Some(1);
+                settings.attempt_timeout_ms = Some(100);
+            },
+        )
+        .await;
+        let error = h
+            .router
+            .systemone(&h.client_id, request(Some("localrouter/auto")))
+            .await
+            .unwrap_err();
+        let AppError::RoutingExhausted { explanation, .. } = error else {
+            panic!("{error:?}")
+        };
+        assert_eq!(h.native_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(explanation["inference_dispatches"], 1);
+        assert_eq!(explanation["attempt_costs"]["unknown_calls"], 1);
+        assert!(explanation["attempts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|attempt| attempt["outcome"] == "max_attempts_exceeded"));
+    }
+
+    #[tokio::test]
+    async fn total_deadline_stops_native_fallback_and_retains_explanation() {
+        let h = harness(
+            &[("slow", Kind::SlowNative), ("fast", Kind::Native)],
+            &[("slow", "m1"), ("fast", "m1")],
+            |config| {
+                config
+                    .strategies
+                    .last_mut()
+                    .unwrap()
+                    .auto_config
+                    .as_mut()
+                    .unwrap()
+                    .adaptive_routing
+                    .total_timeout_ms = Some(100);
+            },
+        )
+        .await;
+        let error = h
+            .router
+            .systemone(&h.client_id, request(Some("localrouter/auto")))
+            .await
+            .unwrap_err();
+        let AppError::RoutingFailure { error, explanation } = error else {
+            panic!("{error:?}")
+        };
+        assert!(matches!(
+            *error,
+            AppError::RoutingDeadlineExceeded { scope: "total" }
+        ));
+        assert!(h.native_calls.load(Ordering::SeqCst) <= 1);
+        assert_eq!(
+            explanation["inference_dispatches"],
+            h.native_calls.load(Ordering::SeqCst)
+        );
+        assert!(explanation["explanation"]["config_fingerprint"].is_string());
+    }
+
+    #[tokio::test]
+    async fn translated_questions_cannot_multiply_the_actual_dispatch_limit() {
+        let h = harness(
+            &[("chat", Kind::ChatLogprobs)],
+            &[("chat", "m1")],
+            |config| {
+                config
+                    .strategies
+                    .last_mut()
+                    .unwrap()
+                    .auto_config
+                    .as_mut()
+                    .unwrap()
+                    .adaptive_routing
+                    .max_attempts = Some(1);
+            },
+        )
+        .await;
+        let error = h
+            .router
+            .systemone(&h.client_id, request(Some("localrouter/auto")))
+            .await
+            .unwrap_err();
+        let AppError::RoutingFailure { explanation, .. } = error else {
+            panic!("{error:?}")
+        };
+        assert_eq!(h.chat_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(explanation["inference_dispatches"], 1);
+        assert_eq!(explanation["attempt_costs"]["unknown_calls"], 0);
+        assert!(
+            explanation["attempt_costs"]["estimated_usd"]
+                .as_f64()
+                .unwrap()
+                > 0.0
+        );
+    }
+    #[tokio::test]
+    async fn classifier_time_already_spent_cannot_reset_the_total_routing_deadline() {
+        let h = harness(&[("chat", Kind::ChatJson)], &[("chat", "m1")], |config| {
+            config
+                .strategies
+                .last_mut()
+                .unwrap()
+                .auto_config
+                .as_mut()
+                .unwrap()
+                .adaptive_routing
+                .total_timeout_ms = Some(100);
+        })
+        .await;
+        let mut request = CompletionRequest::new("localrouter/auto", vec![msg("hello")]);
+        request.pre_computed_routing=Some(serde_json::from_value(json!({"route":"routine","source":"decision_model","reason":"policy_match","probabilities":{},"latency_ms":1000,"policy_version":1,"context_omitted":0,"classifier_cost_usd":0.02,"classifier_cost_estimated":false})).unwrap());
+        let error = h.router.complete(&h.client_id, request).await.unwrap_err();
+        let AppError::RoutingFailure { error, explanation } = error else {
+            panic!("{error:?}")
+        };
+        assert!(matches!(
+            *error,
+            AppError::RoutingDeadlineExceeded { scope: "total" }
+        ));
+        assert_eq!(h.chat_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(explanation["classifier_cost_usd"], 0.02);
+    }
+    #[tokio::test]
+    async fn completed_response_accounting_survives_a_cancelled_await() {
+        let h = harness(&[("chat", Kind::ChatJson)], &[], |_| {}).await;
+        h.router.rate_limiter.add_api_key_limiters(
+            h.client_id.clone(),
+            vec![crate::rate_limit::RateLimiter::new(
+                crate::rate_limit::RateLimitType::Cost,
+                100.0,
+                3600,
+            )],
+        );
+        let work = h.router.completed_usage(
+            &h.client_id,
+            "chat",
+            "m1",
+            UsageInfo {
+                input_tokens: 5,
+                output_tokens: 3,
+                cost_usd: 0.02,
+            },
+            false,
+        );
+        drop(work);
+        let recorded = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if let Some(usage) = h
+                    .router
+                    .rate_limiter
+                    .get_api_key_usage(&h.client_id, crate::rate_limit::RateLimitType::Cost)
+                    .await
+                {
+                    break usage.0;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!((recorded - 0.02).abs() < 1e-12);
+    }
+    #[tokio::test]
+    async fn owned_accounting_does_not_charge_a_duplicate_hop() {
+        let h = harness(&[("chat", Kind::ChatJson)], &[], |_| {}).await;
+        h.router.rate_limiter.add_api_key_limiters(
+            h.client_id.clone(),
+            vec![crate::rate_limit::RateLimiter::new(
+                crate::rate_limit::RateLimitType::Cost,
+                100.0,
+                3600,
+            )],
+        );
+        lr_types::with_outbound_trace(Some(lr_types::RequestTrace::new().next_hop()), async {
+            h.router
+                .completed_usage(
+                    &h.client_id,
+                    "chat",
+                    "m1",
+                    UsageInfo {
+                        input_tokens: 5,
+                        output_tokens: 3,
+                        cost_usd: 0.02,
+                    },
+                    false,
+                )
+                .await;
+        })
+        .await;
+        assert!(h
+            .router
+            .rate_limiter
+            .get_api_key_usage(&h.client_id, crate::rate_limit::RateLimitType::Cost)
+            .await
+            .is_none());
     }
 }

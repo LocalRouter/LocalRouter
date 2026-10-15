@@ -14,6 +14,7 @@
  * - Resources -> Model Strategies tab
  */
 
+import { AdaptiveRoutingEditor } from './AdaptiveRoutingEditor'
 import {useCallback, useEffect, useRef, useState} from "react"
 import {invoke} from "@tauri-apps/api/core"
 import {Bot, Info, List, Loader2} from "lucide-react"
@@ -241,6 +242,7 @@ export function StrategyModelConfiguration({
                 prioritized_models: strategy?.auto_config?.prioritized_models || [],
                 available_models: strategy?.auto_config?.available_models || [],
                 routing_policy: strategy?.auto_config?.routing_policy,
+                adaptive_routing: strategy?.auto_config?.adaptive_routing,
             }
             updateStrategy({auto_config: newConfig})
 
@@ -531,6 +533,21 @@ export function StrategyModelConfiguration({
                                             </CardContent>
                                         </Card>
                         </div>
+
+                        {autoConfig && <AdaptiveRoutingEditor value={autoConfig.adaptive_routing} readOnly={readOnly || saving}
+                          onSave={async adaptive_routing => {
+                            const pending = pendingUpdatesRef.current
+                            const latestAuto = pending?.auto_config === undefined ? autoConfig : pending.auto_config
+                            if (!latestAuto) throw new Error('Auto router settings changed. Reload before saving.')
+                            if (updateTimeoutRef.current) clearTimeout(updateTimeoutRef.current)
+                            setSaving(true)
+                            try {
+                              await invoke('update_strategy', { strategyId, autoConfig: { ...latestAuto, adaptive_routing }, allowedModels: pending?.allowed_models, name: pending?.name } satisfies import('@/types/tauri-commands').UpdateStrategyParams)
+                              pendingUpdatesRef.current = null
+                              await loadData()
+                              onSave?.()
+                            } finally { setSaving(false) }
+                          }} />}
 
                         {autoConfig && <RoutingPolicyEditor strategyId={strategyId} value={autoConfig.routing_policy} readOnly={readOnly || saving}
                           onSave={async policy => {

@@ -63,7 +63,8 @@ pub const BACKEND_HEADER: &str = "x-localrouter-systemone-backend";
         (status = 403, description = "Denied by permissions, the firewall, secret scanning or guardrails", body = crate::types::ErrorResponse),
         (status = 422, description = "Upstream validation error (body passed through unchanged)"),
         (status = 429, description = "Rate limited", body = crate::types::ErrorResponse),
-        (status = 502, description = "Provider error", body = crate::types::ErrorResponse)
+        (status = 502, description = "Provider error", body = crate::types::ErrorResponse),
+        (status = 504, description = "Configured routing deadline exceeded", body = crate::types::ErrorResponse)
     ),
     security(("bearer_auth" = []))
 )]

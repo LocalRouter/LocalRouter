@@ -137,6 +137,18 @@ impl From<AppError> for ApiErrorResponse {
                 ),
                 _ => ApiErrorResponse::bad_gateway(format!("Provider error: {}", message)),
             },
+            AppError::RateLimitWithRetryAfter { retry_after_secs } => {
+                Self::rate_limited_with_retry("Rate limit exceeded", retry_after_secs)
+            }
+            AppError::ProviderUnavailable {
+                message,
+                retry_after_secs,
+                ..
+            } => {
+                let mut response = Self::bad_gateway(format!("Provider error: {message}"));
+                response.retry_after_secs = retry_after_secs;
+                response
+            }
             AppError::RateLimitExceeded => ApiErrorResponse::rate_limited("Rate limit exceeded"),
             AppError::FreeTierExhausted { .. } => ApiErrorResponse::payment_required(
                 "Free tier exhausted. All free-tier providers are at capacity.",
@@ -156,6 +168,12 @@ impl From<AppError> for ApiErrorResponse {
             AppError::Storage(msg) => {
                 ApiErrorResponse::internal_error(format!("Storage error: {}", msg))
             }
+            AppError::RoutingDeadlineExceeded { scope } => Self::new(
+                StatusCode::GATEWAY_TIMEOUT,
+                "timeout_error",
+                format!("Routing {scope} deadline exceeded"),
+            )
+            .with_code("deadline_exceeded"),
             AppError::RoutingFailure { error, explanation } => {
                 let mut response = Self::from(*error);
                 response

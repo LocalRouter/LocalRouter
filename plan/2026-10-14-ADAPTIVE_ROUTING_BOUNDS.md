@@ -1,20 +1,32 @@
 # Adaptive ordering and bounded routing attempts
 
-- [ ] Inspect candidate selection, execution, streaming accounting and config/UI contracts.
-- [ ] Add opt-in per-strategy ordering (priority, estimated cost, observed TTFT, observed throughput, least in-flight), bounded passive observations with minimum samples and deterministic cold starts.
-- [ ] Preserve selected-route/default/baseline boundaries and apply shared eligibility before scoring; unknown prices are never cheapest.
-- [ ] Add explicit maximum actual attempts, per-attempt deadline and total request deadline including classification/preflight. Count gateway calls once, do not multiply upstream retries or issue speculative calls.
-- [ ] Track cancellation-safe in-flight permits, streaming TTFT/output rate and provider recovery; never restart after output or tool execution. Preserve usage accounting for cancelled/deadline streams and label unknown costs on failed calls.
-- [ ] Expose settings and sanitized candidate scores/attempt outcomes in preview, response and monitor; sync config/TS/demo and command types.
-- [ ] Add meaningful ordering/cold-start/filter/recovery/timeout/cancellation/no-stream-restart regression tests.
-- [ ] Plan Review: complete missed requirements and endpoint parity.
-- [ ] Test Coverage Review: inspect error, isolation and migration paths.
-- [ ] Bug Hunt: review cancellation, deadline propagation, stale observations and retry amplification.
-- [ ] Update stable, pin compiler PATH/RUSTC; run workspace Clippy/fmt/tests and frontend/demo checks.
-- [ ] Commit and push validated changes and automatic catalog updates, preserving unrelated work.
+- [x] Inspect candidate selection, execution, streaming accounting and config/UI contracts.
+- [x] Add opt-in per-strategy ordering (priority, estimated cost, observed TTFT, observed throughput, least in-flight), bounded passive observations with minimum samples and deterministic cold starts.
+- [x] Preserve selected-route/default/baseline boundaries and apply shared eligibility before scoring; unknown prices are never cheapest.
+- [x] Add explicit maximum actual attempts, per-attempt deadline and total request deadline including classification/preflight. Count gateway calls once, do not multiply upstream retries or issue speculative calls.
+- [x] Track cancellation-safe in-flight permits, streaming TTFT/output rate and provider recovery; never restart after output or tool execution. Preserve usage accounting for cancelled/deadline streams and label unknown costs on failed calls.
+- [x] Expose settings and sanitized candidate scores/attempt outcomes in preview, response and monitor; sync config/TS/demo and command types.
+- [x] Add meaningful ordering/cold-start/filter/recovery/timeout/cancellation/no-stream-restart regression tests.
+- [x] Plan Review: complete missed requirements and endpoint parity.
+- [x] Test Coverage Review: inspect error, isolation and migration paths.
+- [x] Bug Hunt: review cancellation, deadline propagation, stale observations and retry amplification.
+- [x] Update stable, pin compiler PATH/RUSTC; run workspace Clippy/fmt/tests and frontend/demo checks.
+- [x] Commit and push validated changes and automatic catalog updates, preserving unrelated work.
 
-Defaults retain configured priority and existing retry behavior unless a user enables bounds/ordering. The acceptable pool is the explicit route group; sorting cannot move a baseline model ahead of the selected route. Passive samples are local memory only, bounded by model keys, count and age, and are never collected via probes. Failed calls do not fabricate token/cost usage. Per-attempt timeout may leave an unknown upstream charge; expose that uncertainty. Gateway call count is local dispatches; upstream fallback is governed by existing gateway preferences.
+Defaults retain configured priority and do not enable adaptive ordering, request deadlines or infrastructure cooldowns. Typed transient HTTP errors now retain retry hints and participate in the existing intended infrastructure failover behavior. The acceptable pool is the explicit route group; sorting cannot move a baseline model ahead of the selected route. Passive samples are local memory only, bounded by model keys, count and age, and are never collected via probes. Failed calls do not fabricate token/cost usage. Per-attempt timeout may leave an unknown upstream charge; expose that uncertainty. Gateway call count is local dispatches; upstream fallback is governed by existing gateway preferences.
 
 Streaming uses a deadline for setup/first visible chunk and a total deadline during the returned stream. Once an upstream stream begins emitting, errors end that stream without automatic failover. Output-throughput statistics require completed streams with reported output tokens and positive generation time; estimates do not train ordering. TTL-aged observations and too few successful samples preserve deterministic priority. Recovery uses existing Retry-After cooldown with bounded infrastructure-error cooldown; no sleeping retry loop or same-model retry.
 
 All chat surfaces share the router. Native Decisions get endpoint-appropriate passive measurements and bounded attempts; TTFT/throughput stay unknown for nonstreaming decisions. Explicit models are not reordered. New settings belong to AutoModelConfig and are saved through update_strategy with existing permissions intact.
+
+Dispatch limits count native inference calls and each translated chat call, rather than counting a multi-call decision translation as one request. Classifier cost remains separate, with the total deadline covering classification. Cancellation-safe task-local budget scope prevents parallel translated calls from bypassing the maximum. Provider/config changes invalidate passive measurements via a local registry revision; no credential material is published.
+
+Execution review: actual dispatch counting includes translated decision calls; provider-wide Retry-After hints are honored across models/endpoints, capped to one day and never shortened by a later concurrent hint. Explicit provider reset clears them. Passive recovery has bounded jitter and no active probes. Rates resolve before dispatch; known completed usage starts owned local accounting before response adaptation so cancellation cannot erase a known charge. Duplicate-hop suppression remains enforced. Per-attempt cost summaries separate partial reported/estimated sums and unreported calls. Completed streams append a final routing snapshot; partial streams and deadline failures keep unknown final costs and safe structured errors. Scoring reports are retained from the actual selection snapshot, avoiding load changes rewriting the explanation.
+
+Gateway attempt caps count LocalRouter dispatches. Vendor fallback is governed by gateway preferences; users can set allow_fallbacks=false to let LocalRouter manage the candidate chain. No speculative inference, same-model retry loop or background measurements are added.
+
+MCP turn review: carry one absolute deadline and one shared inference-dispatch/cost counter through an auto-routed tool turn, including spawned streaming loops. Later logical model steps do not reset the budget or charge the original classifier latency again. Pin the selected local provider/model before executing tools, so later steps cannot fail over and repeat actions. Tool workers inherit the deadline through their permission context; expired workers cannot begin a gateway operation and pending permission waits time out with the request. Already-dispatched remote actions cannot be undone. Bounds default off; explicit-model requests retain existing behavior unless they are a pinned continuation of the bounded auto turn. Client-tool continuation in a new HTTP request starts a new request budget.
+
+Final review added a first-output timeout to silent streams while retaining the absolute total timeout after output. Expired buffered chunks cannot bypass the deadline. MCP turns share dispatch/cost counters and one absolute deadline; detached tool workers retain their deadline in permissions. Regression tests cover unchanged deadlines, no duplicate classifier-latency deduction, cancelled permits, tool context expiry, silent streams and no restart. Workspace validation caught an oversized async-wrapper stack; boxing the inner futures fixed all three normal-stack JSON-repair HTTP regressions without increasing the stack limit. Frontend validation: 62 unit tests, app/website type checks and both production builds pass. Final workspace checks passed on rustup stable 1.99.0 with the actual compiler PATH/RUSTC pinned: Clippy with warnings denied, formatting and all workspace tests. HTTP provider fixtures now assert typed Retry-After and transient error variants.
+
+Validation: 4,215 tests passed, 69 ignored, no failures across 107 suites (including doc tests); all 26 live gateway/routing HTTP fixtures passed. No further source changes were made after these checks.

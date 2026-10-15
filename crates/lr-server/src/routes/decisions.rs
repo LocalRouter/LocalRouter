@@ -20,7 +20,8 @@ use lr_providers::systemone::decisions::DecisionRequest;
         (status = 401, description = "Unauthorized", body = crate::types::ErrorResponse),
         (status = 403, description = "Access or content policy denied", body = crate::types::ErrorResponse),
         (status = 429, description = "Rate limited", body = crate::types::ErrorResponse),
-        (status = 502, description = "Invalid upstream response", body = crate::types::ErrorResponse)
+        (status = 502, description = "Invalid upstream response", body = crate::types::ErrorResponse),
+        (status = 504, description = "Configured routing deadline exceeded", body = crate::types::ErrorResponse)
     ), security(("bearer_auth" = []))
 )]
 pub async fn decisions(

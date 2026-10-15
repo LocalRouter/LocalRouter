@@ -1176,6 +1176,9 @@ pub async fn update_strategy(
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     tracing::info!("Updating strategy: {}", strategy_id);
+    if let Some(auto) = &auto_config {
+        auto.adaptive_routing.validate()?;
+    }
     if let Some(policy) = auto_config.as_ref().and_then(|a| a.routing_policy.as_ref()) {
         policy.validate()?;
     }

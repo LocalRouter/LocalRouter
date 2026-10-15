@@ -71,11 +71,7 @@ pub async fn create_response_raw(
 
     let status = response.status();
     if !status.is_success() {
-        let body = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "Unknown error".to_string());
-        return Err(crate::http_client::classify_openai_error(status, &body));
+        return Err(crate::http_client::response_error(response).await);
     }
 
     let raw_value: serde_json::Value = response
@@ -116,11 +112,7 @@ pub async fn stream_response(
 
     let status = response.status();
     if !status.is_success() {
-        let body = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "Unknown error".to_string());
-        return Err(crate::http_client::classify_openai_error(status, &body));
+        return Err(crate::http_client::response_error(response).await);
     }
 
     Ok(super::stream::responses_to_completion_chunks(

@@ -39,6 +39,52 @@ pub async fn run_agentic_loop_streaming(
     router: Arc<Router>,
     client: &Client,
     session: Arc<RwLock<McpViaLlmSession>>,
+    request: CompletionRequest,
+    config: &McpViaLlmConfig,
+    allowed_servers: Vec<String>,
+    pending_executions: Arc<DashMap<String, PendingMixedExecution>>,
+    guardrail_gate: Option<crate::manager::GuardrailGate>,
+    memory_service: Option<Arc<lr_memory::MemoryService>>,
+    on_transformed_request: orchestrator::TransformedRequestCallback,
+    monitor_session_id: Option<String>,
+    monitor_emit: Option<crate::manager::MonitorEmitFn>,
+    monitor_update: Option<crate::manager::MonitorUpdateFn>,
+    llm_call_event_id: Option<String>,
+) -> Result<Pin<Box<dyn futures::Stream<Item = AppResult<CompletionChunk>> + Send>>, McpViaLlmError>
+{
+    let turn = router.auto_turn_budget(&client.id, &request);
+    let fallback = turn
+        .as_ref()
+        .map(|_| orchestrator::turn_fallback_metadata(&router, &client.id, &request));
+    let future = Box::pin(run_agentic_loop_stream_inner(
+        gateway,
+        router,
+        client,
+        session,
+        request,
+        config,
+        allowed_servers,
+        pending_executions,
+        guardrail_gate,
+        memory_service,
+        on_transformed_request,
+        monitor_session_id,
+        monitor_emit,
+        monitor_update,
+        llm_call_event_id,
+    ));
+    if let Some(turn) = turn {
+        orchestrator::run_with_turn_budget(turn, fallback.unwrap(), future).await
+    } else {
+        future.await
+    }
+}
+
+async fn run_agentic_loop_stream_inner(
+    gateway: Arc<McpGateway>,
+    router: Arc<Router>,
+    client: &Client,
+    session: Arc<RwLock<McpViaLlmSession>>,
     mut request: CompletionRequest,
     config: &McpViaLlmConfig,
     allowed_servers: Vec<String>,
@@ -188,9 +234,14 @@ pub async fn run_agentic_loop_streaming(
     // Channel for streaming chunks to the caller
     let (tx, rx) = tokio::sync::mpsc::channel::<AppResult<CompletionChunk>>(64);
 
+    // Carry the same budget into the spawned loop; task locals are not inherited.
+    let turn_context = lr_router::adaptive::current_turn();
+    let turn_fallback = turn_context
+        .as_ref()
+        .map(|_| orchestrator::turn_fallback_metadata(&router, &client_id, &request));
     // Spawn the multi-segment streaming loop
     lr_types::spawn_traced(async move {
-        let result = streaming_loop(
+        let future = Box::pin(streaming_loop(
             gateway,
             router,
             session,
@@ -214,16 +265,22 @@ pub async fn run_agentic_loop_streaming(
             monitor_update,
             llm_call_event_id,
             monitor_session_id,
-        )
-        .await;
+        ));
+        let result = if let Some(turn) = turn_context {
+            orchestrator::run_with_turn_budget(turn, turn_fallback.unwrap(), future).await
+        } else {
+            future.await
+        };
 
         if let Err(e) = result {
             tracing::error!("MCP via LLM streaming loop error: {}", e);
             let _ = tx
-                .send(Err(lr_types::AppError::Internal(format!(
-                    "MCP via LLM streaming error: {}",
-                    e
-                ))))
+                .send(Err(match e {
+                    McpViaLlmError::Router(error) => error,
+                    error => lr_types::AppError::Internal(format!(
+                        "MCP via LLM streaming error: {error}"
+                    )),
+                }))
                 .await;
         }
     });
@@ -446,6 +503,12 @@ async fn streaming_loop(
         }
 
         // Reconstruct the full message from accumulated deltas
+        if request.model == "localrouter/auto" {
+            if let Some(model) = &resolved_model {
+                request.model = model.clone();
+                request.pre_computed_routing = None;
+            }
+        }
         let tool_calls = if accumulated_tool_calls.is_empty() {
             None
         } else {
@@ -1160,8 +1223,6 @@ async fn execute_resource_read_background(
         return Err("missing 'name' parameter".to_string());
     }
 
-    let timeout = std::time::Duration::from_secs(orchestrator::TOOL_EXECUTION_TIMEOUT_SECS);
-
     // Helper to send a resources/read request
     let read_resource =
         |resource_name: String, servers: Vec<String>, rts: Vec<lr_mcp::protocol::Root>| {
@@ -1195,7 +1256,7 @@ async fn execute_resource_read_background(
 
     // Try exact read first
     let response = match tokio::time::timeout(
-        timeout,
+        orchestrator::tool_timeout(permissions)?,
         read_resource(name.to_string(), allowed_servers.clone(), roots.clone()),
     )
     .await
@@ -1231,7 +1292,7 @@ async fn execute_resource_read_background(
     };
 
     let list_response = match tokio::time::timeout(
-        timeout,
+        orchestrator::tool_timeout(permissions)?,
         gateway.handle_request_with_skills(
             client_id,
             Some(&permissions.session_key),
@@ -1281,7 +1342,7 @@ async fn execute_resource_read_background(
         Some((idx, match_kind)) => {
             let resolved = &resource_names[idx];
             let retry_response = match tokio::time::timeout(
-                timeout,
+                orchestrator::tool_timeout(permissions)?,
                 read_resource(resolved.clone(), allowed_servers, roots),
             )
             .await
@@ -1489,7 +1550,7 @@ async fn execute_prompt_get_background(
         })),
     };
 
-    let timeout = std::time::Duration::from_secs(orchestrator::TOOL_EXECUTION_TIMEOUT_SECS);
+    let timeout = orchestrator::tool_timeout(permissions)?;
     let response = match tokio::time::timeout(
         timeout,
         gateway.handle_request_with_skills(

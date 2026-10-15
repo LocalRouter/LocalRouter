@@ -333,15 +333,7 @@ impl ModelProvider for OpenRouterProvider {
             .map_err(|e| AppError::Provider(format!("Failed to send completion request: {}", e)))?;
 
         if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "Unknown error".to_string());
-            return Err(AppError::Provider(format!(
-                "OpenRouter API error ({}): {}",
-                status, error_text
-            )));
+            return Err(crate::http_client::response_error(response).await);
         }
 
         let raw: serde_json::Value = response
@@ -421,15 +413,7 @@ impl ModelProvider for OpenRouterProvider {
             })?;
 
         if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "Unknown error".to_string());
-            return Err(AppError::Provider(format!(
-                "OpenRouter API error ({}): {}",
-                status, error_text
-            )));
+            return Err(crate::http_client::response_error(response).await);
         }
 
         let lines = crate::sse_lines::line_batches(response.bytes_stream());
@@ -557,15 +541,7 @@ impl ModelProvider for OpenRouterProvider {
 
         let status = response.status();
         if !status.is_success() {
-            let error_text = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "Unknown error".to_string());
-
-            return Err(AppError::Provider(format!(
-                "OpenRouter API error ({}): {}",
-                status, error_text
-            )));
+            return Err(crate::http_client::response_error(response).await);
         }
 
         let api_response: serde_json::Value = response

@@ -4,7 +4,7 @@
 - [x] P0 Decisions API: typed contract, validation, native gateway support, legacy translation, refusal/image handling, route/OpenAPI, monitoring and tests.
 - [x] P1 Advanced gateway options: typed configuration/request options, policy intersection, upstream attribution/costs and UI.
 - [x] P1 Routing explanation and dry-run preview.
-- [ ] P1 Adaptive ordering and bounded attempts/deadlines.
+- [x] P1 Adaptive ordering and bounded attempts/deadlines.
 - [ ] P1 Session affinity, classifier reuse and prompt-cache accounting.
 - [ ] P1 Local replay and model/policy evaluation (promoted by user).
 - [ ] P2 Opt-in exact response cache.
@@ -102,3 +102,9 @@ P1 preferences/attribution committed and pushed as d63e7311. Routing explanation
 P1 routing explanations and cached-only preview are complete. Shared filters, exact-mode preview, unknown semantic decisions, policy/config fingerprints and classifier overhead now reach normal/streaming responses, native Decisions, structured failures and the monitor. Explicit classifier tests remain opt-in. Review fixed adapter metadata restoration, post-request eligibility drift, dropped Responses/MCP traces, permanent-error status preservation and missing failed stream attempts. Validation: stable 1.99.0 pinned, workspace Clippy/fmt/tests (4,182 passed, 69 ignored), all 23 live HTTP/OpenAPI fixtures, 62 frontend unit regressions and app/demo types/builds passed.
 
 Next implementation plan saved before code: plan/2026-10-14-ADAPTIVE_ROUTING_BOUNDS.md. Remaining roadmap items remain pending, including P1 local replay.
+
+## P1 adaptive ordering and bounds review
+
+Implemented opt-in cost/TTFT/throughput/load ordering with bounded passive samples, minimum observations, deterministic cold starts and preserved route groups. Attempts count actual dispatches, including translated decisions; total deadlines cover classification, preflight and streams. MCP tool turns share one deadline and dispatch/cost counter, pin their selected model before tool execution and stop expired tool workers. Provider Retry-After and typed infrastructure errors survive native and compatible transports. Preview/monitor show scores, attempts and partial known/unknown costs. Configuration, UI, TypeScript and demo contracts are synchronized.
+
+Plan Review, Test Coverage Review and Bug Hunt caught and fixed buffered chunks bypassing expiry, independent MCP step budgets, lost completed accounting on cancellation and oversized async-wrapper futures. Stable 1.99.0 validation with pinned compiler PATH/RUSTC passed: workspace Clippy/fmt, 4,215 tests passed/69 ignored across 107 suites, all 26 live HTTP fixtures, 62 frontend unit tests, app/website types and both production builds. Details: plan/2026-10-14-ADAPTIVE_ROUTING_BOUNDS.md. All later slices remain pending.

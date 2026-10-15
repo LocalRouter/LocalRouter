@@ -3095,8 +3095,11 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // ============================================================================
   // Strategies
   // ============================================================================
-  'list_strategies': () => mockData.strategies,
-  'get_strategy': (args) => mockData.strategies.find(s => s.id === args?.strategyId || s.id === args?.id),
+  'list_strategies': () => mockData.strategies.map(strategy => ({ ...strategy, rate_limits: strategy.rate_limits.map(limit => ({ ...limit, enabled: 'enabled' in limit ? Boolean(limit.enabled) : true })) })),
+  'get_strategy': (args) => {
+    const strategy = mockData.strategies.find(s => s.id === args?.strategyId || s.id === args?.id)
+    return strategy ? { ...strategy, rate_limits: strategy.rate_limits.map(limit => ({ ...limit, enabled: 'enabled' in limit ? Boolean(limit.enabled) : true })) } : undefined
+  },
   'recover_client_strategy': (args) => {
     const client = mockData.clients.find(c => c.id === args?.clientId || c.client_id === args?.clientId)
     if (!client) throw new Error(`Client not found: ${args?.clientId}`)
@@ -3144,7 +3147,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       if (args?.modelPermissions !== undefined && args.modelPermissions !== null) (strategy as Record<string, unknown>).model_permissions = args.modelPermissions
       if (args?.allowedModels !== undefined && args.allowedModels !== null) strategy.allowed_models = args.allowedModels
       if (args?.autoConfig !== undefined) strategy.auto_config = args.autoConfig
-      if (args?.rateLimits !== undefined && args.rateLimits !== null) strategy.rate_limits = args.rateLimits
+      if (args?.rateLimits !== undefined && args.rateLimits !== null) strategy.rate_limits = args.rateLimits.map((limit: import('@app/types/tauri-commands').StrategyRateLimitInput) => ({ ...limit, enabled: limit.enabled ?? true }))
       if (args?.freeTierOnly !== undefined && args.freeTierOnly !== null) (strategy as Record<string, unknown>).free_tier_only = args.freeTierOnly
       if (args?.freeTierFallback !== undefined && args.freeTierFallback !== null) (strategy as Record<string, unknown>).free_tier_fallback = args.freeTierFallback
     }
@@ -4182,7 +4185,9 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       const models: [string, string][] = selected.length ? selected : baseline
       return { route, candidates: models.map(([provider, model], priority) => ({ provider, model, priority, eligible: true,
         exclusions: [], unknown_checks: ['demo_simulation', 'runtime_readiness', 'provider_quota'], retry_after_secs: null,
-        gateway_preferences: null, pricing: null })) }
+        gateway_preferences: null, pricing: null, ordering: 'priority' as const, score: priority,
+        estimated_request_cost_usd: null, estimated_output_tokens: 1024, execution_priority: priority,
+        observed_performance: { in_flight: 0, ttft_ms: null, output_tokens_per_second: null, ttft_samples: 0, throughput_samples: 0, retry_after_ms: null } })) }
     })
     return { decision, context: { latest_user_request: args.prompt, request_context: { mode: args.mode, mode_source: 'demo' }, conversation: [] },
       explanation: { policy_fingerprint: `demo-policy-${policy.version}`, config_fingerprint: 'demo-config',

@@ -260,6 +260,10 @@ fn validate_strategies(config: &AppConfig) -> AppResult<()> {
 
         // Validate auto config if present
         if let Some(auto_config) = &strategy.auto_config {
+            auto_config
+                .adaptive_routing
+                .validate()
+                .map_err(AppError::Config)?;
             if let Some(policy) = &auto_config.routing_policy {
                 policy.validate().map_err(AppError::Config)?;
             }

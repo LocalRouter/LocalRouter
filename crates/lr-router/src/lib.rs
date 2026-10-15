@@ -17,6 +17,7 @@ use lr_providers::{
 };
 use lr_types::{AppError, AppResult};
 
+pub mod adaptive;
 pub mod decision_routing;
 pub mod endpoint_cache;
 pub mod explanation;
@@ -86,6 +87,10 @@ impl RouterError {
     /// Classify an AppError into a RouterError
     pub fn classify(error: &AppError, provider: &str, model: &str) -> Self {
         match error {
+            AppError::RoutingDeadlineExceeded { .. } => RouterError::Unreachable {
+                provider: provider.into(),
+                model: model.into(),
+            },
             AppError::RoutingFailure { error, .. } => Self::classify(error, provider, model),
             // Prefer typed variants. Providers that parse their own error
             // bodies (OpenAI via `classify_openai_style_error`) produce these
@@ -102,6 +107,15 @@ impl RouterError {
                 provider: provider.to_string(),
                 model: model.to_string(),
                 endpoint: "model_not_found".to_string(),
+            },
+            AppError::RateLimitWithRetryAfter { retry_after_secs } => RouterError::RateLimited {
+                provider: provider.into(),
+                model: model.into(),
+                retry_after_secs: *retry_after_secs,
+            },
+            AppError::ProviderUnavailable { .. } => RouterError::Unreachable {
+                provider: provider.into(),
+                model: model.into(),
             },
             AppError::RateLimitExceeded => RouterError::RateLimited {
                 provider: provider.to_string(),
@@ -474,6 +488,7 @@ pub struct Router {
     rate_limiter: Arc<RateLimiterManager>,
     metrics_collector: Arc<lr_monitoring::metrics::MetricsCollector>,
     decision_slots: tokio::sync::Semaphore,
+    adaptive_measurements: Arc<adaptive::AdaptiveMeasurements>,
     free_tier_manager: Arc<FreeTierManager>,
     health_cache: Option<Arc<lr_providers::health_cache::HealthCacheManager>>,
     endpoint_cache: Arc<EndpointCapabilityCache>,
@@ -519,6 +534,8 @@ fn build_routing_metadata(
                 "exclusions",
                 "unknown_checks",
                 "retry_after_secs",
+                "cost_usd",
+                "cost_source",
             ] {
                 if let Some(value) = attempt.get(key) {
                     safe[key] = value.clone();
@@ -567,6 +584,7 @@ impl Router {
             rate_limiter,
             metrics_collector,
             decision_slots: tokio::sync::Semaphore::new(8),
+            adaptive_measurements: Arc::new(adaptive::AdaptiveMeasurements::default()),
             free_tier_manager: Arc::new(FreeTierManager::new(None)),
             health_cache: None,
             endpoint_cache: Arc::new(EndpointCapabilityCache::new(
@@ -589,6 +607,7 @@ impl Router {
             rate_limiter,
             metrics_collector,
             decision_slots: tokio::sync::Semaphore::new(8),
+            adaptive_measurements: Arc::new(adaptive::AdaptiveMeasurements::default()),
             free_tier_manager,
             health_cache: None,
             endpoint_cache: Arc::new(EndpointCapabilityCache::new(
@@ -865,10 +884,7 @@ impl Router {
                 .ok_or_else(|| {
                     AppError::Router(format!("Provider '{}' not found", final_provider))
                 })?;
-            let pricing = self
-                .provider_registry
-                .get_pricing(&final_provider, &final_model)
-                .await;
+            let pricing = self.request_pricing(&final_provider, &final_model).await;
             let free_tier = self.free_tier_usage(&final_provider, &final_model);
             let mut modified_request = request.without_routing_metadata();
             modified_request.model = final_model.clone();
@@ -876,15 +892,46 @@ impl Router {
                 &modified_request.messages,
                 modified_request.tools.as_deref(),
             );
-            let stream = match provider_instance.stream_complete(modified_request).await {
+            let observation = self.adaptive_measurements.begin(
+                &final_provider,
+                &final_model,
+                lr_providers::EndpointType::Chat,
+                self.provider_registry.routing_revision(),
+            );
+            let first_output_deadline =
+                adaptive::current_turn().and_then(|turn| turn.attempt_deadline());
+            let stream = match adaptive::dispatch_in_turn(async {
+                adaptive::reserve_inference_dispatch()?;
+                provider_instance.stream_complete(modified_request).await
+            })
+            .await
+            {
                 Ok(s) => s,
                 Err(e) => {
+                    self.record_retry_hint(&final_provider, &final_model, &e);
                     let router_error = RouterError::classify(&e, &final_provider, &final_model);
                     if matches!(router_error, RouterError::Unreachable { .. }) {
                         self.report_provider_failure(&final_provider, &e.to_string());
                     }
                     return Err(e);
                 }
+            };
+            let stream = adaptive::observe_stream(
+                stream,
+                observation,
+                adaptive::current_turn().and_then(|turn| turn.deadline()),
+                first_output_deadline,
+                false,
+            );
+            let stream = if let Some(turn) = adaptive::current_turn() {
+                adaptive::routing_stream(
+                    stream,
+                    turn.metadata().unwrap_or_default(),
+                    turn.cost_handle(),
+                    pricing.clone(),
+                )
+            } else {
+                stream
             };
             let resolved_model = format!("{}/{}", final_provider, final_model);
             Ok((
@@ -1177,9 +1224,142 @@ impl Router {
         Ok(())
     }
 
+    pub fn auto_turn_budget(
+        &self,
+        client_id: &str,
+        request: &CompletionRequest,
+    ) -> Option<Arc<adaptive::TurnBudget>> {
+        if request.model != "localrouter/auto" {
+            return None;
+        }
+        let (_, strategy) = self.validate_client_and_strategy(client_id).ok()?;
+        let config = &strategy.auto_config.as_ref()?.adaptive_routing;
+        Some(adaptive::TurnBudget::new(
+            config,
+            request
+                .pre_computed_routing
+                .as_ref()
+                .map_or(0, |decision| decision.latency_ms),
+        ))
+    }
+    pub fn turn_deadline_error(&self, client_id: &str, request: &CompletionRequest) -> AppError {
+        match self.validate_client_and_strategy(client_id) {
+            Ok((_, strategy)) => self.deadline_routing_error(
+                &strategy,
+                request,
+                lr_providers::EndpointType::Chat,
+                "total_deadline_exceeded",
+            ),
+            Err(error) => error,
+        }
+    }
+
+    fn record_retry_hint(&self, provider: &str, _model: &str, error: &AppError) {
+        match error {
+            AppError::RateLimitWithRetryAfter { retry_after_secs } => self
+                .free_tier_manager
+                .record_server_retry_after(provider, *retry_after_secs),
+            AppError::ProviderUnavailable {
+                retry_after_secs: Some(seconds),
+                ..
+            } => self
+                .free_tier_manager
+                .record_server_retry_after(provider, *seconds),
+            AppError::RoutingFailure { error, .. } => {
+                self.record_retry_hint(provider, _model, error)
+            }
+            _ => {}
+        }
+    }
+
+    async fn request_pricing(&self, provider: &str, model: &str) -> lr_providers::PricingInfo {
+        let config = self.config_manager.get();
+        if let Some(pricing) = self.provider_registry.effective_pricing_override(
+            provider,
+            model,
+            &config.pricing_overrides,
+        ) {
+            return lr_providers::PricingInfo {
+                input_cost_per_1k: pricing.input_per_million / 1000.0,
+                output_cost_per_1k: pricing.output_per_million / 1000.0,
+                ..lr_providers::PricingInfo::free()
+            };
+        }
+        self.provider_registry.get_pricing(provider, model).await
+    }
+
+    /// Start accounting synchronously after a completed upstream response.
+    /// Awaiting this task preserves ordinary ordering; dropping the await leaves
+    /// the owned local accounting job running instead of losing known charges.
+    fn completed_usage(
+        &self,
+        client_id: &str,
+        provider: &str,
+        model: &str,
+        usage: UsageInfo,
+        free_tier_only: bool,
+    ) -> Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+        if lr_types::is_duplicate_hop() {
+            return Box::pin(async {});
+        }
+        let free_tier = self.free_tier_usage(provider, model);
+        self.free_tier_manager.record_usage(
+            provider,
+            &free_tier.kind,
+            free_tier.model_is_free,
+            usage.input_tokens.saturating_add(usage.output_tokens),
+            usage.cost_usd,
+        );
+        if free_tier_only {
+            if usage.cost_usd > 0.0 {
+                self.free_tier_manager.record_cost_trigger(provider);
+            } else {
+                self.free_tier_manager.record_cost_free(provider);
+            }
+        }
+        let rate_limiter = self.rate_limiter.clone();
+        let client_id = client_id.to_string();
+        let work = async move {
+            if let Err(error) = rate_limiter.record_api_key_usage(&client_id, &usage).await {
+                warn!(
+                    "Failed to record usage for client '{}': {}",
+                    client_id, error
+                );
+            }
+        };
+        if tokio::runtime::Handle::try_current().is_ok() {
+            let job = lr_types::spawn_traced(work);
+            Box::pin(async move {
+                if let Err(error) = job.await {
+                    warn!("Usage accounting job failed: {error}");
+                }
+            })
+        } else {
+            Box::pin(work)
+        }
+    }
+
     /// Execute a completion request on a specific provider/model
     /// This is the core execution logic extracted from the old complete() method
     async fn execute_request(
+        &self,
+        client_id: &str,
+        provider: &str,
+        model: &str,
+        request: CompletionRequest,
+        free_tier_only: bool,
+    ) -> AppResult<CompletionResponse> {
+        adaptive::dispatch_in_turn(Box::pin(self.execute_request_inner(
+            client_id,
+            provider,
+            model,
+            request,
+            free_tier_only,
+        )))
+        .await
+    }
+
+    async fn execute_request_inner(
         &self,
         client_id: &str,
         provider: &str,
@@ -1269,19 +1449,47 @@ impl Router {
             }
         }
 
+        provider_instance.validate_gateway_options(&request)?;
+        let pricing = self.request_pricing(provider, model).await;
+        adaptive::reserve_inference_dispatch()?;
+        let mut observation = self.adaptive_measurements.begin(
+            provider,
+            model,
+            lr_providers::EndpointType::Chat,
+            self.provider_registry.routing_revision(),
+        );
         // Execute the completion
         let mut response = match provider_instance.complete(modified_request).await {
             Ok(resp) => resp,
             Err(e) => {
                 // Mark provider unhealthy for infrastructure errors (not content/policy/rate-limit)
+                self.record_retry_hint(provider, model, &e);
                 let router_error = RouterError::classify(&e, provider, model);
                 if matches!(router_error, RouterError::Unreachable { .. }) {
+                    observation.infrastructure_failure(adaptive::current_infrastructure_cooldown());
                     self.report_provider_failure(provider, &e.to_string());
                 }
                 return Err(e);
             }
         };
 
+        observation.success();
+        drop(observation);
+
+        let reported_cost = lr_providers::gateway::reported_cost(response.extensions.as_ref());
+        let cost = reported_cost.unwrap_or_else(|| pricing.cost(&response.usage));
+        adaptive::record_completed_cost(cost, reported_cost.is_some());
+        let accounting = self.completed_usage(
+            client_id,
+            provider,
+            model,
+            UsageInfo {
+                input_tokens: response.usage.prompt_tokens as u64,
+                output_tokens: response.usage.completion_tokens as u64,
+                cost_usd: cost,
+            },
+            free_tier_only,
+        );
         // Apply feature adapters to response if needed
         if let Some(ref extensions) = request.extensions {
             for feature_name in extensions.keys() {
@@ -1297,47 +1505,7 @@ impl Router {
         response.provider = provider.to_string();
         response.model = model.to_string();
 
-        // Calculate cost and record usage for rate limiting
-        let pricing = self.provider_registry.get_pricing(provider, model).await;
-
-        let cost = lr_providers::gateway::reported_cost(response.extensions.as_ref())
-            .unwrap_or_else(|| pricing.cost(&response.usage));
-
-        let usage = UsageInfo {
-            input_tokens: response.usage.prompt_tokens as u64,
-            output_tokens: response.usage.completion_tokens as u64,
-            cost_usd: cost,
-        };
-
-        // Record usage for rate limiting
-        if let Err(e) = self
-            .rate_limiter
-            .record_api_key_usage(client_id, &usage)
-            .await
-        {
-            warn!("Failed to record usage for API key '{}': {}", client_id, e);
-        }
-
-        // Record free tier usage
-        let free_tier = self.free_tier_usage(provider, model);
-        let total_tokens =
-            response.usage.prompt_tokens as u64 + response.usage.completion_tokens as u64;
-        self.free_tier_manager.record_usage(
-            provider,
-            &free_tier.kind,
-            free_tier.model_is_free,
-            total_tokens,
-            cost,
-        );
-
-        // Cost watchdog: track whether this request cost money (free tier mode only)
-        if free_tier_only {
-            if cost > 0.0 {
-                self.free_tier_manager.record_cost_trigger(provider);
-            } else {
-                self.free_tier_manager.record_cost_free(provider);
-            }
-        }
+        accounting.await;
 
         Ok(response)
     }
@@ -1390,9 +1558,33 @@ impl Router {
             ));
         }
 
-        let (selected_models, routing_decision) = self
-            .select_models_for_auto_routing(client_id, strategy, auto_config, &request)
-            .await;
+        let mut budget = adaptive::RoutingBudget::new(&auto_config.adaptive_routing);
+        if let Some(decision) = &request.pre_computed_routing {
+            budget.account_classifier_latency(decision.latency_ms);
+        }
+        let (selected_models, routing_decision) = budget
+            .preflight(self.select_models_for_auto_routing(
+                client_id,
+                strategy,
+                auto_config,
+                &request,
+            ))
+            .await
+            .map_err(|reason| {
+                self.deadline_routing_error(
+                    strategy,
+                    &request,
+                    lr_providers::EndpointType::Chat,
+                    reason,
+                )
+            })?;
+        let (selected_models, scored_candidates) = self.order_auto_models(
+            strategy,
+            &request,
+            &selected_models,
+            routing_decision.as_ref(),
+            lr_providers::EndpointType::Chat,
+        );
 
         if selected_models.is_empty() {
             return Err(AppError::Router(
@@ -1413,6 +1605,8 @@ impl Router {
             &request,
             routing_decision.as_ref(),
         );
+        initial_metadata["explanation"]["routes"][0]["candidates"] =
+            serde_json::json!(scored_candidates);
         let mut last_error = None;
         let mut min_retry_after: u64 = u64::MAX;
         let candidate_models: Vec<String> = selected_models
@@ -1422,6 +1616,11 @@ impl Router {
         let mut attempts: Vec<serde_json::Value> = Vec::new();
 
         for (idx, (provider, model)) in selected_models.iter().enumerate() {
+            if let Some(reason) = budget.exhausted() {
+                attempts
+                    .push(serde_json::json!({"provider":provider,"model":model,"outcome":reason}));
+                break;
+            }
             let assessment = self.assess_chat_candidate(strategy, provider, model, &request, idx);
             if let Some(outcome) = assessment.exclusions.first() {
                 if let Some(seconds) = assessment.retry_after_secs {
@@ -1450,7 +1649,17 @@ impl Router {
 
             // Check free tier constraints (when free_tier_only is enabled)
             if strategy.free_tier_only {
-                let status = self.classify_for_free_tier(provider, model).await;
+                let status = budget
+                    .preflight(self.classify_for_free_tier(provider, model))
+                    .await
+                    .map_err(|reason| {
+                        self.deadline_routing_error(
+                            strategy,
+                            &request,
+                            lr_providers::EndpointType::Chat,
+                            reason,
+                        )
+                    })?;
                 match status {
                     free_tier::ModelFreeStatus::AlwaysFree
                     | free_tier::ModelFreeStatus::FreeWithinLimits
@@ -1493,32 +1702,37 @@ impl Router {
                 continue;
             }
 
+            let attempt_revision = self.provider_registry.routing_revision();
             let attempt_start = std::time::Instant::now();
-            match self
-                .execute_request(
+            match budget
+                .dispatch(self.execute_request(
                     client_id,
                     provider,
                     model,
                     request.clone(),
                     strategy.free_tier_only,
-                )
+                ))
                 .await
             {
                 Ok(response) => {
                     let attempt_ms = attempt_start.elapsed().as_millis() as u64;
                     info!("Auto-routing succeeded with {}/{}", provider, model);
                     self.free_tier_manager.clear_backoff(provider, model);
-                    attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "success", "duration_ms": attempt_ms}));
+                    attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "success", "duration_ms": attempt_ms,"cost_usd":lr_providers::gateway::reported_cost(response.extensions.as_ref()),"cost_source":if lr_providers::gateway::reported_cost(response.extensions.as_ref()).is_some(){"reported"}else{"unknown"}}));
                     let mut routing_meta = build_routing_metadata(
                         routing_decision.as_ref(),
                         &candidate_models,
                         attempts,
                         Some(idx),
                     );
+                    routing_meta["attempt_costs"] = serde_json::json!(budget.costs());
+                    routing_meta["inference_dispatches"] =
+                        serde_json::json!(budget.dispatch_count());
                     routing_meta
                         .as_object_mut()
                         .unwrap()
                         .extend(initial_metadata.as_object().unwrap().clone());
+                    adaptive::remember_turn_metadata(&routing_meta);
                     let mut response = response;
                     response
                         .extensions
@@ -1528,6 +1742,16 @@ impl Router {
                 }
                 Err(e) => {
                     let attempt_ms = attempt_start.elapsed().as_millis() as u64;
+                    if matches!(e, AppError::RoutingDeadlineExceeded { .. }) {
+                        self.adaptive_measurements.record_infrastructure_failure(
+                            provider,
+                            model,
+                            lr_providers::EndpointType::Chat,
+                            attempt_revision,
+                            auto_config.adaptive_routing.infrastructure_cooldown,
+                        );
+                    }
+                    self.record_retry_hint(provider, model, &e);
                     let router_error = RouterError::classify(&e, provider, model);
                     warn!(
                         "Auto-routing attempt failed: {}",
@@ -1579,6 +1803,9 @@ impl Router {
                             .as_object_mut()
                             .unwrap()
                             .extend(initial_metadata.as_object().unwrap().clone());
+                        metadata["attempt_costs"] = serde_json::json!(budget.costs());
+                        metadata["inference_dispatches"] =
+                            serde_json::json!(budget.dispatch_count());
                         return Err(AppError::RoutingFailure {
                             error: Box::new(e),
                             explanation: Box::new(metadata),
@@ -1628,6 +1855,18 @@ impl Router {
             .as_object_mut()
             .unwrap()
             .extend(initial_metadata.as_object().unwrap().clone());
+        metadata["attempt_costs"] = serde_json::json!(budget.costs());
+        metadata["inference_dispatches"] = serde_json::json!(budget.dispatch_count());
+        metadata["failed_call_costs"] = serde_json::json!("unknown");
+        if budget
+            .deadline
+            .is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
+        {
+            return Err(AppError::RoutingFailure {
+                error: Box::new(AppError::RoutingDeadlineExceeded { scope: "total" }),
+                explanation: Box::new(metadata),
+            });
+        }
         Err(AppError::RoutingExhausted {
             message: format!("All auto-routing models failed. Last error: {detail}"),
             explanation: Box::new(metadata),
@@ -1655,9 +1894,33 @@ impl Router {
             ));
         }
 
-        let (selected_models, routing_decision) = self
-            .select_models_for_auto_routing(client_id, strategy, auto_config, &request)
-            .await;
+        let mut budget = adaptive::RoutingBudget::new(&auto_config.adaptive_routing);
+        if let Some(decision) = &request.pre_computed_routing {
+            budget.account_classifier_latency(decision.latency_ms);
+        }
+        let (selected_models, routing_decision) = budget
+            .preflight(self.select_models_for_auto_routing(
+                client_id,
+                strategy,
+                auto_config,
+                &request,
+            ))
+            .await
+            .map_err(|reason| {
+                self.deadline_routing_error(
+                    strategy,
+                    &request,
+                    lr_providers::EndpointType::Chat,
+                    reason,
+                )
+            })?;
+        let (selected_models, scored_candidates) = self.order_auto_models(
+            strategy,
+            &request,
+            &selected_models,
+            routing_decision.as_ref(),
+            lr_providers::EndpointType::Chat,
+        );
 
         if selected_models.is_empty() {
             return Err(AppError::Router(
@@ -1678,6 +1941,8 @@ impl Router {
             &request,
             routing_decision.as_ref(),
         );
+        initial_metadata["explanation"]["routes"][0]["candidates"] =
+            serde_json::json!(scored_candidates);
         let mut last_error = None;
         let candidate_models: Vec<String> = selected_models
             .iter()
@@ -1686,6 +1951,11 @@ impl Router {
         let mut attempts: Vec<serde_json::Value> = Vec::new();
 
         for (idx, (provider, model)) in selected_models.iter().enumerate() {
+            if let Some(reason) = budget.exhausted() {
+                attempts
+                    .push(serde_json::json!({"provider":provider,"model":model,"outcome":reason}));
+                break;
+            }
             let assessment = self.assess_chat_candidate(strategy, provider, model, &request, idx);
             if let Some(outcome) = assessment.exclusions.first() {
                 if let Some(seconds) = assessment.retry_after_secs {
@@ -1712,7 +1982,17 @@ impl Router {
 
             // Check free tier constraints (when free_tier_only is enabled)
             if strategy.free_tier_only {
-                let status = self.classify_for_free_tier(provider, model).await;
+                let status = budget
+                    .preflight(self.classify_for_free_tier(provider, model))
+                    .await
+                    .map_err(|reason| {
+                        self.deadline_routing_error(
+                            strategy,
+                            &request,
+                            lr_providers::EndpointType::Chat,
+                            reason,
+                        )
+                    })?;
                 match status {
                     free_tier::ModelFreeStatus::AlwaysFree
                     | free_tier::ModelFreeStatus::FreeWithinLimits
@@ -1787,8 +2067,39 @@ impl Router {
                 &modified_request.messages,
                 modified_request.tools.as_deref(),
             );
-            match provider_instance.stream_complete(modified_request).await {
+            let pricing = budget
+                .preflight(self.request_pricing(provider, model))
+                .await
+                .map_err(|reason| {
+                    self.deadline_routing_error(
+                        strategy,
+                        &request,
+                        lr_providers::EndpointType::Chat,
+                        reason,
+                    )
+                })?;
+            let observation = self.adaptive_measurements.begin(
+                provider,
+                model,
+                lr_providers::EndpointType::Chat,
+                self.provider_registry.routing_revision(),
+            );
+            let first_output_deadline = budget.attempt_deadline();
+            match budget
+                .dispatch(async {
+                    adaptive::reserve_inference_dispatch()?;
+                    provider_instance.stream_complete(modified_request).await
+                })
+                .await
+            {
                 Ok(stream) => {
+                    let stream = adaptive::observe_stream(
+                        stream,
+                        observation,
+                        budget.deadline,
+                        first_output_deadline,
+                        auto_config.adaptive_routing.infrastructure_cooldown,
+                    );
                     info!(
                         "Auto-routing streaming succeeded with {}/{}",
                         provider, model
@@ -1801,26 +2112,21 @@ impl Router {
                         attempts,
                         Some(idx),
                     );
+                    routing_meta["attempt_costs"] = serde_json::json!(budget.costs());
+                    routing_meta["inference_dispatches"] =
+                        serde_json::json!(budget.dispatch_count());
                     routing_meta
                         .as_object_mut()
                         .unwrap()
                         .extend(initial_metadata.as_object().unwrap().clone());
-                    let stream_metadata = routing_meta.clone();
-                    let mut first = true;
-                    let stream = Box::pin(stream.map(move |result| {
-                        result.map(|mut chunk| {
-                            if first {
-                                chunk
-                                    .extensions
-                                    .get_or_insert_with(Default::default)
-                                    .insert("localrouter.routing".into(), stream_metadata.clone());
-                                first = false;
-                            }
-                            chunk
-                        })
-                    }));
+                    adaptive::remember_turn_metadata(&routing_meta);
+                    let stream = adaptive::routing_stream(
+                        stream,
+                        routing_meta.clone(),
+                        budget.cost_handle(),
+                        pricing.clone(),
+                    );
                     let resolved_model = format!("{}/{}", provider, model);
-                    let pricing = self.provider_registry.get_pricing(provider, model).await;
                     let free_tier = self.free_tier_usage(provider, model);
                     return Ok((
                         wrap_stream_with_usage_tracking(
@@ -1839,12 +2145,20 @@ impl Router {
                     ));
                 }
                 Err(e) => {
+                    let mut observation = observation;
+                    self.record_retry_hint(provider, model, &e);
                     let router_error = RouterError::classify(&e, provider, model);
                     warn!(
                         "Auto-routing streaming attempt failed: {}",
                         router_error.to_log_string()
                     );
 
+                    if matches!(router_error, RouterError::Unreachable { .. }) {
+                        observation.infrastructure_failure(
+                            auto_config.adaptive_routing.infrastructure_cooldown,
+                        );
+                    }
+                    drop(observation);
                     // Mark provider unhealthy for infrastructure errors
                     if matches!(router_error, RouterError::Unreachable { .. }) {
                         self.report_provider_failure(provider, &e.to_string());
@@ -1895,6 +2209,9 @@ impl Router {
                             .as_object_mut()
                             .unwrap()
                             .extend(initial_metadata.as_object().unwrap().clone());
+                        metadata["attempt_costs"] = serde_json::json!(budget.costs());
+                        metadata["inference_dispatches"] =
+                            serde_json::json!(budget.dispatch_count());
                         return Err(AppError::RoutingFailure {
                             error: Box::new(e),
                             explanation: Box::new(metadata),
@@ -1943,6 +2260,18 @@ impl Router {
             .as_object_mut()
             .unwrap()
             .extend(initial_metadata.as_object().unwrap().clone());
+        metadata["attempt_costs"] = serde_json::json!(budget.costs());
+        metadata["inference_dispatches"] = serde_json::json!(budget.dispatch_count());
+        metadata["failed_call_costs"] = serde_json::json!("unknown");
+        if budget
+            .deadline
+            .is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
+        {
+            return Err(AppError::RoutingFailure {
+                error: Box::new(AppError::RoutingDeadlineExceeded { scope: "total" }),
+                explanation: Box::new(metadata),
+            });
+        }
         Err(AppError::RoutingExhausted {
             message: format!("All auto-routing streaming models failed. Last error: {detail}"),
             explanation: Box::new(metadata),
@@ -2255,15 +2584,46 @@ impl Router {
                 &modified_request.messages,
                 modified_request.tools.as_deref(),
             );
-            let stream = match provider_instance.stream_complete(modified_request).await {
+            let observation = self.adaptive_measurements.begin(
+                &provider,
+                &model,
+                lr_providers::EndpointType::Chat,
+                self.provider_registry.routing_revision(),
+            );
+            let first_output_deadline =
+                adaptive::current_turn().and_then(|turn| turn.attempt_deadline());
+            let stream = match adaptive::dispatch_in_turn(async {
+                adaptive::reserve_inference_dispatch()?;
+                provider_instance.stream_complete(modified_request).await
+            })
+            .await
+            {
                 Ok(s) => s,
                 Err(e) => {
+                    self.record_retry_hint(&provider, &model, &e);
                     let router_error = RouterError::classify(&e, &provider, &model);
                     if matches!(router_error, RouterError::Unreachable { .. }) {
                         self.report_provider_failure(&provider, &e.to_string());
                     }
                     return Err(e);
                 }
+            };
+            let stream = adaptive::observe_stream(
+                stream,
+                observation,
+                adaptive::current_turn().and_then(|turn| turn.deadline()),
+                first_output_deadline,
+                false,
+            );
+            let stream = if let Some(turn) = adaptive::current_turn() {
+                adaptive::routing_stream(
+                    stream,
+                    turn.metadata().unwrap_or_default(),
+                    turn.cost_handle(),
+                    pricing.clone(),
+                )
+            } else {
+                stream
             };
             let resolved_model = format!("{}/{}", provider, model);
             return Ok((
@@ -2373,15 +2733,46 @@ impl Router {
             &modified_request.messages,
             modified_request.tools.as_deref(),
         );
-        let stream = match provider_instance.stream_complete(modified_request).await {
+        let observation = self.adaptive_measurements.begin(
+            &final_provider,
+            &final_model,
+            lr_providers::EndpointType::Chat,
+            self.provider_registry.routing_revision(),
+        );
+        let first_output_deadline =
+            adaptive::current_turn().and_then(|turn| turn.attempt_deadline());
+        let stream = match adaptive::dispatch_in_turn(async {
+            adaptive::reserve_inference_dispatch()?;
+            provider_instance.stream_complete(modified_request).await
+        })
+        .await
+        {
             Ok(s) => s,
             Err(e) => {
+                self.record_retry_hint(&final_provider, &final_model, &e);
                 let router_error = RouterError::classify(&e, &final_provider, &final_model);
                 if matches!(router_error, RouterError::Unreachable { .. }) {
                     self.report_provider_failure(&final_provider, &e.to_string());
                 }
                 return Err(e);
             }
+        };
+        let stream = adaptive::observe_stream(
+            stream,
+            observation,
+            adaptive::current_turn().and_then(|turn| turn.deadline()),
+            first_output_deadline,
+            false,
+        );
+        let stream = if let Some(turn) = adaptive::current_turn() {
+            adaptive::routing_stream(
+                stream,
+                turn.metadata().unwrap_or_default(),
+                turn.cost_handle(),
+                pricing.clone(),
+            )
+        } else {
+            stream
         };
         let resolved_model = format!("{}/{}", final_provider, final_model);
         Ok((
@@ -2434,6 +2825,7 @@ impl Router {
         let response = match provider_instance.embed(modified_request).await {
             Ok(resp) => resp,
             Err(e) => {
+                self.record_retry_hint(provider, model, &e);
                 let router_error = RouterError::classify(&e, provider, model);
                 if matches!(router_error, RouterError::Unreachable { .. }) {
                     self.report_provider_failure(provider, &e.to_string());
@@ -2444,7 +2836,7 @@ impl Router {
 
         // Embeddings only consume input tokens
         let total_tokens = response.usage.prompt_tokens as u64;
-        let pricing = self.provider_registry.get_pricing(provider, model).await;
+        let pricing = self.request_pricing(provider, model).await;
         let cost = calculate_cost(total_tokens, 0, None, &pricing);
 
         // Record usage for rate limiting (embeddings have simpler usage)
@@ -2586,6 +2978,7 @@ impl Router {
                     return Ok(response);
                 }
                 Err(e) => {
+                    self.record_retry_hint(provider, model, &e);
                     let router_error = RouterError::classify(&e, provider, model);
                     warn!(
                         "Auto-routing embeddings attempt failed: {}",
@@ -2775,6 +3168,7 @@ impl Router {
         let response = match provider_instance.transcribe(modified_request).await {
             Ok(resp) => resp,
             Err(e) => {
+                self.record_retry_hint(provider, model, &e);
                 let router_error = RouterError::classify(&e, provider, model);
                 if matches!(router_error, RouterError::Unreachable { .. }) {
                     self.report_provider_failure(provider, &e.to_string());
@@ -2885,6 +3279,7 @@ impl Router {
         let response = match provider_instance.translate_audio(modified_request).await {
             Ok(resp) => resp,
             Err(e) => {
+                self.record_retry_hint(provider, model, &e);
                 let router_error = RouterError::classify(&e, provider, model);
                 if matches!(router_error, RouterError::Unreachable { .. }) {
                     self.report_provider_failure(provider, &e.to_string());
@@ -2997,6 +3392,7 @@ impl Router {
         let response = match provider_instance.speech(modified_request).await {
             Ok(resp) => resp,
             Err(e) => {
+                self.record_retry_hint(provider, model, &e);
                 let router_error = RouterError::classify(&e, provider, model);
                 if matches!(router_error, RouterError::Unreachable { .. }) {
                     self.report_provider_failure(provider, &e.to_string());

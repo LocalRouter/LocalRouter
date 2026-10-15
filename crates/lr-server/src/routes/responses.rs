@@ -163,7 +163,8 @@ pub struct ReasoningRequest {
         (status = 400, description = "Bad request", body = crate::types::ErrorResponse),
         (status = 401, description = "Unauthorized", body = crate::types::ErrorResponse),
         (status = 429, description = "Rate limit exceeded", body = crate::types::ErrorResponse),
-        (status = 500, description = "Internal server error", body = crate::types::ErrorResponse)
+        (status = 500, description = "Internal server error", body = crate::types::ErrorResponse),
+        (status = 504, description = "Configured routing deadline exceeded", body = crate::types::ErrorResponse)
     ),
     security(
         ("bearer_auth" = [])
@@ -945,6 +946,13 @@ fn build_stream_response(
                     // returned here, leaving the event un-completed —
                     // which left the UI's "in flight" indicator stuck
                     // and dropped the failure from the access log.
+                    let api_error:ApiErrorResponse=e.into();
+                    let error_status=api_error.status.as_u16();
+                    let error_message=api_error.error.error.message.clone();
+                    let error_body=serde_json::to_value(api_error.error.as_ref()).unwrap_or_default();
+                    if let Some(routing)=api_error.error.extensions.as_ref().and_then(|extensions| extensions.get("localrouter.routing")) {
+                        super::monitor_helpers::update_llm_call_routing(&state,&llm_event_id,routing);
+                    }
                     let frame = ResponsesSseFrame {
                         event: "response.failed".into(),
                         data: serde_json::json!({
@@ -952,7 +960,8 @@ fn build_stream_response(
                             "response": {
                                 "id": response_id,
                                 "status": "failed",
-                                "error": { "message": e.to_string() },
+                                "error": error_body["error"],
+                                "extensions":error_body["extensions"],
                             },
                         }),
                     };
@@ -965,8 +974,8 @@ fn build_stream_response(
                         &llm_event_id,
                         &provider_for_err,
                         &model_for_err,
-                        502,
-                        &e.to_string(),
+                        error_status,
+                        &error_message,
                     );
                     return;
                 }

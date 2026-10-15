@@ -1002,6 +1002,12 @@ function RoutingInfoView({ info }: { info: EventData }) {
           ]} />
         </Section>
       )}
+      {(info.inference_dispatches != null || info.attempt_costs) && <Section title="Upstream attempts"><Properties items={[
+        ['Inference calls', info.inference_dispatches != null ? String(info.inference_dispatches) : null],
+        ['Failed-call cost', info.failed_call_costs],
+        ['Classifier time', !decision && info.classifier_latency_ms != null ? `${info.classifier_latency_ms} ms` : null],
+        ['Classifier cost', !decision && info.classifier_cost_usd != null ? `${info.classifier_cost_estimated ? 'estimated ' : ''}$${Number(info.classifier_cost_usd).toFixed(6)}` : null],
+      ]} />{info.attempt_costs && <JsonTree data={info.attempt_costs} />}</Section>}
       {info.explanation && <Section title="Eligibility and policy version"><JsonTree data={info.explanation} /></Section>}
       {(info.routellm_tier || info.routellm_win_rate != null) && (
         <Section title="Legacy routing">

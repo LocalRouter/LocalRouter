@@ -17,11 +17,7 @@ import {
   SelectValue,
 } from "@/components/ui/Select"
 
-export interface StrategyRateLimit {
-  limit_type: "requests" | "input_tokens" | "output_tokens" | "total_tokens" | "cost"
-  value: number
-  time_window: "minute" | "hour" | "day"
-}
+export type StrategyRateLimit = import('@/types/tauri-commands').StrategyRateLimitInput
 
 interface RateLimitEditorProps {
   limits: StrategyRateLimit[]

@@ -46,7 +46,8 @@ use lr_providers::{ChatMessage as ProviderChatMessage, ChatMessageContent};
         (status = 400, description = "Bad request", body = crate::types::ErrorResponse),
         (status = 401, description = "Unauthorized", body = crate::types::ErrorResponse),
         (status = 429, description = "Rate limit exceeded", body = crate::types::ErrorResponse),
-        (status = 500, description = "Internal server error", body = crate::types::ErrorResponse)
+        (status = 500, description = "Internal server error", body = crate::types::ErrorResponse),
+        (status = 504, description = "Configured routing deadline exceeded", body = crate::types::ErrorResponse)
     ),
     security(
         ("bearer_auth" = [])
@@ -821,7 +822,7 @@ fn usage_chunk_event(
     include_usage: bool,
 ) -> Event {
     let chunk = CompletionChunk {
-        extensions: tracked.gateway_extensions(),
+        extensions: tracked.response_extensions(),
         id: id.to_string(),
         object: "text_completion".to_string(),
         created,
@@ -978,13 +979,8 @@ async fn handle_streaming(
             Err(e) => {
                 tracing::error!("Error in streaming: {}", e);
                 // Return error in SSE format with actual error message
-                let error_response = serde_json::json!({
-                    "error": {
-                        "message": format!("Streaming error: {}", e),
-                        "type": "server_error",
-                        "code": "streaming_error"
-                    }
-                });
+                let error_response =
+                    super::monitor_helpers::streaming_error_body(e, "Streaming error");
                 Some(Ok(Event::default().data(
                     serde_json::to_string(&error_response)
                         .unwrap_or_else(|_| "[ERROR]".to_string()),
@@ -996,7 +992,7 @@ async fn handle_streaming(
     let sse_stream = sse_stream.chain(futures::stream::iter(std::iter::once(()).flat_map(
         move |_| {
             let mut tail = Vec::new();
-            if include_usage || tracker_end.lock().gateway_extensions().is_some() {
+            if include_usage || tracker_end.lock().response_extensions().is_some() {
                 tail.push(Ok(usage_chunk_event(
                     &gen_id_end,
                     created_timestamp,
@@ -1256,13 +1252,7 @@ async fn handle_streaming_parallel(
                             }
                             Some(Err(e)) => {
                                 tracing::error!("Error in streaming: {}", e);
-                                let error_response = serde_json::json!({
-                                    "error": {
-                                        "message": format!("Streaming error: {}", e),
-                                        "type": "server_error",
-                                        "code": "streaming_error"
-                                    }
-                                });
+                                let error_response = super::monitor_helpers::streaming_error_body(e,"Streaming error");
                                 let event = Ok(Event::default().data(
                                     serde_json::to_string(&error_response)
                                         .unwrap_or_else(|_| "[ERROR]".to_string()),
@@ -1355,7 +1345,7 @@ async fn handle_streaming_parallel(
             // End of stream for a client that is still there and allowed
             // to see it: optional usage chunk, then [DONE]
             if gate_state != GuardrailGate::Denied && !event_tx.is_closed() {
-                if include_usage || tracker.gateway_extensions().is_some() {
+                if include_usage || tracker.response_extensions().is_some() {
                     let _ = event_tx
                         .send(Ok(usage_chunk_event(
                             &gen_id,

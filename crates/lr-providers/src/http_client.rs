@@ -190,7 +190,60 @@ pub fn classify_openai_error(status: reqwest::StatusCode, body: &str) -> AppErro
             status: s.as_u16(),
             message: format!("API error ({}): {}", s, body),
         },
+        s if s.is_server_error() => AppError::ProviderUnavailable {
+            status: s.as_u16(),
+            message: format!("API error ({}): {}", status, body),
+            retry_after_secs: None,
+        },
         _ => AppError::Provider(format!("API error ({}): {}", status, body)),
+    }
+}
+
+/// Parse standard seconds/HTTP-date hints, bounding untrusted values to one day.
+pub(crate) fn retry_after(
+    headers: &reqwest::header::HeaderMap,
+    now: std::time::SystemTime,
+) -> Option<u64> {
+    let value = headers
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim();
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Some(seconds.min(86_400));
+    }
+    let target = httpdate::parse_http_date(value).ok()?;
+    let delay = target.duration_since(now).unwrap_or_default();
+    Some(
+        delay
+            .as_secs()
+            .saturating_add(u64::from(delay.subsec_nanos() > 0))
+            .min(86_400),
+    )
+}
+/// Capture headers before consuming an error body; native transports share this path.
+pub async fn response_error(response: reqwest::Response) -> AppError {
+    let status = response.status();
+    let delay = retry_after(response.headers(), std::time::SystemTime::now());
+    let body = response
+        .text()
+        .await
+        .unwrap_or_else(|_| "Unknown error".into());
+    with_retry_after(classify_openai_error(status, &body), delay)
+}
+pub(crate) fn with_retry_after(error: AppError, delay: Option<u64>) -> AppError {
+    match error {
+        AppError::RateLimitExceeded if delay.is_some() => AppError::RateLimitWithRetryAfter {
+            retry_after_secs: delay.unwrap(),
+        },
+        AppError::ProviderUnavailable {
+            status, message, ..
+        } => AppError::ProviderUnavailable {
+            status,
+            message,
+            retry_after_secs: delay,
+        },
+        error => error,
     }
 }
 
@@ -297,7 +350,9 @@ mod tests {
     fn test_classify_unparseable_body_falls_back() {
         let err = classify_openai_error(StatusCode::INTERNAL_SERVER_ERROR, "gateway down");
         match err {
-            AppError::Provider(msg) => assert!(msg.contains("API error (500")),
+            AppError::ProviderUnavailable { message, .. } => {
+                assert!(message.contains("API error (500"))
+            }
             other => panic!("expected Provider, got {:?}", other),
         }
     }
@@ -325,11 +380,11 @@ mod tests {
             AppError::ProviderStatus { status: 403, .. }
         ));
 
-        // 5xx stays a generic Provider error (→ 502 downstream), NOT a
+        // 5xx remains a typed transient error (→ 502 downstream), not a
         // pass-through client status.
         assert!(matches!(
             classify_openai_error(StatusCode::BAD_GATEWAY, "upstream boom"),
-            AppError::Provider(_)
+            AppError::ProviderUnavailable { .. }
         ));
     }
 
@@ -478,5 +533,75 @@ mod usage_poll_tests {
             .await
             .unwrap_err();
         assert_eq!(err, FetchError::RateLimited(Some(7)));
+    }
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+    use reqwest::header::{HeaderMap, HeaderValue, RETRY_AFTER};
+    #[test]
+    fn retry_after_supports_seconds_dates_and_safe_bounds() {
+        let now = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        let mut headers = HeaderMap::new();
+        for (value, expected) in [
+            ("5".to_string(), Some(5)),
+            (
+                httpdate::fmt_http_date(now + std::time::Duration::from_secs(13)),
+                Some(13),
+            ),
+            (
+                httpdate::fmt_http_date(now - std::time::Duration::from_secs(1)),
+                Some(0),
+            ),
+            (u64::MAX.to_string(), Some(86400)),
+            ("bad".to_string(), None),
+        ] {
+            headers.insert(RETRY_AFTER, HeaderValue::from_str(&value).unwrap());
+            assert_eq!(retry_after(&headers, now), expected);
+        }
+    }
+    #[tokio::test]
+    async fn response_error_keeps_retry_headers_and_distinguishes_transient_failures() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(path("/limited"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "7"))
+            .mount(&server)
+            .await;
+        Mock::given(path("/down"))
+            .respond_with(ResponseTemplate::new(503).insert_header("Retry-After", "11"))
+            .mount(&server)
+            .await;
+        let client = reqwest::Client::new();
+        assert!(matches!(
+            response_error(
+                client
+                    .get(format!("{}/limited", server.uri()))
+                    .send()
+                    .await
+                    .unwrap()
+            )
+            .await,
+            AppError::RateLimitWithRetryAfter {
+                retry_after_secs: 7
+            }
+        ));
+        assert!(matches!(
+            response_error(
+                client
+                    .get(format!("{}/down", server.uri()))
+                    .send()
+                    .await
+                    .unwrap()
+            )
+            .await,
+            AppError::ProviderUnavailable {
+                status: 503,
+                retry_after_secs: Some(11),
+                ..
+            }
+        ));
     }
 }

@@ -983,3 +983,19 @@ fn truncate_string(s: &str, max_len: usize) -> String {
         format!("{}...", &s[..end])
     }
 }
+
+/// Keep the standard SSE error shape while retaining safe router extensions.
+pub(super) fn streaming_error_body<E>(error: E, label: &str) -> serde_json::Value
+where
+    E: Into<crate::middleware::error::ApiErrorResponse> + std::fmt::Display,
+{
+    let message = format!("{label}: {error}");
+    let mut api = error.into();
+    api.error.error.message = message;
+    let mut body = serde_json::to_value(api.error.as_ref()).unwrap_or_default();
+    body["error"]["type"] = serde_json::json!("server_error");
+    if body["error"]["code"].is_null() {
+        body["error"]["code"] = serde_json::json!("streaming_error");
+    }
+    body
+}

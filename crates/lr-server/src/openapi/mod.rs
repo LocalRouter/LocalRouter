@@ -82,6 +82,8 @@ use utoipa::OpenApi;
             lr_providers::gateway::GatewayCostSource,
             lr_providers::gateway::GatewayCostScope,
             lr_router::explanation::RoutingExplanation,
+        lr_router::adaptive::ObservedPerformance,
+        lr_router::adaptive::AttemptCosts,
             lr_router::explanation::RouteExplanation,
             lr_router::explanation::CandidateExplanation,
             lr_router::explanation::PriceEstimate,

@@ -16,9 +16,11 @@ use tokio::sync::Mutex as AsyncMutex;
 use tracing::{debug, error, info};
 use uuid::Uuid;
 
+mod adaptive_routing;
 pub mod known_client_tools;
 mod migration;
 mod routing_policy;
+pub use adaptive_routing::*;
 mod storage;
 pub mod types;
 pub use routing_policy::*;

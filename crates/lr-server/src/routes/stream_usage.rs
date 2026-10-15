@@ -297,13 +297,13 @@ pub(crate) async fn finalize_stream(
         totals.completion_tokens as u64,
         inputs.created_at.timestamp(),
     );
-    if let Some(extensions) = tracked.gateway_extensions() {
+    if let Some(extensions) = tracked.response_extensions() {
         wire_body["extensions"] = serde_json::json!(extensions);
     }
     super::finalize::finalize_streaming_at_end(
         &inputs,
         StreamingFinalizeSummary {
-            extensions: tracked.gateway_extensions(),
+            extensions: tracked.response_extensions(),
             provider,
             model,
             prompt_tokens: totals.prompt_tokens,

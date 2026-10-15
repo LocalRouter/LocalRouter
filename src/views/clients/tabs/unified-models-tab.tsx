@@ -14,6 +14,7 @@
  * 4. Routing policies
  */
 
+import { AdaptiveRoutingEditor } from '@/components/strategy/AdaptiveRoutingEditor'
 import { useState, useEffect, useCallback, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listenSafe } from "@/hooks/useTauriListener"
@@ -763,6 +764,24 @@ export function UnifiedModelsTab({
         )}
       </Card>
       )}
+
+      {!restricted && autoConfig && <AdaptiveRoutingEditor value={autoConfig.adaptive_routing} readOnly={saving}
+        onSave={async adaptive_routing => {
+          const pending = pendingUpdatesRef.current
+          const latestAuto = pending?.auto_config === undefined ? autoConfig : pending.auto_config
+          if (!latestAuto) throw new Error('Auto router settings changed. Reload before saving.')
+          if (updateTimeoutRef.current) clearTimeout(updateTimeoutRef.current)
+          setSaving(true)
+          try {
+            await invoke('update_strategy', { strategyId: strategy.id, name: pending?.name,
+              allowedModels: pending?.allowed_models, modelPermissions: pending?.model_permissions,
+              autoConfig: { ...latestAuto, adaptive_routing }, rateLimits: pending?.rate_limits,
+              freeTierOnly: pending?.free_tier_only, freeTierFallback: pending?.free_tier_fallback } satisfies import('@/types/tauri-commands').UpdateStrategyParams)
+            pendingUpdatesRef.current = null
+            await loadData()
+            onUpdate()
+          } finally { setSaving(false) }
+        }} />}
 
       {!restricted && autoConfig && <RoutingPolicyEditor strategyId={strategy.id} value={autoConfig.routing_policy} readOnly={saving}
         onSave={async policy => {

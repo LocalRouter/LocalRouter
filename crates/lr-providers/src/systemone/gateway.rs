@@ -472,6 +472,8 @@ impl SystemOneGateway {
             .map_err(|e| {
                 AppError::Provider(format!("connection to {} failed: {e}", self.systemone_url))
             })?;
+        let retry_after =
+            crate::http_client::retry_after(resp.headers(), std::time::SystemTime::now());
         let status = resp.status().as_u16();
         let request_id = resp
             .headers()
@@ -483,7 +485,10 @@ impl SystemOneGateway {
             .await
             .map_err(|e| AppError::Provider(format!("failed to read response: {e}")))?;
         if !(200..300).contains(&status) {
-            return Err(map_systemone_error(status, text));
+            return Err(crate::http_client::with_retry_after(
+                map_systemone_error(status, text),
+                retry_after,
+            ));
         }
         let mut payload = match self.wire {
             GatewayWire::Plain

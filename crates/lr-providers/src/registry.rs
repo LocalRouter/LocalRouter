@@ -7,7 +7,7 @@
 //! - Provides model aggregation across all providers
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 #[cfg(test)]
@@ -281,6 +281,7 @@ pub struct ProviderRegistry {
 
     /// Guard to prevent concurrent incremental refreshes
     refresh_in_progress: AtomicBool,
+    routing_revision: AtomicU64,
 }
 
 /// A registered provider instance
@@ -364,6 +365,10 @@ pub struct ProviderInstanceInfo {
 }
 
 impl ProviderRegistry {
+    /// Process-local provider/config epoch, without credential material.
+    pub fn routing_revision(&self) -> u64 {
+        self.routing_revision.load(Ordering::SeqCst)
+    }
     // ===== INITIALIZATION =====
 
     /// Create a new provider registry
@@ -377,6 +382,7 @@ impl ProviderRegistry {
             model_cache: Arc::new(RwLock::new(HashMap::new())),
             cache_config: Arc::new(RwLock::new(ModelCacheConfig::default())),
             refresh_in_progress: AtomicBool::new(false),
+            routing_revision: AtomicU64::new(0),
         }
     }
 }
@@ -571,6 +577,7 @@ impl ProviderRegistry {
             .write()
             .insert(instance_name.clone(), instance);
 
+        self.routing_revision.fetch_add(1, Ordering::SeqCst);
         info!("Successfully created provider instance: {}", instance_name);
         Ok(())
     }
@@ -662,6 +669,7 @@ impl ProviderRegistry {
 
         // Remove the old instance
         self.instances.write().remove(&instance_name);
+        self.routing_revision.fetch_add(1, Ordering::SeqCst);
 
         // Get factory
         let factory = self
@@ -695,6 +703,7 @@ impl ProviderRegistry {
         // A new base URL, key or discovery setting lists different models.
         self.model_cache.write().remove(&instance_name);
 
+        self.routing_revision.fetch_add(1, Ordering::SeqCst);
         info!("Successfully updated provider instance: {}", instance_name);
         Ok(())
     }
@@ -722,6 +731,7 @@ impl ProviderRegistry {
             return Ok(());
         };
         self.model_cache.write().remove(instance_name);
+        self.routing_revision.fetch_add(1, Ordering::SeqCst);
         info!("Removed provider instance: {}", instance_name);
         // Drop the health manager's reference too, so a provider that owns
         // resources (child processes, loaded models) is actually released.
@@ -751,6 +761,9 @@ impl ProviderRegistry {
             AppError::Config(format!("Provider instance '{}' not found", instance_name))
         })?;
 
+        if instance.enabled != enabled {
+            self.routing_revision.fetch_add(1, Ordering::SeqCst);
+        }
         instance.enabled = enabled;
         info!("Set provider '{}' enabled: {}", instance_name, enabled);
         Ok(())
@@ -966,6 +979,9 @@ impl ProviderRegistry {
             let instance = instances.get_mut(instance_name).ok_or_else(|| {
                 AppError::Config(format!("Provider instance '{}' not found", instance_name))
             })?;
+            if instance.model_settings != settings {
+                self.routing_revision.fetch_add(1, Ordering::SeqCst);
+            }
             instance.model_settings = settings.clone();
         }
         let offered = {

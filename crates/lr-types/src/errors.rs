@@ -30,6 +30,9 @@ pub enum AppError {
         explanation: Box<serde_json::Value>,
     },
 
+    #[error("Routing {scope} deadline exceeded")]
+    RoutingDeadlineExceeded { scope: &'static str },
+
     /// Preserve the original error/status while adding safe routing facts.
     #[error("{error}")]
     RoutingFailure {
@@ -54,6 +57,16 @@ pub enum AppError {
 
     #[error("Authentication failed")]
     Unauthorized,
+
+    #[error("Rate limit exceeded (retry after {retry_after_secs}s)")]
+    RateLimitWithRetryAfter { retry_after_secs: u64 },
+
+    #[error("Provider error: {message}")]
+    ProviderUnavailable {
+        status: u16,
+        message: String,
+        retry_after_secs: Option<u64>,
+    },
 
     #[error("Rate limit exceeded")]
     RateLimitExceeded,

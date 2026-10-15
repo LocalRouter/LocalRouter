@@ -1048,15 +1048,7 @@ impl ModelProvider for OpenAIProvider {
 
         let status = response.status();
         if !status.is_success() {
-            let error_text = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "Unknown error".to_string());
-
-            return Err(crate::http_client::classify_openai_error(
-                status,
-                &error_text,
-            ));
+            return Err(crate::http_client::response_error(response).await);
         }
 
         let openai_response: OpenAIChatResponse = response
@@ -1177,15 +1169,7 @@ impl ModelProvider for OpenAIProvider {
 
         let status = response.status();
         if !status.is_success() {
-            let error_text = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "Unknown error".to_string());
-
-            return Err(crate::http_client::classify_openai_error(
-                status,
-                &error_text,
-            ));
+            return Err(crate::http_client::response_error(response).await);
         }
 
         // Parse SSE (Server-Sent Events) stream with proper line buffering
@@ -1303,15 +1287,7 @@ impl ModelProvider for OpenAIProvider {
 
         let status = response.status();
         if !status.is_success() {
-            let error_text = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "Unknown error".to_string());
-
-            return Err(crate::http_client::classify_openai_error(
-                status,
-                &error_text,
-            ));
+            return Err(crate::http_client::response_error(response).await);
         }
 
         let openai_response: OpenAIEmbeddingResponse = response
@@ -1378,15 +1354,7 @@ impl ModelProvider for OpenAIProvider {
 
         let status = response.status();
         if !status.is_success() {
-            let error_text = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "Unknown error".to_string());
-
-            return Err(crate::http_client::classify_openai_error(
-                status,
-                &error_text,
-            ));
+            return Err(crate::http_client::response_error(response).await);
         }
 
         let openai_response: serde_json::Value = response
@@ -1460,15 +1428,7 @@ impl ModelProvider for OpenAIProvider {
 
         let status = response.status();
         if !status.is_success() {
-            let error_text = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "Unknown error".to_string());
-
-            return Err(crate::http_client::classify_openai_error(
-                status,
-                &error_text,
-            ));
+            return Err(crate::http_client::response_error(response).await);
         }
 
         let transcription: super::AudioTranscriptionResponse = response
@@ -1518,15 +1478,7 @@ impl ModelProvider for OpenAIProvider {
 
         let status = response.status();
         if !status.is_success() {
-            let error_text = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "Unknown error".to_string());
-
-            return Err(crate::http_client::classify_openai_error(
-                status,
-                &error_text,
-            ));
+            return Err(crate::http_client::response_error(response).await);
         }
 
         let translation: super::AudioTranslationResponse = response
@@ -1550,15 +1502,7 @@ impl ModelProvider for OpenAIProvider {
 
         let status = response.status();
         if !status.is_success() {
-            let error_text = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "Unknown error".to_string());
-
-            return Err(crate::http_client::classify_openai_error(
-                status,
-                &error_text,
-            ));
+            return Err(crate::http_client::response_error(response).await);
         }
 
         // Determine content type from response headers or requested format
