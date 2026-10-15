@@ -42,6 +42,8 @@ pub struct RouteExplanation {
 pub struct RoutingExplanation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub named_route: Option<Value>,
     pub policy_fingerprint: String,
     pub config_fingerprint: String,
     pub active_route: Option<String>,
@@ -804,10 +806,44 @@ impl Router {
         policy: &RoutingPolicy,
         request: &CompletionRequest,
     ) -> Option<PreComputedRouting> {
-        if let Some(decision) =
-            decision_routing::deterministic_decision(policy, request.metadata.as_ref())
+        self.deterministic_routing_decision_inner(strategy, policy, request)
+            .map(|mut decision| {
+                decision.route_config_fingerprint =
+                    Some(fingerprint(json!(strategy.routing_scope())));
+                decision
+            })
+    }
+    fn deterministic_routing_decision_inner(
+        &self,
+        strategy: &Strategy,
+        policy: &RoutingPolicy,
+        request: &CompletionRequest,
+    ) -> Option<PreComputedRouting> {
+        let existing = decision_routing::deterministic_decision(policy, request.metadata.as_ref());
+        if existing.as_ref().is_some_and(|decision| {
+            decision.source == "client_mode"
+                || decision.reason.starts_with("invalid_policy")
+                || decision.reason == "policy_disabled"
+        }) {
+            return existing;
+        }
+        let trusted_client = request
+            .extensions
+            .as_ref()
+            .is_some_and(|e| e.contains_key(lr_providers::privacy::ROUTE_CLIENT_EXTENSION));
+        if !trusted_client
+            && policy
+                .rules
+                .iter()
+                .any(|rule| !rule.condition.client_ids.is_empty() || rule.branches.len() > 1)
         {
+            return None;
+        }
+        if let Some(decision) = self.rule_routing_decision(strategy, policy, request) {
             return Some(decision);
+        }
+        if existing.is_some() {
+            return existing;
         }
         let (provider, model) = policy.decision_model.as_ref()?;
         if !strategy.is_model_allowed(provider, model) {
@@ -895,9 +931,10 @@ impl Router {
             .all(|route| route.candidates.iter().all(|candidate| !candidate.eligible));
         RoutingExplanation {
             session: None,
+            named_route: strategy.auto_config.as_ref().map(|auto| json!({"alias":auto.model_name,"revision":if strategy.route_versions.active_matches(auto) {strategy.route_versions.active_revision} else {None},"modified_since_publication":strategy.route_versions.active_revision.is_some() && !strategy.route_versions.active_matches(auto)})),
             policy_fingerprint: fingerprint(json!(policy)),
             config_fingerprint: fingerprint(
-                json!({"provider_revision":self.provider_registry.routing_revision(),"adaptive":strategy.auto_config.as_ref().map(|auto| &auto.adaptive_routing),"session_routing":strategy.auto_config.as_ref().map(|auto| &auto.session_routing),"policy":policy,"permissions":strategy.model_permissions,"free_tier_only":strategy.free_tier_only,"limits":strategy.rate_limits,"routes":projection}),
+                json!({"provider_revision":self.provider_registry.routing_revision(),"named_route_revision":strategy.active_named_revision(),"adaptive":strategy.auto_config.as_ref().map(|auto| &auto.adaptive_routing),"session_routing":strategy.auto_config.as_ref().map(|auto| &auto.session_routing),"policy":policy,"permissions":strategy.model_permissions,"free_tier_only":strategy.free_tier_only,"limits":strategy.rate_limits,"routes":projection}),
             ),
             active_route: policy
                 .enabled

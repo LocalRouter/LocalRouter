@@ -1968,7 +1968,7 @@ async fn replay_policy_uses_shared_rubric_and_reports_classifier_separately() {
     let mut request = replay_request();
     request.targets = vec![lr_replay::ReplayTarget::Policy {
         name: "Draft policy".into(),
-        policy: localrouter::config::RoutingPolicy {
+        policy: Box::new(localrouter::config::RoutingPolicy {
             enabled: true,
             decision_model: Some(("native".into(), "english".into())),
             default_route: "fast".into(),
@@ -1985,7 +1985,7 @@ async fn replay_policy_uses_shared_rubric_and_reports_classifier_separately() {
                 },
             ],
             ..Default::default()
-        },
+        }),
     }];
     request.cases[0].checks = vec![lr_replay::TaskCheck::ExpectedRoute {
         route: "fast".into(),
@@ -2706,3 +2706,6 @@ mod batches_endpoint_cases;
 
 #[path = "fixtures/credential_security_cases.rs"]
 mod credential_security_cases;
+
+#[path = "fixtures/named_routes_endpoint_cases.rs"]
+mod named_routes_endpoint_cases;

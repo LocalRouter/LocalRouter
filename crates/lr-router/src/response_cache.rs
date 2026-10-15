@@ -380,6 +380,12 @@ impl crate::Router {
             self.response_cache.bypass(client);
             return None;
         }
+        // Derived local routing state is stripped from the actual provider wire
+        // too. It is not an opaque vendor action and must not disable caching.
+        if let Some(extensions) = request.get_mut("extensions").and_then(Value::as_object_mut) {
+            extensions.remove(lr_providers::privacy::ROUTE_CLIENT_EXTENSION);
+            extensions.remove(lr_providers::privacy::INTERNAL_EXTENSION);
+        }
         let extensions = request.get("extensions").and_then(Value::as_object)?;
         let scope_info = extensions.get(lr_providers::response_cache::SCOPE)?;
         let scope = scope_info.get("credential")?.as_str()?.to_string();
@@ -422,7 +428,7 @@ impl crate::Router {
             self.response_cache.bypass(client);
             return None;
         }
-        self.response_cache.ticket(client,&scope,json!({"provider":provider,"model":model,"endpoint":format!("{endpoint}:{ingress}"),"body":request,"native_decisions":native_decisions}),json!({"configuration":config,"provider_revision":self.provider_registry.routing_revision()}),&strategy.response_cache,mode)
+        self.response_cache.ticket(client,&scope,json!({"provider":provider,"model":model,"endpoint":format!("{endpoint}:{ingress}"),"body":request,"native_decisions":native_decisions}),json!({"configuration":config.routing_identity(),"provider_revision":self.provider_registry.routing_revision()}),&strategy.response_cache,mode)
     }
     pub(crate) fn chat_cache_ticket(
         &self,
@@ -854,7 +860,7 @@ impl crate::Router {
     fn cache_ticket_current(&self, ticket: &CacheTicket) -> bool {
         ticket.configuration_fingerprint
             == crate::explanation::fingerprint(
-                json!({"configuration":self.config_manager.get(),"provider_revision":self.provider_registry.routing_revision()}),
+                json!({"configuration":self.config_manager.get().routing_identity(),"provider_revision":self.provider_registry.routing_revision()}),
             )
     }
     /// Called only by the HTTP success path after approvals and final checks.

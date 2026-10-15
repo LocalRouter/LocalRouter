@@ -11,7 +11,7 @@
 - [x] P2 Native Anthropic Messages ingress.
 - [x] P2 Native discounted Files/Batches lifecycle.
 - [x] P2/P3 Privacy profiles and client-key hygiene.
-- [ ] P3 Versioned named routes and deterministic rules.
+- [x] P3 Versioned named routes and deterministic rules.
 - [ ] P3 Search/web fetch and upstream server tools.
 - [ ] P3 PDF/document inputs and OCR.
 - [ ] P3 Rerank API.
@@ -143,3 +143,9 @@ P2 native Files/Batches SDK lifecycle completed and pushed in `5e93031c`. The ow
 Implemented independent local-execution/no-retention constraints and metadata-only capture, credential-bound reviewed provider evidence, fail-closed unsupported paths, cache/session/Responses/file/job policy, absolute credential expiry, advisory idle review and deliberate revocation. Secret verification and OAuth issuance recheck current credentials under rotation/revocation locks; existing OAuth checks live client expiry. UI, Tauri contracts and demo mocks are synchronized. Existing history/artifacts are preserved for explicit cleanup. Direct safety scans, proxy/MCP, image/audio/moderation and unverified native gateway control mappings are explicitly unavailable under strict profiles. Details: `2026-10-15-PRIVACY_PROFILES_KEY_HYGIENE.md` and `docs/PRIVACY_PROFILES.md`.
 
 Plan Review, Test Coverage Review and Bug Hunt are complete. Rust stable 1.99.0 exact CI parity passed: Clippy/fmt and 4,412 workspace tests (69 ignored, zero failures); 72 frontend regressions, app/demo types and both production builds passed. Next saved plan: `2026-10-15-VERSIONED_NAMED_ROUTES_RULES.md`. All remaining P3/later features remain authorized and pending.
+
+## P3 named-route versions and deterministic rules
+
+Implemented reusable-strategy alias drafts, immutable publication history, rollback and explicit inactive-history removal, with compare-and-swap edits and permission-free snapshots. Ordered deterministic rules support authenticated clients, tool/image presence, Unicode text size, conservative known-cost conditions and stable opt-in client/session splits. Preview uses the full draft, unknown identity stays unknown, and explanations/replay carry route attribution. Drafts/inactive history do not reset sessions/cache/prepared batches; publication enters effective routing identity, and stale precomputed routing is rejected. UI, Tauri contracts and demo handlers are synchronized.
+
+Plan Review, Test Coverage Review and Bug Hunt are complete. Stable 1.99.0 CI parity passes: Clippy/fmt and 4,430 tests (69 ignored, zero failures), 72 frontend regressions, app/website types/builds and a real browser draft/publish/rollback smoke test. Details: `2026-10-15-VERSIONED_NAMED_ROUTES_RULES.md` and `docs/NAMED_ROUTES.md`. All later features remain authorized and pending.

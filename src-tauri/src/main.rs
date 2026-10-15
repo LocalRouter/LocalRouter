@@ -2866,6 +2866,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands_usage::forget_usage_account,
             // Decision routing
             ui::commands_decision_routing::preview_routing_policy,
+            ui::commands_named_routes::get_named_route,
+            ui::commands_named_routes::mutate_named_route,
             ui::commands_engines::engine_status,
             ui::commands_engines::engine_install,
             ui::commands_engines::engine_install_cancel,

@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use utoipa::ToSchema;
 
 pub const ATTESTATION_CONFIG: &str = "localrouter_privacy_attestation";
+pub const ROUTE_CLIENT_EXTENSION: &str = "_localrouter_route_client";
 pub const INTERNAL_EXTENSION: &str = "_localrouter_privacy";
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(deny_unknown_fields)]

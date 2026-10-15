@@ -358,7 +358,10 @@ export interface RoutingOption {
   description: string
   models: [string, string][]
 }
+export interface RouteCondition { client_ids: string[]; has_tools: boolean | null; has_images: boolean | null; min_context_chars: number | null; max_context_chars: number | null; max_estimated_cost_usd: number | null }
+export interface RouteRule { id: string; condition: RouteCondition; branches: { route: string; weight: number }[] }
 export interface RoutingPolicy {
+  rules?: RouteRule[]
   version: number
   enabled: boolean
   mode: 'semantic' | 'client_mode'
@@ -376,6 +379,7 @@ export interface RoutingPolicy {
 export type RoutingPolicyIssue = 'needs_decision_model' | 'needs_mode_rule' | 'needs_destination_models'
 /** Rust: lr-providers::PreComputedRouting */
 export interface RoutingDecision {
+  route_config_fingerprint?: string | null
   route: string
   source: string
   reason: string
@@ -406,6 +410,7 @@ export interface RoutingCandidateExplanation {
 }
 /** Rust: lr-router/src/explanation.rs */
 export interface RoutingExplanation {
+  named_route?: { alias:string; revision:number | null; modified_since_publication:boolean } | null
   session?: Record<string, unknown> | null
   policy_fingerprint: string
   config_fingerprint: string
@@ -483,7 +488,20 @@ export type StrategyRateLimitInput = Omit<StrategyRateLimit, 'enabled'> & { enab
 /** Rust: crates/lr-config/src/types.rs - FreeTierFallback enum */
 export type FreeTierFallback = 'off' | 'ask' | 'allow'
 
+/** Rust: crates/lr-config/src/named_routes.rs - RouteSnapshot */
+export interface RouteSnapshot { model_name: string; prioritized_models: [string,string][]; available_models: [string,string][]; routing_policy: RoutingPolicy | null; adaptive_routing: AdaptiveRoutingConfig; session_routing: SessionRoutingConfig }
+/** Rust: crates/lr-config/src/named_routes.rs - RouteRevision */
+export interface RouteRevision { revision:number; label:string; published_at:number; snapshot:RouteSnapshot }
+/** Rust: crates/lr-config/src/named_routes.rs - NamedRouteVersions */
+export interface NamedRouteVersions { draft:RouteSnapshot | null; active_revision:number | null; revisions:RouteRevision[]; next_revision:number }
+
+/** Rust: src-tauri/src/ui/commands_named_routes.rs - NamedRouteStatus */
+export interface NamedRouteStatus { strategy_id:string; fingerprint:string; active:RouteSnapshot; published_revision:number | null; modified_since_publication:boolean; versions:NamedRouteVersions }
+/** Rust: src-tauri/src/ui/commands_named_routes.rs - NamedRouteAction */
+export type NamedRouteAction = { action:'save_draft'; snapshot:RouteSnapshot } | { action:'discard_draft' } | { action:'publish'; label:string } | { action:'rollback'; revision:number } | { action:'remove_revision'; revision:number }
+
 export interface Strategy {
+  route_versions?: NamedRouteVersions
   response_cache?: ResponseCacheConfig
   id: string
   name: string
@@ -3152,6 +3170,7 @@ export interface CancelInlineOAuthFlowParams {
 
 /** Params for preview_routing_policy. Rust: commands_decision_routing.rs */
 export interface PreviewRoutingPolicyParams {
+  routeSnapshot?: RouteSnapshot | null
   clientId?: string | null
   strategyId: string
   policy: RoutingPolicy
@@ -5167,3 +5186,9 @@ export interface GetClientPrivacyParams { clientId: string }
 export interface SetClientPrivacyParams { clientId: string; localOnly: boolean; noRetention: boolean; metadataOnly: boolean }
 /** Params for attest_provider_privacy; response is a sealed configuration document. */
 export interface AttestProviderPrivacyParams { instanceName: string; localExecution: boolean; noRetention: boolean; source: string; expiresAt: number | null }
+
+
+/** Params for get_named_route */
+export interface GetNamedRouteParams { strategyId:string }
+/** Params for mutate_named_route */
+export interface MutateNamedRouteParams { strategyId:string; expectedFingerprint:string; operation:NamedRouteAction }

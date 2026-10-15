@@ -21,6 +21,13 @@ impl Router {
         // Private derived state is always replaced by the current configured
         // client policy. Caller-supplied values cannot relax it.
         extensions.remove(INTERNAL_EXTENSION);
+        extensions.remove(lr_providers::privacy::ROUTE_CLIENT_EXTENSION);
+        if !matches!(client_id, "internal-test" | "memory-service") {
+            extensions.insert(
+                lr_providers::privacy::ROUTE_CLIENT_EXTENSION.into(),
+                serde_json::Value::String(client_id.into()),
+            );
+        }
         if policy.restricted() {
             extensions.insert(
                 INTERNAL_EXTENSION.into(),

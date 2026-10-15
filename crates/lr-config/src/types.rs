@@ -306,6 +306,8 @@ fn deserialize_auto_model_name<'de, D: serde::Deserializer<'de>>(
 /// Routing strategy configuration (separate from clients)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Strategy {
+    #[serde(default, skip_serializing_if = "crate::NamedRouteVersions::is_default")]
+    pub route_versions: crate::NamedRouteVersions,
     #[serde(
         default,
         skip_serializing_if = "crate::ResponseCacheConfig::is_default"
@@ -344,6 +346,7 @@ impl Strategy {
     /// Create a new strategy with default settings
     pub fn new(name: String) -> Self {
         Self {
+            route_versions: Default::default(),
             response_cache: Default::default(),
             id: Uuid::new_v4().to_string(),
             name,
@@ -380,6 +383,7 @@ impl Strategy {
         client_name: String,
     ) -> Self {
         Self {
+            route_versions: Default::default(),
             response_cache: Default::default(),
             id: strategy_id,
             name: client_strategy_name(&client_name),

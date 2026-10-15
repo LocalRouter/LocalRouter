@@ -162,7 +162,7 @@ pub(crate) fn seal(
             .firewall_manager
             .should_intercept(&client.id, category)
     };
-    let value = json!({"client":client,"strategy":strategy,"guardrails":cfg.guardrails,"secrets":cfg.secret_scanning,
+    let value = json!({"client":client,"strategy":strategy.routing_identity(),"guardrails":cfg.guardrails,"secrets":cfg.secret_scanning,
         "provider_config":state.provider_registry.get_provider_config(&context.provider_instance),
         "resolved_permission":strategy.model_permissions.resolve_model(&context.provider_instance,&context.permission_model),
         "model_approval":state.model_approval_tracker.has_valid_approval(&client.id,&context.provider_instance,&context.permission_model),

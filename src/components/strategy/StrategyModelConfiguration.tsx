@@ -1,3 +1,4 @@
+import { NamedRouteEditor } from "./NamedRouteEditor"
 /**
  * StrategyModelConfiguration Component
  *
@@ -563,6 +564,8 @@ export function StrategyModelConfiguration({
                               onSave?.()
                             } finally { setSaving(false) }
                           }} />}
+
+                        {autoConfig && <NamedRouteEditor key={strategyId} strategyId={strategyId} autoConfig={autoConfig} readOnly={readOnly || saving} onUpdate={()=>{void loadData();onSave?.()}}/>}
 
                         {autoConfig && <RoutingPolicyEditor strategyId={strategyId} value={autoConfig.routing_policy} readOnly={readOnly || saving}
                           onSave={async policy => {

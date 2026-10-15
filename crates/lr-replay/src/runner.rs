@@ -59,7 +59,7 @@ impl RunContext {
             .client_manager
             .get_client(client_id)
             .ok_or("Client no longer exists")?;
-        if !client.enabled || client.llm_mode != LlmMode::Gateway {
+        if !client.credentials_active() || client.llm_mode != LlmMode::Gateway {
             return Err("Choose an enabled gateway client".into());
         }
         self.state
@@ -595,12 +595,17 @@ fn policy_request(context: &RunContext, input: &ReplayInput) -> Result<Completio
 fn snapshot(
     context: &RunContext,
     strategy: &Strategy,
+    client_id: &str,
     input: &ReplayInput,
     model: &str,
     policy: Option<&lr_config::RoutingPolicy>,
 ) -> Value {
-    let request =
+    let mut request =
         policy_request(context, input).unwrap_or_else(|_| CompletionRequest::new(model, vec![]));
+    let _ = context
+        .state
+        .router
+        .prepare_privacy_request(client_id, &mut request);
     let endpoint = if matches!(
         input.endpoint,
         ReplayEndpoint::Decisions | ReplayEndpoint::SystemOne
@@ -629,7 +634,7 @@ fn snapshot(
             .assess_candidate(strategy, p, m, &request, 0, endpoint)
             .pricing
     });
-    json!({"captured_at":Utc::now(),"source":"requested_configuration","app_version":env!("CARGO_PKG_VERSION"),"policy":policy,"config_fingerprint":explanation.config_fingerprint,"policy_fingerprint":explanation.policy_fingerprint,"model":model,"pricing":pricing,"permissions":strategy.model_permissions,"free_tier_only":strategy.free_tier_only,"limits":strategy.rate_limits,"adaptive_routing":strategy.auto_config.as_ref().map(|a|&a.adaptive_routing),"session_routing":strategy.auto_config.as_ref().map(|a|&a.session_routing)})
+    json!({"captured_at":Utc::now(),"source":"requested_configuration","app_version":env!("CARGO_PKG_VERSION"),"policy":policy,"named_route":explanation.named_route,"config_fingerprint":explanation.config_fingerprint,"policy_fingerprint":explanation.policy_fingerprint,"model":model,"pricing":pricing,"permissions":strategy.model_permissions,"free_tier_only":strategy.free_tier_only,"limits":strategy.rate_limits,"adaptive_routing":strategy.auto_config.as_ref().map(|a|&a.adaptive_routing),"session_routing":strategy.auto_config.as_ref().map(|a|&a.session_routing)})
 }
 fn applied_summary(endpoint: ReplayEndpoint, body: &Value) -> Value {
     let mut parameters = body.clone();
@@ -797,10 +802,20 @@ async fn execute_target(
     sent: &AtomicBool,
     deadline: tokio::time::Instant,
 ) -> Result<(CallOutput, Value, Value), String> {
+    let authenticated = context
+        .state
+        .client_manager
+        .verify_secret(secret)
+        .map_err(|error| error.to_string())?
+        .ok_or("Replay credential is no longer valid")?;
+    if authenticated.strategy_id != strategy.id {
+        return Err("Replay client strategy changed".into());
+    }
+    let client_id = authenticated.id.as_str();
     match target {
         ReplayTarget::Model { model } => {
             let body = prepare_body(&case.input, model, run_id, max_output_tokens)?;
-            let mut snapshot = snapshot(context, strategy, &case.input, model, None);
+            let mut snapshot = snapshot(context, strategy, client_id, &case.input, model, None);
             let mut output = post(
                 context,
                 client,
@@ -823,7 +838,7 @@ async fn execute_target(
                 .body
                 .pointer("/extensions/localrouter.routing/explanation")
             {
-                for key in ["config_fingerprint", "policy_fingerprint"] {
+                for key in ["config_fingerprint", "policy_fingerprint", "named_route"] {
                     if let Some(value) = explanation.get(key) {
                         snapshot[key] = value.clone();
                     }
@@ -837,13 +852,30 @@ async fn execute_target(
             ))
         }
         ReplayTarget::Policy { policy, .. } => {
-            let request = policy_request(context, &case.input)?;
+            let mut effective_strategy = strategy.clone();
+            if let Some(auto) = effective_strategy.auto_config.as_mut() {
+                auto.routing_policy = Some((**policy).clone());
+            }
+            let strategy = &effective_strategy;
+            let mut request = policy_request(context, &case.input)?;
+            context
+                .state
+                .router
+                .prepare_privacy_request(client_id, &mut request)
+                .map_err(|error| error.to_string())?;
             let model = policy
                 .decision_model
                 .as_ref()
                 .map(|(p, m)| format!("{p}/{m}"))
                 .unwrap_or_default();
-            let snapshot = snapshot(context, strategy, &case.input, &model, Some(policy));
+            let snapshot = snapshot(
+                context,
+                strategy,
+                client_id,
+                &case.input,
+                &model,
+                Some(policy),
+            );
             if let Some(decision) = context
                 .state
                 .router
@@ -1150,6 +1182,11 @@ impl ReplayManager {
             for target in &request.targets {
                 let input = sanitize_input(&case.input)?;
                 let mut req = policy_request(&context, &input)?;
+                context
+                    .state
+                    .router
+                    .prepare_privacy_request(&request.client_id, &mut req)
+                    .map_err(|error| error.to_string())?;
                 req.max_tokens = Some(request.max_output_tokens);
                 let model = match target {
                     ReplayTarget::Model { model } => Some(model.clone()),

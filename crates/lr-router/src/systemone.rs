@@ -305,6 +305,7 @@ impl Router {
             extensions.remove(lr_providers::response_cache::SCOPE);
             extensions.remove(lr_providers::session::CACHE_KEY);
             extensions.remove(lr_providers::privacy::INTERNAL_EXTENSION);
+            extensions.remove(lr_providers::privacy::ROUTE_CLIENT_EXTENSION);
         }
         if request
             .extra

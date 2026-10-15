@@ -6,7 +6,7 @@ import type { RoutingPolicy, RoutingPolicyIssue } from '@/types/tauri-commands'
  */
 export function routingPolicyIssue(policy: RoutingPolicy | null | undefined): RoutingPolicyIssue | null {
   if (!policy) return null
-  const canChoose = policy.mode_rules.length > 0 || (policy.mode === 'semantic' && policy.decision_model !== null)
+  const canChoose = (policy.rules?.length ?? 0) > 0 || policy.mode_rules.length > 0 || (policy.mode === 'semantic' && policy.decision_model !== null)
   if (!canChoose) return policy.mode === 'semantic' ? 'needs_decision_model' : 'needs_mode_rule'
   if (policy.options.every(o => o.models.length === 0)) return 'needs_destination_models'
   return null

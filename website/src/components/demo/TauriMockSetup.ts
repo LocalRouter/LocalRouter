@@ -19,7 +19,7 @@
 import { mockIPC, mockWindows, clearMocks } from '@tauri-apps/api/mocks'
 import { emit } from '@tauri-apps/api/event'
 import type { InvokeArgs } from '@tauri-apps/api/core'
-import type { ClientPrivacyStatus, GetClientPrivacyParams, SetClientPrivacyParams, AttestProviderPrivacyParams, ClientSecurityStatus, GetClientSecurityParams, SetClientSecurityParams, RevokeClientCredentialsParams, ApiPathSupport, McpConnectionDiscovery, SkillSourceInfo } from '@app/types/tauri-commands'
+import type { AutoModelConfig, NamedRouteStatus, NamedRouteVersions, RouteSnapshot, GetNamedRouteParams, MutateNamedRouteParams, ClientPrivacyStatus, GetClientPrivacyParams, SetClientPrivacyParams, AttestProviderPrivacyParams, ClientSecurityStatus, GetClientSecurityParams, SetClientSecurityParams, RevokeClientCredentialsParams, ApiPathSupport, McpConnectionDiscovery, SkillSourceInfo } from '@app/types/tauri-commands'
 import { toast } from 'sonner'
 import { mockReplay } from './mockReplay'
 import { mockData } from './mockData'
@@ -1259,6 +1259,43 @@ function llamaProcessKey(instanceName: string, model: string) {
  * matches the corresponding type (e.g., RoutingPolicyPreview, ClientInfo, etc.)
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
+const mockRouteVersions = new Map<string,NamedRouteVersions>()
+function demoRouteCanonical(value:unknown):unknown {
+  if(Array.isArray(value)) return value.map(demoRouteCanonical)
+  if(value!==null && typeof value==='object') return Object.fromEntries(Object.entries(value).sort(([a],[b])=>a.localeCompare(b)).map(([key,value])=>[key,demoRouteCanonical(value)]))
+  return value
+}
+function demoRouteHash(value:unknown):string {
+  let hash=2166136261
+  for(const c of JSON.stringify(demoRouteCanonical(value))) hash=Math.imul(hash^c.charCodeAt(0),16777619)>>>0
+  return `demo-${hash.toString(16)}`
+}
+function demoRouteSnapshot(auto:AutoModelConfig):RouteSnapshot {
+  return JSON.parse(JSON.stringify({model_name:auto.model_name,prioritized_models:auto.prioritized_models,available_models:auto.available_models??[],routing_policy:auto.routing_policy??null,
+    adaptive_routing:auto.adaptive_routing??{ordering:'priority',min_samples:5,observation_window_secs:300,max_attempts:null,attempt_timeout_ms:null,total_timeout_ms:null,infrastructure_cooldown:false},
+    session_routing:auto.session_routing??{enabled:false,classifier_reuse:false,forward_cache_key:false,ttl_secs:1800}}))
+}
+function demoNamedRoute(strategyId:string):NamedRouteStatus {
+  const strategy=mockData.strategies.find(s=>s.id===strategyId)
+  if(!strategy?.auto_config) throw 'This strategy has no auto router'
+  const active=demoRouteSnapshot(strategy.auto_config as unknown as AutoModelConfig)
+  const versions=mockRouteVersions.get(strategyId)??{draft:null,active_revision:null,revisions:[],next_revision:0}
+  const revision=versions.revisions.find(r=>r.revision===versions.active_revision)
+  const matches=!!revision && JSON.stringify(demoRouteCanonical(revision.snapshot))===JSON.stringify(demoRouteCanonical(active))
+  return JSON.parse(JSON.stringify({strategy_id:strategyId,fingerprint:demoRouteHash([strategy,versions]),active,published_revision:matches?versions.active_revision:null,modified_since_publication:versions.active_revision!==null&&!matches,versions}))
+}
+function validateDemoRoute(snapshot:RouteSnapshot) {
+  if(!snapshot.model_name.trim()||snapshot.model_name.length>128||JSON.stringify(snapshot).length>128*1024) throw 'Invalid bounded route snapshot'
+  const policy=snapshot.routing_policy
+  if(policy) {
+    const ids=new Set(policy.options.map(option=>option.id));const rules=new Set<string>()
+    if((policy.rules?.length??0)>64) throw 'Too many rules'
+    for(const rule of policy.rules??[]) {
+      if(!rule.id||rules.has(rule.id)||!rule.branches.length||rule.branches.length>16||rule.branches.some(branch=>!ids.has(branch.route)||branch.weight<=0||!Number.isInteger(branch.weight))||rule.branches.reduce((total,branch)=>total+branch.weight,0)!==10000) throw 'Rules require unique IDs and valid positive branch weights totaling 10000'
+      rules.add(rule.id)
+    }
+  }
+}
 const mockClientPrivacy = new Map<string, { local_only: boolean; no_retention: boolean; metadata_only: boolean }>()
 function clientPrivacyStatus(clientId: string): ClientPrivacyStatus {
   const client = mockData.clients.find(c => c.id === clientId || c.client_id === clientId)
@@ -3173,6 +3210,42 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // ============================================================================
   // Strategies
   // ============================================================================
+  'get_named_route': (args:GetNamedRouteParams):NamedRouteStatus=>demoNamedRoute(args.strategyId),
+  'mutate_named_route': (args:MutateNamedRouteParams):NamedRouteStatus=>{
+    const current=demoNamedRoute(args.strategyId)
+    if(current.fingerprint!==args.expectedFingerprint) throw 'Route changed; reload before editing or publishing'
+    const versions=current.versions
+    const strategy=mockData.strategies.find(s=>s.id===args.strategyId)!
+    let active:RouteSnapshot|null=null
+    const op=args.operation
+    if(op.action==='save_draft') {validateDemoRoute(op.snapshot);versions.draft=JSON.parse(JSON.stringify(op.snapshot))}
+    if(op.action==='discard_draft') versions.draft=null
+    if(op.action==='publish') {
+      if(!versions.draft) throw 'Save a draft before publishing'
+      validateDemoRoute(versions.draft)
+      if(versions.draft.model_name!==current.active.model_name) throw 'Published revisions must retain the current named-route alias'
+      if(op.label.length>128) throw 'Revision label is too long'
+      const revision=Math.max(1,versions.next_revision)
+      versions.revisions.push({revision,label:op.label,published_at:Math.floor(Date.now()/1000),snapshot:versions.draft})
+      active=versions.draft;versions.draft=null;versions.active_revision=revision;versions.next_revision=revision+1
+    }
+    if(op.action==='rollback') {
+      const revision=versions.revisions.find(r=>r.revision===op.revision)
+      if(!revision) throw 'Unknown route revision'
+      if(revision.snapshot.model_name!==current.active.model_name) throw 'Rollback cannot change the current route alias'
+      active=revision.snapshot;versions.active_revision=op.revision
+    }
+    if(op.action==='remove_revision') {
+      if(op.revision===versions.active_revision) throw 'Cannot remove the active revision'
+      if(!versions.revisions.some(r=>r.revision===op.revision)) throw 'Unknown route revision'
+      versions.revisions=versions.revisions.filter(r=>r.revision!==op.revision)
+    }
+    if(versions.revisions.length>32||JSON.stringify(versions).length>1024*1024) throw 'Route history is limited to 32 revisions and 1 MiB'
+    mockRouteVersions.set(args.strategyId,versions)
+    if(active) Object.assign(strategy.auto_config!,JSON.parse(JSON.stringify(active)))
+    setTimeout(()=>emit('strategies-changed',{}),10)
+    return demoNamedRoute(args.strategyId)
+  },
   'list_strategies': () => mockData.strategies.map(strategy => ({ ...strategy, rate_limits: strategy.rate_limits.map(limit => ({ ...limit, enabled: 'enabled' in limit ? Boolean(limit.enabled) : true })) })),
   'get_strategy': (args) => {
     const strategy = mockData.strategies.find(s => s.id === args?.strategyId || s.id === args?.id)
@@ -4262,14 +4335,35 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // Draft preview is explicitly simulated in the demo; no model is called.
   'preview_routing_policy': (args): RoutingPolicyPreview => {
     const policy = args.policy
-    const rule = policy.enabled ? policy.mode_rules.find((r: { mode: string }) => r.mode === args.mode) : null
-    const known = policy.enabled && (args.executeClassifier || rule || policy.mode === 'client_mode' || !policy.decision_model)
-    const decision = known ? { route: rule?.route ?? policy.default_route,
-      source: rule ? 'client_mode' : args.executeClassifier ? 'demo' : 'fallback',
-      reason: rule ? 'client_mode_match' : args.executeClassifier ? 'demo_simulation_default' : 'client_mode_default',
-      probabilities: {}, latency_ms: 0, policy_version: policy.version, context_omitted: 0, classifier_cost_usd: null, classifier_cost_estimated: null } : null
     const strategy = mockData.strategies.find(s => s.id === args.strategyId)
-    const baseline = strategy?.auto_config?.prioritized_models ?? []
+    const clientId = args.clientId ?? strategy?.parent ?? null
+    let body: Record<string,any> = {messages:[{role:'user',content:args.prompt}]}
+    if(args.requestJson) body=JSON.parse(args.requestJson)
+    const modeRule = policy.enabled ? policy.mode_rules.find((r: { mode: string }) => r.mode === args.mode) : null
+    const identityUnknown = !clientId && (policy.rules??[]).some((rule:import('@app/types/tauri-commands').RouteRule)=>rule.condition.client_ids.length||rule.branches.length>1)
+    if(identityUnknown && args.executeClassifier) throw 'Open a client tab to test rules that depend on authenticated client identity'
+    let ruleMatch:{id:string;route:string}|null=null
+    if(policy.enabled&&!modeRule&&!identityUnknown) {
+      const messages=body.messages??[]
+      const text=messages.map((message:any)=>typeof message.content==='string'?message.content:(message.content??[]).filter((part:any)=>part.type==='text').map((part:any)=>part.text).join('')).join('')
+      const chars=[...text].length
+      const hasImages=messages.some((message:any)=>Array.isArray(message.content)&&message.content.some((part:any)=>part.type==='image_url'))
+      for(const rule of policy.rules??[]) {
+        const c=rule.condition
+        if((c.client_ids.length&&!c.client_ids.includes(clientId))||(c.has_tools!==null&&c.has_tools!==!!body.tools?.length)||(c.has_images!==null&&c.has_images!==hasImages)||(c.min_context_chars!==null&&chars<c.min_context_chars)||(c.max_context_chars!==null&&chars>c.max_context_chars)||c.max_estimated_cost_usd!==null) continue
+        // Demo buckets are explicitly simulated; production uses SHA-256.
+        const hash=Number.parseInt(demoRouteHash([strategy?.id,rule.id,clientId,body.extensions?.['localrouter.session']?.id??'']).slice(5),16)%10000
+        let cumulative=0
+        const branch=rule.branches.find((branch:{weight:number})=>{cumulative+=branch.weight;return hash<cumulative})
+        if(branch) {ruleMatch={id:rule.id,route:branch.route};break}
+      }
+    }
+    const known = policy.enabled && (!identityUnknown||modeRule) && (args.executeClassifier || modeRule || ruleMatch || policy.mode === 'client_mode' || !policy.decision_model)
+    const decision = known ? { route: modeRule?.route ?? ruleMatch?.route ?? policy.default_route,
+      source: modeRule ? 'client_mode' : ruleMatch ? 'demo_rule' : args.executeClassifier ? 'demo' : 'fallback',
+      reason: modeRule ? 'client_mode_match' : ruleMatch ? `demo_simulation_rule:${ruleMatch.id};branch:${ruleMatch.route}` : args.executeClassifier ? 'demo_simulation_default' : 'client_mode_default',
+      probabilities: {}, latency_ms: 0, policy_version: policy.version, context_omitted: 0, classifier_cost_usd: null, classifier_cost_estimated: null } : null
+    const baseline = args.routeSnapshot?.prioritized_models ?? strategy?.auto_config?.prioritized_models ?? []
     const routeIds = !policy.enabled ? ['baseline'] : decision ? [decision.route] : policy.options.map((o: { id: string }) => o.id)
     const routes = routeIds.map((route: string) => {
       const selected = policy.options.find((o: { id: string }) => o.id === route)?.models ?? []
@@ -4282,8 +4376,8 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     })
     return { decision, context: { latest_user_request: args.prompt, request_context: { mode: args.mode, mode_source: 'demo' }, conversation: [] },
       explanation: { policy_fingerprint: `demo-policy-${policy.version}`, config_fingerprint: 'demo-config',
-        active_route: decision?.route ?? null, classifier_required: policy.enabled && !known,
-        reason: policy.enabled ? decision?.reason ?? 'classifier_not_executed' : 'policy_disabled', routes,
+        active_route: decision?.route ?? null, classifier_required: policy.enabled && !known && !identityUnknown,
+        reason: identityUnknown&&!modeRule ? 'client_identity_required' : policy.enabled ? decision?.reason ?? 'classifier_not_executed' : 'policy_disabled', routes,
         no_route: routes.every((r: { candidates: unknown[] }) => r.candidates.length === 0),
         runtime_checks: ['runtime_readiness', 'provider_quota', 'actual_pricing_and_upstream_identity'] } }
   },

@@ -34,6 +34,8 @@ pub struct RoutingPolicy {
     pub options: Vec<RoutingOption>,
     pub default_route: String,
     pub mode_rules: Vec<ModeRouteRule>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<crate::RouteRule>,
     pub min_probability: f64,
     pub timeout_ms: u64,
     pub max_context_chars: usize,
@@ -51,6 +53,7 @@ impl Default for RoutingPolicy {
             options: vec![],
             default_route: "general".into(),
             mode_rules: vec![],
+            rules: vec![],
             min_probability: 0.0,
             timeout_ms: 3000,
             max_context_chars: 2000,
@@ -74,6 +77,7 @@ impl<'de> Deserialize<'de> for RoutingPolicy {
             options: Vec<RoutingOption>,
             default_route: String,
             mode_rules: Vec<ModeRouteRule>,
+            rules: Vec<crate::RouteRule>,
             min_probability: f64,
             timeout_ms: u64,
             max_context_chars: usize,
@@ -92,6 +96,7 @@ impl<'de> Deserialize<'de> for RoutingPolicy {
                     options: p.options,
                     default_route: p.default_route,
                     mode_rules: p.mode_rules,
+                    rules: p.rules,
                     min_probability: p.min_probability,
                     timeout_ms: p.timeout_ms,
                     max_context_chars: p.max_context_chars,
@@ -122,6 +127,7 @@ impl<'de> Deserialize<'de> for RoutingPolicy {
             options: w.options,
             default_route: w.default_route,
             mode_rules: w.mode_rules,
+            rules: w.rules,
             min_probability: w.min_probability,
             timeout_ms: w.timeout_ms,
             max_context_chars: w.max_context_chars,
@@ -168,7 +174,8 @@ impl RoutingPolicy {
     /// semantic mode, or an exact mode rule) and at least one route with its
     /// own destination models. Enablement is not considered.
     pub fn setup_issue(&self) -> Option<RoutingPolicyIssue> {
-        let can_choose = !self.mode_rules.is_empty()
+        let can_choose = !self.rules.is_empty()
+            || !self.mode_rules.is_empty()
             || (self.mode == RoutingPolicyMode::Semantic && self.decision_model.is_some());
         if !can_choose {
             return Some(match self.mode {
@@ -226,6 +233,16 @@ impl RoutingPolicy {
         }
         if !ids.contains(self.default_route.as_str()) {
             return Err("Default route must name an option".into());
+        }
+        if self.rules.len() > 64 {
+            return Err("A policy supports at most 64 deterministic rules".into());
+        }
+        let mut rule_ids = HashSet::new();
+        for rule in &self.rules {
+            rule.validate(&ids)?;
+            if !rule_ids.insert(&rule.id) {
+                return Err("Rule IDs must be unique".into());
+            }
         }
         let mut modes = HashSet::new();
         for r in &self.mode_rules {

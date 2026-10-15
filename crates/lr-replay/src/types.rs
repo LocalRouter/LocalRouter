@@ -76,7 +76,7 @@ pub enum ReplayTarget {
     },
     Policy {
         name: String,
-        policy: lr_config::RoutingPolicy,
+        policy: Box<lr_config::RoutingPolicy>,
     },
 }
 impl ReplayTarget {

@@ -26,6 +26,7 @@ mod messages;
 mod privacy;
 pub mod rate_limit;
 pub mod response_cache;
+mod route_rules;
 mod systemone;
 
 // Re-export commonly used types
@@ -1442,6 +1443,7 @@ impl Router {
                         | lr_providers::response_cache::EXTENSION
                         | lr_providers::response_cache::SCOPE
                         | lr_providers::privacy::INTERNAL_EXTENSION
+                        | lr_providers::privacy::ROUTE_CLIENT_EXTENSION
                 ) {
                     continue;
                 }
@@ -1623,6 +1625,18 @@ impl Router {
         Vec<(String, String)>,
         Option<lr_providers::PreComputedRouting>,
     )> {
+        if request
+            .pre_computed_routing
+            .as_ref()
+            .and_then(|decision| decision.route_config_fingerprint.as_ref())
+            .is_some_and(|saved| {
+                saved != &explanation::fingerprint(serde_json::json!(strategy.routing_scope()))
+            })
+        {
+            return Err(AppError::InvalidParams(
+                "Routing configuration changed during preflight; retry with a fresh turn".into(),
+            ));
+        }
         let bound = self.bound_routing_decision(client_id, strategy, request, endpoint)?;
         let Some(policy) = auto_config.routing_policy.as_ref().filter(|p| p.enabled) else {
             return Ok((auto_config.prioritized_models.clone(), bound));

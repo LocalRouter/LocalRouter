@@ -27,6 +27,7 @@ pub async fn preview_routing_policy(
     execute_classifier: Option<bool>,
     request_json: Option<String>,
     gateway_options: Option<GatewayPreferences>,
+    route_snapshot: Option<lr_config::RouteSnapshot>,
     endpoint: Option<String>,
     state: State<'_, Arc<AppState>>,
 ) -> Result<RoutingPolicyPreview, String> {
@@ -49,8 +50,22 @@ pub async fn preview_routing_policy(
     {
         return Err("Preview client must use this strategy".into());
     }
+    let client_identity_unknown = client_id == "internal-test"
+        && policy
+            .rules
+            .iter()
+            .any(|rule| !rule.condition.client_ids.is_empty() || rule.branches.len() > 1);
+    if client_identity_unknown && execute_classifier.unwrap_or(false) {
+        return Err(
+            "Open a client tab to test rules that depend on authenticated client identity".into(),
+        );
+    }
     let mut effective_strategy = strategy.clone();
     if let Some(auto) = effective_strategy.auto_config.as_mut() {
+        if let Some(snapshot) = route_snapshot {
+            snapshot.validate()?;
+            snapshot.apply(auto);
+        }
         auto.routing_policy = Some(policy.clone());
     }
     let strategy = &effective_strategy;
@@ -141,6 +156,11 @@ pub async fn preview_routing_policy(
             lr_providers::EndpointType::Chat
         },
     );
+    if client_identity_unknown && decision.is_none() {
+        explanation.reason = "client_identity_required".into();
+        explanation.classifier_required = false;
+        explanation.runtime_checks.push("client_identity".into());
+    }
     state
         .router
         .apply_session_preview(

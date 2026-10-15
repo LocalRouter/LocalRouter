@@ -141,7 +141,7 @@ impl Router {
             client_id,
             self.client_privacy(client_id),
             options.id,
-            strategy,
+            strategy.routing_identity(),
             self.provider_registry.routing_revision(),
             self.config_manager.get().pricing_overrides,
             format!("{endpoint:?}"),

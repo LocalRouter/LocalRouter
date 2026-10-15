@@ -273,6 +273,10 @@ fn validate_strategies(config: &AppConfig) -> AppResult<()> {
             }
         }
 
+        strategy
+            .route_versions
+            .validate()
+            .map_err(AppError::Config)?;
         // Validate auto config if present
         if let Some(auto_config) = &strategy.auto_config {
             auto_config
@@ -858,6 +862,7 @@ mod tests {
 
     fn make_strategy(name: &str) -> Strategy {
         Strategy {
+            route_versions: Default::default(),
             response_cache: Default::default(),
             id: uuid::Uuid::new_v4().to_string(),
             name: name.to_string(),

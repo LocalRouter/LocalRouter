@@ -87,6 +87,7 @@ pub fn routing_context(
 
 pub fn fallback(policy: &RoutingPolicy, reason: impl Into<String>) -> PreComputedRouting {
     PreComputedRouting {
+        route_config_fingerprint: None,
         route: policy.default_route.clone(),
         source: "fallback".into(),
         reason: reason.into(),
@@ -227,6 +228,22 @@ impl Router {
     }
 
     pub async fn evaluate_routing_policy_for_endpoint(
+        &self,
+        client_id: &str,
+        strategy: &Strategy,
+        policy: &RoutingPolicy,
+        request: &CompletionRequest,
+        endpoint: lr_providers::EndpointType,
+    ) -> PreComputedRouting {
+        let mut decision = self
+            .evaluate_routing_policy_inner(client_id, strategy, policy, request, endpoint)
+            .await;
+        decision.route_config_fingerprint = Some(crate::explanation::fingerprint(json!(
+            strategy.routing_scope()
+        )));
+        decision
+    }
+    async fn evaluate_routing_policy_inner(
         &self,
         client_id: &str,
         strategy: &Strategy,

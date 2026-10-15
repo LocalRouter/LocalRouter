@@ -1566,6 +1566,8 @@ pub enum HealthStatus {
 /// Policy result computed before compression and retained through a tool cycle.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct PreComputedRouting {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_config_fingerprint: Option<String>,
     pub route: String,
     pub source: String,
     pub reason: String,
@@ -1704,6 +1706,7 @@ impl CompletionRequest {
             extensions.remove(response_cache::SCOPE);
             extensions.remove(response_cache::EXTENSION);
             extensions.remove(privacy::INTERNAL_EXTENSION);
+            extensions.remove(privacy::ROUTE_CLIENT_EXTENSION);
             if extensions.is_empty() {
                 self.extensions = None;
             }

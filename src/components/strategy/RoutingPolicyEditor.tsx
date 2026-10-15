@@ -1,3 +1,4 @@
+import { RouteRulesEditor } from './RouteRulesEditor'
 import { useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listenSafe } from '@/hooks/useTauriListener'
@@ -24,7 +25,7 @@ export function routingTemplate(name: string): RoutingPolicy {
       option('implementation', 'Write or edit code, implement an accepted plan, fix bugs or add tests now.'),
       option('review', 'Inspect existing code and report findings without making changes.'),
       option('general', 'General questions, explanations, prose or unclear requests.')],
-    default_route: 'general', mode_rules: [], min_probability: 0, timeout_ms: 3000, max_context_chars: 2000, history_messages: 2 }
+    default_route: 'general', mode_rules: [], rules: [], min_probability: 0, timeout_ms: 3000, max_context_chars: 2000, history_messages: 2 }
   if (name === 'client_mode') {
     p.mode = 'client_mode'; p.question = 'Use the planning route when the supplied client mode is plan; otherwise use the default route.'
     p.options = [option('planning', 'Client explicitly supplies plan mode.'), option('general', 'Any other or missing client mode.')]
@@ -63,8 +64,8 @@ export async function persistRoutingPolicy(strategyId: string, policy: RoutingPo
   await invoke('update_strategy', { strategyId, autoConfig: { ...autoConfig, routing_policy: policy }, modelPermissions } satisfies UpdateStrategyParams)
 }
 
-export function RoutingPolicyEditor({ strategyId, clientId, value, onSave, readOnly = false }: {
-  strategyId: string; clientId?: string; value: RoutingPolicy | null | undefined; onSave: (policy: RoutingPolicy) => Promise<void>; readOnly?: boolean
+export function RoutingPolicyEditor({ strategyId, clientId, value, onSave, readOnly = false, draftOnly = false, previewSnapshot }: {
+  strategyId: string; clientId?: string; value: RoutingPolicy | null | undefined; onSave: (policy: RoutingPolicy) => Promise<void>; readOnly?: boolean; draftOnly?: boolean; previewSnapshot?: import("@/types/tauri-commands").RouteSnapshot
 }) {
   const [draft, setDraft] = useState<RoutingPolicy>(() => value ?? { ...routingTemplate('workflow'), enabled: false })
   const previewRequest = useRef(0)
@@ -105,19 +106,19 @@ export function RoutingPolicyEditor({ strategyId, clientId, value, onSave, readO
     const old = draft.options[index].id
     change({ options: draft.options.map((o, i) => i === index ? { ...o, ...update } : o),
       ...(update.id !== undefined ? { default_route: draft.default_route === old ? update.id : draft.default_route,
-        mode_rules: draft.mode_rules.map(r => r.route === old ? { ...r, route: update.id! } : r) } : {}) })
+        mode_rules: draft.mode_rules.map(r => r.route === old ? { ...r, route: update.id! } : r), rules: draft.rules?.map(rule => ({...rule, branches: rule.branches.map(branch => branch.route === old ? {...branch,route:update.id!}:branch)})) } : {}) })
   }
   const decisionModels = models.filter(m => m.capabilities.includes('decision'))
   const chatModels = models.filter(m => m.capabilities.includes('chat'))
   const save = async () => {
     setSaving(true); setError(null)
-    try { await onSave(draft); toast.success('Routing policy saved') } catch (e) { setError(String(e)) } finally { setSaving(false) }
+    try { await onSave(draft); toast.success(draftOnly ? 'Draft policy saved' : 'Routing policy saved') } catch (e) { setError(String(e)) } finally { setSaving(false) }
   }
   const preview = async (executeClassifier = false) => {
     const requestId = ++previewRequest.current
     setTesting(true); setError(null); setResult(null)
     try {
-      const params: PreviewRoutingPolicyParams = { strategyId, clientId, requestJson: sessionId ? JSON.stringify({model: 'localrouter/auto', messages: [{role: 'user', content: prompt}], extensions: {'localrouter.session': {id: sessionId}}}) : undefined, policy: executeClassifier ? { ...draft, enabled: true } : draft, prompt, mode: mode || null, executeClassifier }
+      const params: PreviewRoutingPolicyParams = { strategyId, clientId, routeSnapshot: previewSnapshot, requestJson: sessionId ? JSON.stringify({model: 'localrouter/auto', messages: [{role: 'user', content: prompt}], extensions: {'localrouter.session': {id: sessionId}}}) : undefined, policy: executeClassifier ? { ...draft, enabled: true } : draft, prompt, mode: mode || null, executeClassifier }
       const response = await invoke<RoutingPolicyPreview>('preview_routing_policy', { ...params } satisfies PreviewRoutingPolicyParams)
       if (requestId === previewRequest.current) setResult(response)
     } catch (e) { if (requestId === previewRequest.current) setError(String(e)) } finally { if (requestId === previewRequest.current) setTesting(false) }
@@ -149,7 +150,7 @@ export function RoutingPolicyEditor({ strategyId, clientId, value, onSave, readO
       <div className="space-y-3"><Label>Options and destination models</Label>
         <p className="text-xs text-muted-foreground">Models are tried in order, then the default route and ordinary priority list. An empty list uses the ordinary priority list.</p>
         {draft.options.map((o, i) => <div key={i} className="rounded-md border p-3 space-y-3">
-          <div className="flex gap-2"><Input aria-label={`Route ${i + 1} ID`} value={o.id} onChange={e => editOption(i, { id: e.target.value })} disabled={disabled} /><Button variant="ghost" size="icon" aria-label={`Remove route ${o.id}`} disabled={disabled || draft.options.length <= 2 || o.id === draft.default_route || draft.mode_rules.some(r => r.route === o.id)} onClick={() => change({ options: draft.options.filter((_, j) => i !== j) })}><Trash2 className="h-4 w-4" /></Button></div>
+          <div className="flex gap-2"><Input aria-label={`Route ${i + 1} ID`} value={o.id} onChange={e => editOption(i, { id: e.target.value })} disabled={disabled} /><Button variant="ghost" size="icon" aria-label={`Remove route ${o.id}`} disabled={disabled || draft.options.length <= 2 || o.id === draft.default_route || draft.mode_rules.some(r => r.route === o.id) || (draft.rules ?? []).some(rule => rule.branches.some(branch => branch.route === o.id))} onClick={() => change({ options: draft.options.filter((_, j) => i !== j) })}><Trash2 className="h-4 w-4" /></Button></div>
           <Input aria-label={`When to use ${o.id}`} value={o.description} onChange={e => editOption(i, { description: e.target.value })} disabled={disabled} />
           {o.models.map((m, j) => <div key={`${modelKey(m)}-${j}`} className="flex items-center gap-2"><span className="text-xs flex-1 truncate">{j + 1}. {m.join(' / ')}</span>
             <Button size="icon" variant="ghost" aria-label="Move model up" disabled={disabled || j === 0} onClick={() => { const ms = [...o.models]; [ms[j-1], ms[j]] = [ms[j], ms[j-1]]; editOption(i, { models: ms }) }}><ArrowUp className="h-3 w-3" /></Button>
@@ -192,9 +193,10 @@ export function RoutingPolicyEditor({ strategyId, clientId, value, onSave, readO
           <details><summary>Details and routing context</summary><pre className="text-xs overflow-auto max-h-72 whitespace-pre-wrap">{JSON.stringify(result, null, 2)}</pre></details>
         </div>}
       </div>
+      <RouteRulesEditor value={draft.rules ?? []} options={draft.options} onChange={rules=>change({rules})} disabled={disabled}/>
       {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
-      <p className="text-xs text-muted-foreground">Saving allows the selected decision and destination models for this client. This matches your routing preferences; it does not guarantee answer quality.</p>
-      <Button onClick={save} disabled={disabled}>{saving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}Save routing policy</Button>
+      <p className="text-xs text-muted-foreground">{draftOnly ? "Saving updates the draft only. Publishing preserves live model permissions; selected models must already be permitted." : "Saving allows the selected decision and destination models for this client. This matches your routing preferences; it does not guarantee answer quality."}</p>
+      <Button onClick={save} disabled={disabled}>{saving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}{draftOnly ? "Save draft policy" : "Save routing policy"}</Button>
     </CardContent>
   </Card>
 }

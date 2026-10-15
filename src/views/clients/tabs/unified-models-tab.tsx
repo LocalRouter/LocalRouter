@@ -1,3 +1,4 @@
+import { NamedRouteEditor } from "@/components/strategy/NamedRouteEditor"
 /**
  * UnifiedModelsTab Component
  *
@@ -819,6 +820,8 @@ export function UnifiedModelsTab({
             onUpdate()
           } finally { setSaving(false) }
         }} />}
+
+      {!restricted && autoConfig && <NamedRouteEditor key={strategy.id} strategyId={strategy.id} clientId={client.client_id} autoConfig={autoConfig} readOnly={saving} onUpdate={()=>{void loadData();onUpdate()}}/>}
 
       {!restricted && autoConfig && <RoutingPolicyEditor clientId={client.client_id} strategyId={strategy.id} value={autoConfig.routing_policy} readOnly={saving}
         onSave={async policy => {
