@@ -159,7 +159,8 @@ struct OpenRouterCreate<'a> {
     provider: Option<BatchProviderPin>,
     requests: &'a [BatchInlineRow],
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct BatchOutputExpiry {
     pub anchor: String,
     pub seconds: u32,
@@ -266,6 +267,12 @@ impl NativeBatchTransport {
     }
     pub fn supports_remote_batch_delete(&self) -> bool {
         self.kind == NativeBatchKind::Openrouter
+    }
+    /// Only the documented public origin can use bundled first-party rates.
+    /// Custom compatible origins may bill independently.
+    pub fn uses_public_openai_pricing(&self) -> bool {
+        self.kind == NativeBatchKind::Openai
+            && self.root.as_str().trim_end_matches('/') == "https://api.openai.com/v1"
     }
     pub fn binding_fingerprint(&self, salt: &str) -> AppResult<String> {
         if salt.len() != 64 || !salt.bytes().all(|c| c.is_ascii_hexdigit()) {

@@ -139,6 +139,12 @@ async fn start_replay_test_server(
     provider_registry.register_factory(Arc::new(TestGatewayFactory));
     provider_registry
         .register_factory(Arc::new(messages_endpoint_cases::TestNativeMessagesFactory));
+    provider_registry.register_factory(Arc::new(batches_endpoint_cases::TestNativeBatchFactory(
+        false,
+    )));
+    provider_registry.register_factory(Arc::new(batches_endpoint_cases::TestNativeBatchFactory(
+        true,
+    )));
     for (name, provider_type, cfg) in upstreams {
         let cfg: HashMap<String, String> =
             cfg.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
@@ -2694,3 +2700,6 @@ mod messages_endpoint_cases;
 
 #[path = "fixtures/files_endpoint_cases.rs"]
 mod files_endpoint_cases;
+
+#[path = "fixtures/batches_endpoint_cases.rs"]
+mod batches_endpoint_cases;

@@ -2,6 +2,7 @@
 //!
 //! Provides OpenAI-compatible HTTP API endpoints using Axum.
 
+pub mod batch_jobs;
 pub mod manager;
 pub mod mcp_request_metrics;
 pub mod middleware;
@@ -124,6 +125,12 @@ pub async fn serve_state(
     let shutdown = CancellationToken::new();
 
     // Build the router with auth layer applied
+    let batch_runtime = state.batch_runtime.clone();
+    let batch_shutdown = shutdown.clone();
+    tokio::spawn(async move {
+        batch_shutdown.cancelled().await;
+        batch_runtime.cancel_all_workers();
+    });
     let app = build_app(state.clone(), config.enable_cors, shutdown.clone());
 
     // Try to bind to the configured port, incrementing if necessary
@@ -271,6 +278,41 @@ fn build_app(state: AppState, enable_cors: bool, shutdown: CancellationToken) ->
         .route("/oauth/token", post(routes::token_endpoint))
         .with_state(oauth_state);
 
+    let batch_routes = Router::new()
+        .route(
+            "/v1/batches",
+            get(batch_jobs::api::list).post(batch_jobs::api::create),
+        )
+        .route("/v1/batches/{batch_id}", get(batch_jobs::api::retrieve))
+        .route(
+            "/v1/batches/{batch_id}/resume",
+            post(batch_jobs::api::resume),
+        )
+        .route(
+            "/v1/batches/{batch_id}/submit",
+            post(batch_jobs::api::submit),
+        )
+        .route(
+            "/v1/batches/{batch_id}/refresh",
+            post(batch_jobs::api::refresh),
+        )
+        .route(
+            "/v1/batches/{batch_id}/cancel",
+            post(batch_jobs::api::cancel),
+        )
+        .route(
+            "/v1/batches/{batch_id}/cleanup",
+            post(batch_jobs::api::cleanup),
+        )
+        .route(
+            "/v1/batches/{batch_id}/reconcile",
+            post(batch_jobs::api::reconcile),
+        )
+        .layer(axum::extract::DefaultBodyLimit::max(32 * 1024))
+        .layer(axum::middleware::map_response(
+            routes::files::private_response,
+        ));
+
     let file_routes = Router::new()
         .route(
             "/v1/files",
@@ -302,6 +344,7 @@ fn build_app(state: AppState, enable_cors: bool, shutdown: CancellationToken) ->
         // Routes with /v1 prefix (all protected by blanket `/v1/` check in auth layer)
         .route("/v1/chat/completions", post(routes::chat_completions))
         .merge(file_routes)
+        .merge(batch_routes)
         .route("/v1/messages", post(routes::messages::create_message))
         .route(
             "/v1/messages/count_tokens",

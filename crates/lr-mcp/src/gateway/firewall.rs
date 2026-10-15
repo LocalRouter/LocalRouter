@@ -262,6 +262,18 @@ pub struct FirewallManager {
     intercept_rule: parking_lot::RwLock<Option<InterceptRule>>,
 }
 
+/// Cancelling an awaiting request must also discard its approval session.
+/// Notify-only sessions have a separate UI-managed lifetime.
+struct PendingRequestGuard {
+    pending: Arc<DashMap<String, FirewallApprovalSession>>,
+    id: String,
+}
+impl Drop for PendingRequestGuard {
+    fn drop(&mut self) {
+        self.pending.remove(&self.id);
+    }
+}
+
 impl FirewallManager {
     /// Create a new firewall manager
     pub fn new(default_timeout_secs: u64) -> Self {
@@ -622,6 +634,10 @@ impl FirewallManager {
 
         // Store session
         self.pending.insert(request_id.clone(), session);
+        let _pending_guard = PendingRequestGuard {
+            pending: self.pending.clone(),
+            id: request_id.clone(),
+        };
 
         info!(
             "Firewall approval request {} created: client={}, tool={}",
@@ -1695,5 +1711,42 @@ mod tests {
         manager.set_intercept_rule(None);
         assert!(manager.get_intercept_rule().is_none());
         assert!(!manager.should_intercept("c1", InterceptCategory::Llm));
+    }
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+    #[tokio::test]
+    async fn dropping_an_approval_future_removes_the_session_without_granting_access() {
+        let manager = Arc::new(FirewallManager::new(120));
+        let worker = manager.clone();
+        let task = tokio::spawn(async move {
+            worker
+                .request_model_approval(
+                    "client".into(),
+                    "Client".into(),
+                    "model".into(),
+                    "provider".into(),
+                    Some(120),
+                    None,
+                    false,
+                )
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while manager.pending_count() == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let id = manager.list_pending()[0].request_id.clone();
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_eq!(manager.pending_count(), 0);
+        assert!(manager
+            .submit_response(&id, FirewallApprovalAction::AllowOnce, None)
+            .is_err());
     }
 }

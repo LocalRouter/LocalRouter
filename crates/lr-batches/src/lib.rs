@@ -1,5 +1,9 @@
 //! Local, owner-scoped payload storage. No network access or provider credentials.
+mod artifacts;
+mod billing;
+pub use billing::*;
 mod jobs;
+pub use artifacts::*;
 pub use jobs::*;
 use parking_lot::Mutex;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
@@ -223,16 +227,8 @@ impl BatchStore {
         let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let now = chrono::Utc::now().timestamp();
         Self::expire(&tx, now)?;
-        let (client_count, client_bytes): (i64, i64) = tx.query_row(
-            "SELECT count(*),coalesce(sum(bytes),0) FROM files WHERE owner=?1",
-            [owner],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )?;
-        let (count, bytes): (i64, i64) = tx.query_row(
-            "SELECT count(*),coalesce(sum(bytes),0) FROM files",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )?;
+        let (client_count, client_bytes) = artifacts::capacity(&tx, Some(owner))?;
+        let (count, bytes) = artifacts::capacity(&tx, None)?;
         if client_count >= 128
             || count >= 512
             || client_bytes + content.len() as i64 > CLIENT_BYTES
@@ -281,13 +277,18 @@ impl BatchStore {
         let mut connection = self.open()?;
         let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         Self::expire(&tx, chrono::Utc::now().timestamp())?;
-        lookup(&tx, owner, id)?;
+        let file = lookup(&tx, owner, id)?;
         let content: Vec<u8> = tx.query_row(
             "SELECT content FROM files WHERE owner=?1 AND id=?2",
             params![owner, id],
             |r| r.get(0),
         )?;
-        if content.len() > MAX_FILE_BYTES {
+        let limit = if file.purpose == "batch_output" {
+            artifacts::MAX_RESULT_BYTES
+        } else {
+            MAX_FILE_BYTES
+        };
+        if content.len() > limit {
             return Err(StoreError::Storage(
                 "Stored file exceeds supported bound".into(),
             ));
@@ -334,9 +335,9 @@ impl BatchStore {
         if !(1..=100).contains(&limit) {
             return Err(StoreError::Invalid("limit must be 1..100".into()));
         }
-        if purpose.is_some_and(|p| p != "batch") {
+        if purpose.is_some_and(|p| !["batch", "batch_output"].contains(&p)) {
             return Err(StoreError::Invalid(
-                "Only purpose=batch is supported".into(),
+                "Only batch and batch_output file lists are supported".into(),
             ));
         }
         let _lock = self.lock.lock();
@@ -351,7 +352,7 @@ impl BatchStore {
             .transpose()?;
         let order = if descending { "DESC" } else { "ASC" };
         let compare = if descending { "<" } else { ">" };
-        let sql = format!("SELECT id,filename,purpose,created_at,expires_at,bytes FROM files WHERE owner=?1 AND (?2 IS NULL OR (created_at,id) {compare} (?2,?3)) ORDER BY created_at {order},id {order} LIMIT ?4");
+        let sql = format!("SELECT id,filename,purpose,created_at,expires_at,bytes FROM files WHERE owner=?1 AND (?5 IS NULL OR purpose=?5) AND (?2 IS NULL OR (created_at,id) {compare} (?2,?3)) ORDER BY created_at {order},id {order} LIMIT ?4");
         let mut statement = tx.prepare(&sql)?;
         let mut data = statement
             .query_map(
@@ -359,7 +360,8 @@ impl BatchStore {
                     owner,
                     cursor.as_ref().map(|f| f.created_at),
                     after,
-                    (limit + 1) as i64
+                    (limit + 1) as i64,
+                    purpose
                 ],
                 file_row,
             )?

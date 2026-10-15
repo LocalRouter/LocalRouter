@@ -23,6 +23,12 @@ pub struct LlmCallGuard {
 }
 
 impl LlmCallGuard {
+    pub(crate) fn validation_only(state: &AppState) -> Self {
+        Self {
+            inner: MonitorEventGuard::validation_only(state.monitor_store.clone()),
+        }
+    }
+
     /// Get the event ID.
     pub fn event_id(&self) -> &str {
         self.inner.event_id()

@@ -44,6 +44,19 @@ impl MonitorEventGuard {
         }
     }
 
+    /// Policy-only validation has no inference event to finish. Safety and
+    /// approval helpers still emit their own real events through the store.
+    pub fn validation_only(store: Arc<MonitorEventStore>) -> Self {
+        Self {
+            store,
+            event_id: String::new(),
+            event_type: MonitorEventType::LlmCall,
+            created_at: Instant::now(),
+            completed: true,
+            early_error: None,
+        }
+    }
+
     /// Get the event ID.
     pub fn event_id(&self) -> &str {
         &self.event_id

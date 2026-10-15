@@ -22,6 +22,15 @@ use utoipa::OpenApi;
         (url = "http://127.0.0.1:3625", description = "Local development server (IPv4)")
     ),
     paths(
+        crate::batch_jobs::api::cleanup,
+        crate::batch_jobs::api::reconcile,
+        crate::batch_jobs::api::create,
+        crate::batch_jobs::api::list,
+        crate::batch_jobs::api::retrieve,
+        crate::batch_jobs::api::resume,
+        crate::batch_jobs::api::submit,
+        crate::batch_jobs::api::refresh,
+        crate::batch_jobs::api::cancel,
         crate::routes::files::upload_file,
         crate::routes::files::list_files,
         crate::routes::files::retrieve_file,
@@ -79,6 +88,9 @@ use utoipa::OpenApi;
     ),
     components(
         schemas(
+            crate::batch_jobs::types::CreateBatchRequest,
+            crate::batch_jobs::types::BatchObject,
+            crate::batch_jobs::types::BatchList,
             lr_batches::FileObject, lr_batches::FileList, lr_batches::FileDeleted, crate::routes::files::FileUpload,
             lr_providers::gateway::GatewayPreferences,
             lr_providers::gateway::GatewayMaxPrice,

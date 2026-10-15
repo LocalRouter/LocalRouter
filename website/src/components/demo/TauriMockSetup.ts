@@ -3393,6 +3393,9 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     return [openai, anthropic, gemini, ollama, ollaya]
   },
   'get_api_path_support': (args): ApiPathSupport => ({
+    batches: ['openai', 'openrouter'].includes(mockData.providers.find(provider => provider.instance_name === args?.instanceName)?.provider_type ?? '') ? 'supported' : 'not_supported',
+    native_batch_cancel: mockData.providers.find(provider => provider.instance_name === args?.instanceName)?.provider_type === 'openai',
+    native_batch_cleanup: mockData.providers.find(provider => provider.instance_name === args?.instanceName)?.provider_type === 'openrouter',
     messages: mockData.providers.find(provider => provider.instance_name === args?.instanceName)?.provider_type === 'anthropic' ? 'supported' : 'translated',
     messages_count_tokens: mockData.providers.find(provider => provider.instance_name === args?.instanceName)?.provider_type === 'anthropic' ? 'supported' : 'not_supported',
     chat_completions: 'supported' as const,
@@ -3404,10 +3407,10 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     client_modes: ['LLM Only', 'MCP Only', 'MCP & LLM', 'MCP via LLM'],
     feature_rows: [
       { feature_name: 'Guardrails', cells: [
-        { support: 'supported', notes: null }, { support: 'supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'translated', notes: 'Via translation to chat completions' }, { support: 'translated', notes: 'Per-request in translated batch mode' }, { support: 'not_supported', notes: null },
+        { support: 'supported', notes: null }, { support: 'supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'translated', notes: 'Via translation to chat completions' }, { support: 'partial', notes: 'Sequential validation before native submission; text subset only' }, { support: 'not_supported', notes: null },
       ]},
       { feature_name: 'Prompt Compression', cells: [
-        { support: 'supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'translated', notes: 'Via translation to chat completions' }, { support: 'translated', notes: 'Per-request in translated batch mode' }, { support: 'not_supported', notes: null },
+        { support: 'supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'translated', notes: 'Via translation to chat completions' }, { support: 'not_supported', notes: 'Native batches preserve the approved snapshot' }, { support: 'not_supported', notes: null },
       ]},
       { feature_name: 'JSON Repair', cells: [
         { support: 'supported', notes: null }, { support: 'supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'translated', notes: 'Via translation to chat completions' }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null },
@@ -3416,7 +3419,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
         { support: 'supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null },
       ]},
       { feature_name: 'Secret Scanning', cells: [
-        { support: 'supported', notes: null }, { support: 'supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'partial', notes: 'TTS input text only; audio binary not scannable' }, { support: 'not_supported', notes: null }, { support: 'translated', notes: 'Via translation to chat completions' }, { support: 'translated', notes: 'Per-request in translated batch mode' }, { support: 'not_supported', notes: null },
+        { support: 'supported', notes: null }, { support: 'supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'not_supported', notes: null }, { support: 'partial', notes: 'TTS input text only; audio binary not scannable' }, { support: 'not_supported', notes: null }, { support: 'translated', notes: 'Via translation to chat completions' }, { support: 'partial', notes: 'Sequential validation of supported native text payloads' }, { support: 'not_supported', notes: null },
       ]},
       { feature_name: 'Rate Limiting', cells: [
         { support: 'supported', notes: null }, { support: 'supported', notes: null }, { support: 'supported', notes: null }, { support: 'supported', notes: null }, { support: 'supported', notes: null }, { support: 'supported', notes: null }, { support: 'supported', notes: null }, { support: 'supported', notes: null }, { support: 'partial', notes: 'Connection-time only, no per-message' },
@@ -5246,6 +5249,12 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
           responses: { '200': { description: 'Ordered typed answers or refusals', content: { 'application/json': { schema: { '$ref': '#/components/schemas/DecisionResponse' } } } }, '400': { description: 'Invalid request or unsupported image input' }, '403': { description: 'Access denied' }, '429': { description: 'Rate limited' } },
         },
       },
+      '/v1/batches': {
+        post: { summary: 'Create owned native batch', operationId: 'create', tags: ['batches'], security: [{ BearerAuth: [] }], description: 'Durable JSONL validation, native discounted submission and owner-scoped idempotency. Direct OpenAI and OpenRouter text subsets only.', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['input_file_id', 'endpoint', 'completion_window'], properties: { input_file_id: { type: 'string' }, endpoint: { type: 'string', enum: ['/v1/chat/completions', '/v1/responses', '/v1/embeddings'] }, completion_window: { type: 'string', enum: ['24h'] } } } } } }, responses: { '200': { description: 'Owned local batch and explicit local phase' } } },
+        get: { summary: 'List owned local batch jobs', operationId: 'list', tags: ['batches'], security: [{ BearerAuth: [] }], description: 'Local only; includes separate asynchronous usage summary.', responses: { '200': { description: 'Owned jobs; no provider polling' } } },
+      },
+      '/v1/batches/{batch_id}': { get: { summary: 'Read local batch status', operationId: 'retrieve', tags: ['batches'], security: [{ BearerAuth: [] }], parameters: [{ name: 'batch_id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Local status; GET never resubmits or polls' }, '404': { description: 'Missing or unowned batch' } } } },
+      ...Object.fromEntries(['resume', 'submit', 'refresh', 'cancel', 'cleanup', 'reconcile'].map(action => [`/v1/batches/{batch_id}/${action}`, { post: { summary: `Explicit batch ${action}`, operationId: action, tags: ['batches'], security: [{ BearerAuth: [] }], parameters: [{ name: 'batch_id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Owned batch lifecycle state' }, '409': { description: 'Unsafe or unavailable transition; uncertain creates are never retried' } } } }])),
       '/v1/files': {
         get: { summary: 'List owned local files', operationId: 'list_files', tags: ['files'], security: [{ BearerAuth: [] }], responses: { '200': { description: 'Only this client’s local files', content: { 'application/json': { schema: { '$ref': '#/components/schemas/FileList' } } } } } },
         post: { summary: 'Upload local batch JSONL', operationId: 'upload_file', tags: ['files'], security: [{ BearerAuth: [] }], requestBody: { required: true, content: { 'multipart/form-data': { schema: { type: 'object', required: ['file', 'purpose'], properties: { file: { type: 'string', format: 'binary' }, purpose: { type: 'string', enum: ['batch'] } } } } } }, responses: { '200': { description: 'Local upload only; no provider request', content: { 'application/json': { schema: { '$ref': '#/components/schemas/FileObject' } } } }, '400': { description: 'Invalid JSONL or upload controls' }, '413': { description: '16 MiB limit exceeded' }, '507': { description: 'Local storage quota exceeded' } } },
@@ -5255,7 +5264,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
         delete: { summary: 'Delete owned local file', operationId: 'delete_file', tags: ['files'], security: [{ BearerAuth: [] }], parameters: [{ name: 'file_id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Local file deleted' }, '404': { description: 'Missing or unowned file' }, '409': { description: 'Active job requires this input' } } },
       },
       '/v1/files/{file_id}/content': {
-        get: { summary: 'Download original local JSONL', operationId: 'file_content', tags: ['files'], security: [{ BearerAuth: [] }], parameters: [{ name: 'file_id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Original immutable input', content: { 'application/jsonl': { schema: { type: 'string' } } } }, '404': { description: 'Missing, expired or unowned file' } } },
+        get: { summary: 'Download owned input or result JSONL', operationId: 'file_content', tags: ['files'], security: [{ BearerAuth: [] }], parameters: [{ name: 'file_id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Immutable local input or native result bytes', content: { 'application/jsonl': { schema: { type: 'string' } } } }, '404': { description: 'Missing, expired or unowned file' } } },
       },
       '/v1/messages': {
         post: {

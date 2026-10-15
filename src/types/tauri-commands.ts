@@ -4620,6 +4620,9 @@ export interface GetProviderFeatureSupportParams {
 export interface ApiPathSupport {
   messages: SupportLevel
   messages_count_tokens: SupportLevel
+  batches: SupportLevel
+  native_batch_cancel: boolean
+  native_batch_cleanup: boolean
   chat_completions: SupportLevel
   completions: SupportLevel
   responses: SupportLevel

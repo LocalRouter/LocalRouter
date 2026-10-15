@@ -31,7 +31,7 @@ pub(crate) fn owner(state: &AppState, auth: &AuthContext) -> ApiResult<String> {
         })?;
     Ok(client.id)
 }
-fn error(error: StoreError) -> ApiErrorResponse {
+pub(crate) fn error(error: StoreError) -> ApiErrorResponse {
     match error {
         StoreError::Invalid(message) => ApiErrorResponse::bad_request(message),
         StoreError::NotFound => ApiErrorResponse::not_found("File not found"),
@@ -51,7 +51,7 @@ fn error(error: StoreError) -> ApiErrorResponse {
         }
     }
 }
-async fn blocking<T: Send + 'static>(
+pub(crate) async fn blocking<T: Send + 'static>(
     operation: impl FnOnce() -> lr_batches::Result<T> + Send + 'static,
 ) -> ApiResult<T> {
     tokio::task::spawn_blocking(operation)

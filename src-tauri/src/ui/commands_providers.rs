@@ -1888,6 +1888,9 @@ pub async fn get_feature_endpoint_matrix() -> Result<lr_providers::FeatureEndpoi
 pub struct ApiPathSupport {
     pub messages: lr_providers::SupportLevel,
     pub messages_count_tokens: lr_providers::SupportLevel,
+    pub batches: lr_providers::SupportLevel,
+    pub native_batch_cancel: bool,
+    pub native_batch_cleanup: bool,
     pub chat_completions: lr_providers::SupportLevel,
     pub completions: lr_providers::SupportLevel,
     pub responses: lr_providers::SupportLevel,
@@ -1903,7 +1906,16 @@ pub async fn get_api_path_support(
         .get_provider(&instance_name)
         .ok_or_else(|| format!("Provider instance '{}' not found", instance_name))?;
 
+    let native_batch = provider.native_batch_kind();
     Ok(ApiPathSupport {
+        batches: if native_batch.is_some() {
+            lr_providers::SupportLevel::Supported
+        } else {
+            lr_providers::SupportLevel::NotSupported
+        },
+        native_batch_cancel: native_batch == Some(lr_providers::batches::NativeBatchKind::Openai),
+        native_batch_cleanup: native_batch
+            == Some(lr_providers::batches::NativeBatchKind::Openrouter),
         messages: if provider.supports_native_messages() {
             lr_providers::SupportLevel::Supported
         } else if provider.supports_chat() {

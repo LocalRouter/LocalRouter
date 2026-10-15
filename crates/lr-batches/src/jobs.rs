@@ -52,7 +52,7 @@ impl BatchMutation {
         }
     }
 }
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, ToSchema)]
 pub struct BatchUsage {
     pub requests: u64,
     pub input_tokens: u64,
@@ -71,7 +71,7 @@ impl Default for BatchUsage {
     }
 }
 impl BatchUsage {
-    fn validate(&self) -> Result<()> {
+    pub(super) fn validate(&self) -> Result<()> {
         if self.requests > MAX_ROWS as u64
             || self.input_tokens > 9_000_000_000_000
             || self.output_tokens > 9_000_000_000_000
@@ -128,6 +128,14 @@ pub struct BatchBudget {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BatchJob {
+    #[serde(default)]
+    pub options: BatchJobOptions,
+    #[serde(default)]
+    pub last_error: Option<BatchJobError>,
+    #[serde(default)]
+    pub validated_rows: usize,
+    #[serde(default)]
+    pub cleanup: std::collections::BTreeMap<String, String>,
     pub id: String,
     pub owner: String,
     pub input_file_id: String,
@@ -148,15 +156,90 @@ pub struct BatchJob {
     pub status: BatchStatus,
     pub remote_input_file_id: Option<String>,
     pub remote_batch_id: Option<String>,
+    pub remote_output_file_id: Option<String>,
+    pub remote_error_file_id: Option<String>,
+    pub request_counts: Option<BatchRequestCounts>,
     pub accounting_settled: bool,
 }
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BatchRequestCounts {
+    pub total: usize,
+    pub completed: usize,
+    pub failed: usize,
+}
+
+/// A coherent local SDK read, including accounting and result aliases.
+pub struct BatchJobSnapshot {
+    pub job: BatchJob,
+    pub results: Vec<BatchResultAlias>,
+    pub accounting: Option<BatchBillingRecord>,
+    pub reserved_usage: Option<BatchUsage>,
+}
+
 pub struct BatchReceipt {
     pub custom_id: String,
     pub fingerprint: String,
     pub usage: BatchUsage,
 }
 
+/// Snapshot of a verified native text price ceiling, not a final invoice.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct NativeBatchPrice {
+    pub source: String,
+    pub checked_at: i64,
+    pub input_ceiling_per_million: f64,
+    pub output_ceiling_per_million: f64,
+}
+impl NativeBatchPrice {
+    pub fn estimate(&self, input: u64, output: u64) -> Option<f64> {
+        let rates = [
+            self.input_ceiling_per_million,
+            self.output_ceiling_per_million,
+        ];
+        if rates.iter().any(|r| !r.is_finite() || *r < 0.0) {
+            return None;
+        }
+        let total = (input as f64 * rates[0] + output as f64 * rates[1]) / 1_000_000.0;
+        total.is_finite().then_some(total)
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct BatchJobOptions {
+    #[serde(default)]
+    pub prepare_only: bool,
+    pub permission_model: Option<String>,
+    #[serde(default)]
+    pub native_price: Option<NativeBatchPrice>,
+    pub native_output_expiry_seconds: Option<u32>,
+    pub metadata: std::collections::HashMap<String, String>,
+    pub output_retention_seconds: u32,
+    pub result_limit_bytes: u64,
+    pub provider_only: Option<Vec<String>>,
+}
+impl Default for BatchJobOptions {
+    fn default() -> Self {
+        Self {
+            prepare_only: false,
+            permission_model: None,
+            native_price: None,
+            native_output_expiry_seconds: None,
+            metadata: Default::default(),
+            output_retention_seconds: DEFAULT_RETENTION as u32,
+            result_limit_bytes: super::artifacts::MAX_RESULT_BYTES as u64,
+            provider_only: None,
+        }
+    }
+}
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct BatchJobError {
+    pub code: String,
+    pub message: String,
+    pub row: Option<String>,
+}
+
 pub struct NewBatchJob {
+    pub options: BatchJobOptions,
     pub owner: String,
     pub input_file_id: String,
     pub provider_instance: String,
@@ -195,10 +278,31 @@ pub(super) fn initialize(connection: &Connection) -> Result<()> {
         receipt_fingerprint TEXT, usage TEXT, observed_at INTEGER,
         PRIMARY KEY(job_id,custom_id)
     );
+    CREATE TABLE IF NOT EXISTS batch_row_edits (
+        job_id TEXT NOT NULL, custom_id TEXT NOT NULL, body TEXT NOT NULL, bytes INTEGER NOT NULL,
+        PRIMARY KEY(job_id,custom_id), FOREIGN KEY(job_id,custom_id) REFERENCES batch_rows(job_id,custom_id)
+    );
     CREATE TABLE IF NOT EXISTS batch_reservations (
         job_id TEXT PRIMARY KEY REFERENCES batch_jobs(id), usage TEXT NOT NULL
     );",
     )?;
+    super::artifacts::initialize(connection)?;
+    super::billing::initialize(connection)?;
+    Ok(())
+}
+fn validate_job_error(error: Option<&BatchJobError>) -> Result<()> {
+    if error.is_some_and(|e| {
+        e.code.is_empty()
+            || e.code.len() > 128
+            || !e
+                .code
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'_')
+            || e.message.len() > 2048
+            || e.row.as_ref().is_some_and(|s| s.len() > 256)
+    }) {
+        return Err(StoreError::Invalid("Invalid bounded job diagnostic".into()));
+    }
     Ok(())
 }
 fn status_rank(status: BatchStatus) -> u8 {
@@ -210,10 +314,10 @@ fn status_rank(status: BatchStatus) -> u8 {
         _ => 4,
     }
 }
-fn encode<T: Serialize>(value: &T) -> Result<String> {
+pub(super) fn encode<T: Serialize>(value: &T) -> Result<String> {
     serde_json::to_string(value).map_err(|_| StoreError::Storage("Invalid journal data".into()))
 }
-fn decode<T: serde::de::DeserializeOwned>(value: &str) -> Result<T> {
+pub(super) fn decode<T: serde::de::DeserializeOwned>(value: &str) -> Result<T> {
     serde_json::from_str(value).map_err(|_| StoreError::Storage("Invalid journal data".into()))
 }
 fn digest(value: &str) -> bool {
@@ -226,7 +330,7 @@ fn remote_id(value: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
-fn load(connection: &Connection, owner: &str, id: &str) -> Result<BatchJob> {
+pub(super) fn load(connection: &Connection, owner: &str, id: &str) -> Result<BatchJob> {
     if !id
         .strip_prefix("batch-lr-")
         .is_some_and(|s| s.len() == 32 && s.bytes().all(|b| b.is_ascii_hexdigit()))
@@ -247,11 +351,11 @@ fn load(connection: &Connection, owner: &str, id: &str) -> Result<BatchJob> {
     }
     Ok(job)
 }
-fn save(connection: &Connection, job: &mut BatchJob) -> Result<()> {
+pub(super) fn save(connection: &Connection, job: &mut BatchJob) -> Result<()> {
     let previous = job.revision;
     job.revision = job.revision.checked_add(1).ok_or(StoreError::Conflict)?;
     job.updated_at = chrono::Utc::now().timestamp();
-    let active = !(job.status.is_terminal() && job.accounting_settled);
+    let active = !job.status.is_terminal();
     let changed = connection.execute(
         "UPDATE batch_jobs SET revision=?1,active=?2,record=?3 WHERE id=?4 AND revision=?5",
         params![job.revision, active, encode(job)?, job.id, previous],
@@ -293,6 +397,31 @@ impl BatchStore {
     }
 
     pub fn create_job(&self, new: NewBatchJob) -> Result<(BatchJob, bool)> {
+        if new.options.native_price.as_ref().is_some_and(|p| {
+            p.estimate(1, 1).is_none() || p.source.len() > 1024 || p.checked_at < 0
+        }) || new
+            .options
+            .native_output_expiry_seconds
+            .is_some_and(|v| !(3600..=DEFAULT_RETENTION as u32).contains(&v))
+            || new.options.metadata.len() > 14
+            || new.options.metadata.iter().any(|(k, v)| {
+                k.is_empty()
+                    || k.len() > 64
+                    || v.len() > 512
+                    || k.starts_with("localrouter_")
+                    || k.chars().any(char::is_control)
+            })
+            || !(3600..=DEFAULT_RETENTION as u32).contains(&new.options.output_retention_seconds)
+            || new.options.result_limit_bytes == 0
+            || new.options.result_limit_bytes > super::artifacts::MAX_RESULT_BYTES as u64
+            || new.options.provider_only.as_ref().is_some_and(|v| {
+                v.is_empty() || v.len() > 128 || v.iter().any(|s| s.is_empty() || s.len() > 256)
+            })
+        {
+            return Err(StoreError::Invalid(
+                "Invalid native job metadata, output limits or provider pin".into(),
+            ));
+        }
         if new.owner.is_empty()
             || new.owner.len() > 256
             || new.provider_instance.is_empty()
@@ -337,7 +466,11 @@ impl BatchStore {
             }
         }
         Self::expire(&tx, chrono::Utc::now().timestamp())?;
-        lookup(&tx, &new.owner, &new.input_file_id)?;
+        if lookup(&tx, &new.owner, &new.input_file_id)?.purpose != "batch" {
+            return Err(StoreError::Invalid(
+                "Native jobs require purpose=batch input".into(),
+            ));
+        }
         let (owned, active): (i64, i64) = tx.query_row(
             "SELECT count(*),coalesce(sum(active),0) FROM batch_jobs WHERE owner=?1",
             [&new.owner],
@@ -353,6 +486,10 @@ impl BatchStore {
         }
         let now = chrono::Utc::now().timestamp();
         let job = BatchJob {
+            options: new.options,
+            last_error: None,
+            validated_rows: 0,
+            cleanup: Default::default(),
             id: format!("batch-lr-{}", Uuid::new_v4().simple()),
             owner: new.owner,
             input_file_id: new.input_file_id,
@@ -372,6 +509,9 @@ impl BatchStore {
             status: BatchStatus::Validating,
             remote_input_file_id: None,
             remote_batch_id: None,
+            remote_output_file_id: None,
+            remote_error_file_id: None,
+            request_counts: None,
             accounting_settled: false,
         };
         tx.execute(
@@ -478,6 +618,7 @@ impl BatchStore {
         job.prepared_snapshot_file_id = Some(snapshot_file_id.into());
         job.snapshot_fingerprint = Some(format!("{:x}", Sha256::digest(&content)));
         job.phase = BatchPhase::Prepared;
+        tx.execute("DELETE FROM batch_row_edits WHERE job_id=?1", [id])?;
         tx.execute(
             "INSERT OR IGNORE INTO file_references VALUES (?1,?2)",
             params![snapshot_file_id, id],
@@ -515,6 +656,83 @@ impl BatchStore {
     pub fn get_job(&self, owner: &str, id: &str) -> Result<BatchJob> {
         let _guard = self.lock.lock();
         load(&self.open()?, owner, id)
+    }
+
+    pub fn job_snapshot(&self, owner: &str, id: &str) -> Result<BatchJobSnapshot> {
+        let _guard = self.lock.lock();
+        let mut connection = self.open()?;
+        let tx = connection.transaction()?;
+        let job = load(&tx, owner, id)?;
+        let results = {
+            let mut statement=tx.prepare("SELECT kind,file_id,fingerprint FROM batch_artifacts WHERE job_id=?1 ORDER BY kind")?;
+            let rows = statement
+                .query_map([id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            rows.into_iter()
+                .map(|(kind, file_id, fingerprint)| {
+                    Ok(BatchResultAlias {
+                        kind: match kind.as_str() {
+                            "output" => BatchResultKind::Output,
+                            "error" => BatchResultKind::Error,
+                            _ => return Err(StoreError::Storage("Invalid result kind".into())),
+                        },
+                        file_id,
+                        fingerprint,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?
+        };
+        let billing: Option<(String, i64, String)> = tx
+            .query_row(
+                "SELECT fingerprint,observed_at,record FROM batch_billing WHERE job_id=?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        let accounting = billing
+            .map(
+                |(fingerprint, observed_at, record)| -> Result<BatchBillingRecord> {
+                    Ok(BatchBillingRecord {
+                        fingerprint,
+                        observed_at,
+                        billing: decode(&record)?,
+                    })
+                },
+            )
+            .transpose()?;
+        let reservation: Option<String> = tx
+            .query_row(
+                "SELECT usage FROM batch_reservations WHERE job_id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let reserved_usage = reservation.map(|s| decode(&s)).transpose()?;
+        tx.commit()?;
+        Ok(BatchJobSnapshot {
+            job,
+            results,
+            accounting,
+            reserved_usage,
+        })
+    }
+
+    pub fn manifest(&self, owner: &str, id: &str) -> Result<Vec<String>> {
+        let _guard = self.lock.lock();
+        let connection = self.open()?;
+        load(&connection, owner, id)?;
+        let mut statement = connection
+            .prepare("SELECT custom_id FROM batch_rows WHERE job_id=?1 ORDER BY custom_id")?;
+        let rows = statement
+            .query_map([id], |row| row.get(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
 
     pub fn pending_mutations(&self, owner: &str, id: &str) -> Result<Vec<MutationIntent>> {
@@ -750,6 +968,199 @@ impl BatchStore {
         Ok(job)
     }
 
+    pub fn record_remote_details(
+        &self,
+        owner: &str,
+        id: &str,
+        remote: &str,
+        output_file: Option<&str>,
+        error_file: Option<&str>,
+        counts: Option<BatchRequestCounts>,
+        error: Option<BatchJobError>,
+    ) -> Result<BatchJob> {
+        for value in [output_file, error_file].into_iter().flatten() {
+            if !remote_id(value) {
+                return Err(StoreError::Invalid("Invalid remote result identity".into()));
+            }
+        }
+        validate_job_error(error.as_ref())?;
+        let _guard = self.lock.lock();
+        let mut connection = self.open()?;
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut job = load(&tx, owner, id)?;
+        if job.remote_batch_id.as_deref() != Some(remote) {
+            return Err(StoreError::Conflict);
+        }
+        if output_file.is_some_and(|v| {
+            job.remote_output_file_id
+                .as_ref()
+                .is_some_and(|old| old != v)
+        }) || error_file.is_some_and(|v| {
+            job.remote_error_file_id
+                .as_ref()
+                .is_some_and(|old| old != v)
+        }) {
+            return Err(StoreError::Conflict);
+        }
+        if let Some(counts) = counts {
+            if counts.total != job.rows
+                || counts.completed > counts.total
+                || counts.failed > counts.total - counts.completed
+            {
+                return Err(StoreError::Invalid(
+                    "Native request counts differ from the owned manifest".into(),
+                ));
+            }
+            if let Some(previous) = &job.request_counts {
+                if counts.completed < previous.completed || counts.failed < previous.failed {
+                    tx.commit()?;
+                    return Ok(job);
+                }
+            }
+            job.request_counts = Some(counts);
+        }
+        job.remote_output_file_id = output_file.map(str::to_owned).or(job.remote_output_file_id);
+        job.remote_error_file_id = error_file.map(str::to_owned).or(job.remote_error_file_id);
+        job.last_error = error;
+        save(&tx, &mut job)?;
+        tx.commit()?;
+        Ok(job)
+    }
+
+    /// Persist user-approved edits before reporting a row as validated, so a
+    /// crash/resume never silently restores the caller's original generation.
+    pub fn save_row_edit(
+        &self,
+        owner: &str,
+        id: &str,
+        custom_id: &str,
+        body: &serde_json::Value,
+    ) -> Result<()> {
+        let encoded = encode(body)?;
+        if !body.is_object() || encoded.len() > MAX_ROW_BYTES {
+            return Err(StoreError::Invalid(
+                "Edited batch body exceeds the row limit".into(),
+            ));
+        }
+        let _guard = self.lock.lock();
+        let mut connection = self.open()?;
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let job = load(&tx, owner, id)?;
+        if job.phase != BatchPhase::Draft || body["model"] != job.model {
+            return Err(StoreError::Conflict);
+        }
+        let known: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM batch_rows WHERE job_id=?1 AND custom_id=?2)",
+            params![id, custom_id],
+            |r| r.get(0),
+        )?;
+        if !known {
+            return Err(StoreError::NotFound);
+        }
+        let previous: i64 = tx
+            .query_row(
+                "SELECT bytes FROM batch_row_edits WHERE job_id=?1 AND custom_id=?2",
+                params![id, custom_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or(0);
+        let total: i64 = tx.query_row(
+            "SELECT coalesce(sum(bytes),0) FROM batch_row_edits WHERE job_id=?1",
+            [id],
+            |r| r.get(0),
+        )?;
+        let delta = encoded.len() as i64 - previous;
+        let (_, owned_bytes) = super::artifacts::capacity(&tx, Some(owner))?;
+        let (_, global_bytes) = super::artifacts::capacity(&tx, None)?;
+        if total + delta > MAX_FILE_BYTES as i64
+            || owned_bytes + delta > CLIENT_BYTES
+            || global_bytes + delta > GLOBAL_BYTES
+        {
+            return Err(StoreError::Quota);
+        }
+        tx.execute("INSERT INTO batch_row_edits VALUES (?1,?2,?3,?4) ON CONFLICT(job_id,custom_id) DO UPDATE SET body=excluded.body,bytes=excluded.bytes",params![id,custom_id,encoded,encoded.len()])?;
+        tx.commit()?;
+        Ok(())
+    }
+    pub fn row_edits(
+        &self,
+        owner: &str,
+        id: &str,
+    ) -> Result<std::collections::HashMap<String, serde_json::Value>> {
+        let _guard = self.lock.lock();
+        let connection = self.open()?;
+        load(&connection, owner, id)?;
+        let mut statement =
+            connection.prepare("SELECT custom_id,body FROM batch_row_edits WHERE job_id=?1")?;
+        let rows = statement.query_map([id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        let mut edits = std::collections::HashMap::new();
+        for row in rows {
+            let (custom_id, body) = row?;
+            edits.insert(custom_id, decode(&body)?);
+        }
+        Ok(edits)
+    }
+    pub fn update_draft_policy(
+        &self,
+        owner: &str,
+        id: &str,
+        fingerprint: &str,
+    ) -> Result<BatchJob> {
+        if !digest(fingerprint) {
+            return Err(StoreError::Invalid("Invalid policy fingerprint".into()));
+        }
+        let _guard = self.lock.lock();
+        let mut connection = self.open()?;
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut job = load(&tx, owner, id)?;
+        if job.phase != BatchPhase::Draft {
+            return Err(StoreError::Conflict);
+        }
+        job.policy_fingerprint = fingerprint.into();
+        job.validated_rows = 0;
+        job.last_error = None;
+        save(&tx, &mut job)?;
+        tx.commit()?;
+        Ok(job)
+    }
+
+    pub fn validation_progress(&self, owner: &str, id: &str, validated_rows: usize) -> Result<()> {
+        let _guard = self.lock.lock();
+        let mut connection = self.open()?;
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut job = load(&tx, owner, id)?;
+        if job.phase != BatchPhase::Draft
+            || validated_rows > job.rows
+            || validated_rows < job.validated_rows
+        {
+            return Err(StoreError::Conflict);
+        }
+        job.validated_rows = validated_rows;
+        save(&tx, &mut job)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn record_job_error(
+        &self,
+        owner: &str,
+        id: &str,
+        error: BatchJobError,
+    ) -> Result<BatchJob> {
+        validate_job_error(Some(&error))?;
+        let _guard = self.lock.lock();
+        let mut connection = self.open()?;
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut job = load(&tx, owner, id)?;
+        job.last_error = Some(error);
+        save(&tx, &mut job)?;
+        tx.commit()?;
+        Ok(job)
+    }
+
     pub fn reject_unsubmitted(&self, owner: &str, id: &str) -> Result<BatchJob> {
         let _guard = self.lock.lock();
         let mut connection = self.open()?;
@@ -763,6 +1174,102 @@ impl BatchStore {
         job.accounting_settled = true;
         tx.execute("DELETE FROM batch_reservations WHERE job_id=?1", [id])?;
         tx.execute("DELETE FROM file_references WHERE job_id=?1", [id])?;
+        save(&tx, &mut job)?;
+        tx.commit()?;
+        Ok(job)
+    }
+
+    /// A caller may cancel only work for which inference was never dispatched.
+    /// Uploaded inputs are safe to abandon; an uncertain upload/submit is not.
+    pub fn cancel_unsubmitted(&self, owner: &str, id: &str) -> Result<BatchJob> {
+        let _guard = self.lock.lock();
+        let mut connection = self.open()?;
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut job = load(&tx, owner, id)?;
+        if !matches!(
+            job.phase,
+            BatchPhase::Draft | BatchPhase::Prepared | BatchPhase::Uploaded
+        ) {
+            return Err(StoreError::Conflict);
+        }
+        job.phase = BatchPhase::Terminal;
+        job.status = BatchStatus::Cancelled;
+        job.accounting_settled = true;
+        tx.execute("DELETE FROM batch_reservations WHERE job_id=?1", [id])?;
+        tx.execute("DELETE FROM file_references WHERE job_id=?1", [id])?;
+        tx.execute("DELETE FROM batch_row_edits WHERE job_id=?1", [id])?;
+        save(&tx, &mut job)?;
+        tx.commit()?;
+        Ok(job)
+    }
+
+    pub fn cleanup_outcome(
+        &self,
+        owner: &str,
+        id: &str,
+        artifact: &str,
+        outcome: &str,
+    ) -> Result<BatchJob> {
+        if ![
+            "local_payloads",
+            "input_file",
+            "output_file",
+            "error_file",
+            "batch",
+            "upstream",
+        ]
+        .contains(&artifact)
+            || ![
+                "pending",
+                "deleted",
+                "unsupported",
+                "not_applicable",
+                "already_absent",
+            ]
+            .contains(&outcome)
+        {
+            return Err(StoreError::Invalid("Invalid cleanup outcome".into()));
+        }
+        let _guard = self.lock.lock();
+        let mut connection = self.open()?;
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut job = load(&tx, owner, id)?;
+        if !job.status.is_terminal() || (artifact != "local_payloads" && !job.accounting_settled) {
+            return Err(StoreError::Conflict);
+        }
+        job.cleanup.insert(artifact.into(), outcome.into());
+        save(&tx, &mut job)?;
+        tx.commit()?;
+        Ok(job)
+    }
+
+    /// Only a verified HTTP rejection proves that a pending upload/submit did
+    /// not run. Timeouts, conflicts, throttling and server errors stay pending.
+    pub fn reject_native_mutation(&self, owner: &str, intent: &MutationIntent) -> Result<BatchJob> {
+        if intent.kind == BatchMutation::Cancel {
+            return Err(StoreError::Conflict);
+        }
+        let _guard = self.lock.lock();
+        let mut connection = self.open()?;
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut job = load(&tx, owner, &intent.job_id)?;
+        let expected = match intent.kind {
+            BatchMutation::Upload => BatchPhase::UploadPendingOutcome,
+            BatchMutation::Submit => BatchPhase::SubmitPendingOutcome,
+            _ => return Err(StoreError::Conflict),
+        };
+        if job.phase != expected {
+            return Err(StoreError::Conflict);
+        }
+        let changed=tx.execute("UPDATE batch_mutations SET completed=1 WHERE id=?1 AND job_id=?2 AND kind=?3 AND completed=0",params![intent.id,intent.job_id,intent.kind.label()])?;
+        if changed != 1 {
+            return Err(StoreError::Conflict);
+        }
+        job.phase = BatchPhase::RejectedBeforeSubmission;
+        job.status = BatchStatus::Failed;
+        job.accounting_settled = true;
+        tx.execute("DELETE FROM batch_reservations WHERE job_id=?1", [&job.id])?;
+        tx.execute("DELETE FROM file_references WHERE job_id=?1", [&job.id])?;
         save(&tx, &mut job)?;
         tx.commit()?;
         Ok(job)
@@ -813,6 +1320,20 @@ impl BatchStore {
         save(&tx, &mut job)?;
         tx.commit()?;
         Ok(job)
+    }
+
+    pub fn job_reservation(&self, owner: &str, id: &str) -> Result<Option<BatchUsage>> {
+        let _guard = self.lock.lock();
+        let connection = self.open()?;
+        load(&connection, owner, id)?;
+        let record: Option<String> = connection
+            .query_row(
+                "SELECT usage FROM batch_reservations WHERE job_id=?1",
+                [id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        record.map(|v| decode(&v)).transpose()
     }
 
     pub fn batch_usage(&self, owner: &str, window_start: i64) -> Result<BatchUsage> {
@@ -914,7 +1435,12 @@ impl BatchStore {
             [id],
             |r| r.get(0),
         )?;
-        if missing != 0 {
+        let aggregate: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM batch_billing WHERE job_id=?1)",
+            [id],
+            |r| r.get(0),
+        )?;
+        if missing != 0 && !aggregate {
             return Err(StoreError::Conflict);
         }
         if !job.accounting_settled {
@@ -945,6 +1471,11 @@ fn ledger(connection: &Connection, owner: &str, window_start: i64) -> Result<Bat
         for row in rows {
             actual.add(&decode::<BatchUsage>(&row?)?);
         }
+        if let Some(aggregate) =
+            super::billing::aggregate(connection, &id, window_start, reservation.is_some())?
+        {
+            actual = aggregate;
+        }
         if let Some(reserved) = reservation {
             actual.maximum(&decode::<BatchUsage>(&reserved)?);
         }
@@ -972,6 +1503,7 @@ mod tests {
     }
     fn new(file: &str) -> NewBatchJob {
         NewBatchJob {
+            options: BatchJobOptions::default(),
             owner: "alice".into(),
             input_file_id: file.into(),
             provider_instance: "openai-instance".into(),
@@ -1018,6 +1550,47 @@ mod tests {
             .complete_mutation("alice", &intent, "batch_remote", BatchStatus::InProgress)
             .unwrap()
     }
+    #[test]
+    fn saved_edits_progress_cancel_and_rejected_native_intent_preserve_boundaries() {
+        let (_dir, store, file) = fixture();
+        let job = store.create_job(new(&file)).unwrap().0;
+        let body = serde_json::json!({"model":"explicit-model","messages":[{"role":"user","content":"approved edit"}]});
+        store.save_row_edit("alice", &job.id, "one", &body).unwrap();
+        store.validation_progress("alice", &job.id, 1).unwrap();
+        assert_eq!(store.row_edits("alice", &job.id).unwrap()["one"], body);
+        assert!(store.validation_progress("alice", &job.id, 0).is_err());
+        let job = store
+            .update_draft_policy("alice", &job.id, &"c".repeat(64))
+            .unwrap();
+        assert_eq!(job.validated_rows, 0);
+        assert_eq!(store.row_edits("alice", &job.id).unwrap().len(), 1);
+        let job = prepare(&store, job);
+        assert!(store.row_edits("alice", &job.id).unwrap().is_empty());
+        let job = store.reserve_batch("alice", &job.id, usage(), &[]).unwrap();
+        let intent = store
+            .begin_mutation("alice", &job.id, job.revision, BatchMutation::Submit)
+            .unwrap();
+        assert!(store.cancel_unsubmitted("alice", &job.id).is_err());
+        let rejected = store.reject_native_mutation("alice", &intent).unwrap();
+        assert!(rejected.accounting_settled);
+        assert_eq!(rejected.phase, BatchPhase::RejectedBeforeSubmission);
+        assert!(store.job_reservation("alice", &job.id).unwrap().is_none());
+        assert!(store
+            .begin_mutation("alice", &job.id, rejected.revision, BatchMutation::Submit)
+            .is_err());
+        assert!(store.reject_native_mutation("alice", &intent).is_err());
+    }
+    #[test]
+    fn local_cancellation_clears_draft_edits_and_never_completes_uncertain_inference() {
+        let (_dir, store, file) = fixture();
+        let job = store.create_job(new(&file)).unwrap().0;
+        let job = store.cancel_unsubmitted("alice", &job.id).unwrap();
+        assert_eq!(job.status, BatchStatus::Cancelled);
+        assert!(job.accounting_settled);
+        assert!(store.row_edits("alice", &job.id).unwrap().is_empty());
+        assert!(store.manifest("bob", &job.id).is_err());
+    }
+
     #[test]
     fn idempotency_and_input_references_are_owner_scoped_and_durable() {
         let (_dir, store, file) = fixture();

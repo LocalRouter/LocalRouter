@@ -1134,6 +1134,7 @@ mod tests {
             .unwrap();
         let job = store
             .create_job(lr_batches::NewBatchJob {
+                options: lr_batches::BatchJobOptions::default(),
                 owner: "client".into(),
                 input_file_id: file.id,
                 provider_instance: "provider".into(),
