@@ -239,3 +239,11 @@ cancellation honestly and never repeats an uncertain create; realtime is a
 120-second JSON WebSocket relay with manual response caps and no automatic
 reconnect. Unknown native fees are not zero-dollar quotes. See docs/VIDEO_JOBS.md
 and docs/REALTIME.md for the exact supported contracts and limits.
+
+Final TLS follow-up: native Realtime now initializes TLS independently of
+optional inspection-proxy startup, preserving existing crypto selection and
+certificate verification. An isolated-process WSS regression covers the original
+dual-backend startup failure. Updated Rust 1.99.1 exact workspace parity passed:
+Clippy, fmt and 111 suites with 4,523 passed, 69 ignored, zero failures; all 72
+frontend regressions also passed. Main Realtime da73b29c is green in cloud CI
+(run 38779717294). See 2026-10-15-NATIVE_REALTIME_TLS_INITIALIZATION.md.

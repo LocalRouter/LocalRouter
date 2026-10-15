@@ -25,6 +25,25 @@ use serde_json::{json, Value};
 use tickets::Ticket;
 use utoipa::ToSchema;
 const SESSION_SECONDS: u64 = 120;
+async fn connect_native(
+    request: tokio_tungstenite::tungstenite::handshake::client::Request,
+    config: tokio_tungstenite::tungstenite::protocol::WebSocketConfig,
+) -> Result<
+    (
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+        tokio_tungstenite::tungstenite::handshake::client::Response,
+    ),
+    tokio_tungstenite::tungstenite::Error,
+> {
+    // Both crypto backends are present in the workspace. Do not depend on the
+    // optional inspection proxy to initialize the process before a WSS call.
+    // install_default preserves an existing caller-selected crypto provider.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    tokio_tungstenite::connect_async_with_config(request, Some(config), true).await
+}
+
 #[derive(Deserialize, Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TicketSession {
@@ -376,7 +395,7 @@ async fn relay(
             .max_write_buffer_size(2 * policy::MAX_FRAME);
         let (mut native, _) = tokio::time::timeout(
             std::time::Duration::from_secs(10),
-            tokio_tungstenite::connect_async_with_config(request, Some(config), true),
+            connect_native(request, config),
         )
         .await
         .map_err(|_| "Native realtime connection timed out")?
@@ -594,4 +613,72 @@ pub fn authenticate_ticket(
     }
     request.headers_mut().remove("authorization");
     Ok(Some(ticket))
+}
+
+#[cfg(test)]
+mod tests {
+    #[tokio::test]
+    async fn wss_crypto_initializes_without_proxy_startup() {
+        const CHILD: &str = "LOCALROUTER_REALTIME_TLS_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "realtime::tests::wss_crypto_initializes_without_proxy_startup",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&result.stdout);
+            assert!(
+                result.status.success(),
+                "{stdout}\n{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            assert!(
+                stdout.contains("running 1 test"),
+                "isolated TLS regression did not run: {stdout}"
+            );
+            return;
+        }
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio_tungstenite::tungstenite::{
+            client::IntoClientRequest, protocol::WebSocketConfig,
+        };
+        assert!(
+            rustls::crypto::CryptoProvider::get_default().is_none(),
+            "test must not inherit proxy initialization"
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut hello = [0u8; 4096];
+            let count = socket.read(&mut hello).await.unwrap();
+            assert!(count > 0);
+            assert_eq!(hello[0], 22, "native client must actually attempt TLS");
+            socket
+                .write_all(
+                    b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        });
+        let request = format!("wss://{addr}/realtime?model=native")
+            .into_client_request()
+            .unwrap();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            super::connect_native(request, WebSocketConfig::default()),
+        )
+        .await
+        .unwrap();
+        assert!(
+            result.is_err(),
+            "a non-TLS peer must never be accepted as secure"
+        );
+        server.await.unwrap();
+        assert!(rustls::crypto::CryptoProvider::get_default().is_some());
+    }
 }

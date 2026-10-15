@@ -8,6 +8,7 @@ repository.workspace = true
 description = "Axum HTTP server, routes, middleware, and OpenAPI for LocalRouter"
 
 [dependencies]
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
 sha2 = { workspace = true }
 lr-batches = { workspace = true }
@@ -60,6 +61,10 @@ lr-monitor = { workspace = true }
 lr-responses-sessions = { workspace = true }
 lr-usage = { workspace = true }
 dirs = { workspace = true }
+
+[dev-dependencies]
+# Reproduce workspace crypto feature unification in the isolated WSS test.
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
 
 [features]
 default = []

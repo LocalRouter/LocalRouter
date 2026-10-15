@@ -86,3 +86,11 @@ passed. Native protocol/schema checks use local fixtures, without paid calls.
 Overall approved roadmap review, coverage review and bug hunt are complete;
 all selected core and later features have an implementation and saved plan.
 Native limitations are explicit in docs/REALTIME.md and docs/VIDEO_JOBS.md.
+
+Final TLS follow-up: native Realtime now initializes TLS independently of
+optional inspection-proxy startup, preserving existing crypto selection and
+certificate verification. An isolated-process WSS regression covers the original
+dual-backend startup failure. Updated Rust 1.99.1 exact workspace parity passed:
+Clippy, fmt and 111 suites with 4,523 passed, 69 ignored, zero failures; all 72
+frontend regressions also passed. Main Realtime da73b29c is green in cloud CI
+(run 38779717294). See 2026-10-15-NATIVE_REALTIME_TLS_INITIALIZATION.md.
