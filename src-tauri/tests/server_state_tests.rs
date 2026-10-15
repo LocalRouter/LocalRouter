@@ -166,7 +166,7 @@ async fn secret_scan_with_findings_records_one_event() {
         &state,
         "client",
         "gpt-5.5",
-        &chat_body("aws key AKIAIOSFODNN7EXAMPLE"),
+        &chat_body("aws key AKIAZ7Q3VJ2M4XK9PLR6"),
     )
     .await;
     let listed = state.monitor_store.list(0, 10, None);

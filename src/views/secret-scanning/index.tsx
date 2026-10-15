@@ -40,9 +40,12 @@ const BUTTON_STYLES: Record<SecretScanAction, string> = {
 }
 
 const DEFAULT_TEST_INPUT = [
-  "My AWS key is AKIAIOSFODNN7EXAMPLE",
-  "GitHub token: ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij",
+  "My AWS key is AKIAZ7Q3VJ2M4XK9PLR6",
+  "GitHub token: ghp_q8Zr2LmX7vKp4NwT9sYb3HdJ6fGc1eRa0uVi",
   "password = 'super_s3cret_P@ssw0rd!'",
+  "DATABASE_URL=postgres://app:Hq3vT8mZ2xLp9wKr@db:5432/main",
+  "Docs example (should NOT match): AKIAIOSFODNN7EXAMPLE",
+  "Placeholder (should NOT match): postgres://postgres:${POSTGRES_PASSWORD}@localhost/app",
   "UUID (should NOT match): 6c2bffca-115a-44d4-a981-0d01a9e4ef08",
 ].join("\n")
 

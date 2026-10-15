@@ -2462,7 +2462,7 @@ mod tests {
             "model": "gpt-5.5",
             "messages": [{
                 "role": "user",
-                "content": "aws key AKIAIOSFODNN7EXAMPLE and token ghp_ABcdefghijklmnopqrstuvwxyz0123456789"
+                "content": "aws key AKIAZ7Q3VJ2M4XK9PLR6 and token ghp_q8Zr2LmX7vKp4NwT9sYb3HdJ6fGc1eRa0uVi"
             }]
         });
         let findings = findings_for(&body);
@@ -2511,7 +2511,7 @@ mod tests {
             "input": [{
                 "role": "user",
                 "content": [{"type": "input_text",
-                             "text": "Is this my AWS key AKIAIOSFODNN7EXAMPLE"}]
+                             "text": "Is this my AWS key AKIAZ7Q3VJ2M4XK9PLR6"}]
             }]
         }));
         assert_eq!(findings.len(), 1, "expected the AWS key to be detected");
@@ -2528,7 +2528,7 @@ mod tests {
             "input": [{
                 "role": "user",
                 "content": [{"type": "input_text",
-                             "text": "Is this my AWS key AKIAIOSFODNN7EXAMPLE"}]
+                             "text": "Is this my AWS key AKIAZ7Q3VJ2M4XK9PLR6"}]
             }]
         }));
         assert_eq!(findings.len(), 1, "websocket messages must be scanned too");
@@ -2543,7 +2543,7 @@ mod tests {
             "messages": [{
                 "role": "user",
                 "content": [{"type": "text",
-                             "text": "Is this my AWS key AKIAIOSFODNN7EXAMPLE"}]
+                             "text": "Is this my AWS key AKIAZ7Q3VJ2M4XK9PLR6"}]
             }]
         }));
         assert_eq!(findings.len(), 1, "expected the AWS key to be detected");
@@ -2554,15 +2554,15 @@ mod tests {
     #[test]
     fn skips_system_prompts_across_formats() {
         assert!(findings_for(&serde_json::json!({
-            "instructions": "Use key AKIAIOSFODNN7EXAMPLE",
+            "instructions": "Use key AKIAZ7Q3VJ2M4XK9PLR6",
         }))
         .is_empty());
         assert!(findings_for(&serde_json::json!({
-            "system": "Use key AKIAIOSFODNN7EXAMPLE",
+            "system": "Use key AKIAZ7Q3VJ2M4XK9PLR6",
         }))
         .is_empty());
         assert!(findings_for(&serde_json::json!({
-            "messages": [{"role": "system", "content": "Use key AKIAIOSFODNN7EXAMPLE"}],
+            "messages": [{"role": "system", "content": "Use key AKIAZ7Q3VJ2M4XK9PLR6"}],
         }))
         .is_empty());
     }

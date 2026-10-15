@@ -122,7 +122,7 @@ mod tests {
         let engine = SecretScanEngine::new(&default_config()).unwrap();
         let texts = vec![ExtractedText {
             label: "user[0]".to_string(),
-            text: "My GitHub token is ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij".to_string(),
+            text: "My GitHub token is ghp_q8Zr2LmX7vKp4NwT9sYb3HdJ6fGc1eRa0uVi".to_string(),
             message_index: 0,
         }];
         let result = engine.scan(&texts);
@@ -134,7 +134,7 @@ mod tests {
         let engine = SecretScanEngine::new(&default_config()).unwrap();
         let texts = vec![ExtractedText {
             label: "system".to_string(),
-            text: "System prompt with ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij".to_string(),
+            text: "System prompt with ghp_q8Zr2LmX7vKp4NwT9sYb3HdJ6fGc1eRa0uVi".to_string(),
             message_index: 0,
         }];
         let result = engine.scan(&texts);
@@ -151,7 +151,7 @@ mod tests {
         let engine = SecretScanEngine::new(&config).unwrap();
         let texts = vec![ExtractedText {
             label: "system".to_string(),
-            text: "System prompt with ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij".to_string(),
+            text: "System prompt with ghp_q8Zr2LmX7vKp4NwT9sYb3HdJ6fGc1eRa0uVi".to_string(),
             message_index: 0,
         }];
         let result = engine.scan(&texts);

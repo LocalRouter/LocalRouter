@@ -2,15 +2,19 @@
 //!
 //! Detects potential secrets (API keys, tokens, passwords, connection strings)
 //! in chat messages before they are sent to LLM providers. Uses a multi-stage
-//! pipeline: keyword pre-filter -> regex matching -> entropy filtering ->
-//! optional ML verification.
+//! pipeline: keyword pre-filter -> regex matching -> entropy and placeholder
+//! filtering on the captured secret -> per-span and per-value deduplication.
 
 pub mod dismissal;
 pub mod engine;
 pub mod entropy;
+pub mod filters;
 pub mod patterns;
 pub mod regex_engine;
 pub mod types;
+
+#[cfg(test)]
+mod detection_tests;
 
 pub use dismissal::{hash_secret, new_salt, verify_secret, DEFAULT_ITERATIONS};
 pub use engine::{SecretScanEngine, SecretScanEngineConfig};

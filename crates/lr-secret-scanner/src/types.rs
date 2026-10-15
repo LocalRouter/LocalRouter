@@ -49,11 +49,17 @@ pub struct SecretRule {
     pub compiled_regex: regex::Regex,
     /// Which capture group contains the secret (0 = entire match)
     pub secret_group: usize,
+    /// Which capture group's entropy gates the match (None = `secret_group`)
+    pub entropy_group: Option<usize>,
     /// Per-rule entropy threshold override (None = use global)
     pub entropy_threshold: Option<f32>,
     /// Fast pre-filter keywords
     pub keywords: Vec<String>,
     pub category: SecretCategory,
+    /// How aggressively placeholder-looking values are discarded
+    pub placeholder: crate::filters::PlaceholderPolicy,
+    /// Extra structural check on the match (None = none)
+    pub validate: Option<crate::patterns::builtin::Validator>,
 }
 
 /// A single secret match found during scanning
@@ -70,7 +76,7 @@ pub struct SecretFinding {
     pub rule_entropy_threshold: Option<f32>,
     /// Index of the message in the conversation that contained the match
     pub message_index: usize,
-    /// Truncated preview of matched text (~40 chars)
+    /// Masked preview of the secret value (~40 chars)
     pub matched_text: String,
     /// The unmasked secret, for on-demand reveal in the approval popup.
     ///
@@ -81,7 +87,8 @@ pub struct SecretFinding {
     /// solely through the explicit reveal command.
     #[serde(skip)]
     pub raw_text: String,
-    /// Calculated Shannon entropy of the matched text
+    /// Shannon entropy (bits/char) of the secret part that gated the match
+    /// (the rule's entropy group — e.g. a URI's password, a JWT's signature)
     pub entropy: f32,
 }
 
