@@ -166,6 +166,7 @@ pub mod server_tools;
 pub(crate) mod sse_lines;
 pub mod systemone;
 pub mod togetherai;
+pub mod videos;
 pub mod xai;
 
 pub use indexmap::IndexMap;
@@ -215,6 +216,9 @@ pub trait ModelProvider: Send + Sync {
         _request: &CompletionRequest,
     ) -> Option<documents::DocumentProtocol> {
         None
+    }
+    fn video_transport(&self) -> AppResult<Option<videos::VideoTransport>> {
+        Ok(None)
     }
     fn rerank_protocol(&self) -> Option<rerank::RerankProtocol> {
         None

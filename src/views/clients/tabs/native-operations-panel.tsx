@@ -63,13 +63,14 @@ export function NativeOperationsPanel({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Document operations</CardTitle>
+        <CardTitle>Native provider operations</CardTitle>
         <CardDescription>
-          Allow explicit OCR or relevance scoring over supplied documents. Existing model permissions still apply; provider fees may apply.
+          Allow explicit provider operations over supplied content. Existing
+          model permissions still apply; provider fees may apply.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        {(['ocr', 'rerank'] as const).map((operation) => (
+        {(['ocr', 'rerank', 'video'] as const).map((operation) => (
           <label key={operation} className="flex items-center gap-2 text-sm">
             <Checkbox
               checked={operations?.includes(operation) ?? false}
@@ -87,7 +88,13 @@ export function NativeOperationsPanel({
                 )
               }
             />
-            {operation === 'ocr' ? 'Allow OCR' : 'Allow rerank'}
+            {
+              {
+                ocr: 'Allow OCR',
+                rerank: 'Allow rerank',
+                video: 'Allow video generation',
+              }[operation]
+            }
           </label>
         ))}
         <Button disabled={busy || !operations} onClick={() => void save()}>

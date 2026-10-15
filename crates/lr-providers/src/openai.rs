@@ -628,6 +628,29 @@ impl ModelProvider for OpenAIProvider {
         (matches!(self.auth, ProviderAuth::ApiKey(_)) && !self.is_chatgpt_backend())
             .then_some(crate::batches::NativeBatchKind::Openai)
     }
+    fn video_transport(&self) -> AppResult<Option<crate::videos::VideoTransport>> {
+        if self.is_chatgpt_backend() {
+            return Ok(None);
+        }
+        match &self.auth {
+            ProviderAuth::ApiKey(key) => {
+                let mut headers = reqwest::header::HeaderMap::new();
+                headers.insert(
+                    reqwest::header::AUTHORIZATION,
+                    reqwest::header::HeaderValue::from_str(&format!("Bearer {key}")).map_err(
+                        |_| AppError::Config("Invalid video API credential header".into()),
+                    )?,
+                );
+                crate::videos::VideoTransport::new(
+                    &self.base_url,
+                    headers,
+                    crate::videos::VideoProtocol::Openai,
+                )
+                .map(Some)
+            }
+            ProviderAuth::OAuth(_) => Ok(None),
+        }
+    }
     fn native_batch_transport(&self) -> AppResult<Option<crate::batches::NativeBatchTransport>> {
         if self.is_chatgpt_backend() {
             return Ok(None);

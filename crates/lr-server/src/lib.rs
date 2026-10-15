@@ -13,6 +13,7 @@ pub mod routes;
 pub mod state;
 pub mod types;
 pub mod upstream_tools;
+pub mod video_jobs;
 
 // Re-export manager types for convenience
 pub use manager::{ServerManager, ServerStatus};
@@ -359,6 +360,14 @@ fn build_app(state: AppState, enable_cors: bool, shutdown: CancellationToken) ->
         .route("/v1/search", post(routes::search::search))
         .route("/v1/ocr", post(routes::ocr::ocr))
         .route("/v1/rerank", post(routes::rerank::rerank))
+        .route("/v1/videos", post(video_jobs::create).get(video_jobs::list))
+        .route(
+            "/v1/videos/{video_id}",
+            get(video_jobs::retrieve).delete(video_jobs::delete),
+        )
+        .route("/v1/videos/{video_id}/content", get(video_jobs::content))
+        .route("/v1/videos/{video_id}/cancel", post(video_jobs::cancel))
+        .route("/v1/videos/{video_id}/archive", post(video_jobs::archive))
         .route("/v1/moderations", post(routes::moderations))
         .route("/v1/images/generations", post(routes::image_generations))
         .route("/v1/audio/speech", post(routes::audio_speech))
@@ -383,6 +392,14 @@ fn build_app(state: AppState, enable_cors: bool, shutdown: CancellationToken) ->
         .route("/search", post(routes::search::search))
         .route("/ocr", post(routes::ocr::ocr))
         .route("/rerank", post(routes::rerank::rerank))
+        .route("/videos", post(video_jobs::create).get(video_jobs::list))
+        .route(
+            "/videos/{video_id}",
+            get(video_jobs::retrieve).delete(video_jobs::delete),
+        )
+        .route("/videos/{video_id}/content", get(video_jobs::content))
+        .route("/videos/{video_id}/cancel", post(video_jobs::cancel))
+        .route("/videos/{video_id}/archive", post(video_jobs::archive))
         .route("/moderations", post(routes::moderations))
         .route("/images/generations", post(routes::image_generations))
         .route("/audio/speech", post(routes::audio_speech))

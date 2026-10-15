@@ -536,6 +536,29 @@ impl ModelProvider for OpenAICompatibleProvider {
         crate::search::read_response(response, request.max_results.unwrap_or(10)).await
     }
 
+    fn video_transport(&self) -> AppResult<Option<crate::videos::VideoTransport>> {
+        if self.gateway_kind != Some(GatewayKind::Llmgateway) {
+            return Ok(None);
+        }
+        let mut preferences = self.gateway_preferences.clone();
+        preferences.allow_fallbacks = None;
+        if preferences != GatewayPreferences::default() {
+            return Err(AppError::InvalidParams(
+                "Configured gateway controls have no verified video mapping".into(),
+            ));
+        }
+        let request = self
+            .apply_headers(crate::http_client::native_client()?.get(&self.base_url))
+            .build()
+            .map_err(|_| AppError::Config("Invalid video request headers".into()))?;
+        crate::videos::VideoTransport::new(
+            &self.base_url,
+            request.headers().clone(),
+            crate::videos::VideoProtocol::LlmGateway,
+        )
+        .map(Some)
+    }
+
     fn rerank_protocol(&self) -> Option<crate::rerank::RerankProtocol> {
         (self.gateway_kind == Some(GatewayKind::Llmgateway))
             .then_some(crate::rerank::RerankProtocol::LlmGateway)

@@ -33,6 +33,8 @@ pub enum LlmApi {
     Ocr,
     /// Native relevance scoring over caller-provided candidates.
     Rerank,
+    /// Native asynchronous video jobs.
+    Video,
     /// Moderations (`/moderations`).
     Moderations,
     /// Image generation and edits (`/images/*`).
@@ -64,6 +66,8 @@ impl LlmApi {
             Some(Self::Decisions)
         } else if path.ends_with("/systemone") {
             Some(Self::SystemOne)
+        } else if path.ends_with("/videos") || path.contains("/videos/") {
+            Some(Self::Video)
         } else if path.ends_with("/rerank") {
             Some(Self::Rerank)
         } else if path.ends_with("/ocr") {

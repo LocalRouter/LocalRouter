@@ -3,6 +3,7 @@ mod artifacts;
 mod billing;
 pub use billing::*;
 mod jobs;
+mod videos;
 pub use artifacts::*;
 pub use jobs::*;
 use parking_lot::Mutex;
@@ -15,6 +16,7 @@ use std::{
 };
 use utoipa::ToSchema;
 use uuid::Uuid;
+pub use videos::*;
 
 pub const MAX_FILE_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_ROW_BYTES: usize = 1024 * 1024;

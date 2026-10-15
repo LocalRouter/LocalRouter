@@ -169,6 +169,18 @@ function systemOneResponse(body: any): { data: any; response: Response } {
   return { data, response }
 }
 
+interface DemoVideo { owner: string; id: string; model: string; status: string; progress: number; seconds: string; size: string; created_at: number; completed_at: number | null; expires_at: number | null; error: null; object: string; extensions: Record<string, unknown> }
+const demoVideos = new Map<string, DemoVideo>()
+const demoVideoKeys = new Map<string, { hash: string; id: string }>()
+function nativeDemoClient(apiKey: string) {
+  const clientId = [...mockClientSecrets.entries()].find(([, secret]) => secret === apiKey)?.[0]
+  const client = mockData.clients.find(client => client.id === clientId)
+  const security = clientId ? mockClientSecurity.get(clientId) : null
+  if (!client?.enabled || security?.hasCredential === false || (security?.expiry && Date.now() >= Date.parse(security.expiry))) throw new DemoApiError(401, 'Demo client credential is inactive')
+  return client
+}
+function publicDemoVideo(job: DemoVideo) { const { owner: _owner, ...value } = job; return structuredClone(value) }
+
 // Mock OpenAI class
 class OpenAI {
   chat = {
@@ -186,10 +198,54 @@ class OpenAI {
     this.apiKey = config?.apiKey ?? 'demo-key'
   }
 
-  // Generic request method. System One and ranked search use local fixtures.
-  post<T = any>(path: string, opts?: { body?: unknown; signal?: AbortSignal; maxRetries?: number }): ApiPromise<T> {
+  get<T = any>(path: string, opts?: { signal?: AbortSignal; maxRetries?: number }): ApiPromise<T> {
     return apiPromise<T>(async () => {
       if (opts?.signal?.aborted) throw new DOMException('Cancelled', 'AbortError')
+      const url = new URL(path, 'http://localhost')
+      if (!url.pathname.startsWith('/videos')) throw new DemoError()
+      const client = nativeDemoClient(this.apiKey)
+      let data: unknown
+      if (url.pathname === '/videos') {
+        data = { object: 'list', data: [...demoVideos.values()].filter(job => job.owner === client.id).map(publicDemoVideo), has_more: false }
+      } else {
+        const id = decodeURIComponent(url.pathname.split('/')[2] ?? '')
+        const job = demoVideos.get(id)
+        if (!job || job.owner !== client.id) throw new DemoApiError(404, 'Video not found')
+        if (!mockNativeOperations.get(client.id)?.includes('video')) throw new DemoApiError(400, 'Video access is disabled for this demo client')
+        if (url.pathname.endsWith('/content')) throw new DemoError()
+        const privacy = mockClientPrivacy.get(client.id)
+        if (privacy?.local_only || privacy?.no_retention) throw new DemoApiError(400, 'Strict privacy does not permit native video access')
+        job.status = 'completed'; job.progress = 100; job.completed_at = Math.floor(Date.now() / 1000)
+        data = publicDemoVideo(job)
+      }
+      return { data: data as T, response: new Response(JSON.stringify(data), { headers: { 'content-type': 'application/json' } }) }
+    })
+  }
+
+  // Generic request method. System One and ranked search use local fixtures.
+  post<T = any>(path: string, opts?: { body?: unknown; signal?: AbortSignal; maxRetries?: number; headers?: Record<string, string> }): ApiPromise<T> {
+    return apiPromise<T>(async () => {
+      if (opts?.signal?.aborted) throw new DOMException('Cancelled', 'AbortError')
+      if (path.replace(/\/+$/, '') === '/videos') {
+        const client = nativeDemoClient(this.apiKey)
+        if (!mockNativeOperations.get(client.id)?.includes('video')) throw new DemoApiError(400, 'Enable Allow video generation for this demo client in Settings')
+        const privacy = mockClientPrivacy.get(client.id)
+        if (privacy?.local_only || privacy?.no_retention) throw new DemoApiError(400, 'Strict privacy does not permit native video generation')
+        const body = opts?.body as { model?: string; prompt?: string; seconds?: number | string; size?: string } | undefined
+        const key = opts?.headers?.['Idempotency-Key']
+        if (!key || !body?.model?.includes('/') || !body.prompt?.trim() || !Number.isInteger(Number(body.seconds)) || Number(body.seconds) < 4 || Number(body.seconds) > 30) throw new DemoApiError(400, 'Provide an Idempotency-Key, qualified model, prompt and explicit duration')
+        const hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify({ model: body.model, prompt: body.prompt, seconds: Number(body.seconds), size: body.size ?? '1280x720' }))))).map(value => value.toString(16).padStart(2, '0')).join('')
+        const scope = `${client.id}:${key}`
+        const prior = demoVideoKeys.get(scope)
+        if (prior && prior.hash !== hash) throw new DemoApiError(409, 'Idempotency key belongs to another request')
+        let job = prior ? demoVideos.get(prior.id) : undefined
+        if (!job) {
+          job = { owner: client.id, id: `video_lr_demo_${crypto.randomUUID()}`, object: 'video', model: body.model, status: 'queued', progress: 0, seconds: String(Number(body.seconds)), size: body.size ?? '1280x720', created_at: Math.floor(Date.now() / 1000), completed_at: null, expires_at: null, error: null, extensions: { 'localrouter.video': { demo: true, phase: 'known', cost_usd: null, cost_source: 'unknown', cancel_supported: false, remote_delete_supported: false, content_supported: false } } }
+          demoVideos.set(job.id, job); demoVideoKeys.set(scope, { hash, id: job.id })
+        }
+        const data = publicDemoVideo(job)
+        return { data: data as T, response: new Response(JSON.stringify(data), { headers: { 'content-type': 'application/json' } }) }
+      }
       if (path.replace(/\/+$/, '') === '/rerank') {
         const clientId = [...mockClientSecrets.entries()].find(([, secret]) => secret === this.apiKey)?.[0]
         const client = mockData.clients.find(client => client.id === clientId)

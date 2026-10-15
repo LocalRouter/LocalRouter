@@ -15,7 +15,8 @@
 - [x] P3 Search/web fetch and upstream server tools.
 - [x] P3 PDF/document inputs and OCR.
 - [x] P3 Rerank API.
-- [ ] Later Video jobs and realtime sessions.
+- [x] Later native Video jobs.
+- [ ] Later native realtime sessions.
 - [ ] Plan Review: compare implemented behavior with each requirement and finish omissions.
 - [ ] Test Coverage Review: add meaningful edge, error, isolation and migration tests.
 - [ ] Bug Hunt: review policy precedence, streaming, cancellation, signatures, billing, persistence and retries.
@@ -196,3 +197,12 @@ no-retry controls, aliases/OpenAPI/discovery/monitoring and Try It Out. Stable
 workspace parity passed (4,492 tests), frontend regressions/types/builds and
 production browser smoke passed. Remaining: native video jobs and realtime,
 then overall final review. Details: 2026-10-15-NATIVE_RERANK_API.md.
+
+Native video jobs are complete: explicit text-to-video mappings for direct
+OpenAI API keys and LLM Gateway, separate default-off grant, durable owner-scoped
+intent/idempotency journal, original provider/credential binding, bounded
+status/download operations, honest unknown outcomes and unsupported cancellation,
+verified completed/failed asset deletion where available, job-fee snapshots,
+OpenAPI/discovery/monitoring and client Try It Out. Stable workspace parity passed
+(4,507 tests, zero failures), frontend checks/builds and production Chrome smoke
+passed. Realtime and the overall final review remain pending.

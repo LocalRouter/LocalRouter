@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 pub enum NativeOperation {
     Ocr,
     Rerank,
+    Video,
 }
 
 /// Default-off constraints on native LLM traffic. These do not grant access.

@@ -25,6 +25,7 @@ pub mod explanation;
 pub mod free_tier;
 mod messages;
 mod native_operations;
+pub use native_operations::NativeDispatch;
 mod privacy;
 pub mod rate_limit;
 pub mod response_cache;

@@ -1928,6 +1928,7 @@ pub async fn get_feature_endpoint_matrix() -> Result<lr_providers::FeatureEndpoi
 /// to emulate that path on top of a different upstream API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiPathSupport {
+    pub videos: lr_providers::SupportLevel,
     pub rerank: lr_providers::SupportLevel,
     pub ocr: lr_providers::SupportLevel,
     pub search: lr_providers::SupportLevel,
@@ -1953,6 +1954,11 @@ pub async fn get_api_path_support(
 
     let native_batch = provider.native_batch_kind();
     Ok(ApiPathSupport {
+        videos: if provider.video_transport().ok().flatten().is_some() {
+            lr_providers::SupportLevel::Supported
+        } else {
+            lr_providers::SupportLevel::NotSupported
+        },
         rerank: if provider.rerank_protocol().is_some() {
             lr_providers::SupportLevel::Supported
         } else {

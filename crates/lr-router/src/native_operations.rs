@@ -3,7 +3,7 @@ use crate::{Router, UsageInfo};
 use lr_config::{NativeOperation, Strategy};
 use lr_types::{AppError, AppResult};
 
-pub(crate) struct NativeDispatch<'a> {
+pub struct NativeDispatch<'a> {
     router: &'a Router,
     client: &'a str,
     provider: &'a str,
@@ -86,7 +86,7 @@ impl Router {
         {
             return Err(AppError::InvalidParams("Native operation charges cannot be reliably bounded before dispatch; cost-limited/free-only requests are unsupported".into()));
         }
-        if operation == NativeOperation::Rerank
+        if matches!(operation, NativeOperation::Rerank | NativeOperation::Video)
             && (self.rate_limiter.has_token_limits(client_id)
                 || strategy.rate_limits.iter().any(|limit| {
                     limit.enabled
@@ -98,7 +98,7 @@ impl Router {
                         )
                 }))
         {
-            return Err(AppError::InvalidParams("Native rerank billing units cannot satisfy configured token ceilings; use explicit request quotas".into()));
+            return Err(AppError::InvalidParams("Native operation billing units cannot satisfy configured token ceilings; use explicit request quotas".into()));
         }
         Ok(strategy)
     }
@@ -202,5 +202,66 @@ impl Router {
         }
         dispatch.success = result.is_ok();
         result
+    }
+    pub fn authorize_native_resource(
+        &self,
+        client_id: &str,
+        operation: NativeOperation,
+        qualified_model: &str,
+    ) -> AppResult<()> {
+        let (client, strategy) = self.validate_client_and_strategy(client_id)?;
+        if !client.security.native_operations.contains(&operation)
+            || client.security.privacy.restricted()
+        {
+            return Err(AppError::InvalidParams(
+                "Native resource access is disabled by the current client policy".into(),
+            ));
+        }
+        let (provider, model) = Self::parse_model_string(qualified_model);
+        if provider.is_empty()
+            || provider == "localrouter"
+            || !strategy.is_model_allowed(&provider, &model)
+        {
+            return Err(AppError::InvalidParams(
+                "Native resource model is not currently permitted".into(),
+            ));
+        }
+        self.require_enabled_model(&provider, &model)
+    }
+    pub async fn begin_native_dispatch<'a>(
+        &'a self,
+        client_id: &'a str,
+        operation: NativeOperation,
+        provider: &'a str,
+        model: &'a str,
+        strategy_id: &'a str,
+    ) -> AppResult<NativeDispatch<'a>> {
+        let strategy = self.authorize_native_operation(client_id, operation)?;
+        if strategy.id != strategy_id || !strategy.is_model_allowed(provider, model) {
+            return Err(AppError::InvalidParams(
+                "Native operation policy changed before dispatch".into(),
+            ));
+        }
+        self.require_enabled_model(provider, model)?;
+        self.check_client_rate_limits(client_id).await?;
+        self.check_strategy_rate_limits(&strategy, provider, model)?;
+        self.rate_limiter
+            .record_api_key_usage(
+                client_id,
+                &UsageInfo {
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cost_usd: 0.0,
+                },
+            )
+            .await?;
+        self.authorize_native_operation(client_id, operation)?;
+        Ok(NativeDispatch::new(
+            self,
+            client_id,
+            provider,
+            model,
+            strategy_id,
+        ))
     }
 }
