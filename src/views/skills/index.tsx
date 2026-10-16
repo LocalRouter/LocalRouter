@@ -417,7 +417,12 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
                               )}
                             </button>
                             <SkillSourceIcon kind={group.kind} className="h-4 w-4 text-muted-foreground shrink-0" />
-                            <span className="text-sm font-semibold truncate flex-1">{group.label}</span>
+                            <div className="min-w-0 flex-1">
+                              <p className="text-sm font-semibold truncate">{group.label}</p>
+                              {group.path && (
+                                <p className="text-xs font-mono text-muted-foreground truncate">{group.path}</p>
+                              )}
+                            </div>
                             {group.missing && <TriangleAlert className="h-3.5 w-3.5 text-amber-500 shrink-0" />}
                             <span className="text-xs text-muted-foreground tabular-nums shrink-0">
                               {group.skills.length}
