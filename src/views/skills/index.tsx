@@ -6,11 +6,12 @@ import { ChevronDown, ChevronRight, FilePlus, Import, Plus, RefreshCw, Search, S
 import { SkillsIcon } from "@/components/icons/category-icons"
 import { Button } from "@/components/ui/Button"
 import { Input } from "@/components/ui/Input"
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from "@/components/ui/resizable"
 import { cn } from "@/lib/utils"
 import { groupSkillsBySource, splitMarketplaceGroups } from "@/utils/skill-sources"
-import type { SkillInfo, SkillSourceInfo, SkillSourceKind, SkillsConfig } from "@/types/tauri-commands"
+import type { SkillInfo, SkillSourceInfo, SkillSourceKind, SkillsConfig, UpdateSkillsToolNamesParams } from "@/types/tauri-commands"
 import { AddSkillsDialog, type AddSkillsTab } from "./add-skills-dialog"
 import { SkillDetail } from "./skill-detail"
 import { SourceDetail } from "./source-detail"
@@ -170,6 +171,7 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
   }
 
   const enabledCount = skills.filter((s) => s.enabled).length
+  const skillToolName = skillsConfig?.tool_name ?? "SkillRead"
 
   const renderSkillRow = (skill: SkillInfo, indent: boolean, sourceLabel?: string) => (
     <div
@@ -205,7 +207,6 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
           source={source}
           inMarketplaceGroup={group?.id === MARKETPLACE_SELECTION}
           onSelectSource={() => select(group?.id ?? `${SOURCE_SELECTION_PREFIX}${source.path}`)}
-          skillToolName={skillsConfig?.tool_name ?? "SkillRead"}
           onChanged={loadData}
           onDeleted={() => {
             select(group?.id ?? null)
@@ -310,6 +311,38 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
               </div>
             </div>
           )}
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm">Tool Names</CardTitle>
+              <CardDescription>
+                Rename tools to resolve conflicts with other tools the LLM client already uses. Applies to all skills; changes apply to new sessions only.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="flex gap-4 items-center">
+                <label className="text-sm text-muted-foreground w-28 shrink-0">Skill read tool:</label>
+                <Input
+                  defaultValue={skillToolName}
+                  key={`skill-tool-name-${skillToolName}`}
+                  onBlur={async (e) => {
+                    const v = e.target.value.trim()
+                    if (v && v !== skillToolName) {
+                      try {
+                        await invoke("update_skills_tool_names", { toolName: v } satisfies UpdateSkillsToolNamesParams)
+                        toast.success("Skill read tool name updated")
+                        loadData()
+                      } catch (error) {
+                        toast.error("Failed to update skill read tool name")
+                      }
+                    }
+                  }}
+                  onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur() }}
+                  className="flex-1"
+                />
+              </div>
+            </CardContent>
+          </Card>
         </div>
       </ScrollArea>
     )

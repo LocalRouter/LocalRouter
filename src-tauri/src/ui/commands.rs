@@ -3280,15 +3280,20 @@ pub struct SkillFileInfo {
     pub content_preview: Option<String>,
 }
 
+/// Text files are shown in full up to this many characters
+const SKILL_FILE_PREVIEW_MAX_CHARS: usize = 200_000;
+
 fn read_file_preview(path: &std::path::Path) -> Option<String> {
-    std::fs::read_to_string(path).ok().map(|content| {
-        if content.len() > 500 {
-            let truncated: String = content.chars().take(500).collect();
-            format!("{}...", truncated)
-        } else {
-            content
-        }
-    })
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|content| truncate_file_preview(content, SKILL_FILE_PREVIEW_MAX_CHARS))
+}
+
+fn truncate_file_preview(content: String, max_chars: usize) -> String {
+    match content.char_indices().nth(max_chars) {
+        Some((cut, _)) => format!("{}\n... (truncated)", &content[..cut]),
+        None => content,
+    }
 }
 
 fn is_text_file(path: &std::path::Path) -> bool {
@@ -5675,6 +5680,15 @@ pub async fn read_memory_archive_file(
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn file_preview_is_kept_whole_up_to_the_limit() {
+        assert_eq!(truncate_file_preview("héllo".into(), 5), "héllo");
+        assert_eq!(
+            truncate_file_preview("héllo world".into(), 5),
+            "héllo\n... (truncated)"
+        );
+    }
 
     #[test]
     fn skill_sources_are_classified_and_labelled() {

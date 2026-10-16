@@ -6,7 +6,6 @@ import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Switch } from "@/components/ui/switch"
-import { Input } from "@/components/ui/Input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import {
@@ -33,7 +32,6 @@ import type {
   SkillFileInfo,
   SkillInfo,
   SkillSourceInfo,
-  UpdateSkillsToolNamesParams,
 } from "@/types/tauri-commands"
 
 interface SkillDetailProps {
@@ -42,8 +40,7 @@ interface SkillDetailProps {
   /** Show the source in the breadcrumb as the marketplace group */
   inMarketplaceGroup: boolean
   onSelectSource: () => void
-  skillToolName: string
-  /** Called after the skill or skills config changed */
+  /** Called after the skill changed */
   onChanged: () => void
   onDeleted: () => void
 }
@@ -53,7 +50,6 @@ export function SkillDetail({
   source,
   inMarketplaceGroup,
   onSelectSource,
-  skillToolName,
   onChanged,
   onDeleted,
 }: SkillDetailProps) {
@@ -296,39 +292,6 @@ export function SkillDetail({
 
           <TabsContent value="settings">
             <div className="space-y-6">
-              {/* Tool Names (global) */}
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-sm">Tool Names</CardTitle>
-                  <CardDescription>
-                    Rename tools to resolve conflicts with other tools the LLM client already uses. Changes apply to new sessions only.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  <div className="flex gap-4 items-center">
-                    <label className="text-sm text-muted-foreground w-28 shrink-0">Skill read tool:</label>
-                    <Input
-                      defaultValue={skillToolName}
-                      key={`skill-tool-name-${skillToolName}`}
-                      onBlur={async (e) => {
-                        const v = e.target.value.trim()
-                        if (v && v !== skillToolName) {
-                          try {
-                            await invoke("update_skills_tool_names", { toolName: v } satisfies UpdateSkillsToolNamesParams)
-                            toast.success("Skill read tool name updated")
-                            onChanged()
-                          } catch (error) {
-                            toast.error("Failed to update skill read tool name")
-                          }
-                        }
-                      }}
-                      onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur() }}
-                      className="flex-1"
-                    />
-                  </div>
-                </CardContent>
-              </Card>
-
               {/* Danger Zone */}
               <Card className="border-red-200 dark:border-red-900">
                 <CardHeader>
@@ -506,7 +469,7 @@ function FileTree({
             </button>
             {expanded.has(file.name) && file.content_preview && (
               <pre
-                className="mr-3 mb-1 px-3 py-2 text-[10px] leading-relaxed bg-muted/30 rounded border border-border/50 overflow-x-auto max-h-48 whitespace-pre-wrap break-words"
+                className="mr-3 mb-1 px-3 py-2 text-[10px] leading-relaxed bg-muted/30 rounded border border-border/50 overflow-auto max-h-96 whitespace-pre-wrap break-words"
                 style={{ marginLeft: padLeft + 18 }}
               >
                 {file.content_preview}
