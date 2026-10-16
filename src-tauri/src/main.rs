@@ -2924,6 +2924,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::cancel_elicitation,
             // File system commands
             ui::commands::open_path,
+            ui::commands::reveal_path,
             // Skills commands
             ui::commands::list_skills,
             ui::commands::list_skill_sources,

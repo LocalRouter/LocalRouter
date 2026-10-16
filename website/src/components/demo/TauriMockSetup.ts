@@ -3774,10 +3774,11 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
         { name: "jest-template.js", category: "script", content_preview: "export const jestTemplate = `\ndescribe('{{name}}', () => {\n  {{tests}}\n});\n`;" },
       ],
     }
-    return filesBySkill[skill?.name || ''] || [
+    const files = filesBySkill[skill?.name || ''] || [
       { name: "main.js", category: "script", content_preview: "// Main script" },
       { name: "config.json", category: "reference", content_preview: "{}" },
     ]
+    return files.map(f => ({ ...f, path: `${skill?.skill_dir ?? '~/skills'}/${f.name}` }))
   },
   'get_mcp_gateway_settings': () => ({
     sampling: 'passthrough',
@@ -5328,6 +5329,10 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'hide_main_window': () => null,
   'open_path': (args) => {
     toast.info(`Opening: ${args?.path} (demo)`)
+    return null
+  },
+  'reveal_path': (args) => {
+    toast.info(`Showing: ${args?.path} (demo)`)
     return null
   },
   'copy_to_clipboard': (args) => {

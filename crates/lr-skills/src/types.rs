@@ -92,6 +92,9 @@ pub struct SkillInfo {
     /// Source path
     pub source_path: String,
 
+    /// Directory containing this skill's SKILL.md
+    pub skill_dir: String,
+
     /// Number of scripts
     pub script_count: usize,
 
@@ -115,6 +118,7 @@ impl From<&SkillDefinition> for SkillInfo {
             tags: def.metadata.tags.clone(),
             extra: def.metadata.extra.clone(),
             source_path: def.source_path.clone(),
+            skill_dir: def.skill_dir.to_string_lossy().into_owned(),
             script_count: def.scripts.len(),
             reference_count: def.references.len(),
             asset_count: def.assets.len(),

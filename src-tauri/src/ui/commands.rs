@@ -1863,6 +1863,40 @@ pub async fn open_path(path: String, app: tauri::AppHandle) -> Result<(), String
     Ok(())
 }
 
+/// Show a file or folder selected in the system file manager, without opening it
+#[tauri::command]
+pub async fn reveal_path(path: String) -> Result<(), String> {
+    let canonical = std::path::Path::new(&path)
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve path: {}", e))?;
+
+    #[cfg(target_os = "macos")]
+    let result = std::process::Command::new("open")
+        .arg("-R")
+        .arg(&canonical)
+        .spawn();
+    #[cfg(target_os = "windows")]
+    let result = {
+        let mut arg = std::ffi::OsString::from("/select,");
+        arg.push(&canonical);
+        std::process::Command::new("explorer").arg(arg).spawn()
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let result = {
+        // No portable "select in file manager" on Linux; open the containing folder
+        let dir = if canonical.is_dir() {
+            canonical.as_path()
+        } else {
+            canonical.parent().unwrap_or(canonical.as_path())
+        };
+        std::process::Command::new("xdg-open").arg(dir).spawn()
+    };
+
+    result
+        .map(|_| ())
+        .map_err(|e| format!("Failed to reveal path: {}", e))
+}
+
 // ============================================================================
 // Clipboard Commands
 // ============================================================================
@@ -3266,6 +3300,7 @@ fn collect_skill_files_recursive(
 
             files.push(SkillFileInfo {
                 name: relative,
+                path: path.to_string_lossy().into_owned(),
                 category,
                 content_preview: preview,
             });
@@ -3275,7 +3310,10 @@ fn collect_skill_files_recursive(
 
 #[derive(serde::Serialize)]
 pub struct SkillFileInfo {
+    /// Path relative to the skill directory
     pub name: String,
+    /// Absolute path
+    pub path: String,
     pub category: String,
     pub content_preview: Option<String>,
 }

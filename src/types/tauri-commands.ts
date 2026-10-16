@@ -1463,6 +1463,8 @@ export interface SkillInfo {
   tags: string[]
   extra: Record<string, unknown>
   source_path: string
+  /** Directory containing this skill's SKILL.md */
+  skill_dir: string
   script_count: number
   reference_count: number
   asset_count: number
@@ -1526,7 +1528,10 @@ export interface SkillToolInfo {
  * Rust: src-tauri/src/ui/commands.rs - SkillFileInfo struct
  */
 export interface SkillFileInfo {
+  /** Path relative to the skill directory */
   name: string
+  /** Absolute path */
+  path: string
   category: 'skill_md' | 'script' | 'reference' | 'asset'
   content_preview?: string | null
 }
@@ -3708,6 +3713,11 @@ export interface DeletePricingOverrideParams {
 
 /** Params for open_path */
 export interface OpenPathParams {
+  path: string
+}
+
+/** Params for reveal_path */
+export interface RevealPathParams {
   path: string
 }
 

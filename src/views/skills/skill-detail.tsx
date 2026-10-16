@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { ExternalLink, ChevronDown, ChevronRight, FileText, FileCode, Image, Folder, FlaskConical, Play, BookOpen, Loader2 } from "lucide-react"
+import { ExternalLink, ChevronDown, ChevronRight, FileText, FileCode, Image, Folder, FolderOpen, FlaskConical, Play, BookOpen, Loader2 } from "lucide-react"
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
@@ -28,6 +28,7 @@ import type {
   MarketplaceDeleteSkillParams,
   MarketplaceIsSkillFromMarketplaceParams,
   OpenPathParams,
+  RevealPathParams,
   SetSkillEnabledParams,
   SkillFileInfo,
   SkillInfo,
@@ -107,6 +108,15 @@ export function SkillDetail({
     } catch (error) {
       console.error("Failed to open path:", error)
       toast.error("Failed to open in file explorer")
+    }
+  }
+
+  const handleRevealPath = async (path: string) => {
+    try {
+      await invoke("reveal_path", { path } satisfies RevealPathParams)
+    } catch (error) {
+      console.error("Failed to reveal path:", error)
+      toast.error("Failed to show in file explorer")
     }
   }
 
@@ -250,32 +260,36 @@ export function SkillDetail({
                 </Card>
               ) : skillFiles.length > 0 && (
                 <Card>
-                  <CardHeader className="pb-3">
-                    <CardTitle className="text-sm">Files</CardTitle>
+                  <CardHeader className="pb-3 flex-row items-center justify-between space-y-0 gap-3">
+                    <div className="min-w-0">
+                      <CardTitle className="text-sm">Files</CardTitle>
+                      <p className="text-xs font-mono text-muted-foreground truncate mt-1" title={skill.skill_dir}>
+                        {skill.skill_dir}
+                      </p>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-xs shrink-0"
+                      onClick={() => handleOpenPath(skill.skill_dir)}
+                    >
+                      <ExternalLink className="h-3 w-3 mr-1" />
+                      Open folder
+                    </Button>
                   </CardHeader>
                   <CardContent>
                     <div className="rounded-md border border-border/50 bg-muted/20 py-1">
-                      <FileTree files={skillFiles} expanded={expandedFiles} onToggle={toggleFileExpanded} />
+                      <FileTree
+                        files={skillFiles}
+                        expanded={expandedFiles}
+                        onToggle={toggleFileExpanded}
+                        onReveal={handleRevealPath}
+                      />
                     </div>
                   </CardContent>
                 </Card>
               )}
 
-              {/* Source path */}
-              <div className="flex items-center justify-between text-xs text-muted-foreground">
-                <span className="truncate" title={skill.source_path}>
-                  Source: {skill.source_path}
-                </span>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-6 text-xs shrink-0"
-                  onClick={() => handleOpenPath(skill.source_path)}
-                >
-                  <ExternalLink className="h-3 w-3 mr-1" />
-                  Open folder
-                </Button>
-              </div>
             </div>
           </TabsContent>
 
@@ -394,10 +408,12 @@ function FileTree({
   files,
   expanded,
   onToggle,
+  onReveal,
 }: {
   files: SkillFileInfo[]
   expanded: Set<string>
   onToggle: (key: string) => void
+  onReveal: (path: string) => void
 }) {
   const root: FileTreeNode = { name: "", fullPath: "", children: {} }
   for (const file of files) {
@@ -453,20 +469,30 @@ function FileTree({
         const file = entry.file
         results.push(
           <div key={file.name}>
-            <button
-              className="w-full flex items-center gap-1.5 py-1 pr-3 text-xs hover:bg-muted/50 transition-colors"
-              style={{ paddingLeft: padLeft }}
-              onClick={() => file.content_preview && onToggle(file.name)}
-            >
-              {file.content_preview ? (
-                expanded.has(file.name)
-                  ? <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
-                  : <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" />
-              ) : <div className="w-3" />}
-              {getFileIcon(entry.name, file.category)}
-              <span>{entry.name}</span>
-              {getCategoryBadge(file.category)}
-            </button>
+            <div className="group flex items-center hover:bg-muted/50 transition-colors">
+              <button
+                className="flex-1 min-w-0 flex items-center gap-1.5 py-1 text-xs"
+                style={{ paddingLeft: padLeft }}
+                onClick={() => file.content_preview && onToggle(file.name)}
+              >
+                {file.content_preview ? (
+                  expanded.has(file.name)
+                    ? <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
+                    : <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" />
+                ) : <div className="w-3" />}
+                {getFileIcon(entry.name, file.category)}
+                <span className="truncate">{entry.name}</span>
+                {getCategoryBadge(file.category)}
+              </button>
+              <button
+                className="mr-2 p-1 rounded text-muted-foreground hover:text-foreground opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity"
+                title="Show in file explorer"
+                aria-label={`Show ${entry.name} in file explorer`}
+                onClick={() => onReveal(file.path)}
+              >
+                <FolderOpen className="h-3.5 w-3.5" />
+              </button>
+            </div>
             {expanded.has(file.name) && file.content_preview && (
               <pre
                 className="mr-3 mb-1 px-3 py-2 text-[10px] leading-relaxed bg-muted/30 rounded border border-border/50 overflow-auto max-h-96 whitespace-pre-wrap break-words"
