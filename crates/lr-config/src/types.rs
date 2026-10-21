@@ -306,6 +306,8 @@ fn deserialize_auto_model_name<'de, D: serde::Deserializer<'de>>(
 /// Routing strategy configuration (separate from clients)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Strategy {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing_profile: Option<crate::RoutingProfileBinding>,
     #[serde(default, skip_serializing_if = "crate::NamedRouteVersions::is_default")]
     pub route_versions: crate::NamedRouteVersions,
     #[serde(
@@ -346,6 +348,7 @@ impl Strategy {
     /// Create a new strategy with default settings
     pub fn new(name: String) -> Self {
         Self {
+            routing_profile: None,
             route_versions: Default::default(),
             response_cache: Default::default(),
             id: Uuid::new_v4().to_string(),
@@ -383,6 +386,7 @@ impl Strategy {
         client_name: String,
     ) -> Self {
         Self {
+            routing_profile: None,
             route_versions: Default::default(),
             response_cache: Default::default(),
             id: strategy_id,
@@ -453,6 +457,10 @@ pub struct AppConfig {
     /// Routing strategies (separate from clients, reusable)
     #[serde(default)]
     pub strategies: Vec<Strategy>,
+
+    /// Optional reusable routing content. Existing inline strategies stay unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routing_profiles: Vec<crate::RoutingProfile>,
 
     /// Pricing overrides for specific provider/model combinations
     /// Format: {provider_name: {model_name: pricing_override}}
@@ -4866,6 +4874,7 @@ impl Default for AppConfig {
             mcp_servers: Vec::new(),
             clients: Vec::new(),
             strategies: Vec::new(),
+            routing_profiles: Vec::new(),
             pricing_overrides: std::collections::HashMap::new(),
             ui: UiConfig::default(),
             update: UpdateConfig::default(),

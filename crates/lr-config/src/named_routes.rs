@@ -105,6 +105,12 @@ impl RouteSnapshot {
         auto.adaptive_routing = self.adaptive_routing.clone();
         auto.session_routing = self.session_routing.clone();
     }
+    /// Shared content never replaces a binding's client-facing model alias.
+    pub fn apply_content(&self, auto: &mut AutoModelConfig) {
+        let alias = auto.model_name.clone();
+        self.apply(auto);
+        auto.model_name = alias;
+    }
     pub fn validate(&self) -> Result<(), String> {
         if self.model_name.trim().is_empty()
             || self.model_name.len() > 128
@@ -250,6 +256,9 @@ impl NamedRouteVersions {
 
 impl crate::Strategy {
     pub fn active_named_revision(&self) -> Option<u64> {
+        if self.routing_profile.is_some() {
+            return None;
+        }
         self.auto_config
             .as_ref()
             .filter(|auto| self.route_versions.active_matches(auto))
@@ -266,12 +275,21 @@ impl crate::Strategy {
         value
     }
     pub fn routing_scope(&self) -> serde_json::Value {
-        serde_json::json!({"auto":self.auto_config,"revision":self.active_named_revision()})
+        let mut scope =
+            serde_json::json!({"auto":self.auto_config,"revision":self.active_named_revision()});
+        if let Some(binding) = &self.routing_profile {
+            scope["profile"] = serde_json::json!(binding);
+        }
+        scope
     }
 }
 impl crate::AppConfig {
     pub fn routing_identity(&self) -> serde_json::Value {
         let mut value = serde_json::json!(self);
+        value
+            .as_object_mut()
+            .expect("config object")
+            .remove("routing_profiles");
         value["strategies"] = serde_json::Value::Array(
             self.strategies
                 .iter()

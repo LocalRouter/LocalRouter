@@ -1,3 +1,5 @@
+import { GatewayConnectionSummary } from './GatewayConnectionSummary'
+import { gatewayBaseUrl } from '@/utils/gateway-connection'
 /**
  * HowToConnect Component
  *
@@ -47,6 +49,7 @@ interface ServerConfig {
 interface HowToConnectProps {
   clientId: string
   clientUuid: string
+  strategyId?: string
   secret: string | null
   loadingSecret?: boolean
   showRotateCredentials?: boolean
@@ -1364,6 +1367,7 @@ function ProxyLlmSetup({
 }
 
 export function HowToConnect({
+  strategyId,
   clientId,
   clientUuid,
   secret,
@@ -1401,10 +1405,13 @@ export function HowToConnect({
 
   // Fetch server config, executable path, and home dir
   useEffect(() => {
+    let live = true
+    let generation = 0
     const fetchServerConfig = async () => {
+      const request = ++generation
       try {
         const config = await invoke<ServerConfig>("get_server_config")
-        setServerConfig(config)
+        if (live && request === generation) setServerConfig(config)
       } catch (error) {
         console.error("Failed to fetch server config:", error)
       }
@@ -1437,15 +1444,15 @@ export function HowToConnect({
     fetchExecutablePath()
     fetchHomeDir()
     fetchConfigDir()
+    const listeners = ['server-status-changed', 'config-changed'].map(event => listenSafe(event, fetchServerConfig))
+    return () => { live = false; listeners.forEach(l => l.cleanup()) }
   }, [])
 
   // Fetch models filtered by client's strategy via the real API endpoint.
   // Only the native gateway can call /v1/models — proxy/off clients would 403.
   useEffect(() => {
     if (!secret || !serverConfig || llmMode !== "gateway") return
-    const port = serverConfig.actual_port ?? serverConfig.port ?? 3625
-    const host = serverConfig.host ?? "127.0.0.1"
-    const url = `http://${host}:${port}/v1/models`
+    const url = `${gatewayBaseUrl(serverConfig)}/v1/models`
     const fetchModels = async () => {
       try {
         const res = await fetch(url, {
@@ -1462,9 +1469,7 @@ export function HowToConnect({
   }, [secret, serverConfig, llmMode])
 
   // Compute URLs based on server config
-  const port = serverConfig?.actual_port ?? serverConfig?.port ?? 3625
-  const host = serverConfig?.host ?? "127.0.0.1"
-  const baseUrl = `http://${host}:${port}`
+  const baseUrl = serverConfig ? gatewayBaseUrl(serverConfig) : "http://127.0.0.1:3625"
 
   // Binary path from the running executable
   const binaryPath = executablePath || "/path/to/localrouter"
@@ -1559,6 +1564,7 @@ export function HowToConnect({
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
+        {showModelsTab && strategyId && <GatewayConnectionSummary strategyId={strategyId} />}
         {/* LLM proxy modes: show proxy instructions instead of the native
             ANTHROPIC_BASE_URL setup. MCP (if a gateway) still renders below. */}
         {isLlmProxy && <ProxyLlmSetup clientUuid={clientUuid} template={template} />}

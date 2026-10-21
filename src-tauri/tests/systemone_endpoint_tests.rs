@@ -2733,3 +2733,6 @@ mod videos_endpoint_cases;
 
 #[path = "fixtures/realtime_endpoint_cases.rs"]
 mod realtime_endpoint_cases;
+
+#[path = "fixtures/routing_profiles_endpoint_cases.rs"]
+mod routing_profiles_endpoint_cases;

@@ -763,6 +763,7 @@ pub async fn clone_client(
     // Clone the strategy
     let new_strategy = if let Some(src_strategy) = source_strategy {
         lr_config::Strategy {
+            routing_profile: src_strategy.routing_profile.clone(),
             route_versions: Default::default(),
             response_cache: Default::default(),
             id: new_strategy_id.clone(),

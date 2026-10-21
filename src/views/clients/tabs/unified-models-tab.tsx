@@ -1,3 +1,4 @@
+import { RoutingProfileBindingEditor } from '@/components/strategy/RoutingProfileBindingEditor'
 import { NamedRouteEditor } from "@/components/strategy/NamedRouteEditor"
 /**
  * UnifiedModelsTab Component
@@ -53,6 +54,7 @@ interface StrategyModelPermissions {
 }
 
 interface StrategyConfig {
+  routing_profile?: import('@/types/tauri-commands').RoutingProfileBinding | null
   response_cache?: import('@/types/tauri-commands').ResponseCacheConfig
   id: string
   name: string
@@ -164,7 +166,7 @@ const buildModelEntries = (
 export function UnifiedModelsTab({
   client,
   onUpdate,
-  onViewChange: _onViewChange,
+  onViewChange,
   restricted = false,
 }: UnifiedModelsTabProps) {
   // Strategy state
@@ -578,6 +580,16 @@ export function UnifiedModelsTab({
 
   return (
     <div className="space-y-4">
+      {!restricted && <RoutingProfileBindingEditor strategyId={strategy.id} disabled={saving} beforeChange={async () => {
+        if (updateTimeoutRef.current) clearTimeout(updateTimeoutRef.current)
+        const pending = pendingUpdatesRef.current
+        if (pending) {
+          await invoke('update_strategy', { strategyId: strategy.id, name: pending.name, allowedModels: pending.allowed_models,
+            modelPermissions: pending.model_permissions, autoConfig: pending.auto_config, rateLimits: pending.rate_limits,
+            responseCache: pending.response_cache, freeTierOnly: pending.free_tier_only, freeTierFallback: pending.free_tier_fallback } satisfies import('@/types/tauri-commands').UpdateStrategyParams)
+          pendingUpdatesRef.current = null
+        }
+      }} onUpdate={() => { void loadData(); onUpdate() }} onEdit={id => onViewChange?.('decision-routing', id)} />}
       {/* Section 1: Model Selection.
           Gateway clients pick from the provider/model catalog and prioritize.
           Proxy clients talk to their own upstream, so there is nothing to route
@@ -598,7 +610,7 @@ export function UnifiedModelsTab({
             <div className="flex-1 min-w-0">
               <CardTitle className="text-base">Model Selection</CardTitle>
               <CardDescription>
-                Select and prioritize models. Enabled models appear in the API model list and are used for auto-routing in priority order.
+                Permitted models can be requested directly. Auto routing uses the chosen policy route, then the default route, then this priority list, skipping ineligible models. An empty route uses this priority list immediately. Available models outside this list are not fallback candidates.
               </CardDescription>
               {/* Show loading indicator for providers */}
               {!isFullyLoaded && loadingProviders.size > 0 && (
@@ -619,7 +631,7 @@ export function UnifiedModelsTab({
             showSecondaryZone={false}
             onEnabledModelsChange={(strong) => handleModelsChange(strong, policyModelRefs(autoConfig?.routing_policy))}
             onSecondaryModelsChange={() => {}}
-            disabled={saving}
+            disabled={saving || !!strategy.routing_profile}
             modelPricing={modelPricing}
             modelParamCounts={modelParamCounts}
             freeTierKinds={freeTierKinds}
@@ -716,7 +728,7 @@ export function UnifiedModelsTab({
             </InfoTooltip>
           </div>
           <CardDescription>
-            Restrict model usage to Free and Free-tier only. For Auto Routing, will move onto using next model if model usage limits are reached.
+            Try free-eligible models first. Auto routing skips exhausted free quotas. Paid fallback follows your choice below; a hosted decision model may still charge for classification.
           </CardDescription>
         </CardHeader>
         {strategy.free_tier_only && (
@@ -737,9 +749,9 @@ export function UnifiedModelsTab({
                   {(['allow', 'ask', 'off'] as const).map((value) => {
                     const isActive = (strategy.free_tier_fallback ?? 'off') === value
                     const config = {
-                      allow: { label: 'Allow', activeClass: 'bg-emerald-500 text-white' },
-                      ask: { label: 'Ask', activeClass: 'bg-amber-500 text-white' },
-                      off: { label: 'Off', activeClass: 'bg-zinc-500 text-white' },
+                      allow: { label: 'Allow paid', activeClass: 'bg-emerald-500 text-white' },
+                      ask: { label: 'Ask before paid', activeClass: 'bg-amber-500 text-white' },
+                      off: { label: 'Free only', activeClass: 'bg-zinc-500 text-white' },
                     }[value]
                     return (
                       <button
@@ -786,7 +798,7 @@ export function UnifiedModelsTab({
           } finally { setSaving(false) }
         }} />}
 
-      {!restricted && autoConfig && <AdaptiveRoutingEditor value={autoConfig.adaptive_routing} readOnly={saving}
+      {!restricted && autoConfig && <AdaptiveRoutingEditor value={autoConfig.adaptive_routing} readOnly={saving || !!strategy.routing_profile}
         onSave={async adaptive_routing => {
           const pending = pendingUpdatesRef.current
           const latestAuto = pending?.auto_config === undefined ? autoConfig : pending.auto_config
@@ -803,7 +815,7 @@ export function UnifiedModelsTab({
             onUpdate()
           } finally { setSaving(false) }
         }} />}
-      {!restricted && autoConfig && <SessionRoutingEditor value={autoConfig.session_routing} readOnly={saving}
+      {!restricted && autoConfig && <SessionRoutingEditor value={autoConfig.session_routing} readOnly={saving || !!strategy.routing_profile}
         onSave={async session_routing => {
           const pending = pendingUpdatesRef.current
           const latestAuto = pending?.auto_config === undefined ? autoConfig : pending.auto_config
@@ -821,9 +833,9 @@ export function UnifiedModelsTab({
           } finally { setSaving(false) }
         }} />}
 
-      {!restricted && autoConfig && <NamedRouteEditor key={strategy.id} strategyId={strategy.id} clientId={client.client_id} autoConfig={autoConfig} readOnly={saving} onUpdate={()=>{void loadData();onUpdate()}}/>}
+      {!restricted && !strategy.routing_profile && autoConfig && <NamedRouteEditor key={strategy.id} strategyId={strategy.id} clientId={client.id} autoConfig={autoConfig} readOnly={saving} onUpdate={()=>{void loadData();onUpdate()}}/>}
 
-      {!restricted && autoConfig && <RoutingPolicyEditor clientId={client.client_id} strategyId={strategy.id} value={autoConfig.routing_policy} readOnly={saving}
+      {!restricted && autoConfig && <RoutingPolicyEditor clientId={client.id} strategyId={strategy.id} value={autoConfig.routing_policy} readOnly={saving || !!strategy.routing_profile}
         onSave={async policy => {
           // Flush prior auto-list edits before persisting the complete policy.
           if (updateTimeoutRef.current) clearTimeout(updateTimeoutRef.current)

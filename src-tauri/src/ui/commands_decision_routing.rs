@@ -60,11 +60,16 @@ pub async fn preview_routing_policy(
             "Open a client tab to test rules that depend on authenticated client identity".into(),
         );
     }
+    let profile_preview = route_snapshot.is_some() && strategy.routing_profile.is_some();
     let mut effective_strategy = strategy.clone();
     if let Some(auto) = effective_strategy.auto_config.as_mut() {
         if let Some(snapshot) = route_snapshot {
             snapshot.validate()?;
-            snapshot.apply(auto);
+            if profile_preview {
+                snapshot.apply_content(auto);
+            } else {
+                snapshot.apply(auto);
+            }
         }
         auto.routing_policy = Some(policy.clone());
     }
@@ -156,6 +161,9 @@ pub async fn preview_routing_policy(
             lr_providers::EndpointType::Chat
         },
     );
+    if let Some(metadata) = explanation.named_route.as_mut().filter(|_| profile_preview) {
+        metadata["profile_preview"] = json!(true);
+    }
     if client_identity_unknown && decision.is_none() {
         explanation.reason = "client_identity_required".into();
         explanation.classifier_required = false;

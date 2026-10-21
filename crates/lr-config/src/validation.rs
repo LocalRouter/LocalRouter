@@ -46,6 +46,9 @@ pub fn validate_config(config: &AppConfig) -> AppResult<()> {
 
     // Validate strategies
     validate_strategies(config)?;
+    config
+        .validate_routing_profiles()
+        .map_err(AppError::Config)?;
 
     // Validate cross-references
     validate_cross_references(config)?;
@@ -862,6 +865,7 @@ mod tests {
 
     fn make_strategy(name: &str) -> Strategy {
         Strategy {
+            routing_profile: None,
             route_versions: Default::default(),
             response_cache: Default::default(),
             id: uuid::Uuid::new_v4().to_string(),

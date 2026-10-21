@@ -1,3 +1,5 @@
+import { PolicyModelPicker as ModelPicker, PolicyModelLabel } from './PolicyModelPicker'
+import type { DetailedModelInfo, FreeTierKind, ProviderFreeTierStatus } from '@/types/tauri-commands'
 import { RouteRulesEditor } from './RouteRulesEditor'
 import { useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
@@ -13,7 +15,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { routingPolicyIssue, routingPolicyIssueMessage } from './routing-policy-status'
 import type { RoutingPolicy, RoutingOption, RoutingPolicyPreview, PreviewRoutingPolicyParams, AutoModelConfig, ModelPermissions, UpdateStrategyParams } from '@/types/tauri-commands'
 
-interface Model { provider_instance: string; model_id: string; capabilities: string[] }
 type ModelRef = [string, string]
 const modelKey = (m: ModelRef) => JSON.stringify(m)
 const option = (id: string, description: string): RoutingOption => ({ id, description, models: [] })
@@ -43,17 +44,6 @@ export function routingTemplate(name: string): RoutingPolicy {
   return p
 }
 
-function ModelPicker({ models, value, onChange, placeholder, disabled }: { models: Model[]; value: ModelRef | null; onChange: (v: ModelRef) => void; placeholder: string; disabled?: boolean }) {
-  const found = value && models.some(m => m.provider_instance === value[0] && m.model_id === value[1])
-  return <Select value={value ? modelKey(value) : ''} onValueChange={v => onChange(JSON.parse(v))} disabled={disabled}>
-    <SelectTrigger aria-label={placeholder}><SelectValue placeholder={placeholder} /></SelectTrigger>
-    <SelectContent>
-      {value && !found && <SelectItem value={modelKey(value)}>{value.join('/')} (unavailable)</SelectItem>}
-      {models.map(m => <SelectItem key={modelKey([m.provider_instance, m.model_id])} value={modelKey([m.provider_instance, m.model_id])}>{m.provider_instance} / {m.model_id}</SelectItem>)}
-    </SelectContent>
-  </Select>
-}
-
 export function policyModelRefs(policy: RoutingPolicy | null | undefined): ModelRef[] {
   return policy ? [...policy.options.flatMap(o => o.models), ...(policy.decision_model ? [policy.decision_model] : [])] : []
 }
@@ -69,7 +59,8 @@ export function RoutingPolicyEditor({ strategyId, clientId, value, onSave, readO
 }) {
   const [draft, setDraft] = useState<RoutingPolicy>(() => value ?? { ...routingTemplate('workflow'), enabled: false })
   const previewRequest = useRef(0)
-  const [models, setModels] = useState<Model[]>([])
+  const [models, setModels] = useState<DetailedModelInfo[]>([])
+  const [freeTiers, setFreeTiers] = useState<Record<string, FreeTierKind>>({})
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
@@ -86,12 +77,12 @@ export function RoutingPolicyEditor({ strategyId, clientId, value, onSave, readO
     const load = () => {
       const requestId = ++generation
       setLoading(true)
-      void invoke<Model[]>('list_all_models_detailed')
-        .then(ms => { if (active && requestId === generation) setModels(ms) })
+      void Promise.all([invoke<DetailedModelInfo[]>('list_all_models_detailed'), invoke<ProviderFreeTierStatus[]>('get_free_tier_status')])
+        .then(([ms, statuses]) => { if (active && requestId === generation) { setModels(ms); setFreeTiers(Object.fromEntries(statuses.map(s => [s.provider_instance, s.free_tier]))); setError(null) } })
         .catch(e => { if (active && requestId === generation) setError(String(e)) })
         .finally(() => { if (active && requestId === generation) setLoading(false) })
     }
-    const listeners = [listenSafe('models-changed', load), listenSafe('providers-changed', load)]
+    const listeners = [listenSafe('models-changed', load), listenSafe('providers-changed', load), listenSafe('config-changed', load)]
     void Promise.all(listeners.map(l => l.promise)).then(() => { if (active) load() })
     return () => { active = false; listeners.forEach(l => l.cleanup()) }
   }, [strategyId])
@@ -100,7 +91,7 @@ export function RoutingPolicyEditor({ strategyId, clientId, value, onSave, readO
     setResult(null)
     setTesting(false)
     return () => { previewRequest.current += 1 }
-  }, [draft, prompt, mode, strategyId])
+  }, [draft, prompt, mode, strategyId, clientId, sessionId, previewSnapshot])
   const change = (update: Partial<RoutingPolicy>) => { setDraft(p => ({ ...p, ...update })); setResult(null) }
   const editOption = (index: number, update: Partial<RoutingOption>) => {
     const old = draft.options[index].id
@@ -142,7 +133,7 @@ export function RoutingPolicyEditor({ strategyId, clientId, value, onSave, readO
         </Select></div>
       </div>
       {draft.mode === 'semantic' && <div className="space-y-2"><Label>Decision provider and model</Label>
-        <ModelPicker models={decisionModels} value={draft.decision_model} onChange={decision_model => change({ decision_model })} placeholder="Choose a decision model" disabled={disabled || loading} />
+        <ModelPicker freeTiers={freeTiers} models={decisionModels} value={draft.decision_model} onChange={decision_model => change({ decision_model })} placeholder="Choose a decision model" disabled={disabled || loading} />
         <p className="text-xs text-muted-foreground">Choose a native decision model from your providers, such as TypeSafe Jev, Laya, Kev or Ollaya. Selected hosted providers receive the routing context and may charge for the decision.</p>
         {!loading && !decisionModels.length && <p className="text-sm text-muted-foreground">Add a System One provider or download a decision model under Providers. Until one is selected, requests use the default route.</p>}
       </div>}
@@ -152,12 +143,12 @@ export function RoutingPolicyEditor({ strategyId, clientId, value, onSave, readO
         {draft.options.map((o, i) => <div key={i} className="rounded-md border p-3 space-y-3">
           <div className="flex gap-2"><Input aria-label={`Route ${i + 1} ID`} value={o.id} onChange={e => editOption(i, { id: e.target.value })} disabled={disabled} /><Button variant="ghost" size="icon" aria-label={`Remove route ${o.id}`} disabled={disabled || draft.options.length <= 2 || o.id === draft.default_route || draft.mode_rules.some(r => r.route === o.id) || (draft.rules ?? []).some(rule => rule.branches.some(branch => branch.route === o.id))} onClick={() => change({ options: draft.options.filter((_, j) => i !== j) })}><Trash2 className="h-4 w-4" /></Button></div>
           <Input aria-label={`When to use ${o.id}`} value={o.description} onChange={e => editOption(i, { description: e.target.value })} disabled={disabled} />
-          {o.models.map((m, j) => <div key={`${modelKey(m)}-${j}`} className="flex items-center gap-2"><span className="text-xs flex-1 truncate">{j + 1}. {m.join(' / ')}</span>
+          {o.models.map((m, j) => <div key={`${modelKey(m)}-${j}`} className="flex items-center gap-2"><span className="text-xs">{j + 1}.</span><PolicyModelLabel value={m} models={models} freeTiers={freeTiers} />
             <Button size="icon" variant="ghost" aria-label="Move model up" disabled={disabled || j === 0} onClick={() => { const ms = [...o.models]; [ms[j-1], ms[j]] = [ms[j], ms[j-1]]; editOption(i, { models: ms }) }}><ArrowUp className="h-3 w-3" /></Button>
             <Button size="icon" variant="ghost" aria-label="Move model down" disabled={disabled || j === o.models.length - 1} onClick={() => { const ms = [...o.models]; [ms[j+1], ms[j]] = [ms[j], ms[j+1]]; editOption(i, { models: ms }) }}><ArrowDown className="h-3 w-3" /></Button>
             <Button size="icon" variant="ghost" aria-label="Remove destination model" disabled={disabled} onClick={() => editOption(i, { models: o.models.filter((_, k) => k !== j) })}><Trash2 className="h-3 w-3" /></Button>
           </div>)}
-          <ModelPicker models={chatModels.filter(m => !o.models.some(([p, id]) => p === m.provider_instance && id === m.model_id))} value={null} onChange={m => editOption(i, { models: [...o.models, m] })} placeholder={`Add model to ${o.id}`} disabled={disabled || loading} />
+          <ModelPicker freeTiers={freeTiers} models={chatModels.filter(m => !o.models.some(([p, id]) => p === m.provider_instance && id === m.model_id))} value={null} onChange={m => editOption(i, { models: [...o.models, m] })} placeholder={`Add model to ${o.id}`} disabled={disabled || loading} />
         </div>)}
         <Button variant="outline" size="sm" disabled={disabled || draft.options.length >= 32} onClick={() => { let n = draft.options.length + 1; while (draft.options.some(o => o.id === `route_${n}`)) n++; change({ options: [...draft.options, option(`route_${n}`, 'Describe when to use this route.')] }) }}><Plus className="h-3 w-3 mr-1" />Add option</Button>
       </div>
@@ -174,9 +165,9 @@ export function RoutingPolicyEditor({ strategyId, clientId, value, onSave, readO
         <p className="text-xs text-muted-foreground col-span-full">Context characters bound what the decision model sees: the latest request, then as many recent history messages as fit. A longer request is shortened to its beginning and end, with the middle omitted, and leaves no room for history.</p></div>}
       <div className="border-t pt-4 space-y-3"><Label>Try this policy</Label><Input aria-label="Routing test prompt" value={prompt} onChange={e => setPrompt(e.target.value)} /><Input aria-label="Test client mode" placeholder="Client mode (optional), e.g. plan" value={mode} onChange={e => setMode(e.target.value)} />
         <Input aria-label="Test session id" placeholder="Session id (optional, private to this client and saved policy)" value={sessionId} onChange={event => setSessionId(event.target.value)} />
-        <Button variant="outline" disabled={testing} onClick={() => preview(false)}>{testing && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}Preview routes</Button>
-        <Button variant="outline" disabled={testing || readOnly || draft.mode !== 'semantic'} onClick={() => preview(true)}>Test classifier</Button>
-        <p className="text-xs text-muted-foreground">Preview uses cached local information. Testing runs the selected decision model.</p>
+        <Button variant="outline" disabled={testing || !strategyId} onClick={() => preview(false)}>{testing && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}Preview routes</Button>
+        <Button variant="outline" disabled={testing || readOnly || !strategyId || draft.mode !== 'semantic'} onClick={() => preview(true)}>Test classifier</Button>
+        <p className="text-xs text-muted-foreground">{strategyId ? 'Preview uses cached local information. Testing runs the selected decision model.' : 'Attach this profile to a client to preview with its permissions and limits.'}</p>
         {result && <div className="rounded-md bg-muted p-3 space-y-2 text-sm">
           {result.decision && <p><strong>{result.decision.route}</strong> · {result.decision.source} · {result.decision.latency_ms} ms</p>}
           {result.decision?.classifier_cost_usd != null && <p className="text-xs">Classifier cost: {result.decision.classifier_cost_estimated ? 'estimated ' : ''}${result.decision.classifier_cost_usd.toFixed(6)}</p>}

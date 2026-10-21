@@ -423,7 +423,7 @@ export interface RoutingCandidateExplanation {
 }
 /** Rust: lr-router/src/explanation.rs */
 export interface RoutingExplanation {
-  named_route?: { alias:string; revision:number | null; modified_since_publication:boolean } | null
+  named_route?: { alias:string; revision:number | null; modified_since_publication:boolean; profile?:RoutingProfileBinding; profile_preview?:boolean } | null
   session?: Record<string, unknown> | null
   policy_fingerprint: string
   config_fingerprint: string
@@ -513,7 +513,22 @@ export interface NamedRouteStatus { strategy_id:string; fingerprint:string; acti
 /** Rust: src-tauri/src/ui/commands_named_routes.rs - NamedRouteAction */
 export type NamedRouteAction = { action:'save_draft'; snapshot:RouteSnapshot } | { action:'discard_draft' } | { action:'publish'; label:string } | { action:'rollback'; revision:number } | { action:'remove_revision'; revision:number }
 
+/** Rust: crates/lr-config/src/routing_profiles.rs */
+export interface RoutingProfileBinding { profile_id: string; revision: number }
+/** Rust: crates/lr-config/src/routing_profiles.rs */
+export interface RoutingProfile { id: string; name: string; active: RouteSnapshot; versions: NamedRouteVersions }
+/** Rust: src-tauri/src/ui/commands_routing_profiles.rs */
+export interface RoutingProfileClient { client_id: string; client_name: string; strategy_id: string; issues: string[] }
+/** Rust: src-tauri/src/ui/commands_routing_profiles.rs */
+export interface RoutingProfileStatus { profile: RoutingProfile; fingerprint: string; clients: RoutingProfileClient[]; revision_clients: Record<string, RoutingProfileClient[]> }
+/** Rust: src-tauri/src/ui/commands_routing_profiles.rs */
+export interface RoutingProfilesState { profiles: RoutingProfileStatus[]; strategy: Strategy | null; strategy_fingerprint: string | null; strategy_clients: RoutingProfileClient[] }
+/** Rust: src-tauri/src/ui/commands_routing_profiles.rs */
+export type RoutingProfileAction = NamedRouteAction | { action: 'rename'; name: string } | { action: 'delete' }
+
 export interface Strategy {
+  routing_profile?: RoutingProfileBinding | null
+  model_permissions: ModelPermissions
   route_versions?: NamedRouteVersions
   response_cache?: ResponseCacheConfig
   id: string
@@ -1196,6 +1211,7 @@ export interface ModelCapabilities {
  * Rust: src-tauri/src/ui/commands_providers.rs - DetailedModelInfo struct
  */
 export interface DetailedModelInfo {
+  display_name: string
   model_id: string
   provider_instance: string
   provider_type: string
@@ -5239,3 +5255,12 @@ export interface SetClientNativeOperationsParams { clientId: string; allowedOper
 
 /** Params for show_approval_popup; Tauri injects the invoking window. */
 export type ShowApprovalPopupParams = Record<string, never>
+
+/** Params for get_routing_profiles */
+export interface GetRoutingProfilesParams { strategyId?: string | null }
+/** Params for create_routing_profile */
+export interface CreateRoutingProfileParams { name: string; sourceStrategyId?: string | null; sourceProfileId?: string | null; expectedFingerprint?: string | null }
+/** Params for mutate_routing_profile */
+export interface MutateRoutingProfileParams { profileId: string; expectedFingerprint: string; operation: RoutingProfileAction }
+/** Params for bind_routing_profile */
+export interface BindRoutingProfileParams { strategyId: string; profileId: string | null; expectedStrategyFingerprint: string; expectedProfileFingerprint?: string | null }

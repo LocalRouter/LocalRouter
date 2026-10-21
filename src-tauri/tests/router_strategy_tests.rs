@@ -33,6 +33,7 @@ fn create_test_config(
     rate_limits: Vec<StrategyRateLimit>,
 ) -> AppConfig {
     let strategy = Strategy {
+        routing_profile: None,
         route_versions: Default::default(),
         response_cache: Default::default(),
         id: strategy_id.to_string(),
@@ -512,6 +513,7 @@ async fn test_strategy_rate_limit_cost_ignores_free_models() {
 #[tokio::test]
 async fn test_disabled_client_returns_unauthorized() {
     let strategy = Strategy {
+        routing_profile: None,
         route_versions: Default::default(),
         response_cache: Default::default(),
         id: "test-strategy".to_string(),
@@ -1207,6 +1209,7 @@ fn create_free_tier_config(
     free_tier_fallback: localrouter::config::FreeTierFallback,
 ) -> AppConfig {
     let strategy = Strategy {
+        routing_profile: None,
         route_versions: Default::default(),
         response_cache: Default::default(),
         id: strategy_id.to_string(),

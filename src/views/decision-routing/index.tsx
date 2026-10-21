@@ -1,3 +1,4 @@
+import { RoutingProfilesManager } from '@/components/strategy/RoutingProfilesManager'
 import { useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listenSafe } from '@/hooks/useTauriListener'
@@ -13,7 +14,7 @@ function clientStatus(c: ClientFeatureStatus): { text: string; warning: boolean 
   return { text: 'Policy enabled', warning: false }
 }
 
-export function DecisionRoutingView({ onTabChange }: { activeSubTab: string | null; onTabChange: (view: string, subTab?: string | null) => void }) {
+export function DecisionRoutingView({ onTabChange, activeSubTab }: { activeSubTab: string | null; onTabChange: (view: string, subTab?: string | null) => void }) {
   const [clients, setClients] = useState<ClientFeatureStatus[]>([])
   const [error, setError] = useState<string | null>(null)
   useEffect(() => {
@@ -25,7 +26,8 @@ export function DecisionRoutingView({ onTabChange }: { activeSubTab: string | nu
     return () => { active = false; listener.cleanup() }
   }, [])
   return <div className="space-y-5 p-6">
-    <div><h1 className="text-2xl font-semibold">Decision Routing</h1><p className="text-muted-foreground mt-2">Choose when to use each model.</p></div>
+    <div><h1 className="text-2xl font-semibold">Routing</h1><p className="text-muted-foreground mt-2">Choose when to use each model.</p></div>
+    <RoutingProfilesManager selectedId={activeSubTab} onSelect={id => onTabChange('decision-routing', id)} onClient={id => onTabChange('clients', `${id}|models`)} />
     <Card><CardHeader><CardTitle>Policies configured per client</CardTitle><CardDescription>In a client's LLM tab, choose a decision model from your providers, write a routing question, and map each answer to a model or fallback list.</CardDescription></CardHeader>
       <CardContent className="space-y-3 text-sm"><p>Templates cover planning and implementation, specialist tasks, and quick or thorough responses. Exact client mode rules work without inference.</p>
         <p>For plan → Astra, otherwise → Sol, choose the Client mode template and assign those models to its two options. Your client must supply <code>metadata: {JSON.stringify({ 'localrouter.mode': 'plan' })}</code>. Missing mode uses the default route.</p>

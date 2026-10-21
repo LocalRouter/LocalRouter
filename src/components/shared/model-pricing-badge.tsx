@@ -1,3 +1,4 @@
+import { knownPrice } from '@/components/strategy/policy-model-catalog'
 import type { FreeTierKind, ModelFreeTierInfo } from "@/types/tauri-commands"
 
 export const FREE_TIER_LABELS: Record<string, string> = {
@@ -75,8 +76,8 @@ export function ModelPricingBadge({
 }: ModelPricingBadgeProps) {
   const kind = freeTierKind?.kind ?? "none"
   // A known price is shown, $0 included (e.g. a provider listing a free model)
-  const hasInput = inputPricePerMillion != null && inputPricePerMillion >= 0
-  const hasOutput = outputPricePerMillion != null && outputPricePerMillion >= 0
+  const hasInput = knownPrice(inputPricePerMillion)
+  const hasOutput = knownPrice(outputPricePerMillion)
   const hasPricing = hasInput || hasOutput
   if (variant === "full") {
     return <FullVariant
@@ -97,7 +98,7 @@ export function ModelPricingBadge({
   }
 
   const priceStr = hasPricing
-    ? `${formatPriceShort(inputPricePerMillion ?? 0)}/${formatPriceShort(outputPricePerMillion ?? 0)}`
+    ? `${(knownPrice(inputPricePerMillion) ? formatPriceShort(inputPricePerMillion) : '?')}/${(knownPrice(outputPricePerMillion) ? formatPriceShort(outputPricePerMillion) : '?')}`
     : null
 
   // Subscription or free-tier without pricing — just show the pill
@@ -160,11 +161,11 @@ function FullVariant({
         <div className="grid grid-cols-2 gap-4 text-sm">
           <div>
             <p className="text-muted-foreground">Input</p>
-            <p className="font-medium">{formatPriceLong(inputPricePerMillion ?? 0)}/M tokens</p>
+            <p className="font-medium">{knownPrice(inputPricePerMillion) ? formatPriceLong(inputPricePerMillion) : 'Unknown'}/M tokens</p>
           </div>
           <div>
             <p className="text-muted-foreground">Output</p>
-            <p className="font-medium">{formatPriceLong(outputPricePerMillion ?? 0)}/M tokens</p>
+            <p className="font-medium">{knownPrice(outputPricePerMillion) ? formatPriceLong(outputPricePerMillion) : 'Unknown'}/M tokens</p>
           </div>
         </div>
       )}
