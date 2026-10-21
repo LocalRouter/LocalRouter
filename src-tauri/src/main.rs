@@ -1634,15 +1634,14 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                                 })
                                 .inner_size(400.0, 320.0)
                                 .center()
-                                .visible(true)
+                                .visible(false)
+                                .focused(false)
                                 .resizable(false)
                                 .decorations(true)
                                 .always_on_top(true)
                                 .build()
                                 {
-                                    Ok(window) => {
-                                        let _ = window.set_focus();
-                                    }
+                                    Ok(_) => {}
                                     Err(e) => {
                                         tracing::error!(
                                             "Failed to create firewall popup: {}",
@@ -1708,14 +1707,13 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                                 .inner_size(400.0, 320.0)
                                 .center()
                                 .visible(false)
+                                .focused(false)
                                 .resizable(false)
                                 .decorations(true)
                                 .always_on_top(true)
                                 .build()
                                 {
-                                    Ok(window) => {
-                                        let _ = window.set_focus();
-                                    }
+                                    Ok(_) => {}
                                     Err(e) => {
                                         tracing::error!(
                                             "Failed to create sampling approval popup: {}",
@@ -1781,14 +1779,13 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                                 .inner_size(400.0, 420.0)
                                 .center()
                                 .visible(false)
+                                .focused(false)
                                 .resizable(true)
                                 .decorations(true)
                                 .always_on_top(true)
                                 .build()
                                 {
-                                    Ok(window) => {
-                                        let _ = window.set_focus();
-                                    }
+                                    Ok(_) => {}
                                     Err(e) => {
                                         tracing::error!(
                                             "Failed to create elicitation form popup: {}",
@@ -3012,6 +3009,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands_coding_agents::get_coding_agent_tool_prefix,
             ui::commands_coding_agents::set_coding_agent_tool_prefix,
             ui::commands_coding_agents::submit_coding_agent_approval,
+            ui::commands::show_approval_popup,
             // Clipboard commands
             ui::commands::copy_image_to_clipboard,
             ui::commands::copy_text_to_clipboard,
@@ -3026,6 +3024,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands_monitor::get_monitor_intercept_rule,
         ])
         .on_window_event(|window, event| {
+            ui::popup_activation::on_window_event(window, event);
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 use ui::tray_support::{close_request_action, CloseRequestAction};
 

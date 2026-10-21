@@ -19,7 +19,7 @@
 import { mockIPC, mockWindows, clearMocks } from '@tauri-apps/api/mocks'
 import { emit } from '@tauri-apps/api/event'
 import type { InvokeArgs } from '@tauri-apps/api/core'
-import type { NativeOperation, GetClientNativeOperationsParams, SetClientNativeOperationsParams, UpstreamToolsPolicy, GetClientUpstreamToolsParams, SetClientUpstreamToolsParams, AutoModelConfig, NamedRouteStatus, NamedRouteVersions, RouteSnapshot, GetNamedRouteParams, MutateNamedRouteParams, ClientPrivacyStatus, GetClientPrivacyParams, SetClientPrivacyParams, AttestProviderPrivacyParams, ClientSecurityStatus, GetClientSecurityParams, SetClientSecurityParams, RevokeClientCredentialsParams, ApiPathSupport, McpConnectionDiscovery, SkillSourceInfo } from '@app/types/tauri-commands'
+import type { ShowApprovalPopupResult, NativeOperation, GetClientNativeOperationsParams, SetClientNativeOperationsParams, UpstreamToolsPolicy, GetClientUpstreamToolsParams, SetClientUpstreamToolsParams, AutoModelConfig, NamedRouteStatus, NamedRouteVersions, RouteSnapshot, GetNamedRouteParams, MutateNamedRouteParams, ClientPrivacyStatus, GetClientPrivacyParams, SetClientPrivacyParams, AttestProviderPrivacyParams, ClientSecurityStatus, GetClientSecurityParams, SetClientSecurityParams, RevokeClientCredentialsParams, ApiPathSupport, McpConnectionDiscovery, SkillSourceInfo } from '@app/types/tauri-commands'
 import { toast } from 'sonner'
 import { mockReplay } from './mockReplay'
 import { mockData } from './mockData'
@@ -5292,6 +5292,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     toast.success('Approval submitted (demo)')
     return null
   },
+  'show_approval_popup': (): ShowApprovalPopupResult => null,
   'dismiss_firewall_notification': () => null,
   'reveal_secret_scan_match': () => 'AKIAIOSFODNN7EXAMPLE',
   'ignore_secret_permanently': () => null,

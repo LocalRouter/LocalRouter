@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
+import type { ShowApprovalPopupParams, ShowApprovalPopupResult } from "@/types/tauri-commands"
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow"
 import { LogicalSize } from "@tauri-apps/api/dpi"
 import { Button } from "@/components/ui/Button"
@@ -118,8 +119,7 @@ export function ElicitationForm() {
         const win = getCurrentWebviewWindow()
         await win.setSize(new LogicalSize(400, height))
         await win.center()
-        await win.show()
-        await win.setFocus()
+        await invoke<ShowApprovalPopupResult>("show_approval_popup", {} satisfies ShowApprovalPopupParams)
       } catch (err) {
         console.error("Failed to load elicitation details:", err)
         setError(typeof err === "string" ? err : "Failed to load elicitation details")

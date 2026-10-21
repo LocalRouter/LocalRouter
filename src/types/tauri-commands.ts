@@ -22,6 +22,9 @@
  * See AGENTS.md "Adding/Modifying Tauri Commands" for full checklist.
  */
 
+/** Rust: src-tauri/src/ui/commands.rs - show_approval_popup returns (). */
+export type ShowApprovalPopupResult = null
+
 // =============================================================================
 // Permission & Access Control Types
 // Rust: crates/lr-config/src/types.rs
@@ -5233,3 +5236,6 @@ export interface SetClientUpstreamToolsParams {
 export interface GetClientNativeOperationsParams { clientId: string }
 /** Params for set_client_native_operations */
 export interface SetClientNativeOperationsParams { clientId: string; allowedOperations: NativeOperation[] }
+
+/** Params for show_approval_popup; Tauri injects the invoking window. */
+export type ShowApprovalPopupParams = Record<string, never>

@@ -3758,13 +3758,13 @@ pub async fn debug_trigger_firewall_popup(
         .inner_size(400.0, 320.0)
         .center()
         .visible(false)
+        .focused(false)
         .resizable(false)
         .decorations(true)
         .always_on_top(true)
         .build()
         {
-            Ok(window) => {
-                let _ = window.set_focus();
+            Ok(_) => {
                 tracing::info!(
                     "Debug firewall popup ({:?}) opened for request {} (#{}/{})",
                     popup_type,
@@ -5712,6 +5712,12 @@ pub async fn read_memory_archive_file(
     tokio::fs::read_to_string(&archive_path)
         .await
         .map_err(|e| format!("Failed to read archive file '{}': {}", filename, e))
+}
+
+/// Present the invoking approval window with its native activation lifecycle.
+#[tauri::command]
+pub async fn show_approval_popup(window: tauri::WebviewWindow) -> Result<(), String> {
+    crate::ui::popup_activation::show(window).await
 }
 
 #[cfg(test)]

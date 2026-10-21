@@ -241,7 +241,7 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
                         // Try to focus existing popup window, or create a new one
                         let window_label = format!("firewall-approval-{}", request_id);
                         if let Some(window) = app_clone.get_webview_window(&window_label) {
-                            let _ = window.set_focus();
+                            let _ = crate::ui::popup_activation::present(window);
                         } else {
                             match tauri::WebviewWindowBuilder::new(
                                 &app_clone,
@@ -252,14 +252,13 @@ pub fn setup_tray<R: Runtime>(app: &App<R>) -> tauri::Result<()> {
                             .inner_size(400.0, 320.0)
                             .center()
                             .visible(false)
+                            .focused(false)
                             .resizable(false)
                             .decorations(true)
                             .always_on_top(true)
                             .build()
                             {
-                                Ok(window) => {
-                                    let _ = window.set_focus();
-                                }
+                                Ok(_) => {}
                                 Err(e) => {
                                     error!("Failed to create firewall popup from tray: {}", e);
                                 }

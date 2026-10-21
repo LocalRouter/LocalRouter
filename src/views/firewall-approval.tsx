@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
+import type { ShowApprovalPopupParams, ShowApprovalPopupResult } from "@/types/tauri-commands"
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow"
 import { LogicalSize } from "@tauri-apps/api/dpi"
 import { Button } from "@/components/ui/Button"
@@ -183,8 +184,7 @@ export function FirewallApproval() {
           await win.setSize(new LogicalSize(440, height))
           await win.center()
         }
-        await win.show()
-        await win.setFocus()
+        await invoke<ShowApprovalPopupResult>("show_approval_popup", {} satisfies ShowApprovalPopupParams)
       } catch (err) {
         console.error("Failed to load approval details:", err)
         // Request expired or not found — just close the popup silently

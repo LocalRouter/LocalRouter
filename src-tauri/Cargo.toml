@@ -91,6 +91,7 @@ libloading = "0.8"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = [
     "std",
+    "NSApplication",
     "NSButton",
     "NSCell",
     "NSControl",
