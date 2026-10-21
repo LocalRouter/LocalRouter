@@ -26,6 +26,7 @@ export function DebugView({ activeSubTab: _activeSubTab, onTabChange }: DebugVie
   const [showWizard, setShowWizard] = useState(false)
   const [triggeringFirewall, setTriggeringFirewall] = useState<FirewallPopupType | null>(null)
   const [sendMultiple, setSendMultiple] = useState(false)
+  const [delayPopups, setDelayPopups] = useState(false)
   const [triggeringSampling, setTriggeringSampling] = useState(false)
   const [triggeringElicitation, setTriggeringElicitation] = useState(false)
   const [activeTrayOverlay, setActiveTrayOverlay] = useState<TrayOverlayOption | "auto">("auto")
@@ -45,9 +46,16 @@ export function DebugView({ activeSubTab: _activeSubTab, onTabChange }: DebugVie
     }
   }
 
+  const waitForPopupDelay = async () => {
+    if (delayPopups) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 2000))
+    }
+  }
+
   const handleTriggerFirewall = async (popupType: FirewallPopupType) => {
     setTriggeringFirewall(popupType)
     try {
+      await waitForPopupDelay()
       await invoke("debug_trigger_firewall_popup", { popupType, sendMultiple })
     } catch (error) {
       console.error("Failed to trigger firewall popup:", error)
@@ -59,6 +67,7 @@ export function DebugView({ activeSubTab: _activeSubTab, onTabChange }: DebugVie
   const handleTriggerSamplingApproval = async () => {
     setTriggeringSampling(true)
     try {
+      await waitForPopupDelay()
       await invoke("debug_trigger_sampling_approval_popup")
     } catch (error) {
       console.error("Failed to trigger sampling approval popup:", error)
@@ -70,6 +79,7 @@ export function DebugView({ activeSubTab: _activeSubTab, onTabChange }: DebugVie
   const handleTriggerElicitationForm = async () => {
     setTriggeringElicitation(true)
     try {
+      await waitForPopupDelay()
       await invoke("debug_trigger_elicitation_form_popup")
     } catch (error) {
       console.error("Failed to trigger elicitation form popup:", error)
@@ -120,8 +130,17 @@ export function DebugView({ activeSubTab: _activeSubTab, onTabChange }: DebugVie
             <h2 className="text-sm font-medium">Approval Popups</h2>
             <p className="text-xs text-muted-foreground">
               Test different types of approval popups. Each button creates a fake
-              approval request and opens the popup immediately.
+              approval request and opens the popup.
             </p>
+
+            <label className="flex items-center gap-2 text-xs">
+              <input
+                type="checkbox"
+                checked={delayPopups}
+                onChange={(e) => setDelayPopups(e.target.checked)}
+              />
+              Delay popups by 2 seconds
+            </label>
 
             <label className="flex items-center gap-2 text-xs">
               <input
