@@ -393,6 +393,8 @@ impl SseTransport {
         let pending = Arc::new(RwLock::new(HashMap::new()));
         let closed = Arc::new(RwLock::new(false));
         let stream_ready = Arc::new(RwLock::new(false));
+        let last_error = Arc::new(RwLock::new(None::<String>));
+        let stream_error = last_error.clone();
         let notification_callback = Arc::new(RwLock::new(None));
         let request_callback: Arc<RwLock<Option<crate::transport::RequestCallback>>> =
             Arc::new(RwLock::new(None));
@@ -424,6 +426,7 @@ impl SseTransport {
                 stream_request_callback,
                 stream_message_endpoint,
                 stream_session_id,
+                stream_error,
             )
             .await;
         })));
@@ -447,11 +450,24 @@ impl SseTransport {
         let is_ready = *stream_ready.read();
         let is_closed = *closed.read();
 
+        let failure_detail = last_error.read().clone().unwrap_or_else(|| {
+            "GET event stream did not return response headers before the connection deadline".into()
+        });
+        let mut display_url = reqwest::Url::parse(&url).ok();
+        if let Some(url) = display_url.as_mut() {
+            let _ = url.set_username("");
+            let _ = url.set_password(None);
+            url.set_query(None);
+            url.set_fragment(None);
+        }
+        let display_url = display_url
+            .as_ref()
+            .map_or("<invalid URL>", |url| url.as_str());
+
         if is_closed && !is_ready {
             // Stream task gave up (exhausted reconnect attempts or permanent error)
             return Err(AppError::Mcp(format!(
-                "Failed to connect to SSE server at {}: stream closed before becoming ready",
-                url
+                "Failed to connect to MCP HTTP server at {display_url}: {failure_detail}"
             )));
         }
 
@@ -459,8 +475,7 @@ impl SseTransport {
             // Close the stream task since we're giving up
             *closed.write() = true;
             return Err(AppError::Mcp(format!(
-                "Failed to connect to SSE server at {}: stream did not become ready within timeout",
-                url
+                "Failed to connect to MCP HTTP server at {display_url}: connection timed out after 10s; {failure_detail}"
             )));
         }
 
@@ -504,6 +519,7 @@ impl SseTransport {
         request_callback: Arc<RwLock<Option<crate::transport::RequestCallback>>>,
         message_endpoint: Arc<RwLock<Option<String>>>,
         session_id: Arc<RwLock<Option<String>>>,
+        last_error: Arc<RwLock<Option<String>>>,
     ) {
         tracing::info!("Starting persistent SSE stream task for: {}", url);
 
@@ -546,6 +562,15 @@ impl SseTransport {
             let response = match request.send().await {
                 Ok(resp) => resp,
                 Err(e) => {
+                    let category = if e.is_timeout() {
+                        "network timeout"
+                    } else if e.is_connect() {
+                        "connection failure (DNS, TCP, TLS or proxy)"
+                    } else {
+                        "HTTP request failure"
+                    };
+                    let detail = format!("GET event stream {category}: {}", e.without_url());
+                    *last_error.write() = Some(detail.clone());
                     reconnect_attempts += 1;
                     let delay = std::cmp::min(
                         BASE_DELAY_SECS * 2u64.saturating_pow(reconnect_attempts - 1),
@@ -555,7 +580,7 @@ impl SseTransport {
                         "Failed to connect to SSE stream (attempt {}/{}): {}. Retrying in {}s",
                         reconnect_attempts,
                         MAX_RECONNECT_ATTEMPTS,
-                        e,
+                        detail,
                         delay
                     );
                     tokio::time::sleep(Duration::from_secs(delay)).await;
@@ -588,6 +613,27 @@ impl SseTransport {
                         url
                     );
                     *stream_ready.write() = true;
+                    break;
+                }
+
+                let hint = match status.as_u16() {
+                    401 => "authentication rejected by the server",
+                    403 => "access forbidden by the server",
+                    429 => "server rate limit exceeded",
+                    300..=399 => "redirect refused; configure the final MCP endpoint URL",
+                    500..=599 => "upstream server error",
+                    _ => "server rejected the event stream request",
+                };
+                *last_error.write() =
+                    Some(format!("GET event stream returned HTTP {status}: {hint}"));
+                // Retrying unchanged credentials or redirects cannot repair setup.
+                // Keep retries for throttling, transient timeouts and server errors.
+                if status.is_redirection()
+                    || (status.is_client_error()
+                        && status != reqwest::StatusCode::TOO_MANY_REQUESTS
+                        && status != reqwest::StatusCode::REQUEST_TIMEOUT)
+                {
+                    *closed.write() = true;
                     break;
                 }
 
@@ -1413,6 +1459,91 @@ impl Transport for SseTransport {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn connection_reports_http_rejection_without_leaking_secrets() {
+        use axum::{http::StatusCode, routing::get, Router};
+        for status in [
+            StatusCode::UNAUTHORIZED,
+            StatusCode::FORBIDDEN,
+            StatusCode::FOUND,
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!(
+                "http://{}/mcp?token=query-secret",
+                listener.local_addr().unwrap()
+            );
+            let app = Router::new().route(
+                "/mcp",
+                get(move || async move { (status, "private response body") }),
+            );
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let result = tokio::time::timeout(
+                Duration::from_secs(2),
+                SseTransport::connect(url, HashMap::new()),
+            )
+            .await
+            .expect("permanent rejection should fail promptly");
+            let error = match result {
+                Err(error) => error.to_string(),
+                Ok(_) => panic!("expected rejection"),
+            };
+            assert!(error.contains(&format!("HTTP {status}")), "{error}");
+            assert!(!error.contains("query-secret"), "{error}");
+            assert!(!error.contains("private response body"), "{error}");
+            server.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn connection_timeout_preserves_last_server_error() {
+        use axum::{http::StatusCode, routing::get, Router};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let app = Router::new().route("/mcp", get(|| async { StatusCode::SERVICE_UNAVAILABLE }));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let error = match SseTransport::connect(url, HashMap::new()).await {
+            Err(error) => error.to_string(),
+            Ok(_) => panic!("expected rejection"),
+        };
+        assert!(error.contains("timed out after 10s"), "{error}");
+        assert!(error.contains("HTTP 503 Service Unavailable"), "{error}");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn connection_keeps_inline_fallback_for_unsupported_get() {
+        use axum::{http::StatusCode, routing::get, Router};
+        for status in [
+            StatusCode::BAD_REQUEST,
+            StatusCode::NOT_FOUND,
+            StatusCode::METHOD_NOT_ALLOWED,
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+            let app = Router::new().route("/mcp", get(move || async move { status }));
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let transport = SseTransport::connect(url, HashMap::new()).await.unwrap();
+            transport.disconnect().await.unwrap();
+            server.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn connection_timeout_identifies_missing_response_headers() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let error = match SseTransport::connect(url, HashMap::new()).await {
+            Err(error) => error.to_string(),
+            Ok(_) => panic!("expected timeout"),
+        };
+        assert!(error.contains("did not return response headers"), "{error}");
+        server.abort();
+    }
+
     #[test]
     fn endpoint_event_must_stay_on_the_servers_origin() {
         let base = "https://mcp.example.com:8443/sse";
