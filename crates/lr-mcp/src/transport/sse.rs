@@ -471,7 +471,7 @@ impl SseTransport {
             )));
         }
 
-        if ready_timeout.is_err() && !is_ready {
+        if ready_timeout.is_err() && !is_ready && last_error.read().is_some() {
             // Close the stream task since we're giving up
             *closed.write() = true;
             return Err(AppError::Mcp(format!(
@@ -479,6 +479,10 @@ impl SseTransport {
             )));
         }
 
+        // Streamable HTTP permits POST initialization without a GET stream.
+        // Some servers do not flush GET headers until a notification arrives.
+        // Keep that optional stream running, but do not block the real handshake
+        // on it when the server has not returned an actual connection error.
         let transport = Self {
             url,
             message_endpoint,
@@ -1529,18 +1533,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn connection_timeout_identifies_missing_response_headers() {
+    async fn silent_optional_get_does_not_block_post_initialization() {
+        use axum::{routing::get, Json, Router};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/mcp", listener.local_addr().unwrap());
-        let server = tokio::spawn(async move {
-            let (_socket, _) = listener.accept().await.unwrap();
-            std::future::pending::<()>().await;
-        });
-        let error = match SseTransport::connect(url, HashMap::new()).await {
-            Err(error) => error.to_string(),
-            Ok(_) => panic!("expected timeout"),
-        };
-        assert!(error.contains("did not return response headers"), "{error}");
+        let app = Router::new().route(
+            "/mcp",
+            get(|| async { std::future::pending::<&'static str>().await }).post(
+                |Json(request): Json<JsonRpcRequest>| async move {
+                    assert_eq!(request.method, "initialize");
+                    Json(serde_json::json!({"jsonrpc":"2.0", "id":request.id,
+                "result":{"protocolVersion":"2025-06-18", "capabilities":{},
+                "serverInfo":{"name":"silent-get-server","version":"1"}}}))
+                },
+            ),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let transport = SseTransport::connect(url, HashMap::new()).await.unwrap();
+        let response = transport
+            .send_request(JsonRpcRequest::with_id(
+                1,
+                "initialize".into(),
+                Some(serde_json::json!({"protocolVersion":"2025-06-18"})),
+            ))
+            .await
+            .unwrap();
+        assert!(response.error.is_none());
+        assert_eq!(
+            response.result.unwrap()["serverInfo"]["name"],
+            "silent-get-server"
+        );
+        assert!(transport.is_healthy());
+        transport.disconnect().await.unwrap();
         server.abort();
     }
 
