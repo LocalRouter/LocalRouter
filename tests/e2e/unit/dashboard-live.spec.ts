@@ -168,3 +168,39 @@ test('dragging docks the detail at the nearest edge', () => {
   expect(dockTarget(rect, 400, 480)).toBe('bottom')
   expect(dockTarget(rect, 900, 480)).toBe('bottom')
 })
+
+for (const [kind, lineKey] of [['llm', 'llmLine'], ['mcp', 'mcpLine'], ['errors', 'errorLine']] as const) {
+  test(`${kind} draws only activity and adjacent zeros, retaining raw counts`, () => {
+    const cases: [(number | null)[], (number | null)[]][] = [
+      [[], []],
+      [[0], [null]],
+      [[2], [2]],
+      [[0, 0, 0], [null, null, null]],
+      [[0, 0, 2, 0, 0], [null, 0, 2, 0, null]],
+      [[1, 0, 1], [1, 0, 1]],
+      [[1, 0, 0, 1], [1, 0, 0, 1]],
+      [[1, 0, 0, 0, 3, 2, 0], [1, 0, null, 0, 3, 2, 0]],
+      [[0, 2], [0, 2]],
+      [[2, 0], [2, 0]],
+      [[null, 2, 0, null, 0, 1, null], [null, 2, 0, null, 0, 1, null]],
+    ]
+    for (const [values, expected] of cases) {
+      const points = values.map((value, i) => ({
+        timestamp: base + i * 10_000, completed: value,
+        llm: 0, mcp: 0, errors: 0, cost: 0, live: false, [kind]: value,
+      }))
+      const rows = chartPoints(points)
+      expect(rows.map((row) => row[lineKey])).toEqual(expected)
+      expect(rows.map((row) => row[kind])).toEqual(values)
+    }
+  })
+}
+
+test('live requests rise from an idle baseline without adding a finished requests line', () => {
+  const points = trafficPoints(timeline([0, 0, 0]), base + 25_000)
+  const rows = chartPoints(points, { llm: 2, mcp: 3 })
+  expect(rows.map((row) => row.llmLine)).toEqual([null, null, null])
+  expect(rows.map((row) => row.mcpLine)).toEqual([null, null, null])
+  expect(rows.map((row) => row.llmInProgress)).toEqual([0, 0, 2])
+  expect(rows.map((row) => row.mcpInProgress)).toEqual([0, 0, 3])
+})

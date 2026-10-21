@@ -228,11 +228,11 @@ function TrafficLegend() {
 }
 
 /**
- * The errors line, one piece per run of errors: a piece rises from the zero
+ * Each traffic line, one piece per active run: a piece rises from the zero
  * before the run and falls to the zero after it, and no line joins two zeros,
  * so nothing runs along the baseline between runs.
  */
-function ErrorsCurve(props: CurveProps) {
+function TrafficCurve(props: CurveProps) {
   const runs: NonNullable<CurveProps['points']>[number][][] = []
   let run: NonNullable<CurveProps['points']>[number][] = []
   for (const point of props.points ?? []) {
@@ -457,6 +457,7 @@ export function RequestTraffic({
                   content={
                     <TrafficTooltip range={range} bucketMs={bucketMs} inFlight={inFlight} />
                   }
+                  filterNull={false}
                   isAnimationActive={false}
                 />
                 {/*
@@ -490,18 +491,23 @@ export function RequestTraffic({
                   strokeLinejoin="round"
                   strokeLinecap="round"
                   dot={false}
-                  activeDot={(props: { cx?: number; cy?: number }) => (
-                    <circle
-                      key="traffic-llm-active"
-                      cx={props.cx}
-                      cy={props.cy}
-                      r={4}
-                      strokeWidth={2}
-                      stroke={SURFACE}
-                      fill={LLM}
-                    />
-                  )}
+                  activeDot={(props: { cx?: number; cy?: number; payload?: ChartPoint }) =>
+                    props.payload?.llm ? (
+                      <circle
+                        key="traffic-llm-active"
+                        cx={props.cx}
+                        cy={props.cy}
+                        r={4}
+                        strokeWidth={2}
+                        stroke={SURFACE}
+                        fill={LLM}
+                      />
+                    ) : (
+                      <g key="traffic-llm-active" />
+                    )
+                  }
                   className="traffic-llm"
+                  shape={<TrafficCurve />}
                   isAnimationActive={false}
                 />
                 <Line
@@ -529,18 +535,23 @@ export function RequestTraffic({
                   strokeLinejoin="round"
                   strokeLinecap="round"
                   dot={false}
-                  activeDot={(props: { cx?: number; cy?: number }) => (
-                    <circle
-                      key="traffic-mcp-active"
-                      cx={props.cx}
-                      cy={props.cy}
-                      r={4}
-                      strokeWidth={2}
-                      stroke={SURFACE}
-                      fill={MCP}
-                    />
-                  )}
+                  activeDot={(props: { cx?: number; cy?: number; payload?: ChartPoint }) =>
+                    props.payload?.mcp ? (
+                      <circle
+                        key="traffic-mcp-active"
+                        cx={props.cx}
+                        cy={props.cy}
+                        r={4}
+                        strokeWidth={2}
+                        stroke={SURFACE}
+                        fill={MCP}
+                      />
+                    ) : (
+                      <g key="traffic-mcp-active" />
+                    )
+                  }
                   className="traffic-mcp"
+                  shape={<TrafficCurve />}
                   isAnimationActive={false}
                 />
                 {/*
@@ -572,7 +583,7 @@ export function RequestTraffic({
                     )
                   }
                   className="traffic-errors"
-                  shape={<ErrorsCurve />}
+                  shape={<TrafficCurve />}
                   isAnimationActive={false}
                 />
               </ComposedChart>

@@ -145,7 +145,7 @@ export function trafficPeak(points: TrafficPoint[], inFlightNow = NONE_IN_FLIGHT
 }
 
 export interface ChartPoint extends TrafficPoint {
-  /** The LLM and MCP lines: finished requests per bucket (so far, at the live bucket). */
+  /** Finished requests near activity; idle baseline buckets are hidden, as for errors. */
   llmLine: number | null
   mcpLine: number | null
   /**
@@ -166,7 +166,15 @@ export interface ChartPoint extends TrafficPoint {
 
 /** Chart rows: the LLM and MCP lines, their in-progress segments, and the errors line. */
 export function chartPoints(points: TrafficPoint[], inFlightNow = NONE_IN_FLIGHT): ChartPoint[] {
-  const hasErrors = (p: TrafficPoint | undefined) => Boolean(p?.errors)
+  // Keep the zero immediately on either side of each active run. Raw counts
+  // remain on the row for tooltips, totals, and the in-progress curve.
+  const lineValue = (i: number, kind: 'llm' | 'mcp' | 'errors'): number | null => {
+    const value = points[i][kind]
+    if (value === null) return null
+    return value > 0 || Boolean(points[i - 1]?.[kind]) || Boolean(points[i + 1]?.[kind])
+      ? value
+      : null
+  }
   const liveIndex = points.findIndex((p) => p.live)
   const live = points[liveIndex]
   /** The segment's curve at bucket `i`: the line before the live bucket, its top at it. */
@@ -177,15 +185,11 @@ export function chartPoints(points: TrafficPoint[], inFlightNow = NONE_IN_FLIGHT
   }
   return points.map((p, i) => ({
     ...p,
-    llmLine: p.llm,
-    mcpLine: p.mcp,
+    llmLine: lineValue(i, 'llm'),
+    mcpLine: lineValue(i, 'mcp'),
     llmInProgress: inProgress(i, 'llm'),
     mcpInProgress: inProgress(i, 'mcp'),
-    errorLine: hasErrors(p)
-      ? p.errors
-      : p.errors !== null && (hasErrors(points[i - 1]) || hasErrors(points[i + 1]))
-        ? 0
-        : null,
+    errorLine: lineValue(i, 'errors'),
   }))
 }
 

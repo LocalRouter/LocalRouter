@@ -28,7 +28,7 @@ async function reloadMonitor(page: Page) {
 /** Serve a fixed 10-second timeline whose newest bucket is the open one. */
 async function fixedTimeline(
   page: Page,
-  buckets: { requests: number; errors?: number }[],
+  buckets: { requests: number; mcp?: number; errors?: number }[],
 ) {
   await page.evaluate((buckets) => {
     const w = window as any
@@ -36,10 +36,10 @@ async function fixedTimeline(
     w.__TAURI_IPC_HANDLER__ = async (command: string, args: unknown) => {
       if (command !== 'get_traffic_timeline') return original(command, args)
       const current = Math.floor(Date.now() / 10_000) * 10
-      const counts = buckets.map(({ requests, errors = 0 }) => ({
+      const counts = buckets.map(({ requests, mcp = 0, errors = 0 }) => ({
         llm_requests: requests,
         llm_errors: errors,
-        mcp_requests: 0,
+        mcp_requests: mcp,
         mcp_errors: 0,
         cost_usd: 0,
       }))
@@ -52,7 +52,7 @@ async function fixedTimeline(
         totals: counts.reduce((a, c) => ({
           llm_requests: a.llm_requests + c.llm_requests,
           llm_errors: a.llm_errors + c.llm_errors,
-          mcp_requests: 0,
+          mcp_requests: a.mcp_requests + c.mcp_requests,
           mcp_errors: 0,
           cost_usd: 0,
         })),
@@ -96,8 +96,8 @@ test('time ranges use a compact line chart and the merged Monitor opens request 
   )
   // An LLM line, an MCP line, an errors line only around errors; no areas,
   // bars or markers for the requests in progress.
-  await expect(traffic.locator(LLM_LINE)).toHaveCount(1)
-  await expect(traffic.locator(MCP_LINE)).toHaveCount(1)
+  await expect(traffic.locator(LLM_LINE).first()).toBeVisible()
+  await expect(traffic.locator(MCP_LINE).first()).toBeVisible()
   await expect(traffic.locator(ERRORS_LINE).first()).toBeVisible()
   await expect(traffic.locator('.recharts-area-curve')).toHaveCount(0)
   await expect(traffic.locator('.recharts-bar-rectangle')).toHaveCount(0)
@@ -356,7 +356,7 @@ test('a range without errors draws no error marks', async ({ page }) => {
   await expect(traffic.getByRole('img')).toHaveAttribute('aria-label', /, 0 errors\./)
   await expect(traffic.locator(ERRORS_LINE)).toHaveCount(0)
   await expect(traffic.locator('.recharts-label-list text')).toHaveCount(0)
-  await expect(traffic.locator(LLM_LINE)).toHaveCount(1)
+  await expect(traffic.locator(LLM_LINE).first()).toBeVisible()
 })
 
 test('the monitor filter selection is remembered across reloads', async ({
@@ -613,4 +613,32 @@ test('a filter with no matches says so instead of "no events captured"', async (
   await monitor.getByPlaceholder('Search...').fill('no event says this')
   await expect(monitor).toContainText('No events match these filters')
   await expect(monitor).not.toContainText('No events captured yet')
+})
+
+test('LLM, MCP and errors split idle baselines and keep isolated spikes and zero tooltips', async ({ page }) => {
+  const traffic = page.getByRole('region', { name: 'Request traffic' })
+  // Two zeros between runs must split paths even though both zeros border activity.
+  for (const values of [[0, 2, 0, 0, 3, 0], [0, 2, 0, 0, 0, 3, 0]]) {
+    await fixedTimeline(page, values.map((value) => ({ requests: value, mcp: value, errors: value })))
+    for (const selector of [LLM_LINE, MCP_LINE, ERRORS_LINE]) {
+      const paths = traffic.locator(selector)
+      await expect(paths).toHaveCount(2)
+      for (const path of await paths.evaluateAll((paths) => paths.map((p) => p.getAttribute('d')!))) {
+        const coords = path.match(/-?\d+(\.\d+)?/g)!.map(Number)
+        // Each isolated spike has its own rise and fall to the same baseline.
+        expect(coords[1]).toBe(coords[coords.length - 1])
+        expect(Math.min(...coords.filter((_, i) => i % 2 === 1))).toBeLessThan(coords[1])
+      }
+    }
+  }
+  await fixedTimeline(page, Array.from({ length: 7 }, () => ({ requests: 0 })))
+  for (const selector of [LLM_LINE, MCP_LINE, ERRORS_LINE]) {
+    await expect(traffic.locator(selector)).toHaveCount(0)
+  }
+  const grid = (await traffic.locator('.recharts-cartesian-grid').boundingBox())!
+  await page.mouse.move(grid.x + grid.width / 2, grid.y + grid.height / 2)
+  const tooltip = traffic.locator('.recharts-tooltip-wrapper')
+  await expect(tooltip).toContainText('LLM requests0')
+  await expect(tooltip).toContainText('MCP requests0')
+  await expect(tooltip).toContainText('Errors0')
 })
