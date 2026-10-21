@@ -1884,6 +1884,17 @@ pub async fn submit_firewall_approval(
         edited_arguments.is_some()
     );
 
+    if action == FirewallApprovalAction::RedactOnce
+        && !state
+            .mcp_gateway
+            .firewall_manager
+            .list_pending()
+            .iter()
+            .any(|p| p.request_id == request_id && p.is_secret_scan_request && !p.is_notify_only)
+    {
+        return Err("Redaction is only available for a pending blocking secret scan".into());
+    }
+
     // Never silently approve the original payload when the user's edits are
     // malformed. Denial does not use edits and must always remain possible.
     let edited_args_value = if matches!(
@@ -2916,6 +2927,45 @@ pub async fn ignore_secret_permanently(
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
+    store_secret_policy(
+        request_id,
+        finding_index,
+        false,
+        &state,
+        &config_manager,
+        &app,
+    )
+    .await
+}
+
+/// Remember a salted digest of this specific value and redact it for this client.
+#[tauri::command]
+pub async fn redact_secret_permanently(
+    request_id: String,
+    finding_index: usize,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+    config_manager: State<'_, ConfigManager>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    store_secret_policy(
+        request_id,
+        finding_index,
+        true,
+        &state,
+        &config_manager,
+        &app,
+    )
+    .await
+}
+
+async fn store_secret_policy(
+    request_id: String,
+    finding_index: usize,
+    redact: bool,
+    state: &lr_server::state::AppState,
+    config_manager: &ConfigManager,
+    app: &tauri::AppHandle,
+) -> Result<(), String> {
     let (client_id, finding) = state
         .mcp_gateway
         .firewall_manager
@@ -2954,6 +3004,7 @@ pub async fn ignore_secret_permanently(
     };
 
     let entry = lr_config::DismissedSecret {
+        redact,
         id: uuid::Uuid::new_v4().to_string(),
         hash,
         iterations,
@@ -2970,12 +3021,14 @@ pub async fn ignore_secret_permanently(
                 found = true;
                 // Same salt + same value = same digest, so this also dedupes
                 // repeat dismissals of one secret.
-                if !client
+                if let Some(existing) = client
                     .secret_scanning
                     .dismissed_secrets
-                    .iter()
-                    .any(|d| d.hash == entry.hash)
+                    .iter_mut()
+                    .find(|d| d.hash == entry.hash)
                 {
+                    existing.redact = redact;
+                } else {
                     client.secret_scanning.dismissed_secrets.push(entry.clone());
                 }
             }
@@ -2989,7 +3042,7 @@ pub async fn ignore_secret_permanently(
     state.secret_dismissal_cache.invalidate(&client_id);
 
     tracing::info!(
-        "Secret scan: permanently ignoring a {} match for client {}",
+        "Secret scan: saved value policy for a {} match for client {}",
         finding.rule_id,
         client_id
     );

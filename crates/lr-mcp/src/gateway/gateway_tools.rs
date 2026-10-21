@@ -892,6 +892,7 @@ impl McpGateway {
                         )))
                     }
                     FirewallApprovalAction::DenyAlways
+                    | FirewallApprovalAction::RedactOnce
                     | FirewallApprovalAction::BlockCategories
                     | FirewallApprovalAction::Deny1Hour
                     | FirewallApprovalAction::DisableClient => {

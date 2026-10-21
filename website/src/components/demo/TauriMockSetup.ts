@@ -5296,6 +5296,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'dismiss_firewall_notification': () => null,
   'reveal_secret_scan_match': () => 'AKIAIOSFODNN7EXAMPLE',
   'ignore_secret_permanently': () => null,
+  'redact_secret_permanently': () => null,
   'list_client_dismissed_secrets': () => [
     {
       id: 'demo-dismissed-1',

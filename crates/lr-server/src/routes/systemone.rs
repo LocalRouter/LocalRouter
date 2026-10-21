@@ -163,13 +163,29 @@ pub(crate) async fn handle_decision(
             .as_ref()
             .map(|c| c.0.client_id.clone())
             .unwrap_or_else(|| auth.api_key_id.clone());
-        let body = request_wire_json(&request)?;
+        let mut body = request_wire_json(&request)?;
         let model_for_scan = request.model.clone().unwrap_or_default();
 
         match super::pipeline::scan_request_for_secrets(&state, &client_id, &model_for_scan, &body)
             .await
         {
             super::pipeline::SecretScanOutcome::Allow => {}
+            super::pipeline::SecretScanOutcome::Redact(redaction) => {
+                redaction.apply(&mut body);
+                request = if request.decisions.is_some() {
+                    serde_json::from_value::<lr_providers::systemone::decisions::DecisionRequest>(
+                        body.clone(),
+                    )
+                    .map(|r| r.into_systemone())
+                } else {
+                    serde_json::from_value::<SystemOneRequest>(body.clone())
+                }
+                .map_err(|_| {
+                    llm_guard.capture_err(ApiErrorResponse::forbidden(
+                        "Request blocked: could not apply secret redaction",
+                    ))
+                })?;
+            }
             super::pipeline::SecretScanOutcome::Deny(message) => {
                 return Err(llm_guard.capture_err(ApiErrorResponse::forbidden(message)));
             }

@@ -2347,7 +2347,7 @@ export interface PendingApprovalInfo {
  * Firewall approval action.
  * Rust: crates/lr-mcp/src/gateway/firewall.rs - FirewallApprovalAction enum
  */
-export type FirewallApprovalAction = 'deny' | 'deny_session' | 'deny_always' | 'block_categories' | 'allow_once' | 'allow_session' | 'allow_1_minute' | 'allow_1_hour' | 'allow_permanent' | 'allow_categories' | 'deny_1_hour'
+export type FirewallApprovalAction = 'deny' | 'deny_session' | 'deny_always' | 'block_categories' | 'allow_once' | 'redact_once' | 'allow_session' | 'allow_1_minute' | 'allow_1_hour' | 'allow_permanent' | 'allow_categories' | 'deny_1_hour'
 
 // =============================================================================
 // Active Connections Types
@@ -4510,6 +4510,8 @@ export interface ClientSecretScanningConfig {
  * there is no field here that can give it back.
  */
 export interface DismissedSecret {
+  /** True: redact this value; false/absent: ignore it (legacy entries). */
+  redact?: boolean
   id: string
   hash: string
   iterations: number
@@ -4586,6 +4588,12 @@ export interface UpdateClientSecretScanningConfigParams {
 
 /** Params for ignore_secret_permanently (from the secret-scan popup) */
 export interface IgnoreSecretPermanentlyParams {
+  requestId: string
+  findingIndex: number
+}
+
+/** Params for redact_secret_permanently (only stores a salted hash). */
+export interface RedactSecretPermanentlyParams {
   requestId: string
   findingIndex: number
 }

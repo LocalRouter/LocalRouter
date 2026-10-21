@@ -10,6 +10,7 @@ pub mod engine;
 pub mod entropy;
 pub mod filters;
 pub mod patterns;
+pub mod redaction;
 pub mod regex_engine;
 pub mod types;
 

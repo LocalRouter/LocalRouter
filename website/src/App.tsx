@@ -6,6 +6,7 @@ import Download from './pages/Download'
 import Demo from './pages/Demo'
 import Docs from './pages/Docs'
 import Research from './pages/Research'
+import SecretRedactionPreview from './pages/SecretRedactionPreview'
 
 function AppLayout() {
   const { pathname } = useLocation()
@@ -40,6 +41,7 @@ function App() {
   return (
     <Router>
       <Routes>
+        {import.meta.env.DEV && <Route path="/__preview/secret-redaction" element={<SecretRedactionPreview />} />}
         {/* Demo route - full screen, no navigation */}
         <Route path="/demo" element={<Demo />} />
 

@@ -225,6 +225,44 @@ pub fn scan_projection(value: &Value) -> AppResult<(Value, bool)> {
     Ok((projected, opaque))
 }
 
+/// Rewrite decoded text attachments too; replacing the scan projection alone
+/// would leave the original base64 secret in the forwarded document.
+pub fn redact_text_files(
+    value: &mut Value,
+    redaction: &lr_secret_scanner::redaction::Redaction,
+) -> AppResult<()> {
+    use base64::Engine;
+    if let Some(messages) = value.get_mut("messages").and_then(Value::as_array_mut) {
+        for message in messages {
+            if let Some(parts) = message.get_mut("content").and_then(Value::as_array_mut) {
+                for part in parts {
+                    if part.get("type").and_then(Value::as_str) != Some("file") {
+                        continue;
+                    }
+                    let file_value = part
+                        .get_mut("file")
+                        .ok_or_else(|| invalid("Missing document"))?;
+                    let mut file: FileInput = serde_json::from_value(file_value.clone())?;
+                    let decoded = file.decode()?;
+                    if decoded.mime == "application/pdf" {
+                        continue;
+                    }
+                    let text = String::from_utf8(decoded.bytes)
+                        .map_err(|_| invalid("Invalid document UTF-8"))?;
+                    let redacted = redaction.apply_text(&text);
+                    file.file_data = format!(
+                        "data:{};base64,{}",
+                        decoded.mime,
+                        base64::engine::general_purpose::STANDARD.encode(redacted.as_bytes())
+                    );
+                    *file_value = serde_json::to_value(file)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn has_native_files(request: &crate::types::ChatCompletionRequest) -> bool {
     request.messages.iter().any(|m|matches!(&m.content,Some(crate::types::MessageContent::Parts(parts)) if parts.iter().any(|p|matches!(p,crate::types::ContentPart::File{..}))))
 }
@@ -278,6 +316,25 @@ mod tests {
             json!({"type":kind,"file":{"filename":"notes.txt","file_data":"data:text/plain;base64,c2VjcmV0"}})
         }
     }
+    #[test]
+    fn redaction_rewrites_decoded_attachment_and_preserves_file_shape() {
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode("token=secret-value");
+        let mut body = json!({"messages":[{"role":"user","content":[{"type":"file","file":{"filename":"config.txt","file_data":format!("data:text/plain;base64,{encoded}")}}]}]});
+        let mut redaction = lr_secret_scanner::redaction::Redaction::default();
+        redaction.add("secret-value");
+        redact_text_files(&mut body, &redaction).unwrap();
+        redaction.apply(&mut body);
+        let file: FileInput =
+            serde_json::from_value(body["messages"][0]["content"][0]["file"].clone()).unwrap();
+        let decoded = file.decode().unwrap();
+        assert_eq!(
+            String::from_utf8(decoded.bytes).unwrap(),
+            format!("token={}", lr_secret_scanner::redaction::REDACTION_MESSAGE)
+        );
+        assert_eq!(file.filename.as_deref(), Some("config.txt"));
+    }
+
     #[test]
     fn local_text_preserves_actual_content_and_provenance_on_both_endpoints() {
         for (path, key, kind) in [

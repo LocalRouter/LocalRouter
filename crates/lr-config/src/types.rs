@@ -3161,6 +3161,9 @@ pub struct ClientSecretScanningConfig {
 /// entries apart when reviewing or resetting them.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DismissedSecret {
+    /// Redact this value instead of ignoring it. Legacy entries remain ignored.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub redact: bool,
     /// Stable identifier, used to remove a single entry.
     pub id: String,
     /// Base64 PBKDF2-HMAC-SHA256 digest of the secret.
@@ -5481,6 +5484,7 @@ mod tests {
             action: Some(SecretScanAction::Notify),
             dismiss_salt: Some("c2FsdHNhbHRzYWx0c2E=".to_string()),
             dismissed_secrets: vec![DismissedSecret {
+                redact: false,
                 id: "entry-1".to_string(),
                 hash: "ZGlnZXN0".to_string(),
                 iterations: 600_000,
@@ -5499,6 +5503,20 @@ mod tests {
 
         let parsed: ClientSecretScanningConfig = serde_yaml::from_str(&yaml).unwrap();
         assert_eq!(parsed, cfg);
+    }
+
+    #[test]
+    fn remembered_redaction_policy_and_legacy_ignore_survive_roundtrip() {
+        let legacy = r#"{"id":"e","hash":"digest","iterations":10,"rule_id":"r","rule_description":"Rule","hint":"masked","dismissed_at":"now"}"#;
+        let mut entry: DismissedSecret = serde_json::from_str(legacy).unwrap();
+        assert!(!entry.redact);
+        entry.redact = true;
+        let encoded = serde_json::to_string(&entry).unwrap();
+        assert!(
+            serde_json::from_str::<DismissedSecret>(&encoded)
+                .unwrap()
+                .redact
+        );
     }
 
     /// An empty exception list must not write noise into every client's config.

@@ -32,6 +32,8 @@ pub enum FirewallApprovalAction {
     DenyAlways,
     /// Allow this single tool call
     AllowOnce,
+    /// Remove detected secrets and forward this request (secret scans only).
+    RedactOnce,
     /// Allow this tool for the rest of the session (MCP/Skills)
     AllowSession,
     /// Allow this for 1 minute (Models & guardrails: short time-based bypass)
@@ -1397,6 +1399,7 @@ mod tests {
             (FirewallApprovalAction::DenySession, "\"deny_session\""),
             (FirewallApprovalAction::DenyAlways, "\"deny_always\""),
             (FirewallApprovalAction::AllowOnce, "\"allow_once\""),
+            (FirewallApprovalAction::RedactOnce, "\"redact_once\""),
             (FirewallApprovalAction::AllowSession, "\"allow_session\""),
             (FirewallApprovalAction::Allow1Minute, "\"allow_1_minute\""),
             (FirewallApprovalAction::Allow1Hour, "\"allow_1_hour\""),

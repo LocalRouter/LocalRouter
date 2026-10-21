@@ -199,7 +199,7 @@ export function ClientSecretScanningTab({ client, onUpdate, onViewChange }: Secr
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <BellOff className="h-5 w-5 text-muted-foreground" />
-                <CardTitle>Ignored Values ({dismissed.length})</CardTitle>
+                <CardTitle>Remembered Secrets ({dismissed.length})</CardTitle>
               </div>
               <AlertDialog>
                 <AlertDialogTrigger asChild>
@@ -213,8 +213,8 @@ export function ClientSecretScanningTab({ client, onUpdate, onViewChange }: Secr
                     <AlertDialogDescription>
                       {client.name} will be checked against every one of these{" "}
                       {dismissed.length} values again. Because only a hash was stored,
-                      the exceptions cannot be restored afterwards — each value has to
-                      be ignored again from its popup.
+                      these choices cannot be restored afterwards — each value has to
+                      be allowed or marked for redaction again from its popup.
                     </AlertDialogDescription>
                   </AlertDialogHeader>
                   <AlertDialogFooter>
@@ -227,7 +227,7 @@ export function ClientSecretScanningTab({ client, onUpdate, onViewChange }: Secr
               </AlertDialog>
             </div>
             <CardDescription>
-              Values you chose never to flag again for {client.name}. Only a salted
+              Values you chose to always allow or always redact for {client.name}. Only a salted
               hash of each is stored — never the value itself, which is why they are
               shown masked here. Removing one starts flagging it again immediately.
             </CardDescription>
@@ -243,6 +243,7 @@ export function ClientSecretScanningTab({ client, onUpdate, onViewChange }: Secr
                     <span className="text-sm font-medium truncate">
                       {entry.rule_description}
                     </span>
+                    <span className="text-xs font-medium text-blue-500">{entry.redact ? "Always redact" : "Always allow"}</span>
                     <span className="font-mono text-[10px] text-muted-foreground truncate">
                       {entry.rule_id}
                     </span>

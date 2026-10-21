@@ -766,6 +766,7 @@ pub(crate) async fn check_model_firewall_for(
                 }
                 FirewallApprovalAction::Deny
                 | FirewallApprovalAction::DenySession
+                | FirewallApprovalAction::RedactOnce
                 | FirewallApprovalAction::DenyAlways
                 | FirewallApprovalAction::BlockCategories
                 | FirewallApprovalAction::Deny1Hour
@@ -1426,6 +1427,7 @@ pub async fn handle_guardrail_result(
         }
         FirewallApprovalAction::Deny
         | FirewallApprovalAction::DenySession
+        | FirewallApprovalAction::RedactOnce
         | FirewallApprovalAction::DenyAlways
         | FirewallApprovalAction::BlockCategories
         | FirewallApprovalAction::Deny1Hour
@@ -1511,15 +1513,26 @@ pub(crate) fn build_flagged_text_preview(
 pub(crate) async fn run_secret_scan_check(
     state: &AppState,
     client_ctx: Option<&ClientAuthContext>,
-    request: &ChatCompletionRequest,
+    request: &mut ChatCompletionRequest,
 ) -> ApiResult<()> {
     let Some(client_ctx) = client_ctx else {
         return Ok(());
     };
-    let body = serde_json::to_value(request).unwrap_or_default();
-    let (body, _) = crate::documents::scan_projection(&body).map_err(ApiErrorResponse::from)?;
+    let mut original = serde_json::to_value(&*request).map_err(|_| {
+        ApiErrorResponse::internal_error("Could not serialize request for secret scanning")
+    })?;
+    let (body, _) = crate::documents::scan_projection(&original).map_err(ApiErrorResponse::from)?;
     match scan_request_for_secrets(state, &client_ctx.client_id, &request.model, &body).await {
         SecretScanOutcome::Allow => Ok(()),
+        SecretScanOutcome::Redact(redaction) => {
+            crate::documents::redact_text_files(&mut original, &redaction)
+                .map_err(ApiErrorResponse::from)?;
+            redaction.apply(&mut original);
+            *request = serde_json::from_value(original).map_err(|_| {
+                ApiErrorResponse::forbidden("Request blocked: could not apply secret redaction")
+            })?;
+            Ok(())
+        }
         SecretScanOutcome::Deny(message) => Err(ApiErrorResponse::forbidden(message)),
     }
 }
@@ -1529,6 +1542,8 @@ pub(crate) async fn run_secret_scan_check(
 pub enum SecretScanOutcome {
     /// No secrets found, action is Notify/Off, or the user approved.
     Allow,
+    /// Apply this in-memory plan to the outbound payload before forwarding.
+    Redact(lr_secret_scanner::redaction::Redaction),
     /// The request must not reach the provider; carries the client-facing reason.
     Deny(String),
 }
@@ -1560,16 +1575,13 @@ pub async fn scan_request_for_secrets(
     }
 
     // Check time-based bypass (unless monitor intercept overrides)
-    if state
+    let bypass = state
         .secret_scan_approval_tracker
         .has_valid_bypass(client_id)
         && !state.mcp_gateway.firewall_manager.should_intercept(
             client_id,
             lr_mcp::gateway::firewall::InterceptCategory::SecretScan,
-        )
-    {
-        return SecretScanOutcome::Allow;
-    }
+        );
 
     // Check if scanner is initialized and has rules
     // Clone Arc out of the RwLock to avoid holding the guard across await points
@@ -1606,45 +1618,65 @@ pub async fn scan_request_for_secrets(
     let scan_start = std::time::Instant::now();
     let mut result = scanner.scan(&texts);
 
-    // Drop findings the user has permanently ignored for this client. Done
-    // here rather than in the engine so the check stays out of the scanner's
-    // hot path and only runs when something actually matched.
-    let dismissed_count = if result.findings.is_empty() {
-        0
-    } else {
-        let before = result.findings.len();
-        let scanning = client.as_ref().map(|c| &c.secret_scanning);
-        let salt = scanning.and_then(|s| s.dismiss_salt.as_deref());
-        let digests: Vec<lr_secret_scanner::dismissal::DismissedDigest<'_>> = scanning
-            .map(|s| {
-                s.dismissed_secrets
-                    .iter()
-                    .map(|d| lr_secret_scanner::dismissal::DismissedDigest {
-                        hash: &d.hash,
-                        iterations: d.iterations,
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        if !digests.is_empty() {
-            result.findings.retain(|f| {
-                !state
-                    .secret_dismissal_cache
-                    .is_dismissed(client_id, salt, &digests, &f.raw_text)
-            });
+    // Remembered redactions take priority over ignored values and time bypasses.
+    let mut redaction = lr_secret_scanner::redaction::Redaction::default();
+    let scanning = client.as_ref().map(|c| &c.secret_scanning);
+    let salt = scanning.and_then(|s| s.dismiss_salt.as_deref());
+    let entries = scanning
+        .map(|s| s.dismissed_secrets.as_slice())
+        .unwrap_or_default();
+    let redact_digests: Vec<_> = entries
+        .iter()
+        .filter(|e| e.redact)
+        .map(|e| lr_secret_scanner::dismissal::DismissedDigest {
+            hash: &e.hash,
+            iterations: e.iterations,
+        })
+        .collect();
+    let ignore_digests: Vec<_> = entries
+        .iter()
+        .filter(|e| !e.redact)
+        .map(|e| lr_secret_scanner::dismissal::DismissedDigest {
+            hash: &e.hash,
+            iterations: e.iterations,
+        })
+        .collect();
+    let mut dismissed_count = 0;
+    result.findings.retain(|finding| {
+        if state.secret_dismissal_cache.is_dismissed(
+            &format!("redact:{client_id}"),
+            salt,
+            &redact_digests,
+            &finding.raw_text,
+        ) {
+            redaction.add(&finding.raw_text);
+            false
+        } else if state.secret_dismissal_cache.is_dismissed(
+            client_id,
+            salt,
+            &ignore_digests,
+            &finding.raw_text,
+        ) {
+            dismissed_count += 1;
+            false
+        } else {
+            true
         }
-        before - result.findings.len()
-    };
+    });
 
     let scan_latency = scan_start.elapsed().as_millis() as u64;
 
-    if result.findings.is_empty() {
+    if result.findings.is_empty() || bypass {
         if dismissed_count > 0 {
             tracing::debug!(
                 "Secret scan: {dismissed_count} finding(s) ignored by client {client_id}'s dismissed-secret list"
             );
         }
-        return SecretScanOutcome::Allow;
+        return if redaction.is_empty() {
+            SecretScanOutcome::Allow
+        } else {
+            SecretScanOutcome::Redact(redaction)
+        };
     }
 
     tracing::info!(
@@ -1671,7 +1703,7 @@ pub async fn scan_request_for_secrets(
         scan_latency,
     );
 
-    match effective_action {
+    let outcome = match effective_action {
         lr_config::SecretScanAction::Notify => {
             // Open the standalone secret-scan popup in notify-only mode (the
             // same window the Ask action uses, so it shows even when the main
@@ -1694,6 +1726,15 @@ pub async fn scan_request_for_secrets(
             handle_secret_scan_approval(state, &client_ctx, model, result).await
         }
         lr_config::SecretScanAction::Off => SecretScanOutcome::Allow,
+    };
+    match outcome {
+        SecretScanOutcome::Deny(message) => SecretScanOutcome::Deny(message),
+        SecretScanOutcome::Redact(current) => {
+            redaction.extend(current);
+            SecretScanOutcome::Redact(redaction)
+        }
+        SecretScanOutcome::Allow if !redaction.is_empty() => SecretScanOutcome::Redact(redaction),
+        other => other,
     }
 }
 
@@ -1753,66 +1794,66 @@ pub(crate) async fn handle_secret_scan_approval(
         .map(|c| c.name.clone())
         .unwrap_or_else(|| client_ctx.client_id.clone());
 
-    let (details, preview) = secret_scan_popup_content(&result);
-
-    let response = match state
-        .mcp_gateway
-        .firewall_manager
-        .request_secret_scan_approval(
-            client_ctx.client_id.clone(),
-            client_name,
-            model.to_string(),
-            details,
-            preview,
-        )
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            // Fail closed: if the approval popup can't be shown, a request
-            // carrying a detected secret must not silently go out.
-            tracing::error!(
-                "Secret scan approval failed for {}: {e}",
-                client_ctx.client_id
-            );
-            return SecretScanOutcome::Deny(
-                "Request blocked: secret scan approval could not be completed".to_string(),
-            );
-        }
-    };
-
-    let action_str = format!("{:?}", response.action);
-    super::monitor_helpers::emit_firewall_decision(
-        state,
-        Some(client_ctx),
-        None,
-        "secret_scan",
-        model,
-        &action_str,
-        None,
-    );
-
-    match response.action {
-        FirewallApprovalAction::AllowOnce
-        | FirewallApprovalAction::AllowSession
-        | FirewallApprovalAction::Allow1Minute
-        | FirewallApprovalAction::Allow1Hour
-        | FirewallApprovalAction::AllowPermanent => {
-            tracing::info!(
-                "Secret scan: request approved for client {}",
-                client_ctx.client_id
-            );
-            SecretScanOutcome::Allow
-        }
-        _ => {
-            tracing::warn!(
-                "Secret scan: request denied for client {}",
-                client_ctx.client_id
-            );
-            SecretScanOutcome::Deny(
-                "Request blocked: potential secrets detected in outbound request".to_string(),
+    let mut redaction = lr_secret_scanner::redaction::Redaction::default();
+    // Await each decision before creating the next popup. A denial immediately
+    // ends the sequence; no later finding is ever presented for this request.
+    for finding in result.findings {
+        let one = lr_secret_scanner::ScanResult {
+            findings: vec![finding],
+            scan_duration_ms: result.scan_duration_ms,
+            rules_evaluated: result.rules_evaluated,
+        };
+        let (details, preview) = secret_scan_popup_content(&one);
+        let response = match state
+            .mcp_gateway
+            .firewall_manager
+            .request_secret_scan_approval(
+                client_ctx.client_id.clone(),
+                client_name.clone(),
+                model.to_string(),
+                details,
+                preview,
             )
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                tracing::error!(
+                    "Secret scan approval failed for {}: {error}",
+                    client_ctx.client_id
+                );
+                return SecretScanOutcome::Deny(
+                    "Request blocked: secret scan approval could not be completed".into(),
+                );
+            }
+        };
+        super::monitor_helpers::emit_firewall_decision(
+            state,
+            Some(client_ctx),
+            None,
+            "secret_scan",
+            model,
+            &format!("{:?}", response.action),
+            None,
+        );
+        match response.action {
+            FirewallApprovalAction::RedactOnce => redaction.add(&one.findings[0].raw_text),
+            FirewallApprovalAction::AllowOnce
+            | FirewallApprovalAction::AllowSession
+            | FirewallApprovalAction::Allow1Minute
+            | FirewallApprovalAction::Allow1Hour
+            | FirewallApprovalAction::AllowPermanent => {}
+            _ => {
+                return SecretScanOutcome::Deny(
+                    "Request blocked: potential secrets detected in outbound request".into(),
+                )
+            }
         }
+    }
+    if redaction.is_empty() {
+        SecretScanOutcome::Allow
+    } else {
+        SecretScanOutcome::Redact(redaction)
     }
 }
 
@@ -2264,7 +2305,7 @@ pub(crate) async fn run_turn_pipeline(
     }
 
     // Stage 4: secret scan
-    run_secret_scan_check(state, client_auth.map(|e| &e.0), &chat_req)
+    run_secret_scan_check(state, client_auth.map(|e| &e.0), &mut chat_req)
         .await
         .map_err(|e| llm_guard.capture_err(e))?;
 

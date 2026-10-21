@@ -11,7 +11,7 @@ import {
   type ApprovalAction,
   type MarketplaceListingInfo,
 } from "@/components/shared/FirewallApprovalCard"
-import type { ModelInfo, ClientInfo, ModelPermissions, SafetyVerdict, CategoryActionRequired, McpServerListing, SkillListing, SecretFindingSummary } from "@/types/tauri-commands"
+import type { ModelInfo, ClientInfo, ModelPermissions, SafetyVerdict, CategoryActionRequired, McpServerListing, SkillListing, SecretFindingSummary, RedactSecretPermanentlyParams } from "@/types/tauri-commands"
 
 interface ApprovalDetails {
   request_id: string
@@ -180,7 +180,7 @@ export function FirewallApproval() {
           // Each finding carries rule, value + reveal, entropy, and the
           // permanent-ignore control — the default 320px clips even one.
           const findingCount = result.secret_scan_details?.findings?.length || 1
-          const height = Math.min(600, 300 + findingCount * 110)
+          const height = Math.min(660, (result.is_notify_only ? 300 : 365) + findingCount * 155)
           await win.setSize(new LogicalSize(440, height))
           await win.center()
         }
@@ -501,6 +501,14 @@ export function FirewallApproval() {
       requestId: details.request_id,
       findingIndex,
     })
+  }
+
+  const handleRedactPermanently = async (findingIndex: number): Promise<void> => {
+    if (!details) throw new Error("Approval is no longer available")
+    await invoke<void>("redact_secret_permanently", {
+      requestId: details.request_id,
+      findingIndex,
+    } satisfies RedactSecretPermanentlyParams)
   }
 
   const handleAction = async (action: ApprovalAction) => {
@@ -914,7 +922,8 @@ export function FirewallApproval() {
           onAction={buttonsReady ? handleAction : undefined}
           onDismiss={buttonsReady ? handleDismiss : undefined}
           onReveal={details.is_secret_scan_request ? handleReveal : undefined}
-          onIgnorePermanently={
+          onRedactPermanently={details.is_secret_scan_request && !details.is_notify_only ? handleRedactPermanently : undefined}
+          onAllowSecretPermanently={
             details.is_secret_scan_request ? handleIgnorePermanently : undefined
           }
           onEdit={enterEditMode}

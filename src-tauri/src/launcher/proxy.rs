@@ -198,17 +198,27 @@ impl lr_proxy::active::Firewall for AppFirewall {
         // already approved. `req.body` is the provider-native request (Anthropic
         // Messages or OpenAI Responses, including a websocket `response.create`
         // message); the shared text extractor understands all of them.
-        if let lr_server::routes::pipeline::SecretScanOutcome::Deny(message) =
-            lr_server::routes::pipeline::scan_request_for_secrets(
-                &self.state,
-                &req.client_id,
-                req.model.as_deref().unwrap_or_default(),
-                &req.body,
-            )
-            .await
+        let mut body = req.body.clone();
+        let redacted = match lr_server::routes::pipeline::scan_request_for_secrets(
+            &self.state,
+            &req.client_id,
+            req.model.as_deref().unwrap_or_default(),
+            &body,
+        )
+        .await
         {
-            return RequestAction::reject_json(403, &message);
-        }
+            lr_server::routes::pipeline::SecretScanOutcome::Deny(message) => {
+                return RequestAction::reject_json(403, &message)
+            }
+            lr_server::routes::pipeline::SecretScanOutcome::Redact(redaction) => {
+                if lr_server::documents::redact_text_files(&mut body, &redaction).is_err() {
+                    return RequestAction::reject_json(403, "Could not redact document secrets");
+                }
+                redaction.apply(&mut body);
+                Some(redaction)
+            }
+            lr_server::routes::pipeline::SecretScanOutcome::Allow => None,
+        };
 
         // GuardRails — same safety models, category actions, monitor events and
         // approval popup as the gateway path, so a client's configured
@@ -219,7 +229,7 @@ impl lr_proxy::active::Firewall for AppFirewall {
                 &self.state,
                 &req.client_id,
                 req.model.as_deref().unwrap_or_default(),
-                &req.body,
+                &body,
             )
             .await
         {
@@ -255,8 +265,8 @@ impl lr_proxy::active::Firewall for AppFirewall {
                     req.model.clone().unwrap_or_default(),
                     req.provider.clone(),
                     Some(120),
-                    Some(req.body.clone()), // full request → editable in the popup
-                    false,                  // not mcp-via-llm
+                    Some(body.clone()), // full request → editable in the popup
+                    false,              // not mcp-via-llm
                 )
                 .await;
 
@@ -270,7 +280,18 @@ impl lr_proxy::active::Firewall for AppFirewall {
                     | A::AllowCategories => {
                         // If the user edited the request in the popup, send the
                         // rewritten body upstream instead of the original.
-                        if let Some(edited) = r.edited_arguments {
+                        if let Some(mut edited) = r.edited_arguments {
+                            if let Some(redaction) = &redacted {
+                                if lr_server::documents::redact_text_files(&mut edited, redaction)
+                                    .is_err()
+                                {
+                                    return RequestAction::reject_json(
+                                        403,
+                                        "Could not redact edited document secrets",
+                                    );
+                                }
+                                redaction.apply(&mut edited);
+                            }
                             if let Ok(bytes) = serde_json::to_vec(&edited) {
                                 return RequestAction::Replace(bytes);
                             }
@@ -284,7 +305,14 @@ impl lr_proxy::active::Firewall for AppFirewall {
             }
         }
 
-        RequestAction::Forward
+        if redacted.is_some() {
+            match serde_json::to_vec(&body) {
+                Ok(bytes) => RequestAction::Replace(bytes),
+                Err(_) => RequestAction::reject_json(403, "Could not serialize redacted request"),
+            }
+        } else {
+            RequestAction::Forward
+        }
     }
 }
 

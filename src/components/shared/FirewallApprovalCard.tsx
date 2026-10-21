@@ -5,10 +5,9 @@
  *
  * Keep this component free of Tauri-specific imports so the website can use it.
  */
-import { useState } from "react"
+import { useRef, useState } from "react"
 import { ChevronDown, Pencil, Eye, EyeOff } from "lucide-react"
 import { Button } from "@/components/ui/Button"
-import { Checkbox } from "@/components/ui/checkbox"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -22,7 +21,7 @@ import { isValidHttpUrl } from "@/utils/url"
 import { categoryActionLabel } from "@/components/permissions/CategoryActionButton"
 import type { SafetyVerdict, CategoryActionRequired, SecretFindingSummary } from "@/types/tauri-commands"
 
-export type ApprovalAction = "deny" | "deny_session" | "deny_always" | "block_categories" | "allow_once" | "allow_session" | "allow_1_minute" | "allow_1_hour" | "allow_permanent" | "allow_categories" | "deny_1_hour" | "disable_client"
+export type ApprovalAction = "deny" | "deny_session" | "deny_always" | "block_categories" | "allow_once" | "redact_once" | "allow_session" | "allow_1_minute" | "allow_1_hour" | "allow_permanent" | "allow_categories" | "deny_1_hour" | "disable_client"
 
 export type RequestType = "marketplace" | "skill" | "model" | "tool" | "guardrail" | "free_tier_fallback" | "auto_router" | "secret_scan"
 
@@ -198,13 +197,10 @@ export interface FirewallApprovalCardProps {
    * Returns null when it is no longer available. Omitted (demo) = no reveal.
    */
   onReveal?: (findingIndex: number) => Promise<string | null>
-  /**
-   * Permanently stop flagging one finding's value for this client. Stores a
-   * salted hash, never the value. Called for every finding the user ticked,
-   * right before whichever action they choose is carried out.
-   * Omitted (demo) = the checkbox is not offered.
-   */
-  onIgnorePermanently?: (findingIndex: number) => Promise<void>
+  /** Remember a salted hash so this specific value is always allowed for this client. */
+  onAllowSecretPermanently?: (findingIndex: number) => Promise<void>
+  /** Save a salted hash for automatic redaction of this exact value. */
+  onRedactPermanently?: (findingIndex: number) => Promise<void>
   onEdit?: () => void
   submitting?: boolean
   className?: string
@@ -247,7 +243,8 @@ export function FirewallApprovalCard({
   onAction,
   onDismiss,
   onReveal,
-  onIgnorePermanently,
+  onAllowSecretPermanently,
+  onRedactPermanently,
   onEdit,
   submitting = false,
   className,
@@ -255,46 +252,29 @@ export function FirewallApprovalCard({
   // Revealed plaintext per finding index; absent = still masked.
   const [revealed, setRevealed] = useState<Record<number, string>>({})
   const [revealError, setRevealError] = useState<Record<number, string>>({})
-  // Findings ticked "never flag again" — applied when the user picks any action.
-  const [ignoreChecked, setIgnoreChecked] = useState<Record<number, boolean>>({})
-  const [ignoreError, setIgnoreError] = useState<Record<number, string>>({})
-  const [applyingIgnores, setApplyingIgnores] = useState(false)
+  const [policyErrors, setPolicyErrors] = useState<Record<number, string>>({})
+  const [savingPolicy, setSavingPolicy] = useState(false)
+  const savingPolicyRef = useRef(false)
 
-  /**
-   * Store the hash for every ticked finding. Returns false (and shows the error
-   * under the finding) if any failed, so the action is not carried out and the
-   * user can see what went wrong instead of losing the popup.
-   */
-  const applyIgnores = async (): Promise<boolean> => {
-    const indices = Object.keys(ignoreChecked)
-      .map(Number)
-      .filter((i) => ignoreChecked[i])
-    if (!onIgnorePermanently || indices.length === 0) return true
-    setApplyingIgnores(true)
-    const errors: Record<number, string> = {}
+  const act = (action: ApprovalAction) => {
+    if (!savingPolicyRef.current && !submitting) onAction?.(action)
+  }
+
+  const rememberSecret = async (index: number, policy: "redact" | "allow") => {
+    const save = policy === "redact" ? onRedactPermanently : onAllowSecretPermanently
+    if (!onAction || !save || savingPolicyRef.current || submitting) return
+    savingPolicyRef.current = true
+    setSavingPolicy(true)
+    setPolicyErrors({})
     try {
-      for (const i of indices) {
-        try {
-          await onIgnorePermanently(i)
-        } catch (err) {
-          errors[i] = typeof err === "string" ? err : "Could not save this exception"
-        }
-      }
+      await save(index)
+      onAction(policy === "redact" ? "redact_once" : "allow_once")
+    } catch (err) {
+      setPolicyErrors({ [index]: typeof err === "string" ? err : "Could not save this secret's policy" })
     } finally {
-      setApplyingIgnores(false)
+      savingPolicyRef.current = false
+      setSavingPolicy(false)
     }
-    setIgnoreError(errors)
-    return Object.keys(errors).length === 0
-  }
-
-  /** Run the ticked ignores first, then the chosen action. */
-  const act = async (action: ApprovalAction) => {
-    if (!onAction) return
-    if (await applyIgnores()) onAction(action)
-  }
-  const dismiss = async () => {
-    if (!onDismiss) return
-    if (await applyIgnores()) onDismiss()
   }
 
   const toggleReveal = async (index: number) => {
@@ -335,7 +315,7 @@ export function FirewallApprovalCard({
   })
   const parsedArgs = parseArguments(argumentsPreview || "")
   const canEdit = requestType !== "marketplace" && requestType !== "guardrail" && requestType !== "free_tier_fallback" && requestType !== "secret_scan"
-  const disabled = !onAction || submitting || applyingIgnores
+  const disabled = !onAction || submitting || savingPolicy
 
   return (
     <div className={className}>
@@ -534,36 +514,34 @@ export function FirewallApprovalCard({
 
         {/* Secret scan findings */}
         {requestType === "secret_scan" && secretScanFindings && secretScanFindings.length > 0 && (
-          <div className="mt-2 space-y-1.5 max-h-64 overflow-auto">
-            <span className="text-[10px] font-semibold text-muted-foreground">Detected Secrets</span>
+          <div className="mt-3 space-y-2 max-h-80 overflow-auto">
+            <span className="text-xs font-semibold text-muted-foreground">{isNotifyOnly ? "Detected secrets" : "Detected secret"}</span>
             {secretScanFindings.map((finding, i) => (
-              <div key={i} className="bg-muted/50 rounded px-2 py-1.5 text-xs space-y-0.5">
+              <div key={i} className="bg-muted/50 rounded px-3 py-3 text-xs space-y-2">
                 <div className="flex items-center justify-between">
                   <span className="font-semibold">{finding.rule_description}</span>
                   <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-orange-500/20 text-orange-600">
                     {finding.category.replace(/_/g, " ")}
                   </span>
                 </div>
-                <div className="flex items-start gap-1">
+                <div className="flex items-start gap-2">
                   <div
-                    className={`font-mono text-[10px] bg-background/50 rounded px-1 py-0.5 flex-1 min-w-0 ${
-                      revealed[i] !== undefined ? "break-all select-all" : "truncate"
-                    }`}
+                    className="font-mono text-2xl leading-relaxed font-semibold bg-background/70 rounded px-3 py-3 flex-1 min-w-0 break-all select-all"
                     title={revealed[i] ?? finding.matched_text}
                   >
                     {revealed[i] ?? finding.matched_text}
                   </div>
                   {onReveal && (
                     <button
-                      className="text-muted-foreground hover:text-foreground p-0.5 flex-shrink-0"
+                      className="text-muted-foreground hover:text-foreground p-2 flex-shrink-0"
                       onClick={() => toggleReveal(i)}
                       title={revealed[i] !== undefined ? "Hide secret" : "Reveal secret"}
                       aria-label={revealed[i] !== undefined ? "Hide secret" : "Reveal secret"}
                     >
                       {revealed[i] !== undefined ? (
-                        <EyeOff className="h-3 w-3" />
+                        <EyeOff className="h-5 w-5" />
                       ) : (
-                        <Eye className="h-3 w-3" />
+                        <Eye className="h-5 w-5" />
                       )}
                     </button>
                   )}
@@ -575,24 +553,8 @@ export function FirewallApprovalCard({
                   <span>Entropy: <span className="font-mono font-medium text-foreground">{finding.entropy.toFixed(2)}</span></span>
                   <span className="ml-auto font-mono">{finding.rule_id}</span>
                 </div>
-                {onIgnorePermanently && (
-                  <label
-                    className="flex items-center gap-1.5 text-[10px] text-muted-foreground cursor-pointer pt-0.5"
-                    title={`Stores a salted hash of this value — never the value itself — so it is never flagged again for ${clientName}. Reversible in that client's Secret Scanning settings.`}
-                  >
-                    <Checkbox
-                      className="h-3 w-3"
-                      checked={!!ignoreChecked[i]}
-                      disabled={applyingIgnores || submitting}
-                      onCheckedChange={(checked) =>
-                        setIgnoreChecked((prev) => ({ ...prev, [i]: checked === true }))
-                      }
-                    />
-                    <span>Never flag this value again for this client</span>
-                  </label>
-                )}
-                {ignoreError[i] && (
-                  <div className="text-[10px] text-destructive">{ignoreError[i]}</div>
+                {policyErrors[i] && (
+                  <div className="text-[10px] text-destructive" role="alert">{policyErrors[i]}</div>
                 )}
               </div>
             ))}
@@ -608,8 +570,8 @@ export function FirewallApprovalCard({
           <div className="flex flex-1">
             <Button
               className="flex-1 h-10 rounded-r-none font-bold"
-              onClick={dismiss}
-              disabled={!onDismiss || submitting || applyingIgnores}
+              onClick={onDismiss}
+              disabled={!onDismiss || submitting || savingPolicy}
             >
               Dismiss
             </Button>
@@ -617,7 +579,7 @@ export function FirewallApprovalCard({
               <DropdownMenuTrigger asChild>
                 <Button
                   className="h-10 px-2 rounded-l-none border-l border-background/30"
-                  disabled={!onAction || submitting || applyingIgnores}
+                  disabled={!onAction || submitting || savingPolicy}
                 >
                   <ChevronDown className="h-4 w-4" />
                 </Button>
@@ -695,10 +657,39 @@ export function FirewallApprovalCard({
           </DropdownMenu>
         </div>
 
+        {isSecretScanRequest && (
+          <div className="flex flex-1">
+            <Button
+              className="flex-1 h-10 rounded-r-none bg-yellow-600 hover:bg-yellow-700 dark:bg-[#807000] dark:hover:bg-[#6b5e00] text-white font-bold"
+              onClick={() => act("redact_once")}
+              disabled={disabled}
+            >
+              Redact once
+            </Button>
+            {onRedactPermanently && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button className="h-10 px-2 rounded-l-none border-l border-yellow-700 dark:border-[#6b5e00] bg-yellow-600 hover:bg-yellow-700 dark:bg-[#807000] dark:hover:bg-[#6b5e00] text-white" disabled={disabled} aria-label="More redaction options">
+                    <ChevronDown className="h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="center">
+                  {(secretScanFindings ?? []).map((finding, i) => (
+                    <DropdownMenuItem key={i} className="flex-col items-start" onClick={() => rememberSecret(i, "redact")}>
+                      <span>Always redact this secret</span>
+                      {(secretScanFindings?.length ?? 0) > 1 && <span className="text-xs text-muted-foreground">{finding.rule_description} · {finding.matched_text}</span>}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
+          </div>
+        )}
+
         {/* Edit button - hidden for marketplace */}
         {canEdit && (
           <Button
-            className="h-10 px-3 bg-amber-500 hover:bg-amber-600 text-white font-bold"
+            className="h-10 px-3 bg-yellow-600 hover:bg-yellow-700 dark:bg-[#807000] dark:hover:bg-[#6b5e00] text-white font-bold"
             onClick={onEdit}
             disabled={disabled}
           >
@@ -720,12 +711,19 @@ export function FirewallApprovalCard({
             <DropdownMenuTrigger asChild>
               <Button
                 className="h-10 px-2 rounded-l-none border-l border-emerald-700 bg-emerald-600 hover:bg-emerald-700 text-white"
+                aria-label="More allow options"
                 disabled={disabled}
               >
                 <ChevronDown className="h-4 w-4" />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
+              {isSecretScanRequest && onAllowSecretPermanently && (secretScanFindings ?? []).map((finding, i) => (
+                <DropdownMenuItem key={`allow-secret-${i}`} className="flex-col items-start" onClick={() => rememberSecret(i, "allow")}>
+                  <span>Always allow this secret</span>
+                  {(secretScanFindings?.length ?? 0) > 1 && <span className="text-xs text-muted-foreground">{finding.rule_description} · {finding.matched_text}</span>}
+                </DropdownMenuItem>
+              ))}
               {!isModelRequest && !isGuardrailRequest && !isFreeTierFallback && !isSecretScanRequest && !isAutoRouterRequest && (
                 <DropdownMenuItem onClick={() => act("allow_session")}>
                   Allow for Session

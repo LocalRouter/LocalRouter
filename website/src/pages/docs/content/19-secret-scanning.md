@@ -18,7 +18,11 @@ Secret scanning supports three actions: **Ask**, **Notify**, and **Off**. **Ask*
 
 <!-- @entry secret-scan-approval-flow -->
 
-When the action is set to Ask, the firewall intercepts the request and displays a popup showing a preview of the detected finding, including the rule description, category, and a truncated view of the matched text (first 6 and last 4 characters visible, middle masked). The user can approve or reject the request. Approved requests include a time-based bypass so that repeated matches from the same conversation do not require re-approval within the bypass window.
+When the action is set to Ask, the firewall intercepts the request and displays a popup showing a preview of the detected finding, including the rule description, category, and a truncated view of the matched text (first 6 and last 4 characters visible, middle masked). Each detected secret is shown in its own blocking popup. The user can block, allow, or **Redact once**. Block stops the request immediately, so later secrets are not shown. Allow and Redact advance to the next secret; the request is forwarded only after every secret has a decision. Redaction replaces every occurrence of the currently displayed secret with `[REDACTED: secret removed by LocalRouter]` before continuing the request, including repeated values and decoded text attachments. Redact once asks again when the value appears in a later request.
+
+**Always redact this secret**, in the Redact dropdown, redacts the current request and remembers that particular value for this client. Both dropdowns apply only to the secret currently shown. Only a randomly salted, per-client PBKDF2-HMAC-SHA256 hash is saved locally; the secret itself is never stored in the rule. Future matches are automatically redacted while scanning is enabled, including during a temporary approval bypass. New secret values still follow the client's Ask or Notify policy. Remembered values can be removed in the client's **Secret Scanning → Remembered Secrets** settings. **Always allow this secret**, in the Allow dropdown, remembers only the selected value as allowed for this client. Existing ignored values keep this behavior and appear as **Always allow** in settings.
+
+**Allow for 1 Hour** temporarily bypasses approval for other findings. **Notify** popups report requests that have already proceeded, so they cannot offer redaction of that request.
 
 <!-- @entry secret-scan-allowlist -->
 

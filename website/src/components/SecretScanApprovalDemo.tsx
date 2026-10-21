@@ -32,6 +32,8 @@ export function SecretScanApprovalDemo() {
         secretScanFindings={DEMO_FINDINGS}
         secretScanDurationMs={12}
         onAction={noop}
+        onRedactPermanently={async () => {}}
+        onAllowSecretPermanently={async () => {}}
       />
     </div>
   )
