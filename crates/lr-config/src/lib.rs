@@ -18,6 +18,8 @@ use uuid::Uuid;
 
 mod upstream_tools;
 pub use upstream_tools::*;
+mod routing_profiles;
+pub use routing_profiles::*;
 mod named_routes;
 pub use named_routes::*;
 mod client_security;

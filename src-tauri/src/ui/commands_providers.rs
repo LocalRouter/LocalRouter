@@ -1460,6 +1460,7 @@ pub type ModelFreeTierInfo = lr_providers::free_models::FreeModelDecision;
 /// Detailed model information for the frontend
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct DetailedModelInfo {
+    pub display_name: String,
     pub model_id: String,
     pub provider_instance: String,
     pub provider_type: String,
@@ -1604,6 +1605,7 @@ fn detailed_model(
     });
 
     DetailedModelInfo {
+        display_name: model.name,
         model_id: model.id,
         provider_instance: model.provider,
         provider_type,

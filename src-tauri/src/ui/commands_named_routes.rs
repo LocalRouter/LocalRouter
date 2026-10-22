@@ -93,6 +93,9 @@ fn apply_mutation(
     if status(before)?.fingerprint != expected_fingerprint {
         return Err("Route changed; reload before editing or publishing".into());
     }
+    if before.routing_profile.is_some() {
+        return Err("Edit the shared routing profile or make an independent copy first".into());
+    }
     let mut updated = before.clone();
     let auto = updated
         .auto_config

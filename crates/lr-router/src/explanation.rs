@@ -931,11 +931,17 @@ impl Router {
             .all(|route| route.candidates.iter().all(|candidate| !candidate.eligible));
         RoutingExplanation {
             session: None,
-            named_route: strategy.auto_config.as_ref().map(|auto| json!({"alias":auto.model_name,"revision":if strategy.route_versions.active_matches(auto) {strategy.route_versions.active_revision} else {None},"modified_since_publication":strategy.route_versions.active_revision.is_some() && !strategy.route_versions.active_matches(auto)})),
+            named_route: strategy.auto_config.as_ref().map(|auto| {
+                let mut metadata = json!({"alias":auto.model_name,"revision":strategy.active_named_revision(),"modified_since_publication":strategy.routing_profile.is_none() && strategy.route_versions.active_revision.is_some() && !strategy.route_versions.active_matches(auto)});
+                if let Some(binding) = &strategy.routing_profile { metadata["profile"] = json!(binding); }
+                metadata
+            }),
             policy_fingerprint: fingerprint(json!(policy)),
-            config_fingerprint: fingerprint(
-                json!({"provider_revision":self.provider_registry.routing_revision(),"named_route_revision":strategy.active_named_revision(),"adaptive":strategy.auto_config.as_ref().map(|auto| &auto.adaptive_routing),"session_routing":strategy.auto_config.as_ref().map(|auto| &auto.session_routing),"policy":policy,"permissions":strategy.model_permissions,"free_tier_only":strategy.free_tier_only,"limits":strategy.rate_limits,"routes":projection}),
-            ),
+            config_fingerprint: fingerprint({
+                let mut context = json!({"provider_revision":self.provider_registry.routing_revision(),"named_route_revision":strategy.active_named_revision(),"adaptive":strategy.auto_config.as_ref().map(|auto| &auto.adaptive_routing),"session_routing":strategy.auto_config.as_ref().map(|auto| &auto.session_routing),"policy":policy,"permissions":strategy.model_permissions,"free_tier_only":strategy.free_tier_only,"limits":strategy.rate_limits,"routes":projection});
+                if let Some(binding) = &strategy.routing_profile { context["routing_profile"] = json!(binding); }
+                context
+            }),
             active_route: policy
                 .enabled
                 .then(|| decision.map(|decision| decision.route.clone()))

@@ -1,3 +1,5 @@
+import { gatewayPortExplanation } from '@/utils/gateway-connection'
+import { listenSafe } from '@/hooks/useTauriListener'
 import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
@@ -52,6 +54,8 @@ export function ServerTab({ hideResourceLimits }: ServerTabProps = {}) {
     loadNetworkInterfaces()
     loadExecutablePath()
     loadMaxCodingSessions()
+    const listeners = ['server-status-changed', 'config-changed'].map(event => listenSafe(event, () => { void invoke<ServerConfig>('get_server_config').then(setConfig).catch(console.error) }))
+    return () => listeners.forEach(l => l.cleanup())
   }, [])
 
   useEffect(() => {
@@ -157,6 +161,7 @@ export function ServerTab({ hideResourceLimits }: ServerTabProps = {}) {
 
   return (
     <div className="space-y-6">
+      {gatewayPortExplanation(config) && <p className="text-sm text-muted-foreground">{gatewayPortExplanation(config)}</p>}
       {/* Server Status */}
       <Card>
         <CardHeader className="pb-3">

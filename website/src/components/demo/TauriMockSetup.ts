@@ -1298,6 +1298,54 @@ function validateDemoRoute(snapshot:RouteSnapshot) {
     }
   }
 }
+const demoProfiles = new Map<string, import('@app/types/tauri-commands').RoutingProfile>()
+const demoBindings = new Map<string, import('@app/types/tauri-commands').RoutingProfileBinding>()
+function demoProfileStrategy(id: string): import('@app/types/tauri-commands').Strategy {
+  const s = mockData.strategies.find(s => s.id === id)
+  if (!s) throw 'Strategy not found'
+  return JSON.parse(JSON.stringify({ ...s, auto_config: s.auto_config ? { ...s.auto_config, ...demoRouteSnapshot(s.auto_config as unknown as AutoModelConfig) } : null,
+    routing_profile: demoBindings.get(id) ?? null, model_permissions: s.model_permissions, rate_limits: s.rate_limits.map(l => ({ ...l, enabled: 'enabled' in l ? Boolean(l.enabled) : true })) }))
+}
+function demoProfileClients(strategyId: string, snapshot?: RouteSnapshot): import('@app/types/tauri-commands').RoutingProfileClient[] {
+  const s = demoProfileStrategy(strategyId)
+  const issues: string[] = []
+  if (!s.auto_config || s.auto_config.permission === 'off') issues.push('Auto routing is off')
+  const routing = snapshot ?? (s.auto_config ? demoRouteSnapshot(s.auto_config) : null)
+  const refs = [...(routing?.prioritized_models ?? []), ...(routing?.routing_policy?.options.flatMap(o => o.models) ?? []), ...(routing?.routing_policy?.decision_model ? [routing.routing_policy.decision_model] : [])]
+  for (const [provider, model] of refs) {
+    if (!mockData.providers.some(p => p.instance_name === provider && p.enabled)) issues.push(`Provider unavailable: ${provider}`)
+    const permission = s.model_permissions.models[`${provider}__${model}`] ?? s.model_permissions.providers[provider] ?? s.model_permissions.global
+    if (permission === 'off') issues.push(`Model not permitted: ${provider}/${model}`)
+    if (permission === 'ask') issues.push(`Model requires approval: ${provider}/${model}`)
+  }
+  return mockData.clients.filter(c => c.strategy_id === strategyId).map(c => ({ client_id: c.id, client_name: c.name, strategy_id: strategyId, issues: [...new Set(issues)].sort() }))
+}
+function demoProfileStatus(profile: import('@app/types/tauri-commands').RoutingProfile): import('@app/types/tauri-commands').RoutingProfileStatus {
+  const strategies = mockData.strategies.filter(s => demoBindings.get(s.id)?.profile_id === profile.id).map(s => demoProfileStrategy(s.id))
+  const clients = strategies.flatMap(s => demoProfileClients(s.id, profile.versions.draft ?? profile.active))
+  const providers = mockData.providers.map(p => [p.instance_name, p.enabled])
+  return { profile: JSON.parse(JSON.stringify(profile)), fingerprint: demoRouteHash([profile, strategies, clients, providers]), clients,
+    revision_clients: Object.fromEntries(profile.versions.revisions.map(r => [String(r.revision), strategies.flatMap(s => demoProfileClients(s.id, r.snapshot))])) }
+}
+function demoProfilesState(strategyId?: string | null): import('@app/types/tauri-commands').RoutingProfilesState {
+  const strategy = strategyId ? demoProfileStrategy(strategyId) : null
+  return { profiles: [...demoProfiles.values()].map(demoProfileStatus), strategy, strategy_fingerprint: strategy ? demoRouteHash(strategy) : null, strategy_clients: strategy ? demoProfileClients(strategy.id) : [] }
+}
+function demoApplyProfile(profile: import('@app/types/tauri-commands').RoutingProfile, strategyId: string) {
+  const strategy = mockData.strategies.find(s => s.id === strategyId)
+  if (!strategy?.auto_config) throw 'Enable auto routing before attaching a profile'
+  const alias = strategy.auto_config.model_name
+  Object.assign(strategy.auto_config, JSON.parse(JSON.stringify(profile.active)), { model_name: alias })
+  demoBindings.set(strategyId, { profile_id: profile.id, revision: profile.versions.active_revision! })
+}
+function demoEmitProfiles() { setTimeout(() => { emit('routing-profiles-changed', {}); emit('strategies-changed', {}); emit('clients-changed', {}) }, 10) }
+function demoRequireProfile(id: string, token: string) {
+  const p = demoProfiles.get(id)
+  if (!p) throw 'Profile not found'
+  if (demoProfileStatus(p).fingerprint !== token) throw 'Profile or affected clients changed; reload and review before applying'
+  return p
+}
+
 function clientPrivacyStatus(clientId: string): ClientPrivacyStatus {
   const client = mockData.clients.find(c => c.id === clientId || c.client_id === clientId)
   if (!client) throw 'Client not found'
@@ -1352,7 +1400,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // ============================================================================
   // Server Configuration
   // ============================================================================
-  'get_server_config': () => mockData.serverConfig,
+  'get_server_config': (): import('@app/types/tauri-commands').ServerConfigInfo => ({ host: mockData.serverConfig.host, port: mockData.serverConfig.port, actual_port: mockData.healthCache.server_running ? mockData.serverConfig.port : null, enable_cors: true }),
   'update_server_config': () => mockData.serverConfig,
   'restart_server': () => {
     toast.success('Server restarted (demo)')
@@ -3249,8 +3297,65 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // ============================================================================
   // Strategies
   // ============================================================================
+  'get_routing_profiles': (args: import('@app/types/tauri-commands').GetRoutingProfilesParams): import('@app/types/tauri-commands').RoutingProfilesState => demoProfilesState(args.strategyId),
+  'create_routing_profile': (args: import('@app/types/tauri-commands').CreateRoutingProfileParams): import('@app/types/tauri-commands').RoutingProfilesState => {
+    if (!args.name.trim() || args.name.length > 128 || demoProfiles.size >= 128) throw 'Invalid profile name or too many profiles'
+    if (args.sourceProfileId && args.sourceStrategyId) throw 'Choose one routing source'
+    const base = args.sourceProfileId ? demoRequireProfile(args.sourceProfileId, args.expectedFingerprint ?? '').active : args.sourceStrategyId ? (() => {
+      const strategy = demoProfileStrategy(args.sourceStrategyId!)
+      if (demoRouteHash(strategy) !== args.expectedFingerprint) throw 'Client routing changed; reload before copying'
+      if (!strategy.auto_config) throw 'This strategy has no auto router'
+      return demoRouteSnapshot(strategy.auto_config)
+    })() : demoRouteSnapshot({ model_name: 'auto', prioritized_models: [] } as unknown as AutoModelConfig)
+    const active = JSON.parse(JSON.stringify({ ...base, model_name: 'auto' })) as RouteSnapshot
+    validateDemoRoute(active)
+    const id = `profile-${generateId()}`
+    demoProfiles.set(id, { id, name: args.name, active, versions: { draft: null, active_revision: 1, next_revision: 2, revisions: [{ revision: 1, label: 'Initial version', published_at: Math.floor(Date.now() / 1000), snapshot: active }] } })
+    demoEmitProfiles()
+    return demoProfilesState(args.sourceStrategyId)
+  },
+  'bind_routing_profile': (args: import('@app/types/tauri-commands').BindRoutingProfileParams): import('@app/types/tauri-commands').RoutingProfilesState => {
+    if (demoRouteHash(demoProfileStrategy(args.strategyId)) !== args.expectedStrategyFingerprint) throw 'Client routing changed; reload before applying'
+    if (args.profileId) demoApplyProfile(demoRequireProfile(args.profileId, args.expectedProfileFingerprint ?? ''), args.strategyId)
+    else demoBindings.delete(args.strategyId)
+    demoEmitProfiles()
+    return demoProfilesState(args.strategyId)
+  },
+  'mutate_routing_profile': (args: import('@app/types/tauri-commands').MutateRoutingProfileParams): import('@app/types/tauri-commands').RoutingProfilesState => {
+    const current = demoRequireProfile(args.profileId, args.expectedFingerprint)
+    const profile = JSON.parse(JSON.stringify(current)) as import('@app/types/tauri-commands').RoutingProfile
+    const op = args.operation
+    if (op.action === 'delete') {
+      if ([...demoBindings].some(([id, b]) => b.profile_id === profile.id && mockData.clients.some(c => c.strategy_id === id))) throw 'Detach all clients before deleting this profile'
+      for (const [id, b] of demoBindings) if (b.profile_id === profile.id) demoBindings.delete(id)
+      demoProfiles.delete(profile.id)
+    } else {
+      if (op.action === 'save_draft') { validateDemoRoute(op.snapshot); if (op.snapshot.model_name !== 'auto') throw 'Shared profiles cannot change client aliases'; profile.versions.draft = JSON.parse(JSON.stringify(op.snapshot)) }
+      if (op.action === 'discard_draft') profile.versions.draft = null
+      if (op.action === 'rename') { if (!op.name.trim() || op.name.length > 128) throw 'Invalid profile name'; profile.name = op.name }
+      if (op.action === 'publish') {
+        if (!profile.versions.draft) throw 'Save a draft before publishing'
+        if (profile.versions.revisions.length >= 32 || op.label.length > 128) throw 'History or label limit exceeded'
+        profile.active = profile.versions.draft
+        const revision = profile.versions.next_revision++
+        profile.versions.revisions.push({ revision, label: op.label, published_at: Math.floor(Date.now() / 1000), snapshot: profile.active })
+        profile.versions.active_revision = revision; profile.versions.draft = null
+      }
+      if (op.action === 'rollback') { const r = profile.versions.revisions.find(r => r.revision === op.revision); if (!r) throw 'Unknown profile revision'; profile.active = r.snapshot; profile.versions.active_revision = r.revision }
+      if (op.action === 'remove_revision') {
+        if (profile.versions.active_revision === op.revision) throw 'Cannot remove active revision'
+        if (!profile.versions.revisions.some(r => r.revision === op.revision)) throw 'Unknown profile revision'
+        profile.versions.revisions = profile.versions.revisions.filter(r => r.revision !== op.revision)
+      }
+      demoProfiles.set(profile.id, profile)
+      for (const [id, binding] of demoBindings) if (binding.profile_id === profile.id) demoApplyProfile(profile, id)
+    }
+    demoEmitProfiles()
+    return demoProfilesState()
+  },
   'get_named_route': (args:GetNamedRouteParams):NamedRouteStatus=>demoNamedRoute(args.strategyId),
   'mutate_named_route': (args:MutateNamedRouteParams):NamedRouteStatus=>{
+    if(demoBindings.has(args.strategyId)) throw 'Edit the shared profile or make an independent copy first'
     const current=demoNamedRoute(args.strategyId)
     if(current.fingerprint!==args.expectedFingerprint) throw 'Route changed; reload before editing or publishing'
     const versions=current.versions
@@ -3288,7 +3393,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'list_strategies': () => mockData.strategies.map(strategy => ({ ...strategy, rate_limits: strategy.rate_limits.map(limit => ({ ...limit, enabled: 'enabled' in limit ? Boolean(limit.enabled) : true })) })),
   'get_strategy': (args) => {
     const strategy = mockData.strategies.find(s => s.id === args?.strategyId || s.id === args?.id)
-    return strategy ? { ...strategy, rate_limits: strategy.rate_limits.map(limit => ({ ...limit, enabled: 'enabled' in limit ? Boolean(limit.enabled) : true })) } : undefined
+    return strategy ? { ...strategy, routing_profile: demoBindings.get(strategy.id) ?? null, rate_limits: strategy.rate_limits.map(limit => ({ ...limit, enabled: 'enabled' in limit ? Boolean(limit.enabled) : true })) } : undefined
   },
   'recover_client_strategy': (args) => {
     const client = mockData.clients.find(c => c.id === args?.clientId || c.client_id === args?.clientId)
@@ -3335,6 +3440,12 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'update_strategy': (args) => {
     const strategy = mockData.strategies.find(s => s.id === args?.strategyId || s.id === args?.id)
     if (strategy) {
+      if (demoBindings.has(strategy.id) && args?.autoConfig) {
+        const proposed = demoRouteSnapshot(args.autoConfig)
+        const current = demoRouteSnapshot(strategy.auto_config as unknown as AutoModelConfig)
+        proposed.model_name = current.model_name
+        if (demoRouteHash(proposed) !== demoRouteHash(current)) throw 'Edit the shared profile or make an independent copy first'
+      }
       // Handle individual field updates (the API passes individual fields, not an updates object)
       if (args?.name !== undefined && args.name !== null) strategy.name = args.name
       if (args?.modelPermissions !== undefined && args.modelPermissions !== null) (strategy as Record<string, unknown>).model_permissions = args.modelPermissions
@@ -3471,6 +3582,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       return {
         free_tier_model: freeTierModel,
         model_id: m.id,
+        display_name: m.display_name,
         provider_instance: m.provider,
         provider_type: providerTypeMap[m.provider] || 'unknown',
         capabilities: capabilitiesMap[m.id] || ['chat', 'completion'],
@@ -4420,7 +4532,8 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
         observed_performance: { in_flight: 0, ttft_ms: null, output_tokens_per_second: null, ttft_samples: 0, throughput_samples: 0, retry_after_ms: null } })) }
     })
     return { decision, context: { latest_user_request: args.prompt, request_context: { mode: args.mode, mode_source: 'demo' }, conversation: [] },
-      explanation: { policy_fingerprint: `demo-policy-${policy.version}`, config_fingerprint: 'demo-config',
+      explanation: { policy_fingerprint: `demo-policy-${policy.version}`, config_fingerprint: demoRouteHash([policy, demoBindings.get(args.strategyId)]),
+        named_route: strategy?.auto_config ? { alias: strategy.auto_config.model_name, revision: null, modified_since_publication: false, ...(demoBindings.has(args.strategyId) ? { profile: demoBindings.get(args.strategyId), profile_preview: !!args.routeSnapshot } : {}) } : null,
         active_route: decision?.route ?? null, classifier_required: policy.enabled && !known && !identityUnknown,
         reason: identityUnknown&&!modeRule ? 'client_identity_required' : policy.enabled ? decision?.reason ?? 'classifier_not_executed' : 'policy_disabled', routes,
         no_route: routes.every((r: { candidates: unknown[] }) => r.candidates.length === 0),

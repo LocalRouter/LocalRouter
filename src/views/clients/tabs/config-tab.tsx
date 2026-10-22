@@ -66,6 +66,7 @@ export function ClientConfigTab({ client }: ConfigTabProps) {
       {/* Connection instructions. HowToConnect renders the proxy setup block
           itself when the client is in an LLM proxy mode. */}
       <HowToConnect
+        strategyId={client.strategy_id}
         clientId={client.client_id}
         clientUuid={client.id}
         secret={secret}
