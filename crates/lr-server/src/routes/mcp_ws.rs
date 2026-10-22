@@ -8,6 +8,7 @@ use axum::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         State,
     },
+    http::HeaderMap,
     response::{IntoResponse, Response},
 };
 use futures::{sink::SinkExt, stream::StreamExt};
@@ -46,10 +47,12 @@ use crate::state::AppState;
     get,
     path = "/ws",
     tag = "mcp",
+    params(("Mcp-Session-Id" = Option<String>, Header, description = "HTTP MCP session whose notifications this socket receives")),
     responses(
+        (status = 400, description = "Invalid MCP session header", body = crate::types::ErrorResponse),
         (status = 101, description = "WebSocket upgrade successful"),
         (status = 401, description = "Unauthorized", body = crate::types::ErrorResponse),
-        (status = 403, description = "Forbidden - no MCP server access", body = crate::types::ErrorResponse)
+        (status = 403, description = "Forbidden - direct MCP access disabled", body = crate::types::ErrorResponse)
     ),
     security(
         ("bearer" = [])
@@ -59,6 +62,7 @@ pub async fn mcp_websocket_handler(
     State(state): State<AppState>,
     client_auth: Option<axum::Extension<ClientAuthContext>>,
     ws: WebSocketUpgrade,
+    headers: HeaderMap,
 ) -> Response {
     // Extract client_id from auth context
     let client_id = match client_auth {
@@ -80,14 +84,8 @@ pub async fn mcp_websocket_handler(
         return e.into_response();
     }
 
-    // Check MCP access using mcp_permissions (hierarchical)
-    if !client.mcp_permissions.has_any_access() {
-        return ApiErrorResponse::forbidden(
-            "Client has no MCP server access. Configure mcp_permissions in client settings.",
-        )
-        .into_response();
-    }
-
+    // Empty upstream access is valid: built-in Skills and other virtual
+    // servers are permission-checked by the gateway, just as on HTTP/SSE.
     let allowed_servers = client
         .mcp_permissions
         .allowed_server_ids(&state.config_manager.get().mcp_servers);
@@ -98,8 +96,22 @@ pub async fn mcp_websocket_handler(
         allowed_servers.len()
     );
 
+    let session_key = match headers.get("mcp-session-id") {
+        Some(header) => match header
+            .to_str()
+            .ok()
+            .filter(|id| lr_mcp::gateway::types::is_valid_session_id(id))
+        {
+            Some(id) => lr_mcp::gateway::types::streamable_session_key(&client_id, id),
+            None => {
+                return ApiErrorResponse::bad_request("Invalid Mcp-Session-Id header")
+                    .into_response()
+            }
+        },
+        None => client_id.clone(),
+    };
     // Upgrade to WebSocket
-    ws.on_upgrade(move |socket| handle_websocket(socket, state, client_id, allowed_servers))
+    ws.on_upgrade(move |socket| handle_websocket(socket, state, client_id, session_key))
 }
 
 /// Handle WebSocket connection for a specific client
@@ -109,7 +121,7 @@ async fn handle_websocket(
     socket: WebSocket,
     state: AppState,
     client_id: String,
-    allowed_servers: Vec<String>,
+    session_key: String,
 ) {
     let (mut sender, mut receiver) = socket.split();
 
@@ -144,14 +156,17 @@ async fn handle_websocket(
                 result = notification_rx.recv() => {
                     match result {
                         Ok((server_id, notification)) => {
-                            // Filter: only forward notifications from servers this client has access to
-                            if !allowed_servers.contains(&server_id) {
-                                continue;
-                            }
+                            // Apply current permissions, and keep built-in notifications
+                            // scoped to the HTTP session this socket belongs to.
+                            let Some(client) = state.client_manager.get_client(&client_id_forward)
+                                .filter(|client| client.credentials_active() && client.mcp_direct_enabled()) else { break; };
+                            let allowed = client.mcp_permissions.allowed_server_ids(&state.config_manager.get().mcp_servers);
+                            let Some(origin) = lr_mcp::gateway::types::notification_target(&server_id, &session_key, &allowed) else { continue; };
+                            if !origin.is_empty() && !allowed.iter().any(|id| id == origin) { continue; }
 
                             // Create notification message
                             let message = json!({
-                                "server_id": server_id,
+                                "server_id": origin,
                                 "notification": notification,
                             });
 

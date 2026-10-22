@@ -28,6 +28,8 @@ impl McpGateway {
         if let Some(cached) = &session_read.cached_resources {
             if cached.is_valid() {
                 let resources = session_read.visible_resources(&cached.data);
+                let result = session_read
+                    .with_initialization_failures(cached.result("resources", &resources));
                 drop(session_read);
 
                 tracing::debug!(
@@ -38,7 +40,7 @@ impl McpGateway {
 
                 return Ok(JsonRpcResponse::success(
                     request.id.unwrap_or(Value::Null),
-                    json!({"resources": resources}),
+                    result,
                 ));
             }
         }
@@ -76,7 +78,8 @@ impl McpGateway {
             session_write.resources_list_fetched = true;
 
             let cache_ttl = session_write.cache_ttl_manager.get_ttl();
-            session_write.cached_resources = Some(CachedList::new(resources.clone(), cache_ttl));
+            session_write.cached_resources =
+                Some(CachedList::new(resources.clone(), cache_ttl).with_failures(failures.clone()));
         }
 
         // Apply permissions and catalog compression (filter deferred resources)
@@ -90,6 +93,7 @@ impl McpGateway {
             });
         }
 
+        let result = session.read().await.with_initialization_failures(result);
         Ok(JsonRpcResponse::success(
             request.id.unwrap_or(Value::Null),
             result,

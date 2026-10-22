@@ -93,6 +93,14 @@ pub struct McpServerManager {
     /// Next handler ID (atomic counter)
     next_handler_id: Arc<std::sync::atomic::AtomicU64>,
 
+    /// Weak references follow client session lifetime; a separate successful
+    /// probe cannot erase a failure on a client's still-broken connection.
+    session_failures: Arc<
+        DashMap<String, std::sync::Weak<crate::transport::session_transport_set::SessionFailures>>,
+    >,
+    health_cache:
+        Arc<parking_lot::RwLock<Option<Arc<lr_providers::health_cache::HealthCacheManager>>>>,
+
     /// Optional monitor event callback
     monitor_emit: Arc<parking_lot::RwLock<Option<MonitorEmitFn>>>,
 }
@@ -127,7 +135,7 @@ pub struct McpServerHealth {
 pub enum HealthStatus {
     /// Server is running and responding
     Healthy,
-    /// Server is not running but ready to start (command exists for STDIO)
+    /// An isolated authenticated MCP handshake/discovery succeeded; no global transport is running.
     Ready,
     /// Server is unhealthy or cannot start
     Unhealthy,
@@ -147,6 +155,8 @@ impl McpServerManager {
             notification_handlers: Arc::new(DashMap::new()),
             next_handler_id: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             monitor_emit: Arc::new(parking_lot::RwLock::new(None)),
+            session_failures: Arc::new(DashMap::new()),
+            health_cache: Arc::new(parking_lot::RwLock::new(None)),
         }
     }
 
@@ -168,7 +178,28 @@ impl McpServerManager {
             notification_handlers: Arc::new(DashMap::new()),
             next_handler_id: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             monitor_emit: Arc::new(parking_lot::RwLock::new(None)),
+            session_failures: Arc::new(DashMap::new()),
+            health_cache: Arc::new(parking_lot::RwLock::new(None)),
         }
+    }
+
+    pub fn set_health_cache(&self, cache: Arc<lr_providers::health_cache::HealthCacheManager>) {
+        *self.health_cache.write() = Some(cache);
+    }
+
+    fn client_connection_failure(&self, server_id: &str) -> Option<String> {
+        let mut failure = None;
+        self.session_failures.retain(|_, weak| {
+            if let Some(state) = weak.upgrade() {
+                if let Some(error) = state.read().get(server_id) {
+                    failure = error.values().next().cloned();
+                }
+                true
+            } else {
+                false
+            }
+        });
+        failure
     }
 
     /// Set the monitor event callback.
@@ -487,10 +518,11 @@ impl McpServerManager {
             .await?;
 
         // Connect to the SSE server
-        let transport = SseTransport::connect(url, headers).await?;
-        if config.auth_config.is_some() {
-            transport.set_auth_refresher(self.auth_refresher(server_id));
-        }
+        let refresher = config
+            .auth_config
+            .as_ref()
+            .map(|_| self.auth_refresher(server_id));
+        let transport = SseTransport::connect_with_auth(url, headers, refresher).await?;
 
         // Set up notification callback
         let server_id_for_callback = server_id.to_string();
@@ -587,6 +619,39 @@ impl McpServerManager {
         use crate::transport::SessionTransportSet;
 
         let transport_set = SessionTransportSet::new();
+        self.session_failures
+            .retain(|_, state| state.strong_count() > 0);
+        self.session_failures.insert(
+            uuid::Uuid::new_v4().to_string(),
+            Arc::downgrade(&transport_set.failures),
+        );
+        let cache = self.health_cache.clone();
+        let names: HashMap<String, String> = self
+            .list_configs()
+            .into_iter()
+            .map(|c| (c.id, c.name))
+            .collect();
+        let sessions = self.session_failures.clone();
+        transport_set.set_failure_callback(Arc::new(move |id, error| {
+            if let Some(cache) = cache.read().as_ref() {
+                let error = error.map(str::to_string).or_else(|| {
+                    sessions.iter().find_map(|entry| {
+                        entry.value().upgrade().and_then(|state| {
+                            state
+                                .read()
+                                .get(id)
+                                .and_then(|methods| methods.values().next().cloned())
+                        })
+                    })
+                });
+                let name = names.get(id).cloned().unwrap_or_else(|| id.to_string());
+                let item = match error {
+                    Some(error) => lr_providers::health_cache::ItemHealth::unhealthy(name, error),
+                    None => lr_providers::health_cache::ItemHealth::healthy(name, None),
+                };
+                cache.update_mcp_server(id, item);
+            }
+        }));
         let mut failures = Vec::new();
 
         let futures: Vec<_> = server_ids
@@ -640,6 +705,13 @@ impl McpServerManager {
             }
         }
 
+        for failure in &failures {
+            transport_set.record_failure(
+                &failure.server_id,
+                "_connect",
+                "MCP connection could not start; check authentication and server availability",
+            );
+        }
         (transport_set, failures)
     }
 
@@ -710,10 +782,11 @@ impl McpServerManager {
         self.apply_auth_headers(server_id, config, &mut headers)
             .await?;
 
-        let transport = SseTransport::connect(url, headers).await?;
-        if config.auth_config.is_some() {
-            transport.set_auth_refresher(self.auth_refresher(server_id));
-        }
+        let refresher = config
+            .auth_config
+            .as_ref()
+            .map(|_| self.auth_refresher(server_id));
+        let transport = SseTransport::connect_with_auth(url, headers, refresher).await?;
         Ok(Arc::new(transport))
     }
 
@@ -1088,10 +1161,43 @@ impl McpServerManager {
                 || self.sse_transports.contains_key(server_id)
                 || self.websocket_transports.contains_key(server_id));
 
-        // If a global transport is alive (e.g. manually started from UI), report healthy.
+        // A client session's failed connection remains down even if an
+        // independent UI transport or readiness probe succeeds.
+        let client_failure = self.client_connection_failure(server_id);
+        // A live process/socket alone does not prove protocol availability.
         // Otherwise, always do a fresh readiness check (try to spawn/connect).
-        let (status, latency_ms, error) = if has_live_global_transport {
-            (HealthStatus::Healthy, None, None)
+        let (status, latency_ms, error) = if let Some(error) = client_failure {
+            (HealthStatus::Unhealthy, None, Some(error))
+        } else if has_live_global_transport {
+            let probe = async {
+                let response = self
+                    .send_request(
+                        server_id,
+                        JsonRpcRequest::with_id(0, "tools/list".into(), None),
+                    )
+                    .await?;
+                if response.error.as_ref().is_some_and(|e| e.code == -32601) {
+                    // A resource/prompt-only MCP server can legitimately have no tools.
+                    let ping = self
+                        .send_request(server_id, JsonRpcRequest::with_id(1, "ping".into(), None))
+                        .await?;
+                    if ping.error.is_none() {
+                        return Ok(());
+                    }
+                } else if response.error.is_none()
+                    && response
+                        .result
+                        .as_ref()
+                        .is_some_and(|v| v.get("tools").is_some_and(serde_json::Value::is_array))
+                {
+                    return Ok(());
+                }
+                Err::<(), AppError>(AppError::Mcp("Running MCP catalog request failed".into()))
+            };
+            match tokio::time::timeout(std::time::Duration::from_secs(10), probe).await {
+                Ok(Ok(())) => (HealthStatus::Healthy, None, None),
+                _ => (HealthStatus::Unhealthy, None, Some("Running MCP connection failed protocol/tool discovery; check authentication and server availability".into())),
+            }
         } else {
             // Clean up any dead global transports before the readiness check
             if self
@@ -1165,10 +1271,8 @@ impl McpServerManager {
         }
     }
 
-    /// Check if a non-running server is ready to start
-    ///
-    /// For STDIO servers: attempts to spawn the command briefly to verify it can run
-    /// For SSE/WebSocket servers: returns "Not started" status
+    /// Check a non-running server through an isolated authenticated MCP handshake.
+    /// Arbitrary process output or HTTP reachability alone is insufficient.
     async fn check_server_readiness(
         &self,
         config: &Option<McpServerConfig>,
@@ -1181,43 +1285,7 @@ impl McpServerManager {
             );
         };
 
-        match &config.transport_config {
-            McpTransportConfig::Stdio { .. } => {
-                // Parse the command using shell-words
-                let (command, args, config_env) =
-                    match config.transport_config.parse_stdio_command() {
-                        Ok(parsed) => parsed,
-                        Err(e) => return (HealthStatus::Unhealthy, None, Some(e)),
-                    };
-
-                // Build environment: shell env (PATH) -> config env
-                let mut env = shell_env();
-                for (key, value) in config_env {
-                    env.insert(key, value);
-                }
-
-                // Try to spawn the command briefly to verify it can run, in the
-                // same working directory the real server would use
-                // Don't report latency for STDIO - it's not meaningful (not network latency)
-                let cwd = config.transport_config.resolve_stdio_cwd();
-                match Self::try_spawn_command(&command, &args, &env, cwd.as_deref()).await {
-                    Ok(_) => (HealthStatus::Ready, None, Some("Not started".to_string())),
-                    Err(e) => (HealthStatus::Unhealthy, None, Some(e)),
-                }
-            }
-            McpTransportConfig::Sse { url, .. } | McpTransportConfig::HttpSse { url, .. } => {
-                // Try an HTTP HEAD request to check connectivity and measure latency
-                Self::check_http_endpoint(url).await
-            }
-            McpTransportConfig::WebSocket { url, .. } => {
-                // For WebSocket, try HTTP endpoint first (many WS servers also respond to HTTP)
-                // Convert ws:// to http:// or wss:// to https://
-                let http_url = url
-                    .replace("ws://", "http://")
-                    .replace("wss://", "https://");
-                Self::check_http_endpoint(&http_url).await
-            }
-        }
+        self.check_protocol_readiness(&config.id).await
     }
 
     /// Try to spawn a command and wait for it to produce output
@@ -1428,78 +1496,119 @@ impl McpServerManager {
         }
     }
 
-    /// Check an HTTP endpoint for connectivity and measure latency
-    ///
-    /// Returns (Ready, latency, message) if reachable, (Unhealthy, None, error) if not
-    async fn check_http_endpoint(url: &str) -> (HealthStatus, Option<u64>, Option<String>) {
+    /// Authenticate and perform a real MCP handshake and catalog request.
+    /// HEAD (even HTTP 401/500) used to count as Ready without credentials.
+    async fn check_protocol_readiness(
+        &self,
+        server_id: &str,
+    ) -> (HealthStatus, Option<u64>, Option<String>) {
         let start = std::time::Instant::now();
-
-        let client = match reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
-            .build()
-        {
-            Ok(c) => c,
-            Err(e) => {
-                return (
-                    HealthStatus::Unhealthy,
-                    None,
-                    Some(format!("Failed to create HTTP client: {}", e)),
+        // Owning the temporary transport in a set guarantees cleanup even
+        // when the outer deadline cancels the handshake/discovery future.
+        let transports = crate::transport::SessionTransportSet::new();
+        let probe = async {
+            let transport = self.create_transport(server_id).await?;
+            transports.insert(server_id.to_string(), transport);
+            let initialize = JsonRpcRequest::with_id(
+                0,
+                "initialize".into(),
+                Some(serde_json::json!({
+                    "protocolVersion": crate::protocol::MCP_PROTOCOL_VERSION,
+                    "capabilities": {},
+                    "clientInfo": {"name": "localrouter-health-check", "version": "1"}
+                })),
+            );
+            let response = transports.send_request(server_id, initialize).await?;
+            let capabilities = if response.error.is_some() {
+                // Stateless backends reject initialize. Negotiate discovery
+                // before deciding they are down, as the gateway does.
+                let discover = JsonRpcRequest::with_id(
+                    1,
+                    "server/discover".into(),
+                    Some(serde_json::json!({
+                        "_meta": {crate::protocol::meta_keys::PROTOCOL_VERSION: crate::protocol::MCP_PROTOCOL_VERSION_STATELESS}
+                    })),
+                );
+                let discovered = transports.send_request(server_id, discover).await?;
+                let value = discovered
+                    .result
+                    .ok_or_else(|| AppError::Mcp("MCP handshake rejected".into()))?;
+                if !value
+                    .get("protocolVersions")
+                    .and_then(|v| v.as_array())
+                    .is_some_and(|versions| {
+                        versions.iter().any(|v| {
+                            v.as_str() == Some(crate::protocol::MCP_PROTOCOL_VERSION_STATELESS)
+                        })
+                    })
+                {
+                    return Err(AppError::Mcp(
+                        "MCP discovery did not negotiate a supported protocol".into(),
+                    ));
+                }
+                transports.set_revision(server_id, crate::protocol::ProtocolRevision::V2026_07_28);
+                serde_json::from_value::<crate::gateway::types::ServerCapabilities>(
+                    value.get("capabilities").cloned().unwrap_or_default(),
                 )
+                .map_err(|_| AppError::Mcp("Invalid MCP discovery capabilities".into()))?
+            } else {
+                let initialized: crate::gateway::types::InitializeResult =
+                    serde_json::from_value(response.result.unwrap_or_default())
+                        .map_err(|_| AppError::Mcp("Invalid MCP initialize response".into()))?;
+                transports
+                    .send_request(
+                        server_id,
+                        JsonRpcRequest::new(None, "notifications/initialized".into(), None),
+                    )
+                    .await?;
+                initialized.capabilities
+            };
+            if capabilities.tools.is_some() {
+                let response = transports
+                    .send_request(
+                        server_id,
+                        JsonRpcRequest::with_id(1, "tools/list".into(), None),
+                    )
+                    .await?;
+                if response.error.is_some()
+                    || !response
+                        .result
+                        .as_ref()
+                        .is_some_and(|v| v.get("tools").is_some_and(serde_json::Value::is_array))
+                {
+                    return Err(AppError::Mcp(
+                        "MCP tools/list failed; check authentication and permissions".into(),
+                    ));
+                }
             }
+            Ok::<(), AppError>(())
         };
-
-        // Try a HEAD request first (lightweight), fall back to GET if HEAD fails
-        match client.head(url).send().await {
-            Ok(response) => {
-                let latency = start.elapsed().as_millis() as u64;
-                if response.status().is_success() || response.status().is_redirection() {
-                    (
-                        HealthStatus::Ready,
-                        Some(latency),
-                        Some("Not started".to_string()),
-                    )
-                } else {
-                    // Server responded but with error status
-                    (
-                        HealthStatus::Ready,
-                        Some(latency),
-                        Some(format!("Not started (HTTP {})", response.status())),
-                    )
-                }
-            }
-            Err(e) => {
-                // Try GET as some servers don't support HEAD
-                let start_get = std::time::Instant::now();
-                match client.get(url).send().await {
-                    Ok(response) => {
-                        let latency = start_get.elapsed().as_millis() as u64;
-                        if response.status().is_success() || response.status().is_redirection() {
-                            (
-                                HealthStatus::Ready,
-                                Some(latency),
-                                Some("Not started".to_string()),
-                            )
-                        } else {
-                            (
-                                HealthStatus::Ready,
-                                Some(latency),
-                                Some(format!("Not started (HTTP {})", response.status())),
-                            )
-                        }
+        let result = tokio::time::timeout(std::time::Duration::from_secs(20), probe).await;
+        transports.close_all().await;
+        match result {
+            Ok(Ok(())) => (
+                HealthStatus::Ready,
+                Some(start.elapsed().as_millis() as u64),
+                Some("MCP handshake verified; client sessions connect independently".into()),
+            ),
+            // Do not surface arbitrary upstream response bodies or credential-bearing URLs.
+            Ok(Err(error)) => (
+                HealthStatus::Unhealthy,
+                None,
+                Some({
+                    let description = error.to_string().to_lowercase();
+                    if description.contains("not found") || description.contains("no such file") {
+                        "MCP server executable or endpoint not found".into()
+                    } else {
+                        "Authenticated MCP handshake or tool discovery failed; check server authentication and availability".into()
                     }
-                    Err(_) => {
-                        // Both HEAD and GET failed
-                        let error_msg = if e.is_timeout() {
-                            "Connection timeout".to_string()
-                        } else if e.is_connect() {
-                            "Connection refused".to_string()
-                        } else {
-                            format!("Connection failed: {}", e)
-                        };
-                        (HealthStatus::Unhealthy, None, Some(error_msg))
-                    }
-                }
-            }
+                }),
+            ),
+            Err(_) => (
+                HealthStatus::Unhealthy,
+                None,
+                Some("Authenticated MCP health check timed out after 20s".into()),
+            ),
         }
     }
 
@@ -1655,6 +1764,188 @@ mod tests {
     use lr_config::McpServerConfig;
     use std::collections::HashMap;
 
+    async fn health_fixture() -> (
+        McpServerManager,
+        String,
+        Arc<std::sync::atomic::AtomicBool>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        use axum::{
+            http::{HeaderMap, StatusCode},
+            routing::get,
+            Json, Router,
+        };
+        let broken = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let state = broken.clone();
+        let app = Router::new().route("/mcp", get(|| async { StatusCode::METHOD_NOT_ALLOWED }).post(
+            move |headers: HeaderMap, Json(request): Json<JsonRpcRequest>| {
+                let state = state.clone();
+                async move {
+                    use axum::response::IntoResponse;
+                    if headers.get("authorization").and_then(|h| h.to_str().ok()) != Some("Bearer health-fixture") {
+                        return StatusCode::UNAUTHORIZED.into_response();
+                    }
+                    let result = match request.method.as_str() {
+                        "initialize" => serde_json::json!({"protocolVersion":"2025-11-25", "capabilities":{"tools":{}}, "serverInfo":{"name":"fixture","version":"1"}}),
+                        "tools/list" if state.load(std::sync::atomic::Ordering::Relaxed) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+                        "tools/list" => serde_json::json!({"tools":[]}),
+                        _ => serde_json::json!({}),
+                    };
+                    Json(JsonRpcResponse::success(request.id.unwrap_or_default(), result)).into_response()
+                }
+            }
+        ));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let manager = McpServerManager::new_for_test();
+        let config = McpServerConfig::new(
+            "fixture".into(),
+            McpTransportType::HttpSse,
+            McpTransportConfig::HttpSse {
+                url,
+                headers: HashMap::from([("Authorization".into(), "Bearer health-fixture".into())]),
+            },
+        );
+        let id = config.id.clone();
+        manager.add_config(config);
+        (manager, id, broken, task)
+    }
+
+    #[tokio::test]
+    async fn remote_health_requires_authenticated_mcp_discovery() {
+        let (manager, id, broken, task) = health_fixture().await;
+        assert_eq!(
+            manager.get_server_health(&id).await.status,
+            HealthStatus::Ready
+        );
+        broken.store(true, std::sync::atomic::Ordering::Relaxed);
+        let failed = manager.get_server_health(&id).await;
+        assert_eq!(failed.status, HealthStatus::Unhealthy);
+        assert!(!failed.error.unwrap().contains("health-fixture"));
+        broken.store(false, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            manager.get_server_health(&id).await.status,
+            HealthStatus::Ready
+        );
+        let mut config = manager.get_config(&id).unwrap();
+        if let McpTransportConfig::HttpSse { headers, .. } = &mut config.transport_config {
+            headers.clear();
+        }
+        manager.add_config(config);
+        assert_eq!(
+            manager.get_server_health(&id).await.status,
+            HealthStatus::Unhealthy
+        );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn open_global_socket_does_not_hide_broken_tools() {
+        let (manager, id, broken, task) = health_fixture().await;
+        manager.start_server(&id).await.unwrap();
+        assert_eq!(
+            manager.get_server_health(&id).await.status,
+            HealthStatus::Healthy
+        );
+        broken.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            manager.get_server_health(&id).await.status,
+            HealthStatus::Unhealthy
+        );
+        manager.stop_server(&id).await.unwrap();
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn protocol_health_accepts_stateless_backends_without_initialize() {
+        use axum::{http::StatusCode, routing::get, Json, Router};
+        let app = Router::new().route("/mcp", get(|| async { StatusCode::METHOD_NOT_ALLOWED }).post(
+            |Json(request): Json<JsonRpcRequest>| async move {
+                let id = request.id.clone().unwrap_or_default();
+                Json(match request.method.as_str() {
+                    "initialize" => JsonRpcResponse::error(id, crate::protocol::JsonRpcError::method_not_found("initialize")),
+                    "server/discover" => JsonRpcResponse::success(id, serde_json::json!({"protocolVersions":["2026-07-28"], "capabilities":{"tools":{}}})),
+                    "tools/list" => {
+                        assert_eq!(request.params.unwrap()["_meta"][crate::protocol::meta_keys::PROTOCOL_VERSION], "2026-07-28");
+                        JsonRpcResponse::success(id, serde_json::json!({"tools":[]}))
+                    },
+                    method => panic!("unexpected method {method}"),
+                })
+            }
+        ));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let manager = McpServerManager::new_for_test();
+        let config = McpServerConfig::new(
+            "stateless".into(),
+            McpTransportType::HttpSse,
+            McpTransportConfig::HttpSse {
+                url,
+                headers: HashMap::new(),
+            },
+        );
+        let id = config.id.clone();
+        manager.add_config(config);
+        assert_eq!(
+            manager.get_server_health(&id).await.status,
+            HealthStatus::Ready
+        );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn client_failure_reaches_health_cache_and_outlives_independent_success() {
+        use lr_providers::health_cache::{HealthCacheManager, ItemHealthStatus};
+        let (manager, id, broken, task) = health_fixture().await;
+        let cache = Arc::new(HealthCacheManager::new());
+        manager.set_health_cache(cache.clone());
+        let (transports, failures) = manager
+            .create_transports(std::slice::from_ref(&id), std::time::Duration::from_secs(2))
+            .await;
+        assert!(failures.is_empty());
+        broken.store(true, std::sync::atomic::Ordering::Relaxed);
+        let request = JsonRpcRequest::with_id(1, "tools/list".into(), None);
+        assert!(transports.send_request(&id, request.clone()).await.is_err());
+        assert_eq!(
+            cache.get().mcp_servers[&id].status,
+            ItemHealthStatus::Unhealthy
+        );
+        broken.store(false, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            manager.check_protocol_readiness(&id).await.0,
+            HealthStatus::Ready
+        );
+        assert_eq!(
+            manager.get_server_health(&id).await.status,
+            HealthStatus::Unhealthy
+        );
+        transports
+            .send_request(&id, JsonRpcRequest::with_id(2, "prompts/list".into(), None))
+            .await
+            .unwrap();
+        assert_eq!(
+            manager.get_server_health(&id).await.status,
+            HealthStatus::Unhealthy
+        );
+        transports.send_request(&id, request).await.unwrap();
+        assert_eq!(
+            cache.get().mcp_servers[&id].status,
+            ItemHealthStatus::Healthy
+        );
+        assert_eq!(
+            manager.get_server_health(&id).await.status,
+            HealthStatus::Ready
+        );
+        transports.close_all().await;
+        task.abort();
+    }
+
     #[test]
     fn test_manager_creation() {
         let manager = McpServerManager::new();
@@ -1688,7 +1979,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_health_check_not_running_valid_command() {
+    async fn non_mcp_executable_is_not_reported_ready() {
         let manager = McpServerManager::new();
 
         // echo is a valid command that exits immediately
@@ -1707,8 +1998,8 @@ mod tests {
         manager.add_config(config);
 
         let health = manager.get_server_health(&server_id).await;
-        // echo outputs "hello" and exits successfully, so it should be Ready
-        assert_eq!(health.status, HealthStatus::Ready);
+        // Process output alone is not a successful MCP handshake.
+        assert_eq!(health.status, HealthStatus::Unhealthy);
     }
 
     #[tokio::test]

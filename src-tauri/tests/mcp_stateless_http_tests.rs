@@ -551,3 +551,66 @@ async fn test_subscription_acknowledges_explicit_filter_and_request_id() {
     );
     assert!(ack.get("result").is_none());
 }
+
+#[tokio::test]
+async fn skills_only_websocket_receives_its_session_notifications() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::{
+        connect_async,
+        tungstenite::{client::IntoClientRequest, Message},
+    };
+    let (base_url, _, state) = start_test_server_with_state().await;
+    let mut client = create_test_client("skills-ws-client", "default");
+    client.mcp_mode = lr_config::McpMode::Gateway;
+    client.skills_permissions.global = lr_config::PermissionState::Allow;
+    assert!(!client.mcp_permissions.has_any_access());
+    state.client_manager.sync_clients(vec![client.clone()]);
+    let (token, _) = state.token_store.generate_token(client.id.clone()).unwrap();
+    let mut request = format!("{}/ws", base_url.replace("http://", "ws://"))
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert("Authorization", format!("Bearer {token}").parse().unwrap());
+    request
+        .headers_mut()
+        .insert("Mcp-Session-Id", "skills-session".parse().unwrap());
+    let (mut socket, _) = connect_async(request)
+        .await
+        .expect("Skills-only clients can connect without upstream MCP grants");
+    // A round trip proves the forwarder is subscribed; no timing sleeps.
+    socket.send(Message::Text("ping".into())).await.unwrap();
+    assert_eq!(
+        socket.next().await.unwrap().unwrap().into_text().unwrap(),
+        "pong"
+    );
+    let notification = |marker| lr_mcp::protocol::JsonRpcNotification {
+        jsonrpc: "2.0".into(),
+        method: "notifications/tools/list_changed".into(),
+        params: Some(json!({"marker":marker})),
+    };
+    let key = lr_mcp::gateway::types::streamable_session_key(&client.id, "skills-session");
+    state
+        .mcp_notification_broadcast
+        .send((
+            lr_mcp::gateway::types::session_notification_key("someone-else"),
+            notification("other"),
+        ))
+        .unwrap();
+    state
+        .mcp_notification_broadcast
+        .send((
+            lr_mcp::gateway::types::session_notification_key(&key),
+            notification("mine"),
+        ))
+        .unwrap();
+    let frame = tokio::time::timeout(Duration::from_secs(2), socket.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let text = frame.into_text().unwrap();
+    assert!(text.contains("mine"), "{text}");
+    assert!(!text.contains("other"), "{text}");
+    socket.close(None).await.unwrap();
+}

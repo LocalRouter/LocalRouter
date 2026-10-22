@@ -9,10 +9,14 @@ use std::sync::Arc;
 use std::time::Instant;
 use tracing::{info, warn};
 
+type ChangeCallback = Arc<dyn Fn() + Send + Sync>;
+
 /// Central skill manager
 pub struct SkillManager {
     /// All discovered skills — readers clone the inner Arc for a snapshot
     skills: Arc<RwLock<Arc<Vec<SkillDefinition>>>>,
+
+    change_callback: RwLock<Option<ChangeCallback>>,
 
     /// Optional Tauri app handle for event emission
     app_handle: Option<tauri::AppHandle>,
@@ -33,8 +37,14 @@ impl SkillManager {
         Self {
             skills: Arc::new(RwLock::new(Arc::new(Vec::new()))),
             app_handle: None,
+            change_callback: RwLock::new(None),
             pending_cleanup: Arc::new(DashMap::new()),
         }
+    }
+
+    /// Notify MCP sessions as well as the desktop UI when the catalog changes.
+    pub fn set_change_callback(&self, callback: ChangeCallback) {
+        *self.change_callback.write() = Some(callback);
     }
 
     /// Set the Tauri app handle for event emission
@@ -219,6 +229,10 @@ impl SkillManager {
 
     /// Emit skills-changed event to frontend
     fn emit_skills_changed(&self) {
+        let callback = self.change_callback.read().clone();
+        if let Some(callback) = callback {
+            callback();
+        }
         if let Some(ref handle) = self.app_handle {
             use tauri::Emitter;
             if let Err(e) = handle.emit("skills-changed", ()) {
@@ -244,6 +258,19 @@ mod tests {
             ),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn rescans_and_enable_changes_notify_mcp_observers() {
+        let manager = SkillManager::new();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = calls.clone();
+        manager.set_change_callback(Arc::new(move || {
+            counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }));
+        manager.rescan(&[], &[]);
+        manager.set_skill_enabled("absent", false);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 2);
     }
 
     #[test]

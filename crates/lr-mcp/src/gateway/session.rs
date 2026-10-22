@@ -226,6 +226,31 @@ pub struct GatewaySession {
 }
 
 impl GatewaySession {
+    /// Preserve unavailable startup/handshake backends on every discovery
+    /// response, including cached and otherwise-successful virtual listings.
+    pub fn with_initialization_failures(&self, mut result: serde_json::Value) -> serde_json::Value {
+        let mut failures = self
+            .merged_capabilities
+            .as_ref()
+            .map(|m| m.failures.clone())
+            .unwrap_or_default();
+        if let Some(existing) = result
+            .get("_meta")
+            .and_then(|m| m.get("failures"))
+            .cloned()
+            .and_then(|f| serde_json::from_value::<Vec<ServerFailure>>(f).ok())
+        {
+            for failure in existing {
+                failures.retain(|f| f.server_id != failure.server_id);
+                failures.push(failure);
+            }
+        }
+        if !failures.is_empty() {
+            result["_meta"] = serde_json::json!({"partial_failure":true, "failures":failures});
+        }
+        result
+    }
+
     /// Create a new session
     pub fn new(
         client_id: String,
