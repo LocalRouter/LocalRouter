@@ -92,11 +92,13 @@ test('a failed policy save keeps the current popup open and does not forward', a
   await expect(page.getByTestId('approval-popup')).toHaveCount(0)
 })
 
-test('dark yellow action has white text and the secret is the largest popup text', async ({ page }) => {
+test('dark yellow action has white text and secrets match regular popup text size', async ({ page }) => {
   const redact = page.getByRole('button', { name: 'Redact once', exact: true })
   await expect(redact).toHaveCSS('background-color', 'rgb(128, 112, 0)')
   await expect(redact).toHaveCSS('color', 'rgb(255, 255, 255)')
-  await expect(page.getByText('AKIA************PLR6', { exact: true })).toHaveCSS('font-size', '24px')
+  await expect(page.getByText('AKIA************PLR6', { exact: true })).toHaveCSS('font-size', '12px')
+  await page.getByRole('button', { name: 'Reveal secret', exact: true }).click()
+  await expect(page.getByText(SECRET, { exact: true })).toHaveCSS('font-size', '12px')
   await expect(page.getByText('Redaction replaces this secret with', { exact: false })).toHaveCount(0)
 })
 

@@ -526,7 +526,7 @@ export function FirewallApprovalCard({
                 </div>
                 <div className="flex items-start gap-2">
                   <div
-                    className="font-mono text-2xl leading-relaxed font-semibold bg-background/70 rounded px-3 py-3 flex-1 min-w-0 break-all select-all"
+                    className="font-mono text-xs leading-relaxed font-semibold bg-background/70 rounded px-3 py-3 flex-1 min-w-0 break-all select-all"
                     title={revealed[i] ?? finding.matched_text}
                   >
                     {revealed[i] ?? finding.matched_text}
