@@ -919,7 +919,7 @@ impl McpGateway {
     }
 
     /// Append tools from all registered virtual servers to the tools list.
-    fn append_virtual_server_tools(
+    pub(crate) fn append_virtual_server_tools(
         &self,
         tools: &mut Vec<serde_json::Value>,
         session: &GatewaySession,

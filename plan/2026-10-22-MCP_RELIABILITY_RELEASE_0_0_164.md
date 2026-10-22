@@ -5,8 +5,8 @@
 - [x] Bug Hunt: review concurrency, cancellation, credential redaction and release state transitions.
 - [x] Run stable CI-parity Clippy/fmt/workspace tests with pinned compiler; commit and push the validated worktree branch and automatic catalog updates.
 - [x] Merge the validated branch into current master, retaining the other changes since v0.0.163. Validate the combined tree and commit/push the merge without force.
-- [ ] Review generated release notes for v0.0.164, verify master CI and resolve failures.
-- [ ] Dispatch the existing Release workflow on master for version 0.0.164, prerelease=false; let it bump and tag.
+- [x] Review generated release notes for v0.0.164, verify master CI and resolve failures.
+- [x] Dispatch the existing Release workflow on master for version 0.0.164, prerelease=false; let it bump and tag.
 - [ ] Monitor all five native builds through actual publication, investigate failures, and verify release assets plus updater signatures/URLs.
 - [ ] Report the published version, fixes and remaining incident limits; distinguish Nix/Docker/Flatpak/Snap follow-up status from native publication. Existing disabled store publishing remains disabled.
 
@@ -17,3 +17,5 @@ Audit worktree validation before commit: stable workspace Clippy/fmt and all 457
 Combined master validation passed: stable workspace Clippy with -D warnings, formatting, 4577 Rust tests across 111 suites (69 ignored), 90 frontend unit tests, both packaging regressions, app and website type checks/builds, and all ten secret-redaction browser cases using installed Chrome. The merge had no conflicts and preserves the queued popup-font change.
 
 Release scope clarification: the user requested shipping this validated patch now and releasing the subsequent foreground-initialize deadline fix separately. v0.0.164 improves availability/health/auth/discovery, but does not yet guarantee initialize below Claude Code's reported 25-second timeout. That additional work is tracked in FAST_MCP_INITIALIZE in the audit worktree.
+
+Master CI run 39828586464 passed both frontend/website and Rust gates. Release run 39830970395 was dispatched for 0.0.164, prerelease=false; version bump/tag 516cb817 is published to git. Native publication remains pending until all builds complete. Follow-up code is isolated from this tag and is validated separately for v0.0.165.

@@ -202,6 +202,38 @@ impl McpServerManager {
         failure
     }
 
+    pub(crate) fn report_startup_phase(
+        &self,
+        server_id: &str,
+        phase: &str,
+        elapsed_ms: u64,
+        succeeded: bool,
+    ) {
+        let name = self
+            .get_config(server_id)
+            .map(|c| c.name)
+            .unwrap_or_else(|| server_id.to_string());
+        let outcome = if succeeded { "completed" } else { "failed" };
+        self.emit_monitor_event(
+            lr_monitor::MonitorEventType::McpServerEvent,
+            None,
+            None,
+            None,
+            lr_monitor::MonitorEventData::McpServerEvent {
+                server_id: server_id.into(),
+                server_name: Some(name.clone()),
+                action: format!("{phase}_{outcome}"),
+                message: format!("{name}: MCP {phase} {outcome} after {elapsed_ms}ms"),
+            },
+            if succeeded {
+                lr_monitor::EventStatus::Complete
+            } else {
+                lr_monitor::EventStatus::Error
+            },
+            Some(elapsed_ms),
+        );
+    }
+
     /// Set the monitor event callback.
     pub fn set_monitor_emit(&self, emit: MonitorEmitFn) {
         *self.monitor_emit.write() = Some(emit);
@@ -652,6 +684,13 @@ impl McpServerManager {
                 cache.update_mcp_server(id, item);
             }
         }));
+        for id in server_ids {
+            transport_set.record_failure(
+                id,
+                "_connect",
+                "MCP connection is still initializing; client tools are not ready yet",
+            );
+        }
         let mut failures = Vec::new();
 
         let futures: Vec<_> = server_ids
@@ -668,6 +707,12 @@ impl McpServerManager {
                     let start = std::time::Instant::now();
                     let result =
                         tokio::time::timeout(timeout, manager.create_transport(&server_id)).await;
+                    manager.report_startup_phase(
+                        &server_id,
+                        "transport_connect",
+                        start.elapsed().as_millis() as u64,
+                        matches!(&result, Ok(Ok(_))),
+                    );
                     tracing::info!(
                         "Transport creation for '{}' completed in {:?}: {}",
                         server_name,
@@ -1909,6 +1954,15 @@ mod tests {
             .create_transports(std::slice::from_ref(&id), std::time::Duration::from_secs(2))
             .await;
         assert!(failures.is_empty());
+        assert_eq!(
+            cache.get().mcp_servers[&id].status,
+            ItemHealthStatus::Unhealthy
+        );
+        // Creating a socket is not readiness; complete this client's handshake.
+        transports
+            .send_request(&id, JsonRpcRequest::with_id(0, "initialize".into(), None))
+            .await
+            .unwrap();
         broken.store(true, std::sync::atomic::Ordering::Relaxed);
         let request = JsonRpcRequest::with_id(1, "tools/list".into(), None);
         assert!(transports.send_request(&id, request.clone()).await.is_err());
