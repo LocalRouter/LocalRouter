@@ -30,6 +30,7 @@ const LIST_RESULT_TTL_MS: u64 = 60_000;
 
 /// MCP Gateway - Unified endpoint for multiple MCP servers
 #[allow(clippy::type_complexity)]
+#[derive(Clone)]
 pub struct McpGateway {
     /// Active sessions (session_key -> session)
     /// For SSE connections, session_key is a per-connection UUID.
@@ -42,7 +43,7 @@ pub struct McpGateway {
     /// Cached protocol revision per backend server id, learned from the
     /// `server/discover` probe. Known-legacy backends skip re-probing on
     /// every new session; entries live for the gateway's lifetime.
-    pub(crate) backend_revision_cache: DashMap<String, crate::protocol::ProtocolRevision>,
+    pub(crate) backend_revision_cache: Arc<DashMap<String, crate::protocol::ProtocolRevision>>,
 
     /// Gateway configuration
     pub(crate) config: GatewayConfig,
@@ -70,26 +71,28 @@ pub struct McpGateway {
     /// Sampling approval manager for user approval flow (permission=Ask).
     /// Wrapped in RwLock so it can be replaced with a shared instance from AppState.
     pub(crate) sampling_approval_manager:
-        parking_lot::RwLock<Arc<super::sampling_approval::SamplingApprovalManager>>,
+        Arc<parking_lot::RwLock<Arc<super::sampling_approval::SamplingApprovalManager>>>,
 
     /// Sampling passthrough manager for forwarding to external clients.
     /// Wrapped in RwLock so it can be replaced with a shared instance from AppState.
     pub(crate) sampling_passthrough_manager:
-        parking_lot::RwLock<Arc<super::sampling_approval::SamplingPassthroughManager>>,
+        Arc<parking_lot::RwLock<Arc<super::sampling_approval::SamplingPassthroughManager>>>,
 
     /// Callback to send a server-initiated request to a connected external client.
     /// Returns a oneshot receiver for the response. Used for passthrough mode.
     #[allow(clippy::type_complexity)]
-    pub(crate) client_request_sender: parking_lot::RwLock<
-        Option<
-            Arc<
-                dyn Fn(
-                        &str,           // client_id
-                        JsonRpcRequest, // request to forward
-                    )
-                        -> Option<tokio::sync::oneshot::Receiver<JsonRpcResponse>>
-                    + Send
-                    + Sync,
+    pub(crate) client_request_sender: Arc<
+        parking_lot::RwLock<
+            Option<
+                Arc<
+                    dyn Fn(
+                            &str,           // client_id
+                            JsonRpcRequest, // request to forward
+                        )
+                            -> Option<tokio::sync::oneshot::Receiver<JsonRpcResponse>>
+                        + Send
+                        + Sync,
+                >,
             >,
         >,
     >,
@@ -101,34 +104,36 @@ pub struct McpGateway {
     pub(crate) live_elicitation_mode: Arc<parking_lot::RwLock<lr_config::ElicitationMode>>,
 
     /// Virtual MCP servers (skills, marketplace, coding agents)
-    pub(crate) virtual_servers: parking_lot::RwLock<Vec<Arc<dyn VirtualMcpServer>>>,
+    pub(crate) virtual_servers: Arc<parking_lot::RwLock<Vec<Arc<dyn VirtualMcpServer>>>>,
 
     /// Callback to record context management bytes saved (wired to metrics DB)
-    pub(crate) on_context_saved: parking_lot::RwLock<Option<Arc<dyn Fn(u64) + Send + Sync>>>,
+    pub(crate) on_context_saved: Arc<parking_lot::RwLock<Option<Arc<dyn Fn(u64) + Send + Sync>>>>,
 
     /// Callback to emit monitor events (wired to MonitorEventStore). Returns event ID.
     #[allow(clippy::type_complexity)]
-    pub(crate) on_monitor_event: parking_lot::RwLock<
-        Option<
-            Arc<
-                dyn Fn(
-                        lr_monitor::MonitorEventType,
-                        Option<String>, // client_id
-                        Option<String>, // client_name
-                        Option<String>, // session_id
-                        lr_monitor::MonitorEventData,
-                        lr_monitor::EventStatus,
-                        Option<u64>, // duration_ms
-                    ) -> String
-                    + Send
-                    + Sync,
+    pub(crate) on_monitor_event: Arc<
+        parking_lot::RwLock<
+            Option<
+                Arc<
+                    dyn Fn(
+                            lr_monitor::MonitorEventType,
+                            Option<String>, // client_id
+                            Option<String>, // client_name
+                            Option<String>, // session_id
+                            lr_monitor::MonitorEventData,
+                            lr_monitor::EventStatus,
+                            Option<u64>, // duration_ms
+                        ) -> String
+                        + Send
+                        + Sync,
+                >,
             >,
         >,
     >,
 
     /// Callback to update an existing monitor event (wired to MonitorEventStore)
     pub(crate) on_monitor_update:
-        parking_lot::RwLock<Option<super::super::manager::MonitorUpdateFn>>,
+        Arc<parking_lot::RwLock<Option<super::super::manager::MonitorUpdateFn>>>,
 }
 
 impl McpGateway {
@@ -198,8 +203,8 @@ impl McpGateway {
         Self {
             sessions: Arc::new(DashMap::new()),
             server_manager,
-            backend_revision_cache: DashMap::new(),
-            client_request_sender: parking_lot::RwLock::new(None),
+            backend_revision_cache: Arc::new(DashMap::new()),
+            client_request_sender: Arc::new(parking_lot::RwLock::new(None)),
             live_sampling: Arc::new(parking_lot::RwLock::new(config.sampling.clone())),
             live_elicitation_mode: Arc::new(parking_lot::RwLock::new(
                 config.elicitation_mode.clone(),
@@ -210,12 +215,16 @@ impl McpGateway {
             elicitation_manager,
             firewall_manager,
             coding_agent_approval_manager,
-            sampling_approval_manager: parking_lot::RwLock::new(sampling_approval_manager),
-            sampling_passthrough_manager: parking_lot::RwLock::new(sampling_passthrough_manager),
-            virtual_servers: parking_lot::RwLock::new(Vec::new()),
-            on_context_saved: parking_lot::RwLock::new(None),
-            on_monitor_event: parking_lot::RwLock::new(None),
-            on_monitor_update: parking_lot::RwLock::new(None),
+            sampling_approval_manager: Arc::new(parking_lot::RwLock::new(
+                sampling_approval_manager,
+            )),
+            sampling_passthrough_manager: Arc::new(parking_lot::RwLock::new(
+                sampling_passthrough_manager,
+            )),
+            virtual_servers: Arc::new(parking_lot::RwLock::new(Vec::new())),
+            on_context_saved: Arc::new(parking_lot::RwLock::new(None)),
+            on_monitor_event: Arc::new(parking_lot::RwLock::new(None)),
+            on_monitor_update: Arc::new(parking_lot::RwLock::new(None)),
         }
     }
 
@@ -785,16 +794,29 @@ impl McpGateway {
                         .iter()
                         .any(|vs| vs.id() == "_skills" && vs.owns_tool(name))
                 });
-        if method != "initialize" && method != "server/discover" && !local_skill_call {
-            let needs_backends = session.read().await.transports.is_none();
+        if method != "initialize"
+            && method != "server/discover"
+            && method != "ping"
+            && !local_skill_call
+        {
+            let needs_backends = {
+                let state = session.read().await;
+                state.transports.is_none() && !state.initialization_pending
+            };
             if needs_backends {
                 self.initialize_session_backends(&session, &client_meta)
                     .await?;
             }
         }
 
-        // Route based on method
-        let mut result = if is_broadcast {
+        // Keep pending discovery on the normal response path so stateless
+        // clients receive result and private-cache metadata as usual.
+        let mut result = if let Some(response) = self
+            .pending_initialization_response(&session, &request)
+            .await
+        {
+            Ok(response)
+        } else if is_broadcast {
             self.handle_broadcast_request(session.clone(), request)
                 .await
         } else {
@@ -873,9 +895,12 @@ impl McpGateway {
         // and the losing set's stdio processes would leak.
         let init_lock = session.read().await.lazy_init_lock.clone();
         let _guard = init_lock.lock().await;
-        if session.read().await.transports.is_some() {
-            // Another request initialized the session while we waited.
-            return Ok(());
+        {
+            let state = session.read().await;
+            if state.transports.is_some() || state.initialization_pending {
+                // Another request started initialization while we waited.
+                return Ok(());
+            }
         }
 
         let params = json!({
@@ -1054,6 +1079,9 @@ impl McpGateway {
             if session_read.is_expired() {
                 // Close per-session transports before removing
                 let transports = session_read.transports.clone();
+                if let Some(task) = &session_read.initialization_abort {
+                    task.abort();
+                }
                 drop(session_read);
                 drop(session);
                 if let Some(transports) = transports {
@@ -1075,6 +1103,9 @@ impl McpGateway {
                 let servers_changed = servers_sorted != session_read.requested_servers;
                 // Clone transports before dropping the read lock
                 let transports = if servers_changed {
+                    if let Some(task) = &session_read.initialization_abort {
+                        task.abort();
+                    }
                     session_read.transports.clone()
                 } else {
                     None
@@ -1806,6 +1837,9 @@ impl McpGateway {
                 self.handle_resource_templates_list(session, request).await
             }
             "prompts/list" => self.handle_prompts_list(session, request).await,
+            "ping" if !session.read().await.protocol_revision.is_stateless() => Ok(
+                JsonRpcResponse::success(request.id.unwrap_or(Value::Null), json!({})),
+            ),
             "logging/setLevel" | "ping" => {
                 // Removed in 2026-07-28: stateless peers set the log level
                 // per request via _meta and have no ping. Legacy peers keep
@@ -2096,6 +2130,184 @@ impl McpGateway {
         session: Arc<RwLock<GatewaySession>>,
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
+        let request_id = request.id.clone().unwrap_or(Value::Null);
+        let gateway = self.clone();
+        let background_session = session.clone();
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        {
+            let mut state = session.write().await;
+            // Local skill search must be ready before any remote startup. The
+            // normal full catalog pass will add upstream entries afterwards.
+            let skill_entries = self
+                .virtual_servers
+                .read()
+                .iter()
+                .find(|vs| vs.id() == "_skills")
+                .and_then(|vs| {
+                    state
+                        .virtual_server_state
+                        .get(vs.id())
+                        .map(|s| vs.catalog_index_entries(s.as_ref()))
+                })
+                .unwrap_or_default();
+            if let Some(cm) = state
+                .virtual_server_state
+                .get_mut("_context_mode")
+                .and_then(|s| {
+                    s.as_any_mut()
+                        .downcast_mut::<super::context_mode::ContextModeSessionState>()
+                })
+            {
+                if cm.catalog_compression_enabled {
+                    for (label, content) in skill_entries {
+                        match cm.store.index(&label, &content) {
+                            Ok(_) => {
+                                cm.catalog_sources
+                                    .insert(label, super::context_mode::CatalogItemType::Skill);
+                            }
+                            Err(error) => tracing::warn!(
+                                "Could not index local skill before MCP warm-up: {error}"
+                            ),
+                        }
+                    }
+                }
+            }
+            state.initialization_pending = true;
+            let task = tokio::spawn(async move {
+                let start = std::time::Instant::now();
+                let result = gateway
+                    .initialize_backends(background_session.clone(), request)
+                    .await;
+                let (key, deferred) = {
+                    let mut state = background_session.write().await;
+                    state.initialization_pending = false;
+                    state.initialization_abort = None;
+                    (state.session_key.clone(), state.initialization_deferred)
+                };
+                tracing::info!(session_key = %key, elapsed_ms = start.elapsed().as_millis(),
+                    "MCP backend warm-up finished");
+                if deferred {
+                    gateway.send_list_changed(
+                        &session_notification_key(&key),
+                        super::session::ListChanges {
+                            tools: true,
+                            resources: true,
+                            prompts: true,
+                        },
+                    );
+                }
+                let _ = sender.send(result);
+            });
+            state.initialization_abort = Some(task.abort_handle());
+        }
+        match tokio::time::timeout(Duration::from_secs(2), receiver).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err(AppError::Mcp("MCP initialization task stopped".into())),
+            Err(_) => {
+                let (completed, key) = {
+                    let mut state = session.write().await;
+                    state.initialization_deferred = true;
+                    (!state.initialization_pending, state.session_key.clone())
+                };
+                // Completion can race the foreground deadline. If it already
+                // passed the deferred check, publish the change here instead.
+                if completed {
+                    self.send_list_changed(
+                        &session_notification_key(&key),
+                        super::session::ListChanges {
+                            tools: true,
+                            resources: true,
+                            prompts: true,
+                        },
+                    );
+                }
+                let virtual_instructions = self.collect_virtual_instructions(&session).await;
+                let state = session.read().await;
+                let unavailable = state.requested_servers.iter().map(|id| UnavailableServerInfo {
+                    name: self.server_manager.get_config(id).map(|c| c.name).unwrap_or_else(|| id.clone()),
+                    error: "Still connecting in the background; tools will appear after list_changed".into(),
+                }).collect();
+                let instructions = build_gateway_instructions(&InstructionsContext {
+                    unavailable_servers: unavailable,
+                    virtual_instructions,
+                    ..Default::default()
+                });
+                let mut value = json!({
+                    "protocolVersion": crate::protocol::MCP_PROTOCOL_VERSION,
+                    "capabilities": {
+                        "tools": {"listChanged":true},
+                        "resources": {"listChanged":true, "subscribe":true},
+                        "prompts": {"listChanged":true},
+                        "logging": {},
+                        "completions": {}
+                    },
+                    "serverInfo":{"name":"LocalRouter MCP Gateway","version":env!("CARGO_PKG_VERSION")},
+                    "_meta":{"initializing":state.initialization_pending}
+                });
+                if let Some(instructions) = instructions {
+                    value["instructions"] = json!(instructions);
+                }
+                Ok(JsonRpcResponse::success(request_id, value))
+            }
+        }
+    }
+
+    /// Local discovery remains usable while remote authentication/handshakes run.
+    async fn pending_initialization_response(
+        &self,
+        session: &Arc<RwLock<GatewaySession>>,
+        request: &JsonRpcRequest,
+    ) -> Option<JsonRpcResponse> {
+        let state = session.read().await;
+        if !state.initialization_pending {
+            return None;
+        }
+        let key = match request.method.as_str() {
+            "tools/list" => "tools",
+            "resources/list" => "resources",
+            "prompts/list" => "prompts",
+            "resources/templates/list" => "resourceTemplates",
+            "tools/call" | "resources/read" | "prompts/get" => {
+                let local = request.method == "tools/call"
+                    && request
+                        .params
+                        .as_ref()
+                        .and_then(|p| p.get("name"))
+                        .and_then(Value::as_str)
+                        .is_some_and(|name| {
+                            self.virtual_servers
+                                .read()
+                                .iter()
+                                .any(|vs| vs.owns_tool(name))
+                        });
+                if local {
+                    return None;
+                }
+                return Some(JsonRpcResponse::error(request.id.clone().unwrap_or(Value::Null), JsonRpcError::custom(
+                    -32000, "Upstream MCP servers are still initializing; retry after tools/list_changed", None)));
+            }
+            _ => return None,
+        };
+        let mut items = Vec::new();
+        if key == "tools" {
+            self.append_virtual_server_tools(&mut items, &state);
+        }
+        let failures: Vec<_> = state.requested_servers.iter().map(|id| json!({
+            "server_id":id, "error":"Connection is still initializing; upstream tools are not available yet"
+        })).collect();
+        Some(JsonRpcResponse::success(
+            request.id.clone().unwrap_or(Value::Null),
+            json!({
+                key:items, "_meta":{"initializing":true,"partial_failure":!failures.is_empty(),"failures":failures}
+            }),
+        ))
+    }
+
+    async fn initialize_backends(
+        &self,
+        session: Arc<RwLock<GatewaySession>>,
+        request: JsonRpcRequest,
+    ) -> AppResult<JsonRpcResponse> {
         // Extract client capabilities from request params
         // NOTE: Per MCP spec, all clients must handle notifications including listChanged.
         // We store capabilities for potential future features (sampling, roots/listChanged, etc.)
@@ -2311,8 +2523,18 @@ impl McpGateway {
                 let discovered = if known_legacy {
                     None
                 } else {
-                    self.probe_server_discover(&transport_set, server_id, probe_timeout)
-                        .await
+                    let start = std::time::Instant::now();
+                    let discovered = self
+                        .probe_server_discover(&transport_set, server_id, probe_timeout)
+                        .await;
+                    // Unsupported discovery is an expected legacy fallback.
+                    self.server_manager.report_startup_phase(
+                        server_id,
+                        "protocol_probe",
+                        start.elapsed().as_millis() as u64,
+                        true,
+                    );
+                    discovered
                 };
                 (server_id.clone(), discovered)
             }
@@ -2340,14 +2562,31 @@ impl McpGateway {
         let timeout = Duration::from_secs(self.config.server_timeout_seconds);
         let max_retries = self.config.max_retry_attempts;
 
-        let results = broadcast_request(
-            &servers_needing_initialize,
-            broadcast_request_msg,
-            &transport_set,
-            timeout,
-            max_retries,
-        )
-        .await;
+        let results =
+            futures::future::join_all(servers_needing_initialize.iter().map(|server_id| {
+                let request = broadcast_request_msg.clone();
+                let transports = transport_set.clone();
+                async move {
+                    let start = std::time::Instant::now();
+                    let mut responses = broadcast_request(
+                        std::slice::from_ref(server_id),
+                        request,
+                        &transports,
+                        timeout,
+                        max_retries,
+                    )
+                    .await;
+                    let response = responses.pop().expect("one server produces one result");
+                    self.server_manager.report_startup_phase(
+                        server_id,
+                        "initialize",
+                        start.elapsed().as_millis() as u64,
+                        response.1.is_ok(),
+                    );
+                    response
+                }
+            }))
+            .await;
 
         // Separate successes and failures
         let (successes, mut failures) = separate_results(results);
@@ -2356,14 +2595,23 @@ impl McpGateway {
         failures.extend(start_failures);
 
         // Parse initialize results from the legacy handshake
-        let legacy_init_results: Vec<(String, InitializeResult)> = successes
-            .into_iter()
-            .filter_map(|(server_id, value)| {
-                serde_json::from_value::<InitializeResult>(value)
-                    .ok()
-                    .map(|result| (server_id, result))
-            })
-            .collect();
+        let mut legacy_init_results = Vec::new();
+        for (server_id, value) in successes {
+            match serde_json::from_value::<InitializeResult>(value) {
+                Ok(result) => legacy_init_results.push((server_id, result)),
+                Err(_) => {
+                    transport_set.record_failure(
+                        &server_id,
+                        "initialize",
+                        "Invalid MCP initialize response",
+                    );
+                    failures.push(ServerFailure {
+                        server_id,
+                        error: "Invalid MCP initialize response".into(),
+                    });
+                }
+            }
+        }
 
         // Only legacy-handshake backends expect notifications/initialized
         let legacy_server_ids: Vec<String> = legacy_init_results
@@ -2374,6 +2622,23 @@ impl McpGateway {
         // Combine legacy and discover-probed backends for merging and handlers
         let mut init_results = legacy_init_results;
         init_results.extend(discovered_results);
+        {
+            let mut state = session.write().await;
+            for (id, result) in &init_results {
+                state
+                    .server_init_status
+                    .insert(id.clone(), InitStatus::Completed(result.clone()));
+            }
+            for failure in &failures {
+                state.server_init_status.insert(
+                    failure.server_id.clone(),
+                    InitStatus::Failed {
+                        error: failure.error.clone(),
+                        retry_count: 0,
+                    },
+                );
+            }
+        }
 
         // Register per-session request callbacks on transports before completing
         // the handshake. Servers may send requests (elicitation, sampling, roots/list)
@@ -2566,6 +2831,19 @@ impl McpGateway {
             .filter(|(_, r)| r.capabilities.prompts.is_some())
             .map(|(id, _)| id.clone())
             .collect();
+        for (ids, method) in [
+            (&tools_servers, "tools/list"),
+            (&resource_servers, "resources/list"),
+            (&prompt_servers, "prompts/list"),
+        ] {
+            for id in ids {
+                transport_set.record_failure(
+                    id,
+                    method,
+                    "MCP catalog is still loading; client tools are not ready yet",
+                );
+            }
+        }
         let (tools_result, resources_result, prompts_result) = tokio::join!(
             self.fetch_and_merge_tools(&tools_servers, tools_request, &transport_set),
             self.fetch_and_merge_resources(&resource_servers, resources_request, &transport_set),
@@ -3836,7 +4114,12 @@ pub struct CatalogSourceEntry {
 /// session, which would leak its processes.
 async fn close_session_transports(session: &Arc<RwLock<GatewaySession>>) {
     let transports = match tokio::time::timeout(Duration::from_secs(5), session.read()).await {
-        Ok(session_read) => session_read.transports.clone(),
+        Ok(session_read) => {
+            if let Some(task) = &session_read.initialization_abort {
+                task.abort();
+            }
+            session_read.transports.clone()
+        }
         Err(_) => {
             tracing::warn!("Timed out waiting for session lock; closing transports skipped");
             None

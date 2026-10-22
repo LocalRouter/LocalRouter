@@ -2156,8 +2156,13 @@ async fn test_malformed_json_response() {
         .handle_request("test-client-malformed", allowed_servers, vec![], request)
         .await;
 
-    // Should handle gracefully without crashing
-    assert!(result.is_err() || result.unwrap().error.is_some());
+    // A malformed upstream must not make the local gateway unavailable.
+    // Discovery returns a usable (possibly still warming) partial catalog.
+    let response = result.expect("gateway survives malformed upstream JSON");
+    assert!(response.error.is_none());
+    let value = response.result.expect("partial discovery result");
+    assert_eq!(value["_meta"]["partial_failure"], true);
+    assert_eq!(value["tools"], json!([]));
 }
 
 #[tokio::test]

@@ -210,6 +210,11 @@ pub struct GatewaySession {
     /// without holding the session lock during requests.
     pub transports: Option<Arc<SessionTransportSet>>,
 
+    /// Remote warm-up may outlive the foreground initialize response.
+    pub initialization_pending: bool,
+    pub initialization_deferred: bool,
+    pub initialization_abort: Option<tokio::task::AbortHandle>,
+
     /// Protocol revision the downstream client speaks.
     /// Legacy (2025-11-25) by default; upgraded when a request declares
     /// `io.modelcontextprotocol/protocolVersion: 2026-07-28` in `_meta`.
@@ -309,6 +314,9 @@ impl GatewaySession {
             pending_requests: HashMap::new(),
             monitor_session_id: None,
             transports: None,
+            initialization_pending: false,
+            initialization_deferred: false,
+            initialization_abort: None,
             protocol_revision: crate::protocol::ProtocolRevision::default(),
             log_level: None,
             lazy_init_lock: Arc::new(tokio::sync::Mutex::new(())),

@@ -1315,3 +1315,335 @@ async fn skill_read_does_not_initialize_unavailable_remote_backends() {
         .read("catalog:skills/audit-skill", None, None)
         .is_err());
 }
+
+async fn send_with_skills(
+    gateway: &McpGateway,
+    session: &str,
+    allowed: &[&str],
+    perms: &McpPermissions,
+    overrides: Option<ContextManagementOverrides>,
+    method: &str,
+    params: Option<Value>,
+) -> JsonRpcResponse {
+    gateway
+        .handle_request_with_skills(
+            "client-1",
+            Some(session),
+            allowed.iter().map(|s| s.to_string()).collect(),
+            vec![],
+            perms.clone(),
+            lr_config::SkillsPermissions {
+                global: PermissionState::Allow,
+                ..Default::default()
+            },
+            "Test Client".to_string(),
+            PermissionState::Off,
+            PermissionState::Off,
+            None,
+            overrides,
+            PermissionState::default(),
+            PermissionState::default(),
+            None,
+            None,
+            lr_config::ClientMode::default(),
+            JsonRpcRequest::new(Some(json!(1)), method.to_string(), params),
+            None,
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{method} failed: {e}"))
+}
+
+async fn slow_start_fixture(
+    fail_initialize: bool,
+) -> (
+    Arc<McpGateway>,
+    MockServer,
+    tempfile::TempDir,
+    tokio::sync::broadcast::Receiver<(String, lr_mcp::protocol::JsonRpcNotification)>,
+) {
+    let server = MockServer::start().await;
+    Mock::given(http_method("POST")).and(JsonRpcMethod("initialize"))
+        .respond_with(ResponseTemplate::new(if fail_initialize { 410 } else { 200 }).set_delay(std::time::Duration::from_secs(6)).set_body_json(if fail_initialize {
+            json!({"error":"account_deleted"})
+        } else {json!({
+            "jsonrpc":"2.0", "id":1, "result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"Slow","version":"1"}}
+        })})).mount(&server).await;
+    mock(
+        &server,
+        "tools/list",
+        Some(json!({"tools":[{"name":"echo","inputSchema":{"type":"object"}}]})),
+    )
+    .await;
+    mock(&server, "notifications/initialized", Some(json!({}))).await;
+    let manager = Arc::new(McpServerManager::new_for_test());
+    manager.add_config(http_server("slow-id", "Slow", server.uri(), true));
+    let (broadcast, receiver) = tokio::sync::broadcast::channel(32);
+    let gateway = Arc::new(McpGateway::new_with_broadcast(
+        manager,
+        GatewayConfig {
+            server_timeout_seconds: 12,
+            max_retry_attempts: 0,
+            ..Default::default()
+        },
+        test_router(),
+        Some(Arc::new(broadcast)),
+    ));
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(
+        directory.path().join("SKILL.md"),
+        "---\nname: warmup-skill\ndescription: local fixture\n---\nAvailable while warming up.",
+    )
+    .unwrap();
+    let skills = Arc::new(lr_skills::SkillManager::new());
+    skills.initial_scan(&[directory.path().to_string_lossy().into_owned()], &[]);
+    gateway.register_virtual_server(Arc::new(
+        lr_mcp::gateway::virtual_skills::SkillsVirtualServer::new(
+            skills,
+            Default::default(),
+            Default::default(),
+        ),
+    ));
+    (gateway, server, directory, receiver)
+}
+
+#[tokio::test]
+async fn slow_upstream_does_not_block_initialize_skills_discovery_or_ping() {
+    use std::time::Duration;
+    let (gateway, server, _directory, mut notifications) = slow_start_fixture(false).await;
+    let initialized = tokio::time::timeout(Duration::from_secs(4), send_with_skills(&gateway, "slow-session", &["slow-id"], &allow_all(), overrides(false, false), "initialize", Some(json!({
+        "protocolVersion":"2025-06-18", "capabilities":{},"clientInfo":{"name":"claude-code","version":"fixture"}
+    })))).await.expect("foreground handshake must finish before Claude Code's 25s deadline");
+    assert!(initialized.error.is_none());
+    assert_eq!(initialized.result.unwrap()["_meta"]["initializing"], true);
+    for (method, params) in [
+        ("tools/list", None),
+        ("ping", None),
+        (
+            "tools/call",
+            Some(json!({"name":"SkillRead","arguments":{"name":"warmup-skill"}})),
+        ),
+    ] {
+        let response = tokio::time::timeout(
+            Duration::from_secs(1),
+            send_with_skills(
+                &gateway,
+                "slow-session",
+                &["slow-id"],
+                &allow_all(),
+                overrides(false, false),
+                method,
+                params,
+            ),
+        )
+        .await
+        .expect("local gateway operations must stay usable during upstream warm-up");
+        assert!(response.error.is_none(), "{method}: {:?}", response.error);
+        let result = response.result.unwrap();
+        if method == "tools/list" {
+            assert_eq!(result["_meta"]["initializing"], true);
+            assert!(result["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["name"] == "SkillRead"));
+        } else if method == "tools/call" {
+            assert!(result.to_string().contains("Available while warming up"));
+        }
+    }
+    while notifications.try_recv().is_ok() {}
+    let (key, notification) = tokio::time::timeout(Duration::from_secs(10), notifications.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        key,
+        lr_mcp::gateway::types::session_notification_key("slow-session")
+    );
+    assert_eq!(notification.method, "notifications/tools/list_changed");
+    let listed = send_with_skills(
+        &gateway,
+        "slow-session",
+        &["slow-id"],
+        &allow_all(),
+        overrides(false, false),
+        "tools/list",
+        None,
+    )
+    .await;
+    assert!(tool_names(&listed).contains(&"slow__echo".to_string()));
+    let calls = server.received_requests().await.unwrap();
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| serde_json::from_slice::<Value>(&call.body)
+                .ok()
+                .is_some_and(|body| body["method"] == "initialize"))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn terminating_session_cancels_background_initialization() {
+    let (gateway, _server, _directory, _notifications) = slow_start_fixture(false).await;
+    initialize(&gateway, "cancel-warmup", &["slow-id"], &allow_all(), None).await;
+    let session = gateway.get_session("cancel-warmup").unwrap();
+    let task = session
+        .read()
+        .await
+        .initialization_abort
+        .clone()
+        .expect("slow warm-up is running");
+    gateway.terminate_session("cancel-warmup").await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while !task.is_finished() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("teardown must abort warm-up instead of publishing into an orphaned session");
+    assert!(gateway.get_session("cancel-warmup").is_none());
+}
+
+#[tokio::test]
+async fn concurrent_stateless_discovery_shares_warmup_and_keeps_result_metadata() {
+    use std::time::Duration;
+    let (gateway, server, _directory, _notifications) = slow_start_fixture(false).await;
+    let permissions = allow_all();
+    let params = json!({"_meta": {
+        "io.modelcontextprotocol/protocolVersion":"2026-07-28",
+        "io.modelcontextprotocol/clientInfo":{"name":"stateless-fixture","version":"1"}
+    }});
+    let (first, second) = tokio::time::timeout(Duration::from_secs(4), async {
+        tokio::join!(
+            send_with_skills(
+                &gateway,
+                "stateless-warmup",
+                &["slow-id"],
+                &permissions,
+                overrides(false, false),
+                "tools/list",
+                Some(params.clone())
+            ),
+            send_with_skills(
+                &gateway,
+                "stateless-warmup",
+                &["slow-id"],
+                &permissions,
+                overrides(false, false),
+                "tools/list",
+                Some(params.clone())
+            )
+        )
+    })
+    .await
+    .expect("concurrent discovery must not wait for remote initialization");
+    for response in [first, second] {
+        assert!(response.error.is_none());
+        let result = response.result.unwrap();
+        assert_eq!(result["resultType"], "complete");
+        assert_eq!(result["_meta"]["initializing"], true);
+        assert!(result["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["name"] == "SkillRead"));
+    }
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let calls = server.received_requests().await.unwrap();
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| serde_json::from_slice::<Value>(&call.body)
+                .ok()
+                .is_some_and(|b| b["method"] == "initialize"))
+            .count(),
+        1
+    );
+    gateway.terminate_session("stateless-warmup").await.unwrap();
+}
+
+#[tokio::test]
+async fn failed_background_handshake_preserves_skills_and_partial_failure() {
+    use std::time::Duration;
+    let (gateway, _server, _directory, mut notifications) = slow_start_fixture(true).await;
+    initialize(
+        &gateway,
+        "failed-warmup",
+        &["slow-id"],
+        &allow_all(),
+        overrides(false, false),
+    )
+    .await;
+    while notifications.try_recv().is_ok() {}
+    tokio::time::timeout(Duration::from_secs(10), notifications.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let listed = send_with_skills(
+        &gateway,
+        "failed-warmup",
+        &["slow-id"],
+        &allow_all(),
+        overrides(false, false),
+        "tools/list",
+        None,
+    )
+    .await;
+    assert!(listed.error.is_none());
+    let result = listed.result.unwrap();
+    assert_eq!(result["_meta"]["partial_failure"], true);
+    assert!(result["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|t| t["name"] == "SkillRead"));
+    let read = send_with_skills(
+        &gateway,
+        "failed-warmup",
+        &["slow-id"],
+        &allow_all(),
+        overrides(false, false),
+        "tools/call",
+        Some(json!({"name":"SkillRead","arguments":{"name":"warmup-skill"}})),
+    )
+    .await;
+    assert!(read.error.is_none());
+    assert!(read
+        .result
+        .unwrap()
+        .to_string()
+        .contains("Available while warming up"));
+}
+
+#[tokio::test]
+async fn compressed_skill_catalog_is_indexed_before_remote_warmup() {
+    let (gateway, _server, _directory, _notifications) = slow_start_fixture(false).await;
+    register_context_mode(&gateway);
+    send_with_skills(
+        &gateway,
+        "indexed-warmup",
+        &["slow-id"],
+        &allow_all(),
+        overrides(false, true),
+        "initialize",
+        Some(json!({"capabilities":{}})),
+    )
+    .await;
+    let session = gateway.get_session("indexed-warmup").unwrap();
+    let state = session.read().await;
+    assert!(state.initialization_pending);
+    let cm = state
+        .virtual_server_state
+        .get("_context_mode")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<localrouter::mcp::gateway::context_mode::ContextModeSessionState>()
+        .unwrap();
+    assert!(cm
+        .store
+        .read("catalog:skills/warmup-skill", None, None)
+        .is_ok());
+    drop(state);
+    gateway.terminate_session("indexed-warmup").await.unwrap();
+}

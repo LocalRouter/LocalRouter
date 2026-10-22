@@ -77,6 +77,25 @@ impl SessionTransportSet {
         if let Some(transport) = self.get(server_id) {
             transport.set_protocol_revision(revision);
         }
+        if revision.is_stateless() {
+            let recovered = {
+                let mut failures = self.failures.write();
+                if let Some(methods) = failures.get_mut(server_id) {
+                    let recovered = methods.remove("_connect").is_some();
+                    if methods.is_empty() {
+                        failures.remove(server_id);
+                    }
+                    recovered
+                } else {
+                    false
+                }
+            };
+            if recovered {
+                if let Some(callback) = self.failure_callback.read().clone() {
+                    callback(server_id, None);
+                }
+            }
+        }
     }
 
     /// The protocol revision negotiated with a backend (legacy when unset).
@@ -171,8 +190,8 @@ impl SessionTransportSet {
                 let recovered = {
                     let mut failures = self.failures.write();
                     if let Some(methods) = failures.get_mut(server_id) {
-                        let recovered = methods.remove(&method).is_some();
-                        if method == "initialize" { methods.remove("_connect"); }
+                        let mut recovered = methods.remove(&method).is_some();
+                        if method == "initialize" { recovered |= methods.remove("_connect").is_some(); }
                         if methods.is_empty() { failures.remove(server_id); }
                         recovered
                     } else { false }
