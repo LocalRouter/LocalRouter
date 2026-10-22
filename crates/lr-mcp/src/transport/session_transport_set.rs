@@ -18,7 +18,15 @@ use super::Transport;
 /// A set of MCP server transports owned by a single gateway session.
 ///
 /// Provides request routing by server_id and lifecycle management (close all on drop).
+pub(crate) type SessionFailures = parking_lot::RwLock<
+    std::collections::HashMap<String, std::collections::HashMap<String, String>>,
+>;
+
+type FailureCallback = Arc<dyn Fn(&str, Option<&str>) + Send + Sync>;
+
 pub struct SessionTransportSet {
+    pub(crate) failures: Arc<SessionFailures>,
+    failure_callback: parking_lot::RwLock<Option<FailureCallback>>,
     transports: DashMap<String, Arc<dyn Transport>>,
 
     /// Protocol revision negotiated per backend (absent = legacy).
@@ -40,9 +48,26 @@ impl SessionTransportSet {
     /// Create an empty transport set.
     pub fn new() -> Self {
         Self {
+            failures: Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
+            failure_callback: parking_lot::RwLock::new(None),
             transports: DashMap::new(),
             revisions: DashMap::new(),
             client_capabilities: parking_lot::RwLock::new(None),
+        }
+    }
+
+    pub(crate) fn set_failure_callback(&self, callback: FailureCallback) {
+        *self.failure_callback.write() = Some(callback);
+    }
+
+    pub(crate) fn record_failure(&self, server_id: &str, method: &str, error: &str) {
+        self.failures
+            .write()
+            .entry(server_id.to_string())
+            .or_default()
+            .insert(method.to_string(), error.to_string());
+        if let Some(callback) = self.failure_callback.read().clone() {
+            callback(server_id, Some(error));
         }
     }
 
@@ -138,7 +163,31 @@ impl SessionTransportSet {
             .ok_or_else(|| AppError::Mcp(format!("Server not running: {}", server_id)))?;
 
         let request = self.prepare_request_for(server_id, request);
-        transport.send_request(request).await
+        let method = request.method.clone();
+        let result = transport.send_request(request).await;
+        match &result {
+            Err(_) if method != "server/discover" => self.record_failure(server_id, &method, &format!("MCP connection failed during {method}; check authentication and server availability")),
+            Ok(response) if response.error.is_none() => {
+                let recovered = {
+                    let mut failures = self.failures.write();
+                    if let Some(methods) = failures.get_mut(server_id) {
+                        let recovered = methods.remove(&method).is_some();
+                        if method == "initialize" { methods.remove("_connect"); }
+                        if methods.is_empty() { failures.remove(server_id); }
+                        recovered
+                    } else { false }
+                };
+                if recovered {
+                    if let Some(callback) = self.failure_callback.read().clone() { callback(server_id, None); }
+                }
+            }
+            Ok(response) if matches!(method.as_str(), "initialize" | "tools/list" | "resources/list" | "prompts/list")
+                && response.error.as_ref().is_some_and(|e| e.code != -32601) => {
+                    self.record_failure(server_id, &method, &format!("MCP {method} rejected; check authentication and permissions"));
+                }
+            _ => {}
+        }
+        result
     }
 
     /// Send a streaming request to a specific server.
@@ -159,6 +208,7 @@ impl SessionTransportSet {
 
     /// Close and remove a single server's transport.
     pub async fn close_server(&self, server_id: &str) {
+        self.failures.write().remove(server_id);
         if let Some((_, transport)) = self.transports.remove(server_id) {
             if let Err(e) = transport.close().await {
                 tracing::warn!("Error closing transport for server {}: {}", server_id, e);
@@ -168,6 +218,7 @@ impl SessionTransportSet {
 
     /// Close all transports in this set.
     pub async fn close_all(&self) {
+        self.failures.write().clear();
         let entries: Vec<(String, Arc<dyn Transport>)> = self
             .transports
             .iter()

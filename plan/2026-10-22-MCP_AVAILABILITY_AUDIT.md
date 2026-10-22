@@ -1,0 +1,40 @@
+- [x] Independently trace client authentication, gateway/session initialization, upstream OAuth refresh, Skills discovery and health propagation. Reconcile incoming diagnostics without assuming a common cause.
+- [x] Reproduce failure modes with local protocol fixtures and inspect redacted local runtime evidence for Atlassian, Datadog and Skills. Keep production credentials and configuration unchanged.
+- [x] Fix confirmed causes and make unavailable MCP services surface as unhealthy/degraded instead of falsely healthy; preserve permissions, legacy transport compatibility and working services during partial failure.
+- [x] Plan Review: compare implementation with client availability and truthful health requirements; document unresolved external failures separately.
+- [x] Test Coverage Review: cover authentication failures, failed/stale session discovery, recovery and virtual Skills availability.
+- [x] Bug Hunt: inspect concurrency, token refresh, timeouts, shutdown, error redaction and cache invalidation.
+- [x] Run current stable toolchain workspace Clippy, fmt and tests with verified compiler PATH/RUSTC; run affected frontend type checks/tests.
+- [x] Commit and normal push validated task changes and generated catalog updates, preserving unrelated work. Report findings, evidence, fixes and remaining operational limits.
+
+## Independent audit findings
+
+1. **False readiness and health.** The previous remote readiness probe sent unauthenticated HEAD/GET and returned Ready even for HTTP 401/500. A global socket/process being open was sufficient for Healthy, while actual client transports were owned separately. Health now checks the MCP protocol with configured authentication, including tool discovery when advertised; arbitrary stdio output is insufficient. Stateless backends can negotiate server/discover. Failures on active client transports update the shared health cache immediately and remain unhealthy even when a separate UI probe succeeds. Recovery of the failed operation clears its failure without clearing failures on other operations or client sessions. Runtime failure details are fixed, credential-free messages.
+2. **Skills blocked by upstreams.** A local SkillRead on a fresh session previously triggered all backend startup. It now dispatches locally with the same permission checks. Upstream protocol probes and startup catalog families run independently in parallel. Discovery retries share one request deadline instead of each consuming the full timeout, keeping stalled backends from multiplying the gateway wait.
+3. **Startup OAuth refresh gap.** SSE's auth refresher was installed only after connect returned. An initial GET 401 could therefore terminate the connection before refresh was available. Both global and per-session transports now install the refresher before GET begins, retrying authentication once per failed connection attempt. Existing POST refresh behavior and no-refresher rejection remain covered.
+4. **Failures disappearing from discovery.** Cached tools/resources/prompts responses previously dropped partial_failure metadata. Startup failures could also disappear once failed servers were removed from the active subset. Each cached catalog now retains its own failures; startup/handshake failures are included in fresh and cached discovery responses. An unrelated successful catalog cannot erase tool-discovery failures.
+5. **Stale Skills catalogs.** Skill rescans and enable changes previously notified only Tauri/UI listeners. They now notify permitted MCP sessions and rebuild each session's skill search index, removing stale entries before sending tools/list_changed. Permissions remain authoritative.
+6. **WebSocket mismatch.** Skills-only gateway clients were rejected for having no upstream MCP permissions. Session-scoped built-in notifications were also dropped by the upstream-only filter. WS now accepts gateway clients without upstream grants, honors an optional Mcp-Session-Id, checks current permissions, and forwards only its own session notifications. MCP-off/via-LLM clients remain denied. OpenAPI documents the optional header and invalid-header response.
+
+## Local incident evidence and boundaries
+
+- The running production application was listening on localhost:3625; its public /health returned ok. That proves process/HTTP availability, not client MCP discovery.
+- A read-only initialize probe with the configured Upwave MCP client took 42.99 seconds before returning success. A subsequent legacy/stateless fallback tools/list request received zero response bytes before a 55-second curl deadline. That request did not retain the newly issued session header, so it is evidence of a stall on the fallback path, not proof that the negotiated session was broken.
+- A corrected session-preserving recheck stopped at a 10-second credential-read timeout before issuing requests. No conclusion about that session is justified. Credentials and returned instructions were never printed or persisted.
+- All four configured skill source directories existed at inspection. Immediate-child SKILL.md counts were 0, 8, 43 and 4 respectively. This does not by itself prove successful parsing or client permission visibility.
+- Existing October 21 plans already distinguish Atlassian's optional-GET startup bug from intermittent authenticated upstream POST stalls. This audit does not claim to repair the external Atlassian service or establish the historical Datadog auth cause without incident diagnostics.
+- The expected other-agent incident report has not arrived during this audit. Reconcile its timestamps, client/transport, HTTP status, token/session lifecycle and tool discovery results with these independent findings when available.
+- Failed startup backends still require reconnection/session rebuild to retry attachment; this change makes that failure explicit rather than claiming automatic recovery. Invalid client credentials remain authentication failures, not a reason to mark an otherwise working upstream down.
+- No production configuration, permissions or saved credentials were changed. No installed app restart or release is part of this audit branch.
+
+## Review and validation
+
+Plan review: preserves permission boundaries and partial availability; local Skills reads do not grant access to remote servers; existing HTTP/SSE and legacy WS callers need no new header. No Tauri command schema changed.
+
+Coverage review: local fixtures cover authenticated health, HTTP rejection, an open global transport with failed tools, independent-probe versus client-session failures, per-operation recovery, stateless handshake fallback, initial-GET OAuth refresh, retry budgets, cached and initialization failure metadata, offline-upstream SkillRead, Skills source notifications/index refresh, and actual WS connection/session isolation. Existing transport, permissions and gateway regressions remain enabled.
+
+Bug hunt: checked cancellation cleanup of isolated probe transports, weak ownership of session health state, absence of DashMap guards across gateway awaits, operation-specific failures (a successful prompts/list cannot erase a failed tools/list), bounded auth retries and discovery waits, and secret-free health errors. Component health can be down while other clients/features remain available; the process /health endpoint intentionally remains a liveness endpoint.
+
+Initial full stable workspace run: 111 suites, 4574 passed, 69 ignored, zero failed. Both targeted gateway/HTTP suites then passed (16 + 10 cases), including Skills index replacement and WS session scoping. Final CI-parity checks with all coverage additions are recorded below before commit. Log files: /tmp/localrouter-mcp-audit-*.log.
+
+Final pre-commit validation: rustup stable 1.99.1 updated/confirmed, compiler pinned to /Users/matus/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc with sysroot/bin first on PATH. Stable workspace Clippy with -D warnings and formatting checks passed; final workspace run passed 4577 tests across 111 suites, 69 ignored, zero failed. No frontend or Tauri command type/schema changed.

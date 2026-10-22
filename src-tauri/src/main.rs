@@ -1121,6 +1121,13 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                     .register_virtual_server(skills_vs.clone());
                 app.manage(skills_vs);
                 info!("Skills virtual server registered");
+                let gateway_for_skill_changes = Arc::downgrade(&app_state.mcp_gateway);
+                skill_manager.set_change_callback(Arc::new(move || {
+                    if let Some(gateway) = gateway_for_skill_changes.upgrade() {
+                        tauri::async_runtime::spawn(async move { gateway.notify_skills_changed().await; });
+                    }
+                }));
+
 
                 // Capture vector search setting before moving config
                 let vector_search_enabled = context_management_config.vector_search_enabled;

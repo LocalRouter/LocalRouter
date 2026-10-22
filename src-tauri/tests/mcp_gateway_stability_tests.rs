@@ -281,6 +281,15 @@ async fn session_is_reused_when_a_server_fails_to_start() {
         None,
     )
     .await;
+    assert_eq!(
+        list.result.as_ref().unwrap()["_meta"]["partial_failure"],
+        true
+    );
+    assert!(list.result.as_ref().unwrap()["_meta"]["failures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|failure| failure["server_id"] == DISABLED_ID));
     assert!(tool_names(&list).contains(&echo_tool("echo")));
 
     let after = gateway.get_session("s1").unwrap();
@@ -454,6 +463,28 @@ async fn tools_list_survives_every_server_failing() {
     let result = list.result.unwrap();
     assert_eq!(result["tools"], json!([]));
     assert_eq!(result["_meta"]["partial_failure"], json!(true));
+    // An unrelated successful listing must not erase cached tool failures.
+    send(
+        &gateway,
+        "s5",
+        &["broken-id"],
+        &allow_all(),
+        None,
+        "prompts/list",
+        None,
+    )
+    .await;
+    let cached = send(
+        &gateway,
+        "s5",
+        &["broken-id"],
+        &allow_all(),
+        None,
+        "tools/list",
+        None,
+    )
+    .await;
+    assert_eq!(cached.result.unwrap()["_meta"], result["_meta"]);
 }
 
 /// Register context management with a 1-byte catalog threshold so catalog
@@ -1168,4 +1199,119 @@ async fn skill_read_shows_disk_paths_to_direct_clients_only() {
         !via_llm.contains(&skill_dir.display().to_string()),
         "{via_llm}"
     );
+}
+
+#[tokio::test]
+async fn skill_read_does_not_initialize_unavailable_remote_backends() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(directory.path().join("SKILL.md"), "---\nname: audit-skill\ndescription: availability fixture\n---\nLocal instructions remain readable.").unwrap();
+    let skills = Arc::new(lr_skills::SkillManager::new());
+    skills.initial_scan(&[directory.path().to_string_lossy().into_owned()], &[]);
+    let manager = Arc::new(McpServerManager::new_for_test());
+    manager.add_config(http_server(
+        "offline",
+        "Offline",
+        "http://127.0.0.1:1/mcp".into(),
+        true,
+    ));
+    let (notifications, mut received) = tokio::sync::broadcast::channel(16);
+    let gateway = McpGateway::new_with_broadcast(
+        manager,
+        GatewayConfig::default(),
+        test_router(),
+        Some(Arc::new(notifications)),
+    );
+    gateway.register_virtual_server(Arc::new(
+        lr_mcp::gateway::virtual_skills::SkillsVirtualServer::new(
+            skills.clone(),
+            Default::default(),
+            Default::default(),
+        ),
+    ));
+    register_context_mode(&gateway);
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        gateway.handle_request_with_skills(
+            "skills-client",
+            Some("local-skill-session"),
+            vec!["offline".into()],
+            vec![],
+            allow_all(),
+            lr_config::SkillsPermissions {
+                global: PermissionState::Allow,
+                ..Default::default()
+            },
+            "Skills client".into(),
+            PermissionState::Off,
+            PermissionState::Off,
+            None,
+            overrides(false, true),
+            PermissionState::Off,
+            PermissionState::Off,
+            None,
+            None,
+            lr_config::ClientMode::default(),
+            JsonRpcRequest::with_id(
+                1,
+                "tools/call".into(),
+                Some(json!({"name":"SkillRead","arguments":{"name":"audit-skill"}})),
+            ),
+            None,
+        ),
+    )
+    .await
+    .expect("local SkillRead must not wait for offline upstreams")
+    .unwrap();
+    assert!(response.error.is_none(), "{:?}", response.error);
+    assert_ne!(response.result.as_ref().unwrap()["isError"], json!(true));
+    assert!(response
+        .result
+        .unwrap()
+        .to_string()
+        .contains("Local instructions remain readable"));
+    assert!(gateway
+        .get_session("local-skill-session")
+        .unwrap()
+        .read()
+        .await
+        .transports
+        .is_none());
+    gateway.notify_skills_changed().await;
+    let session = gateway.get_session("local-skill-session").unwrap();
+    let store = session
+        .read()
+        .await
+        .virtual_server_state
+        .get("_context_mode")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<localrouter::mcp::gateway::context_mode::ContextModeSessionState>()
+        .unwrap()
+        .store
+        .clone();
+    assert!(store.read("catalog:skills/audit-skill", None, None).is_ok());
+    std::fs::write(
+        directory.path().join("SKILL.md"),
+        "---\nname: audit-renamed\ndescription: updated fixture\n---\nUpdated instructions.",
+    )
+    .unwrap();
+    while received.try_recv().is_ok() {}
+    skills.rescan(&[directory.path().to_string_lossy().into_owned()], &[]);
+    gateway.notify_skills_changed().await;
+    let (target, notification) =
+        tokio::time::timeout(std::time::Duration::from_secs(1), received.recv())
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(
+        target,
+        lr_mcp::gateway::types::session_notification_key("local-skill-session")
+    );
+    assert_eq!(notification.method, "notifications/tools/list_changed");
+    assert!(store
+        .read("catalog:skills/audit-renamed", None, None)
+        .is_ok());
+    assert!(store
+        .read("catalog:skills/audit-skill", None, None)
+        .is_err());
 }

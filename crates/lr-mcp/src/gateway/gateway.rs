@@ -771,7 +771,21 @@ impl McpGateway {
         // Stateless (2026-07-28) clients never send `initialize`; materialize
         // backend transports lazily on the first request that needs them.
         // `server/discover` is exempt so a capability probe stays cheap.
-        if method != "initialize" && method != "server/discover" {
+        // Local skill reads must not depend on remote services initializing.
+        // Permissions and session state are still checked by virtual dispatch.
+        let local_skill_call = method == "tools/call"
+            && request
+                .params
+                .as_ref()
+                .and_then(|p| p.get("name"))
+                .and_then(Value::as_str)
+                .is_some_and(|name| {
+                    self.virtual_servers
+                        .read()
+                        .iter()
+                        .any(|vs| vs.id() == "_skills" && vs.owns_tool(name))
+                });
+        if method != "initialize" && method != "server/discover" && !local_skill_call {
             let needs_backends = session.read().await.transports.is_none();
             if needs_backends {
                 self.initialize_session_backends(&session, &client_meta)
@@ -2285,36 +2299,41 @@ impl McpGateway {
         let mut discovered_results: Vec<(String, InitializeResult)> = Vec::new();
         let mut servers_needing_initialize: Vec<String> = Vec::new();
         let probe_timeout = Duration::from_secs(5);
-        for server_id in &servers_to_initialize {
-            let known_legacy = self
-                .backend_revision_cache
-                .get(server_id)
-                .map(|e| !e.value().is_stateless())
-                .unwrap_or(false);
-            if !known_legacy {
-                if let Some(init_result) = self
-                    .probe_server_discover(&transport_set, server_id, probe_timeout)
-                    .await
-                {
-                    tracing::info!(
-                        "Backend {} speaks MCP 2026-07-28 (stateless); skipping initialize",
-                        server_id
-                    );
-                    self.backend_revision_cache.insert(
-                        server_id.clone(),
-                        crate::protocol::ProtocolRevision::V2026_07_28,
-                    );
-                    transport_set
-                        .set_revision(server_id, crate::protocol::ProtocolRevision::V2026_07_28);
-                    discovered_results.push((server_id.clone(), init_result));
-                    continue;
-                }
+        // Probe independently: one slow backend must not add five seconds
+        // for every configured server before any legacy handshake can begin.
+        let probes = futures::future::join_all(servers_to_initialize.iter().map(|server_id| {
+            let transport_set = transport_set.clone();
+            async move {
+                let known_legacy = self
+                    .backend_revision_cache
+                    .get(server_id)
+                    .is_some_and(|entry| !entry.value().is_stateless());
+                let discovered = if known_legacy {
+                    None
+                } else {
+                    self.probe_server_discover(&transport_set, server_id, probe_timeout)
+                        .await
+                };
+                (server_id.clone(), discovered)
+            }
+        }))
+        .await;
+        for (server_id, discovered) in probes {
+            if let Some(init_result) = discovered {
+                self.backend_revision_cache.insert(
+                    server_id.clone(),
+                    crate::protocol::ProtocolRevision::V2026_07_28,
+                );
+                transport_set
+                    .set_revision(&server_id, crate::protocol::ProtocolRevision::V2026_07_28);
+                discovered_results.push((server_id, init_result));
+            } else {
                 self.backend_revision_cache.insert(
                     server_id.clone(),
                     crate::protocol::ProtocolRevision::V2025_11_25,
                 );
+                servers_needing_initialize.push(server_id);
             }
-            servers_needing_initialize.push(server_id.clone());
         }
 
         // Broadcast initialize to the legacy backends
@@ -2499,13 +2518,7 @@ impl McpGateway {
         }
 
         // Build gateway instructions based on the full context
-        let (active_server_ids, client_id_for_log) = {
-            let session_read = session.read().await;
-            (
-                session_read.allowed_servers.clone(),
-                session_read.client_id.clone(),
-            )
-        };
+        let client_id_for_log = session.read().await.client_id.clone();
 
         let virtual_instructions = self.collect_virtual_instructions(&session).await;
 
@@ -2533,48 +2546,34 @@ impl McpGateway {
             }
         };
 
-        // Fetch the full catalogs for building instructions.
-        let tools_catalog = self
-            .fetch_and_merge_tools(
-                &active_server_ids,
-                JsonRpcRequest::new(
-                    Some(serde_json::json!("_instructions_tools")),
-                    "tools/list".to_string(),
-                    None,
-                ),
-                &transport_set,
-            )
-            .await
-            .map(|(t, _)| t)
-            .unwrap_or_default();
-
-        let resources_catalog = self
-            .fetch_and_merge_resources(
-                &active_server_ids,
-                JsonRpcRequest::new(
-                    Some(serde_json::json!("_instructions_resources")),
-                    "resources/list".to_string(),
-                    None,
-                ),
-                &transport_set,
-            )
-            .await
-            .map(|(r, _)| r)
-            .unwrap_or_default();
-
-        let prompts_catalog = self
-            .fetch_and_merge_prompts(
-                &active_server_ids,
-                JsonRpcRequest::new(
-                    Some(serde_json::json!("_instructions_prompts")),
-                    "prompts/list".to_string(),
-                    None,
-                ),
-                &transport_set,
-            )
-            .await
-            .map(|(p, _)| p)
-            .unwrap_or_default();
+        // Catalog families are independent. Serial timeouts used to keep
+        // the whole gateway (including Skills) waiting for a broken remote.
+        let tools_request = JsonRpcRequest::with_id(1, "tools/list".into(), None);
+        let resources_request = JsonRpcRequest::with_id(2, "resources/list".into(), None);
+        let prompts_request = JsonRpcRequest::with_id(3, "prompts/list".into(), None);
+        let tools_servers: Vec<String> = init_results_for_instructions
+            .iter()
+            .filter(|(_, r)| r.capabilities.tools.is_some())
+            .map(|(id, _)| id.clone())
+            .collect();
+        let resource_servers: Vec<String> = init_results_for_instructions
+            .iter()
+            .filter(|(_, r)| r.capabilities.resources.is_some())
+            .map(|(id, _)| id.clone())
+            .collect();
+        let prompt_servers: Vec<String> = init_results_for_instructions
+            .iter()
+            .filter(|(_, r)| r.capabilities.prompts.is_some())
+            .map(|(id, _)| id.clone())
+            .collect();
+        let (tools_result, resources_result, prompts_result) = tokio::join!(
+            self.fetch_and_merge_tools(&tools_servers, tools_request, &transport_set),
+            self.fetch_and_merge_resources(&resource_servers, resources_request, &transport_set),
+            self.fetch_and_merge_prompts(&prompt_servers, prompts_request, &transport_set),
+        );
+        let tools_catalog = tools_result.map(|(items, _)| items).unwrap_or_default();
+        let resources_catalog = resources_result.map(|(items, _)| items).unwrap_or_default();
+        let prompts_catalog = prompts_result.map(|(items, _)| items).unwrap_or_default();
 
         let server_infos = self.build_server_instruction_infos(
             &init_results_for_instructions,
@@ -3049,6 +3048,81 @@ impl McpGateway {
                 changes.tools,
                 changes.resources,
                 changes.prompts,
+            );
+        }
+    }
+
+    /// Rebuild each permitted session's skill search catalog before telling
+    /// that client to re-list. Never hold a DashMap entry across awaits.
+    pub async fn notify_skills_changed(&self) {
+        let skills = self
+            .virtual_servers
+            .read()
+            .iter()
+            .find(|vs| vs.id() == "_skills")
+            .cloned();
+        let Some(skills) = skills else {
+            return;
+        };
+        let sessions: Vec<_> = self
+            .sessions
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .collect();
+        for (key, session) in sessions {
+            let mut session = session.write().await;
+            if !session.skills_permissions.has_any_access() {
+                continue;
+            }
+            let entries = session
+                .virtual_server_state
+                .get("_skills")
+                .map(|state| skills.catalog_index_entries(state.as_ref()))
+                .unwrap_or_default();
+            session.cached_tools = None;
+            if let Some(cm) = session
+                .virtual_server_state
+                .get_mut("_context_mode")
+                .and_then(|state| {
+                    state
+                        .as_any_mut()
+                        .downcast_mut::<super::context_mode::ContextModeSessionState>()
+                })
+            {
+                let old: Vec<_> = cm
+                    .catalog_sources
+                    .keys()
+                    .filter(|label| label.starts_with("catalog:skills/"))
+                    .cloned()
+                    .collect();
+                for label in old {
+                    cm.catalog_sources.remove(&label);
+                    if let Err(error) = cm.store.delete(&label) {
+                        tracing::warn!("Could not remove stale skill index entry: {error}");
+                    }
+                }
+                if cm.catalog_compression_enabled {
+                    for (label, content) in entries {
+                        match cm.store.index(&label, &content) {
+                            Ok(_) => {
+                                cm.catalog_sources
+                                    .insert(label, super::context_mode::CatalogItemType::Skill);
+                            }
+                            Err(error) => {
+                                tracing::warn!("Could not refresh skill catalog index: {error}")
+                            }
+                        }
+                    }
+                }
+            }
+            drop(session);
+            self.send_list_changed(
+                &session_notification_key(&key),
+                super::session::ListChanges {
+                    tools: true,
+                    resources: false,
+                    prompts: false,
+                },
             );
         }
     }

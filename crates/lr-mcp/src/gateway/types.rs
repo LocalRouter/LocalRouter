@@ -295,6 +295,8 @@ pub struct PromptArgument {
 #[derive(Debug, Clone)]
 pub struct CachedList<T> {
     pub data: Vec<T>,
+    /// Failures belong to this listing, not to the last unrelated broadcast.
+    pub failures: Vec<ServerFailure>,
     pub cached_at: Instant,
     pub ttl: std::time::Duration,
 }
@@ -303,9 +305,26 @@ impl<T> CachedList<T> {
     pub fn new(data: Vec<T>, ttl: std::time::Duration) -> Self {
         Self {
             data,
+            failures: Vec::new(),
             cached_at: Instant::now(),
             ttl,
         }
+    }
+
+    pub fn with_failures(mut self, failures: Vec<ServerFailure>) -> Self {
+        self.failures = failures;
+        self
+    }
+
+    pub fn result(&self, key: &str, items: impl Serialize) -> Value {
+        let mut result = serde_json::json!({key: items});
+        if !self.failures.is_empty() {
+            result["_meta"] = serde_json::json!({
+                "partial_failure": true,
+                "failures": self.failures,
+            });
+        }
+        result
     }
 
     pub fn is_valid(&self) -> bool {

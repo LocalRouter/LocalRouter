@@ -174,13 +174,15 @@ impl McpGateway {
 
                 // Append tools from virtual servers
                 self.append_virtual_server_tools(&mut tools, &session_read);
+                let result =
+                    session_read.with_initialization_failures(cached.result("tools", &tools));
                 drop(session_read);
 
                 tracing::info!("handle_tools_list CACHED: returning {} tools", tools.len(),);
 
                 return Ok(JsonRpcResponse::success(
                     request.id.unwrap_or(Value::Null),
-                    json!({"tools": tools}),
+                    result,
                 ));
             }
         }
@@ -193,12 +195,11 @@ impl McpGateway {
 
         // Check if there were any failures during fetch
         let session_read = session.read().await;
-        let has_failures = !session_read.last_broadcast_failures.is_empty();
-        let failures = if has_failures {
-            Some(session_read.last_broadcast_failures.clone())
-        } else {
-            None
-        };
+        let failures = session_read
+            .cached_tools
+            .as_ref()
+            .map(|cache| cache.failures.clone())
+            .unwrap_or_default();
         let filtered = session_read.visible_tools(&tools);
         let mut all_tools: Vec<serde_json::Value> = filtered
             .iter()
@@ -210,13 +211,14 @@ impl McpGateway {
         drop(session_read);
 
         let mut result = json!({"tools": all_tools});
-        if let Some(failures) = failures {
+        if !failures.is_empty() {
             result["_meta"] = json!({
                 "partial_failure": true,
                 "failures": failures
             });
         }
 
+        let result = session.read().await.with_initialization_failures(result);
         Ok(JsonRpcResponse::success(
             request.id.unwrap_or(Value::Null),
             result,
@@ -247,9 +249,10 @@ impl McpGateway {
 
         let mut session_write = session.write().await;
         session_write.update_tool_mappings(&tools, &failures);
-        session_write.last_broadcast_failures = failures;
+        session_write.last_broadcast_failures = failures.clone();
         let cache_ttl = session_write.cache_ttl_manager.get_ttl();
-        session_write.cached_tools = Some(CachedList::new(tools.clone(), cache_ttl));
+        session_write.cached_tools =
+            Some(CachedList::new(tools.clone(), cache_ttl).with_failures(failures));
 
         Ok(tools)
     }

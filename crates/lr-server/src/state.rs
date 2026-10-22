@@ -1045,6 +1045,7 @@ impl AppState {
 
     /// Add MCP manager to the state
     pub fn with_mcp(self, mcp_server_manager: Arc<McpServerManager>) -> Self {
+        mcp_server_manager.set_health_cache(self.health_cache.clone());
         // Build gateway config from global MCP gateway settings
         let mcp_gateway_settings = self.config_manager.get().mcp_gateway.clone();
         let gateway_config = lr_mcp::gateway::GatewayConfig {

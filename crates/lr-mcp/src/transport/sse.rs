@@ -380,6 +380,15 @@ impl SseTransport {
     /// * Returns an error if the HTTP client cannot be created
     /// * Returns an error if the server is not reachable or returns an error status
     pub async fn connect(url: String, headers: HashMap<String, String>) -> AppResult<Self> {
+        Self::connect_with_auth(url, headers, None).await
+    }
+
+    pub async fn connect_with_auth(
+        url: String,
+        headers: HashMap<String, String>,
+        auth_refresher: Option<AuthRefresher>,
+    ) -> AppResult<Self> {
+        let auth_refresher = Arc::new(RwLock::new(auth_refresher));
         tracing::info!("Connecting to MCP SSE server: {}", url);
 
         // Use shared HTTP client with connection pooling
@@ -406,6 +415,7 @@ impl SseTransport {
         // Start persistent SSE stream in background
         let stream_url = url.clone();
         let stream_headers = headers.clone();
+        let stream_auth_refresher = auth_refresher.clone();
         let stream_pending = pending.clone();
         let stream_closed = closed.clone();
         let stream_ready_clone = stream_ready.clone();
@@ -427,6 +437,7 @@ impl SseTransport {
                 stream_message_endpoint,
                 stream_session_id,
                 stream_error,
+                stream_auth_refresher,
             )
             .await;
         })));
@@ -489,7 +500,7 @@ impl SseTransport {
             session_id,
             client,
             headers,
-            auth_refresher: Arc::new(RwLock::new(None)),
+            auth_refresher,
             pending,
             next_id: Arc::new(RwLock::new(1)),
             closed,
@@ -524,6 +535,7 @@ impl SseTransport {
         message_endpoint: Arc<RwLock<Option<String>>>,
         session_id: Arc<RwLock<Option<String>>>,
         last_error: Arc<RwLock<Option<String>>>,
+        auth_refresher: Arc<RwLock<Option<AuthRefresher>>>,
     ) {
         tracing::info!("Starting persistent SSE stream task for: {}", url);
 
@@ -532,6 +544,7 @@ impl SseTransport {
         const MAX_DELAY_SECS: u64 = 60;
 
         let mut reconnect_attempts = 0u32;
+        let mut auth_refreshed = false;
         let mut utf8_buffer = Vec::new(); // Buffer for incomplete UTF-8 sequences
 
         loop {
@@ -620,6 +633,19 @@ impl SseTransport {
                     break;
                 }
 
+                // The refresher must be installed before connect: a rejected
+                // initial GET used to terminate before the manager could set it.
+                if status == reqwest::StatusCode::UNAUTHORIZED && !auth_refreshed {
+                    let refresher = auth_refresher.read().clone();
+                    if let Some(refresher) = refresher {
+                        auth_refreshed = true;
+                        if let Ok(new_headers) = refresher().await {
+                            headers.write().extend(new_headers);
+                            continue;
+                        }
+                    }
+                }
+
                 let hint = match status.as_u16() {
                     401 => "authentication rejected by the server",
                     403 => "access forbidden by the server",
@@ -659,6 +685,8 @@ impl SseTransport {
 
             // Reset reconnection counter on successful connection
             reconnect_attempts = 0;
+            auth_refreshed = false;
+            *last_error.write() = None;
             *stream_ready.write() = true;
             tracing::info!("Connected to persistent SSE stream");
 
@@ -1496,6 +1524,49 @@ mod tests {
             assert!(!error.contains("private response body"), "{error}");
             server.abort();
         }
+    }
+
+    #[tokio::test]
+    async fn initial_get_authentication_can_refresh_before_connect_finishes() {
+        use axum::{
+            http::{HeaderMap, StatusCode},
+            routing::get,
+            Router,
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let app = Router::new().route(
+            "/mcp",
+            get(|headers: HeaderMap| async move {
+                if headers.get("authorization").and_then(|h| h.to_str().ok())
+                    == Some("Bearer refreshed")
+                {
+                    StatusCode::METHOD_NOT_ALLOWED
+                } else {
+                    StatusCode::UNAUTHORIZED
+                }
+            }),
+        );
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = calls.clone();
+        let refresher: AuthRefresher = Arc::new(move || {
+            counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Box::pin(async {
+                Ok(HashMap::from([(
+                    "Authorization".into(),
+                    "Bearer refreshed".into(),
+                )]))
+            })
+        });
+        let transport = SseTransport::connect_with_auth(url, HashMap::new(), Some(refresher))
+            .await
+            .unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+        transport.disconnect().await.unwrap();
+        server.abort();
     }
 
     #[tokio::test]

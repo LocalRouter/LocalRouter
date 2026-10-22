@@ -30,113 +30,140 @@ pub async fn broadcast_request(
     );
     let broadcast_start = std::time::Instant::now();
 
-    let futures = server_ids.iter().map(|server_id| {
-        let request = request.clone();
-        let server_id = server_id.clone();
-        let transports = transports.clone();
-        let method = method.clone();
+    let futures =
+        server_ids.iter().map(|server_id| {
+            let request = request.clone();
+            let server_id = server_id.clone();
+            let transports = transports.clone();
+            let method = method.clone();
 
-        async move {
-            let mut retries = 0;
-            loop {
-                tracing::debug!(
-                    "broadcast: sending {} to server {}, attempt={}",
-                    method,
-                    &server_id[..8.min(server_id.len())],
-                    retries
-                );
-                let attempt_start = std::time::Instant::now();
-
-                let result = timeout(
-                    request_timeout,
-                    transports.send_request(&server_id, request.clone()),
-                )
-                .await;
-
-                match result {
-                    // Success
-                    Ok(Ok(resp)) => {
-                        if let Some(error) = resp.error {
-                            return (
-                                server_id,
-                                Err(AppError::Mcp(format!(
-                                    "JSON-RPC error {}: {}",
-                                    error.code, error.message
-                                ))),
-                            );
-                        }
-                        tracing::debug!(
-                            "broadcast: {} success from server {} in {:?}",
-                            method,
-                            &server_id[..8.min(server_id.len())],
-                            attempt_start.elapsed()
-                        );
-                        return (server_id, Ok(resp.result.unwrap_or(Value::Null)));
-                    }
-
-                    // Request failed but we can retry
-                    Ok(Err(e)) if retries < max_retries && is_retryable(&e) => {
-                        tracing::warn!(
-                            "broadcast: {} error (retryable) from server {} in {:?}: {}",
-                            method,
-                            &server_id[..8.min(server_id.len())],
-                            attempt_start.elapsed(),
-                            e
-                        );
-                        retries += 1;
-                        let backoff_ms = (100 * (1u64 << retries.min(7))).min(10_000);
-                        let backoff = Duration::from_millis(backoff_ms);
-                        tokio::time::sleep(backoff).await;
-                        continue;
-                    }
-
-                    // Request failed and we can't retry
-                    Ok(Err(e)) => {
-                        tracing::warn!(
-                            "broadcast: {} error (final) from server {} in {:?}: {}",
-                            method,
-                            &server_id[..8.min(server_id.len())],
-                            attempt_start.elapsed(),
-                            e
-                        );
-                        return (server_id, Err(e));
-                    }
-
-                    // Timeout but we can retry
-                    Err(_) if retries < max_retries => {
-                        tracing::warn!(
-                            "broadcast: {} TIMEOUT (retrying) from server {} after {:?}",
-                            method,
-                            &server_id[..8.min(server_id.len())],
-                            attempt_start.elapsed()
-                        );
-                        retries += 1;
-                        let backoff_ms = (100 * (1u64 << retries.min(7))).min(10_000);
-                        let backoff = Duration::from_millis(backoff_ms);
-                        tokio::time::sleep(backoff).await;
-                        continue;
-                    }
-
-                    // Timeout and no more retries
-                    Err(_) => {
-                        tracing::warn!(
-                            "broadcast: {} TIMEOUT (final) from server {} after {:?}",
-                            method,
-                            &server_id[..8.min(server_id.len())],
-                            attempt_start.elapsed()
+            async move {
+                let mut retries = 0;
+                // The configured timeout is the whole discovery budget. Three
+                // full-length attempts otherwise outlive the downstream deadline
+                // and hide healthy built-in tools behind a stalled upstream.
+                let deadline = tokio::time::Instant::now() + request_timeout;
+                loop {
+                    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                    if remaining.is_zero() {
+                        transports.record_failure(
+                            &server_id,
+                            &method,
+                            "MCP request timed out, including retries",
                         );
                         return (
                             server_id,
                             Err(AppError::Mcp(format!(
-                                "Request timeout after {}ms",
+                                "Request timeout after {}ms (including retries)",
                                 request_timeout.as_millis()
                             ))),
                         );
                     }
+                    tracing::debug!(
+                        "broadcast: sending {} to server {}, attempt={}",
+                        method,
+                        &server_id[..8.min(server_id.len())],
+                        retries
+                    );
+                    let attempt_start = std::time::Instant::now();
+
+                    let result = timeout(
+                        remaining,
+                        transports.send_request(&server_id, request.clone()),
+                    )
+                    .await;
+
+                    match result {
+                        // Success
+                        Ok(Ok(resp)) => {
+                            if let Some(error) = resp.error {
+                                return (
+                                    server_id,
+                                    Err(AppError::Mcp(format!(
+                                        "JSON-RPC error {}: {}",
+                                        error.code, error.message
+                                    ))),
+                                );
+                            }
+                            tracing::debug!(
+                                "broadcast: {} success from server {} in {:?}",
+                                method,
+                                &server_id[..8.min(server_id.len())],
+                                attempt_start.elapsed()
+                            );
+                            return (server_id, Ok(resp.result.unwrap_or(Value::Null)));
+                        }
+
+                        // Request failed but we can retry
+                        Ok(Err(e)) if retries < max_retries && is_retryable(&e) => {
+                            tracing::warn!(
+                                "broadcast: {} error (retryable) from server {} in {:?}: {}",
+                                method,
+                                &server_id[..8.min(server_id.len())],
+                                attempt_start.elapsed(),
+                                e
+                            );
+                            retries += 1;
+                            let backoff_ms = (100 * (1u64 << retries.min(7))).min(10_000);
+                            let backoff = Duration::from_millis(backoff_ms);
+                            tokio::time::sleep(backoff.min(
+                                deadline.saturating_duration_since(tokio::time::Instant::now()),
+                            ))
+                            .await;
+                            continue;
+                        }
+
+                        // Request failed and we can't retry
+                        Ok(Err(e)) => {
+                            tracing::warn!(
+                                "broadcast: {} error (final) from server {} in {:?}: {}",
+                                method,
+                                &server_id[..8.min(server_id.len())],
+                                attempt_start.elapsed(),
+                                e
+                            );
+                            return (server_id, Err(e));
+                        }
+
+                        // Timeout but we can retry
+                        Err(_) if retries < max_retries => {
+                            tracing::warn!(
+                                "broadcast: {} TIMEOUT (retrying) from server {} after {:?}",
+                                method,
+                                &server_id[..8.min(server_id.len())],
+                                attempt_start.elapsed()
+                            );
+                            retries += 1;
+                            let backoff_ms = (100 * (1u64 << retries.min(7))).min(10_000);
+                            let backoff = Duration::from_millis(backoff_ms);
+                            tokio::time::sleep(backoff.min(
+                                deadline.saturating_duration_since(tokio::time::Instant::now()),
+                            ))
+                            .await;
+                            continue;
+                        }
+
+                        // Timeout and no more retries
+                        Err(_) => {
+                            transports.record_failure(&server_id, &method, "MCP request timed out");
+                            tracing::warn!(
+                                "broadcast: {} TIMEOUT (final) from server {} after {:?}",
+                                method,
+                                &server_id[..8.min(server_id.len())],
+                                attempt_start.elapsed()
+                            );
+                            return (
+                                server_id,
+                                Err(AppError::Mcp(format!(
+                                    "Request timeout after {}ms",
+                                    request_timeout.as_millis()
+                                ))),
+                            );
+                        }
+                    }
                 }
             }
-        }
-    });
+        });
 
     let results = futures::future::join_all(futures).await;
     tracing::debug!(
@@ -201,6 +228,43 @@ pub fn separate_results<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn broadcast_timeout_is_one_budget_including_retries() {
+        struct Stalled;
+        #[async_trait::async_trait]
+        impl crate::transport::Transport for Stalled {
+            async fn send_request(
+                &self,
+                _: JsonRpcRequest,
+            ) -> AppResult<crate::protocol::JsonRpcResponse> {
+                std::future::pending().await
+            }
+            async fn is_healthy(&self) -> bool {
+                true
+            }
+            async fn close(&self) -> AppResult<()> {
+                Ok(())
+            }
+        }
+        let transports = Arc::new(SessionTransportSet::new());
+        transports.insert("stalled".into(), Arc::new(Stalled));
+        let request = JsonRpcRequest::with_id(1, "tools/list".into(), None);
+        let results = tokio::time::timeout(
+            Duration::from_millis(400),
+            broadcast_request(
+                &["stalled".into()],
+                request,
+                &transports,
+                Duration::from_millis(50),
+                2,
+            ),
+        )
+        .await
+        .expect("retries must not multiply the discovery deadline");
+        assert!(results[0].1.is_err());
+        assert!(transports.failures.read().contains_key("stalled"));
+    }
 
     #[tokio::test]
     async fn broadcast_reports_backend_json_rpc_errors_as_failures() {

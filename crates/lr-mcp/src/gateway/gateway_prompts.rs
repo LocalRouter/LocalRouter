@@ -27,11 +27,13 @@ impl McpGateway {
         if let Some(cached) = &session_read.cached_prompts {
             if cached.is_valid() {
                 let prompts = session_read.visible_prompts(&cached.data);
+                let result =
+                    session_read.with_initialization_failures(cached.result("prompts", &prompts));
                 drop(session_read);
 
                 return Ok(JsonRpcResponse::success(
                     request.id.unwrap_or(Value::Null),
-                    json!({"prompts": prompts}),
+                    result,
                 ));
             }
         }
@@ -55,7 +57,8 @@ impl McpGateway {
             session_write.last_broadcast_failures = failures.clone();
 
             let cache_ttl = session_write.cache_ttl_manager.get_ttl();
-            session_write.cached_prompts = Some(CachedList::new(prompts.clone(), cache_ttl));
+            session_write.cached_prompts =
+                Some(CachedList::new(prompts.clone(), cache_ttl).with_failures(failures.clone()));
         }
 
         // Apply permissions and catalog compression (filter deferred prompts)
@@ -69,6 +72,7 @@ impl McpGateway {
             });
         }
 
+        let result = session.read().await.with_initialization_failures(result);
         Ok(JsonRpcResponse::success(
             request.id.unwrap_or(Value::Null),
             result,
