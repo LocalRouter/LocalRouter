@@ -7,7 +7,7 @@
 - [x] Test Coverage Review: cover authentication transitions, credential preservation and validation failures.
 - [x] Bug Hunt: review async saves, credential handling and form initialization.
 - [x] Validate TypeScript and exact stable Rust CI checks, then commit and push task changes and automatic catalog updates.
-- [ ] Dispatch the next unused stable release through the existing Release workflow; verify publication, updater assets and signatures.
+- [x] Dispatch the next unused stable release through the existing Release workflow; verify publication, updater assets and signatures.
 
 ## Findings and implementation
 
@@ -22,3 +22,11 @@ Plan/coverage/bug review: checked secret preservation, empty/new credentials, nu
 Validation so far: rustup stable 1.99.1 updated/verified; actual compiler pinned by PATH and RUSTC, inaccessible sccache disabled only for validation. Workspace Clippy with warnings denied and formatting passed. Full Rust suite: 4,597 passed, 69 ignored, zero failures across 111 suites. All 95 frontend unit tests and packaging regressions passed; desktop and website production builds passed. Browser OAuth regressions use an isolated headless Chrome demo session. GitHub CLI TLS failed through the inspection proxy; release API calls use macOS curl with normal certificate verification and existing GitHub authentication, without exposing credentials in argv/output.
 
 Final validation: all 12 remote MCP browser regressions passed; an additional in-flight credential-reversion regression passed (13 total). Final TypeScript and production frontend/website builds passed after the snapshot guard changes. Upstream is unchanged; v0.0.167 is the next unused stable version.
+
+Release v0.0.167 dispatched on master as run 39978244948: https://github.com/LocalRouter/LocalRouter/actions/runs/39978244948 . Workflow-owned tag/version bump is 7d910ed3 and contains candidate 73c9b3f4. All five native builds are running; publication and signature verification are pending. Candidate CI 39978168926 has passed its frontend/website job and is running Rust tests. Exact tagged-tree stable Clippy and formatting passed; full workspace tests are running.
+
+Exact tagged-tree validation completed successfully: stable Clippy with warnings denied, formatting, and 4,597 tests passed (69 ignored, 111 suites). Windows native build completed successfully; other native jobs are still building/signing/uploading.
+
+Published v0.0.167 at 2026-10-23T16:01:14Z: https://github.com/LocalRouter/LocalRouter/releases/tag/v0.0.167 . All five native builds and Create GitHub Release succeeded; candidate CI 39978168926 is green. Verified latest.json version and all five updater platforms, downloaded 13 assets, matched every GitHub SHA-256 digest, verified every updater signature plus Windows MSI against the bundled updater public key, and confirmed both macOS bundles internally report 0.0.167. Initial publication includes 28 assets. Nix pin and Docker dispatch completed; Flatpak and Snap builds remain separate in-progress packaging follow-ups.
+
+Final review complete: no catalog snapshot changed, unrelated local release plans remain untracked, and all application source changes were committed/pushed as 73c9b3f4 before release.
