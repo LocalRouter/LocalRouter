@@ -183,6 +183,7 @@ export interface FirewallApprovalCardProps {
   isNotifyOnly?: boolean
   secretScanFindings?: SecretFindingSummary[]
   secretScanRequestJson?: string | null
+  secretScanLlmSource?: string | null
   guardrailVerdicts?: SafetyVerdict[]
   guardrailDirection?: "request" | "response"
   guardrailActions?: CategoryActionRequired[]
@@ -236,6 +237,7 @@ export function FirewallApprovalCard({
   isNotifyOnly,
   secretScanFindings,
   secretScanRequestJson,
+  secretScanLlmSource,
   guardrailVerdicts,
   guardrailDirection,
   guardrailActions,
@@ -403,9 +405,8 @@ export function FirewallApprovalCard({
             </>
           ) : requestType === "secret_scan" ? (
             <>
-              <span className="text-muted-foreground">Model:</span>
-              <span className="truncate">{toolName}</span>
-
+              <span className="text-muted-foreground">LLM source:</span>
+              <span className="truncate">{secretScanLlmSource || "Not selected yet"}</span>
             </>
           ) : (
             <>
@@ -514,35 +515,26 @@ export function FirewallApprovalCard({
               <div key={i} className="bg-muted/50 rounded px-3 py-3 text-xs space-y-2">
                 <div className="flex items-center justify-between">
                   <span className="font-semibold">{finding.rule_description}</span>
-                  <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-orange-500/20 text-orange-600">
-                    {finding.category.replace(/_/g, " ")}
-                  </span>
-                </div>
-                {finding.context ? (
-                  <SecretScanEvent finding={finding} requestJson={secretScanRequestJson} revealed={revealed[i]} onReveal={onReveal ? () => { void toggleReveal(i) } : undefined} />
-                ) : (
-                  <div className="flex items-start gap-2">
-                    <div
-                      className="font-mono text-xs leading-relaxed font-semibold bg-background/70 rounded px-3 py-3 flex-1 min-w-0 break-all select-all"
-                      title={revealed[i] ?? finding.matched_text}
+                  {onReveal && (
+                    <button
+                      className="shrink-0 p-1 text-muted-foreground hover:text-foreground"
+                      onClick={() => { void toggleReveal(i) }}
+                      title={revealed[i] !== undefined ? "Hide secret" : "Reveal secret"}
+                      aria-label={revealed[i] !== undefined ? "Hide secret" : "Reveal secret"}
                     >
-                      {revealed[i] ?? finding.matched_text}
-                    </div>
-                    {onReveal && (
-                      <button
-                        className="text-muted-foreground hover:text-foreground p-2 flex-shrink-0"
-                        onClick={() => toggleReveal(i)}
-                        title={revealed[i] !== undefined ? "Hide secret" : "Reveal secret"}
-                        aria-label={revealed[i] !== undefined ? "Hide secret" : "Reveal secret"}
-                      >
-                        {revealed[i] !== undefined ? (
-                          <EyeOff className="h-5 w-5" />
-                        ) : (
-                          <Eye className="h-5 w-5" />
-                      )}
+                      {revealed[i] !== undefined ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                     </button>
                   )}
                 </div>
+                {secretScanRequestJson ? (
+                  <SecretScanEvent finding={finding} requestJson={secretScanRequestJson} revealed={revealed[i]} />
+                ) : (
+                  <div
+                    className="font-mono text-xs leading-relaxed font-semibold bg-background/70 rounded px-3 py-3 break-all select-all"
+                    title={revealed[i] ?? finding.matched_text}
+                  >
+                    {revealed[i] ?? finding.matched_text}
+                  </div>
                 )}
                 {revealError[i] && (
                   <div className="text-[10px] text-destructive">{revealError[i]}</div>

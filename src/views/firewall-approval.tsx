@@ -40,6 +40,7 @@ interface ApprovalDetails {
     findings: SecretFindingSummary[]
     scan_duration_ms: number
     request_json: string | null
+    llm_source: string | null
   }
 }
 
@@ -919,6 +920,7 @@ export function FirewallApproval() {
           guardrailFlaggedText={details.guardrail_details?.flagged_text}
           secretScanFindings={details.secret_scan_details?.findings}
           secretScanRequestJson={details.secret_scan_details?.request_json}
+          secretScanLlmSource={details.secret_scan_details?.llm_source}
           marketplaceListing={marketplaceListing}
           onAction={buttonsReady ? handleAction : undefined}
           onDismiss={buttonsReady ? handleDismiss : undefined}

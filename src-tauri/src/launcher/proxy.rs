@@ -199,11 +199,12 @@ impl lr_proxy::active::Firewall for AppFirewall {
         // Messages or OpenAI Responses, including a websocket `response.create`
         // message); the shared text extractor understands all of them.
         let mut body = req.body.clone();
-        let redacted = match lr_server::routes::pipeline::scan_request_for_secrets(
+        let redacted = match lr_server::routes::pipeline::scan_request_for_secrets_with_source(
             &self.state,
             &req.client_id,
             req.model.as_deref().unwrap_or_default(),
             &body,
+            Some(&req.provider),
         )
         .await
         {

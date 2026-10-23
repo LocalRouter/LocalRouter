@@ -73,6 +73,9 @@ pub struct SecretScanApprovalDetails {
     /// Complete request with every detected secret masked before serialization.
     #[serde(default)]
     pub request_json: Option<String>,
+    /// Provider source, when known before the request is forwarded.
+    #[serde(default)]
+    pub llm_source: Option<String>,
 }
 
 /// Complete masked source text around a secret. Plaintext stays in the reveal path.
@@ -82,6 +85,13 @@ pub struct SecretFindingContext {
     pub line: usize,
     pub before: String,
     pub after: String,
+}
+
+/// UTF-16 offsets into the masked request JSON, matching JavaScript string slicing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecretFindingRequestMatch {
+    pub start: usize,
+    pub end: usize,
 }
 
 /// Summary of a single secret finding for the approval popup
@@ -101,6 +111,8 @@ pub struct SecretFindingSummary {
     pub entropy: f32,
     #[serde(default)]
     pub context: Option<SecretFindingContext>,
+    #[serde(default)]
+    pub request_match: Option<SecretFindingRequestMatch>,
 }
 
 /// Guardrail approval details (sent to popup)
@@ -982,9 +994,11 @@ mod tests {
                 raw_text: "AKIAIOSFODNN7EXAMPLE".to_string(),
                 entropy: 3.42,
                 context: None,
+                request_match: None,
             }],
             scan_duration_ms: 1,
             request_json: None,
+            llm_source: None,
         }
     }
 

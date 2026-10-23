@@ -4547,6 +4547,12 @@ export interface SecretFindingContext {
   after: string
 }
 
+/** UTF-16 offsets into SecretScanApprovalDetails.request_json. */
+export interface SecretFindingRequestMatch {
+  start: number
+  end: number
+}
+
 /** Summary of a single secret finding (for approval popup) */
 export interface SecretFindingSummary {
   rule_id: string
@@ -4555,6 +4561,7 @@ export interface SecretFindingSummary {
   matched_text: string
   entropy: number
   context: SecretFindingContext | null
+  request_match: SecretFindingRequestMatch | null
 }
 
 /** Secret scan approval details (sent to popup) */
@@ -4562,6 +4569,7 @@ export interface SecretScanApprovalDetails {
   findings: SecretFindingSummary[]
   scan_duration_ms: number
   request_json: string | null
+  llm_source: string | null
 }
 
 /** Result of a secret scan */

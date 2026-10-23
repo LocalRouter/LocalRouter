@@ -3547,7 +3547,7 @@ pub async fn debug_trigger_firewall_popup(
         None
     };
 
-    let secret_scan_details = if is_secret_scan {
+    let mut secret_scan_details = if is_secret_scan {
         Some(lr_mcp::gateway::firewall::SecretScanApprovalDetails {
             findings: vec![
                 lr_mcp::gateway::firewall::SecretFindingSummary {
@@ -3557,6 +3557,7 @@ pub async fn debug_trigger_firewall_popup(
                     matched_text: "AKIA**********MPLE".to_string(),
                     raw_text: "AKIAIOSFODNN7EXAMPLE".to_string(),
                     entropy: 3.42,
+                    request_match: None,
                     context: Some(lr_mcp::gateway::firewall::SecretFindingContext {
                         source: "Message 2 · user message".into(),
                         line: 1,
@@ -3571,6 +3572,7 @@ pub async fn debug_trigger_firewall_popup(
                     matched_text: "ghp_AB********************ghij".to_string(),
                     raw_text: "ghp_ABcdefghijklmnopqrstuvwxyz012345ghij".to_string(),
                     entropy: 4.12,
+                    request_match: None,
                     context: Some(lr_mcp::gateway::firewall::SecretFindingContext {
                         source: "Message 2 · user tool call arguments".into(),
                         line: 1,
@@ -3580,11 +3582,35 @@ pub async fn debug_trigger_firewall_popup(
                 },
             ],
             scan_duration_ms: 1,
-            request_json: Some(serde_json::json!({"model": "demo", "messages": [{"role": "user", "content": "AWS_ACCESS_KEY_ID=[REDACTED: secret removed by LocalRouter]"}]}).to_string()),
+            llm_source: Some("OpenAI".into()),
+            request_json: Some(serde_json::json!({"model": "demo", "messages": [{"role": "user", "content": "AWS_ACCESS_KEY_ID=[REDACTED: secret removed by LocalRouter] GITHUB_TOKEN=[REDACTED: secret removed by LocalRouter]"}]}).to_string()),
         })
     } else {
         None
     };
+
+    fn set_demo_request_matches(
+        details: &mut Option<lr_mcp::gateway::firewall::SecretScanApprovalDetails>,
+    ) {
+        let Some(details) = details.as_mut() else {
+            return;
+        };
+        let Some(json) = details.request_json.as_ref() else {
+            return;
+        };
+        for (finding, (offset, marker)) in details
+            .findings
+            .iter_mut()
+            .zip(json.match_indices(lr_secret_scanner::redaction::REDACTION_MESSAGE))
+        {
+            let start = json[..offset].encode_utf16().count();
+            finding.request_match = Some(lr_mcp::gateway::firewall::SecretFindingRequestMatch {
+                start,
+                end: start + marker.len(),
+            });
+        }
+    }
+    set_demo_request_matches(&mut secret_scan_details);
 
     let mut sessions = vec![DebugSession {
         tool_name: tool_name.clone(),
@@ -3692,7 +3718,7 @@ pub async fn debug_trigger_firewall_popup(
         } else {
             None
         };
-        let alt_secret_scan_details = if is_secret_scan {
+        let mut alt_secret_scan_details = if is_secret_scan {
             Some(lr_mcp::gateway::firewall::SecretScanApprovalDetails {
                 findings: vec![lr_mcp::gateway::firewall::SecretFindingSummary {
                     rule_id: "postgres-uri".to_string(),
@@ -3701,6 +3727,7 @@ pub async fn debug_trigger_firewall_popup(
                     matched_text: "postg...( 45 chars)...5432".to_string(),
                     raw_text: "postgres://demo:hunter2@db.example.com:5432".to_string(),
                     entropy: 3.85,
+                    request_match: None,
                     context: Some(lr_mcp::gateway::firewall::SecretFindingContext {
                         source: "Message 2 · user message".into(),
                         line: 1,
@@ -3709,11 +3736,13 @@ pub async fn debug_trigger_firewall_popup(
                     }),
                 }],
                 scan_duration_ms: 0,
+                llm_source: Some("Anthropic".into()),
                 request_json: Some(serde_json::json!({"model": "demo", "messages": [{"role": "user", "content": "DATABASE_URL=[REDACTED: secret removed by LocalRouter]"}]}).to_string()),
             })
         } else {
             None
         };
+        set_demo_request_matches(&mut alt_secret_scan_details);
         sessions.push(DebugSession {
             tool_name: alt_tool,
             server_name: alt_server,

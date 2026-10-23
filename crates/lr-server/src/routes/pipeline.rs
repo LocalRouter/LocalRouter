@@ -1561,6 +1561,17 @@ pub async fn scan_request_for_secrets(
     model: &str,
     body: &serde_json::Value,
 ) -> SecretScanOutcome {
+    scan_request_for_secrets_with_source(state, client_id, model, body, None).await
+}
+
+/// Native proxy requests already know their provider before scanning.
+pub async fn scan_request_for_secrets_with_source(
+    state: &AppState,
+    client_id: &str,
+    model: &str,
+    body: &serde_json::Value,
+    source_hint: Option<&str>,
+) -> SecretScanOutcome {
     let config = state.config_manager.get();
     let client = state.client_manager.get_client(client_id);
 
@@ -1620,8 +1631,27 @@ pub async fn scan_request_for_secrets(
 
     // Build context before filtering remembered secrets so those values are
     // masked too, including during sequential approvals of later findings.
-    let mut popup_details = (!result.findings.is_empty())
-        .then(|| secret_scan_popup_content(&result, &guardrail_texts, body));
+    let mut popup_details = (!result.findings.is_empty()).then(|| {
+        let mut details = secret_scan_popup_content(&result, &guardrail_texts, body);
+        let matching_providers: Vec<_> = if source_hint.is_none() && !model.contains('/') {
+            state
+                .provider_registry
+                .get_all_cached_models_instant()
+                .iter()
+                .filter(|m| m.id.eq_ignore_ascii_case(model))
+                .map(|m| m.provider.clone())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        details.llm_source = Some(secret_scan_llm_source(
+            model,
+            source_hint,
+            &state.provider_registry.list_providers(),
+            &matching_providers,
+        ));
+        details
+    });
 
     // Remembered redactions take priority over ignored values and time bypasses.
     let mut redaction = lr_secret_scanner::redaction::Redaction::default();
@@ -1752,6 +1782,34 @@ pub async fn scan_request_for_secrets(
     }
 }
 
+fn secret_scan_llm_source(
+    model: &str,
+    source_hint: Option<&str>,
+    providers: &[lr_providers::registry::ProviderInstanceInfo],
+    matching_providers: &[String],
+) -> String {
+    if source_hint.is_none() && model == "localrouter/auto" {
+        return "Auto routing".into();
+    }
+    let unique: std::collections::HashSet<_> =
+        matching_providers.iter().map(String::as_str).collect();
+    let instance = source_hint
+        .or_else(|| model.split_once('/').map(|(provider, _)| provider))
+        .or_else(|| (unique.len() == 1).then(|| *unique.iter().next().unwrap()));
+    let Some(instance) = instance else {
+        return "Not selected yet".into();
+    };
+    providers
+        .iter()
+        .find(|p| {
+            p.instance_name.eq_ignore_ascii_case(instance)
+                || p.provider_type.eq_ignore_ascii_case(instance)
+                || p.provider_name.eq_ignore_ascii_case(instance)
+        })
+        .map(|p| p.provider_name.clone())
+        .unwrap_or_else(|| instance.to_string())
+}
+
 /// Build structured findings with masked source context from a scan result. Shared by the Ask (approval) and
 /// Notify (informational) popup paths.
 fn secret_scan_popup_content(
@@ -1767,8 +1825,8 @@ fn secret_scan_popup_content(
     }
     let mut masked_body = body.clone();
     mask.apply(&mut masked_body);
+    let request_json = serde_json::to_string_pretty(&masked_body).ok();
     SecretScanApprovalDetails {
-        request_json: serde_json::to_string_pretty(&masked_body).ok(),
         findings: result
             .findings
             .iter()
@@ -1779,13 +1837,69 @@ fn secret_scan_popup_content(
                 matched_text: f.matched_text.clone(),
                 raw_text: f.raw_text.clone(),
                 entropy: f.entropy,
+                request_match: request_json
+                    .as_deref()
+                    .and_then(|json| secret_request_match(body, &f.raw_text, &mask, json)),
                 context: texts
                     .get(f.message_index)
                     .and_then(|text| secret_finding_context(text, &f.raw_text, &mask)),
             })
             .collect(),
         scan_duration_ms: result.scan_duration_ms,
+        request_json,
+        llm_source: None,
     }
+}
+
+/// Locate this value in the complete masked JSON without searching for its
+/// (possibly non-unique) masked preview or losing JSON escaping information.
+fn secret_request_match(
+    body: &serde_json::Value,
+    secret: &str,
+    mask: &lr_secret_scanner::redaction::Redaction,
+    masked_json: &str,
+) -> Option<lr_mcp::gateway::firewall::SecretFindingRequestMatch> {
+    fn mark_first(value: &mut serde_json::Value, secret: &str, marker: &str) -> bool {
+        match value {
+            serde_json::Value::String(text) => {
+                if let Some(start) = text.find(secret) {
+                    text.replace_range(start..start + secret.len(), marker);
+                    true
+                } else {
+                    false
+                }
+            }
+            serde_json::Value::Array(values) => {
+                values.iter_mut().any(|v| mark_first(v, secret, marker))
+            }
+            serde_json::Value::Object(values) => {
+                values.values_mut().any(|v| mark_first(v, secret, marker))
+            }
+            _ => false,
+        }
+    }
+    if secret.is_empty() {
+        return None;
+    }
+    let marker = format!("LocalRouterFinding{}", uuid::Uuid::new_v4());
+    let mut marked = body.clone();
+    if !mark_first(&mut marked, secret, &marker) {
+        return None;
+    }
+    mask.apply(&mut marked);
+    let json = serde_json::to_string_pretty(&marked).ok()?;
+    let (before, _) = json.split_once(&marker)?;
+    let replacement = lr_secret_scanner::redaction::REDACTION_MESSAGE;
+    // Only return offsets if substituting the marker recreates the exact
+    // masked payload. Overlaps or unusual inputs cannot select unrelated text.
+    if json.replacen(&marker, replacement, 1) != masked_json {
+        return None;
+    }
+    let start = before.encode_utf16().count();
+    Some(lr_mcp::gateway::firewall::SecretFindingRequestMatch {
+        start,
+        end: start + replacement.encode_utf16().count(),
+    })
 }
 
 fn secret_finding_context(
@@ -1854,6 +1968,7 @@ pub(crate) async fn handle_secret_scan_approval(
             findings: vec![finding],
             scan_duration_ms: details.scan_duration_ms,
             request_json: details.request_json.clone(),
+            llm_source: details.llm_source.clone(),
         };
         let preview = secret_scan_popup_preview(&one);
         let response = match state
@@ -2530,6 +2645,88 @@ pub(crate) async fn run_turn_pipeline(
 mod tests {
 
     #[test]
+    fn secret_scan_source_uses_known_provider_identity_and_preserves_unresolved_routing() {
+        use lr_providers::registry::ProviderInstanceInfo;
+        let providers = vec![
+            ProviderInstanceInfo {
+                instance_name: "local-models".into(),
+                provider_type: "ollama".into(),
+                provider_name: "Ollama".into(),
+                created_at: chrono::Utc::now(),
+                enabled: true,
+            },
+            ProviderInstanceInfo {
+                instance_name: "claude-account".into(),
+                provider_type: "anthropic".into(),
+                provider_name: "Anthropic".into(),
+                created_at: chrono::Utc::now(),
+                enabled: true,
+            },
+        ];
+        let resolve = |model, hint, candidates: &[String]| {
+            super::secret_scan_llm_source(model, hint, &providers, candidates)
+        };
+        assert_eq!(resolve("local-models/llama3", None, &[]), "Ollama");
+        assert_eq!(
+            resolve("claude-sonnet", Some("anthropic"), &[]),
+            "Anthropic"
+        );
+        assert_eq!(resolve("llama3", None, &["local-models".into()]), "Ollama");
+        assert_eq!(
+            resolve(
+                "llama3",
+                None,
+                &["local-models".into(), "local-models".into()]
+            ),
+            "Ollama"
+        );
+        assert_eq!(resolve("localrouter/auto", None, &[]), "Auto routing");
+        assert_eq!(resolve("claude-sonnet", None, &[]), "Not selected yet");
+        assert_eq!(
+            resolve(
+                "shared-model",
+                None,
+                &["local-models".into(), "claude-account".into()]
+            ),
+            "Not selected yet"
+        );
+    }
+
+    #[test]
+    fn full_request_match_handles_utf16_json_escaping_repeats_and_other_secrets() {
+        use lr_secret_scanner::redaction::{Redaction, REDACTION_MESSAGE};
+        let secret = "token\"with\nnewlines";
+        let neighbor = "another-secret";
+        let body = serde_json::json!({"messages": [
+            {"role": "assistant", "content": "🌍 Previous context"},
+            {"role": "user", "content": format!("界 {neighbor} then {secret} and again {secret}")}
+        ], "temperature": 0.7});
+        let mut mask = Redaction::default();
+        mask.add(secret);
+        mask.add(neighbor);
+        let mut masked = body.clone();
+        mask.apply(&mut masked);
+        let json = serde_json::to_string_pretty(&masked).unwrap();
+        let selected = super::secret_request_match(&body, secret, &mask, &json).unwrap();
+        let units: Vec<_> = json.encode_utf16().collect();
+        assert_eq!(
+            String::from_utf16(&units[selected.start..selected.end]).unwrap(),
+            REDACTION_MESSAGE
+        );
+        let before = String::from_utf16(&units[..selected.start]).unwrap();
+        let after = String::from_utf16(&units[selected.end..]).unwrap();
+        assert!(before.contains("🌍 Previous context"));
+        assert!(before.contains(REDACTION_MESSAGE));
+        assert!(after.contains(REDACTION_MESSAGE));
+        assert!(!json.contains(neighbor));
+        assert!(!json.contains("token"));
+        let neighbor_match = super::secret_request_match(&body, neighbor, &mask, &json).unwrap();
+        assert!(neighbor_match.start < selected.start);
+        assert!(super::secret_request_match(&body, "absent", &mask, &json).is_none());
+        assert!(super::secret_request_match(&body, "", &mask, &json).is_none());
+    }
+
+    #[test]
     fn secret_context_preserves_complete_source_and_masks_neighbors() {
         use lr_guardrails::text_extractor::ExtractedText;
         use lr_secret_scanner::redaction::{Redaction, REDACTION_MESSAGE};
@@ -2599,6 +2796,14 @@ mod tests {
         assert!(!request.contains(first));
         assert!(!request.contains(second));
         assert!(serde_json::from_str::<serde_json::Value>(request).is_ok());
+        let first_match = details.findings[0].request_match.as_ref().unwrap();
+        let second_match = details.findings[1].request_match.as_ref().unwrap();
+        assert!(first_match.start < second_match.start);
+        let units: Vec<_> = request.encode_utf16().collect();
+        assert_eq!(
+            String::from_utf16(&units[second_match.start..second_match.end]).unwrap(),
+            lr_secret_scanner::redaction::REDACTION_MESSAGE
+        );
         let context = details.findings[1].context.as_ref().unwrap();
         assert_eq!(context.source, "Message 2 · user message (text part)");
         assert_eq!(context.line, 2);
