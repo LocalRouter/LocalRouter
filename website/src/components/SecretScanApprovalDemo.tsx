@@ -15,6 +15,7 @@ const DEMO_FINDINGS: SecretFindingSummary[] = [
     category: "ai_service",
     matched_text: "sk-proj...4f3K",
     entropy: 4.82,
+    context: { source: 'Message 2 · user message', line: 2, before: 'Check my configuration:\nOPENAI_API_KEY=', after: '\nWhy does authentication fail?' },
   },
 ]
 

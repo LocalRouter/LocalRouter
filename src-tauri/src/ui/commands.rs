@@ -3557,6 +3557,12 @@ pub async fn debug_trigger_firewall_popup(
                     matched_text: "AKIA**********MPLE".to_string(),
                     raw_text: "AKIAIOSFODNN7EXAMPLE".to_string(),
                     entropy: 3.42,
+                    context: Some(lr_mcp::gateway::firewall::SecretFindingContext {
+                        source: "Message 2 · user message".into(),
+                        line: 1,
+                        before: "Check the deployment configuration:\nAWS_ACCESS_KEY_ID=".into(),
+                        after: "\nAuthentication fails.".into(),
+                    }),
                 },
                 lr_mcp::gateway::firewall::SecretFindingSummary {
                     rule_id: "github-pat".to_string(),
@@ -3565,6 +3571,12 @@ pub async fn debug_trigger_firewall_popup(
                     matched_text: "ghp_AB********************ghij".to_string(),
                     raw_text: "ghp_ABcdefghijklmnopqrstuvwxyz012345ghij".to_string(),
                     entropy: 4.12,
+                    context: Some(lr_mcp::gateway::firewall::SecretFindingContext {
+                        source: "Message 2 · user tool call arguments".into(),
+                        line: 1,
+                        before: "Clone the repository with token ".into(),
+                        after: " and run the tests.".into(),
+                    }),
                 },
             ],
             scan_duration_ms: 1,
@@ -3688,6 +3700,12 @@ pub async fn debug_trigger_firewall_popup(
                     matched_text: "postg...( 45 chars)...5432".to_string(),
                     raw_text: "postgres://demo:hunter2@db.example.com:5432".to_string(),
                     entropy: 3.85,
+                    context: Some(lr_mcp::gateway::firewall::SecretFindingContext {
+                        source: "Message 2 · user message".into(),
+                        line: 1,
+                        before: "DATABASE_URL=".into(),
+                        after: "\nCan you check the connection?".into(),
+                    }),
                 }],
                 scan_duration_ms: 0,
             })

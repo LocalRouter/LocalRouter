@@ -4539,6 +4539,14 @@ export interface DismissedSecret {
   dismissed_at: string
 }
 
+/** Rust: lr-mcp gateway/firewall.rs - SecretFindingContext */
+export interface SecretFindingContext {
+  source: string
+  line: number
+  before: string
+  after: string
+}
+
 /** Summary of a single secret finding (for approval popup) */
 export interface SecretFindingSummary {
   rule_id: string
@@ -4546,6 +4554,7 @@ export interface SecretFindingSummary {
   category: string
   matched_text: string
   entropy: number
+  context: SecretFindingContext | null
 }
 
 /** Secret scan approval details (sent to popup) */

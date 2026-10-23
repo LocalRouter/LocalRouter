@@ -72,6 +72,15 @@ pub struct SecretScanApprovalDetails {
     pub scan_duration_ms: u64,
 }
 
+/// Masked, bounded excerpt around a secret. Plaintext stays in the reveal path.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecretFindingContext {
+    pub source: String,
+    pub line: usize,
+    pub before: String,
+    pub after: String,
+}
+
 /// Summary of a single secret finding for the approval popup
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecretFindingSummary {
@@ -87,6 +96,8 @@ pub struct SecretFindingSummary {
     #[serde(skip)]
     pub raw_text: String,
     pub entropy: f32,
+    #[serde(default)]
+    pub context: Option<SecretFindingContext>,
 }
 
 /// Guardrail approval details (sent to popup)
@@ -967,6 +978,7 @@ mod tests {
                 matched_text: "AKIA**********MPLE".to_string(),
                 raw_text: "AKIAIOSFODNN7EXAMPLE".to_string(),
                 entropy: 3.42,
+                context: None,
             }],
             scan_duration_ms: 1,
         }

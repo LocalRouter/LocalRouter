@@ -1618,6 +1618,10 @@ pub async fn scan_request_for_secrets(
     let scan_start = std::time::Instant::now();
     let mut result = scanner.scan(&texts);
 
+    // Build context before filtering remembered secrets so those values are
+    // masked too, including during sequential approvals of later findings.
+    let mut popup_details = secret_scan_popup_content(&result, &guardrail_texts);
+
     // Remembered redactions take priority over ignored values and time bypasses.
     let mut redaction = lr_secret_scanner::redaction::Redaction::default();
     let scanning = client.as_ref().map(|c| &c.secret_scanning);
@@ -1679,6 +1683,13 @@ pub async fn scan_request_for_secrets(
         };
     }
 
+    popup_details.findings.retain(|summary| {
+        result
+            .findings
+            .iter()
+            .any(|f| f.raw_text == summary.raw_text)
+    });
+
     tracing::info!(
         "Secret scan found {} potential secrets in request from client {}",
         result.findings.len(),
@@ -1712,18 +1723,18 @@ pub async fn scan_request_for_secrets(
                 .as_ref()
                 .map(|c| c.name.clone())
                 .unwrap_or_else(|| client_id.to_string());
-            let (details, preview) = secret_scan_popup_content(&result);
+            let preview = secret_scan_popup_preview(&popup_details);
             state.mcp_gateway.firewall_manager.notify_secret_scan(
                 client_id.to_string(),
                 client_name,
                 model.to_string(),
-                details,
+                popup_details,
                 preview,
             );
             SecretScanOutcome::Allow
         }
         lr_config::SecretScanAction::Ask => {
-            handle_secret_scan_approval(state, &client_ctx, model, result).await
+            handle_secret_scan_approval(state, &client_ctx, model, popup_details).await
         }
         lr_config::SecretScanAction::Off => SecretScanOutcome::Allow,
     };
@@ -1738,15 +1749,19 @@ pub async fn scan_request_for_secrets(
     }
 }
 
-/// Build the popup payload — structured findings plus the human-readable
-/// preview lines — from a scan result. Shared by the Ask (approval) and
+/// Build structured findings with masked source context from a scan result. Shared by the Ask (approval) and
 /// Notify (informational) popup paths.
 fn secret_scan_popup_content(
     result: &lr_secret_scanner::ScanResult,
-) -> (lr_mcp::gateway::firewall::SecretScanApprovalDetails, String) {
+    texts: &[lr_guardrails::text_extractor::ExtractedText],
+) -> lr_mcp::gateway::firewall::SecretScanApprovalDetails {
     use lr_mcp::gateway::firewall::{SecretFindingSummary, SecretScanApprovalDetails};
 
-    let details = SecretScanApprovalDetails {
+    let mut mask = lr_secret_scanner::redaction::Redaction::default();
+    for finding in &result.findings {
+        mask.add(&finding.raw_text);
+    }
+    SecretScanApprovalDetails {
         findings: result
             .findings
             .iter()
@@ -1757,12 +1772,58 @@ fn secret_scan_popup_content(
                 matched_text: f.matched_text.clone(),
                 raw_text: f.raw_text.clone(),
                 entropy: f.entropy,
+                context: texts
+                    .get(f.message_index)
+                    .and_then(|text| secret_finding_context(text, &f.raw_text, &mask)),
             })
             .collect(),
         scan_duration_ms: result.scan_duration_ms,
-    };
+    }
+}
 
-    let preview = result
+fn secret_finding_context(
+    text: &lr_guardrails::text_extractor::ExtractedText,
+    secret: &str,
+    mask: &lr_secret_scanner::redaction::Redaction,
+) -> Option<lr_mcp::gateway::firewall::SecretFindingContext> {
+    use lr_mcp::gateway::firewall::SecretFindingContext;
+    if secret.is_empty() {
+        return None;
+    }
+    let start = text.text.find(secret)?;
+    let end = start + secret.len();
+    // Mask complete neighboring values before clipping, so the excerpt's
+    // boundary cannot expose a fragment of another secret.
+    let before = mask.apply_text(&text.text[..start]);
+    let after = mask.apply_text(&text.text[end..]);
+    const CONTEXT_CHARS: usize = 180;
+    let mut before_chars: Vec<_> = before.chars().rev().take(CONTEXT_CHARS).collect();
+    before_chars.reverse();
+    let before_excerpt: String = before_chars.into_iter().collect();
+    let after_excerpt: String = after.chars().take(CONTEXT_CHARS).collect();
+    Some(SecretFindingContext {
+        source: match text.message_index {
+            Some(i) => format!("Message {} · {}", i + 1, text.label),
+            None => text.label.clone(),
+        },
+        line: text.text[..start].bytes().filter(|b| *b == b'\n').count() + 1,
+        before: if before_excerpt.len() < before.len() {
+            format!("…{before_excerpt}")
+        } else {
+            before_excerpt
+        },
+        after: if after_excerpt.len() < after.len() {
+            format!("{after_excerpt}…")
+        } else {
+            after_excerpt
+        },
+    })
+}
+
+fn secret_scan_popup_preview(
+    details: &lr_mcp::gateway::firewall::SecretScanApprovalDetails,
+) -> String {
+    details
         .findings
         .iter()
         .map(|f| {
@@ -1772,9 +1833,7 @@ fn secret_scan_popup_content(
             )
         })
         .collect::<Vec<_>>()
-        .join("\n");
-
-    (details, preview)
+        .join("\n")
 }
 
 /// Handle a secret scan detection that requires user approval (Ask action).
@@ -1784,7 +1843,7 @@ pub(crate) async fn handle_secret_scan_approval(
     state: &AppState,
     client_ctx: &ClientAuthContext,
     model: &str,
-    result: lr_secret_scanner::ScanResult,
+    details: lr_mcp::gateway::firewall::SecretScanApprovalDetails,
 ) -> SecretScanOutcome {
     use lr_mcp::gateway::firewall::FirewallApprovalAction;
 
@@ -1797,13 +1856,12 @@ pub(crate) async fn handle_secret_scan_approval(
     let mut redaction = lr_secret_scanner::redaction::Redaction::default();
     // Await each decision before creating the next popup. A denial immediately
     // ends the sequence; no later finding is ever presented for this request.
-    for finding in result.findings {
-        let one = lr_secret_scanner::ScanResult {
+    for finding in details.findings {
+        let one = lr_mcp::gateway::firewall::SecretScanApprovalDetails {
             findings: vec![finding],
-            scan_duration_ms: result.scan_duration_ms,
-            rules_evaluated: result.rules_evaluated,
+            scan_duration_ms: details.scan_duration_ms,
         };
-        let (details, preview) = secret_scan_popup_content(&one);
+        let preview = secret_scan_popup_preview(&one);
         let response = match state
             .mcp_gateway
             .firewall_manager
@@ -1811,7 +1869,7 @@ pub(crate) async fn handle_secret_scan_approval(
                 client_ctx.client_id.clone(),
                 client_name.clone(),
                 model.to_string(),
-                details,
+                one.clone(),
                 preview,
             )
             .await
@@ -2476,6 +2534,86 @@ pub(crate) async fn run_turn_pipeline(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn secret_context_masks_neighbors_before_clipping_and_handles_unicode() {
+        use lr_guardrails::text_extractor::ExtractedText;
+        use lr_secret_scanner::redaction::{Redaction, REDACTION_MESSAGE};
+        let secret = "target-value";
+        let neighbor = "a-neighboring-secret";
+        let mut mask = Redaction::default();
+        mask.add(secret);
+        mask.add(neighbor);
+        let text = ExtractedText {
+            text: format!(
+                "{}\n{neighbor}\nkey={secret}\n{neighbor}{}",
+                "界".repeat(240),
+                "🌍".repeat(240)
+            ),
+            message_index: Some(3),
+            label: "user tool call arguments".into(),
+            role: "user".into(),
+        };
+        let context = super::secret_finding_context(&text, secret, &mask).unwrap();
+        assert_eq!(context.source, "Message 4 · user tool call arguments");
+        assert_eq!(context.line, 3);
+        assert!(context.before.starts_with('…'));
+        assert!(context.after.ends_with('…'));
+        assert!(context.before.contains(REDACTION_MESSAGE));
+        assert!(context.after.contains(REDACTION_MESSAGE));
+        assert!(!context.before.contains(neighbor));
+        assert!(!context.after.contains(neighbor));
+        assert!(context.before.chars().count() <= 181);
+        assert!(context.after.chars().count() <= 181);
+        assert!(super::secret_finding_context(&text, "absent", &mask).is_none());
+        assert!(super::secret_finding_context(&text, "", &mask).is_none());
+    }
+
+    #[test]
+    fn secret_popup_context_uses_matching_source_and_never_serializes_plaintext() {
+        use lr_secret_scanner::{SecretScanEngine, SecretScanEngineConfig};
+        let first = "AKIAZ7Q3VJ2M4XK9PLR6";
+        let second = "AKIAX9Q7W5E3R1T8Y6U4";
+        let body = serde_json::json!({"messages": [
+            {"role": "assistant", "content": "Earlier response"},
+            {"role": "user", "content": [
+                {"type": "text", "text": "Deployment configuration"},
+                {"type": "text", "text": format!("first = {first}\nsecond = {second}\nagain = {first}")}
+            ]}
+        ]});
+        let texts = lr_guardrails::text_extractor::extract_request_text(&body);
+        let scan_texts: Vec<_> = texts
+            .iter()
+            .enumerate()
+            .map(|(i, t)| lr_secret_scanner::ExtractedText {
+                text: t.text.clone(),
+                label: t.label.clone(),
+                message_index: i,
+            })
+            .collect();
+        let scanner = SecretScanEngine::new(&SecretScanEngineConfig {
+            entropy_threshold: 3.0,
+            allowlist: vec![],
+            scan_system_messages: false,
+        })
+        .unwrap();
+        let result = scanner.scan(&scan_texts);
+        assert_eq!(result.findings.len(), 2);
+        let mut details = super::secret_scan_popup_content(&result, &texts);
+        let context = details.findings[1].context.as_ref().unwrap();
+        assert_eq!(context.source, "Message 2 · user message (text part)");
+        assert_eq!(context.line, 2);
+        assert!(context.before.contains("first = "));
+        // Filtering remembered values must not unmask them in later contexts.
+        details.findings.remove(0);
+        let json = serde_json::to_string(&details).unwrap();
+        assert!(!json.contains(first));
+        assert!(!json.contains(second));
+        // A missing source remains compatible and simply has no excerpt.
+        assert!(super::secret_scan_popup_content(&result, &[]).findings[0]
+            .context
+            .is_none());
+    }
 
     /// A client's tool `strict` reaches the provider request unchanged.
     #[test]

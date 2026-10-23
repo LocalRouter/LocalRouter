@@ -549,6 +549,22 @@ export function FirewallApprovalCard({
                 {revealError[i] && (
                   <div className="text-[10px] text-destructive">{revealError[i]}</div>
                 )}
+                {finding.context && (
+                  <details className="group border-t border-border pt-2">
+                    <summary className="flex cursor-pointer list-none items-center gap-1 text-xs text-muted-foreground hover:text-foreground [&::-webkit-details-marker]:hidden">
+                      <ChevronDown className="h-3.5 w-3.5 -rotate-90 group-open:rotate-0" />
+                      View context
+                    </summary>
+                    <div className="mt-2 space-y-1.5">
+                      <p className="text-[10px] text-muted-foreground break-words">
+                        {finding.context.source} · Line {finding.context.line} · First occurrence
+                      </p>
+                      <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-background/70 p-2 text-xs font-mono leading-relaxed select-text">
+                        {finding.context.before}<mark className="rounded bg-orange-500/20 text-foreground font-semibold px-0.5">{revealed[i] ?? finding.matched_text}</mark>{finding.context.after}
+                      </pre>
+                    </div>
+                  </details>
+                )}
                 <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
                   <span>Entropy: <span className="font-mono font-medium text-foreground">{finding.entropy.toFixed(2)}</span></span>
                   <span className="ml-auto font-mono">{finding.rule_id}</span>
