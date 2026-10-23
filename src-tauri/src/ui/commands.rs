@@ -3580,6 +3580,7 @@ pub async fn debug_trigger_firewall_popup(
                 },
             ],
             scan_duration_ms: 1,
+            request_json: Some(serde_json::json!({"model": "demo", "messages": [{"role": "user", "content": "AWS_ACCESS_KEY_ID=[REDACTED: secret removed by LocalRouter]"}]}).to_string()),
         })
     } else {
         None
@@ -3708,6 +3709,7 @@ pub async fn debug_trigger_firewall_popup(
                     }),
                 }],
                 scan_duration_ms: 0,
+                request_json: Some(serde_json::json!({"model": "demo", "messages": [{"role": "user", "content": "DATABASE_URL=[REDACTED: secret removed by LocalRouter]"}]}).to_string()),
             })
         } else {
             None

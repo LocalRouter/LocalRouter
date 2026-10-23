@@ -6,7 +6,8 @@
  * Keep this component free of Tauri-specific imports so the website can use it.
  */
 import { useRef, useState } from "react"
-import { ChevronDown, Pencil, Eye, EyeOff } from "lucide-react"
+import { ChevronDown, Pencil, Eye, EyeOff, FileText } from "lucide-react"
+import { SecretScanEventDialog } from "./SecretScanEventDialog"
 import { Button } from "@/components/ui/Button"
 import {
   DropdownMenu,
@@ -181,7 +182,8 @@ export interface FirewallApprovalCardProps {
   /** Non-blocking notification: request already allowed, show Dismiss only */
   isNotifyOnly?: boolean
   secretScanFindings?: SecretFindingSummary[]
-  secretScanDurationMs?: number
+  secretScanRequestJson?: string | null
+  onEventViewChange?: (open: boolean) => void
   guardrailVerdicts?: SafetyVerdict[]
   guardrailDirection?: "request" | "response"
   guardrailActions?: CategoryActionRequired[]
@@ -234,7 +236,8 @@ export function FirewallApprovalCard({
   isSecretScanRequest,
   isNotifyOnly,
   secretScanFindings,
-  secretScanDurationMs,
+  secretScanRequestJson,
+  onEventViewChange,
   guardrailVerdicts,
   guardrailDirection,
   guardrailActions,
@@ -249,6 +252,9 @@ export function FirewallApprovalCard({
   submitting = false,
   className,
 }: FirewallApprovalCardProps) {
+  const [eventDark, setEventDark] = useState(false)
+  const [eventFinding, setEventFinding] = useState<number | null>(null)
+
   // Revealed plaintext per finding index; absent = still masked.
   const [revealed, setRevealed] = useState<Record<number, string>>({})
   const [revealError, setRevealError] = useState<Record<number, string>>({})
@@ -404,14 +410,7 @@ export function FirewallApprovalCard({
             <>
               <span className="text-muted-foreground">Model:</span>
               <span className="truncate">{toolName}</span>
-              {secretScanDurationMs !== undefined && (
-                <>
-                  <span className="text-muted-foreground">Scan time:</span>
-                  <span>{secretScanDurationMs}ms</span>
-                </>
-              )}
-              <span className="text-muted-foreground">Findings:</span>
-              <span className="font-medium text-orange-500">{secretScanFindings?.length ?? 0} secret(s) detected</span>
+
             </>
           ) : (
             <>
@@ -550,20 +549,9 @@ export function FirewallApprovalCard({
                   <div className="text-[10px] text-destructive">{revealError[i]}</div>
                 )}
                 {finding.context && (
-                  <details className="group border-t border-border pt-2">
-                    <summary className="flex cursor-pointer list-none items-center gap-1 text-xs text-muted-foreground hover:text-foreground [&::-webkit-details-marker]:hidden">
-                      <ChevronDown className="h-3.5 w-3.5 -rotate-90 group-open:rotate-0" />
-                      View context
-                    </summary>
-                    <div className="mt-2 space-y-1.5">
-                      <p className="text-[10px] text-muted-foreground break-words">
-                        {finding.context.source} · Line {finding.context.line} · First occurrence
-                      </p>
-                      <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-background/70 p-2 text-xs font-mono leading-relaxed select-text">
-                        {finding.context.before}<mark className="rounded bg-orange-500/20 text-foreground font-semibold px-0.5">{revealed[i] ?? finding.matched_text}</mark>{finding.context.after}
-                      </pre>
-                    </div>
-                  </details>
+                  <Button size="sm" variant="ghost" className="h-7 px-0 text-xs text-muted-foreground hover:text-foreground" onClick={(event) => { setEventDark(!!event.currentTarget.closest(".dark")); setEventFinding(i); onEventViewChange?.(true) }}>
+                    <FileText className="mr-1.5 h-3.5 w-3.5" />View event
+                  </Button>
                 )}
                 <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
                   <span>Entropy: <span className="font-mono font-medium text-foreground">{finding.entropy.toFixed(2)}</span></span>
@@ -577,6 +565,20 @@ export function FirewallApprovalCard({
           </div>
         )}
       </div>
+
+      {eventFinding !== null && secretScanFindings?.[eventFinding] && (
+        <SecretScanEventDialog
+          finding={secretScanFindings[eventFinding]}
+          dark={eventDark}
+          revealError={revealError[eventFinding]}
+          requestJson={secretScanRequestJson}
+          clientName={clientName}
+          model={toolName}
+          revealed={revealed[eventFinding]}
+          onReveal={onReveal ? () => { void toggleReveal(eventFinding) } : undefined}
+          onClose={() => { setEventFinding(null); onEventViewChange?.(false) }}
+        />
+      )}
 
       {/* Notify-only: informational popup — Dismiss, with escalation options.
           The dropdown reuses the Ask actions: allow_1_hour = 1-hour scan

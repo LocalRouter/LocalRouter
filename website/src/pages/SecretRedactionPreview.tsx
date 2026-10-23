@@ -4,12 +4,14 @@ import type { SecretFindingSummary } from '@app/types/tauri-commands'
 
 const SAMPLES = ['AKIAZ7Q3VJ2M4XK9PLR6', 'AKIAX9Q7W5E3R1T8Y6U4']
 const MARKER = '[REDACTED: secret removed by LocalRouter]'
+const INTRO = ['Beginning of the deployment request', ...Array.from({ length: 60 }, (_, i) => `Earlier deployment detail ${i + 1}`)].join('\n')
+const OUTRO = [...Array.from({ length: 60 }, (_, i) => `Later deployment detail ${i + 1}`), 'End of the deployment request'].join('\n')
 const FINDINGS: SecretFindingSummary[] = SAMPLES.map((_, i) => ({
   rule_id: 'aws-access-token', rule_description: 'AWS Access Key ID', category: 'cloud_provider',
   matched_text: i === 0 ? 'AKIA************PLR6' : 'AKIA************Y6U4', entropy: 4.12,
-  context: { source: 'Message 2 · user message', line: i + 2,
-    before: `Help me configure the deployment.\naws_access_key_id_${i + 1}=`,
-    after: '\nPlease check why authentication fails.', },
+  context: { source: 'Message 2 · user message', line: 63,
+    before: `${INTRO}\nHelp me configure the deployment.\naws_access_key_id_${i + 1}=`,
+    after: `\nPlease check why authentication fails.\n${OUTRO}`,  },
 }))
 type Choice = 'redact' | 'allow'
 type SavedPolicy = { choice: Choice; hash: string }
@@ -18,7 +20,8 @@ type SavedPolicy = { choice: Choice; hash: string }
  * No requests are sent; saved hashes remain in memory. */
 export default function SecretRedactionPreview() {
   const count = new URLSearchParams(window.location.search).has('multiple') ? 2 : 1
-  const source = SAMPLES.slice(0, count).map((secret, i) => `aws_access_key_id_${i + 1}=${secret}`).join('\n')
+  const source = `${INTRO}\n${SAMPLES.slice(0, count).map((secret, i) => `aws_access_key_id_${i + 1}=${secret}`).join('\n')}\n${OUTRO}`
+  const requestJson = JSON.stringify({ model: 'gpt-4o', messages: [{ role: 'assistant', content: 'Previous conversation message' }, { role: 'user', content: SAMPLES.reduce((text, secret) => text.split(secret).join(MARKER), source) }], temperature: 0.7 }, null, 2)
   const [current, setCurrent] = useState<number | null>(0)
   const [decisions, setDecisions] = useState<Record<number, Choice>>({})
   const [policies, setPolicies] = useState<Record<number, SavedPolicy>>({})
@@ -70,7 +73,7 @@ export default function SecretRedactionPreview() {
       <div><p className="text-xs uppercase tracking-widest text-blue-400">Local preview · no requests sent</p><h1 className="text-2xl font-semibold mt-2">Secret redaction</h1><p className="text-sm text-muted-foreground mt-2">Actual approval UI with simulated requests and in-memory hashes.</p><a className="text-sm underline text-muted-foreground" href={count === 1 ? '?multiple' : '?'}>{count === 1 ? 'Try a request with two secrets' : 'Try a request with one secret'}</a></div>
       <div className="grid gap-8 lg:grid-cols-2 items-start">
         <div className="space-y-4">
-          {current !== null ? <div className="rounded-lg border shadow-xl w-[440px] max-w-full" data-testid="approval-popup"><FirewallApprovalCard key={current} className="flex flex-col p-4" clientName="Cursor" toolName="gpt-4o" serverName="openai" isSecretScanRequest isNotifyOnly={new URLSearchParams(window.location.search).has('notify')} onDismiss={() => setCurrent(null)} secretScanFindings={[FINDINGS[current]]} secretScanDurationMs={1} onAction={action} onReveal={async () => SAMPLES[current]} onAllowSecretPermanently={() => remember('allow')} onRedactPermanently={() => remember('redact')} submitting={saving} /></div> : <div className="rounded-lg border p-6 text-sm" role="status">{status}</div>}
+          {current !== null ? <div className="rounded-lg border shadow-xl w-[440px] max-w-full" data-testid="approval-popup"><FirewallApprovalCard key={current} className="flex flex-col p-4" clientName="Cursor" toolName="gpt-4o" serverName="openai" isSecretScanRequest secretScanRequestJson={requestJson} isNotifyOnly={new URLSearchParams(window.location.search).has('notify')} onDismiss={() => setCurrent(null)} secretScanFindings={[FINDINGS[current]]} onAction={action} onReveal={async () => SAMPLES[current]} onAllowSecretPermanently={() => remember('allow')} onRedactPermanently={() => remember('redact')} submitting={saving} /></div> : <div className="rounded-lg border p-6 text-sm" role="status">{status}</div>}
           <div className="flex gap-3 text-sm"><button className="rounded border px-3 py-2 hover:bg-muted" onClick={nextRequest}>Send the same request again</button><button className="rounded border px-3 py-2 hover:bg-muted" onClick={() => { setPolicies({}); setDecisions({}); setCurrent(0); setPayload(null); setStatus('Request paused for your decision') }}>Reset preview</button></div>
         </div>
         <div className="space-y-5 text-sm">

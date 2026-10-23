@@ -31,7 +31,7 @@ export function SecretScanApprovalDemo() {
         serverName="openai"
         isSecretScanRequest
         secretScanFindings={DEMO_FINDINGS}
-        secretScanDurationMs={12}
+        secretScanRequestJson={JSON.stringify({ model: 'gpt-4o', messages: [{ role: 'user', content: 'OPENAI_API_KEY=[REDACTED: secret removed by LocalRouter]' }] }, null, 2)}
         onAction={noop}
         onRedactPermanently={async () => {}}
         onAllowSecretPermanently={async () => {}}

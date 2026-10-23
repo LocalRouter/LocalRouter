@@ -39,6 +39,7 @@ interface ApprovalDetails {
   secret_scan_details?: {
     findings: SecretFindingSummary[]
     scan_duration_ms: number
+    request_json: string | null
   }
 }
 
@@ -83,6 +84,8 @@ export function FirewallApproval() {
   const submittingRef = useRef(false)
   const [error, setError] = useState<string | null>(null)
   const [buttonsReady, setButtonsReady] = useState(false)
+
+  const eventResizeQueue = useRef<Promise<void>>(Promise.resolve())
 
   // Edit mode state
   const [editMode, setEditMode] = useState(false)
@@ -180,7 +183,7 @@ export function FirewallApproval() {
           // Each finding carries rule, value + reveal, entropy, and the
           // permanent-ignore control — the default 320px clips even one.
           const findingCount = result.secret_scan_details?.findings?.length || 1
-          const height = Math.min(660, (result.is_notify_only ? 300 : 365) + findingCount * 155)
+          const height = Math.min(660, (result.is_notify_only ? 260 : 325) + findingCount * 155)
           await win.setSize(new LogicalSize(440, height))
           await win.center()
         }
@@ -917,7 +920,16 @@ export function FirewallApproval() {
           guardrailActions={details.guardrail_details?.actions_required}
           guardrailFlaggedText={details.guardrail_details?.flagged_text}
           secretScanFindings={details.secret_scan_details?.findings}
-          secretScanDurationMs={details.secret_scan_details?.scan_duration_ms}
+          secretScanRequestJson={details.secret_scan_details?.request_json}
+          onEventViewChange={(open) => {
+            const count = details.secret_scan_details?.findings.length || 1
+            const height = Math.min(660, (details.is_notify_only ? 260 : 325) + count * 155)
+            eventResizeQueue.current = eventResizeQueue.current.catch(() => {}).then(async () => {
+              const win = getCurrentWebviewWindow()
+              await win.setSize(open ? new LogicalSize(860, 720) : new LogicalSize(440, height))
+              await win.center()
+            }).catch(() => {})
+          }}
           marketplaceListing={marketplaceListing}
           onAction={buttonsReady ? handleAction : undefined}
           onDismiss={buttonsReady ? handleDismiss : undefined}

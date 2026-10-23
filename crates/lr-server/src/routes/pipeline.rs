@@ -1620,7 +1620,8 @@ pub async fn scan_request_for_secrets(
 
     // Build context before filtering remembered secrets so those values are
     // masked too, including during sequential approvals of later findings.
-    let mut popup_details = secret_scan_popup_content(&result, &guardrail_texts);
+    let mut popup_details = (!result.findings.is_empty())
+        .then(|| secret_scan_popup_content(&result, &guardrail_texts, body));
 
     // Remembered redactions take priority over ignored values and time bypasses.
     let mut redaction = lr_secret_scanner::redaction::Redaction::default();
@@ -1683,6 +1684,8 @@ pub async fn scan_request_for_secrets(
         };
     }
 
+    // Non-empty findings above guarantee a popup payload was built.
+    let mut popup_details = popup_details.take().expect("findings have popup details");
     popup_details.findings.retain(|summary| {
         result
             .findings
@@ -1754,6 +1757,7 @@ pub async fn scan_request_for_secrets(
 fn secret_scan_popup_content(
     result: &lr_secret_scanner::ScanResult,
     texts: &[lr_guardrails::text_extractor::ExtractedText],
+    body: &serde_json::Value,
 ) -> lr_mcp::gateway::firewall::SecretScanApprovalDetails {
     use lr_mcp::gateway::firewall::{SecretFindingSummary, SecretScanApprovalDetails};
 
@@ -1761,7 +1765,10 @@ fn secret_scan_popup_content(
     for finding in &result.findings {
         mask.add(&finding.raw_text);
     }
+    let mut masked_body = body.clone();
+    mask.apply(&mut masked_body);
     SecretScanApprovalDetails {
+        request_json: serde_json::to_string_pretty(&masked_body).ok(),
         findings: result
             .findings
             .iter()
@@ -1792,31 +1799,17 @@ fn secret_finding_context(
     }
     let start = text.text.find(secret)?;
     let end = start + secret.len();
-    // Mask complete neighboring values before clipping, so the excerpt's
-    // boundary cannot expose a fragment of another secret.
+    // Keep the entire source on either side, masking all neighboring secrets.
     let before = mask.apply_text(&text.text[..start]);
     let after = mask.apply_text(&text.text[end..]);
-    const CONTEXT_CHARS: usize = 180;
-    let mut before_chars: Vec<_> = before.chars().rev().take(CONTEXT_CHARS).collect();
-    before_chars.reverse();
-    let before_excerpt: String = before_chars.into_iter().collect();
-    let after_excerpt: String = after.chars().take(CONTEXT_CHARS).collect();
     Some(SecretFindingContext {
         source: match text.message_index {
             Some(i) => format!("Message {} · {}", i + 1, text.label),
             None => text.label.clone(),
         },
         line: text.text[..start].bytes().filter(|b| *b == b'\n').count() + 1,
-        before: if before_excerpt.len() < before.len() {
-            format!("…{before_excerpt}")
-        } else {
-            before_excerpt
-        },
-        after: if after_excerpt.len() < after.len() {
-            format!("{after_excerpt}…")
-        } else {
-            after_excerpt
-        },
+        before,
+        after,
     })
 }
 
@@ -1860,6 +1853,7 @@ pub(crate) async fn handle_secret_scan_approval(
         let one = lr_mcp::gateway::firewall::SecretScanApprovalDetails {
             findings: vec![finding],
             scan_duration_ms: details.scan_duration_ms,
+            request_json: details.request_json.clone(),
         };
         let preview = secret_scan_popup_preview(&one);
         let response = match state
@@ -2536,7 +2530,7 @@ pub(crate) async fn run_turn_pipeline(
 mod tests {
 
     #[test]
-    fn secret_context_masks_neighbors_before_clipping_and_handles_unicode() {
+    fn secret_context_preserves_complete_source_and_masks_neighbors() {
         use lr_guardrails::text_extractor::ExtractedText;
         use lr_secret_scanner::redaction::{Redaction, REDACTION_MESSAGE};
         let secret = "target-value";
@@ -2557,14 +2551,13 @@ mod tests {
         let context = super::secret_finding_context(&text, secret, &mask).unwrap();
         assert_eq!(context.source, "Message 4 · user tool call arguments");
         assert_eq!(context.line, 3);
-        assert!(context.before.starts_with('…'));
-        assert!(context.after.ends_with('…'));
+        assert!(context.before.starts_with(&"界".repeat(240)));
+        assert!(context.after.ends_with(&"🌍".repeat(240)));
         assert!(context.before.contains(REDACTION_MESSAGE));
         assert!(context.after.contains(REDACTION_MESSAGE));
         assert!(!context.before.contains(neighbor));
         assert!(!context.after.contains(neighbor));
-        assert!(context.before.chars().count() <= 181);
-        assert!(context.after.chars().count() <= 181);
+
         assert!(super::secret_finding_context(&text, "absent", &mask).is_none());
         assert!(super::secret_finding_context(&text, "", &mask).is_none());
     }
@@ -2599,7 +2592,13 @@ mod tests {
         .unwrap();
         let result = scanner.scan(&scan_texts);
         assert_eq!(result.findings.len(), 2);
-        let mut details = super::secret_scan_popup_content(&result, &texts);
+        let mut details = super::secret_scan_popup_content(&result, &texts, &body);
+        let request = details.request_json.as_ref().unwrap();
+        assert!(request.contains("Earlier response"));
+        assert!(request.contains("Deployment configuration"));
+        assert!(!request.contains(first));
+        assert!(!request.contains(second));
+        assert!(serde_json::from_str::<serde_json::Value>(request).is_ok());
         let context = details.findings[1].context.as_ref().unwrap();
         assert_eq!(context.source, "Message 2 · user message (text part)");
         assert_eq!(context.line, 2);
@@ -2610,9 +2609,11 @@ mod tests {
         assert!(!json.contains(first));
         assert!(!json.contains(second));
         // A missing source remains compatible and simply has no excerpt.
-        assert!(super::secret_scan_popup_content(&result, &[]).findings[0]
-            .context
-            .is_none());
+        assert!(
+            super::secret_scan_popup_content(&result, &[], &body).findings[0]
+                .context
+                .is_none()
+        );
     }
 
     /// A client's tool `strict` reaches the provider request unchanged.

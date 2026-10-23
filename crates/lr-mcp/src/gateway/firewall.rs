@@ -70,9 +70,12 @@ pub struct SecretScanApprovalDetails {
     pub findings: Vec<SecretFindingSummary>,
     /// How long the scan took
     pub scan_duration_ms: u64,
+    /// Complete request with every detected secret masked before serialization.
+    #[serde(default)]
+    pub request_json: Option<String>,
 }
 
-/// Masked, bounded excerpt around a secret. Plaintext stays in the reveal path.
+/// Complete masked source text around a secret. Plaintext stays in the reveal path.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecretFindingContext {
     pub source: String,
@@ -981,6 +984,7 @@ mod tests {
                 context: None,
             }],
             scan_duration_ms: 1,
+            request_json: None,
         }
     }
 

@@ -4561,6 +4561,7 @@ export interface SecretFindingSummary {
 export interface SecretScanApprovalDetails {
   findings: SecretFindingSummary[]
   scan_duration_ms: number
+  request_json: string | null
 }
 
 /** Result of a secret scan */
