@@ -6,8 +6,8 @@
  * Keep this component free of Tauri-specific imports so the website can use it.
  */
 import { useRef, useState } from "react"
-import { ChevronDown, Pencil, Eye, EyeOff, FileText } from "lucide-react"
-import { SecretScanEventDialog } from "./SecretScanEventDialog"
+import { ChevronDown, Pencil, Eye, EyeOff } from "lucide-react"
+import { SecretScanEvent } from "./SecretScanEvent"
 import { Button } from "@/components/ui/Button"
 import {
   DropdownMenu,
@@ -183,7 +183,6 @@ export interface FirewallApprovalCardProps {
   isNotifyOnly?: boolean
   secretScanFindings?: SecretFindingSummary[]
   secretScanRequestJson?: string | null
-  onEventViewChange?: (open: boolean) => void
   guardrailVerdicts?: SafetyVerdict[]
   guardrailDirection?: "request" | "response"
   guardrailActions?: CategoryActionRequired[]
@@ -237,7 +236,6 @@ export function FirewallApprovalCard({
   isNotifyOnly,
   secretScanFindings,
   secretScanRequestJson,
-  onEventViewChange,
   guardrailVerdicts,
   guardrailDirection,
   guardrailActions,
@@ -252,9 +250,6 @@ export function FirewallApprovalCard({
   submitting = false,
   className,
 }: FirewallApprovalCardProps) {
-  const [eventDark, setEventDark] = useState(false)
-  const [eventFinding, setEventFinding] = useState<number | null>(null)
-
   // Revealed plaintext per finding index; absent = still masked.
   const [revealed, setRevealed] = useState<Record<number, string>>({})
   const [revealError, setRevealError] = useState<Record<number, string>>({})
@@ -523,35 +518,34 @@ export function FirewallApprovalCard({
                     {finding.category.replace(/_/g, " ")}
                   </span>
                 </div>
-                <div className="flex items-start gap-2">
-                  <div
-                    className="font-mono text-xs leading-relaxed font-semibold bg-background/70 rounded px-3 py-3 flex-1 min-w-0 break-all select-all"
-                    title={revealed[i] ?? finding.matched_text}
-                  >
-                    {revealed[i] ?? finding.matched_text}
-                  </div>
-                  {onReveal && (
-                    <button
-                      className="text-muted-foreground hover:text-foreground p-2 flex-shrink-0"
-                      onClick={() => toggleReveal(i)}
-                      title={revealed[i] !== undefined ? "Hide secret" : "Reveal secret"}
-                      aria-label={revealed[i] !== undefined ? "Hide secret" : "Reveal secret"}
+                {finding.context ? (
+                  <SecretScanEvent finding={finding} requestJson={secretScanRequestJson} revealed={revealed[i]} onReveal={onReveal ? () => { void toggleReveal(i) } : undefined} />
+                ) : (
+                  <div className="flex items-start gap-2">
+                    <div
+                      className="font-mono text-xs leading-relaxed font-semibold bg-background/70 rounded px-3 py-3 flex-1 min-w-0 break-all select-all"
+                      title={revealed[i] ?? finding.matched_text}
                     >
-                      {revealed[i] !== undefined ? (
-                        <EyeOff className="h-5 w-5" />
-                      ) : (
-                        <Eye className="h-5 w-5" />
+                      {revealed[i] ?? finding.matched_text}
+                    </div>
+                    {onReveal && (
+                      <button
+                        className="text-muted-foreground hover:text-foreground p-2 flex-shrink-0"
+                        onClick={() => toggleReveal(i)}
+                        title={revealed[i] !== undefined ? "Hide secret" : "Reveal secret"}
+                        aria-label={revealed[i] !== undefined ? "Hide secret" : "Reveal secret"}
+                      >
+                        {revealed[i] !== undefined ? (
+                          <EyeOff className="h-5 w-5" />
+                        ) : (
+                          <Eye className="h-5 w-5" />
                       )}
                     </button>
                   )}
                 </div>
+                )}
                 {revealError[i] && (
                   <div className="text-[10px] text-destructive">{revealError[i]}</div>
-                )}
-                {finding.context && (
-                  <Button size="sm" variant="ghost" className="h-7 px-0 text-xs text-muted-foreground hover:text-foreground" onClick={(event) => { setEventDark(!!event.currentTarget.closest(".dark")); setEventFinding(i); onEventViewChange?.(true) }}>
-                    <FileText className="mr-1.5 h-3.5 w-3.5" />View event
-                  </Button>
                 )}
                 <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
                   <span>Entropy: <span className="font-mono font-medium text-foreground">{finding.entropy.toFixed(2)}</span></span>
@@ -565,20 +559,6 @@ export function FirewallApprovalCard({
           </div>
         )}
       </div>
-
-      {eventFinding !== null && secretScanFindings?.[eventFinding] && (
-        <SecretScanEventDialog
-          finding={secretScanFindings[eventFinding]}
-          dark={eventDark}
-          revealError={revealError[eventFinding]}
-          requestJson={secretScanRequestJson}
-          clientName={clientName}
-          model={toolName}
-          revealed={revealed[eventFinding]}
-          onReveal={onReveal ? () => { void toggleReveal(eventFinding) } : undefined}
-          onClose={() => { setEventFinding(null); onEventViewChange?.(false) }}
-        />
-      )}
 
       {/* Notify-only: informational popup — Dismiss, with escalation options.
           The dropdown reuses the Ask actions: allow_1_hour = 1-hour scan

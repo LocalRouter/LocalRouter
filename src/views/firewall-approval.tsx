@@ -85,8 +85,6 @@ export function FirewallApproval() {
   const [error, setError] = useState<string | null>(null)
   const [buttonsReady, setButtonsReady] = useState(false)
 
-  const eventResizeQueue = useRef<Promise<void>>(Promise.resolve())
-
   // Edit mode state
   const [editMode, setEditMode] = useState(false)
   const [fullArguments, setFullArguments] = useState<string | null>(null)
@@ -921,15 +919,6 @@ export function FirewallApproval() {
           guardrailFlaggedText={details.guardrail_details?.flagged_text}
           secretScanFindings={details.secret_scan_details?.findings}
           secretScanRequestJson={details.secret_scan_details?.request_json}
-          onEventViewChange={(open) => {
-            const count = details.secret_scan_details?.findings.length || 1
-            const height = Math.min(660, (details.is_notify_only ? 260 : 325) + count * 155)
-            eventResizeQueue.current = eventResizeQueue.current.catch(() => {}).then(async () => {
-              const win = getCurrentWebviewWindow()
-              await win.setSize(open ? new LogicalSize(860, 720) : new LogicalSize(440, height))
-              await win.center()
-            }).catch(() => {})
-          }}
           marketplaceListing={marketplaceListing}
           onAction={buttonsReady ? handleAction : undefined}
           onDismiss={buttonsReady ? handleDismiss : undefined}
