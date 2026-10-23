@@ -3107,7 +3107,10 @@ export interface UpdateMcpServerConfigParams {
   authConfig?: Record<string, unknown> | null
 }
 
-/** Params for update_mcp_server */
+/** Params for update_mcp_server. OAuth updates accept `oauth` or legacy `o_auth`;
+ * an empty client_secret preserves the existing pre-generated OAuth secret.
+ * Omitting auth_config preserves authentication; null or { type: "none" } clears it.
+ * Returns void. */
 export interface UpdateMcpServerParams {
   serverId: string
   updates: Record<string, unknown>

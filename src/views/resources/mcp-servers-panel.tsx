@@ -14,9 +14,10 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
+import { buildMcpAuthUpdate, type McpAuthConfig, type OAuthEndpoints } from "@/utils/mcp-auth-update"
 import { resolveMcpTemplateUrl } from "@/utils/mcp-template-url"
 import { Checkbox } from "@/components/ui/checkbox"
-import type { McpOAuthDiscovery, DiscoverMcpOAuthEndpointsParams } from "@/types/tauri-commands"
+import type { McpOAuthDiscovery, DiscoverMcpOAuthEndpointsParams, UpdateMcpServerParams } from "@/types/tauri-commands"
 import { Input } from "@/components/ui/Input"
 import {
   Dialog,
@@ -44,11 +45,6 @@ import { MarketplaceSearchPanel, McpServerListing } from "@/components/add-resou
 import ServiceIcon from "@/components/ServiceIcon"
 import { McpTab } from "@/views/try-it-out/mcp-tab"
 import { cn } from "@/lib/utils"
-
-interface McpAuthConfig {
-  type: string
-  [key: string]: unknown
-}
 
 interface McpServer {
   id: string
@@ -127,8 +123,11 @@ export function McpServersPanel({
   // Detail tab state
   const [detailTab, setDetailTab] = useState("info")
 
-  // Auto-save guard
+  // Serialize saves so edits made while a request is in flight are not dropped.
   const isSavingRef = useRef(false)
+  const queuedSaveRef = useRef<(() => Promise<void>) | null>(null)
+  const editRevisionRef = useRef(0)
+  const [saveStatus, setSaveStatus] = useState("Changes save automatically")
 
   // Create modal state
   const [showCreateModal, setShowCreateModal] = useState(false)
@@ -204,28 +203,34 @@ export function McpServersPanel({
   const [bearerToken, setBearerToken] = useState("")
   const [customAuthOverridden, setCustomAuthOverridden] = useState(false)
 
-  // OAuth credentials state (for pregenerated flow)
+  // Registered OAuth app credentials (both OAuth flows)
   const [oauthClientId, setOauthClientId] = useState("")
   const [oauthClientSecret, setOauthClientSecret] = useState("")
 
   // Template field values: { fieldId: userInputValue }
   const [templateFieldValues, setTemplateFieldValues] = useState<Record<string, string>>({})
 
-  // Auto-save: track when form is being populated to skip auto-save
-  const isPopulatingForm = useRef(false)
+  // Compare against the persisted form so loading Settings does not auto-save.
+  const populatedFormSnapshot = useRef("")
+  const activeServerIdRef = useRef(selectedId)
+  activeServerIdRef.current = selectedId
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const saveServerConfig = useCallback(async () => {
+  const saveServerConfig = useCallback(async (revision: number) => {
     const server = servers.find((s) => s.id === selectedId)
     if (!server) return
-    if (isSavingRef.current) return
+    if (isSavingRef.current) {
+      queuedSaveRef.current = () => saveServerConfig(revision)
+      return
+    }
 
-    // Validate required fields
-    if (!serverName.trim()) return
-    if (transportType === "Stdio" && !command.trim()) return
-    if (transportType === "Sse" && !url.trim()) return
+    if (!serverName.trim() || (transportType === "Stdio" ? !command.trim() : !url.trim())) {
+      if (revision === editRevisionRef.current) setSaveStatus("Not saved — complete the required server fields")
+      return
+    }
 
     isSavingRef.current = true
+    if (revision === editRevisionRef.current) setSaveStatus("Saving…")
     try {
       let transportConfig
       if (transportType === "Stdio") {
@@ -234,36 +239,33 @@ export function McpServersPanel({
         transportConfig = { type: "http_sse", url, headers: headers }
       }
 
-      let authConfig = null
-      if (authMethod === "bearer" && bearerToken) {
-        authConfig = { type: "bearer_token", token: bearerToken }
-      } else if (authMethod === "oauth_browser") {
-        authConfig = { type: "oauth_browser" }
-      } else if (authMethod === "none") {
-        authConfig = null
-      }
-
       const updates: Record<string, unknown> = {
         name: serverName, transport_config: transportConfig,
       }
-
-      if (authMethod === "bearer" && bearerToken) {
-        updates.auth_config = authConfig
-      } else if (authMethod === "oauth_browser" && server.auth_config?.type !== "oauth_browser") {
-        updates.auth_config = authConfig
-      } else if (authMethod === "none" && server.auth_config?.type !== "none" && server.auth_config !== null) {
-        updates.auth_config = null
+      if (transportType === "Sse") {
+        const authConfig = await buildMcpAuthUpdate(
+          authMethod, server.auth_config, bearerToken, oauthClientId, oauthClientSecret,
+          () => invoke<OAuthEndpoints | null>("discover_mcp_oauth_endpoints", { baseUrl: url }),
+        )
+        if (authConfig !== undefined) updates.auth_config = authConfig
       }
 
-      await invoke("update_mcp_server", { serverId: server.id, updates })
+      await invoke<void>("update_mcp_server", { serverId: server.id, updates } satisfies UpdateMcpServerParams)
+      if (activeServerIdRef.current === server.id) {
+        populatedFormSnapshot.current = JSON.stringify([serverName, transportType, command, url, envVars, cwd, headers, authMethod, bearerToken, oauthClientId, oauthClientSecret])
+      }
       await loadServersOnly()
+      if (revision === editRevisionRef.current) setSaveStatus("All changes saved")
     } catch (error) {
       console.error("Failed to update MCP server:", error)
-      toast.error(`Error updating MCP server: ${error}`)
+      if (revision === editRevisionRef.current) setSaveStatus(`Not saved — ${error}`)
     } finally {
       isSavingRef.current = false
+      const queued = queuedSaveRef.current
+      queuedSaveRef.current = null
+      if (queued) void queued()
     }
-  }, [servers, selectedId, serverName, transportType, command, url, envVars, cwd, headers, authMethod, bearerToken])
+  }, [servers, selectedId, serverName, transportType, command, url, envVars, cwd, headers, authMethod, bearerToken, oauthClientId, oauthClientSecret])
 
   // Keep a ref to the latest save function so the auto-save effect below can
   // invoke it without taking it as a dependency. If we put `saveServerConfig`
@@ -278,18 +280,21 @@ export function McpServersPanel({
 
   // Debounced auto-save when form fields change
   useEffect(() => {
-    if (isPopulatingForm.current) return
     if (detailTab !== "settings" || !selectedId) return
+    const snapshot = JSON.stringify([serverName, transportType, command, url, envVars, cwd, headers, authMethod, bearerToken, oauthClientId, oauthClientSecret])
+    if (snapshot === populatedFormSnapshot.current && !isSavingRef.current) return
 
+    const revision = ++editRevisionRef.current
+    setSaveStatus("Unsaved changes — saving automatically…")
     if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current)
     autoSaveTimer.current = setTimeout(() => {
-      saveServerConfigRef.current()
+      void saveServerConfigRef.current(revision)
     }, 600)
 
     return () => {
       if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current)
     }
-  }, [serverName, transportType, command, url, envVars, cwd, headers, authMethod, bearerToken, detailTab, selectedId])
+  }, [serverName, transportType, command, url, envVars, cwd, headers, authMethod, bearerToken, oauthClientId, oauthClientSecret, detailTab, selectedId])
 
   useEffect(() => {
     loadServers()
@@ -471,35 +476,20 @@ export function McpServersPanel({
         transportConfig = { type: "http_sse", url, headers: headers }
       }
 
-      let authConfig = null
-      if (authMethod === "bearer") {
-        authConfig = { type: "bearer_token", token: bearerToken }
-      } else if (authMethod === "oauth_pregenerated") {
-        if (!oauthClientId || !oauthClientSecret) {
-          toast.error("Client ID and Client Secret are required for OAuth")
-          setIsCreating(false)
-          return
-        }
-        const discovery = await invoke<{
-          auth_url: string; token_url: string; scopes_supported: string[]
-        } | null>("discover_mcp_oauth_endpoints", { baseUrl: url })
-        if (!discovery) {
-          toast.error("This MCP server does not support OAuth")
-          setIsCreating(false)
-          return
-        }
-        authConfig = {
-          type: "oauth", client_id: oauthClientId, client_secret: oauthClientSecret,
-          auth_url: discovery.auth_url, token_url: discovery.token_url, scopes: discovery.scopes_supported,
-        }
-      } else if (authMethod === "oauth_browser") {
-        authConfig = { type: "oauth_browser" }
-      }
       const bearerField = template?.fields?.find(field => field.type === "bearer")
-      if (bearerField) {
-        const token = (templateFieldValues[bearerField.id] || "").trim()
-        if (token) authConfig = { type: "bearer_token", token }
+      const clientIdField = template?.fields?.find(field => field.type === "oauth_client_id")
+      const clientSecretField = template?.fields?.find(field => field.type === "oauth_client_secret")
+      const templateClientId = clientIdField ? templateFieldValues[clientIdField.id]?.trim() : undefined
+      const templateClientSecret = clientSecretField ? templateFieldValues[clientSecretField.id] : undefined
+      if ((clientIdField && !templateClientId) || (clientSecretField && !templateClientSecret)) {
+        throw new Error("Client ID and Client Secret are required for this template")
       }
+      const authConfig = await buildMcpAuthUpdate(
+        template?.authMethod ?? authMethod, null,
+        bearerField ? (templateFieldValues[bearerField.id] || "").trim() : bearerToken,
+        templateClientId ?? oauthClientId, templateClientSecret ?? oauthClientSecret,
+        () => invoke<OAuthEndpoints | null>("discover_mcp_oauth_endpoints", { baseUrl: url }),
+      ) ?? null
 
       const newServer = await invoke<{ id: string }>("create_mcp_server", {
         name: serverName || null, transport: transportType, transportConfig, authConfig,
@@ -509,8 +499,8 @@ export function McpServersPanel({
       await loadServersOnly()
       setShowCreateModal(false)
       resetForm()
-      onSelect(newServer.id, authMethod === "oauth_browser")
-      if (authMethod !== "oauth_browser") onRefreshHealth(newServer.id)
+      onSelect(newServer.id, authConfig?.type === "oauth_browser")
+      if (authConfig?.type !== "oauth_browser") onRefreshHealth(newServer.id)
     } catch (error) {
       console.error("Failed to create MCP server:", error)
       toast.error(`Error creating MCP server: ${error}`)
@@ -533,46 +523,38 @@ export function McpServersPanel({
   }
 
   const populateFormFromServer = (server: McpServer) => {
-    isPopulatingForm.current = true
-    setServerName(server.name)
-    setTransportType(server.transport === "Stdio" ? "Stdio" : "Sse")
+    editRevisionRef.current += 1
+    setSaveStatus("Changes save automatically")
     setSelectedSource(null)
-
     const tc = server.transport_config as Record<string, unknown>
-    if (server.transport === "Stdio") {
-      const cmd = (tc.command as string) || ""
-      const args = (tc.args as string[]) || []
-      const fullCommand = args.length > 0 ? [cmd, ...args].join(" ") : cmd
-      setCommand(fullCommand)
-      setEnvVars((tc.env as Record<string, string>) || {})
-      setCwd((tc.cwd as string) || "")
-      setUrl("")
-      setHeaders({})
-    } else {
-      setUrl((tc.url as string) || "")
-      setHeaders((tc.headers as Record<string, string>) || {})
-      setCommand("")
-      setEnvVars({})
-      setCwd("")
-    }
+    const nextTransport = server.transport === "Stdio" ? "Stdio" : "Sse"
+    const nextCommand = nextTransport === "Stdio"
+      ? [tc.command as string || "", ...((tc.args as string[]) || [])].join(" ") : ""
+    const nextUrl = nextTransport === "Sse" ? (tc.url as string || "") : ""
+    const nextEnv = nextTransport === "Stdio" ? (tc.env as Record<string, string> || {}) : {}
+    const nextCwd = nextTransport === "Stdio" ? (tc.cwd as string || "") : ""
+    const nextHeaders = nextTransport === "Sse" ? (tc.headers as Record<string, string> || {}) : {}
+    const authType = server.auth_config?.type
+    const nextAuth = authType === "bearer_token" ? "bearer"
+      : authType === "oauth" || authType === "o_auth" ? "oauth_pregenerated"
+      : authType === "oauth_browser" ? "oauth_browser" : "none"
+    const nextClientId = nextAuth === "oauth_pregenerated" || nextAuth === "oauth_browser"
+      ? (server.auth_config?.client_id as string || "") : ""
 
-    if (!server.auth_config || server.auth_config.type === "none") {
-      setAuthMethod("none"); setBearerToken(""); setOauthClientId(""); setOauthClientSecret("")
-    } else if (server.auth_config.type === "bearer_token") {
-      setAuthMethod("bearer"); setBearerToken(""); setOauthClientId(""); setOauthClientSecret("")
-    } else if (server.auth_config.type === "oauth") {
-      setAuthMethod("oauth_pregenerated"); setBearerToken("")
-      setOauthClientId((server.auth_config as { client_id?: string }).client_id || "")
-      setOauthClientSecret("")
-    } else if (server.auth_config.type === "oauth_browser") {
-      setAuthMethod("oauth_browser"); setBearerToken("")
-      setOauthClientId((server.auth_config as { client_id?: string }).client_id || "")
-      setOauthClientSecret("")
-    } else {
-      setAuthMethod("none"); setBearerToken(""); setOauthClientId(""); setOauthClientSecret("")
-    }
-    // Allow React to batch the state updates before re-enabling auto-save
-    setTimeout(() => { isPopulatingForm.current = false }, 0)
+    // Compare actual values rather than suppressing edits for a timer window.
+    // An edit made immediately after entering Settings must still auto-save.
+    populatedFormSnapshot.current = JSON.stringify([server.name, nextTransport, nextCommand, nextUrl, nextEnv, nextCwd, nextHeaders, nextAuth, "", nextClientId, ""])
+    setServerName(server.name)
+    setTransportType(nextTransport)
+    setCommand(nextCommand)
+    setUrl(nextUrl)
+    setEnvVars(nextEnv)
+    setCwd(nextCwd)
+    setHeaders(nextHeaders)
+    setAuthMethod(nextAuth)
+    setBearerToken("")
+    setOauthClientId(nextClientId)
+    setOauthClientSecret("")
   }
 
 
@@ -947,6 +929,92 @@ export function McpServersPanel({
 
                 <TabsContent value="settings">
                   <div className="space-y-6">
+                    {/* Inline Edit Form */}
+                    <Card>
+                      <CardHeader>
+                        <CardTitle>Server Configuration</CardTitle>
+                        <CardDescription>Update the configuration for this MCP server</CardDescription>
+                        <p role="status" className="text-sm text-muted-foreground break-words">{saveStatus}</p>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="space-y-4">
+                          <div>
+                            <label className="block text-sm font-medium mb-2">Server Name</label>
+                            <Input value={serverName} onChange={(e) => setServerName(e.target.value)} placeholder="My MCP Server" />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium mb-2">Transport Type</label>
+                            <LegacySelect value={transportType} onChange={(e) => setTransportType(e.target.value as "Stdio" | "Sse")}>
+                              <option value="Stdio">STDIO (Subprocess)</option>
+                              <option value="Sse">HTTP (Streamable HTTP / SSE)</option>
+                            </LegacySelect>
+                          </div>
+                          {transportType === "Stdio" && (
+                            <>
+                              <div>
+                                <label className="block text-sm font-medium mb-2">Command</label>
+                                <Input value={command} onChange={(e) => setCommand(e.target.value)} placeholder="npx -y @modelcontextprotocol/server-everything" />
+                                <p className="text-xs text-muted-foreground mt-1">Full command with arguments</p>
+                              </div>
+                              {workingDirectoryField}
+                              <div>
+                                <label className="block text-sm font-medium mb-2">Environment Variables</label>
+                                <KeyValueInput value={envVars} onChange={setEnvVars} keyPlaceholder="KEY" valuePlaceholder="VALUE" />
+                              </div>
+                            </>
+                          )}
+                          {transportType === "Sse" && (
+                            <div>
+                              <label className="block text-sm font-medium mb-2">URL</label>
+                              <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://api.example.com/mcp" />
+                            </div>
+                          )}
+                          {transportType === "Sse" && (
+                            <div className="border-t pt-4 mt-4">
+                              <h3 className="text-md font-semibold mb-3">Authentication</h3>
+                              <p className="text-sm text-muted-foreground mb-3">Configure how LocalRouter authenticates to this MCP server</p>
+                              <div>
+                                <label className="block text-sm font-medium mb-2">Authentication Method</label>
+                                <LegacySelect value={authMethod} onChange={(e) => setAuthMethod(e.target.value as typeof authMethod)}>
+                                  <option value="none">None / Via headers</option>
+                                  <option value="bearer">Bearer Token</option>
+                                  <option value="oauth_browser">OAuth (Browser login)</option>
+                          <option value="oauth_pregenerated">OAuth (Pre-generated credentials)</option>
+                                </LegacySelect>
+                              </div>
+                              {authMethod === "bearer" && (
+                                <div className="mt-3">
+                                  <label className="block text-sm font-medium mb-2">Bearer Token</label>
+                                  <Input type="password" value={bearerToken} onChange={(e) => setBearerToken(e.target.value)} placeholder="Enter new token to update (leave empty to keep existing)" />
+                                  <p className="text-xs text-muted-foreground mt-1">Leave empty to keep the existing token. Token will be stored securely in system keychain.</p>
+                                </div>
+                              )}
+                              {(authMethod === "oauth_pregenerated" || authMethod === "oauth_browser") && (
+                                <div className="mt-3 space-y-3">
+                                  <div>
+                                    <label className="block text-sm font-medium mb-2">Client ID</label>
+                                    <Input value={oauthClientId} onChange={(e) => setOauthClientId(e.target.value)} placeholder="your-oauth-client-id" />
+                                    <p className="text-xs text-muted-foreground mt-1">Leave empty to keep the existing client ID</p>
+                                  </div>
+                                  <div>
+                                    <label className="block text-sm font-medium mb-2">Client Secret</label>
+                                    <Input type="password" value={oauthClientSecret} onChange={(e) => setOauthClientSecret(e.target.value)} placeholder="Enter new secret to update (leave empty to keep existing)" />
+                                    <p className="text-xs text-muted-foreground mt-1">Leave empty to keep the existing secret. Stored securely in system keychain.</p>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          {transportType === "Sse" && (
+                            <div>
+                              <label className="block text-sm font-medium mb-2">Headers (Optional)</label>
+                              <KeyValueInput value={headers} onChange={setHeaders} keyPlaceholder="Header Name" valuePlaceholder="Header Value" />
+                            </div>
+                          )}
+                        </div>
+                      </CardContent>
+                    </Card>
+
                     {/* OAuth Status */}
                     {selectedServer.auth_config?.type === "oauth_browser" && (
                       <Card>
@@ -1002,91 +1070,6 @@ export function McpServersPanel({
                         </CardContent>
                       </Card>
                     )}
-                    {/* Inline Edit Form */}
-                    <Card>
-                      <CardHeader>
-                        <CardTitle>Server Configuration</CardTitle>
-                        <CardDescription>Update the configuration for this MCP server</CardDescription>
-                      </CardHeader>
-                      <CardContent>
-                        <div className="space-y-4">
-                          <div>
-                            <label className="block text-sm font-medium mb-2">Server Name</label>
-                            <Input value={serverName} onChange={(e) => setServerName(e.target.value)} placeholder="My MCP Server" />
-                          </div>
-                          <div>
-                            <label className="block text-sm font-medium mb-2">Transport Type</label>
-                            <LegacySelect value={transportType} onChange={(e) => setTransportType(e.target.value as "Stdio" | "Sse")}>
-                              <option value="Stdio">STDIO (Subprocess)</option>
-                              <option value="Sse">HTTP (Streamable HTTP / SSE)</option>
-                            </LegacySelect>
-                          </div>
-                          {transportType === "Stdio" && (
-                            <>
-                              <div>
-                                <label className="block text-sm font-medium mb-2">Command</label>
-                                <Input value={command} onChange={(e) => setCommand(e.target.value)} placeholder="npx -y @modelcontextprotocol/server-everything" />
-                                <p className="text-xs text-muted-foreground mt-1">Full command with arguments</p>
-                              </div>
-                              {workingDirectoryField}
-                              <div>
-                                <label className="block text-sm font-medium mb-2">Environment Variables</label>
-                                <KeyValueInput value={envVars} onChange={setEnvVars} keyPlaceholder="KEY" valuePlaceholder="VALUE" />
-                              </div>
-                            </>
-                          )}
-                          {transportType === "Sse" && (
-                            <div>
-                              <label className="block text-sm font-medium mb-2">URL</label>
-                              <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://api.example.com/mcp" />
-                            </div>
-                          )}
-                          {transportType === "Sse" && (
-                            <div className="border-t pt-4 mt-4">
-                              <h3 className="text-md font-semibold mb-3">Authentication</h3>
-                              <p className="text-sm text-muted-foreground mb-3">Configure how LocalRouter authenticates to this MCP server</p>
-                              <div>
-                                <label className="block text-sm font-medium mb-2">Authentication Method</label>
-                                <LegacySelect value={authMethod} onChange={(e) => setAuthMethod(e.target.value as typeof authMethod)}>
-                                  <option value="none">None / Via headers</option>
-                                  <option value="bearer">Bearer Token</option>
-                                  <option value="oauth_browser">OAuth (Browser login)</option>
-                          <option value="oauth_pregenerated">OAuth (Pre-generated credentials)</option>
-                                </LegacySelect>
-                              </div>
-                              {authMethod === "bearer" && (
-                                <div className="mt-3">
-                                  <label className="block text-sm font-medium mb-2">Bearer Token</label>
-                                  <Input type="password" value={bearerToken} onChange={(e) => setBearerToken(e.target.value)} placeholder="Enter new token to update (leave empty to keep existing)" />
-                                  <p className="text-xs text-muted-foreground mt-1">Leave empty to keep the existing token. Token will be stored securely in system keychain.</p>
-                                </div>
-                              )}
-                              {authMethod === "oauth_pregenerated" && (
-                                <div className="mt-3 space-y-3">
-                                  <div>
-                                    <label className="block text-sm font-medium mb-2">Client ID</label>
-                                    <Input value={oauthClientId} onChange={(e) => setOauthClientId(e.target.value)} placeholder="your-oauth-client-id" />
-                                    <p className="text-xs text-muted-foreground mt-1">Leave empty to keep the existing client ID</p>
-                                  </div>
-                                  <div>
-                                    <label className="block text-sm font-medium mb-2">Client Secret</label>
-                                    <Input type="password" value={oauthClientSecret} onChange={(e) => setOauthClientSecret(e.target.value)} placeholder="Enter new secret to update (leave empty to keep existing)" />
-                                    <p className="text-xs text-muted-foreground mt-1">Leave empty to keep the existing secret. Stored securely in system keychain.</p>
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                          )}
-                          {transportType === "Sse" && (
-                            <div>
-                              <label className="block text-sm font-medium mb-2">Headers (Optional)</label>
-                              <KeyValueInput value={headers} onChange={setHeaders} keyPlaceholder="Header Name" valuePlaceholder="Header Value" />
-                            </div>
-                          )}
-                        </div>
-                      </CardContent>
-                    </Card>
-
                     {/* Danger Zone */}
                     <Card className="border-red-200 dark:border-red-900">
                       <CardHeader>
@@ -1362,15 +1345,15 @@ export function McpServersPanel({
                           <Input type="password" value={bearerToken} onChange={(e) => setBearerToken(e.target.value)} placeholder="your-bearer-token" required />
                         </div>
                       )}
-                      {authMethod === "oauth_pregenerated" && (
+                      {(authMethod === "oauth_pregenerated" || authMethod === "oauth_browser") && (
                         <div className="mt-3 space-y-3">
                           <div>
                             <label className="block text-sm font-medium mb-2">Client ID</label>
-                            <Input value={oauthClientId} onChange={(e) => setOauthClientId(e.target.value)} placeholder="your-oauth-client-id" required />
+                            <Input value={oauthClientId} onChange={(e) => setOauthClientId(e.target.value)} placeholder="your-oauth-client-id" required={authMethod === "oauth_pregenerated"} />
                           </div>
                           <div>
                             <label className="block text-sm font-medium mb-2">Client Secret</label>
-                            <Input type="password" value={oauthClientSecret} onChange={(e) => setOauthClientSecret(e.target.value)} placeholder="your-oauth-client-secret" required />
+                            <Input type="password" value={oauthClientSecret} onChange={(e) => setOauthClientSecret(e.target.value)} placeholder="your-oauth-client-secret" required={authMethod === "oauth_pregenerated"} />
                           </div>
                         </div>
                       )}
@@ -1426,7 +1409,7 @@ export function McpServersPanel({
                 const isRequired = field.required !== false
                 return (
                   <div key={field.id}>
-                    <label className="block text-sm font-medium mb-2">
+                    <label htmlFor={`mcp-template-${field.id}`} className="block text-sm font-medium mb-2">
                       {field.label}
                     </label>
                     {field.options ? (
@@ -1448,6 +1431,7 @@ export function McpServersPanel({
                       </div>
                     ) : (
                       <Input
+                        id={`mcp-template-${field.id}`}
                         type={field.secret ? "password" : "text"}
                         value={templateFieldValues[field.id] || ""}
                         onChange={(e) => setTemplateFieldValues(prev => ({ ...prev, [field.id]: e.target.value }))}
@@ -1586,15 +1570,15 @@ export function McpServersPanel({
                       <p className="text-xs text-muted-foreground mt-1">Token will be stored securely in system keychain</p>
                     </div>
                   )}
-                  {authMethod === "oauth_pregenerated" && (
+                  {(authMethod === "oauth_pregenerated" || authMethod === "oauth_browser") && (
                     <div className="mt-3 space-y-3">
                       <div>
                         <label className="block text-sm font-medium mb-2">Client ID</label>
-                        <Input value={oauthClientId} onChange={(e) => setOauthClientId(e.target.value)} placeholder="your-oauth-client-id" required />
+                        <Input value={oauthClientId} onChange={(e) => setOauthClientId(e.target.value)} placeholder="your-oauth-client-id" required={authMethod === "oauth_pregenerated"} />
                       </div>
                       <div>
                         <label className="block text-sm font-medium mb-2">Client Secret</label>
-                        <Input type="password" value={oauthClientSecret} onChange={(e) => setOauthClientSecret(e.target.value)} placeholder="your-oauth-client-secret" required />
+                        <Input type="password" value={oauthClientSecret} onChange={(e) => setOauthClientSecret(e.target.value)} placeholder="your-oauth-client-secret" required={authMethod === "oauth_pregenerated"} />
                         <p className="text-xs text-muted-foreground mt-1">Stored securely in system keychain</p>
                       </div>
                     </div>

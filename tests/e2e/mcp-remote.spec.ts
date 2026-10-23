@@ -36,14 +36,15 @@ test('Datadog DDSQL selection changes the saved URL and starts browser OAuth', a
   await page.waitForFunction(() => (window as any).startedMcpOAuth)
 })
 
-test('custom HTTP servers expose browser login without requiring client credentials', async ({ page }) => {
+test('custom HTTP servers allow optional registered browser OAuth credentials', async ({ page }) => {
   await page.getByRole('tab', { name: 'Custom', exact: true }).click()
   const dialog = page.getByRole('dialog')
   await dialog.locator('select').first().selectOption('Sse')
   const auth = dialog.locator('select').nth(1)
   await expect(auth.locator('option', { hasText: 'OAuth (Browser login)' })).toHaveCount(1)
   await auth.selectOption('oauth_browser')
-  await expect(dialog.locator('input[type=password]')).toHaveCount(0)
+  await expect(dialog.getByPlaceholder('your-oauth-client-id')).not.toHaveAttribute('required', '')
+  await expect(dialog.getByPlaceholder('your-oauth-client-secret')).not.toHaveAttribute('required', '')
 })
 
 test('custom discovery detects HTTP and fills server name and browser login, with editable overrides', async ({ page }) => {
@@ -133,4 +134,135 @@ test('late discovery cannot overwrite a new URL or settings edited while discove
   await expect(dialog.getByRole('alert')).toContainText('your edits were kept')
   await expect(dialog.getByPlaceholder('My MCP Server')).toHaveValue('Edited while waiting')
   await expect(dialog.locator('select').nth(1)).toHaveValue('none')
+})
+
+async function captureAuthUpdates(page: import('@playwright/test').Page) {
+  await page.evaluate(() => {
+    const w = window as any
+    const original = w.__TAURI_IPC_HANDLER__
+    w.authUpdates = []
+    w.__TAURI_IPC_HANDLER__ = async (command: string, args: any) => {
+      if (command === 'create_mcp_server') w.createdMcpArgs = args
+      if (command === 'start_mcp_oauth_browser_flow') w.startedMcpOAuth = args
+      if (command === 'update_mcp_server') {
+        w.authUpdates.push(structuredClone(args))
+        if (w.holdAuthSave) {
+          w.holdAuthSave = false
+          await new Promise<void>(resolve => { w.releaseAuthSave = resolve })
+        }
+        if (w.failAuthSave) throw new Error('Simulated configuration write failure')
+      }
+      return original(command, args)
+    }
+  })
+}
+
+async function createPregeneratedServer(page: import('@playwright/test').Page) {
+  await captureAuthUpdates(page)
+  await page.getByRole('tab', { name: 'Custom', exact: true }).click()
+  const dialog = page.getByRole('dialog')
+  await dialog.getByPlaceholder('My MCP Server').fill('OAuth regression server')
+  await dialog.locator('select').first().selectOption('Sse')
+  await dialog.getByPlaceholder('https://api.example.com/mcp').fill('https://example.com/mcp')
+  await dialog.locator('select').nth(1).selectOption('oauth_pregenerated')
+  await dialog.getByPlaceholder('your-oauth-client-id').fill('registered-client')
+  await dialog.getByPlaceholder('your-oauth-client-secret').fill('test-secret')
+  await dialog.getByRole('button', { name: 'Create', exact: true }).click()
+  await expect(dialog).not.toBeVisible()
+  await page.getByRole('tab', { name: 'Settings', exact: true }).last().click()
+}
+
+test('Slack template accepts app credentials and begins browser authorization with the saved app', async ({ page }) => {
+  await captureAuthUpdates(page)
+  await page.getByRole('dialog').getByRole('button', { name: /slack logo Slack/i }).click()
+  const dialog = page.getByRole('dialog')
+  await expect(dialog).toContainText('https://mcp.slack.com/mcp')
+  await dialog.getByLabel('Client ID', { exact: true }).fill('slack-app-client')
+  await dialog.getByLabel('Client Secret', { exact: true }).fill('slack-app-secret')
+  await dialog.getByRole('button', { name: 'Create', exact: true }).click()
+  await page.waitForFunction(() => (window as any).createdMcpArgs)
+  const created = await page.evaluate(() => (window as any).createdMcpArgs)
+  expect(created.transportConfig.url).toBe('https://mcp.slack.com/mcp')
+  expect(created.authConfig).toMatchObject({ type: 'oauth_browser', client_id: 'slack-app-client', client_secret: 'slack-app-secret' })
+  await page.waitForFunction(() => (window as any).startedMcpOAuth?.serverId)
+})
+
+test('pre-generated OAuth reloads from o_auth, auto-saves credential edits, and clears auth without JSON null', async ({ page }) => {
+  await createPregeneratedServer(page)
+  const auth = page.locator('select').nth(1)
+  await expect(auth).toHaveValue('oauth_pregenerated')
+  await expect(page.getByPlaceholder('your-oauth-client-id')).toHaveValue('registered-client')
+  await page.getByPlaceholder('your-oauth-client-id').fill('edited-client')
+  await expect(page.getByText('All changes saved', { exact: true })).toBeVisible()
+  let updates = await page.evaluate(() => (window as any).authUpdates)
+  expect(updates.at(-1).updates.auth_config).toMatchObject({ type: 'oauth', client_id: 'edited-client', client_secret: '' })
+  await page.getByRole('tab', { name: 'Info', exact: true }).click()
+  await page.getByRole('tab', { name: 'Settings', exact: true }).last().click()
+  await expect(auth).toHaveValue('oauth_pregenerated')
+  await expect(page.getByPlaceholder('your-oauth-client-id')).toHaveValue('edited-client')
+  await auth.selectOption('none')
+  await page.waitForFunction(() => (window as any).authUpdates.at(-1)?.updates.auth_config?.type === 'none')
+  await expect(page.getByText('All changes saved', { exact: true })).toBeVisible()
+  updates = await page.evaluate(() => (window as any).authUpdates)
+  expect(updates.at(-1).updates.auth_config).toEqual({ type: 'none' })
+  const count = updates.length
+  await page.waitForTimeout(1400) // More than two debounce windows: a server refresh must not trigger another save.
+  expect(await page.evaluate(() => (window as any).authUpdates.length)).toBe(count)
+  await auth.selectOption('oauth_pregenerated')
+  await expect(page.getByText(/Not saved — .*Client ID and Client Secret/)).toBeVisible()
+})
+
+test('credential edits made during an in-flight auto-save are eventually persisted', async ({ page }) => {
+  await createPregeneratedServer(page)
+  await page.evaluate(() => { (window as any).holdAuthSave = true })
+  await page.getByPlaceholder('your-oauth-client-id').fill('first-edit')
+  await page.waitForFunction(() => (window as any).releaseAuthSave)
+  await page.getByPlaceholder('your-oauth-client-id').fill('second-edit')
+  await page.waitForTimeout(800) // Let the second debounce expire while the first save is held.
+  await page.evaluate(() => (window as any).releaseAuthSave())
+  await expect(page.getByText('All changes saved', { exact: true })).toBeVisible()
+  const updates = await page.evaluate(() => (window as any).authUpdates)
+  expect(updates).toHaveLength(2)
+  expect(updates.at(-1).updates.auth_config.client_id).toBe('second-edit')
+})
+
+test('auto-save failures remain visible and a subsequent edit retries successfully', async ({ page }) => {
+  await createPregeneratedServer(page)
+  await page.evaluate(() => { (window as any).failAuthSave = true })
+  await page.getByPlaceholder('your-oauth-client-id').fill('retry-client')
+  await expect(page.getByText(/Not saved — .*Simulated configuration write failure/)).toBeVisible()
+  await page.evaluate(() => { (window as any).failAuthSave = false })
+  await page.getByPlaceholder('your-oauth-client-id').fill('retry-client-success')
+  await expect(page.getByText('All changes saved', { exact: true })).toBeVisible()
+})
+
+test('OAuth Authentication appears after Server Configuration and browser credentials auto-save', async ({ page }) => {
+  await captureAuthUpdates(page)
+  await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).click()
+  await page.getByText('GitHub', { exact: true }).first().click()
+  await page.getByRole('tab', { name: 'Settings', exact: true }).last().click()
+  const configuration = page.getByText('Server Configuration', { exact: true })
+  const oauth = page.getByText('OAuth Authentication', { exact: true })
+  await expect(configuration).toBeVisible()
+  await expect(oauth).toBeAttached()
+  expect(await configuration.evaluate((node, other) => !!(node.compareDocumentPosition(other as Node) & Node.DOCUMENT_POSITION_FOLLOWING), await oauth.elementHandle())).toBe(true)
+  await page.getByPlaceholder('your-oauth-client-id').fill('github-registered-client')
+  await page.getByPlaceholder('Enter new secret to update (leave empty to keep existing)').fill('github-app-secret')
+  await expect(page.getByText('All changes saved', { exact: true })).toBeVisible()
+  const updates = await page.evaluate(() => (window as any).authUpdates)
+  expect(updates.at(-1).updates.auth_config).toMatchObject({ type: 'oauth_browser', client_id: 'github-registered-client', client_secret: 'github-app-secret' })
+})
+
+test('reverting a credential during an in-flight save restores the persisted value', async ({ page }) => {
+  await createPregeneratedServer(page)
+  await page.evaluate(() => { (window as any).holdAuthSave = true })
+  await page.getByPlaceholder('your-oauth-client-id').fill('temporary-client')
+  await page.waitForFunction(() => (window as any).releaseAuthSave)
+  await page.getByPlaceholder('your-oauth-client-id').fill('registered-client')
+  await page.waitForTimeout(800)
+  await page.evaluate(() => (window as any).releaseAuthSave())
+  await expect(page.getByText('All changes saved', { exact: true })).toBeVisible()
+  const updates = await page.evaluate(() => (window as any).authUpdates)
+  expect(updates).toHaveLength(2)
+  expect(updates.at(-1).updates.auth_config.client_id).toBe('registered-client')
 })

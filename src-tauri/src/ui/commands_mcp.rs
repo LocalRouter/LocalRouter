@@ -57,6 +57,7 @@ pub enum FrontendAuthConfig {
     CustomHeaders {
         headers: std::collections::HashMap<String, String>,
     },
+    #[serde(alias = "oauth")]
     OAuth {
         client_id: String,
         client_secret: String,
@@ -118,8 +119,9 @@ impl std::fmt::Debug for FrontendAuthConfig {
 fn process_auth_config(
     server_id: &str,
     auth_cfg: Option<serde_json::Value>,
+    existing: Option<&McpAuthConfig>,
 ) -> Result<Option<McpAuthConfig>, String> {
-    let Some(auth_value) = auth_cfg else {
+    let Some(auth_value) = auth_cfg.filter(|value| !value.is_null()) else {
         tracing::debug!("No auth config provided to process_auth_config");
         return Ok(None);
     };
@@ -182,16 +184,22 @@ fn process_auth_config(
             token_url,
             scopes,
         } => {
-            // Store client secret in keychain
-            let keychain = lr_api_keys::CachedKeychain::auto()
-                .map_err(|e| format!("Failed to access keychain: {}", e))?;
-
-            let key = format!("{}_oauth_secret", server_id);
-            keychain
-                .store(lr_config::MCP_KEYRING_SERVICE, &key, &client_secret)
-                .map_err(|e| format!("Failed to store OAuth secret in keychain: {}", e))?;
-
-            tracing::debug!("Stored OAuth secret in keychain with key: {}", key);
+            let key = if client_secret.is_empty() {
+                match existing {
+                    Some(McpAuthConfig::OAuth {
+                        client_secret_ref, ..
+                    }) => client_secret_ref.clone(),
+                    _ => return Err("Client Secret is required for OAuth".into()),
+                }
+            } else {
+                let keychain = lr_api_keys::CachedKeychain::auto()
+                    .map_err(|e| format!("Failed to access keychain: {}", e))?;
+                let key = format!("{}_oauth_secret", server_id);
+                keychain
+                    .store(lr_config::MCP_KEYRING_SERVICE, &key, &client_secret)
+                    .map_err(|e| format!("Failed to store OAuth secret in keychain: {}", e))?;
+                key
+            };
 
             McpAuthConfig::OAuth {
                 client_id,
@@ -247,8 +255,12 @@ fn process_auth_config(
                 tracing::debug!("Stored OAuth browser secret in keychain with key: {}", key);
                 key
             } else {
-                // No secret provided yet - use placeholder
-                format!("{}_oauth_browser_secret", server_id)
+                match existing {
+                    Some(McpAuthConfig::OAuthBrowser {
+                        client_secret_ref, ..
+                    }) => client_secret_ref.clone(),
+                    _ => format!("{}_oauth_browser_secret", server_id),
+                }
             };
 
             McpAuthConfig::OAuthBrowser {
@@ -372,7 +384,7 @@ pub async fn create_mcp_server(
     let mut config = McpServerConfig::new(name, transport_type, parsed_config);
 
     // Parse auth config (if provided) and store secrets in keychain
-    config.auth_config = process_auth_config(&config.id, auth_config)?;
+    config.auth_config = process_auth_config(&config.id, auth_config, None)?;
 
     // Get the actual server port
     let port = server_manager.get_actual_port().unwrap_or(3625);
@@ -1025,7 +1037,7 @@ pub async fn update_mcp_server_config(
 ) -> Result<(), String> {
     tracing::info!("Updating MCP server config: {}", server_id);
     tracing::debug!("Transport config JSON: {}", transport_config);
-    tracing::debug!("Auth config JSON: {:?}", auth_config);
+    tracing::debug!("Processing MCP authentication update");
 
     // Validate name is not empty
     if name.trim().is_empty() {
@@ -1046,7 +1058,16 @@ pub async fn update_mcp_server_config(
     // If auth_config is None, we preserve the existing auth config
     let should_update_auth = auth_config.is_some();
     let parsed_auth_config = if should_update_auth {
-        process_auth_config(&server_id, auth_config)?
+        process_auth_config(
+            &server_id,
+            auth_config,
+            config_manager
+                .get()
+                .mcp_servers
+                .iter()
+                .find(|s| s.id == server_id)
+                .and_then(|s| s.auth_config.as_ref()),
+        )?
     } else {
         None
     };
@@ -1121,7 +1142,7 @@ pub async fn update_mcp_server(
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     tracing::info!("Updating MCP server with partial updates: {}", server_id);
-    tracing::debug!("Updates JSON: {}", updates);
+    tracing::debug!("Processing MCP server update fields");
 
     let updates_obj = updates.as_object().ok_or("Updates must be a JSON object")?;
 
@@ -1151,7 +1172,16 @@ pub async fn update_mcp_server(
 
     // Parse auth config if provided and store secrets in keychain
     let parsed_auth_config = if auth_config_update.is_some() {
-        process_auth_config(&server_id, auth_config_update.cloned())?
+        process_auth_config(
+            &server_id,
+            auth_config_update.cloned(),
+            config_manager
+                .get()
+                .mcp_servers
+                .iter()
+                .find(|s| s.id == server_id)
+                .and_then(|s| s.auth_config.as_ref()),
+        )?
     } else {
         None
     };
@@ -2536,4 +2566,97 @@ pub async fn set_mcp_gateway_settings(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod auth_update_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn oauth_value(kind: &str) -> serde_json::Value {
+        json!({"type": kind, "client_id": "updated-client", "client_secret": "",
+            "auth_url": "https://example.com/authorize", "token_url": "https://example.com/token", "scopes": ["read"]})
+    }
+
+    #[test]
+    fn absent_null_and_explicit_none_auth_are_accepted() {
+        for value in [
+            None,
+            Some(serde_json::Value::Null),
+            Some(json!({"type": "none"})),
+        ] {
+            assert_eq!(process_auth_config("test", value, None).unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn oauth_spellings_preserve_the_existing_secret_reference() {
+        let existing = McpAuthConfig::OAuth {
+            client_id: "old-client".into(),
+            client_secret_ref: "retained-secret".into(),
+            auth_url: "https://example.com/authorize".into(),
+            token_url: "https://example.com/token".into(),
+            scopes: vec!["old".into()],
+        };
+        for kind in ["oauth", "o_auth"] {
+            let value = oauth_value(kind);
+            assert!(serde_json::from_value::<FrontendAuthConfig>(value.clone()).is_ok());
+            let auth = process_auth_config("test", Some(value), Some(&existing))
+                .unwrap()
+                .unwrap();
+            let McpAuthConfig::OAuth {
+                client_id,
+                client_secret_ref,
+                scopes,
+                ..
+            } = &auth
+            else {
+                panic!("wrong auth type")
+            };
+            assert_eq!(client_id, "updated-client");
+            assert_eq!(client_secret_ref, "retained-secret");
+            assert_eq!(scopes, &["read"]);
+            let stored = serde_json::to_value(auth).unwrap();
+            assert_eq!(stored["type"], "o_auth");
+            let mut alias = stored;
+            alias["type"] = json!("oauth");
+            assert!(serde_json::from_value::<McpAuthConfig>(alias).is_ok());
+        }
+    }
+
+    #[test]
+    fn new_oauth_requires_a_secret() {
+        assert!(
+            process_auth_config("test", Some(oauth_value("oauth")), None)
+                .unwrap_err()
+                .contains("Client Secret is required")
+        );
+    }
+
+    #[test]
+    fn browser_oauth_update_preserves_custom_secret_reference() {
+        let existing = McpAuthConfig::OAuthBrowser {
+            client_id: "client".into(),
+            client_secret_ref: "custom-existing-ref".into(),
+            auth_url: String::new(),
+            token_url: String::new(),
+            scopes: vec![],
+            redirect_uri: "http://localhost:8080/callback".into(),
+            issuer: None,
+        };
+        let updated = process_auth_config(
+            "test",
+            Some(json!({"type":"oauth_browser", "client_id":"client"})),
+            Some(&existing),
+        )
+        .unwrap()
+        .unwrap();
+        let McpAuthConfig::OAuthBrowser {
+            client_secret_ref, ..
+        } = updated
+        else {
+            panic!("wrong auth type")
+        };
+        assert_eq!(client_secret_ref, "custom-existing-ref");
+    }
 }

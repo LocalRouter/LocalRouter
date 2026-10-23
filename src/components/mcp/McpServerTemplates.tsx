@@ -14,7 +14,7 @@ export interface TemplateField {
   label: string
   placeholder: string
   /** bearer: the value becomes the server's bearer-token auth. */
-  type: 'env_var' | 'arg' | 'query' | 'bearer'
+  type: 'env_var' | 'arg' | 'query' | 'bearer' | 'oauth_client_id' | 'oauth_client_secret'
   /** Comma-separated choices for query fields. */
   options?: { value: string; label: string }[]
   secret?: boolean
@@ -158,6 +158,22 @@ export const MCP_SERVER_TEMPLATES: McpServerTemplate[] = [
     authMethod: 'oauth_browser',
     setupInstructions: 'Sign in to Atlassian in your browser and choose the sites to authorize.',
     docsUrl: 'https://atlassian.github.io/atlassian-mcp-server/',
+  },
+  {
+    id: 'slack',
+    name: 'Slack',
+    description: 'Connect Slack’s official MCP server using your Slack app’s Client ID and Client Secret.',
+    category: 'productivity',
+    icon: 'slack',
+    transport: 'Sse',
+    url: 'https://mcp.slack.com/mcp',
+    authMethod: 'oauth_browser',
+    fields: [
+      { id: 'client_id', label: 'Client ID', type: 'oauth_client_id', placeholder: 'Your Slack app Client ID', helpText: 'Find this in your Slack app’s Basic Information → App Credentials.' },
+      { id: 'client_secret', label: 'Client Secret', type: 'oauth_client_secret', placeholder: 'Your Slack app Client Secret', secret: true, helpText: 'Stored securely in your system keychain.' },
+    ],
+    setupInstructions: 'Create an internal or published Slack app enabled for MCP. Add http://localhost:8080/callback to its OAuth Redirect URLs and configure the user scopes you need. Enter its Client ID and Client Secret below, then authorize your workspace in the browser.',
+    docsUrl: 'https://docs.slack.dev/ai/slack-mcp-server/',
   },
   {
     id: 'notion',

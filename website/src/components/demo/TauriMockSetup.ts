@@ -19,7 +19,7 @@
 import { mockIPC, mockWindows, clearMocks } from '@tauri-apps/api/mocks'
 import { emit } from '@tauri-apps/api/event'
 import type { InvokeArgs } from '@tauri-apps/api/core'
-import type { ShowApprovalPopupResult, NativeOperation, GetClientNativeOperationsParams, SetClientNativeOperationsParams, UpstreamToolsPolicy, GetClientUpstreamToolsParams, SetClientUpstreamToolsParams, AutoModelConfig, NamedRouteStatus, NamedRouteVersions, RouteSnapshot, GetNamedRouteParams, MutateNamedRouteParams, ClientPrivacyStatus, GetClientPrivacyParams, SetClientPrivacyParams, AttestProviderPrivacyParams, ClientSecurityStatus, GetClientSecurityParams, SetClientSecurityParams, RevokeClientCredentialsParams, ApiPathSupport, McpConnectionDiscovery, SkillSourceInfo } from '@app/types/tauri-commands'
+import type { ShowApprovalPopupResult, NativeOperation, GetClientNativeOperationsParams, SetClientNativeOperationsParams, UpstreamToolsPolicy, GetClientUpstreamToolsParams, SetClientUpstreamToolsParams, AutoModelConfig, NamedRouteStatus, NamedRouteVersions, RouteSnapshot, GetNamedRouteParams, MutateNamedRouteParams, ClientPrivacyStatus, GetClientPrivacyParams, SetClientPrivacyParams, AttestProviderPrivacyParams, ClientSecurityStatus, GetClientSecurityParams, SetClientSecurityParams, RevokeClientCredentialsParams, ApiPathSupport, McpConnectionDiscovery, SkillSourceInfo, UpdateMcpServerParams } from '@app/types/tauri-commands'
 import { toast } from 'sonner'
 import { mockReplay } from './mockReplay'
 import { mockData } from './mockData'
@@ -1379,6 +1379,23 @@ function clientSecurityStatus(clientId: string): ClientSecurityStatus {
   return { enabled: client.enabled, has_credential: policy.hasCredential, credential_active: client.enabled && policy.hasCredential && (!policy.expiry || Date.now() < Date.parse(policy.expiry)), credential_expires_at: policy.expiry, review_idle_after_days: policy.reviewDays, last_used: last, idle_review_due: policy.reviewDays !== null && Date.now() - Date.parse(last ?? client.created_at) >= policy.reviewDays * 86400000 }
 }
 
+// Mirror the backend's public auth metadata without retaining demo form secrets.
+function mockMcpAuth(config: any, serverId: string, existing?: any): any {
+  if (!config || config.type === 'none') return null
+  if (config.type === 'oauth' || config.type === 'o_auth') {
+    const { client_secret: _secret, ...metadata } = config
+    return { ...metadata, type: 'o_auth', client_secret_ref: existing?.client_secret_ref || `${serverId}_oauth_secret` }
+  }
+  if (config.type === 'oauth_browser') {
+    const { client_secret: _secret, ...metadata } = config
+    return { ...metadata, client_id: config.client_id || '', auth_url: config.auth_url || '', token_url: config.token_url || '',
+      scopes: config.scopes || [], redirect_uri: config.redirect_uri || 'http://localhost:8080/callback',
+      client_secret_ref: existing?.client_secret_ref || `${serverId}_oauth_browser_secret` }
+  }
+  if (config.type === 'bearer_token') return { type: 'bearer_token', token_ref: serverId }
+  return config
+}
+
 const mockHandlers: Record<string, (args?: any) => unknown> = {
   ...mockReplay,
   // ============================================================================
@@ -2445,13 +2462,14 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'list_mcp_servers': () => mockData.mcpServers,
   'get_mcp_server': (args) => mockData.mcpServers.find(s => s.id === args?.id),
   'create_mcp_server': (args) => {
+    const serverId = `mcp-${generateId()}`
     const newServer = {
-      id: `mcp-${generateId()}`,
+      id: serverId,
       name: args?.name || 'New MCP Server',
       enabled: true,
       transport: args?.transport || 'Stdio',
       transport_config: args?.transportConfig || { type: 'stdio', command: '', env: {}, cwd: null },
-      auth_config: args?.authConfig || null,
+      auth_config: mockMcpAuth(args?.authConfig, serverId),
       proxy_url: '',
       gateway_url: 'http://localhost:3625/mcp',
       tools_count: 0,
@@ -2460,10 +2478,12 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     toast.success(`MCP Server "${args?.name}" created (demo)`)
     return newServer
   },
-  'update_mcp_server': (args) => {
-    const server = mockData.mcpServers.find(s => s.id === (args?.serverId || args?.id))
-    if (server && args?.updates) {
-      Object.assign(server, args.updates)
+  'update_mcp_server': (args: UpdateMcpServerParams): null => {
+    const server = mockData.mcpServers.find(s => s.id === args.serverId)
+    if (server && args.updates) {
+      const updates = { ...args.updates }
+      if ('auth_config' in updates) updates.auth_config = mockMcpAuth(updates.auth_config, server.id, server.auth_config)
+      Object.assign(server, updates)
     }
     return null
   },

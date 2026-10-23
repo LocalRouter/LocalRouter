@@ -4008,6 +4008,7 @@ pub enum McpAuthConfig {
     },
 
     /// Pre-registered OAuth credentials (client credentials flow)
+    #[serde(alias = "oauth")]
     OAuth {
         /// OAuth client ID
         client_id: String,
