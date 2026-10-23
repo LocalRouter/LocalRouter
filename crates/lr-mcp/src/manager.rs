@@ -187,21 +187,6 @@ impl McpServerManager {
         *self.health_cache.write() = Some(cache);
     }
 
-    fn client_connection_failure(&self, server_id: &str) -> Option<String> {
-        let mut failure = None;
-        self.session_failures.retain(|_, weak| {
-            if let Some(state) = weak.upgrade() {
-                if let Some(error) = state.read().get(server_id) {
-                    failure = error.values().next().cloned();
-                }
-                true
-            } else {
-                false
-            }
-        });
-        failure
-    }
-
     pub(crate) fn report_startup_phase(
         &self,
         server_id: &str,
@@ -1206,14 +1191,12 @@ impl McpServerManager {
                 || self.sse_transports.contains_key(server_id)
                 || self.websocket_transports.contains_key(server_id));
 
-        // A client session's failed connection remains down even if an
-        // independent UI transport or readiness probe succeeds.
-        let client_failure = self.client_connection_failure(server_id);
+        // Server health describes current availability, not historical failures
+        // on independent client sessions. Always probe the server, even when a
+        // client previously failed to initialize. Session diagnostics and their
+        // per-operation recovery remain owned by SessionTransportSet.
         // A live process/socket alone does not prove protocol availability.
-        // Otherwise, always do a fresh readiness check (try to spawn/connect).
-        let (status, latency_ms, error) = if let Some(error) = client_failure {
-            (HealthStatus::Unhealthy, None, Some(error))
-        } else if has_live_global_transport {
+        let (status, latency_ms, error) = if has_live_global_transport {
             let probe = async {
                 let response = self
                     .send_request(
@@ -1945,7 +1928,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn client_failure_reaches_health_cache_and_outlives_independent_success() {
+    async fn server_health_refresh_does_not_reuse_or_clear_client_failures() {
         use lr_providers::health_cache::{HealthCacheManager, ItemHealthStatus};
         let (manager, id, broken, task) = health_fixture().await;
         let cache = Arc::new(HealthCacheManager::new());
@@ -1970,6 +1953,10 @@ mod tests {
             cache.get().mcp_servers[&id].status,
             ItemHealthStatus::Unhealthy
         );
+        assert_eq!(
+            manager.get_server_health(&id).await.status,
+            HealthStatus::Unhealthy
+        );
         broken.store(false, std::sync::atomic::Ordering::Relaxed);
         assert_eq!(
             manager.check_protocol_readiness(&id).await.0,
@@ -1977,7 +1964,7 @@ mod tests {
         );
         assert_eq!(
             manager.get_server_health(&id).await.status,
-            HealthStatus::Unhealthy
+            HealthStatus::Ready
         );
         transports
             .send_request(&id, JsonRpcRequest::with_id(2, "prompts/list".into(), None))
@@ -1985,13 +1972,55 @@ mod tests {
             .unwrap();
         assert_eq!(
             manager.get_server_health(&id).await.status,
-            HealthStatus::Unhealthy
+            HealthStatus::Ready
+        );
+        // A successful server probe must not erase this client's discovery failure.
+        assert!(transports.failures.read()[&id].contains_key("tools/list"));
+        assert_eq!(
+            cache.get().mcp_servers[&id].status,
+            ItemHealthStatus::Unhealthy
         );
         transports.send_request(&id, request).await.unwrap();
         assert_eq!(
             cache.get().mcp_servers[&id].status,
             ItemHealthStatus::Healthy
         );
+        assert_eq!(
+            manager.get_server_health(&id).await.status,
+            HealthStatus::Ready
+        );
+        transports.close_all().await;
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn failed_client_initialize_cannot_latch_server_health() {
+        let (manager, id, broken, task) = health_fixture().await;
+        let (transports, failures) = manager
+            .create_transports(std::slice::from_ref(&id), std::time::Duration::from_secs(2))
+            .await;
+        assert!(failures.is_empty());
+        // Keep the failed session alive, as happens after partial gateway startup.
+        transports.record_failure(
+            &id,
+            "initialize",
+            "MCP connection failed during initialize; check authentication and server availability",
+        );
+        assert_eq!(
+            manager.get_server_health(&id).await.status,
+            HealthStatus::Ready
+        );
+        assert_eq!(
+            manager.get_server_health(&id).await.status,
+            HealthStatus::Ready
+        );
+        assert!(transports.failures.read()[&id].contains_key("initialize"));
+        broken.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            manager.get_server_health(&id).await.status,
+            HealthStatus::Unhealthy
+        );
+        broken.store(false, std::sync::atomic::Ordering::Relaxed);
         assert_eq!(
             manager.get_server_health(&id).await.status,
             HealthStatus::Ready
