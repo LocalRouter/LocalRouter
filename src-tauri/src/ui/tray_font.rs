@@ -5,9 +5,9 @@
 //! uppercase font, scaled with nearest-neighbour sampling and drawn bold
 //! (1px horizontal dilation) so it survives the menu bar's downscale.
 //!
-//! Stacked labels are sized to use the icon height: 4 letters get 8px
-//! glyphs, 3 letters 11px, 1–2 letters 16px. Labels drawn above content use
-//! an 11px glyph.
+//! Stacked labels have 2px gaps: 4 letters get 7px glyphs, 3 letters 10px,
+//! 2 letters 16px. A single letter is 28px tall and stays narrow. Labels
+//! drawn above content use an 11px glyph.
 
 use image::{Rgba, RgbaImage};
 
@@ -15,8 +15,12 @@ use image::{Rgba, RgbaImage};
 const BASE_WIDTH: u32 = 5;
 /// Base glyph height in the 5×7 source font.
 const BASE_HEIGHT: u32 = 7;
-/// Largest glyph height used for stacked labels (1–2 letters).
+/// Largest glyph height used for stacked labels of two or more letters.
 const MAX_LABEL_GLYPH_HEIGHT: u32 = 16;
+const SINGLE_LABEL_GLYPH_HEIGHT: u32 = 28;
+/// Includes the 1px bold stroke; matches the reviewed tall/narrow preview.
+const SINGLE_LABEL_GLYPH_WIDTH: u32 = 13;
+const VERTICAL_LABEL_GAP: u32 = 2;
 /// Glyph height for a label drawn above its content.
 pub const ABOVE_LABEL_GLYPH_HEIGHT: u32 = 11;
 /// Icon height the vertical layout is computed against.
@@ -237,10 +241,18 @@ pub struct VerticalLayout {
 /// the label gets shorter so the whole icon height is used.
 pub fn vertical_layout(n: usize) -> VerticalLayout {
     let n = n.clamp(1, 4) as u32;
-    let row_pitch = ICON_HEIGHT / n;
-    let glyph_height = (row_pitch - 1).min(MAX_LABEL_GLYPH_HEIGHT);
-    let metrics = FontMetrics::for_height(glyph_height);
-    let y_offset = (ICON_HEIGHT - n * row_pitch) / 2;
+    let glyph_height = if n == 1 {
+        SINGLE_LABEL_GLYPH_HEIGHT
+    } else {
+        ((ICON_HEIGHT - (n - 1) * VERTICAL_LABEL_GAP) / n).min(MAX_LABEL_GLYPH_HEIGHT)
+    };
+    let mut metrics = FontMetrics::for_height(glyph_height);
+    if n == 1 {
+        metrics.glyph_width = SINGLE_LABEL_GLYPH_WIDTH;
+    }
+    let row_pitch = glyph_height + VERTICAL_LABEL_GAP;
+    let stack_height = glyph_height + (n - 1) * row_pitch;
+    let y_offset = (ICON_HEIGHT - stack_height) / 2;
     VerticalLayout {
         metrics,
         row_pitch,
@@ -273,9 +285,8 @@ pub fn draw_vertical_label(
     }
     let layout = vertical_layout(chars.len());
     let gx = x + column_width.saturating_sub(layout.metrics.glyph_width) / 2;
-    let cell_pad = (layout.row_pitch - layout.metrics.glyph_height) / 2;
     for (i, ch) in chars.iter().enumerate() {
-        let gy = layout.y_offset + i as u32 * layout.row_pitch + cell_pad;
+        let gy = layout.y_offset + i as u32 * layout.row_pitch;
         draw_glyph(img, gx, gy, *ch, layout.metrics, color);
     }
 }
@@ -333,17 +344,19 @@ mod tests {
         let l4 = vertical_layout(4);
         assert_eq!(
             (l4.row_pitch, l4.metrics.glyph_height, l4.y_offset),
-            (9, 8, 0)
+            (9, 7, 1)
         );
         let l3 = vertical_layout(3);
         assert_eq!(
             (l3.row_pitch, l3.metrics.glyph_height, l3.y_offset),
-            (12, 11, 0)
+            (12, 10, 1)
         );
         let l2 = vertical_layout(2);
         assert_eq!((l2.row_pitch, l2.metrics.glyph_height), (18, 16));
         let l1 = vertical_layout(1);
-        assert_eq!(l1.metrics.glyph_height, 16);
+        assert_eq!(l1.metrics.glyph_height, 28);
+        assert_eq!(l1.metrics.glyph_width, 13);
+        assert_eq!(l1.y_offset, 4);
         // Wider glyphs for shorter labels
         assert!(vertical_label_width("ALL") > vertical_label_width("CLAU"));
         assert_eq!(vertical_label_width(""), 0);
@@ -356,25 +369,54 @@ mod tests {
         let mut img = RgbaImage::from_pixel(w, 36, Rgba([0, 0, 0, 0]));
         draw_vertical_label(&mut img, 0, w, "ILLI", Rgba([0, 0, 0, 255]));
         for row in 0..4u32 {
-            let y0 = row * 9;
+            let y0 = 1 + row * 9;
             assert!(
-                (y0..y0 + 8).any(|y| (0..w).any(|x| img.get_pixel(x, y)[3] != 0)),
+                (y0..y0 + 7).any(|y| (0..w).any(|x| img.get_pixel(x, y)[3] != 0)),
                 "row {row} empty"
             );
         }
         // Gap rows between glyphs stay empty
         assert!((0..w).all(|x| img.get_pixel(x, 8)[3] == 0));
-        // 3-letter label: bigger glyphs, rows at 0..11, 12..23, 24..35
+        assert!((0..w).all(|x| img.get_pixel(x, 9)[3] == 0));
+        // 3-letter label: rows at 1..11, 13..23, 25..35.
         let w3 = vertical_label_width("ALL");
         let mut img3 = RgbaImage::from_pixel(w3, 36, Rgba([0, 0, 0, 0]));
         draw_vertical_label(&mut img3, 0, w3, "ALL", Rgba([0, 0, 0, 255]));
-        assert!((0..w3).any(|x| img3.get_pixel(x, 0)[3] != 0));
+        assert!((0..w3).any(|x| img3.get_pixel(x, 1)[3] != 0));
         assert!((0..w3).all(|x| img3.get_pixel(x, 11)[3] == 0));
         assert!((0..w3).any(|x| img3.get_pixel(x, 34)[3] != 0));
         // A short label is centred in a wider column
         let mut imgc = RgbaImage::from_pixel(w3 + 4, 36, Rgba([0, 0, 0, 0]));
         draw_vertical_label(&mut imgc, 0, w3 + 4, "ALL", Rgba([0, 0, 0, 255]));
         assert!((0..36).all(|y| imgc.get_pixel(0, y)[3] == 0));
+    }
+
+    #[test]
+    fn stacked_labels_are_centered_with_two_clear_gap_rows() {
+        for (label, height, width) in [
+            ("H", 28, 13),
+            ("HH", 16, 13),
+            ("HHH", 10, 9),
+            ("HHHH", 7, 6),
+        ] {
+            let layout = vertical_layout(label.len());
+            assert_eq!(layout.metrics.glyph_height, height);
+            assert_eq!(vertical_label_width(label), width);
+            let mut img = RgbaImage::from_pixel(width, ICON_HEIGHT, Rgba([0, 0, 0, 0]));
+            draw_vertical_label(&mut img, 0, width, label, Rgba([0, 0, 0, 255]));
+            let ink_rows: Vec<u32> = (0..ICON_HEIGHT)
+                .filter(|&y| (0..width).any(|x| img.get_pixel(x, y)[3] != 0))
+                .collect();
+            assert_eq!(ink_rows[0], layout.y_offset);
+            assert_eq!(ICON_HEIGHT - 1 - ink_rows.last().unwrap(), layout.y_offset);
+            assert_eq!(ink_rows.len(), label.len() * height as usize);
+            for i in 0..label.len() as u32 - 1 {
+                let gap_start = layout.y_offset + i * layout.row_pitch + height;
+                for y in gap_start..gap_start + 2 {
+                    assert!((0..width).all(|x| img.get_pixel(x, y)[3] == 0));
+                }
+            }
+        }
     }
 
     #[test]
