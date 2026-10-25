@@ -140,6 +140,7 @@ export function McpServersPanel({
     listing?: McpServerListing
   } | null>(null)
   const [isCreating, setIsCreating] = useState(false)
+  const [createError, setCreateError] = useState<string | null>(null)
 
   // Form state
   const [serverName, setServerName] = useState("")
@@ -365,6 +366,7 @@ export function McpServersPanel({
   }
 
   const resetForm = () => {
+    setCreateError(null)
     setCustomAuthOverridden(false)
     setServerName("")
     setTransportType("Stdio")
@@ -436,6 +438,7 @@ export function McpServersPanel({
   }
 
   const handleBackToSelect = () => {
+    setCreateError(null)
     setDialogPage("select")
     // Keep form data in case user wants to go back
   }
@@ -443,6 +446,7 @@ export function McpServersPanel({
   const handleCreateServer = async (e: React.FormEvent) => {
     e.preventDefault()
     setIsCreating(true)
+    setCreateError(null)
 
     try {
       const template = selectedSource?.type === "template" ? selectedSource.template : null
@@ -505,7 +509,7 @@ export function McpServersPanel({
       if (authConfig?.type !== "oauth_browser") onRefreshHealth(newServer.id)
     } catch (error) {
       console.error("Failed to create MCP server:", error)
-      toast.error(`Error creating MCP server: ${error}`)
+      setCreateError(`Error creating MCP server: ${error}`)
     } finally {
       setIsCreating(false)
     }
@@ -1245,6 +1249,11 @@ export function McpServersPanel({
         <DialogHeader className="flex-shrink-0">
           <DialogTitle>Add MCP</DialogTitle>
         </DialogHeader>
+        {createError && (
+          <div role="alert" className="flex-shrink-0 max-h-32 overflow-y-auto break-words rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+            {createError}
+          </div>
+        )}
 
         {dialogPage === "select" ? (
           /* Page 1: Selection */

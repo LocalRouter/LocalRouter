@@ -497,6 +497,15 @@ pub async fn start_callback_server(
     Ok(result)
 }
 
+/// Preserve exact issuer binding, with Google's observed Workspace discovery
+/// exception: resource metadata adds a root slash that its OIDC issuer omits.
+/// Keep the metadata issuer unchanged for credential binding and callback checks.
+fn authorization_server_issuer_matches(advertised: &str, metadata: Option<&str>) -> bool {
+    metadata == Some(advertised)
+        || (advertised == "https://accounts.google.com/"
+            && metadata == Some("https://accounts.google.com"))
+}
+
 impl McpOAuthManager {
     /// Create a new OAuth manager
     pub fn new() -> Self {
@@ -710,8 +719,12 @@ impl McpOAuthManager {
             if let Ok(resp) = response {
                 if resp.status().is_success() {
                     if let Ok(metadata) = resp.json::<AuthorizationServerMetadata>().await {
-                        // Metadata must be bound to exactly the advertised issuer.
-                        if metadata.issuer.as_deref() != Some(auth_server_url) {
+                        // Bind metadata to the advertised issuer, allowing only the
+                        // known Google Workspace root-slash discrepancy.
+                        if !authorization_server_issuer_matches(
+                            auth_server_url,
+                            metadata.issuer.as_deref(),
+                        ) {
                             return Err(AppError::Mcp(
                                 "OAuth metadata issuer does not match the authorization server"
                                     .into(),
@@ -1589,6 +1602,78 @@ mod tests {
             build_well_known_url("https://mcp.atlassian.com/v2/mcp"),
             "https://mcp.atlassian.com/.well-known/oauth-protected-resource/v2/mcp"
         );
+    }
+
+    #[test]
+    fn google_workspace_root_issuer_alias_is_narrow() {
+        assert!(authorization_server_issuer_matches(
+            "https://accounts.google.com/",
+            Some("https://accounts.google.com")
+        ));
+        assert!(authorization_server_issuer_matches(
+            "https://accounts.google.com",
+            Some("https://accounts.google.com")
+        ));
+        assert!(authorization_server_issuer_matches(
+            "https://example.com/tenant",
+            Some("https://example.com/tenant")
+        ));
+        for advertised in [
+            "http://accounts.google.com/",
+            "https://accounts.google.com:443/",
+            "https://accounts.google.com/tenant",
+            "https://accounts.google.com/?query=1",
+            "https://accounts.google.com/#fragment",
+            "https://accounts.google.com.evil.example/",
+            "https://user@accounts.google.com/",
+            "https://example.com/",
+        ] {
+            assert!(!authorization_server_issuer_matches(
+                advertised,
+                Some("https://accounts.google.com")
+            ));
+        }
+        for metadata in [
+            None,
+            Some("http://accounts.google.com"),
+            Some("https://accounts.google.com.evil.example"),
+            Some("https://example.com"),
+        ] {
+            assert!(!authorization_server_issuer_matches(
+                "https://accounts.google.com/",
+                metadata
+            ));
+        }
+        assert!(!authorization_server_issuer_matches(
+            "https://example.com/",
+            Some("https://example.com")
+        ));
+    }
+
+    #[tokio::test]
+    async fn discovery_rejects_metadata_from_a_different_issuer() {
+        use axum::{routing::get, Json};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let app = Router::new().route(
+            "/.well-known/oauth-authorization-server",
+            get(|| async {
+                Json(serde_json::json!({
+                    "issuer": "https://different.example.com",
+                    "authorization_endpoint": "https://different.example.com/authorize",
+                    "token_endpoint": "https://different.example.com/token"
+                }))
+            }),
+        );
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let error = mock_manager()
+            .discover_authorization_server(&origin, &[])
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("issuer does not match"));
+        task.abort();
     }
 
     fn browser_config() -> lr_config::McpAuthConfig {

@@ -292,3 +292,45 @@ for (const service of [
     await page.waitForFunction(() => (window as any).startedMcpOAuth?.serverId)
   })
 }
+
+
+test('creation failures stay inside the modal, preserve inputs, and clear on retry and reopen', async ({ page }) => {
+  await captureAuthUpdates(page)
+  await page.evaluate(() => {
+    const w = window as any
+    const original = w.__TAURI_IPC_HANDLER__
+    w.failCreation = true
+    w.__TAURI_IPC_HANDLER__ = (command: string, args: any) => {
+      if (command === 'create_mcp_server' && w.failCreation) throw new Error('MCP error: OAuth metadata issuer does not match the authorization server')
+      return original(command, args)
+    }
+  })
+  await page.getByRole('dialog').getByRole('button', { name: /gmail logo Gmail/i }).click()
+  const dialog = page.getByRole('dialog')
+  await dialog.getByLabel('Client ID', { exact: true }).fill('google-regression-client')
+  await dialog.getByLabel('Client Secret', { exact: true }).fill('test-secret')
+  await dialog.getByRole('button', { name: 'Create', exact: true }).click()
+  const error = dialog.getByRole('alert')
+  await expect(error).toBeVisible()
+  await expect(error).toContainText('OAuth metadata issuer does not match')
+  // Visible at the alert's center, above both dialog content and backdrop.
+  expect(await error.evaluate(element => {
+    const rect = element.getBoundingClientRect()
+    const top = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2)
+    return top === element || element.contains(top)
+  })).toBe(true)
+  await expect(dialog.getByLabel('Client ID', { exact: true })).toHaveValue('google-regression-client')
+  await expect(dialog.getByLabel('Client Secret', { exact: true })).toHaveValue('test-secret')
+  await expect(dialog.getByRole('button', { name: 'Create', exact: true })).toBeEnabled()
+  await dialog.getByRole('button', { name: 'Back', exact: true }).click()
+  await expect(dialog.getByRole('alert')).toHaveCount(0)
+  await dialog.getByRole('button', { name: /gmail logo Gmail/i }).click()
+  await dialog.getByLabel('Client ID', { exact: true }).fill('google-regression-client')
+  await dialog.getByLabel('Client Secret', { exact: true }).fill('test-secret')
+  await page.evaluate(() => { (window as any).failCreation = false })
+  await dialog.getByRole('button', { name: 'Create', exact: true }).click()
+  await expect(dialog).not.toBeVisible()
+  await page.getByRole('button', { name: 'Back to MCPs', exact: true }).click()
+  await page.getByTitle('Add MCP', { exact: true }).click()
+  await expect(page.getByRole('dialog').getByRole('alert')).toHaveCount(0)
+})
