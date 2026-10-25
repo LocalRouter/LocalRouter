@@ -4078,6 +4078,10 @@ pub struct McpOAuthDiscovery {
     /// Supported OAuth scopes
     pub scopes_supported: Vec<String>,
 
+    /// Grant types advertised by the authorization server. Empty when unspecified.
+    #[serde(default)]
+    pub grant_types_supported: Vec<String>,
+
     /// When this was discovered
     pub discovered_at: DateTime<Utc>,
 }
@@ -5196,6 +5200,18 @@ fn default_sidebar_expanded() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oauth_discovery_without_grant_types_remains_compatible() {
+        let discovery: McpOAuthDiscovery = serde_json::from_value(serde_json::json!({
+            "auth_url": "https://example.com/authorize",
+            "token_url": "https://example.com/token",
+            "scopes_supported": ["read"],
+            "discovered_at": "2026-10-24T00:00:00Z"
+        }))
+        .unwrap();
+        assert!(discovery.grant_types_supported.is_empty());
+    }
 
     #[test]
     fn tray_stats_defaults_when_absent_from_yaml() {

@@ -1349,7 +1349,7 @@ export interface ProviderManagedModels {
  */
 export type McpTransportConfig =
   | { type: 'stdio'; command: string; args?: string[]; env?: Record<string, string>; cwd?: string | null }
-  | { type: 'http_sse'; url: string }
+  | { type: 'http_sse'; url: string; headers?: Record<string, string> }
   | { type: 'websocket'; url: string }
 
 /**
@@ -1359,6 +1359,7 @@ export type McpTransportConfig =
 export type McpAuthConfig =
   | { type: 'none' }
   | { type: 'bearer_token'; token_ref: string }
+  /** Values remain in the keychain; updates use raw headers and blank values retain existing secrets. */
   | { type: 'custom_headers'; header_refs: Record<string, string> }
   | { type: 'oauth'; client_id: string; client_secret_ref: string; auth_url: string; token_url: string; scopes: string[] }
   | { type: 'oauth_browser'; auth_url: string; token_url: string; client_id: string; client_secret_ref: string; scopes: string[]; redirect_uri: string; issuer?: string | null }
@@ -2498,6 +2499,7 @@ export interface McpOAuthDiscovery {
   auth_url: string
   token_url: string
   scopes_supported: string[]
+  grant_types_supported: string[]
   discovered_at: string
 }
 

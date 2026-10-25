@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { buildMcpAuthUpdate, type McpAuthConfig } from '../../../src/utils/mcp-auth-update'
+import { buildMcpAuthUpdate, getMcpAuthMethod, retainedMcpTransportHeaders, type McpAuthConfig } from '../../../src/utils/mcp-auth-update'
 
 const endpoints = { auth_url: 'https://example.com/authorize', token_url: 'https://example.com/token', scopes_supported: ['read'] }
 const discover = async () => endpoints
@@ -49,4 +49,41 @@ test('Google template scopes limit new browser grants and preserve saved scopes 
   const scopes = ['https://www.googleapis.com/auth/gmail.readonly', 'https://www.googleapis.com/auth/gmail.compose']
   expect(await buildMcpAuthUpdate('oauth_browser', null, '', 'google-client', 'secret', noDiscovery, scopes)).toMatchObject({ scopes })
   expect(await buildMcpAuthUpdate('oauth_browser', { type: 'oauth_browser', client_id: 'old', scopes: ['saved'] }, '', 'new', '', noDiscovery, scopes)).toMatchObject({ scopes: ['saved'] })
+})
+
+
+test('custom headers use dedicated auth and validate names without exposing values', async () => {
+  const headers = { 'X-API-Key': 'secret' }
+  expect(await buildMcpAuthUpdate('custom_headers', null, '', '', '', noDiscovery, [], headers)).toEqual({ type: 'custom_headers', headers })
+  const existing = { type: 'custom_headers', header_refs: { 'X-API-Key': 'saved-ref' } }
+  expect(await buildMcpAuthUpdate('custom_headers', existing, '', '', '', noDiscovery, [], {})).toEqual({ type: 'custom_headers', headers: {} })
+  expect(await buildMcpAuthUpdate('custom_headers', existing, '', '', '', noDiscovery, [], { 'x-api-key': '' })).toEqual({ type: 'custom_headers', headers: { 'x-api-key': '' } })
+  for (const invalid of [{}, { 'Invalid Name': 'secret' }, { 'X-Key': 'one', 'x-key': 'two' }, { 'X-Key': 'secret\r\ninjected' }]) {
+    await expect(buildMcpAuthUpdate('custom_headers', null, '', '', '', noDiscovery, [], invalid)).rejects.toThrow(/header/)
+  }
+})
+
+test('only selected credentials are submitted and pasted access tokens never need discovery', async () => {
+  expect(await buildMcpAuthUpdate('none', null, 'hidden-token', 'hidden-id', 'hidden-secret', noDiscovery, [], { 'X-Key': 'hidden' })).toBeUndefined()
+  expect(await buildMcpAuthUpdate('none', { type: 'custom_headers' }, '', '', '', noDiscovery)).toEqual({ type: 'none' })
+  expect(await buildMcpAuthUpdate('bearer', null, 'access-token', 'hidden-id', 'hidden-secret', noDiscovery, [], { 'X-Key': 'hidden' })).toEqual({ type: 'bearer_token', token: 'access-token' })
+  expect(await buildMcpAuthUpdate('oauth_browser', null, '', '', '', noDiscovery)).toMatchObject({ type: 'oauth_browser', client_id: null, client_secret: null })
+})
+
+test('client credentials rejects advertised browser-only grants without asking for browser authentication', async () => {
+  await expect(buildMcpAuthUpdate('oauth_pregenerated', null, '', 'client', 'secret', async () => ({ ...endpoints, grant_types_supported: ['authorization_code', 'refresh_token'] }))).rejects.toThrow('does not support OAuth client credentials')
+  expect(await buildMcpAuthUpdate('oauth_pregenerated', null, '', 'client', 'secret', async () => ({ ...endpoints, grant_types_supported: ['client_credentials'] }))).toMatchObject({ type: 'oauth' })
+})
+
+test('legacy headers infer Custom headers; explicit auth changes drop transport credentials', () => {
+  expect(getMcpAuthMethod(null)).toBe('none')
+  expect(getMcpAuthMethod(null, { 'X-Key': 'old' })).toBe('custom_headers')
+  expect(getMcpAuthMethod({ type: 'custom_headers', header_refs: { 'X-Key': 'ref' } })).toBe('custom_headers')
+  for (const type of ['oauth', 'o_auth']) expect(getMcpAuthMethod({ type })).toBe('oauth_pregenerated')
+  const headers = { 'X-Tenant': 'legacy' }
+  expect(retainedMcpTransportHeaders('bearer', { type: 'bearer_token' }, headers)).toEqual(headers)
+  expect(retainedMcpTransportHeaders('oauth_browser', { type: 'oauth_browser' }, headers)).toEqual(headers)
+  expect(retainedMcpTransportHeaders('none', { type: 'bearer_token' }, headers)).toEqual({})
+  expect(retainedMcpTransportHeaders('oauth_browser', { type: 'bearer_token' }, headers)).toEqual({})
+  expect(retainedMcpTransportHeaders('custom_headers', null, headers)).toEqual({})
 })

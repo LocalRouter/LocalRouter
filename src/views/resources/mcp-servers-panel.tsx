@@ -15,7 +15,7 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
-import { buildMcpAuthUpdate, type McpAuthConfig, type OAuthEndpoints } from "@/utils/mcp-auth-update"
+import { buildMcpAuthUpdate, getMcpAuthMethod, retainedMcpTransportHeaders, type McpAuthMethod, type McpAuthConfig, type OAuthEndpoints } from "@/utils/mcp-auth-update"
 import { resolveMcpTemplateUrl } from "@/utils/mcp-template-url"
 import { Checkbox } from "@/components/ui/checkbox"
 import type { McpOAuthDiscovery, DiscoverMcpOAuthEndpointsParams, UpdateMcpServerParams } from "@/types/tauri-commands"
@@ -40,6 +40,7 @@ import {
 import LegacySelect from "@/components/ui/Select"
 import KeyValueInput from "@/components/ui/KeyValueInput"
 import { McpServerTemplates, McpServerTemplate, MCP_SERVER_TEMPLATES, initialTemplateFieldValues } from "@/components/mcp/McpServerTemplates"
+import { McpAuthFields } from "@/components/mcp/McpAuthFields"
 import { McpOAuthModal } from "@/components/mcp/McpOAuthModal"
 import { CustomMcpDiscovery } from "@/components/mcp/CustomMcpDiscovery"
 import { MarketplaceSearchPanel, McpServerListing } from "@/components/add-resource"
@@ -201,9 +202,8 @@ export function McpServersPanel({
   )
 
   // Auth config state
-  const [authMethod, setAuthMethod] = useState<"none" | "bearer" | "oauth_pregenerated" | "oauth_browser">("none")
+  const [authMethod, setAuthMethod] = useState<McpAuthMethod>("none")
   const [bearerToken, setBearerToken] = useState("")
-  const [customAuthOverridden, setCustomAuthOverridden] = useState(false)
 
   // Registered OAuth app credentials (both OAuth flows)
   const [oauthClientId, setOauthClientId] = useState("")
@@ -238,16 +238,19 @@ export function McpServersPanel({
       if (transportType === "Stdio") {
         transportConfig = { type: "stdio", command, env: envVars, cwd: cwd.trim() || null }
       } else {
-        transportConfig = { type: "http_sse", url, headers: headers }
+        transportConfig = { type: "http_sse", url, headers: retainedMcpTransportHeaders(authMethod, server.auth_config, (server.transport_config as { headers?: Record<string, string> }).headers ?? {}) }
       }
 
       const updates: Record<string, unknown> = {
         name: serverName, transport_config: transportConfig,
       }
       if (transportType === "Sse") {
+        const savedHeaders = (server.transport_config as { headers?: Record<string, string> }).headers ?? {}
+        const existingAuth = server.auth_config ?? (Object.keys(savedHeaders).length ? { type: "custom_headers", header_refs: {} } : null)
         const authConfig = await buildMcpAuthUpdate(
-          authMethod, server.auth_config, bearerToken, oauthClientId, oauthClientSecret,
+          authMethod, existingAuth, bearerToken, oauthClientId, oauthClientSecret,
           () => invoke<OAuthEndpoints | null>("discover_mcp_oauth_endpoints", { baseUrl: url }),
+          [], headers,
         )
         if (authConfig !== undefined) updates.auth_config = authConfig
       }
@@ -365,9 +368,22 @@ export function McpServersPanel({
     }
   }
 
+  const authenticationFields = (
+    <div className="border-t pt-4 mt-4">
+      <h3 className="text-md font-semibold mb-3">Authentication</h3>
+      <McpAuthFields
+        method={authMethod} onMethodChange={setAuthMethod}
+        token={bearerToken} onTokenChange={setBearerToken}
+        clientId={oauthClientId} onClientIdChange={setOauthClientId}
+        clientSecret={oauthClientSecret} onClientSecretChange={setOauthClientSecret}
+        headers={headers} onHeadersChange={setHeaders}
+        editing={!!selectedId && !showCreateModal}
+      />
+    </div>
+  )
+
   const resetForm = () => {
     setCreateError(null)
-    setCustomAuthOverridden(false)
     setServerName("")
     setTransportType("Stdio")
     setCommand("")
@@ -473,12 +489,12 @@ export function McpServersPanel({
           const fullCommand = [template.command, ...resolvedArgs].join(" ")
           transportConfig = { type: "stdio", command: fullCommand, env: envVarsFromFields, cwd: cwd.trim() || null }
         } else {
-          transportConfig = { type: "http_sse", url: resolveMcpTemplateUrl(template, templateFieldValues) || url, headers }
+          transportConfig = { type: "http_sse", url: resolveMcpTemplateUrl(template, templateFieldValues) || url, headers: {} }
         }
       } else if (transportType === "Stdio") {
         transportConfig = { type: "stdio", command, env: envVars, cwd: cwd.trim() || null }
       } else {
-        transportConfig = { type: "http_sse", url, headers: headers }
+        transportConfig = { type: "http_sse", url, headers: {} }
       }
 
       const bearerField = template?.fields?.find(field => field.type === "bearer")
@@ -490,11 +506,11 @@ export function McpServersPanel({
         throw new Error("Client ID and Client Secret are required for this template")
       }
       const authConfig = await buildMcpAuthUpdate(
-        template?.authMethod ?? authMethod, null,
+        transportType === "Sse" ? template?.authMethod ?? authMethod : "none", null,
         bearerField ? (templateFieldValues[bearerField.id] || "").trim() : bearerToken,
         templateClientId ?? oauthClientId, templateClientSecret ?? oauthClientSecret,
         () => invoke<OAuthEndpoints | null>("discover_mcp_oauth_endpoints", { baseUrl: url }),
-        template?.defaultScopes,
+        template?.defaultScopes, headers,
       ) ?? null
 
       const newServer = await invoke<{ id: string }>("create_mcp_server", {
@@ -539,11 +555,12 @@ export function McpServersPanel({
     const nextUrl = nextTransport === "Sse" ? (tc.url as string || "") : ""
     const nextEnv = nextTransport === "Stdio" ? (tc.env as Record<string, string> || {}) : {}
     const nextCwd = nextTransport === "Stdio" ? (tc.cwd as string || "") : ""
-    const nextHeaders = nextTransport === "Sse" ? (tc.headers as Record<string, string> || {}) : {}
-    const authType = server.auth_config?.type
-    const nextAuth = authType === "bearer_token" ? "bearer"
-      : authType === "oauth" || authType === "o_auth" ? "oauth_pregenerated"
-      : authType === "oauth_browser" ? "oauth_browser" : "none"
+    const transportHeaders = nextTransport === "Sse" ? (tc.headers as Record<string, string> || {}) : {}
+    const nextAuth = getMcpAuthMethod(server.auth_config, transportHeaders)
+    const headerRefs = server.auth_config?.type === "custom_headers"
+      ? (server.auth_config.header_refs as Record<string, string> || {}) : {}
+    const nextHeaders = nextAuth === "custom_headers"
+      ? { ...transportHeaders, ...Object.fromEntries(Object.keys(headerRefs).map(name => [name, ""])) } : {}
     const nextClientId = nextAuth === "oauth_pregenerated" || nextAuth === "oauth_browser"
       ? (server.auth_config?.client_id as string || "") : ""
 
@@ -975,48 +992,7 @@ export function McpServersPanel({
                               <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://api.example.com/mcp" />
                             </div>
                           )}
-                          {transportType === "Sse" && (
-                            <div className="border-t pt-4 mt-4">
-                              <h3 className="text-md font-semibold mb-3">Authentication</h3>
-                              <p className="text-sm text-muted-foreground mb-3">Configure how LocalRouter authenticates to this MCP server</p>
-                              <div>
-                                <label className="block text-sm font-medium mb-2">Authentication Method</label>
-                                <LegacySelect value={authMethod} onChange={(e) => setAuthMethod(e.target.value as typeof authMethod)}>
-                                  <option value="none">None / Via headers</option>
-                                  <option value="bearer">Bearer Token</option>
-                                  <option value="oauth_browser">OAuth (Browser login)</option>
-                          <option value="oauth_pregenerated">OAuth (Pre-generated credentials)</option>
-                                </LegacySelect>
-                              </div>
-                              {authMethod === "bearer" && (
-                                <div className="mt-3">
-                                  <label className="block text-sm font-medium mb-2">Bearer Token</label>
-                                  <Input type="password" value={bearerToken} onChange={(e) => setBearerToken(e.target.value)} placeholder="Enter new token to update (leave empty to keep existing)" />
-                                  <p className="text-xs text-muted-foreground mt-1">Leave empty to keep the existing token. Token will be stored securely in system keychain.</p>
-                                </div>
-                              )}
-                              {(authMethod === "oauth_pregenerated" || authMethod === "oauth_browser") && (
-                                <div className="mt-3 space-y-3">
-                                  <div>
-                                    <label className="block text-sm font-medium mb-2">Client ID</label>
-                                    <Input value={oauthClientId} onChange={(e) => setOauthClientId(e.target.value)} placeholder="your-oauth-client-id" />
-                                    <p className="text-xs text-muted-foreground mt-1">Leave empty to keep the existing client ID</p>
-                                  </div>
-                                  <div>
-                                    <label className="block text-sm font-medium mb-2">Client Secret</label>
-                                    <Input type="password" value={oauthClientSecret} onChange={(e) => setOauthClientSecret(e.target.value)} placeholder="Enter new secret to update (leave empty to keep existing)" />
-                                    <p className="text-xs text-muted-foreground mt-1">Leave empty to keep the existing secret. Stored securely in system keychain.</p>
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                          )}
-                          {transportType === "Sse" && (
-                            <div>
-                              <label className="block text-sm font-medium mb-2">Headers (Optional)</label>
-                              <KeyValueInput value={headers} onChange={setHeaders} keyPlaceholder="Header Name" valuePlaceholder="Header Value" />
-                            </div>
-                          )}
+                          {transportType === "Sse" && authenticationFields}
                         </div>
                       </CardContent>
                     </Card>
@@ -1293,16 +1269,15 @@ export function McpServersPanel({
                 <CustomMcpDiscovery
                   params={{ target: transportType === "Sse" ? url : command,
                     transportOverride: transportType === "Sse" ? "http_sse" : "stdio",
-                    headers: { ...headers, ...(authMethod === "bearer" && bearerToken ? { Authorization: `Bearer ${bearerToken}` } : {}) },
+                    headers: { ...(authMethod === "custom_headers" ? headers : {}), ...(authMethod === "bearer" && bearerToken ? { Authorization: `Bearer ${bearerToken}` } : {}) },
                     env: envVars, cwd: cwd.trim() || null }}
-                  formRevision={JSON.stringify([serverName, authMethod, customAuthOverridden, transportType, url, command, headers, envVars, cwd, bearerToken])}
+                  formRevision={JSON.stringify([serverName, authMethod, transportType, url, command, headers, envVars, cwd, bearerToken])}
                   onTargetChange={target => {
                     if (/^https?:\/\//i.test(target.trim())) { setTransportType("Sse"); setUrl(target) }
                     else { setTransportType("Stdio"); setCommand(target) }
                   }}
                   onDiscovered={result => {
                     if (!serverName.trim() && result.server_name) setServerName(result.server_name)
-                    if (!customAuthOverridden && authMethod === "none" && (result.auth_method === "oauth_browser" || result.auth_method === "bearer")) setAuthMethod(result.auth_method)
                   }}
                 />
                 <div>
@@ -1336,43 +1311,7 @@ export function McpServersPanel({
                       <label className="block text-sm font-medium mb-2">URL</label>
                       <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://api.example.com/mcp" required />
                     </div>
-                    <div className="border-t pt-4 mt-4">
-                      <h3 className="text-md font-semibold mb-3">Authentication (Optional)</h3>
-                      <div>
-                        <label className="block text-sm font-medium mb-2">Authentication Method</label>
-                        <LegacySelect value={authMethod} onChange={(e) => {
-                          setCustomAuthOverridden(true)
-                          setAuthMethod(e.target.value as typeof authMethod)
-                        }}>
-                          <option value="none">None / Via headers</option>
-                          <option value="bearer">Bearer Token</option>
-                          <option value="oauth_browser">OAuth (Browser login)</option>
-                          <option value="oauth_pregenerated">OAuth (Pre-generated credentials)</option>
-                        </LegacySelect>
-                      </div>
-                      {authMethod === "bearer" && (
-                        <div className="mt-3">
-                          <label className="block text-sm font-medium mb-2">Bearer Token</label>
-                          <Input type="password" value={bearerToken} onChange={(e) => setBearerToken(e.target.value)} placeholder="your-bearer-token" required />
-                        </div>
-                      )}
-                      {(authMethod === "oauth_pregenerated" || authMethod === "oauth_browser") && (
-                        <div className="mt-3 space-y-3">
-                          <div>
-                            <label className="block text-sm font-medium mb-2">Client ID</label>
-                            <Input value={oauthClientId} onChange={(e) => setOauthClientId(e.target.value)} placeholder="your-oauth-client-id" required={authMethod === "oauth_pregenerated"} />
-                          </div>
-                          <div>
-                            <label className="block text-sm font-medium mb-2">Client Secret</label>
-                            <Input type="password" value={oauthClientSecret} onChange={(e) => setOauthClientSecret(e.target.value)} placeholder="your-oauth-client-secret" required={authMethod === "oauth_pregenerated"} />
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium mb-2">Headers (Optional)</label>
-                      <KeyValueInput value={headers} onChange={setHeaders} keyPlaceholder="Header Name" valuePlaceholder="Header Value" />
-                    </div>
+                    {authenticationFields}
                   </>
                 )}
                 <div className="flex justify-end gap-2 pt-4">
@@ -1569,47 +1508,7 @@ export function McpServersPanel({
                   <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://api.example.com/mcp" required />
                 </div>
               )}
-              {transportType === "Sse" && (
-                <div className="border-t pt-4 mt-4">
-                  <h3 className="text-md font-semibold mb-3">Authentication (Optional)</h3>
-                  <p className="text-sm text-muted-foreground mb-3">Configure how LocalRouter authenticates to this MCP server</p>
-                  <div>
-                    <label className="block text-sm font-medium mb-2">Authentication Method</label>
-                    <LegacySelect value={authMethod} onChange={(e) => setAuthMethod(e.target.value as typeof authMethod)}>
-                      <option value="none">None / Via headers</option>
-                      <option value="bearer">Bearer Token</option>
-                      <option value="oauth_browser">OAuth (Browser login)</option>
-                          <option value="oauth_pregenerated">OAuth (Pre-generated credentials)</option>
-                    </LegacySelect>
-                  </div>
-                  {authMethod === "bearer" && (
-                    <div className="mt-3">
-                      <label className="block text-sm font-medium mb-2">Bearer Token</label>
-                      <Input type="password" value={bearerToken} onChange={(e) => setBearerToken(e.target.value)} placeholder="your-bearer-token" required />
-                      <p className="text-xs text-muted-foreground mt-1">Token will be stored securely in system keychain</p>
-                    </div>
-                  )}
-                  {(authMethod === "oauth_pregenerated" || authMethod === "oauth_browser") && (
-                    <div className="mt-3 space-y-3">
-                      <div>
-                        <label className="block text-sm font-medium mb-2">Client ID</label>
-                        <Input value={oauthClientId} onChange={(e) => setOauthClientId(e.target.value)} placeholder="your-oauth-client-id" required={authMethod === "oauth_pregenerated"} />
-                      </div>
-                      <div>
-                        <label className="block text-sm font-medium mb-2">Client Secret</label>
-                        <Input type="password" value={oauthClientSecret} onChange={(e) => setOauthClientSecret(e.target.value)} placeholder="your-oauth-client-secret" required={authMethod === "oauth_pregenerated"} />
-                        <p className="text-xs text-muted-foreground mt-1">Stored securely in system keychain</p>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-              {transportType === "Sse" && (
-                <div>
-                  <label className="block text-sm font-medium mb-2">Headers (Optional)</label>
-                  <KeyValueInput value={headers} onChange={setHeaders} keyPlaceholder="Header Name" valuePlaceholder="Header Value" />
-                </div>
-              )}
+              {transportType === "Sse" && authenticationFields}
               <div className="flex justify-end gap-2 pt-4">
                 <Button type="button" variant="secondary" onClick={() => { setShowCreateModal(false); resetForm() }} disabled={isCreating}>Cancel</Button>
                 <Button type="submit" disabled={isCreating}>{isCreating ? "Creating..." : "Create"}</Button>

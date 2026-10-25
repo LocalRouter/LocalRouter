@@ -1392,6 +1392,13 @@ function mockMcpAuth(config: any, serverId: string, existing?: any): any {
       scopes: config.scopes || [], redirect_uri: config.redirect_uri || 'http://localhost:8080/callback',
       client_secret_ref: existing?.client_secret_ref || `${serverId}_oauth_browser_secret` }
   }
+  if (config.type === 'custom_headers') {
+    const previous = existing?.type === 'custom_headers' ? existing.header_refs || {} : {}
+    return { type: 'custom_headers', header_refs: Object.fromEntries(Object.keys(config.headers || {}).map(name => {
+      const old = Object.entries(previous).find(([key]) => key.toLowerCase() === name.toLowerCase())
+      return [name, !config.headers[name] && old ? old[1] : `demo-header-${generateId()}`]
+    })) }
+  }
   if (config.type === 'bearer_token') return { type: 'bearer_token', token_ref: serverId }
   return config
 }
@@ -3308,7 +3315,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     },
     suggested_headers: [], warnings: [],
   }),
-  'discover_mcp_oauth_endpoints': () => ({ auth_url: 'https://example.com/authorize', token_url: 'https://example.com/token', scopes_supported: [], discovered_at: new Date().toISOString() }),
+  'discover_mcp_oauth_endpoints': () => ({ auth_url: 'https://example.com/authorize', token_url: 'https://example.com/token', scopes_supported: [], grant_types_supported: ['authorization_code', 'client_credentials'], discovered_at: new Date().toISOString() }),
   'revoke_mcp_oauth_tokens': () => {
     toast.success('OAuth tokens revoked (demo)')
     return null

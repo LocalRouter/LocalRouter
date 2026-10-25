@@ -3,12 +3,13 @@ export interface McpAuthConfig {
   [key: string]: unknown
 }
 
-export type McpAuthMethod = 'none' | 'bearer' | 'oauth_browser' | 'oauth_pregenerated'
+export type McpAuthMethod = 'none' | 'custom_headers' | 'bearer' | 'oauth_browser' | 'oauth_pregenerated'
 
 export interface OAuthEndpoints {
   auth_url: string
   token_url: string
   scopes_supported: string[]
+  grant_types_supported?: string[]
 }
 
 /** Undefined preserves auth; empty OAuth secrets preserve an existing OAuth secret. */
@@ -20,10 +21,22 @@ export async function buildMcpAuthUpdate(
   clientSecret: string,
   discover: () => Promise<OAuthEndpoints | null>,
   defaultScopes: string[] = [],
+  headers: Record<string, string> = {},
 ): Promise<McpAuthConfig | undefined> {
   switch (method) {
     case 'none':
       return existing && existing.type !== 'none' ? { type: 'none' } : undefined
+    case 'custom_headers': {
+      if (Object.keys(headers).length === 0 && existing?.type !== 'custom_headers') throw new Error('Enter at least one custom header')
+      const names = new Set<string>()
+      for (const [name, value] of Object.entries(headers)) {
+        const lower = name.toLowerCase()
+        if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name) || names.has(lower)) throw new Error('Enter unique, valid custom header names')
+        names.add(lower)
+        if (/[\r\n]/.test(value)) throw new Error('Custom header values cannot contain line breaks')
+      }
+      return { type: 'custom_headers', headers }
+    }
     case 'bearer':
       if (token) return { type: 'bearer_token', token }
       if (existing?.type === 'bearer_token') return undefined
@@ -51,6 +64,9 @@ export async function buildMcpAuthUpdate(
         scopes_supported: (previous.scopes as string[] | undefined) ?? [],
       } : await discover()
       if (!discovery) throw new Error('This MCP server does not support OAuth discovery')
+      if (discovery.grant_types_supported?.length && !discovery.grant_types_supported.includes('client_credentials')) {
+        throw new Error('This server does not support OAuth client credentials. Use OAuth (Browser login) instead.')
+      }
       return {
         type: 'oauth', client_id: id, client_secret: clientSecret,
         auth_url: discovery.auth_url, token_url: discovery.token_url,
@@ -58,4 +74,21 @@ export async function buildMcpAuthUpdate(
       }
     }
   }
+}
+
+
+/** Infer legacy transport-header authentication without changing saved configurations. */
+export function getMcpAuthMethod(auth: McpAuthConfig | null, headers: Record<string, string> = {}): McpAuthMethod {
+  switch (auth?.type) {
+    case 'bearer_token': return 'bearer'
+    case 'oauth': case 'o_auth': return 'oauth_pregenerated'
+    case 'oauth_browser': return 'oauth_browser'
+    case 'custom_headers': return 'custom_headers'
+    default: return Object.keys(headers).length ? 'custom_headers' : 'none'
+  }
+}
+
+/** Keep extra transport headers on legacy authenticated servers until auth is explicitly changed. */
+export function retainedMcpTransportHeaders(method: McpAuthMethod, auth: McpAuthConfig | null, headers: Record<string, string>): Record<string, string> {
+  return method !== 'none' && method !== 'custom_headers' && method === getMcpAuthMethod(auth) ? headers : {}
 }

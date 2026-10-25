@@ -156,25 +156,44 @@ fn process_auth_config(
             McpAuthConfig::BearerToken { token_ref: key }
         }
         FrontendAuthConfig::CustomHeaders { headers } => {
-            // Store each header value in keychain with a generated UUID reference
-            let keychain = lr_api_keys::CachedKeychain::auto()
-                .map_err(|e| format!("Failed to access keychain: {}", e))?;
-
+            let previous = match existing {
+                Some(McpAuthConfig::CustomHeaders { header_refs }) => Some(header_refs),
+                _ => None,
+            };
+            // Validate the entire update before writing any secret. Never echo values.
+            let mut names = std::collections::HashSet::new();
+            for (name, value) in &headers {
+                if reqwest::header::HeaderName::from_bytes(name.as_bytes()).is_err()
+                    || !names.insert(name.to_ascii_lowercase())
+                {
+                    return Err("Enter unique, valid custom header names".into());
+                }
+                if reqwest::header::HeaderValue::from_str(value).is_err() {
+                    return Err("Invalid custom header value".into());
+                }
+            }
             let mut header_refs = std::collections::HashMap::new();
             for (name, value) in headers {
+                // Public config exposes only names/references. Blank retained values
+                // preserve saved secrets; omitted names remove their headers.
+                if value.is_empty() {
+                    if let Some(old_ref) = previous.and_then(|refs| {
+                        refs.iter()
+                            .find(|(key, _)| key.eq_ignore_ascii_case(&name))
+                            .map(|(_, value)| value)
+                    }) {
+                        header_refs.insert(name, old_ref.clone());
+                        continue;
+                    }
+                }
+                let keychain = lr_api_keys::CachedKeychain::auto()
+                    .map_err(|e| format!("Failed to access keychain: {}", e))?;
                 let ref_key = uuid::Uuid::new_v4().to_string();
                 keychain
                     .store(lr_config::MCP_KEYRING_SERVICE, &ref_key, &value)
-                    .map_err(|e| format!("Failed to store header '{}' in keychain: {}", name, e))?;
+                    .map_err(|_| "Failed to store custom header in keychain".to_string())?;
                 header_refs.insert(name, ref_key);
             }
-
-            tracing::debug!(
-                "Stored {} custom header(s) in keychain for server {}",
-                header_refs.len(),
-                server_id
-            );
-
             McpAuthConfig::CustomHeaders { header_refs }
         }
         FrontendAuthConfig::OAuth {
@@ -259,7 +278,13 @@ fn process_auth_config(
                     Some(McpAuthConfig::OAuthBrowser {
                         client_secret_ref, ..
                     }) => client_secret_ref.clone(),
-                    _ => format!("{}_oauth_browser_secret", server_id),
+                    // A fresh browser flow without a secret must not reuse a
+                    // stale registered-app secret after switching auth modes.
+                    _ => format!(
+                        "{}_oauth_browser_secret_{}",
+                        server_id,
+                        uuid::Uuid::new_v4()
+                    ),
                 }
             };
 
@@ -1985,6 +2010,7 @@ pub async fn discover_mcp_oauth_endpoints(
             auth_url: discovery.auth_url,
             token_url: discovery.token_endpoint,
             scopes_supported: discovery.scopes_supported,
+            grant_types_supported: discovery.grant_types_supported,
             discovered_at: chrono::Utc::now(),
         })),
         Ok(None) => Ok(None),
@@ -2586,6 +2612,87 @@ mod auth_update_tests {
             Some(json!({"type": "none"})),
         ] {
             assert_eq!(process_auth_config("test", value, None).unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn new_browser_oauth_without_secret_cannot_reuse_a_previous_mode_secret() {
+        let config = json!({"type": "oauth_browser"});
+        let first = process_auth_config("test", Some(config.clone()), None)
+            .unwrap()
+            .unwrap();
+        let second = process_auth_config("test", Some(config), None)
+            .unwrap()
+            .unwrap();
+        let McpAuthConfig::OAuthBrowser {
+            client_secret_ref: first_ref,
+            ..
+        } = first
+        else {
+            panic!("wrong auth type")
+        };
+        let McpAuthConfig::OAuthBrowser {
+            client_secret_ref: second_ref,
+            ..
+        } = second
+        else {
+            panic!("wrong auth type")
+        };
+        assert_ne!(first_ref, "test_oauth_browser_secret");
+        assert_ne!(first_ref, second_ref);
+    }
+
+    #[test]
+    fn custom_header_updates_preserve_named_secrets_and_drop_omitted_headers() {
+        let existing = McpAuthConfig::CustomHeaders {
+            header_refs: [
+                ("X-API-Key".into(), "saved-key".into()),
+                ("X-Remove".into(), "removed-key".into()),
+            ]
+            .into(),
+        };
+        let updated = process_auth_config(
+            "test",
+            Some(json!({"type": "custom_headers", "headers": {"x-api-key": ""}})),
+            Some(&existing),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            updated,
+            McpAuthConfig::CustomHeaders {
+                header_refs: [("x-api-key".into(), "saved-key".into())].into()
+            }
+        );
+        let cleared = process_auth_config(
+            "test",
+            Some(json!({"type": "custom_headers", "headers": {}})),
+            Some(&existing),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            cleared,
+            McpAuthConfig::CustomHeaders {
+                header_refs: Default::default()
+            }
+        );
+    }
+
+    #[test]
+    fn custom_header_updates_reject_invalid_or_case_duplicate_names_and_values() {
+        for headers in [
+            json!({"Invalid Name": "secret"}),
+            json!({"X-Key": "one", "x-key": "two"}),
+            json!({"X-Key": "secret\r\ninjected"}),
+        ] {
+            let error = process_auth_config(
+                "test",
+                Some(json!({"type": "custom_headers", "headers": headers})),
+                None,
+            )
+            .unwrap_err();
+            assert!(!error.contains("secret"));
         }
     }
 

@@ -1,5 +1,7 @@
 # MCP OAuth Browser Authentication - Setup Guide
 
+For current authentication choices and the distinction between browser OAuth, client credentials, bearer tokens and custom headers, see [MCP authentication](MCP_AUTHENTICATION.md).
+
 ## Overview
 
 LocalRouter AI now supports browser-based OAuth authentication for MCP servers, enabling secure integration with services like GitHub, GitLab, and other OAuth-enabled MCP servers.
