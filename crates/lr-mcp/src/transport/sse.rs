@@ -120,6 +120,9 @@ pub struct SseTransport {
     /// Legacy Streamable HTTP session assigned by initialize (absent for modern MCP).
     session_id: Arc<RwLock<Option<String>>>,
 
+    /// Exact server-selected version, including legacy revisions.
+    negotiated_version: Arc<RwLock<Option<String>>>,
+
     /// HTTP client for sending requests
     client: Client,
 
@@ -157,23 +160,29 @@ pub struct SseTransport {
 ///
 /// `MCP-Protocol-Version` reflects the revision declared in the request's
 /// `_meta` (injected by the session transport set for stateless backends),
-/// defaulting to the legacy version. `Mcp-Method`/`Mcp-Name` mirror the
-/// JSON-RPC body so 2026-07-28 servers and load balancers can route on the
+/// falling back to the version negotiated during initialization.
+/// `Mcp-Method`/`Mcp-Name` mirror the JSON-RPC body so 2026-07-28 servers and load balancers can route on the
 /// operation without inspecting it; legacy servers ignore them.
-fn mcp_request_headers(request: &JsonRpcRequest) -> Vec<(&'static str, String)> {
+fn mcp_request_headers(
+    request: &JsonRpcRequest,
+    negotiated_version: Option<&str>,
+) -> Vec<(&'static str, String)> {
     let version = request
         .params
         .as_ref()
         .and_then(|p| p.get("_meta"))
         .and_then(|m| m.get(crate::protocol::meta_keys::PROTOCOL_VERSION))
         .and_then(|v| v.as_str())
-        .unwrap_or(crate::protocol::MCP_PROTOCOL_VERSION)
-        .to_string();
+        .or(negotiated_version);
 
-    let mut headers = vec![
-        ("MCP-Protocol-Version", version),
-        ("Mcp-Method", request.method.clone()),
-    ];
+    let mut headers = vec![("Mcp-Method", request.method.clone())];
+    // Initialization negotiates via its body. Sending an unsupported version
+    // header here prevents strict HTTP servers from negotiating an older one.
+    if let Some(version) = version.or_else(|| {
+        (request.method != "initialize").then_some(crate::protocol::MCP_PROTOCOL_VERSION)
+    }) {
+        headers.push(("MCP-Protocol-Version", version.to_string()));
+    }
 
     if let Some(name) = request
         .params
@@ -188,6 +197,21 @@ fn mcp_request_headers(request: &JsonRpcRequest) -> Vec<(&'static str, String)> 
 }
 
 impl SseTransport {
+    /// Record before returning initialize so notifications and catalog requests
+    /// immediately use the server's selected version (inline or legacy SSE).
+    fn record_negotiated_version(&self, request: &JsonRpcRequest, response: &JsonRpcResponse) {
+        if request.method == "initialize" && response.error.is_none() {
+            if let Some(version) = response
+                .result
+                .as_ref()
+                .and_then(|result| result.get("protocolVersion"))
+                .and_then(Value::as_str)
+            {
+                *self.negotiated_version.write() = Some(version.to_string());
+            }
+        }
+    }
+
     /// Parse SSE response and extract JSON data
     ///
     /// SSE responses have the format:
@@ -325,6 +349,9 @@ impl SseTransport {
                             if let Some(id) = self.session_id.read().clone() {
                                 post = post.header("Mcp-Session-Id", id);
                             }
+                            if let Some(version) = self.negotiated_version.read().clone() {
+                                post = post.header("MCP-Protocol-Version", version);
+                            }
                             post.send()
                                 .await
                                 .map_err(|e| {
@@ -410,6 +437,8 @@ impl SseTransport {
         let message_endpoint = Arc::new(RwLock::new(None));
         let session_id = Arc::new(RwLock::new(None));
         let stream_session_id = session_id.clone();
+        let negotiated_version = Arc::new(RwLock::new(None));
+        let stream_negotiated_version = negotiated_version.clone();
         let headers: SharedHeaders = Arc::new(RwLock::new(headers));
 
         // Start persistent SSE stream in background
@@ -436,6 +465,7 @@ impl SseTransport {
                 stream_request_callback,
                 stream_message_endpoint,
                 stream_session_id,
+                stream_negotiated_version,
                 stream_error,
                 stream_auth_refresher,
             )
@@ -498,6 +528,7 @@ impl SseTransport {
             url,
             message_endpoint,
             session_id,
+            negotiated_version,
             client,
             headers,
             auth_refresher,
@@ -534,6 +565,7 @@ impl SseTransport {
         request_callback: Arc<RwLock<Option<crate::transport::RequestCallback>>>,
         message_endpoint: Arc<RwLock<Option<String>>>,
         session_id: Arc<RwLock<Option<String>>>,
+        negotiated_version: Arc<RwLock<Option<String>>>,
         last_error: Arc<RwLock<Option<String>>>,
         auth_refresher: Arc<RwLock<Option<AuthRefresher>>>,
     ) {
@@ -573,6 +605,10 @@ impl SseTransport {
             request = request.header("Accept", "text/event-stream");
             if let Some(id) = session_id.read().clone() {
                 request = request.header("Mcp-Session-Id", id);
+            }
+
+            if let Some(version) = negotiated_version.read().clone() {
+                request = request.header("MCP-Protocol-Version", version);
             }
 
             // Send request and get streaming response
@@ -833,6 +869,8 @@ impl SseTransport {
                                                 let response_client = client.clone();
                                                 let response_headers = headers.read().clone();
                                                 let response_session = session_id.read().clone();
+                                                let response_version =
+                                                    negotiated_version.read().clone();
 
                                                 tokio::spawn(async move {
                                                     let request_id = request.id.clone();
@@ -854,6 +892,12 @@ impl SseTransport {
                                                     if let Some(id) = response_session {
                                                         req_builder = req_builder
                                                             .header("Mcp-Session-Id", id);
+                                                    }
+                                                    if let Some(version) = response_version {
+                                                        req_builder = req_builder.header(
+                                                            "MCP-Protocol-Version",
+                                                            version,
+                                                        );
                                                     }
                                                     match req_builder.send().await {
                                                         Ok(resp) => {
@@ -1038,7 +1082,9 @@ impl Transport for SseTransport {
                 req_builder = req_builder.header("Mcp-Session-Id", id);
             }
             req_builder = req_builder.header("Accept", "application/json, text/event-stream");
-            for (key, value) in mcp_request_headers(&request) {
+            for (key, value) in
+                mcp_request_headers(&request, self.negotiated_version.read().as_deref())
+            {
                 req_builder = req_builder.header(key, value);
             }
             for (key, value) in self.headers.read().clone() {
@@ -1113,7 +1159,9 @@ impl Transport for SseTransport {
             req_builder = req_builder.header("Accept", "application/json, text/event-stream");
 
             // Add standard MCP request headers (SEP-2243)
-            for (key, value) in mcp_request_headers(&request) {
+            for (key, value) in
+                mcp_request_headers(&request, self.negotiated_version.read().as_deref())
+            {
                 req_builder = req_builder.header(key, value);
             }
 
@@ -1187,6 +1235,7 @@ impl Transport for SseTransport {
         }
 
         if let Some(mut response) = self.read_inline_response(post_response).await? {
+            self.record_negotiated_version(&request, &response);
             response.id = original_request_id.clone().unwrap_or(Value::Null);
             return Ok(response);
         }
@@ -1215,6 +1264,8 @@ impl Transport for SseTransport {
                 );
                 AppError::Mcp("Response channel closed".to_string())
             })?;
+
+        self.record_negotiated_version(&request, &response);
 
         // Restore original request ID in response
         response.id = original_request_id.unwrap_or(Value::Null);
@@ -1257,7 +1308,8 @@ impl Transport for SseTransport {
         }
 
         // Add standard MCP request headers (SEP-2243)
-        for (key, value) in mcp_request_headers(&request) {
+        for (key, value) in mcp_request_headers(&request, self.negotiated_version.read().as_deref())
+        {
             req_builder = req_builder.header(key, value);
         }
 
@@ -1404,7 +1456,7 @@ impl Transport for SseTransport {
                 for (key, value) in &headers {
                     post = post.header(key, value);
                 }
-                for (key, value) in mcp_request_headers(&request) {
+                for (key, value) in mcp_request_headers(&request, None) {
                     post = post.header(key, value);
                 }
                 let response = match post.send().await {
@@ -1767,6 +1819,165 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn http_uses_server_negotiated_version_for_tools_and_notifications() {
+        use axum::{http::HeaderMap, response::IntoResponse, routing::post, Json, Router};
+        for version in ["2025-06-18", "2025-03-26", "2024-11-05", "2024-10-07"] {
+            for sse in [false, true] {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+                let notifications = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                let received = notifications.clone();
+                let app = Router::new().route("/mcp", post(move |headers: HeaderMap, Json(request): Json<JsonRpcRequest>| {
+                    let received = received.clone();
+                    async move {
+                        if request.method == "initialize" {
+                            assert!(headers.get("MCP-Protocol-Version").is_none());
+                            assert_eq!(request.params.as_ref().unwrap()["protocolVersion"], crate::protocol::MCP_PROTOCOL_VERSION);
+                            let body = json!({"jsonrpc":"2.0", "id":request.id, "result": {
+                                "protocolVersion": version, "capabilities":{"tools":{}},
+                                "serverInfo":{"name":"older-server","version":"1"}
+                            }});
+                            return if sse {
+                                ([("Content-Type", "text/event-stream")], format!("data: {body}\n\n")).into_response()
+                            } else {
+                                Json(body).into_response()
+                            };
+                        }
+                        if headers.get("MCP-Protocol-Version").and_then(|h| h.to_str().ok()) != Some(version) {
+                            return (axum::http::StatusCode::BAD_REQUEST, Json(json!({
+                                "jsonrpc":"2.0", "id":request.id,
+                                "error":{"code":-32000,"message":"Unsupported protocol version"}
+                            }))).into_response();
+                        }
+                        if request.method == "notifications/initialized" {
+                            received.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            return axum::http::StatusCode::ACCEPTED.into_response();
+                        }
+                        Json(json!({"jsonrpc":"2.0", "id":request.id, "result":{"tools":[]}})).into_response()
+                    }
+                }));
+                let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+                let transport = SseTransport::connect(url, HashMap::new()).await.unwrap();
+                let initialize = JsonRpcRequest::with_id(
+                    1,
+                    "initialize".into(),
+                    Some(json!({
+                        "protocolVersion": crate::protocol::MCP_PROTOCOL_VERSION,
+                        "capabilities":{}, "clientInfo":{"name":"test","version":"1"}
+                    })),
+                );
+                let response = transport.send_request(initialize.clone()).await.unwrap();
+                assert!(response.error.is_none());
+                transport
+                    .send_request(JsonRpcRequest::new(
+                        None,
+                        "notifications/initialized".into(),
+                        None,
+                    ))
+                    .await
+                    .unwrap();
+                assert_eq!(notifications.load(std::sync::atomic::Ordering::SeqCst), 1);
+                let response = transport
+                    .send_request(JsonRpcRequest::with_id(2, "tools/list".into(), None))
+                    .await
+                    .unwrap();
+                assert!(response.error.is_none(), "{version}: {:?}", response.error);
+                assert_eq!(response.result.unwrap()["tools"], json!([]));
+                transport.disconnect().await.unwrap();
+                server.abort();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_sse_initialize_records_version_from_persistent_stream() {
+        use axum::{http::HeaderMap, response::IntoResponse, routing::get, Json, Router};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/sse", listener.local_addr().unwrap());
+        let (messages, _) = tokio::sync::broadcast::channel::<String>(16);
+        let outgoing = messages.clone();
+        let app = Router::new().route("/sse", get(move || {
+            let mut incoming = messages.subscribe();
+            async move {
+                let stream = async_stream::stream! {
+                    yield Ok::<_, std::convert::Infallible>("event: endpoint\ndata: /sse\n\n".to_string());
+                    while let Ok(message) = incoming.recv().await {
+                        yield Ok(format!("event: message\ndata: {message}\n\n"));
+                    }
+                };
+                ([("Content-Type", "text/event-stream")], axum::body::Body::from_stream(stream))
+            }
+        }).post(move |headers: HeaderMap, Json(request): Json<JsonRpcRequest>| {
+            let outgoing = outgoing.clone();
+            async move {
+                let result = if request.method == "initialize" {
+                    if request.params.as_ref().is_some_and(|p| p["reject"] == true) {
+                        outgoing.send(json!({"jsonrpc":"2.0", "id":request.id,
+                            "error":{"code":-32000,"message":"rejected initialization"}
+                        }).to_string()).unwrap();
+                        return axum::http::StatusCode::ACCEPTED.into_response();
+                    }
+                    json!({"protocolVersion":"2025-06-18"})
+                } else {
+                    assert_eq!(headers.get("MCP-Protocol-Version").unwrap(), "2025-06-18");
+                    json!({"tools":[]})
+                };
+                outgoing.send(json!({"jsonrpc":"2.0", "id":request.id, "result":result}).to_string()).unwrap();
+                axum::http::StatusCode::ACCEPTED.into_response()
+            }
+        }));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let transport = SseTransport::connect(url, HashMap::new()).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            let response = transport
+                .send_request(JsonRpcRequest::with_id(
+                    1,
+                    "initialize".into(),
+                    Some(json!({
+                        "protocolVersion": crate::protocol::MCP_PROTOCOL_VERSION
+                    })),
+                ))
+                .await
+                .unwrap();
+            assert!(response.error.is_none());
+            let rejected = transport
+                .send_request(JsonRpcRequest::with_id(
+                    2,
+                    "initialize".into(),
+                    Some(json!({"reject":true})),
+                ))
+                .await
+                .unwrap();
+            assert!(rejected.error.is_some());
+            let response = transport
+                .send_request(JsonRpcRequest::with_id(3, "tools/list".into(), None))
+                .await
+                .unwrap();
+            assert_eq!(response.result.unwrap()["tools"], json!([]));
+        })
+        .await
+        .expect("legacy SSE handshake and subsequent requests should complete");
+        transport.disconnect().await.unwrap();
+        server.abort();
+    }
+
+    #[test]
+    fn explicit_stateless_metadata_overrides_legacy_negotiation() {
+        let request = JsonRpcRequest::with_id(
+            1,
+            "tools/list".into(),
+            Some(json!({
+                "_meta": {crate::protocol::meta_keys::PROTOCOL_VERSION: crate::protocol::MCP_PROTOCOL_VERSION_STATELESS}
+            })),
+        );
+        let headers = mcp_request_headers(&request, Some("2025-06-18"));
+        assert!(headers.contains(&(
+            "MCP-Protocol-Version",
+            crate::protocol::MCP_PROTOCOL_VERSION_STATELESS.to_string()
+        )));
+    }
+
+    #[tokio::test]
     async fn legacy_http_preserves_session_and_query_and_reads_open_sse() {
         use axum::{
             extract::Query, http::HeaderMap, response::IntoResponse, routing::post, Json, Router,
@@ -1900,6 +2111,7 @@ mod tests {
             url: "http://localhost:3000".to_string(),
             message_endpoint: Arc::new(RwLock::new(None)),
             session_id: Arc::new(RwLock::new(None)),
+            negotiated_version: Arc::new(RwLock::new(None)),
             client: Client::new(),
             headers: Arc::new(RwLock::new(HashMap::new())),
             auth_refresher: Arc::new(RwLock::new(None)),
