@@ -8,7 +8,7 @@
 - [x] Test Coverage Review: inspect all new/changed paths and error handling.
 - [x] Bug Hunt: inspect credential preservation, conflicting headers, auto-save and form reset.
 - [x] Validate exact stable Rust CI checks, TypeScript, production builds and relevant unit/browser regressions.
-- [ ] Commit and push completed validated work and automatic catalog updates on the existing isolated worktree branch.
+- [x] Commit and push completed validated work and automatic catalog updates on the existing isolated worktree branch.
 
 Do not migrate legacy OAuth flows or discard non-auth transport headers from existing servers. Custom header values use keychain-backed auth config; blank existing values retain the matching saved header secret. Omitting a header removes it. Default None sends no credentials for newly created servers. Browser app credentials should be an optional expanded section, while Google/Slack templates continue requiring registered client credentials.
 
