@@ -193,6 +193,41 @@ export const MCP_SERVER_TEMPLATES: McpServerTemplate[] = [
   },
 
   {
+    id: 'gmail',
+    name: 'Gmail',
+    description: 'Official Google-hosted Gmail MCP server for searching mail, reading threads, drafts, and labels (Developer Preview).',
+    category: 'productivity',
+    icon: 'gmail',
+    transport: 'Sse',
+    url: 'https://gmailmcp.googleapis.com/mcp/v1',
+    authMethod: 'oauth_browser',
+    fields: [
+      { id: 'client_id', label: 'Client ID', type: 'oauth_client_id', placeholder: 'Your Google OAuth Client ID', helpText: 'Google Auth Platform → Clients. Use a client marked “Use this client for an AI-powered agent”.' },
+      { id: 'client_secret', label: 'Client Secret', type: 'oauth_client_secret', placeholder: 'Your Google OAuth Client Secret', secret: true, helpText: 'Stored securely in your system keychain.' },
+    ],
+    defaultScopes: ['https://www.googleapis.com/auth/gmail.readonly', 'https://www.googleapis.com/auth/gmail.compose'],
+    setupInstructions: 'Requires Google Workspace Developer Preview enrollment for your Cloud project.\n1. In Google Cloud, enable Gmail API (gmail.googleapis.com) and Gmail MCP API (gmailmcp.googleapis.com).\n2. Configure Google Auth Platform branding and audience: Internal for your organization, or External with your account added as a test user. Add gmail.readonly and gmail.compose scopes.\n3. Create a Web application OAuth client, select “Use this client for an AI-powered agent”, and add http://localhost:8080/callback as an authorized redirect URI.\n4. Enter its Client ID and Client Secret below, create the server, and sign in with Google. Uses Streamable HTTP; leave custom headers empty. LocalRouter manages the Authorization: Bearer access-token header. External apps in Testing can require reauthorization after seven days.',
+    docsUrl: 'https://developers.google.com/workspace/gmail/api/guides/configure-mcp-server',
+  },
+  {
+    id: 'google-drive',
+    name: 'Google Drive',
+    description: 'Official Google-hosted Drive MCP server for searching and reading eligible files, metadata, and file creation (Developer Preview).',
+    category: 'files_data',
+    icon: 'google-drive',
+    transport: 'Sse',
+    url: 'https://drivemcp.googleapis.com/mcp/v1',
+    authMethod: 'oauth_browser',
+    fields: [
+      { id: 'client_id', label: 'Client ID', type: 'oauth_client_id', placeholder: 'Your Google OAuth Client ID', helpText: 'The same registered Google OAuth client can be used for Gmail and Drive if both APIs and their scopes are configured.' },
+      { id: 'client_secret', label: 'Client Secret', type: 'oauth_client_secret', placeholder: 'Your Google OAuth Client Secret', secret: true, helpText: 'Stored securely in your system keychain.' },
+    ],
+    defaultScopes: ['https://www.googleapis.com/auth/drive.readonly', 'https://www.googleapis.com/auth/drive.file'],
+    setupInstructions: 'Requires Google Workspace Developer Preview enrollment for your Cloud project.\n1. In Google Cloud, enable Google Drive API (drive.googleapis.com) and Google Drive MCP API (drivemcp.googleapis.com).\n2. Configure Google Auth Platform branding and audience: Internal for your organization, or External with your account added as a test user. Add drive.readonly and drive.file scopes.\n3. Create a Web application OAuth client, select “Use this client for an AI-powered agent”, and add http://localhost:8080/callback as an authorized redirect URI.\n4. Enter its Client ID and Client Secret below, create the server, and sign in with Google. Uses Streamable HTTP; leave custom headers empty. LocalRouter manages the Authorization: Bearer access-token header. Google limits which files are eligible; see its Drive MCP file eligibility guide. External apps in Testing can require reauthorization after seven days.',
+    docsUrl: 'https://developers.google.com/workspace/drive/api/guides/configure-mcp-server',
+  },
+
+  {
     id: 'google-workspace',
     name: 'Google Workspace',
     description: 'Official Google Workspace CLI exposing Drive, Gmail, Calendar, Docs, Sheets, and more as MCP tools via stdio.',

@@ -43,3 +43,10 @@ test('switching auth never reuses credentials from a different method', async ()
   expect(await buildMcpAuthUpdate('bearer', null, 'new-token', '', '', noDiscovery)).toEqual({ type: 'bearer_token', token: 'new-token' })
   await expect(buildMcpAuthUpdate('oauth_pregenerated', { type: 'oauth_browser', client_id: 'client' }, '', '', '', noDiscovery)).rejects.toThrow('Client ID')
 })
+
+
+test('Google template scopes limit new browser grants and preserve saved scopes on edits', async () => {
+  const scopes = ['https://www.googleapis.com/auth/gmail.readonly', 'https://www.googleapis.com/auth/gmail.compose']
+  expect(await buildMcpAuthUpdate('oauth_browser', null, '', 'google-client', 'secret', noDiscovery, scopes)).toMatchObject({ scopes })
+  expect(await buildMcpAuthUpdate('oauth_browser', { type: 'oauth_browser', client_id: 'old', scopes: ['saved'] }, '', 'new', '', noDiscovery, scopes)).toMatchObject({ scopes: ['saved'] })
+})

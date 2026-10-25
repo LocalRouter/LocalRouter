@@ -266,3 +266,29 @@ test('reverting a credential during an in-flight save restores the persisted val
   expect(updates).toHaveLength(2)
   expect(updates.at(-1).updates.auth_config.client_id).toBe('registered-client')
 })
+
+
+for (const service of [
+  { name: 'Gmail', icon: 'gmail', host: 'gmailmcp', scopes: ['gmail.readonly', 'gmail.compose'] },
+  { name: 'Google Drive', icon: 'google-drive', host: 'drivemcp', scopes: ['drive.readonly', 'drive.file'] },
+]) {
+  test(`${service.name} template saves personal OAuth credentials with documented scopes`, async ({ page }) => {
+    await captureAuthUpdates(page)
+    await page.getByRole('dialog').getByRole('button', { name: new RegExp(`${service.icon} logo ${service.name}`, 'i') }).click()
+    const dialog = page.getByRole('dialog')
+    await expect(dialog).toContainText('Google Workspace Developer Preview')
+    await expect(dialog).toContainText('http://localhost:8080/callback')
+    await expect(dialog.getByRole('button', { name: 'Open official setup guide' })).toBeVisible()
+    await expect(dialog.getByLabel('Client ID', { exact: true })).toHaveAttribute('required', '')
+    await expect(dialog.getByLabel('Client Secret', { exact: true })).toHaveAttribute('required', '')
+    await dialog.getByLabel('Client ID', { exact: true }).fill('personal-google-client')
+    await dialog.getByLabel('Client Secret', { exact: true }).fill('personal-google-secret')
+    await dialog.getByRole('button', { name: 'Create', exact: true }).click()
+    await page.waitForFunction(() => (window as any).createdMcpArgs)
+    const created = await page.evaluate(() => (window as any).createdMcpArgs)
+    expect(created.transportConfig.url).toBe(`https://${service.host}.googleapis.com/mcp/v1`)
+    expect(created.transportConfig.headers).toEqual({})
+    expect(created.authConfig).toMatchObject({ type: 'oauth_browser', client_id: 'personal-google-client', client_secret: 'personal-google-secret', scopes: service.scopes.map(scope => `https://www.googleapis.com/auth/${scope}`) })
+    await page.waitForFunction(() => (window as any).startedMcpOAuth?.serverId)
+  })
+}

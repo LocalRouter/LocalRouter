@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
+import { open } from "@tauri-apps/plugin-shell"
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog"
 import { listenSafe } from "@/hooks/useTauriListener"
 import { toast } from "sonner"
@@ -489,6 +490,7 @@ export function McpServersPanel({
         bearerField ? (templateFieldValues[bearerField.id] || "").trim() : bearerToken,
         templateClientId ?? oauthClientId, templateClientSecret ?? oauthClientSecret,
         () => invoke<OAuthEndpoints | null>("discover_mcp_oauth_endpoints", { baseUrl: url }),
+        template?.defaultScopes,
       ) ?? null
 
       const newServer = await invoke<{ id: string }>("create_mcp_server", {
@@ -1392,9 +1394,17 @@ export function McpServersPanel({
             {/* Setup instructions */}
             {selectedSource.template.setupInstructions && (
               <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-400 dark:border-blue-800 rounded p-3">
-                <p className="text-xs text-foreground">
+                <p className="text-xs text-foreground whitespace-pre-line">
                   {selectedSource.template.setupInstructions}
                 </p>
+                {selectedSource.template.docsUrl && (
+                  <button type="button" className="text-xs underline mt-2" onClick={() => {
+                    const docsUrl = selectedSource?.type === "template" ? selectedSource.template?.docsUrl : undefined
+                    if (docsUrl) void open(docsUrl).catch(error => toast.error(`Could not open setup guide: ${error}`))
+                  }}>
+                    Open official setup guide
+                  </button>
+                )}
               </div>
             )}
 

@@ -151,6 +151,19 @@ impl OAuthFlowManager {
             url.push_str(&format!("&scope={}", urlencoding::encode(&scopes)));
         }
 
+        // Google requires access_type=offline (not an offline_access scope) to
+        // issue refresh tokens. Consent also covers users who already granted access.
+        if reqwest::Url::parse(&config.auth_url).is_ok_and(|url| {
+            url.scheme() == "https" && url.host_str() == Some("accounts.google.com")
+        }) {
+            if !config.extra_auth_params.contains_key("access_type") {
+                url.push_str("&access_type=offline");
+            }
+            if !config.extra_auth_params.contains_key("prompt") {
+                url.push_str("&prompt=consent");
+            }
+        }
+
         // Add extra authorization parameters
         for (key, value) in &config.extra_auth_params {
             url.push_str(&format!(
@@ -406,6 +419,46 @@ mod tests {
             .unwrap();
 
         assert!(url.contains("prompt=consent"));
+    }
+
+    #[test]
+    fn test_google_offline_access_and_explicit_overrides() {
+        let manager = OAuthFlowManager::new(CachedKeychain::system());
+        let mut config = create_test_config();
+        config.auth_url = "https://accounts.google.com/o/oauth2/v2/auth".into();
+        let url = manager
+            .build_authorization_url(&config, "challenge", "state")
+            .unwrap();
+        let url = reqwest::Url::parse(&url).unwrap();
+        let params: HashMap<_, _> = url.query_pairs().collect();
+        assert_eq!(params.get("access_type").unwrap(), "offline");
+        assert_eq!(params.get("prompt").unwrap(), "consent");
+        config
+            .extra_auth_params
+            .insert("access_type".into(), "online".into());
+        config
+            .extra_auth_params
+            .insert("prompt".into(), "select_account".into());
+        let url = manager
+            .build_authorization_url(&config, "challenge", "state")
+            .unwrap();
+        assert!(!url.contains("access_type=offline"));
+        assert!(!url.contains("prompt=consent"));
+        assert!(url.contains("access_type=online"));
+        assert!(url.contains("prompt=select_account"));
+        for endpoint in [
+            "https://accounts.google.com.evil.example/auth",
+            "https://example.com/accounts.google.com",
+            "http://accounts.google.com/auth",
+        ] {
+            config.auth_url = endpoint.into();
+            config.extra_auth_params.clear();
+            let url = manager
+                .build_authorization_url(&config, "challenge", "state")
+                .unwrap();
+            assert!(!url.contains("access_type="));
+            assert!(!url.contains("prompt="));
+        }
     }
 
     #[test]

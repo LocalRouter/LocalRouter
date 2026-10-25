@@ -19,6 +19,7 @@ export async function buildMcpAuthUpdate(
   clientId: string,
   clientSecret: string,
   discover: () => Promise<OAuthEndpoints | null>,
+  defaultScopes: string[] = [],
 ): Promise<McpAuthConfig | undefined> {
   switch (method) {
     case 'none':
@@ -34,7 +35,7 @@ export async function buildMcpAuthUpdate(
       return {
         type: 'oauth_browser', client_id: id || null, client_secret: clientSecret || null,
         auth_url: previous?.auth_url ?? null, token_url: previous?.token_url ?? null,
-        scopes: previous?.scopes ?? [], redirect_uri: previous?.redirect_uri ?? null,
+        scopes: previous?.scopes ?? defaultScopes, redirect_uri: previous?.redirect_uri ?? null,
         issuer: previous?.issuer ?? null,
       }
     }

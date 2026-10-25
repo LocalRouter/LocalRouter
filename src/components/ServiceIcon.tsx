@@ -93,6 +93,7 @@ const ICON_MAP: Record<string, string | null> = {
   netget: 'netget.svg', // official asset; see public/icons/SOURCES.md
   notion: 'notion.png',
   confluence: 'confluence.png',
+  gmail: 'gmail.png', // official Google asset; see public/icons/SOURCES.md
   'google-drive': 'google-drive.png',
   'google drive': 'google-drive.png',
   gdrive: 'google-drive.png',
