@@ -170,8 +170,8 @@ export function AppShell({
         onViewChange={handleViewChange}
         dynamicGroups={{
           clients: clients.map(c => ({ subTab: c.client_id, label: c.name, iconService: c.template_id ?? undefined })),
-          providers: providers.map(p => ({ subTab: `providers/${p.instance_name}`, label: p.instance_name, iconService: p.provider_type })),
-          mcpServers: mcpServers.map(s => ({ subTab: s.id, label: s.name, iconService: s.name })),
+          providers: providers.map(p => ({ subTab: `providers/${p.instance_name}`, label: p.instance_name, iconService: p.provider_type, resourceKey: `provider:${p.instance_name}` })),
+          mcpServers: mcpServers.map(s => ({ subTab: s.id, label: s.name, iconService: s.name, resourceKey: `mcp:${s.id}` })),
         }}
       />
 

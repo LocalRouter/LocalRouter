@@ -1,3 +1,4 @@
+import { discoverResourceIcon, forgetResourceIcon } from '@/utils/resource-icons'
 import { useState, useEffect, useRef, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog"
@@ -251,6 +252,7 @@ export function McpServersPanel({
       }
 
       await invoke<void>("update_mcp_server", { serverId: server.id, updates } satisfies UpdateMcpServerParams)
+      void discoverResourceIcon(`mcp:${server.id}`, transportType === "Sse" ? url : undefined)
       if (activeServerIdRef.current === server.id) {
         populatedFormSnapshot.current = JSON.stringify([serverName, transportType, command, url, envVars, cwd, headers, authMethod, bearerToken, oauthClientId, oauthClientSecret])
       }
@@ -495,6 +497,7 @@ export function McpServersPanel({
         name: serverName || null, transport: transportType, transportConfig, authConfig,
       })
 
+      void discoverResourceIcon(`mcp:${newServer.id}`, transportType === "Sse" ? url : undefined)
       toast.success("MCP server created")
       await loadServersOnly()
       setShowCreateModal(false)
@@ -562,6 +565,7 @@ export function McpServersPanel({
     if (!serverToDelete) return
     try {
       await invoke("delete_mcp_server", { serverId: serverToDelete.id })
+      forgetResourceIcon(`mcp:${serverToDelete.id}`)
       toast.success("Server deleted")
       if (selectedId === serverToDelete.id) { onSelect(null) }
       loadServersOnly()
@@ -1163,7 +1167,7 @@ export function McpServersPanel({
                     onClick={() => onSelect(server.id)}
                     className="group flex items-center gap-3 p-3 rounded-md cursor-pointer hover:bg-muted"
                   >
-                    <McpServerIcon serverName={server.name} size={20} />
+                    <McpServerIcon serverId={server.id} serverName={server.name} size={20} />
                     <div className="flex-1 min-w-0">
                       <p className="font-medium truncate">{server.name}</p>
                       <p className="text-xs text-muted-foreground capitalize">

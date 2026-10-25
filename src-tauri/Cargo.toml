@@ -67,7 +67,8 @@ async-trait = { workspace = true }
 
 # These may still be needed by ui/ commands and updater
 reqwest = { workspace = true }
-image = { workspace = true }
+regex = { workspace = true }
+image = { workspace = true, features = ["ico", "jpeg", "gif", "webp"] }
 arboard = { workspace = true }
 base64 = { workspace = true }
 if-addrs = { workspace = true }

@@ -2532,6 +2532,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            ui::commands_icons::discover_resource_icon,
             ui::commands_replay::replay_current_policy,
             ui::commands_replay::get_response_cache_stats,
             ui::commands_replay::clear_response_cache,

@@ -1,3 +1,6 @@
+import ServiceIcon from "@/components/ServiceIcon"
+import ProviderIcon from "@/components/ProviderIcon"
+import McpServerIcon from "@/components/McpServerIcon"
 import * as React from "react"
 import {
   LayoutDashboard,
@@ -42,7 +45,7 @@ interface CommandPaletteProps {
   onAddMcpServer?: (templateId: string) => void
   onAddClient?: (templateId: string) => void
   // Data for search
-  clients?: Array<{ id: string; name: string; client_id: string }>
+  clients?: Array<{ id: string; name: string; client_id: string; template_id?: string | null }>
   providers?: Array<{ instance_name: string; provider_type: string }>
   providerTypes?: ProviderType[]
   models?: Array<{ id: string; provider: string }>
@@ -199,7 +202,7 @@ export function CommandPalette({
                     runCommand(() => onViewChange('clients', client.client_id))
                   }
                 >
-                  <Users className="mr-2 h-4 w-4" />
+                  <ServiceIcon service={client.template_id ?? ""} fallbackToClientIcon size={16} className="mr-2" />
                   <span>{client.name}</span>
                   <span className="ml-2 text-xs text-muted-foreground">
                     {client.client_id.slice(0, 8)}...
@@ -224,7 +227,7 @@ export function CommandPalette({
                     )
                   }
                 >
-                  <ProvidersIcon className="mr-2 h-4 w-4" />
+                  <ProviderIcon providerId={provider.provider_type} instanceName={provider.instance_name} size={16} className="mr-2" />
                   <span>{provider.instance_name}</span>
                   <span className="ml-2 text-xs text-muted-foreground">
                     {provider.provider_type}
@@ -278,7 +281,7 @@ export function CommandPalette({
                     )
                   }
                 >
-                  <McpIcon className="mr-2 h-4 w-4" />
+                  <McpServerIcon serverName={server.name} serverId={server.id} size={16} className="mr-2" />
                   <span>{server.name}</span>
                 </CommandItem>
               ))}

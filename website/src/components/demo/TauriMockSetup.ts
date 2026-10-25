@@ -16,6 +16,8 @@
  * See AGENTS.md "Adding/Modifying Tauri Commands" for full checklist.
  */
 
+import type { DiscoveredResourceIcon } from '@app/types/tauri-commands'
+
 import { mockIPC, mockWindows, clearMocks } from '@tauri-apps/api/mocks'
 import { emit } from '@tauri-apps/api/event'
 import type { InvokeArgs } from '@tauri-apps/api/core'
@@ -1406,6 +1408,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'get_home_dir': () => mockData.homeDir,
   'get_config_dir': () => mockData.configDir,
   'detect_available_runtimes': () => ({ npx: true, uvx: true, docker: true }),
+  'discover_resource_icon': (): DiscoveredResourceIcon => null,
   'get_config': () => ({
     providers: [
       { name: 'openai', api_key: 'sk-demo-fake-key-1234', models: ['gpt-4o', 'gpt-4o-mini'] },

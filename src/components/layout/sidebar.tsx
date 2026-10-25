@@ -93,6 +93,7 @@ interface NavDynamicChild {
   label: string
   /** Service identifier for ServiceIcon (template_id, provider_type, server name) */
   iconService?: string
+  resourceKey?: string
 }
 
 interface NavStaticChild {
@@ -666,9 +667,9 @@ export function Sidebar({ activeView, activeSubTab, onViewChange, dynamicGroups 
                       : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
                   )}
                 >
-                  {child.iconService && (
-                    <span className="shrink-0 grayscale dark:invert opacity-70 [&_span]:!bg-transparent">
-                      <ServiceIcon service={child.iconService} size={16} fallbackToServerIcon={groupId === 'mcp-servers'} />
+                  {(child.iconService || groupId === 'clients') && (
+                    <span className="shrink-0 opacity-70">
+                      <ServiceIcon service={child.iconService ?? ''} resourceKey={child.resourceKey} size={16} fallbackToServerIcon={groupId === 'mcp-servers'} fallbackToClientIcon={groupId === 'clients'} />
                     </span>
                   )}
                   <span className="truncate text-left text-sm">{child.label}</span>

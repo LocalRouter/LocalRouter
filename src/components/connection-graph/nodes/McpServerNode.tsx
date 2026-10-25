@@ -45,7 +45,7 @@ function McpServerNodeComponent({ data }: NodeProps<McpServerNodeData>) {
       {/* Node content */}
       <div className="flex items-center gap-2">
         <div className="flex items-center justify-center w-6 h-6 rounded-full overflow-hidden">
-          <McpServerIcon serverName={name} size={18} />
+          <McpServerIcon serverId={data.id} serverName={name} size={18} />
         </div>
         <div className="min-w-0 flex-1">
           <div className="text-sm font-medium text-emerald-900 dark:text-emerald-100 truncate">
