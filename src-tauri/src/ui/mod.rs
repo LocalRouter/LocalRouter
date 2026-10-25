@@ -41,3 +41,5 @@ pub mod commands_named_routes;
 pub mod commands_replay;
 
 pub mod commands_routing_profiles;
+
+pub mod commands_icons;

@@ -6,10 +6,11 @@ import ServiceIcon from './ServiceIcon'
 
 interface McpServerIconProps {
   serverName: string
+  serverId?: string
   size?: number
   className?: string
 }
 
-export default function McpServerIcon({ serverName, size = 32, className = '' }: McpServerIconProps) {
-  return <ServiceIcon service={serverName} size={size} className={className} fallbackToServerIcon />
+export default function McpServerIcon({ serverName, serverId, size = 32, className = '' }: McpServerIconProps) {
+  return <ServiceIcon resourceKey={serverId ? `mcp:${serverId}` : undefined} service={serverName} size={size} className={className} fallbackToServerIcon />
 }

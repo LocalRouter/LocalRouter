@@ -1,3 +1,4 @@
+import { discoverResourceIcon, forgetResourceIcon, renameResourceIcon } from '@/utils/resource-icons'
 import { ProviderPrivacySettings, PRIVACY_ATTESTATION_KEY } from "@/components/providers/privacy-attestation-settings"
 import { useState, useEffect, useCallback, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
@@ -325,6 +326,7 @@ export function ProvidersPanel({
       await invoke("remove_provider_instance", {
         instanceName: providerToDelete.instance_name,
       })
+      forgetResourceIcon(`provider:${providerToDelete.instance_name}`)
       toast.success("Provider deleted")
       if (selectedId === providerToDelete.instance_name) {
         onSelect(null)
@@ -355,6 +357,7 @@ export function ProvidersPanel({
         providerType,
         config,
       })
+      void discoverResourceIcon(`provider:${instanceName}`, config.base_url)
       toast.success("Provider created")
       setCreateDialogOpen(false)
       setSelectedProviderType("")
@@ -427,6 +430,7 @@ export function ProvidersPanel({
           instanceName: selectedProvider.instance_name,
           newName: trimmed,
         })
+        renameResourceIcon(`provider:${selectedProvider.instance_name}`, `provider:${trimmed}`)
         toast.success("Provider renamed")
         await loadProvidersOnly()
         skipTabResetRef.current = true
@@ -452,6 +456,7 @@ export function ProvidersPanel({
           providerType: selectedProvider.provider_type,
           config,
         })
+        void discoverResourceIcon(`provider:${selectedProvider.instance_name}`, config.base_url)
         toast.success("Provider updated")
         loadProvidersOnly()
       } catch (error) {
@@ -1162,7 +1167,7 @@ export function ProvidersPanel({
                       onClick={() => onSelect(provider.instance_name)}
                       className="group flex items-center gap-3 p-3 rounded-md cursor-pointer hover:bg-muted"
                     >
-                      <ProviderIcon providerId={provider.provider_type.toLowerCase()} size={20} />
+                      <ProviderIcon instanceName={provider.instance_name} providerId={provider.provider_type.toLowerCase()} size={20} />
                       <div className="flex-1 min-w-0">
                         <p className="font-medium truncate">{provider.instance_name}</p>
                         <p className="text-xs text-muted-foreground">{provider.provider_type}</p>

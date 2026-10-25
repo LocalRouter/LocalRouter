@@ -8,11 +8,17 @@
  *   <ServiceIcon service="GitHub MCP Server" size={24} />
  */
 
+import { useState } from 'react'
+import { Users } from 'lucide-react'
+import { useResourceIcon } from '@/utils/resource-icons'
+
 import { ProvidersIcon, McpIcon } from './icons/category-icons'
 
 interface ServiceIconProps {
   /** Service identifier - can be a provider type, MCP server name, or service ID */
   service: string
+  resourceKey?: string
+  fallbackToClientIcon?: boolean
   size?: number
   className?: string
   /** If true, uses the standard MCP server icon for services without a logo */
@@ -177,69 +183,36 @@ export default function ServiceIcon({
   service,
   size = 32,
   className = '',
-  fallbackToServerIcon = false
+  fallbackToServerIcon = false,
+  fallbackToClientIcon = false,
+  resourceKey,
 }: ServiceIconProps) {
+  const discovered = useResourceIcon(resourceKey)
   const iconFile = resolveServiceIcon(service)
-
-  // Reset image/fallback DOM state when the resolved logo changes.
-  if (iconFile) {
-    const padding = Math.max(4, size * 0.15)
-    const containerSize = size + padding * 2
-
-    return (
-      <span
-        key={iconFile}
-        className="inline-flex items-center justify-center rounded-lg dark:bg-white/90"
-        style={{ width: containerSize, height: containerSize }}
-      >
-        <img
-          src={`/icons/${iconFile}`}
-          alt={`${service} logo`}
-          width={size}
-          height={size}
-          className={`object-contain ${className}`}
-          onError={(e) => {
-            const target = e.target as HTMLImageElement
-            target.style.display = 'none'
-            if (target.nextElementSibling) {
-              (target.nextElementSibling as HTMLElement).style.display = 'inline-flex'
-            }
-          }}
-        />
-        <span
-          className={`items-center justify-center text-foreground dark:text-gray-800 ${className}`}
-          style={{ display: 'none' }}
-        >
-          {fallbackToServerIcon
-            ? <McpIcon style={{ width: size, height: size }} />
-            : <ProvidersIcon style={{ width: size, height: size }} />
-          }
-        </span>
-      </span>
-    )
-  }
-
-  // Services without a logo use the established category icon.
+  const [failedSources, setFailedSources] = useState<string[]>([])
+  const bundled = iconFile ? `/icons/${iconFile}` : undefined
+  const source = discovered && !failedSources.includes(discovered) ? discovered : bundled
+  const showImage = source && !failedSources.includes(source)
   const padding = Math.max(4, size * 0.15)
   const containerSize = size + padding * 2
-
-  if (fallbackToServerIcon) {
-    return (
-      <span
-        className={`inline-flex items-center justify-center text-foreground ${className}`}
-        style={{ width: containerSize, height: containerSize }}
-      >
-        <McpIcon style={{ width: size, height: size }} />
-      </span>
-    )
-  }
+  const Fallback = fallbackToClientIcon ? Users : fallbackToServerIcon ? McpIcon : ProvidersIcon
 
   return (
     <span
-      className={`inline-flex items-center justify-center text-foreground ${className}`}
+      className={`inline-flex shrink-0 items-center justify-center rounded-lg ${showImage ? 'dark:bg-white/90' : 'text-foreground'} ${className}`}
       style={{ width: containerSize, height: containerSize }}
     >
-      <ProvidersIcon style={{ width: size, height: size }} />
+      {showImage ? (
+        <img
+          key={source}
+          src={source}
+          alt={`${service} logo`}
+          width={size}
+          height={size}
+          className="object-contain"
+          onError={() => setFailedSources(previous => [...previous, source])}
+        />
+      ) : <Fallback style={{ width: size, height: size }} />}
     </span>
   )
 }

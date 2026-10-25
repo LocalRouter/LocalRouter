@@ -45,7 +45,7 @@ function ProviderNodeComponent({ data }: NodeProps<ProviderNodeData>) {
       {/* Node content */}
       <div className="flex items-center gap-2">
         <div className="flex items-center justify-center w-6 h-6 rounded-full overflow-hidden">
-          <ProviderIcon providerId={providerType} size={18} />
+          <ProviderIcon instanceName={data.id} providerId={providerType} size={18} />
         </div>
         <div className="min-w-0 flex-1">
           <div className="text-sm font-medium text-violet-900 dark:text-violet-100 truncate">
