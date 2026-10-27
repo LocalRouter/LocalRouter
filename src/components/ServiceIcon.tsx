@@ -199,7 +199,7 @@ export default function ServiceIcon({
 
   return (
     <span
-      className={`inline-flex shrink-0 items-center justify-center rounded-lg ${showImage ? 'dark:bg-white/90' : 'text-foreground'} ${className}`}
+      className={`inline-flex shrink-0 items-center justify-center rounded-lg text-foreground ${className}`}
       style={{ width: containerSize, height: containerSize }}
     >
       {showImage ? (
