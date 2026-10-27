@@ -175,8 +175,8 @@ const MONOCHROME_ICONS = new Set([
 export function serviceIconImageClass(source: string | undefined): string {
   const file = source?.startsWith('/icons/') ? source.slice('/icons/'.length) : undefined
   return file && MONOCHROME_ICONS.has(file)
-    ? 'object-contain dark:brightness-0 dark:invert'
-    : 'object-contain'
+    ? 'object-contain rounded-[20%] dark:brightness-0 dark:invert'
+    : 'object-contain rounded-[20%]'
 }
 
 /** Normalize a service name and resolve its locally bundled logo. */

@@ -31,9 +31,9 @@ test('generic endpoints and unknown services use category icons without unrelate
 
 test('monochrome bundled marks become white in dark mode without recoloring full-color or discovered icons', () => {
   for (const file of ['openai.png', 'anthropic.png', 'gemini.png', 'github.svg', 'ollama.png', 'mistral.png', 'vercel.svg']) {
-    expect(serviceIconImageClass(`/icons/${file}`)).toBe('object-contain dark:brightness-0 dark:invert')
+    expect(serviceIconImageClass(`/icons/${file}`)).toBe('object-contain rounded-[20%] dark:brightness-0 dark:invert')
   }
   for (const source of ['/icons/slack.png', '/icons/google-drive.png', '/icons/typesafe.png', 'data:image/png;base64,example', undefined]) {
-    expect(serviceIconImageClass(source)).toBe('object-contain')
+    expect(serviceIconImageClass(source)).toBe('object-contain rounded-[20%]')
   }
 })
