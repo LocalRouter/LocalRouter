@@ -66,7 +66,7 @@ const ICON_MAP: Record<string, string | null> = {
   systemone_compatible: null,
   'systemone-compatible': null,
   'system one compatible': null,
-  github_models: 'github.png',
+  github_models: 'github.svg',
   nvidia_nim: 'nvidia.svg',
   nvidia: 'nvidia.svg',
   cloudflare_ai: 'cloudflare.svg',
@@ -80,13 +80,13 @@ const ICON_MAP: Record<string, string | null> = {
   opencode_go: 'opencode.png',
 
   // OAuth/Subscription Providers
-  'github-copilot': 'github.png',
+  'github-copilot': 'github.svg',
   'openai-codex': 'openai.png',
   'openai-chatgpt-plus': 'openai.png',
   'anthropic-claude': 'anthropic.png',
 
   // VCS Services
-  github: 'github.png',
+  github: 'github.svg',
   gitlab: 'gitlab.png',
   git: 'git.png',
 
@@ -162,6 +162,23 @@ const EXACT_MATCH_ONLY = new Set(['pi'])
 // Prefer the most specific service name: e.g. DigitalOcean over Git.
 const ICON_PATTERNS = Object.entries(ICON_MAP).sort(([a], [b]) => b.length - a.length)
 
+// Only transparent, monochrome bundled marks may be recolored. Full-color
+// logos and discovered favicons retain their original colors.
+const MONOCHROME_ICONS = new Set([
+  'anthropic.png', 'cerebras.png', 'cohere.png', 'deepinfra.png',
+  'gemini.png', 'github.svg', 'groq.png', 'llmgateway.svg', 'lmstudio.png',
+  'mistral.png', 'ollama.png', 'ollaya.svg', 'openai.png', 'openrouter.png',
+  'perplexity.png', 'togetherai.png', 'vercel.svg', 'onyx.svg', 'xai.png',
+])
+
+/** Theme treatment belongs to the resolved asset, never the service name. */
+export function serviceIconImageClass(source: string | undefined): string {
+  const file = source?.startsWith('/icons/') ? source.slice('/icons/'.length) : undefined
+  return file && MONOCHROME_ICONS.has(file)
+    ? 'object-contain dark:brightness-0 dark:invert'
+    : 'object-contain'
+}
+
 /** Normalize a service name and resolve its locally bundled logo. */
 export function resolveServiceIcon(service: string): string | undefined {
   const normalized = service.toLowerCase().trim()
@@ -209,7 +226,7 @@ export default function ServiceIcon({
           alt={`${service} logo`}
           width={size}
           height={size}
-          className="object-contain"
+          className={serviceIconImageClass(source)}
           onError={() => setFailedSources(previous => [...previous, source])}
         />
       ) : <Fallback style={{ width: size, height: size }} />}

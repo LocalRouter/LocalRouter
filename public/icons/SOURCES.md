@@ -35,7 +35,7 @@ Vercel starter mark, so it is not used as Kev branding.
 
 ## LLM Gateway provider
 
-- `llmgateway.svg`: official black symbol from LLM Gateway's [brand assets](https://llmgateway.io/brand), copied without modification from [`apps/ui/public/brand/logo-black.svg`](https://github.com/theopenco/llmgateway/blob/ba743696ea6db4b7a68ba764ddd70edc19fbb95d/apps/ui/public/brand/logo-black.svg) (retrieved 2026-10-14). The upstream repository licenses this content under AGPLv3; its [license notice](https://github.com/theopenco/llmgateway/blob/ba743696ea6db4b7a68ba764ddd70edc19fbb95d/LICENSE) is included as `llmgateway-LICENSE.txt`. Copyright (c) 2025-present LLMGateway, Inc. The name and mark belong to their owners and identify the provider without implying endorsement. The existing icon container supplies a light background in dark mode.
+- `llmgateway.svg`: official black symbol from LLM Gateway's [brand assets](https://llmgateway.io/brand), copied without modification from [`apps/ui/public/brand/logo-black.svg`](https://github.com/theopenco/llmgateway/blob/ba743696ea6db4b7a68ba764ddd70edc19fbb95d/apps/ui/public/brand/logo-black.svg) (retrieved 2026-10-14). The upstream repository licenses this content under AGPLv3; its [license notice](https://github.com/theopenco/llmgateway/blob/ba743696ea6db4b7a68ba764ddd70edc19fbb95d/LICENSE) is included as `llmgateway-LICENSE.txt`. Copyright (c) 2025-present LLMGateway, Inc. The name and mark belong to their owners and identify the provider without implying endorsement. The transparent monochrome mark is rendered white in dark mode.
 
 ## TypeSafe and Vercel providers
 
@@ -56,3 +56,9 @@ Both projects are made by the LocalRouter team. Assets are copied without modifi
 ## Gmail MCP template
 
 - `gmail.png`: official Google Gmail product icon, copied without modification from https://www.gstatic.com/images/branding/product/2x/gmail_48dp.png (retrieved 2026-10-23). Google trademark, used only to identify the service under Google's brand terms (https://about.google/brand-resource-center/). No open-source license is claimed. Google Drive reuses the existing bundled `google-drive.png`.
+
+
+## GitHub transparent mark and theme contrast
+
+- `github.svg`: official Primer Octicons `mark-github-16.svg`, copied without modification from https://raw.githubusercontent.com/primer/octicons/main/icons/mark-github-16.svg (retrieved 2026-10-27). MIT license bundled as `github-LICENSE.txt` from https://github.com/primer/octicons/blob/main/LICENSE. GitHub owns the mark; used solely to identify the service. Replaces the opaque `github.png` in ServiceIcon.
+- Transparent monochrome bundled marks are rendered white in dark mode using CSS filters. Colored logos and discovered favicons keep their original colors; no shared background is added.
