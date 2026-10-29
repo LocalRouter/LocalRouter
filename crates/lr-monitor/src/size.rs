@@ -35,6 +35,10 @@ pub fn event_size(event: &MonitorEvent) -> usize {
         + opt_str(&event.client_id)
         + opt_str(&event.client_name)
         + opt_str(&event.session_id)
+        + event
+            .conversation
+            .as_ref()
+            .map_or(0, |c| str_size(&c.id) + str_size(&c.title))
         + data_size(&event.data)
 }
 
@@ -377,6 +381,7 @@ mod tests {
 
     fn llm_event(request_body: Value) -> MonitorEvent {
         MonitorEvent {
+            conversation: None,
             payload_redacted: false,
             id: "mon-1".to_string(),
             sequence: 1,
@@ -479,6 +484,7 @@ mod tests {
     #[test]
     fn event_size_is_small_for_scalar_only_events() {
         let event = MonitorEvent {
+            conversation: None,
             payload_redacted: false,
             id: "mon-2".to_string(),
             sequence: 2,

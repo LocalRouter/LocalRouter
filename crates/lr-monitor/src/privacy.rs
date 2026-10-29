@@ -7,6 +7,7 @@ pub(crate) fn redact(event: &mut MonitorEvent) {
     event.payload_redacted = true;
     event.client_name = None;
     event.session_id = None;
+    event.conversation = None;
     let Ok(mut value) = serde_json::to_value(&event.data) else {
         return;
     };

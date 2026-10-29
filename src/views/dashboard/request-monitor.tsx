@@ -1,11 +1,12 @@
 import { memo, useState, useEffect, useMemo, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { Button } from '@/components/ui/Button'
-import { PanelRight } from 'lucide-react'
+import { PanelRight, X } from 'lucide-react'
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable'
 import { cn } from '@/lib/utils'
 import { useMonitorEvents } from '@/views/monitor/hooks/useMonitorEvents'
 import { showEventTypeColumn } from '@/views/monitor/monitor-events'
+import { eventRelationships } from '@/views/monitor/event-relationships'
 import { EventList } from '@/views/monitor/event-list'
 import { EventDetail } from '@/views/monitor/event-detail'
 import { EventFilters } from '@/views/monitor/event-filters'
@@ -50,6 +51,8 @@ interface RequestMonitorProps {
 
 // Memoized: the traffic chart's live updates re-render the dashboard often.
 export const RequestMonitor = memo(function RequestMonitor({ className }: RequestMonitorProps) {
+  const [grouping, setGrouping] = useState<'events' | 'conversations'>('events')
+  const [conversationFilter, setConversationFilter] = useState<{ keys: string[]; title: string } | null>(null)
   const [filter, setFilter] = useState<MonitorEventFilter>(loadPersistedFilter)
   const [replayDraft, setReplayDraft] = useState<{ input: ReplayInput; clientId?: string } | null>(null)
   const [replayError, setReplayError] = useState('')
@@ -104,6 +107,14 @@ export const RequestMonitor = memo(function RequestMonitor({ className }: Reques
     selectEvent,
   } = useMonitorEvents(activeFilter)
 
+  const relationships = useMemo(() => eventRelationships(events), [events])
+  const selectedGroup = relationships.find(group => group.members.has(selectedId ?? ''))
+  const visibleEvents = useMemo(() => {
+    if (!conversationFilter || grouping === 'conversations') return events
+    const matching = new Set(relationships.filter(group => group.keys.some(key => conversationFilter.keys.includes(key))).flatMap(group => [...group.members]))
+    return events.filter(event => matching.has(event.id))
+  }, [events, relationships, conversationFilter, grouping])
+
   const bodyRef = useRef<HTMLDivElement>(null)
   const { dock, setDock, drag, startDrag, detailSize, saveLayout } = useDetailDock(bodyRef)
 
@@ -111,6 +122,20 @@ export const RequestMonitor = memo(function RequestMonitor({ className }: Reques
     <div className="flex items-center border-b">
       <div className="flex-1 min-w-0">
         <EventFilters
+          groupingControl={<div className="flex rounded-md border p-0.5" role="group" aria-label="Group events by">
+            {(['events', 'conversations'] as const).map(mode => <Button key={mode} size="sm" variant={grouping === mode ? 'secondary' : 'ghost'} className="h-6 px-2 text-xs" aria-pressed={grouping === mode} onClick={() => {
+              setGrouping(mode)
+              if (mode === 'conversations') {
+                setConversationFilter(null)
+                setFilter(current => current.session_id == null ? current : { ...current, session_id: null })
+              }
+            }}>{mode === 'events' ? 'Events' : 'Conversations'}</Button>)}
+          </div>}
+          conversationControl={grouping === 'events' && (conversationFilter ? <Button size="sm" variant="secondary" className="h-7 max-w-[220px] gap-1 text-xs" title={conversationFilter.title} aria-label={`Dismiss conversation filter: ${conversationFilter.title}`} onClick={() => setConversationFilter(null)}>
+            <span className="truncate">{conversationFilter.title}</span><X className="h-3 w-3 shrink-0" />
+          </Button> : <Button size="sm" variant="ghost" className="h-7 text-xs" disabled={!selectedGroup} onClick={() => selectedGroup && setConversationFilter({ keys: selectedGroup.keys, title: selectedGroup.title })}>
+            Filter to this conversation
+          </Button>)}
           filter={filter}
           onFilterChange={setFilter}
           interceptRule={interceptRule}
@@ -149,11 +174,12 @@ export const RequestMonitor = memo(function RequestMonitor({ className }: Reques
     <p className="py-16 text-center text-sm text-muted-foreground">Loading activity…</p>
   ) : (
     <EventList
-      events={events}
+      events={visibleEvents}
+      grouping={grouping}
       showType={showEventTypeColumn(filter.event_types)}
       selectedId={selectedId}
       onSelect={selectEvent}
-      filtered={filter.event_types != null || filter.status != null || Boolean(filter.search)}
+      filtered={conversationFilter != null || filter.event_types != null || filter.status != null || Boolean(filter.search)}
     />
   )
 

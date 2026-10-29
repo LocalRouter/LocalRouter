@@ -286,7 +286,7 @@ impl PassiveInterceptor {
             duplicate_hop: duplicate_hop(ex),
         };
 
-        Some(self.monitor.push(
+        let event_id = self.monitor.push(
             MonitorEventType::LlmCall,
             Some(ex.client_id.clone()),
             self.client_name(&ex.client_id),
@@ -294,7 +294,9 @@ impl PassiveInterceptor {
             data,
             EventStatus::Pending,
             None,
-        ))
+        );
+        self.track_conversation(&event_id, ex);
+        Some(event_id)
     }
 
     /// Fill in the response half of a previously-opened Pending event
@@ -402,7 +404,7 @@ impl PassiveInterceptor {
             duplicate_hop: duplicate_hop(ex),
         };
 
-        self.monitor.push(
+        let event_id = self.monitor.push(
             MonitorEventType::LlmCall,
             Some(ex.client_id.clone()),
             self.client_name(&ex.client_id),
@@ -411,6 +413,17 @@ impl PassiveInterceptor {
             status,
             ex.latency_ms,
         );
+        self.track_conversation(&event_id, ex);
+    }
+
+    fn track_conversation(&self, event_id: &str, ex: &ObservedExchange) {
+        if let Some(body) = ex
+            .request_body
+            .as_ref()
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(b).ok())
+        {
+            self.monitor.track_conversation(event_id, &body);
+        }
     }
 }
 

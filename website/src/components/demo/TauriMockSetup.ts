@@ -5508,7 +5508,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       matchesFilter(event as unknown as MonitorEventSummary, args?.filter as MonitorEventFilter | null),
     )
     return {
-      // Summaries carry an LLM call's APIs, as the backend's to_summary does.
+      // Conversation metadata is kept on both summaries and details, like to_summary.
       events: matching.slice(args?.offset ?? 0, (args?.offset ?? 0) + (args?.limit ?? 100)).map(({ data, ...summary }) => {
         const llm = data as { client_api?: string; upstream_api?: string }
         return { ...summary, client_api: llm.client_api ?? null, upstream_api: llm.upstream_api ?? null }

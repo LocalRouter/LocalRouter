@@ -5041,8 +5041,17 @@ export type LlmApi =
   | 'images'
   | 'audio'
 
+/** Rust: crates/lr-monitor/src/types.rs - MonitorConversation */
+export interface MonitorConversation {
+  id: string
+  /** First captured user-message excerpt, not a provider conversation title. */
+  title: string
+  source: 'explicit' | 'message_history' | 'response_chain'
+}
+
 /** Rust: crates/lr-monitor/src/types.rs - MonitorEventSummary */
 export interface MonitorEventSummary {
+  conversation?: MonitorConversation | null
   payload_redacted?: boolean
   id: string
   sequence: number
@@ -5071,6 +5080,7 @@ export interface MonitorEventSummary {
 
 /** Rust: crates/lr-monitor/src/types.rs - MonitorEvent */
 export interface MonitorEvent {
+  conversation?: MonitorConversation | null
   payload_redacted?: boolean
   id: string
   sequence: number

@@ -296,18 +296,71 @@ test('the detail docks on the right by toggle or by dragging, and back below', a
 })
 
 
-test('request tracks connect secret scans and LLM events and highlight the selected group', async ({ page }) => {
+test('selected events have one connector, a dismissible filter, and clean conversation groups', async ({ page }) => {
   await page.getByRole('button', { name: 'LLM', exact: true }).click()
   await page.getByLabel('All Events', { exact: true }).click()
   await page.keyboard.press('Escape')
-  const scan = page.getByRole('row').filter({ hasText: 'Scan outbound request before sending to provider' })
-  const request = page.getByRole('row').filter({ hasText: 'How should I retry failed API requests?' })
-  await expect(scan.getByTestId('event-links').locator('circle')).toHaveCount(1)
+  const list = page.getByTestId('monitor-event-list')
+  const scan = list.locator('[data-event-id="mon-secret-scan"]')
+  const request = list.locator('[data-event-id="mon-001"]')
+  await expect(list.getByText('Related to selected event', { exact: true })).toHaveCount(0)
   await scan.click()
   await expect(request.getByTestId('event-links')).toHaveAttribute('data-related', 'true')
-  await expect(page.getByText('4 related events · highlighted')).toBeVisible()
-  await expect(page.getByRole('row').filter({ hasText: 'Write a unit test for the retry helper.' }).getByTestId('event-links')).not.toHaveAttribute('data-related', 'true')
-  await page.getByRole('region', { name: 'Request monitor' }).screenshot({ path: 'test-results/monitor/monitor-relationships-selected.png' })
-  await page.getByRole('button', { name: 'Close details', exact: true }).click()
-  await page.getByRole('region', { name: 'Request monitor' }).screenshot({ path: 'test-results/monitor/monitor-relationships.png' })
+  await expect(list.getByText('Related to selected event', { exact: true })).toHaveCount(4)
+  await page.getByRole('button', { name: 'Filter to this conversation', exact: true }).click()
+  await expect(list.locator('[data-event-id]')).toHaveCount(4)
+  await page.evaluate(async () => {
+    const module: string = '/src/stubs/tauri-api-event.ts'
+    const { emit } = await import(/* @vite-ignore */ module)
+    await emit('monitor-event-created', JSON.stringify({ id: 'next-conversation-turn', sequence: 50, timestamp: new Date().toISOString(),
+      event_type: 'llm_call', client_id: 'client-1', client_name: 'Claude Code', session_id: 'another-request',
+      conversation: { id: 'conv-demo-retry', title: 'How should I retry failed API requests?', source: 'explicit' },
+      status: 'complete', question: 'Follow-up from the same conversation', answer: '', summary: '', duration_ms: 1 }))
+  })
+  await expect(list.locator('[data-event-id]')).toHaveCount(5)
+  await page.getByRole('button', { name: /Dismiss conversation filter/ }).click()
+  await expect(list.locator('[data-event-id="mon-live-3"]')).toBeVisible()
+  await page.getByRole('button', { name: 'Filter to this conversation', exact: true }).click()
+  await page.getByRole('button', { name: 'Conversations', exact: true }).click()
+  await expect(list.getByTestId('event-links')).toHaveCount(0)
+  await expect(page.getByRole('button', { name: /Filter to this conversation|Dismiss conversation filter/ })).toHaveCount(0)
+  await expect(list.getByTestId('conversation-header').first()).toContainText('How should I retry failed API requests?')
+  await expect(list.locator('[data-event-id="mon-live-3"]')).toBeVisible()
+  // A new event moves its whole group above the previously newest conversation.
+  await page.evaluate(async () => {
+    const module: string = '/src/stubs/tauri-api-event.ts'
+    const { emit } = await import(/* @vite-ignore */ module)
+    await emit('monitor-event-created', JSON.stringify({ id: 'new-cursor-event', sequence: 100, timestamp: new Date().toISOString(),
+      event_type: 'mcp_tool_call', client_id: 'client-2', client_name: 'Cursor', session_id: 'sess-002',
+      status: 'complete', question: 'New Cursor tool event', answer: '', summary: '', duration_ms: 1 }))
+  })
+  await expect(list.locator('[data-event-id]').first()).toHaveAttribute('data-event-id', 'new-cursor-event')
+  await page.getByRole('button', { name: 'Events', exact: true }).click()
+  await expect(page.getByRole('button', { name: /Dismiss conversation filter/ })).toHaveCount(0)
+  await expect(list.locator('[data-event-id="mon-001"]')).toBeVisible()
+})
+
+test('fifteen interleaved conversations share one narrow connector and group without links', async ({ page }) => {
+  await page.evaluate(async () => {
+    const module: string = '/src/stubs/tauri-api-event.ts'
+    const { emit } = await import(/* @vite-ignore */ module)
+    for (let turn = 0; turn < 3; turn++) {
+      for (let conversation = 0; conversation < 15; conversation++) {
+        await emit('monitor-event-created', JSON.stringify({ id: `scale-${conversation}-${turn}`, sequence: 100 + turn * 15 + conversation,
+          timestamp: new Date().toISOString(), event_type: 'llm_call', client_id: 'scale-client', client_name: 'Test client',
+          session_id: `request-${conversation}-${turn}`, conversation: { id: `conversation-${conversation}`, title: `Captured user question ${conversation}`, source: 'explicit' },
+          status: 'complete', question: `Turn ${turn} in conversation ${conversation}`, answer: 'Answer', summary: '', duration_ms: 1 }))
+      }
+    }
+  })
+  const list = page.getByTestId('monitor-event-list')
+  const newest = list.locator('[data-event-id="scale-14-2"]')
+  await newest.click()
+  await expect(list.getByText('Related to selected event', { exact: true })).toHaveCount(3)
+  const gutter = await newest.getByTestId('event-links').boundingBox()
+  expect(gutter!.width).toBeLessThanOrEqual(25)
+  await page.getByRole('button', { name: 'Conversations', exact: true }).click()
+  await expect(list.getByTestId('event-links')).toHaveCount(0)
+  await expect(list.getByTestId('conversation-header').first()).toHaveText('Captured user question 14')
+  expect(await list.locator('[data-event-id]').evaluateAll(rows => rows.slice(0, 3).map(row => row.getAttribute('data-event-id')))).toEqual(['scale-14-2', 'scale-14-1', 'scale-14-0'])
 })

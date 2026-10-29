@@ -30,7 +30,7 @@ fn single_line(text: &str) -> String {
 
 /// Text blocks from OpenAI, Anthropic, Responses, and MCP. Non-text blocks are
 /// described without copying image/audio bytes into a summary.
-fn content(value: &Value) -> String {
+pub(crate) fn content(value: &Value) -> String {
     match value {
         Value::String(s) => single_line(s),
         Value::Array(items) => single_line(

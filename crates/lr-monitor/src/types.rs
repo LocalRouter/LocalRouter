@@ -2,6 +2,23 @@ use chrono::{DateTime, Utc};
 use lr_types::LlmApi;
 use serde::{Deserialize, Serialize};
 
+/// Local conversation identity, separate from the per-request session ID.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MonitorConversation {
+    pub id: String,
+    /// Excerpt of the first captured user message, not a provider-supplied title.
+    pub title: String,
+    pub source: ConversationSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConversationSource {
+    Explicit,
+    MessageHistory,
+    ResponseChain,
+}
+
 /// A monitor event captured from the request pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MonitorEvent {
@@ -30,6 +47,8 @@ pub struct MonitorEvent {
     /// Session ID grouping all events from one API request
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation: Option<MonitorConversation>,
 
     /// Type-specific event data
     pub data: MonitorEventData,
@@ -69,6 +88,8 @@ pub struct MonitorEventSummary {
     /// Session ID grouping all events from one API request
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation: Option<MonitorConversation>,
     /// For LLM calls: whether it was seen on the native API or via the proxy.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<LlmCallSource>,

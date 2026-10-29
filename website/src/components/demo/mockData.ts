@@ -1395,7 +1395,7 @@ export const mockData = {
   monitorEvents: [
     {
       id: "mon-secret-scan", sequence: 8, timestamp: new Date(Date.now() - 50).toISOString(),
-      event_type: "secret_scan", session_id: "sess-001", client_id: "client-1", client_name: "Claude Code",
+      event_type: "secret_scan", session_id: "sess-001", conversation: { id: "conv-demo-retry", title: "How should I retry failed API requests?", source: "explicit" }, client_id: "client-1", client_name: "Claude Code",
       status: "complete", duration_ms: 12,
       summary: "Secret scan — no secrets detected",
       question: "Scan outbound request before sending to provider", answer: "No secrets detected · allowed",
@@ -1403,7 +1403,7 @@ export const mockData = {
     },
     {
       id: "mon-live", sequence: 7, timestamp: new Date().toISOString(),
-      event_type: "llm_call", session_id: "sess-001", client_id: "client-1", client_name: "Claude Code",
+      event_type: "llm_call", session_id: "sess-001-next", conversation: { id: "conv-demo-retry", title: "How should I retry failed API requests?", source: "explicit" }, client_id: "client-1", client_name: "Claude Code",
       status: "pending", duration_ms: null,
       summary: "anthropic/claude-sonnet-4-6 — streaming response",
       question: "Review the changes in my working tree.", answer: "",
@@ -1427,7 +1427,7 @@ export const mockData = {
     },
     {
       id: "mon-001", sequence: 6, timestamp: new Date(Date.now() - 1000).toISOString(),
-      event_type: "llm_call", session_id: "sess-001", client_id: "client-1", client_name: "Claude Code",
+      event_type: "llm_call", session_id: "sess-001", conversation: { id: "conv-demo-retry", title: "How should I retry failed API requests?", source: "explicit" }, client_id: "client-1", client_name: "Claude Code",
       status: "complete", duration_ms: 1250,
       summary: "openai/gpt-4o — 1,523 tokens",
       question: "How should I retry failed API requests? Please handle rate limits and temporary server failures, but avoid retrying invalid requests.", answer: "Retry only transient failures: **429 rate limits, 5xx responses, and connection errors**. - Honor the `Retry-After` header when the server provides it. - Otherwise use exponential backoff with jitter, capped at 30 seconds. - Limit the request to 3 attempts and keep the same idempotency key. - Return validation and authentication errors immediately. This gives temporary failures time to recover without repeating requests that need to be corrected.",
@@ -1560,7 +1560,7 @@ export const mockData = {
     },
     {
       id: "mon-012", sequence: 0, timestamp: new Date(Date.now() - 60000).toISOString(),
-      event_type: "json_repair", session_id: "sess-001", client_id: "client-1", client_name: "Claude Code",
+      event_type: "json_repair", session_id: "sess-001", conversation: { id: "conv-demo-retry", title: "How should I retry failed API requests?", source: "explicit" }, client_id: "client-1", client_name: "Claude Code",
       status: "complete", duration_ms: null,
       summary: "json repair: 2 fixes — gpt-5.5",
       question: "```json {\"department\": \"billing\", \"urgent\": true,} ```", answer: "{\"department\": \"billing\", \"urgent\": true}",

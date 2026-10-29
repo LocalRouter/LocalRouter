@@ -31,6 +31,7 @@ pub const DEFAULT_MAX_BYTES: usize = 128 * 1024 * 1024;
 struct Stored {
     event: MonitorEvent,
     size: usize,
+    correlation: Option<crate::conversation::Correlation>,
 }
 
 /// The buffer and its running totals, under one lock so they cannot drift.
@@ -189,6 +190,7 @@ impl MonitorEventStore {
         let sequence = self.next_sequence.fetch_add(1, Ordering::Relaxed);
 
         let mut event = MonitorEvent {
+            conversation: None,
             payload_redacted: false,
             id: id.clone(),
             sequence,
@@ -203,17 +205,29 @@ impl MonitorEventStore {
         };
 
         self.new_event_payload_policy(&mut event);
-        let summary = to_summary(&event);
-        let size = event_size(&event);
+        let summary;
 
         {
             let mut events = self.events.write();
             let before = events.pending_requests;
+            if !event.payload_redacted && event.session_id.is_some() {
+                event.conversation = events.queue.iter().rev().find_map(|s| {
+                    (s.event.client_id == event.client_id && s.event.session_id == event.session_id)
+                        .then(|| s.event.conversation.clone())
+                        .flatten()
+                });
+            }
+            summary = to_summary(&event);
+            let size = event_size(&event);
             if is_pending_request(&event) {
                 events.pending_requests += 1;
             }
             events.total_bytes += size;
-            events.queue.push_back(Stored { event, size });
+            events.queue.push_back(Stored {
+                event,
+                size,
+                correlation: None,
+            });
             self.evict(&mut events);
             self.notify_pending(&events, before);
         }
@@ -227,6 +241,133 @@ impl MonitorEventStore {
         }
 
         id
+    }
+
+    /// Correlate before request truncation, while honoring the capture policy.
+    /// State lives with retained events and disappears on eviction/clear.
+    pub fn track_conversation(&self, id: &str, body: &serde_json::Value) {
+        // Avoid hashing protected captures, and keep long-context hashing outside
+        // the store write lock so capture/list/update operations remain responsive.
+        {
+            let events = self.events.read();
+            let Some(stored) = events.queue.iter().find(|s| s.event.id == id) else {
+                return;
+            };
+            if stored.event.payload_redacted
+                || stored.event.client_id.is_none()
+                || stored.correlation.is_some()
+            {
+                return;
+            }
+        }
+        let Some(correlation) = crate::conversation::Correlation::from_body(body) else {
+            return;
+        };
+        let mut events = self.events.write();
+        let Some(index) = events.queue.iter().position(|s| s.event.id == id) else {
+            return;
+        };
+        if events.queue[index].event.payload_redacted || events.queue[index].correlation.is_some() {
+            return;
+        }
+        let client = events.queue[index].event.client_id.clone();
+        // Anonymous traffic cannot safely share an identity across callers.
+        if client.is_none() {
+            return;
+        }
+        let mut candidates = std::collections::BTreeMap::new();
+        let mut longest_prefix = 0;
+        for previous in events.queue.iter().take(index).rev() {
+            if previous.event.client_id != client {
+                continue;
+            }
+            let (Some(prior), Some(conversation)) =
+                (&previous.correlation, &previous.event.conversation)
+            else {
+                continue;
+            };
+            if correlation.references_response(&previous.event.data) || correlation.follows(prior) {
+                let length = if correlation.is_response_chain() {
+                    usize::MAX
+                } else {
+                    prior.history_len()
+                };
+                if !correlation.is_explicit() {
+                    if length < longest_prefix {
+                        continue;
+                    }
+                    if length > longest_prefix {
+                        candidates.clear();
+                        longest_prefix = length;
+                    }
+                }
+                let mut candidate = conversation.clone();
+                if correlation.references_response(&previous.event.data)
+                    && candidate.source != ConversationSource::Explicit
+                {
+                    candidate.source = ConversationSource::ResponseChain;
+                }
+                candidates.insert(candidate.id.clone(), candidate);
+                // Explicit identities use the latest retained epoch (reset starts one).
+                if correlation.is_explicit() {
+                    break;
+                }
+            }
+        }
+        let mut conversation = if candidates.len() == 1 {
+            candidates.into_values().next().unwrap()
+        } else {
+            MonitorConversation {
+                id: format!("conv-{}", Uuid::new_v4()),
+                title: correlation.title.clone(),
+                source: if correlation.is_explicit() {
+                    ConversationSource::Explicit
+                } else if correlation.is_response_chain() {
+                    ConversationSource::ResponseChain
+                } else {
+                    ConversationSource::MessageHistory
+                },
+            }
+        };
+        if conversation.title.is_empty() {
+            conversation.title.clone_from(&correlation.title);
+        }
+        let session = events.queue[index].event.session_id.clone();
+        events.queue[index].correlation = Some(correlation);
+        let mut summaries = Vec::new();
+        let mut added = 0;
+        let mut removed = 0;
+        for stored in &mut events.queue {
+            if stored.event.id != id
+                && !(session.is_some()
+                    && stored.event.session_id == session
+                    && stored.event.client_id == client)
+            {
+                continue;
+            }
+            if stored.event.payload_redacted {
+                continue;
+            }
+            stored.event.conversation = Some(conversation.clone());
+            removed += stored.size;
+            stored.size =
+                event_size(&stored.event) + stored.correlation.as_ref().map_or(0, |c| c.size());
+            added += stored.size;
+            summaries.push(to_summary(&stored.event));
+        }
+        events.total_bytes = events.total_bytes + added - removed;
+        let before = events.pending_requests;
+        self.evict(&mut events);
+        self.notify_pending(&events, before);
+        drop(events);
+        let emitter = self.emitter.read().clone();
+        if let Some(emitter) = emitter {
+            for summary in summaries {
+                if let Ok(payload) = serde_json::to_string(&summary) {
+                    emitter("monitor-event-updated", payload);
+                }
+            }
+        }
     }
 
     /// Update an existing event (e.g., combined event completion).
@@ -252,7 +393,8 @@ impl MonitorEventStore {
             // The response half is usually where the bulk of an LLM event
             // arrives, so re-charge the entry and re-check the budget.
             let old_size = stored.size;
-            let new_size = event_size(&stored.event);
+            let new_size =
+                event_size(&stored.event) + stored.correlation.as_ref().map_or(0, |c| c.size());
             stored.size = new_size;
             events.total_bytes = events.total_bytes + new_size - old_size;
             match (was_pending, is_pending) {
@@ -535,6 +677,137 @@ mod tests {
         assert_eq!(store.pending_requests(), 1);
         assert!(!store.get(&old).unwrap().payload_redacted);
     }
+    #[test]
+    fn conversation_capture_is_scoped_bounded_and_propagates_to_request_events() {
+        let store = make_store(20);
+        let body = serde_json::json!({"extensions":{"localrouter.session":{"id":"private-id"}},"messages":[{"role":"user","content":"First question"}]});
+        let first = push_llm_call(&store, "test");
+        store.track_conversation(&first, &body);
+        let metadata = store.get(&first).unwrap().conversation.unwrap();
+        assert_eq!(metadata.title, "First question");
+        assert!(!metadata.id.contains("private-id"));
+        let second = push_llm_call(&store, "test");
+        store.track_conversation(&second, &body);
+        assert_eq!(
+            store.get(&second).unwrap().conversation.unwrap().id,
+            metadata.id
+        );
+        let parent = store.get(&first).unwrap();
+        let child = store.push(
+            MonitorEventType::InternalError,
+            parent.client_id,
+            None,
+            parent.session_id,
+            MonitorEventData::InternalError {
+                error_type: "test".into(),
+                message: "test".into(),
+                status_code: 500,
+            },
+            EventStatus::Error,
+            None,
+        );
+        assert_eq!(
+            store.get(&child).unwrap().conversation.unwrap().id,
+            metadata.id
+        );
+        let other = push_llm_call(&store, "test");
+        store.update(&other, |e| e.client_id = Some("other-client".into()));
+        store.track_conversation(&other, &body);
+        assert_ne!(
+            store.get(&other).unwrap().conversation.unwrap().id,
+            metadata.id
+        );
+        let reset = push_llm_call(&store, "test");
+        store.track_conversation(&reset, &serde_json::json!({"extensions":{"localrouter.session":{"id":"private-id","reset":true}}}));
+        let reset_id = store.get(&reset).unwrap().conversation.unwrap().id;
+        assert_ne!(reset_id, metadata.id);
+        let next = push_llm_call(&store, "test");
+        store.track_conversation(&next, &body);
+        assert_eq!(store.get(&next).unwrap().conversation.unwrap().id, reset_id);
+        store.clear();
+        assert_eq!(store.stats().total_bytes, 0);
+        let fresh = push_llm_call(&store, "test");
+        store.track_conversation(&fresh, &body);
+        assert_ne!(
+            store.get(&fresh).unwrap().conversation.unwrap().id,
+            reset_id
+        );
+    }
+
+    #[test]
+    fn history_correlation_rejects_ambiguous_continuations_and_protects_redacted_capture() {
+        let store = make_store(20);
+        let first_body =
+            serde_json::json!({"messages":[{"role":"user","content":"same question"}]});
+        let a = push_llm_call(&store, "test");
+        let b = push_llm_call(&store, "test");
+        store.track_conversation(&a, &first_body);
+        store.track_conversation(&b, &first_body);
+        let a_id = store.get(&a).unwrap().conversation.unwrap().id;
+        let b_id = store.get(&b).unwrap().conversation.unwrap().id;
+        assert_ne!(a_id, b_id);
+        let c = push_llm_call(&store, "test");
+        store.track_conversation(&c, &serde_json::json!({"messages":[{"role":"user","content":"same question"},{"role":"assistant","content":"answer"},{"role":"user","content":"next"}]}));
+        let c_id = store.get(&c).unwrap().conversation.unwrap().id;
+        assert_ne!(c_id, a_id);
+        assert_ne!(c_id, b_id);
+        let d = push_llm_call(&store, "test");
+        store.track_conversation(&d, &serde_json::json!({"messages":[{"role":"user","content":"same question"},{"role":"assistant","content":"answer"},{"role":"user","content":"next"},{"role":"assistant","content":"next answer"},{"role":"user","content":"third"}]}));
+        assert_eq!(store.get(&d).unwrap().conversation.unwrap().id, c_id);
+        store.set_payload_policy(|_| true);
+        let hidden = push_llm_call(&store, "test");
+        let before = store.stats().total_bytes;
+        store.track_conversation(&hidden, &first_body);
+        assert!(store.get(&hidden).unwrap().conversation.is_none());
+        assert_eq!(store.stats().total_bytes, before);
+    }
+
+    #[test]
+    fn response_chains_keep_the_first_title_and_emit_without_locks() {
+        let store = Arc::new(make_store(20));
+        let first = push_llm_call(&store, "test");
+        store.track_conversation(
+            &first,
+            &serde_json::json!({"input":"First response question"}),
+        );
+        store.update(&first, |e| {
+            if let MonitorEventData::LlmCall { response_body, .. } = &mut e.data {
+                *response_body = Some(serde_json::json!({"id":"resp-1"}));
+            }
+        });
+        let first_conversation = store.get(&first).unwrap().conversation.unwrap();
+        let second = push_llm_call(&store, "test");
+        let weak = Arc::downgrade(&store);
+        store.set_emitter(move |name, payload| {
+            assert_eq!(name, "monitor-event-updated");
+            assert!(payload.contains("First response question"));
+            // Callbacks may reconfigure emitters and query the event store.
+            let store = weak.upgrade().unwrap();
+            store.set_emitter(|_, _| {});
+            let _ = store.stats();
+        });
+        store.track_conversation(
+            &second,
+            &serde_json::json!({"input":"Next question", "previous_response_id":"resp-1"}),
+        );
+        assert_eq!(
+            store.get(&second).unwrap().conversation.unwrap().id,
+            first_conversation.id
+        );
+        assert!(store.stats().total_bytes > 0);
+        // Eviction discards identity/fingerprints; no hidden unbounded cache survives.
+        store.set_max_capacity(1);
+        let fresh = push_llm_call(&store, "test");
+        store.track_conversation(
+            &fresh,
+            &serde_json::json!({"input":"Third question", "previous_response_id":"resp-1"}),
+        );
+        assert_ne!(
+            store.get(&fresh).unwrap().conversation.unwrap().id,
+            first_conversation.id
+        );
+    }
+
     #[test]
     fn test_push_and_get() {
         let store = make_store(100);

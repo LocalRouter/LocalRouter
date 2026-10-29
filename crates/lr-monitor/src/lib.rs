@@ -1,3 +1,4 @@
+mod conversation;
 mod guard;
 mod preview;
 mod size;

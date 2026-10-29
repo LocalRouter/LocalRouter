@@ -429,6 +429,7 @@ pub fn to_summary(event: &MonitorEvent) -> MonitorEventSummary {
         question,
         answer,
         session_id: event.session_id.clone(),
+        conversation: event.conversation.clone(),
         source: match &event.data {
             MonitorEventData::LlmCall { source, .. } => Some(*source),
             _ => None,

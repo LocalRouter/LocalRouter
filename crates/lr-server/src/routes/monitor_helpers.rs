@@ -212,6 +212,9 @@ pub fn emit_llm_call(
         EventStatus::Pending,
         None,
     );
+    state
+        .monitor_store
+        .track_conversation(&event_id, request_body);
 
     LlmCallGuard {
         inner: MonitorEventGuard::new(

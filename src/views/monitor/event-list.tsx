@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { Fragment, useMemo } from 'react'
 import { eventRelationships } from './event-relationships'
 import { singleLinePreview } from './monitor-events'
 import { EventDuration } from './event-duration'
@@ -9,6 +9,7 @@ import { ProvidersIcon } from '@/components/icons/category-icons'
 import type { MonitorEventSummary, MonitorEventType, EventStatus } from '@/types/tauri-commands'
 
 interface EventListProps {
+  grouping?: 'events' | 'conversations'
   events: MonitorEventSummary[]
   showType: boolean
   selectedId: string | null
@@ -110,9 +111,12 @@ function ApiCell({ event }: { event: MonitorEventSummary }) {
   )
 }
 
-export function EventList({ events, showType, selectedId, onSelect, filtered = false }: EventListProps) {
-  const relationships = useMemo(() => eventRelationships(events, selectedId), [events, selectedId])
-  const selectedGroup = relationships.find(group => group.members.has(selectedId ?? ''))
+export function EventList({ grouping = 'events', events, showType, selectedId, onSelect, filtered = false }: EventListProps) {
+  const relationships = useMemo(() => eventRelationships(events), [events])
+  const selectedGroup = grouping === 'events' ? relationships.find(group => group.members.has(selectedId ?? '')) : undefined
+  const rows = grouping === 'conversations' ? relationships.flatMap(group => group.events) : events
+  const first = selectedGroup ? rows.findIndex(e => selectedGroup.members.has(e.id)) : -1
+  const last = selectedGroup ? rows.reduce((last, e, i) => selectedGroup.members.has(e.id) ? i : last, -1) : -1
   if (events.length === 0) {
     return (
       <div className="flex h-full items-center justify-center text-muted-foreground text-sm">
@@ -137,15 +141,11 @@ export function EventList({ events, showType, selectedId, onSelect, filtered = f
   return (
     // Columns drop out as the list narrows (e.g. with the detail docked beside it).
     <div className="flex flex-col h-full">
-      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b px-3 py-1.5 text-[11px] text-muted-foreground">
-        <span title="Lines connect visible events with the same recorded request/session or cross-hop trace ID. Conversation identity across separate requests is not recorded.">Lines connect related request events</span>
-        <span aria-live="polite" className="shrink-0">{selectedGroup ? `${selectedGroup.members.size} related events · highlighted` : 'Select an event to highlight its links'}</span>
-      </div>
       <div className="overflow-auto flex-1 min-h-0 [container-type:inline-size]">
       <table className="w-full table-fixed text-xs">
         <thead className="sticky top-0 bg-background border-b z-10">
           <tr className="text-left text-muted-foreground">
-            <th className="px-1 py-1.5 w-[68px] text-center" title="Related request events">Links</th>
+            {grouping === 'events' && <th className="w-[24px]"><span className="sr-only">Related events</span></th>}
             <th className="px-2 py-1.5 w-[24px]"></th>
             <th className="px-2 py-1.5 w-[105px]">Time</th>
             {showType && <th className="px-2 py-1.5 w-[140px]">Type</th>}
@@ -157,15 +157,22 @@ export function EventList({ events, showType, selectedId, onSelect, filtered = f
           </tr>
         </thead>
         <tbody>
-          {events.map((event, index) => {
+          {rows.map((event, index) => {
             const category = getCategory(event.event_type)
             const config = categoryConfig[category] ?? categoryConfig.llm
             const Icon = config.icon
             const isSelected = selectedId === event.id
 
+            const header = grouping === 'conversations' ? relationships.find(group => group.events[0].id === event.id) : undefined
             return (
+              <Fragment key={event.id}>
+              {header && <tr data-testid="conversation-header" className="border-b bg-muted/50">
+                <th colSpan={showType ? 8 : 7} scope="rowgroup" className="px-3 py-2 text-left font-medium" title={header.description}>
+                  <div className="truncate">{header.title}</div>
+                </th>
+              </tr>}
               <tr
-                key={event.id}
+                data-event-id={event.id}
                 onClick={() => onSelect(event.id)}
                 tabIndex={0}
                 onKeyDown={e => {
@@ -175,27 +182,18 @@ export function EventList({ events, showType, selectedId, onSelect, filtered = f
                   }
                 }}
                 aria-selected={isSelected}
-                style={selectedGroup?.members.has(event.id) ? { backgroundColor: `${selectedGroup.color}${isSelected ? '20' : '0a'}` } : undefined}
                 className={cn(
                   'cursor-pointer transition-colors border-b border-border/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary',
                   isSelected ? 'bg-primary/10 hover:bg-primary/15' : selectedGroup?.members.has(event.id) ? 'bg-primary/5 hover:bg-primary/10' : 'hover:bg-accent/50'
                 )}
               >
-                <td className="relative p-0" data-testid="event-links" data-related={selectedGroup?.members.has(event.id) || undefined}>
-                  <svg className="absolute inset-0 h-full w-full overflow-visible" viewBox="0 0 68 28" preserveAspectRatio="none" aria-hidden="true">
-                    {relationships.filter(group => group.lane !== null && group.first <= index && group.last >= index).map(group => {
-                      const x = 12 + group.lane! * 13
-                      const member = group.members.has(event.id)
-                      return <g key={group.id} stroke={group.color} opacity={selectedGroup && selectedGroup !== group ? 0.22 : 1}>
-                        <path d={`M ${x} ${index === group.first ? 14 : 0} V ${index === group.last ? 14 : 28}`} strokeWidth="2" fill="none" />
-                        {member && <circle cx={x} cy="14" r={isSelected ? 4 : 3} fill={group.color} strokeWidth="1.5" />}
-                      </g>
-                    })}
-                    {relationships.some(group => group.lane === null && group.members.has(event.id)) && <circle cx="62" cy="14" r="2.5" fill="currentColor" className="text-muted-foreground" />}
-                  </svg>
-                  <span className="sr-only">{relationships.filter(group => group.members.has(event.id)).map(group => `Related request: ${group.members.size} visible events. ${group.id}${group.lane === null ? '. Track hidden while busy; select to show' : ''}`).join(' ')}</span>
-                  <span className="absolute inset-0" title={relationships.filter(group => group.members.has(event.id)).map(group => `${group.members.size} visible events · ${group.id}${group.lane === null ? ' · Select to show track' : ''}`).join('\n') || 'No related events in this view'} />
-                </td>
+                {grouping === 'events' && <td className="relative p-0 text-primary" data-testid="event-links" data-related={selectedGroup?.members.has(event.id) || undefined}>
+                  {selectedGroup && selectedGroup.members.size > 1 && index >= first && index <= last && <>
+                    <span aria-hidden="true" className="absolute left-1/2 w-[3px] -translate-x-1/2 bg-primary" style={{ top: index === first ? '50%' : 0, bottom: index === last ? '50%' : 0 }} />
+                    {selectedGroup.members.has(event.id) && <span aria-hidden="true" className={cn('absolute left-1/2 top-1/2 h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-primary ring-2 ring-background', isSelected && 'h-3 w-3')} />}
+                    {selectedGroup.members.has(event.id) && <span className="sr-only">Related to selected event</span>}
+                  </>}
+                </td>}
                 <td className={cn('px-2 py-1 border-l-2', isSelected ? 'border-l-primary' : 'border-l-transparent')}>
                   <span title={event.duplicate_hop != null ? `Duplicate hop ${event.duplicate_hop} — not counted in stats` : event.status} aria-label={event.status}>
                     {event.duplicate_hop != null ? <AlertTriangle className="h-3 w-3 text-amber-500" /> : <StatusBadge status={event.status} />}
@@ -226,6 +224,7 @@ export function EventList({ events, showType, selectedId, onSelect, filtered = f
                   <EventDuration event={event} />
                 </td>
               </tr>
+              </Fragment>
             )
           })}
         </tbody>

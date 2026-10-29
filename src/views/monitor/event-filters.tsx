@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, type ReactNode } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
@@ -10,6 +10,8 @@ import { InfoTooltip } from '@/components/ui/info-tooltip'
 import type { MonitorEventFilter, MonitorEventType, InterceptCategory, InterceptRule, ClientInfo } from '@/types/tauri-commands'
 
 interface EventFiltersProps {
+  conversationControl?: ReactNode
+  groupingControl?: ReactNode
   filter: MonitorEventFilter
   onFilterChange: (filter: MonitorEventFilter) => void
   interceptRule: InterceptRule | null
@@ -63,7 +65,7 @@ const ALL_INTERCEPT_CATEGORIES: { label: string; value: InterceptCategory }[] = 
 
 const ALL_CATEGORY_VALUES = ALL_INTERCEPT_CATEGORIES.map(c => c.value)
 
-export function EventFilters({ filter, onFilterChange, interceptRule, onInterceptRuleChange }: EventFiltersProps) {
+export function EventFilters({ conversationControl, groupingControl, filter, onFilterChange, interceptRule, onInterceptRuleChange }: EventFiltersProps) {
   // Type filter state — seeded from the incoming filter so a persisted/restored
   // selection survives mount instead of being reset to "all events".
   const [selectedGroups, setSelectedGroups] = useState<string[]>(() => groupsFromEventTypes(filter.event_types))
@@ -165,7 +167,7 @@ export function EventFilters({ filter, onFilterChange, interceptRule, onIntercep
     : 'Intercept'
 
   return (
-    <div className="flex items-center gap-2 p-2">
+    <div className="flex flex-wrap items-center gap-2 p-2">
       <Popover open={typeFilterOpen} onOpenChange={setTypeFilterOpen}>
         <PopoverTrigger asChild>
           <Button
@@ -223,7 +225,8 @@ export function EventFilters({ filter, onFilterChange, interceptRule, onIntercep
         </PopoverContent>
       </Popover>
 
-      <div className="relative flex-1 max-w-[200px]">
+      {groupingControl}
+      <div className="relative flex-1 max-w-[200px] min-w-[80px]">
         <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
         <Input
           placeholder="Search..."
@@ -233,6 +236,7 @@ export function EventFilters({ filter, onFilterChange, interceptRule, onIntercep
         />
       </div>
 
+      {conversationControl}
       <div className="flex-1" />
 
       <Popover open={interceptPopoverOpen} onOpenChange={setInterceptPopoverOpen}>
