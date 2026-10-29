@@ -2799,7 +2799,7 @@ export interface GetAppCapabilitiesParams {
   templateId: string
 }
 
-/** Params for try_it_out_app */
+/** Params for try_it_out_app. The backend resolves modes and permitted models from this client. */
 export interface TryItOutAppParams {
   clientId: string
 }

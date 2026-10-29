@@ -16,7 +16,7 @@
  * See AGENTS.md "Adding/Modifying Tauri Commands" for full checklist.
  */
 
-import type { DiscoveredResourceIcon } from '@app/types/tauri-commands'
+import type { DiscoveredResourceIcon, LaunchResult } from '@app/types/tauri-commands'
 
 import { mockIPC, mockWindows, clearMocks } from '@tauri-apps/api/mocks'
 import { emit } from '@tauri-apps/api/event'
@@ -1816,8 +1816,28 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       supports_permanent_config: true,
     }
   },
-  'try_it_out_app': (args) => {
+  'try_it_out_app': (args): LaunchResult => {
     toast.success(`Try it out for client ${args?.clientId} (demo)`)
+    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
+    if (client?.template_id === 'goose') {
+      const strategy = client.strategy_id ? demoProfileStrategy(client.strategy_id) : null
+      const models = mockHandlers['list_all_models_detailed']() as Array<{ model_id: string; provider_instance: string; capabilities: string[] }>
+      const model = models.find(model => {
+        const permissions = strategy?.model_permissions
+        const permission = permissions?.models[`${model.provider_instance}__${model.model_id}`]
+          ?? permissions?.providers[model.provider_instance]
+          ?? permissions?.global
+          ?? 'off'
+        return model.capabilities.includes('chat') && permission !== 'off'
+      })
+      return {
+        success: Boolean(model),
+        message: model ? 'Run the command below in your terminal:' : 'Enable a chat model for this client before launching Goose.',
+        modified_files: [],
+        backup_files: [],
+        terminal_command: model ? `OPENAI_HOST=http://127.0.0.1:3625 OPENAI_BASE_PATH=chat/completions OPENAI_API_KEY=lr_demo_secret goose session --provider openai --model '${model.model_id.replace(/'/g, "'\\''")}'` : null,
+      }
+    }
     return {
       success: true,
       message: 'Run the command below in your terminal:',
@@ -1826,10 +1846,18 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       terminal_command: 'ANTHROPIC_BASE_URL=http://127.0.0.1:3625 ANTHROPIC_API_KEY=lr_demo_secret claude --mcp-config \'{"mcpServers":{"localrouter":{"type":"http","url":"http://127.0.0.1:3625","headers":{"Authorization":"Bearer lr_demo_secret"}}}}\'',
     }
   },
-  'configure_app_permanent': (args) => {
+  'configure_app_permanent': (args): LaunchResult => {
     toast.success(`App configured permanently for client ${args?.clientId} (demo)`)
     const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
     const templateId = (client as unknown as Record<string, unknown> | undefined)?.template_id
+    if (templateId === 'goose') {
+      return {
+        success: true,
+        message: 'Configured Goose: LocalRouter provider, permitted models and provider selection, MCP extension.',
+        modified_files: ['~/.config/goose/config.yaml', '~/.config/goose/custom_providers/localrouter.json'],
+        backup_files: [],
+      }
+    }
     if (templateId === 'pi') {
       return {
         success: true,

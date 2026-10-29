@@ -988,12 +988,10 @@ fn build_stream_response(
     let mut native_completed_envelope: Option<Value> = None;
 
     let emitted = async_stream::stream! {
-        // Opening event.
-        for frame in emitter.start() {
-            yield sse_event(frame);
-        }
-
         // Main loop: translate each chunk into zero-or-more SSE frames.
+        // The emitter opens translated streams on the first chunk. Native
+        // Responses streams already carry their own opening event and
+        // sequence, so emitting a local opening here would duplicate it.
         let mut stream = upstream;
         while let Some(chunk_result) = stream.next().await {
             let chunk = match chunk_result {
@@ -1012,19 +1010,12 @@ fn build_stream_response(
                     if let Some(routing)=api_error.error.extensions.as_ref().and_then(|extensions| extensions.get("localrouter.routing")) {
                         super::monitor_helpers::update_llm_call_routing(&state,&llm_event_id,routing);
                     }
-                    let frame = ResponsesSseFrame {
-                        event: "response.failed".into(),
-                        data: serde_json::json!({
-                            "type": "response.failed",
-                            "response": {
-                                "id": response_id,
-                                "status": "failed",
-                                "error": error_body["error"],
-                                "extensions":error_body["extensions"],
-                            },
-                        }),
-                    };
-                    yield sse_event(frame);
+                    for mut frame in emitter.fail(error_body["error"].clone()) {
+                        if frame.event == "response.failed" {
+                            frame.data["response"]["extensions"] = error_body["extensions"].clone();
+                        }
+                        yield sse_event(frame);
+                    }
                     abandoned.disarm();
                     let provider_for_err = tracker.lock().provider(&model);
                     let model_for_err = model_name_observed.clone().unwrap_or_else(|| model.clone());
@@ -1063,44 +1054,22 @@ fn build_stream_response(
             // encrypted-content carry-over, and built-in tool events
             // reach the client intact. Otherwise fall back to the
             // `ResponsesEmitter` re-serialization.
-            let native_envelope = chunk.extensions.as_ref().and_then(|ext| {
-                ext.get(lr_providers::openai_responses::NATIVE_RESPONSES_SSE_EXT_KEY)
-                    .cloned()
+            let native = chunk.extensions.as_ref().is_some_and(|ext| {
+                ext.contains_key(lr_providers::openai_responses::NATIVE_RESPONSES_SSE_EXT_KEY)
             });
-            if let Some(envelope) = native_envelope {
-                saw_native_envelope = true;
-                let event_type = envelope
-                    .get("type")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("message")
-                    .to_string();
-                // Rewrite top-level `response.id` to LocalRouter's
-                // response_id, same as the non-streaming path — this
-                // keeps `previous_response_id` continuations pointing
-                // at our session store, not the upstream handle.
-                let envelope = rewrite_envelope_response_id(envelope, &response_id);
+            saw_native_envelope |= native;
+            for frame in response_frames_for_chunk(&mut emitter, chunk) {
                 // Capture the canonical final response object from the
                 // last `response.completed` event — used as the wire
                 // body for monitor telemetry below so the UI sees the
                 // upstream's full response (including reasoning items)
                 // rather than the emitter's synthesized stand-in.
-                if event_type == "response.completed" {
-                    if let Some(resp) = envelope.get("response") {
+                if native && frame.event == "response.completed" {
+                    if let Some(resp) = frame.data.get("response") {
                         native_completed_envelope = Some(resp.clone());
                     }
                 }
-                yield sse_event(ResponsesSseFrame {
-                    event: event_type,
-                    data: envelope,
-                });
-                // Still advance the emitter's internal counters so
-                // `final_response_object` reflects the same shape for
-                // the telemetry wire body.
-                let _ = emitter.on_chunk(chunk);
-            } else {
-                for frame in emitter.on_chunk(chunk) {
-                    yield sse_event(frame);
-                }
+                yield sse_event(frame);
             }
         }
 
@@ -1227,6 +1196,32 @@ fn build_stream_response(
     Sse::new(emitted)
         .keep_alive(KeepAlive::default())
         .into_response()
+}
+
+fn response_frames_for_chunk(
+    emitter: &mut ResponsesEmitter,
+    chunk: lr_providers::CompletionChunk,
+) -> Vec<ResponsesSseFrame> {
+    let native_envelope = chunk.extensions.as_ref().and_then(|ext| {
+        ext.get(lr_providers::openai_responses::NATIVE_RESPONSES_SSE_EXT_KEY)
+            .cloned()
+    });
+    if let Some(envelope) = native_envelope {
+        // Keep native event payloads and sequence numbers intact, rewriting
+        // only the response handle so continuations use our session store.
+        let envelope = rewrite_envelope_response_id(envelope, &emitter.response_id);
+        let event = envelope["type"].as_str().unwrap_or("message").to_owned();
+        // Maintain the translated view for monitoring and any local failure,
+        // without emitting a second opening event or translated text deltas.
+        let _ = emitter.on_chunk(chunk);
+        emitter.observe_native_envelope(&envelope);
+        vec![ResponsesSseFrame {
+            event,
+            data: envelope,
+        }]
+    } else {
+        emitter.on_chunk(chunk)
+    }
 }
 
 fn sse_event(frame: ResponsesSseFrame) -> Result<axum::response::sse::Event, Infallible> {
@@ -1424,6 +1419,60 @@ fn select_wire_body(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn native_response_stream_keeps_one_opening_and_upstream_sequences() {
+        use lr_providers::openai_responses::NATIVE_RESPONSES_SSE_EXT_KEY;
+
+        let mut emitter = ResponsesEmitter::new("resp_local".into(), "model".into(), 100);
+        let events = [
+            serde_json::json!({"type":"response.created", "sequence_number":0,
+                "response":{"id":"resp_upstream", "status":"in_progress", "output":[]}}),
+            serde_json::json!({"type":"response.output_text.delta", "sequence_number":3,
+                "item_id":"msg_upstream", "output_index":0, "content_index":0, "delta":"hello"}),
+            serde_json::json!({"type":"response.completed", "sequence_number":4,
+            "response":{"id":"resp_upstream", "status":"completed", "output":[
+                {"type":"reasoning", "encrypted_content":"opaque"}
+            ]}}),
+        ];
+        let mut frames = Vec::new();
+        for envelope in &events {
+            let chunk = lr_providers::CompletionChunk {
+                id: "resp_upstream".into(),
+                object: "chat.completion.chunk".into(),
+                created: 100,
+                model: "model".into(),
+                // Native opening/metadata chunks can carry no choices.
+                choices: vec![],
+                extensions: Some(std::collections::HashMap::from([(
+                    NATIVE_RESPONSES_SSE_EXT_KEY.to_owned(),
+                    envelope.clone(),
+                )])),
+                usage: None,
+                provider: None,
+            };
+            frames.extend(response_frames_for_chunk(&mut emitter, chunk));
+        }
+        assert_eq!(frames.len(), events.len());
+        assert_eq!(
+            frames
+                .iter()
+                .filter(|f| f.event == "response.created")
+                .count(),
+            1
+        );
+        for (frame, original) in frames.iter().zip(events) {
+            let mut expected = original;
+            if expected.get("response").is_some() {
+                expected["response"]["id"] = serde_json::json!("resp_local");
+            }
+            assert_eq!(frame.data, expected);
+        }
+        let failed =
+            emitter.fail(serde_json::json!({"code":"server_error", "message":"disconnected"}));
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].data["sequence_number"], 5);
+    }
+
     #[test]
     fn response_metadata_reaches_routing_but_control_key_is_consumed_upstream() {
         let req: super::CreateResponseRequest = serde_json::from_value(serde_json::json!({

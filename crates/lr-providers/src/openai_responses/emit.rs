@@ -29,8 +29,10 @@ pub struct ResponsesEmitter {
     pub response_id: String,
     pub model: String,
     pub created_at: i64,
-    /// Set after `response.created` is emitted so we don't re-emit it.
+    /// Set after opening a translated stream or observing a native event.
     started: bool,
+    /// Responses clients use this required field to order every event.
+    next_sequence_number: u64,
     /// Set after the assistant `message` output_item has been added.
     message_item_added: bool,
     /// Accumulated assistant text across deltas — replayed at the end
@@ -65,6 +67,7 @@ impl ResponsesEmitter {
             model,
             created_at,
             started: false,
+            next_sequence_number: 0,
             message_item_added: false,
             accumulated_text: String::new(),
             annotations: Vec::new(),
@@ -80,13 +83,30 @@ impl ResponsesEmitter {
         &self.accumulated_text
     }
 
+    fn sequence_frames(&mut self, mut frames: Vec<ResponsesSseFrame>) -> Vec<ResponsesSseFrame> {
+        for frame in &mut frames {
+            frame.data["sequence_number"] = json!(self.next_sequence_number);
+            self.next_sequence_number += 1;
+        }
+        frames
+    }
+
+    /// Native events retain their upstream sequence numbers. A locally
+    /// generated failure must continue after the last forwarded event.
+    pub fn observe_native_envelope(&mut self, envelope: &Value) {
+        self.started = true;
+        if let Some(sequence_number) = envelope["sequence_number"].as_u64() {
+            self.next_sequence_number = sequence_number.saturating_add(1);
+        }
+    }
+
     /// Emit the opening `response.created` frame.
     pub fn start(&mut self) -> Vec<ResponsesSseFrame> {
         if self.started {
             return vec![];
         }
         self.started = true;
-        vec![ResponsesSseFrame {
+        let frames = vec![ResponsesSseFrame {
             event: "response.created".into(),
             data: json!({
                 "type": "response.created",
@@ -99,7 +119,8 @@ impl ResponsesEmitter {
                     "output": [],
                 },
             }),
-        }]
+        }];
+        self.sequence_frames(frames)
     }
 
     /// Feed one chat-completions chunk; emit zero-or-more SSE frames.
@@ -140,6 +161,7 @@ impl ResponsesEmitter {
                                 "type": "message",
                                 "id": format!("msg_{}", self.response_id),
                                 "role": "assistant",
+                                "status": "in_progress",
                                 "content": [],
                             },
                         }),
@@ -150,8 +172,11 @@ impl ResponsesEmitter {
                     event: "response.output_text.delta".into(),
                     data: json!({
                         "type": "response.output_text.delta",
+                        "item_id": format!("msg_{}", self.response_id),
                         "output_index": self.message_output_index,
+                        "content_index": 0,
                         "delta": content,
+                        "logprobs": [],
                     }),
                 });
             }
@@ -201,7 +226,7 @@ impl ResponsesEmitter {
             }
         }
 
-        frames
+        self.sequence_frames(frames)
     }
 
     fn ensure_tool_slot(&mut self, tc: &crate::ToolCallDelta) -> &mut ToolSlot {
@@ -233,9 +258,10 @@ impl ResponsesEmitter {
         slot
     }
 
-    /// Emit the terminal `response.completed` (or `response.failed`)
+    /// Emit the terminal `response.completed` (or `response.incomplete`)
     /// frame after all chunks have been folded in. Call once.
     pub fn finish(&mut self, finish_reason: Option<&str>) -> Vec<ResponsesSseFrame> {
+        let mut opening = self.start();
         let mut frames = Vec::new();
 
         // Close any message item we opened.
@@ -249,6 +275,7 @@ impl ResponsesEmitter {
                         "type": "message",
                         "id": format!("msg_{}", self.response_id),
                         "role": "assistant",
+                        "status": "completed",
                         "content": [
                             {"type": "output_text", "text": self.accumulated_text.clone(), "annotations": self.annotations}
                         ],
@@ -289,6 +316,19 @@ impl ResponsesEmitter {
                 "response": self.final_response_object(status),
             }),
         });
+        opening.extend(self.sequence_frames(frames));
+        opening
+    }
+
+    /// Emit a terminal failure with the same response envelope as success.
+    pub fn fail(&mut self, error: Value) -> Vec<ResponsesSseFrame> {
+        let mut frames = self.start();
+        let mut response = self.final_response_object("failed");
+        response["error"] = error;
+        frames.extend(self.sequence_frames(vec![ResponsesSseFrame {
+            event: "response.failed".into(),
+            data: json!({"type": "response.failed", "response": response}),
+        }]));
         frames
     }
 
@@ -297,11 +337,17 @@ impl ResponsesEmitter {
     /// `previous_response_id` lookups.
     pub fn final_response_object(&self, status: &str) -> Value {
         let mut output: Vec<Value> = Vec::new();
+        let message_status = if status == "failed" {
+            "incomplete"
+        } else {
+            "completed"
+        };
         if self.message_item_added {
             output.push(json!({
                 "type": "message",
                 "id": format!("msg_{}", self.response_id),
                 "role": "assistant",
+                "status": message_status,
                 "content": [
                     {"type": "output_text", "text": self.accumulated_text, "annotations": self.annotations}
                 ],
@@ -399,6 +445,20 @@ mod tests {
     use super::*;
     use crate::{ChunkChoice, ChunkDelta, CompletionChunk};
 
+    fn assert_sequences(frames: &[ResponsesSseFrame], first: u64) {
+        #[derive(serde::Deserialize)]
+        struct EventEnvelope {
+            r#type: String,
+            sequence_number: u64,
+        }
+
+        for (offset, frame) in frames.iter().enumerate() {
+            let event: EventEnvelope = serde_json::from_value(frame.data.clone()).unwrap();
+            assert_eq!(event.r#type, frame.event);
+            assert_eq!(event.sequence_number, first + offset as u64);
+        }
+    }
+
     fn text_chunk(content: &str) -> CompletionChunk {
         CompletionChunk {
             id: "chatcmpl-1".into(),
@@ -442,7 +502,119 @@ mod tests {
                 "response.completed",
             ]
         );
+        assert_sequences(&frames, 0);
+        // Required fields used by strict Responses consumers (including
+        // Goose 1.57) must survive JSON decoding, not just match event names.
+        #[derive(serde::Deserialize)]
+        struct TextDelta {
+            item_id: String,
+            output_index: u32,
+            content_index: u32,
+            delta: String,
+            logprobs: Vec<Value>,
+        }
+        let mut decoded_text = String::new();
+        for frame in frames
+            .iter()
+            .filter(|f| f.event == "response.output_text.delta")
+        {
+            let delta: TextDelta = serde_json::from_value(frame.data.clone()).unwrap();
+            assert_eq!(delta.item_id, frames[1].data["item"]["id"]);
+            assert_eq!(delta.output_index, 0);
+            assert_eq!(delta.content_index, 0);
+            assert!(delta.logprobs.is_empty());
+            decoded_text.push_str(&delta.delta);
+        }
+        assert_eq!(decoded_text, "Hello");
+        assert_eq!(
+            frames.last().unwrap().data["response"]["output"][0]["content"][0]["text"],
+            decoded_text
+        );
         assert_eq!(e.text(), "Hello");
+    }
+
+    #[test]
+    fn tool_call_frames_are_sequenced_across_chunks_and_completion() {
+        let mut e = ResponsesEmitter::new("resp_tool".into(), "model".into(), 100);
+        let mut frames = e.start();
+        assert!(e.start().is_empty());
+        for (id, name, arguments) in [
+            (Some("call_1"), Some("weather"), "{\"city\":"),
+            (None, None, "\"Toronto\"}"),
+        ] {
+            let mut chunk = text_chunk("");
+            chunk.choices[0].delta.tool_calls = Some(vec![crate::ToolCallDelta {
+                index: 0,
+                id: id.map(str::to_owned),
+                tool_type: Some("function".into()),
+                function: Some(crate::FunctionCallDelta {
+                    name: name.map(str::to_owned),
+                    arguments: Some(arguments.into()),
+                }),
+            }]);
+            frames.extend(e.on_chunk(chunk));
+        }
+        frames.extend(e.finish(Some("tool_calls")));
+        assert_sequences(&frames, 0);
+        let added = &frames[1].data["item"];
+        let arguments: String = frames
+            .iter()
+            .filter(|f| f.event == "response.function_call_arguments.delta")
+            .map(|f| {
+                assert_eq!(f.data["item_id"], added["id"]);
+                assert_eq!(f.data["output_index"], 0);
+                f.data["delta"].as_str().unwrap()
+            })
+            .collect();
+        assert_eq!(arguments, r#"{"city":"Toronto"}"#);
+        assert_eq!(
+            frames.last().unwrap().data["response"]["output"][0]["arguments"],
+            arguments
+        );
+    }
+
+    #[test]
+    fn empty_stream_and_failure_emit_complete_sequenced_envelopes() {
+        let mut empty = ResponsesEmitter::new("resp_empty".into(), "model".into(), 100);
+        let frames = empty.finish(Some("stop"));
+        assert_sequences(&frames, 0);
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].event, "response.created");
+        assert_eq!(frames[1].event, "response.completed");
+
+        let mut failed = ResponsesEmitter::new("resp_failed".into(), "model".into(), 100);
+        let error = json!({"code":"server_error", "message":"upstream disconnected"});
+        let mut frames = failed.on_chunk(text_chunk("partial"));
+        frames.extend(failed.fail(error.clone()));
+        assert_sequences(&frames, 0);
+        let failure = &frames.last().unwrap().data["response"];
+        assert_eq!(failure["id"], "resp_failed");
+        assert_eq!(failure["object"], "response");
+        assert_eq!(failure["model"], "model");
+        assert_eq!(failure["status"], "failed");
+        assert_eq!(failure["error"], error);
+        assert_eq!(failure["output"][0]["status"], "incomplete");
+        assert_eq!(failure["output"][0]["content"][0]["text"], "partial");
+
+        let mut early_failure = ResponsesEmitter::new("resp_early".into(), "model".into(), 100);
+        let frames = early_failure.fail(error);
+        assert_sequences(&frames, 0);
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].event, "response.created");
+        assert_eq!(frames[1].event, "response.failed");
+    }
+
+    #[test]
+    fn failure_after_native_event_continues_upstream_sequence_without_local_opening() {
+        let mut e = ResponsesEmitter::new("resp_native".into(), "model".into(), 100);
+        let envelope = json!({"type":"response.created", "sequence_number":17,
+            "response":{"id":"upstream", "output":[]}});
+        e.observe_native_envelope(&envelope);
+        let frames = e.fail(json!({"code":"server_error", "message":"disconnected"}));
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].event, "response.failed");
+        assert_sequences(&frames, 18);
+        assert_eq!(envelope["sequence_number"], 17);
     }
 
     #[test]

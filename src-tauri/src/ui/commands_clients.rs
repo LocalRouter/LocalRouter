@@ -4314,6 +4314,7 @@ pub async fn try_it_out_app(
     client_id: String,
     config_manager: State<'_, ConfigManager>,
     client_manager: State<'_, Arc<lr_clients::ClientManager>>,
+    provider_registry: State<'_, Arc<lr_providers::registry::ProviderRegistry>>,
 ) -> Result<LaunchResult, String> {
     use crate::launcher;
 
@@ -4339,7 +4340,26 @@ pub async fn try_it_out_app(
         .map_err(|e| format!("Failed to get client secret: {}", e))?
         .ok_or("Client secret not found in keychain")?;
 
-    integration.try_it_out(&base_url, &client_secret, &client_id)
+    let models = if integration.needs_model_list() && client.llm_mode == LlmMode::Gateway {
+        let strategy = config
+            .strategies
+            .iter()
+            .find(|s| s.id == client.strategy_id);
+        build_integration_model_list(strategy, provider_registry.inner()).await?
+    } else {
+        vec![]
+    };
+
+    integration.try_it_out_with_context(&launcher::ConfigSyncContext {
+        base_url,
+        client_secret,
+        client_id,
+        models,
+        llm_mode: client.llm_mode,
+        mcp_mode: client.mcp_mode,
+        proxy_url: None,
+        ca_cert_path: None,
+    })
 }
 
 /// Permanently configure the app to route through LocalRouter (modifies config files)
@@ -4451,6 +4471,13 @@ async fn build_integration_model_list(
     strategy: Option<&lr_config::Strategy>,
     provider_registry: &Arc<lr_providers::registry::ProviderRegistry>,
 ) -> Result<Vec<String>, String> {
+    if strategy
+        .and_then(|s| s.auto_config.as_ref())
+        .is_some_and(|config| !config.permission.is_enabled())
+    {
+        return Err("LLM access is disabled for this client. Enable model access before configuring the app."
+            .to_string());
+    }
     let auto_config_active = strategy
         .and_then(|s| s.auto_config.as_ref())
         .filter(|ac| ac.permission != lr_config::PermissionState::Off);
@@ -4466,17 +4493,25 @@ async fn build_integration_model_list(
         .await
         .map_err(|e| format!("Failed to list models: {}", e))?;
 
-    require_integration_models(
-        all_models
-            .iter()
-            .filter(|m| {
-                strategy
+    require_integration_models(integration_chat_models(&all_models, strategy))
+}
+
+/// Coding assistants need a chat model, including when access is granted to a
+/// whole provider with no individually prioritized models.
+fn integration_chat_models(
+    all_models: &[lr_providers::ModelInfo],
+    strategy: Option<&lr_config::Strategy>,
+) -> Vec<String> {
+    all_models
+        .iter()
+        .filter(|m| {
+            lr_providers::EndpointType::Chat.is_compatible_with(&m.capabilities)
+                && strategy
                     .map(|s| s.is_model_allowed(&m.provider, &m.id))
                     .unwrap_or(true)
-            })
-            .map(|m| format!("{}/{}", m.provider, m.id))
-            .collect(),
-    )
+        })
+        .map(|m| format!("{}/{}", m.provider, m.id))
+        .collect()
 }
 
 /// Inner helper to sync a single client's external config.
@@ -4915,6 +4950,52 @@ mod tests {
         let error = require_integration_models(vec![]).unwrap_err();
         assert!(error.contains("No usable models"));
         assert!(error.contains("prioritized models"));
+    }
+
+    #[test]
+    fn whole_provider_access_offers_only_permitted_chat_models_to_integrations() {
+        use lr_providers::{Capability, ModelInfo};
+
+        let mut strategy = lr_config::Strategy::new("Goose".into());
+        strategy.model_permissions.global = PermissionState::Off;
+        strategy
+            .model_permissions
+            .providers
+            .insert("ChatGPT Plus".into(), PermissionState::Allow);
+        let model = |provider: &str, id: &str, capabilities| ModelInfo {
+            id: id.into(),
+            name: id.into(),
+            provider: provider.into(),
+            parameter_count: None,
+            context_window: 0,
+            supports_streaming: true,
+            capabilities,
+            detailed_capabilities: None,
+        };
+        let models = vec![
+            model("Ollama", "llama3.2:1b", vec![Capability::Chat]),
+            model("ChatGPT Plus", "gpt-5.6-sol", vec![Capability::Chat]),
+            model("ChatGPT Plus", "embedding", vec![Capability::Embedding]),
+            model("ChatGPT Plus", "decision", vec![Capability::Decision]),
+            model("ChatGPT Plus", "unknown", vec![]),
+        ];
+        assert_eq!(
+            integration_chat_models(&models, Some(&strategy)),
+            vec!["ChatGPT Plus/gpt-5.6-sol", "ChatGPT Plus/unknown"]
+        );
+        assert!(strategy.model_permissions.models.is_empty());
+        assert!(strategy.auto_config.unwrap().prioritized_models.is_empty());
+    }
+
+    #[tokio::test]
+    async fn disabled_model_access_cannot_configure_an_integration() {
+        let mut strategy = lr_config::Strategy::new("Goose".into());
+        strategy.auto_config.as_mut().unwrap().permission = PermissionState::Off;
+        let registry = Arc::new(lr_providers::registry::ProviderRegistry::new());
+        let error = build_integration_model_list(Some(&strategy), &registry)
+            .await
+            .unwrap_err();
+        assert!(error.contains("LLM access is disabled"));
     }
 
     // =========================================================================

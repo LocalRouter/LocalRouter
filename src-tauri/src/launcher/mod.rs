@@ -82,7 +82,7 @@ pub trait AppIntegration: Send + Sync {
     }
 
     /// Whether this integration needs the model list for sync_config.
-    /// OpenCode, OpenClaw, and Pi return true.
+    /// OpenCode, OpenClaw, Pi, and Goose return true.
     fn needs_model_list(&self) -> bool {
         false
     }
@@ -95,6 +95,13 @@ pub trait AppIntegration: Send + Sync {
         _client_id: &str,
     ) -> Result<LaunchResult, String> {
         Err("Try It Out is not supported for this app".to_string())
+    }
+
+    /// One-time launch with the client's modes and permitted models. Integrations
+    /// that require an explicit model can override this without choosing a stale
+    /// model from the external app's existing settings.
+    fn try_it_out_with_context(&self, ctx: &ConfigSyncContext) -> Result<LaunchResult, String> {
+        self.try_it_out(&ctx.base_url, &ctx.client_secret, &ctx.client_id)
     }
 
     /// Permanently modify config files to route through LocalRouter.

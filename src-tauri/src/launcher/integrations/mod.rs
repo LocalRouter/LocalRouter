@@ -138,7 +138,7 @@ mod tests {
 
     #[test]
     fn test_try_it_out_returns_terminal_command() {
-        for id in &["claude-code", "codex", "aider", "goose"] {
+        for id in &["claude-code", "codex", "aider"] {
             let integration = get_integration(id).unwrap();
             let result = integration
                 .try_it_out("http://localhost:3625", "test-secret", "test-client")

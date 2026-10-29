@@ -255,12 +255,37 @@ export const CLIENT_TEMPLATES: ClientTemplate[] = [
     category: 'coding_assistants',
     icon: 'goose',
     defaultMode: 'both',
-    setupType: 'env_vars',
-    envVars: [
-      { name: 'OPENAI_BASE_URL', value: '{{BASE_URL}}', description: 'LocalRouter API endpoint' },
-      { name: 'OPENAI_API_KEY', value: '{{CLIENT_SECRET}}', description: 'Client secret' },
-    ],
-    manualInstructions: 'Alternatively, in Goose Desktop: Settings > Configure Provider > add an OpenAI-compatible provider with the base URL and API key above.',
+    setupType: 'config_file',
+    configFile: {
+      path: '{{HOME_DIR}}/.config/goose/custom_providers/localrouter.json',
+      jsonSnippet: ({ models }) => JSON.stringify({
+        name: 'localrouter',
+        engine: 'openai',
+        display_name: 'LocalRouter',
+        api_key_env: '',
+        base_url: '{{BASE_URL}}',
+        base_path: 'chat/completions',
+        models: models.map(model => ({ name: model.id })),
+        headers: { Authorization: 'Bearer {{CLIENT_SECRET}}' },
+        requires_auth: false,
+        supports_streaming: true,
+        dynamic_models: false,
+      }, null, 2),
+      description: 'Adds a LocalRouter provider with the models permitted for this client.',
+    },
+    mcpConfigFile: {
+      path: '{{HOME_DIR}}/.config/goose/config.yaml',
+      jsonSnippet: `extensions:
+  localrouter:
+    type: streamable_http
+    name: LocalRouter
+    uri: "{{BASE_URL}}"
+    enabled: true
+    headers:
+      Authorization: "Bearer {{CLIENT_SECRET}}"`,
+      description: 'Merge this LocalRouter extension into the existing extensions in config.yaml.',
+    },
+    manualInstructions: 'After saving the provider file, restart Goose and select the LocalRouter provider and one of its permitted models. Automatic configuration also selects the LocalRouter provider and a permitted model in config.yaml.',
     docsUrl: 'https://block.github.io/goose',
     supportsMcp: true,
     supportsProxy: true,
