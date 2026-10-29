@@ -1,4 +1,4 @@
-import { Fragment, useMemo } from 'react'
+import { Fragment, useCallback, useLayoutEffect, useMemo, useRef } from 'react'
 import { eventRelationships } from './event-relationships'
 import { singleLinePreview } from './monitor-events'
 import { EventDuration } from './event-duration'
@@ -14,6 +14,8 @@ interface EventListProps {
   showType: boolean
   selectedId: string | null
   onSelect: (id: string) => void
+  onToggleConversationFilter: (id: string) => void
+  conversationFiltered?: boolean
   /** A filter narrows the list, so an empty list means "no matches", not "no events". */
   filtered?: boolean
 }
@@ -111,12 +113,48 @@ function ApiCell({ event }: { event: MonitorEventSummary }) {
   )
 }
 
-export function EventList({ grouping = 'events', events, showType, selectedId, onSelect, filtered = false }: EventListProps) {
+export function EventList({ grouping = 'events', events, showType, selectedId, onSelect, onToggleConversationFilter, conversationFiltered = false, filtered = false }: EventListProps) {
   const relationships = useMemo(() => eventRelationships(events), [events])
   const selectedGroup = grouping === 'events' ? relationships.find(group => group.members.has(selectedId ?? '')) : undefined
   const rows = grouping === 'conversations' ? relationships.flatMap(group => group.events) : events
   const first = selectedGroup ? rows.findIndex(e => selectedGroup.members.has(e.id)) : -1
   const last = selectedGroup ? rows.reduce((last, e, i) => selectedGroup.members.has(e.id) ? i : last, -1) : -1
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const selectedRowRef = useRef<HTMLTableRowElement>(null)
+  const anchorRef = useRef<{ id: string; top: number; scrollTop: number; height: number } | null>(null)
+
+  const rememberAnchor = useCallback(() => {
+    const container = scrollRef.current
+    const row = selectedRowRef.current
+    anchorRef.current = null
+    if (grouping !== 'conversations' || !selectedId || !container || !row) return
+    const viewport = container.getBoundingClientRect()
+    const bounds = row.getBoundingClientRect()
+    // Keep a layout snapshot even offscreen: a user scroll can happen before
+    // its scroll event fires, so the next update must account for scrollTop.
+    anchorRef.current = { id: selectedId, top: bounds.top - viewport.top, scrollTop: container.scrollTop, height: bounds.height }
+  }, [grouping, selectedId])
+
+  useLayoutEffect(() => {
+    const container = scrollRef.current
+    const row = selectedRowRef.current
+    const anchor = anchorRef.current
+    if (grouping === 'conversations' && anchor?.id === selectedId && container && row) {
+      // React may move the entire group or prepend rows. Compensate before
+      // paint so the event being read stays put, within the scroll bounds.
+      const viewport = container.getBoundingClientRect()
+      const previousTop = anchor.top - (container.scrollTop - anchor.scrollTop)
+      const headerHeight = container.querySelector('thead')?.getBoundingClientRect().height ?? 0
+      // Only hold a row the reader could see. Scrolling away must never snap
+      // them back, including arrivals before the pending scroll event fires.
+      if (previousTop + anchor.height > headerHeight && previousTop < viewport.height) {
+        const top = row.getBoundingClientRect().top - viewport.top
+        container.scrollTop += top - previousTop
+      }
+    }
+    rememberAnchor()
+  }, [events, grouping, selectedId, rememberAnchor])
+
   if (events.length === 0) {
     return (
       <div className="flex h-full items-center justify-center text-muted-foreground text-sm">
@@ -141,7 +179,7 @@ export function EventList({ grouping = 'events', events, showType, selectedId, o
   return (
     // Columns drop out as the list narrows (e.g. with the detail docked beside it).
     <div className="flex flex-col h-full">
-      <div className="overflow-auto flex-1 min-h-0 [container-type:inline-size]">
+      <div ref={scrollRef} onScroll={rememberAnchor} style={grouping === 'conversations' ? { overflowAnchor: 'none' } : undefined} className="overflow-auto flex-1 min-h-0 [container-type:inline-size]">
       <table className="w-full table-fixed text-xs">
         <thead className="sticky top-0 bg-background border-b z-10">
           <tr className="text-left text-muted-foreground">
@@ -172,6 +210,7 @@ export function EventList({ grouping = 'events', events, showType, selectedId, o
                 </th>
               </tr>}
               <tr
+                ref={isSelected ? selectedRowRef : undefined}
                 data-event-id={event.id}
                 onClick={() => onSelect(event.id)}
                 tabIndex={0}
@@ -184,17 +223,27 @@ export function EventList({ grouping = 'events', events, showType, selectedId, o
                 aria-selected={isSelected}
                 className={cn(
                   'cursor-pointer transition-colors border-b border-border/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary',
-                  isSelected ? 'bg-primary/10 hover:bg-primary/15' : selectedGroup?.members.has(event.id) ? 'bg-primary/5 hover:bg-primary/10' : 'hover:bg-accent/50'
+                  isSelected ? 'bg-primary/5 hover:bg-primary/10' : 'hover:bg-accent/50'
                 )}
               >
                 {grouping === 'events' && <td className="relative p-0 text-primary" data-testid="event-links" data-related={selectedGroup?.members.has(event.id) || undefined}>
                   {selectedGroup && selectedGroup.members.size > 1 && index >= first && index <= last && <>
-                    <span aria-hidden="true" className="absolute left-1/2 w-[3px] -translate-x-1/2 bg-primary" style={{ top: index === first ? '50%' : 0, bottom: index === last ? '50%' : 0 }} />
-                    {selectedGroup.members.has(event.id) && <span aria-hidden="true" className={cn('absolute left-1/2 top-1/2 h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-primary ring-2 ring-background', isSelected && 'h-3 w-3')} />}
+                    <span aria-hidden="true" className="absolute left-1/2 w-[2px] -translate-x-1/2 bg-primary/20" style={{ top: index === first ? '50%' : 0, bottom: index === last ? '50%' : 0 }} />
+                    {selectedGroup.members.has(event.id) && <button
+                      type="button"
+                      aria-label={`Toggle conversation filter: ${selectedGroup.title}`}
+                      aria-pressed={conversationFiltered}
+                      title={conversationFiltered ? 'Show all conversations' : 'Filter to this conversation'}
+                      className="absolute left-1/2 top-1/2 flex h-5 w-5 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+                      onClick={e => { e.stopPropagation(); onToggleConversationFilter(event.id) }}
+                      onKeyDown={e => e.stopPropagation()}
+                    >
+                      <span aria-hidden="true" className={cn('h-1.5 w-1.5 rounded-full bg-primary/35 ring-1 ring-background', isSelected && 'h-2 w-2 bg-primary/50')} />
+                    </button>}
                     {selectedGroup.members.has(event.id) && <span className="sr-only">Related to selected event</span>}
                   </>}
                 </td>}
-                <td className={cn('px-2 py-1 border-l-2', isSelected ? 'border-l-primary' : 'border-l-transparent')}>
+                <td className="px-2 py-1 border-l-2 border-l-transparent">
                   <span title={event.duplicate_hop != null ? `Duplicate hop ${event.duplicate_hop} — not counted in stats` : event.status} aria-label={event.status}>
                     {event.duplicate_hop != null ? <AlertTriangle className="h-3 w-3 text-amber-500" /> : <StatusBadge status={event.status} />}
                   </span>

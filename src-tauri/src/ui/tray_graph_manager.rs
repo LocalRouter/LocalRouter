@@ -20,7 +20,7 @@ use lr_types::RecordedRequest;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tauri::{AppHandle, Listener, Manager};
+use tauri::{AppHandle, Emitter, Listener, Manager};
 use tokio::sync::mpsc;
 use tracing::{debug, error};
 
@@ -1198,7 +1198,7 @@ impl TrayGraphManager {
         // Detect if system is in dark mode for color adjustments
         let dark_mode = detect_dark_mode(app_handle);
 
-        // Clean up expired firewall approval requests and close their popups
+        // Expired firewall approvals stay visible as informational alerts.
         if let Some(app_state) = app_handle.try_state::<Arc<lr_server::state::AppState>>() {
             let expired_requests = app_state.mcp_gateway.firewall_manager.cleanup_expired();
             if !expired_requests.is_empty() {
@@ -1206,13 +1206,16 @@ impl TrayGraphManager {
                     "Cleaned up {} expired firewall approval requests",
                     expired_requests.len()
                 );
-                // Close any popup windows for expired requests
+                // Retain their context until the user dismisses the alert.
                 for request_id in &expired_requests {
                     if let Some(window) =
                         app_handle.get_webview_window(&format!("firewall-approval-{}", request_id))
                     {
-                        let _ = window.close();
-                        debug!("Closed popup for expired firewall request {}", request_id);
+                        let _ = window.emit("firewall-approval-ended", ());
+                        debug!(
+                            "Marked expired firewall request {} informational",
+                            request_id
+                        );
                     }
                 }
                 // Rebuild tray menu to remove expired items

@@ -198,10 +198,15 @@ pub async fn discover_connection(
             env: env.clone(),
             cwd,
         };
+        // GUI launches do not inherit the user's terminal PATH. Match saved
+        // server startup, including PATH for interpreters used by npx/uvx.
+        // Explicit custom variables (including PATH) take precedence.
+        let mut process_env = lr_utils::binary::shell_env();
+        process_env.extend(env);
         let transport = StdioTransport::spawn_in(
             program.clone(),
             args.to_vec(),
-            env,
+            process_env,
             config.resolve_stdio_cwd(),
         )
         .await?;
@@ -689,6 +694,91 @@ mod tests {
         .await
         .is_err());
         task.abort();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stdio_discovery_uses_shell_path_and_preserves_overrides() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        const CHILD_DIR: &str = "LR_DISCOVERY_PATH_TEST_DIR";
+        if let Some(directory) = std::env::var_os(CHILD_DIR) {
+            let directory = std::path::PathBuf::from(directory);
+            for custom_path in [false, true] {
+                let mut env = HashMap::from([("MCP_TEST_ENV".into(), "present".into())]);
+                if custom_path {
+                    env.insert(
+                        "PATH".into(),
+                        directory.join("override").display().to_string(),
+                    );
+                }
+                let result = discover_connection(
+                    "lr-discovery-test-server",
+                    None,
+                    HashMap::new(),
+                    env,
+                    Some(directory.display().to_string()),
+                    &oauth_manager(),
+                )
+                .await
+                .unwrap();
+                assert_eq!(
+                    result.server_name.as_deref(),
+                    Some(if custom_path { "Override" } else { "Shell" })
+                );
+            }
+            return;
+        }
+
+        let directory =
+            std::env::temp_dir().join(format!("lr-discovery-path-{}", uuid::Uuid::new_v4()));
+        let shell_bin = directory.join("shell");
+        let override_bin = directory.join("override");
+        for (bin, name) in [(&shell_bin, "Shell"), (&override_bin, "Override")] {
+            std::fs::create_dir_all(bin).unwrap();
+            // A shebang interpreter found through PATH also exercises the
+            // environment passed to the child, beyond finding the executable.
+            symlink("/bin/sh", bin.join("sh")).unwrap();
+            let server = bin.join("lr-discovery-test-server");
+            std::fs::write(&server, format!(r##"#!/usr/bin/env sh
+[ "$MCP_TEST_ENV" = present ] || exit 1
+IFS= read -r request
+printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersions":["2026-07-28"],"serverInfo":{{"name":"{name}"}},"capabilities":{{}}}}}}'
+while IFS= read -r request; do :; done
+"##)).unwrap();
+            std::fs::set_permissions(server, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let shell = directory.join("login-shell");
+        std::fs::write(
+            &shell,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' {}\n",
+                shell_words::quote(shell_bin.to_str().unwrap())
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // Isolate PATH and the shell-env cache from concurrently running tests.
+        let output = tokio::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "discovery::tests::stdio_discovery_uses_shell_path_and_preserves_overrides",
+                "--nocapture",
+            ])
+            .env(CHILD_DIR, &directory)
+            .env("PATH", "/usr/bin:/bin")
+            .env("SHELL", shell)
+            .output()
+            .await
+            .unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[cfg(unix)]

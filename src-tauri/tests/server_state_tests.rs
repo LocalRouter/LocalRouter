@@ -407,6 +407,7 @@ async fn secrets_are_approved_one_at_a_time_and_denial_stops_the_sequence() {
         vec![Action::AllowOnce, Action::Deny],
         vec![Action::RedactOnce, Action::AllowOnce],
         vec![Action::AllowOnce, Action::RedactOnce],
+        vec![Action::RedactOnce, Action::RedactOnce],
     ] {
         let state = secret_scan_state().await;
         state
@@ -520,5 +521,64 @@ async fn aws_identifiers_proceed_without_prompt_or_monitor_event() {
     .await;
     assert!(matches!(outcome, SecretScanOutcome::Allow));
     assert_eq!(state.monitor_store.list(0, 10, None).total, 0);
+    assert!(state.mcp_gateway.firewall_manager.list_pending().is_empty());
+}
+
+/// A consumed popup can submit again when its close operation fails. Those
+/// stale actions must never approve, deny, or redact the next finding.
+#[tokio::test]
+async fn stale_popup_actions_cannot_consume_the_next_secret_approval() {
+    use lr_mcp::gateway::firewall::FirewallApprovalAction as Action;
+    const SECOND: &str = "ghp_6nmCEa00cbNmH0B4zKPSYOPP5z1oYFR26doJl";
+    let state = secret_scan_state().await;
+    state
+        .config_manager
+        .update(|cfg| cfg.secret_scanning.action = lr_config::SecretScanAction::Ask)
+        .unwrap();
+    let body = chat_body(&format!("token {REDACTION_SECRET}, second token {SECOND}"));
+    let worker = state.clone();
+    let scan =
+        tokio::spawn(
+            async move { scan_request_for_secrets(&worker, "client", "gpt-5.5", &body).await },
+        );
+    let first = next_secret_approval(&state).await;
+    state
+        .mcp_gateway
+        .firewall_manager
+        .submit_response(&first.request_id, Action::RedactOnce, None)
+        .unwrap();
+    let second = next_secret_approval(&state).await;
+    assert_ne!(first.request_id, second.request_id);
+    for stale_action in [Action::RedactOnce, Action::AllowOnce, Action::Deny] {
+        assert!(state
+            .mcp_gateway
+            .firewall_manager
+            .submit_response(&first.request_id, stale_action, None)
+            .is_err());
+        let pending = state.mcp_gateway.firewall_manager.list_pending();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].request_id, second.request_id);
+        assert!(pending[0].is_secret_scan_request && !pending[0].is_notify_only);
+        assert!(
+            !scan.is_finished(),
+            "later secrets must remain blocking after stale popup actions"
+        );
+    }
+    state
+        .mcp_gateway
+        .firewall_manager
+        .submit_response(&second.request_id, Action::RedactOnce, None)
+        .unwrap();
+    let SecretScanOutcome::Redact(plan) = scan.await.unwrap() else {
+        panic!("both decisions must produce redaction")
+    };
+    assert_eq!(
+        plan.apply_text(REDACTION_SECRET),
+        lr_secret_scanner::redaction::REDACTION_MESSAGE
+    );
+    assert_eq!(
+        plan.apply_text(SECOND),
+        lr_secret_scanner::redaction::REDACTION_MESSAGE
+    );
     assert!(state.mcp_gateway.firewall_manager.list_pending().is_empty());
 }

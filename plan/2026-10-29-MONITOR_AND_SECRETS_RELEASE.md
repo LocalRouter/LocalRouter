@@ -1,0 +1,17 @@
+- [x] Finish the quieter relationship links, singleton selection, Filter-style ordering menu, clickable conversation-filter dots, and stable viewport anchoring during live conversation updates.
+- [x] Integrate latest origin/master, explicitly retaining the secret-scanning popup/decision fixes and other committed master changes; preserve unrelated local files.
+- [x] Review current release workflow, latest published version, candidate diff, and competing workflow runs.
+- [x] Plan Review: reconcile all requested Monitor behavior and secret-scanning release content.
+- [x] Test Coverage Review: exercise dot toggling/keyboard selection, ordering, mixed conversation load, selected-row viewport stability and intentional scrolling away.
+- [x] Bug Hunt: inspect effect timing, scroll limits, selection, filtering, popup lifecycle and release inputs.
+- [x] Run frontend/website/packaging checks and exact stable Rust workspace Clippy, formatting and tests with pinned PATH/RUSTC.
+- [x] Commit, merge and push to master with a normal push. User explicitly authorized shipping and release after the final changes; this supersedes the earlier review-before-push restriction.
+- [ ] Dispatch the existing Release workflow for the next unused stable version; let it own version bump and tag creation.
+- [ ] Monitor candidate CI and release builds; resolve actual failures and verify the published native assets, updater metadata/signatures and inclusion of Monitor and secret-scanning fixes.
+- [ ] Verify packaging follow-ups and report the published release, distinguishing any intentionally skipped external package-manager jobs.
+
+Candidate checkpoint: combined origin/master b086c73d with the completed Monitor feature. Master secret-scanning code and regressions are preserved unchanged, including a923e82b, 74364fe0 and b086c73d; the MCP shell-PATH fix c64c17fd is also retained. The sole merge conflict was the generated model catalog; selected the newer complete origin/master snapshot without hand-editing it.
+
+Validation on the combined tree: updated stable Rust 1.99.1, stable sysroot PATH and explicit stable RUSTC; workspace Clippy with all targets and warnings denied, formatting, and workspace tests all passed (4,649 passed, 0 failed, 69 ignored). Desktop build, website build:check, 111 frontend unit tests, all 15 Monitor browser tests, all 24 secret-redaction browser tests, and 2 packaging-script tests passed. Fixed the existing browser fake-clock race by pausing at a future timestamp rather than racing the install call. New Monitor regressions cover pointer/keyboard dot toggles without selection changes, ordering-menu selection, 15 interleaved conversations, same/other-conversation arrivals preserving the selected row's viewport offset, and scrolling away without being pulled back.
+
+Latest published stable at candidate validation is v0.0.169; v0.0.170 is unused and no competing release is active. The existing Release workflow owns version bump, tag, signed binaries, publication and packaging follow-ups. The remaining release checklist is an execution plan recorded before dispatch; the public release and workflow runs provide the resulting publication state. Native publication must be verified independently from intentionally disabled package-manager publishing.

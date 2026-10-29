@@ -83,6 +83,9 @@ export function FirewallApproval() {
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const submittingRef = useRef(false)
+  const [inactive, setInactive] = useState(false)
+  const [decisionAccepted, setDecisionAccepted] = useState(false)
+  const inactiveRef = useRef(false)
   const [error, setError] = useState<string | null>(null)
   const [buttonsReady, setButtonsReady] = useState(false)
 
@@ -107,17 +110,39 @@ export function FirewallApproval() {
   // Marketplace listing details
   const [marketplaceListing, setMarketplaceListing] = useState<MarketplaceListingInfo | null>(null)
 
+  const markInactive = () => {
+    inactiveRef.current = true
+    setInactive(true)
+    setError(null)
+    setEditMode(false)
+    setSubmitting(false)
+  }
+
   useEffect(() => {
+    let disposed = false
+    let unlisten: (() => void) | undefined
     const loadDetails = async () => {
       try {
         const window = getCurrentWebviewWindow()
         const label = window.label
         const requestId = label.replace("firewall-approval-", "")
 
-        const result = await invoke<ApprovalDetails>("get_firewall_approval_details", {
+        // Subscribe before loading to cover a session ending during the load.
+        const stop = await window.listen("firewall-approval-ended", () => {
+          if (!submittingRef.current) markInactive()
+        })
+        if (disposed) { stop(); return }
+        unlisten = stop
+        const result = await invoke<ApprovalDetails | null>("get_firewall_approval_details", {
           requestId,
         })
+        if (disposed) return
         setDetails(result)
+        if (!result) {
+          markInactive()
+          await invoke<ShowApprovalPopupResult>("show_approval_popup", {} satisfies ShowApprovalPopupParams)
+          return
+        }
 
         // Fetch marketplace listing details for install tools
         // Detect marketplace install by checking tool_name for "marketplace" + "install" (case-insensitive)
@@ -189,19 +214,16 @@ export function FirewallApproval() {
         await invoke<ShowApprovalPopupResult>("show_approval_popup", {} satisfies ShowApprovalPopupParams)
       } catch (err) {
         console.error("Failed to load approval details:", err)
-        // Request expired or not found — just close the popup silently
-        try {
-          await getCurrentWebviewWindow().close()
-        } catch {
-          // Fallback: show error if we can't close
-          setError(typeof err === "string" ? err : "Failed to load approval details")
-        }
+        setError(typeof err === "string" ? err : "Failed to load approval details")
+        // Loading errors must remain visible rather than silently losing an alert.
+        await invoke<ShowApprovalPopupResult>("show_approval_popup", {} satisfies ShowApprovalPopupParams).catch(() => {})
       } finally {
-        setLoading(false)
+        if (!disposed) setLoading(false)
       }
     }
 
     loadDetails()
+    return () => { disposed = true; unlisten?.() }
   }, [])
 
   // Notify-only popups: dismiss the backend session when the window is
@@ -209,7 +231,7 @@ export function FirewallApproval() {
   // Hold the close until the dismiss lands (a fire-and-forget invoke can be
   // dropped mid-teardown), then destroy — which skips this handler.
   useEffect(() => {
-    if (!details?.is_notify_only) return
+    if (!details?.is_notify_only || inactive) return
     const win = getCurrentWebviewWindow()
     const unlistenPromise = win.onCloseRequested(async (event) => {
       if (submittingRef.current) return // Dismiss button already cleaned up
@@ -229,7 +251,7 @@ export function FirewallApproval() {
     return () => {
       unlistenPromise.then(fn => { try { fn() } catch {} }).catch(() => {})
     }
-  }, [details])
+  }, [details, inactive])
 
   // Start button delay when the window gains focus (not on mount)
   // This prevents accidental clicks when popups appear suddenly.
@@ -466,25 +488,30 @@ export function FirewallApproval() {
   }
 
   const handleDismiss = async () => {
-    if (!details || submittingRef.current) return
+    if (submittingRef.current) return
     submittingRef.current = true
     setSubmitting(true)
     setError(null)
     try {
-      await invoke("dismiss_firewall_notification", { requestId: details.request_id })
+      if (!inactiveRef.current && details) await invoke("dismiss_firewall_notification", { requestId: details.request_id })
     } catch (err) {
       console.error("Failed to dismiss notification:", err)
     }
     try {
-      await getCurrentWebviewWindow().close()
+      const win = getCurrentWebviewWindow()
+      await win.close()
+      await win.destroy()
     } catch {
-      // window close failed — nothing else to do
+      // Keep Dismiss usable if the window manager rejects closure again.
+      submittingRef.current = false
+      setSubmitting(false)
+      setError("Could not close this window. Try Dismiss again.")
     }
   }
 
   /** Fetch one finding's plaintext on demand (reveal button in the card). */
   const handleReveal = async (findingIndex: number): Promise<string | null> => {
-    if (!details) return null
+    if (!details || inactiveRef.current) return null
     try {
       return await invoke<string>("reveal_secret_scan_match", {
         requestId: details.request_id,
@@ -518,7 +545,7 @@ export function FirewallApproval() {
     // When a dropdown item is clicked, the portal is removed on pointerup, causing
     // the browser click event to fall through to the button underneath. React state
     // (setSubmitting) is batched and won't block the second call, but a ref is synchronous.
-    if (!details || submittingRef.current) return
+    if (!details || inactiveRef.current || submittingRef.current) return
     submittingRef.current = true
     setSubmitting(true)
     setError(null)
@@ -561,12 +588,30 @@ export function FirewallApproval() {
       }
 
       await invoke("submit_firewall_approval", params)
-      await getCurrentWebviewWindow().close()
+      setDecisionAccepted(true)
     } catch (err) {
       console.error("Failed to submit approval:", err)
       setError(typeof err === "string" ? err : "Failed to submit response")
       submittingRef.current = false
       setSubmitting(false)
+      // A session can end between rendering the buttons and submitting. Preserve
+      // the alert as information; do not infer that the request was forwarded.
+      try {
+        const pending = await invoke<ApprovalDetails | null>("get_firewall_approval_details", { requestId: details.request_id })
+        if (!pending) markInactive()
+      } catch { /* Keep the original error when session status cannot be checked. */ }
+      return
+    }
+    // Submission has consumed the session. A window teardown failure must
+    // never re-enable actions against that already-resolved request.
+    try {
+      const win = getCurrentWebviewWindow()
+      await win.close()
+      await win.destroy()
+    } catch {
+      // If teardown failed, retain an informational alert that can be dismissed.
+      submittingRef.current = false
+      markInactive()
     }
   }
 
@@ -581,7 +626,10 @@ export function FirewallApproval() {
   if (!details) {
     return (
       <div className="flex flex-col h-screen bg-background p-4">
-        <p className="text-sm text-destructive text-center">{error || "Request not found"}</p>
+        <p role="status" className="text-sm text-muted-foreground">{inactive
+          ? "This approval is no longer active. This window can no longer block or change the request. The request's final outcome is unknown here."
+          : error || "Approval details unavailable"}</p>
+        <Button className="mt-4" onClick={handleDismiss}>Dismiss</Button>
       </div>
     )
   }
@@ -914,6 +962,8 @@ export function FirewallApproval() {
           isAutoRouterRequest={details.is_auto_router_request}
           isSecretScanRequest={details.is_secret_scan_request}
           isNotifyOnly={details.is_notify_only}
+          isInactive={inactive}
+          decisionAccepted={decisionAccepted}
           guardrailVerdicts={details.guardrail_details?.verdicts}
           guardrailDirection={details.guardrail_details?.scan_direction}
           guardrailActions={details.guardrail_details?.actions_required}
@@ -922,12 +972,12 @@ export function FirewallApproval() {
           secretScanRequestJson={details.secret_scan_details?.request_json}
           secretScanLlmSource={details.secret_scan_details?.llm_source}
           marketplaceListing={marketplaceListing}
-          onAction={buttonsReady ? handleAction : undefined}
-          onDismiss={buttonsReady ? handleDismiss : undefined}
+          onAction={buttonsReady && !inactive ? handleAction : undefined}
+          onDismiss={buttonsReady || inactive ? handleDismiss : undefined}
           onReveal={details.is_secret_scan_request ? handleReveal : undefined}
-          onRedactPermanently={details.is_secret_scan_request && !details.is_notify_only ? handleRedactPermanently : undefined}
+          onRedactPermanently={details.is_secret_scan_request && !details.is_notify_only && !inactive ? handleRedactPermanently : undefined}
           onAllowSecretPermanently={
-            details.is_secret_scan_request ? handleIgnorePermanently : undefined
+            details.is_secret_scan_request && !inactive ? handleIgnorePermanently : undefined
           }
           onEdit={enterEditMode}
           submitting={submitting}

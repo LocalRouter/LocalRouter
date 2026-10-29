@@ -1,5 +1,11 @@
 import { codexRequest, codexStream, codexTruncated } from './codex-fixture'
-import { test, expect } from '@playwright/test'
+import { test, expect, type Page } from '@playwright/test'
+
+async function orderBy(page: Page, order: 'timestamp' | 'conversation') {
+  await page.getByRole('button', { name: /^Order: By / }).click()
+  await page.getByRole('radio', { name: `By ${order}`, exact: true }).click()
+  await expect(page.getByRole('button', { name: `Order: By ${order}`, exact: true })).toBeVisible()
+}
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
@@ -98,7 +104,8 @@ for (const status of ['complete', 'error'] as const) {
   test(`duration increments in the list and detail until the request is ${status}`, async ({ page }) => {
     const start = new Date('2026-10-03T12:00:00Z')
     await page.clock.install({ time: start })
-    await page.clock.pauseAt(start)
+    // pauseAt must be in the future even if the runner is briefly CPU-bound.
+    await page.clock.pauseAt(new Date(start.getTime() + 60_000))
     await page.evaluate(async () => {
       const eventModule: string = '/src/stubs/tauri-api-event.ts'
       const { emit } = await import(/* @vite-ignore */ eventModule)
@@ -307,6 +314,16 @@ test('selected events have one connector, a dismissible filter, and clean conver
   await scan.click()
   await expect(request.getByTestId('event-links')).toHaveAttribute('data-related', 'true')
   await expect(list.getByText('Related to selected event', { exact: true })).toHaveCount(4)
+  const dot = request.getByRole('button', { name: /^Toggle conversation filter:/ })
+  await dot.click()
+  await expect(list.locator('[data-event-id]')).toHaveCount(4)
+  await expect(dot).toHaveAttribute('aria-pressed', 'true')
+  await expect(scan).toHaveAttribute('aria-selected', 'true')
+  await expect(request).toHaveAttribute('aria-selected', 'false')
+  await dot.press('Space')
+  await expect(list.locator('[data-event-id="mon-live-3"]')).toBeVisible()
+  await expect(dot).toHaveAttribute('aria-pressed', 'false')
+  await expect(scan).toHaveAttribute('aria-selected', 'true')
   await page.getByRole('button', { name: 'Filter to this conversation', exact: true }).click()
   await expect(list.locator('[data-event-id]')).toHaveCount(4)
   await page.evaluate(async () => {
@@ -321,7 +338,7 @@ test('selected events have one connector, a dismissible filter, and clean conver
   await page.getByRole('button', { name: /Dismiss conversation filter/ }).click()
   await expect(list.locator('[data-event-id="mon-live-3"]')).toBeVisible()
   await page.getByRole('button', { name: 'Filter to this conversation', exact: true }).click()
-  await page.getByRole('button', { name: 'Conversations', exact: true }).click()
+  await orderBy(page, 'conversation')
   await expect(list.getByTestId('event-links')).toHaveCount(0)
   await expect(page.getByRole('button', { name: /Filter to this conversation|Dismiss conversation filter/ })).toHaveCount(0)
   await expect(list.getByTestId('conversation-header').first()).toContainText('How should I retry failed API requests?')
@@ -335,7 +352,7 @@ test('selected events have one connector, a dismissible filter, and clean conver
       status: 'complete', question: 'New Cursor tool event', answer: '', summary: '', duration_ms: 1 }))
   })
   await expect(list.locator('[data-event-id]').first()).toHaveAttribute('data-event-id', 'new-cursor-event')
-  await page.getByRole('button', { name: 'Events', exact: true }).click()
+  await orderBy(page, 'timestamp')
   await expect(page.getByRole('button', { name: /Dismiss conversation filter/ })).toHaveCount(0)
   await expect(list.locator('[data-event-id="mon-001"]')).toBeVisible()
 })
@@ -359,8 +376,68 @@ test('fifteen interleaved conversations share one narrow connector and group wit
   await expect(list.getByText('Related to selected event', { exact: true })).toHaveCount(3)
   const gutter = await newest.getByTestId('event-links').boundingBox()
   expect(gutter!.width).toBeLessThanOrEqual(25)
-  await page.getByRole('button', { name: 'Conversations', exact: true }).click()
+  await orderBy(page, 'conversation')
   await expect(list.getByTestId('event-links')).toHaveCount(0)
   await expect(list.getByTestId('conversation-header').first()).toHaveText('Captured user question 14')
   expect(await list.locator('[data-event-id]').evaluateAll(rows => rows.slice(0, 3).map(row => row.getAttribute('data-event-id')))).toEqual(['scale-14-2', 'scale-14-1', 'scale-14-0'])
+})
+
+test('conversation updates keep the selected event anchored and respect manual scrolling', async ({ page }) => {
+  await page.evaluate(async () => {
+    const eventModule: string = '/src/stubs/tauri-api-event.ts'
+    const { emit } = await import(/* @vite-ignore */ eventModule)
+    const mockModule: string = '/src/components/demo/mockData.ts'
+    const { mockData } = await import(/* @vite-ignore */ mockModule)
+    const base = mockData.monitorEvents.find((e: { id: string }) => e.id === 'mon-001')
+    const fixtures = new Map<string, object>()
+    for (let c = 0; c < 15; c++) for (let turn = 0; turn < 3; turn++) {
+      const event = { ...base, id: `anchor-${c}-${turn}`, sequence: 100 + c * 3 + turn,
+        status: 'complete', session_id: `anchor-request-${c}-${turn}`,
+        conversation: { id: `anchor-conversation-${c}`, title: `Anchor conversation ${c}`, source: 'explicit' },
+        question: `Anchor conversation ${c}, turn ${turn}` }
+      fixtures.set(event.id, event)
+      await emit('monitor-event-created', JSON.stringify(event))
+    }
+    const target = window as unknown as { __TAURI_IPC_HANDLER__: (cmd: string, args: { eventId?: string }) => unknown }
+    const original = target.__TAURI_IPC_HANDLER__
+    target.__TAURI_IPC_HANDLER__ = (cmd, args) => cmd === 'get_monitor_event_detail' && fixtures.has(args.eventId ?? '')
+      ? fixtures.get(args.eventId!) : original(cmd, args)
+  })
+  await orderBy(page, 'conversation')
+  const list = page.getByTestId('monitor-event-list')
+  const row = list.locator('[data-event-id="anchor-5-0"]')
+  await row.click()
+  await expect(page.getByTestId('monitor-event-detail')).toBeVisible()
+  const scroller = list.locator('div.overflow-auto')
+  await row.evaluate(el => {
+    const container = el.closest('div.overflow-auto')!
+    container.scrollTop += el.getBoundingClientRect().top - container.getBoundingClientRect().top - 70
+  })
+  await expect.poll(async () => Math.abs((await row.boundingBox())!.y - (await scroller.boundingBox())!.y - 70)).toBeLessThan(1)
+  const before = (await row.boundingBox())!.y
+
+  const emit = async (id: string, conversation: number, sequence: number) => page.evaluate(async ({ id, conversation, sequence }) => {
+    const eventModule: string = '/src/stubs/tauri-api-event.ts'
+    const { emit } = await import(/* @vite-ignore */ eventModule)
+    await emit('monitor-event-created', JSON.stringify({ id, sequence, timestamp: new Date().toISOString(), event_type: 'llm_call',
+      client_id: 'client-1', client_name: 'Claude Code', session_id: `request-${id}`, status: 'complete', duration_ms: 1,
+      conversation: { id: `anchor-conversation-${conversation}`, title: `Anchor conversation ${conversation}`, source: 'explicit' },
+      question: id, answer: '', summary: '' }))
+  }, { id, conversation, sequence })
+
+  await emit('other-group-new', 1, 1000)
+  await expect(list.getByTestId('conversation-header').first()).toHaveText('Anchor conversation 1')
+  await expect.poll(async () => Math.abs((await row.boundingBox())!.y - before)).toBeLessThan(2)
+  await emit('selected-group-new', 5, 1001)
+  await expect(list.getByTestId('conversation-header').first()).toHaveText('Anchor conversation 5')
+  await expect.poll(async () => Math.abs((await row.boundingBox())!.y - before)).toBeLessThan(2)
+  await expect(row).toHaveAttribute('aria-selected', 'true')
+
+  // Once the reader scrolls away, arrivals must not pull them back to selection.
+  await scroller.evaluate(el => { el.scrollTop = el.scrollHeight })
+  await expect.poll(async () => (await row.boundingBox())!.y < (await scroller.boundingBox())!.y).toBe(true)
+  const manualPosition = await scroller.evaluate(el => el.scrollTop)
+  await emit('while-reading-away', 0, 1002)
+  await expect(list.getByTestId('conversation-header').first()).toHaveText('Anchor conversation 0')
+  expect(await scroller.evaluate(el => el.scrollTop)).toBe(manualPosition)
 })

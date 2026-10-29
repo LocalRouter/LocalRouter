@@ -98,6 +98,18 @@ pub async fn show(window: WebviewWindow) -> Result<(), String> {
     rx.await.map_err(|e| e.to_string())?
 }
 
+#[cfg(target_os = "macos")]
+fn restore_after_close(window: &tauri::Window) {
+    let focused = window.is_focused().unwrap_or(false);
+    let restore = SESSION.with_borrow_mut(|session| session.close(window.label(), focused));
+    if restore {
+        let mtm = objc2::MainThreadMarker::new().expect("window events on the main thread");
+        // Hide before closing the key popup so AppKit does not first make
+        // the ordinary main window key.
+        objc2_app_kit::NSApplication::sharedApplication(mtm).hide(None);
+    }
+}
+
 pub fn on_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
     #[cfg(target_os = "macos")]
     {
@@ -109,16 +121,7 @@ pub fn on_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
         }
         match event {
             tauri::WindowEvent::CloseRequested { .. } => {
-                let focused = window.is_focused().unwrap_or(false);
-                let restore =
-                    SESSION.with_borrow_mut(|session| session.close(window.label(), focused));
-                if restore {
-                    let mtm =
-                        objc2::MainThreadMarker::new().expect("window events on the main thread");
-                    // Hide the app before hiding/closing the key popup. Otherwise
-                    // AppKit can first make the ordinary main window key.
-                    objc2_app_kit::NSApplication::sharedApplication(mtm).hide(None);
-                }
+                restore_after_close(window);
             }
             tauri::WindowEvent::Destroyed => {
                 SESSION.with_borrow_mut(|session| session.close(window.label(), false));

@@ -306,10 +306,25 @@ pub struct FirewallManager {
 struct PendingRequestGuard {
     pending: Arc<DashMap<String, FirewallApprovalSession>>,
     id: String,
+    notification_broadcast:
+        Option<Arc<tokio::sync::broadcast::Sender<(String, JsonRpcNotification)>>>,
 }
 impl Drop for PendingRequestGuard {
     fn drop(&mut self) {
         self.pending.remove(&self.id);
+        // Also runs when the awaiting HTTP request is dropped. Tell the popup
+        // to stop offering blocking actions, preserving it as information until
+        // the user dismisses it even if no response was submitted.
+        if let Some(broadcast) = &self.notification_broadcast {
+            let _ = broadcast.send((
+                "_firewall".to_string(),
+                JsonRpcNotification {
+                    jsonrpc: "2.0".to_string(),
+                    method: "firewall/approvalResolved".to_string(),
+                    params: Some(json!({ "request_id": self.id })),
+                },
+            ));
+        }
     }
 }
 
@@ -676,6 +691,7 @@ impl FirewallManager {
         let _pending_guard = PendingRequestGuard {
             pending: self.pending.clone(),
             id: request_id.clone(),
+            notification_broadcast: self.notification_broadcast.clone(),
         };
 
         info!(
@@ -1762,6 +1778,117 @@ mod tests {
 #[cfg(test)]
 mod cancellation_tests {
     use super::*;
+    async fn next_event(
+        rx: &mut tokio::sync::broadcast::Receiver<(String, JsonRpcNotification)>,
+        method: &str,
+    ) -> String {
+        let (channel, notification) = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(channel, "_firewall");
+        assert_eq!(notification.method, method);
+        notification.params.unwrap()["request_id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    }
+
+    async fn ask_secret(manager: &FirewallManager) -> AppResult<FirewallApprovalResponse> {
+        manager
+            .request_secret_scan_approval(
+                "client".into(),
+                "Client".into(),
+                "model".into(),
+                SecretScanApprovalDetails {
+                    findings: vec![],
+                    scan_duration_ms: 0,
+                    request_json: None,
+                    llm_source: None,
+                },
+                "masked preview".into(),
+            )
+            .await
+    }
+
+    #[tokio::test]
+    async fn sequential_redactions_resolve_only_the_answered_window() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(16);
+        let manager = Arc::new(FirewallManager::new_with_broadcast(120, Arc::new(tx)));
+        let worker = manager.clone();
+        let task = tokio::spawn(async move {
+            for _ in 0..3 {
+                assert_eq!(
+                    ask_secret(&worker).await.unwrap().action,
+                    FirewallApprovalAction::RedactOnce
+                );
+            }
+        });
+        let mut previous_id = None;
+        for _ in 0..3 {
+            let id = next_event(&mut rx, "firewall/approvalRequired").await;
+            assert_ne!(previous_id.as_ref(), Some(&id));
+            let pending = manager.list_pending();
+            assert_eq!(pending.len(), 1);
+            assert_eq!(pending[0].request_id, id);
+            assert!(pending[0].is_secret_scan_request);
+            assert!(!pending[0].is_notify_only);
+            manager
+                .submit_response(&id, FirewallApprovalAction::RedactOnce, None)
+                .unwrap();
+            assert_eq!(next_event(&mut rx, "firewall/approvalResolved").await, id);
+            previous_id = Some(id);
+        }
+        task.await.unwrap();
+        assert_eq!(manager.pending_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn cancelled_secret_scan_retires_its_popup() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(16);
+        let manager = Arc::new(FirewallManager::new_with_broadcast(120, Arc::new(tx)));
+        let worker = manager.clone();
+        let task = tokio::spawn(async move {
+            assert_eq!(
+                ask_secret(&worker).await.unwrap().action,
+                FirewallApprovalAction::RedactOnce
+            );
+            ask_secret(&worker).await
+        });
+        let first = next_event(&mut rx, "firewall/approvalRequired").await;
+        manager
+            .submit_response(&first, FirewallApprovalAction::RedactOnce, None)
+            .unwrap();
+        assert_eq!(
+            next_event(&mut rx, "firewall/approvalResolved").await,
+            first
+        );
+        let id = next_event(&mut rx, "firewall/approvalRequired").await;
+        assert_ne!(id, first);
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_eq!(next_event(&mut rx, "firewall/approvalResolved").await, id);
+        assert_eq!(manager.pending_count(), 0);
+        assert!(manager
+            .submit_response(&id, FirewallApprovalAction::RedactOnce, None)
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn expired_secret_scan_retires_its_popup_and_denies() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(16);
+        let manager = Arc::new(FirewallManager::new_with_broadcast(0, Arc::new(tx)));
+        let worker = manager.clone();
+        let task = tokio::spawn(async move { ask_secret(&worker).await });
+        let id = next_event(&mut rx, "firewall/approvalRequired").await;
+        assert_eq!(
+            task.await.unwrap().unwrap().action,
+            FirewallApprovalAction::Deny
+        );
+        assert_eq!(next_event(&mut rx, "firewall/approvalResolved").await, id);
+        assert_eq!(manager.pending_count(), 0);
+    }
+
     #[tokio::test]
     async fn dropping_an_approval_future_removes_the_session_without_granting_access() {
         let manager = Arc::new(FirewallManager::new(120));

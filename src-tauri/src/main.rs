@@ -1599,6 +1599,22 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                                     continue;
                                 }
 
+                                // Keep unexpectedly invalidated approvals visible. The popup
+                                // becomes informational, preserving context until Dismiss.
+                                if notification.method == "firewall/approvalResolved" {
+                                    if let Some(window) = app_handle_for_firewall.get_webview_window(
+                                        &format!("firewall-approval-{}", request_id),
+                                    ) {
+                                        let _ = window.emit("firewall-approval-ended", ());
+                                    }
+                                    continue;
+                                }
+                                if notification.method != "firewall/approvalRequired" {
+                                    continue;
+                                }
+                                // Even an obsolete queued alert opens: its UI explains that
+                                // the approval is no longer active instead of discarding it.
+
                                 // Notify-only popups are informational (request
                                 // already allowed) — same window, different title
                                 let is_notify_only = notification

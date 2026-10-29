@@ -69,6 +69,19 @@ test('redact then allow only forwards after both secrets are reviewed', async ({
   await expect(page.getByTestId('outgoing-payload')).toContainText(SECOND_SECRET)
 })
 
+test('redacting every sequential secret completes without leaving an actionable popup', async ({ page }) => {
+  await page.goto('/__preview/secret-redaction?multiple')
+  const redact = page.getByRole('button', { name: 'Redact once', exact: true })
+  await redact.click()
+  await expect(page.getByText('q8Zr2L********************5zQ2', { exact: true }).first()).toBeVisible()
+  await expect(page.getByTestId('outgoing-payload')).toHaveText('Not forwarded')
+  await redact.click()
+  await expect(page.getByTestId('approval-popup')).toHaveCount(0)
+  await expect(page.getByTestId('outgoing-payload')).not.toContainText(SECRET)
+  await expect(page.getByTestId('outgoing-payload')).not.toContainText(SECOND_SECRET)
+  await expect(page.getByTestId('outgoing-payload')).toContainText(MARKER)
+})
+
 test('Always redact only remembers the displayed secret; remaining secret still asks next time', async ({ page }) => {
   await page.goto('/__preview/secret-redaction?multiple')
   await page.getByRole('button', { name: 'More redaction options' }).click()
@@ -180,4 +193,85 @@ test('secret popup shows the supplied LLM provider source instead of a model id'
   await expect(popup).not.toContainText('Model:')
   await expect(popup.getByRole('tab')).toHaveCount(0)
   await expect(popup.getByLabel('Complete request JSON').locator('mark')).toBeInViewport()
+})
+
+
+test('an ended approval stays visible with its context and only Dismiss', async ({ page }) => {
+  await page.goto('/__preview/secret-redaction?multiple')
+  const popup = page.getByTestId('approval-popup')
+  await page.getByRole('button', { name: 'Simulate ended approval' }).click()
+  await expect(popup).toBeVisible()
+  await expect(popup).toContainText('This approval is no longer active')
+  await expect(popup).toContainText("The request's final outcome is unknown here")
+  await expect(popup).toContainText('AWS Secret Access Key')
+  await expect(popup).not.toContainText('Potential secrets were sent')
+  await expect(popup.getByLabel('Complete request JSON')).toBeVisible()
+  await expect(popup.getByRole('button', { name: 'Redact once', exact: true })).toHaveCount(0)
+  await expect(popup.getByRole('button', { name: 'Allow', exact: true })).toHaveCount(0)
+  await expect(popup.getByRole('button', { name: 'Block', exact: true })).toHaveCount(0)
+  await expect(popup.getByRole('button', { name: 'More redaction options' })).toHaveCount(0)
+  await expect(popup.getByRole('button', { name: 'Reveal secret', exact: true })).toBeDisabled()
+  await popup.getByRole('button', { name: 'Dismiss', exact: true }).click()
+  await expect(popup).toHaveCount(0)
+})
+
+
+for (const query of ['native', 'native&missing', 'native&endDuringLoad', 'native&lostOnSubmit', 'native&closeFailure']) {
+  test(`desktop approval remains visible when its session ends: ${query}`, async ({ page }) => {
+    await page.goto(`/__preview/secret-redaction?${query}`)
+    const popup = page.getByTestId('native-approval')
+    if (query === 'native') {
+      await expect(popup.getByRole('button', { name: 'Redact once', exact: true })).toBeEnabled()
+      await page.getByRole('button', { name: 'End backend approval' }).click()
+    }
+    if (query.includes('lostOnSubmit') || query.includes('closeFailure')) {
+      await popup.getByRole('button', { name: 'Redact once', exact: true }).click()
+    }
+    await expect(popup).toContainText('This approval is no longer active')
+    await expect(popup).not.toContainText('Window closed')
+    await expect(popup.getByRole('button', { name: 'Redact once', exact: true })).toHaveCount(0)
+    await popup.getByRole('button', { name: 'Dismiss', exact: true }).click()
+    await expect(popup).toContainText('Window closed')
+    await expect(popup).toContainText('dismissals 0')
+  })
+}
+
+test('desktop closes after its own successful approval', async ({ page }) => {
+  await page.goto('/__preview/secret-redaction?native')
+  const popup = page.getByTestId('native-approval')
+  await popup.getByRole('button', { name: 'Redact once', exact: true }).click()
+  await expect(popup).toContainText('Window closed · submissions 1')
+})
+
+
+test('a close failure after the first redaction cannot approve or consume the second finding', async ({ page }) => {
+  await page.goto('/__preview/secret-redaction?native&multiple&closeFailure')
+  const popup = page.getByTestId('native-approval')
+  await popup.getByRole('button', { name: 'Redact once', exact: true }).click()
+  await expect(popup).toContainText('Your decision was accepted, but this window could not close')
+  await expect(popup).not.toContainText("The request's final outcome is unknown here")
+  await expect(page.getByTestId('backend-state')).toContainText('Submissions 1 · attempts 1 · second pending true · forwarded false')
+  await popup.getByRole('button', { name: 'Dismiss', exact: true }).click()
+  await page.getByRole('button', { name: 'Review next approval' }).click()
+  await expect(popup).toContainText('q8Zr2L********************5zQ2')
+  await expect(popup.getByRole('button', { name: 'Redact once', exact: true })).toBeEnabled()
+  await expect(page.getByTestId('backend-state')).toContainText('second pending true · forwarded false')
+  await popup.getByRole('button', { name: 'Redact once', exact: true }).click()
+  await expect(popup).toContainText('Window closed · submissions 2')
+  await expect(page.getByTestId('backend-state')).toContainText('Submissions 2 · attempts 2 · second pending false · forwarded true')
+})
+
+
+test('Dismiss remains usable if window closure fails again after an accepted redaction', async ({ page }) => {
+  await page.goto('/__preview/secret-redaction?native&multiple&closeFailureTwice')
+  const popup = page.getByTestId('native-approval')
+  await popup.getByRole('button', { name: 'Redact once', exact: true }).click()
+  await expect(popup).toContainText('Your decision was accepted, but this window could not close')
+  const dismiss = popup.getByRole('button', { name: 'Dismiss', exact: true })
+  await dismiss.click()
+  await expect(popup.getByRole('alert')).toHaveText('Could not close this window. Try Dismiss again.')
+  await expect(dismiss).toBeEnabled()
+  await expect(page.getByTestId('backend-state')).toContainText('Submissions 1 · attempts 1 · second pending true · forwarded false')
+  await dismiss.click()
+  await expect(popup).toContainText('Window closed · submissions 1')
 })

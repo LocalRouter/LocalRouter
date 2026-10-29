@@ -1,7 +1,9 @@
 import { memo, useState, useEffect, useMemo, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { Button } from '@/components/ui/Button'
-import { PanelRight, X } from 'lucide-react'
+import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover'
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
+import { ArrowDownWideNarrow, PanelRight, X } from 'lucide-react'
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable'
 import { cn } from '@/lib/utils'
 import { useMonitorEvents } from '@/views/monitor/hooks/useMonitorEvents'
@@ -52,6 +54,7 @@ interface RequestMonitorProps {
 // Memoized: the traffic chart's live updates re-render the dashboard often.
 export const RequestMonitor = memo(function RequestMonitor({ className }: RequestMonitorProps) {
   const [grouping, setGrouping] = useState<'events' | 'conversations'>('events')
+  const [orderingOpen, setOrderingOpen] = useState(false)
   const [conversationFilter, setConversationFilter] = useState<{ keys: string[]; title: string } | null>(null)
   const [filter, setFilter] = useState<MonitorEventFilter>(loadPersistedFilter)
   const [replayDraft, setReplayDraft] = useState<{ input: ReplayInput; clientId?: string } | null>(null)
@@ -122,15 +125,33 @@ export const RequestMonitor = memo(function RequestMonitor({ className }: Reques
     <div className="flex items-center border-b">
       <div className="flex-1 min-w-0">
         <EventFilters
-          groupingControl={<div className="flex rounded-md border p-0.5" role="group" aria-label="Group events by">
-            {(['events', 'conversations'] as const).map(mode => <Button key={mode} size="sm" variant={grouping === mode ? 'secondary' : 'ghost'} className="h-6 px-2 text-xs" aria-pressed={grouping === mode} onClick={() => {
-              setGrouping(mode)
-              if (mode === 'conversations') {
-                setConversationFilter(null)
-                setFilter(current => current.session_id == null ? current : { ...current, session_id: null })
-              }
-            }}>{mode === 'events' ? 'Events' : 'Conversations'}</Button>)}
-          </div>}
+          groupingControl={<Popover open={orderingOpen} onOpenChange={setOrderingOpen}>
+            <PopoverTrigger asChild>
+              <Button variant="outline" size="sm" className="h-7 text-xs gap-1" aria-label={`Order: ${grouping === 'events' ? 'By timestamp' : 'By conversation'}`}>
+                <ArrowDownWideNarrow className="h-3 w-3" />
+                {grouping === 'events' ? 'By timestamp' : 'By conversation'}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="start" className="w-48 p-3">
+              <p className="mb-3 text-xs font-medium">Order events</p>
+              <RadioGroup aria-label="Order events" value={grouping} onValueChange={value => {
+                const mode = value === 'conversations' ? 'conversations' : 'events'
+                setGrouping(mode)
+                if (mode === 'conversations') {
+                  setConversationFilter(null)
+                  setFilter(current => current.session_id == null ? current : { ...current, session_id: null })
+                }
+                setOrderingOpen(false)
+              }}>
+                <label className="flex items-center gap-2 text-xs cursor-pointer">
+                  <RadioGroupItem value="events" />By timestamp
+                </label>
+                <label className="flex items-center gap-2 text-xs cursor-pointer">
+                  <RadioGroupItem value="conversations" />By conversation
+                </label>
+              </RadioGroup>
+            </PopoverContent>
+          </Popover>}
           conversationControl={grouping === 'events' && (conversationFilter ? <Button size="sm" variant="secondary" className="h-7 max-w-[220px] gap-1 text-xs" title={conversationFilter.title} aria-label={`Dismiss conversation filter: ${conversationFilter.title}`} onClick={() => setConversationFilter(null)}>
             <span className="truncate">{conversationFilter.title}</span><X className="h-3 w-3 shrink-0" />
           </Button> : <Button size="sm" variant="ghost" className="h-7 text-xs" disabled={!selectedGroup} onClick={() => selectedGroup && setConversationFilter({ keys: selectedGroup.keys, title: selectedGroup.title })}>
@@ -179,6 +200,13 @@ export const RequestMonitor = memo(function RequestMonitor({ className }: Reques
       showType={showEventTypeColumn(filter.event_types)}
       selectedId={selectedId}
       onSelect={selectEvent}
+      conversationFiltered={conversationFilter != null}
+      onToggleConversationFilter={id => {
+        const group = relationships.find(group => group.members.has(id))
+        if (!group) return
+        setConversationFilter(current => current && group.keys.some(key => current.keys.includes(key))
+          ? null : { keys: group.keys, title: group.title })
+      }}
       filtered={conversationFilter != null || filter.event_types != null || filter.status != null || Boolean(filter.search)}
     />
   )
