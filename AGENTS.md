@@ -68,37 +68,57 @@ When creating or modifying a Tauri command, update **all locations**:
 - [ ] Mock handler returns data matching response type
 - [ ] Run `npx tsc --noEmit` to verify types
 
-### Pre-Commit CI Parity (CRITICAL)
+### Local Validation and On-Demand CI (CRITICAL)
 
-CI has been failing repeatedly because local `clippy` lags the CI toolchain.
-**Before every commit, run the exact checks CI runs using the rustup stable
-toolchain (not the system/Homebrew `rustc`)**:
+Ordinary pushes to `master` do not start hosted CI. Pull requests targeting
+`master` still run CI automatically; `ci.yml` also supports `workflow_dispatch`.
+Run the checks appropriate to the changed code locally before committing and
+pushing. A successful push does not establish that hosted CI passed, and an
+absent CI run after a `master` push is expected.
+
+For Rust/workspace changes, use the rustup stable toolchain rather than a
+system/Homebrew compiler:
 
 ```bash
-rustup update stable                                        # keep parity with CI
+rustup update stable
 rustup run stable cargo clippy --workspace --all-targets -- -D warnings
 rustup run stable cargo fmt --all -- --check
 rustup run stable cargo test --workspace
 ```
 
-If Homebrew comes first on `PATH`, Cargo or a compiler wrapper can still resolve
-its older `rustc` even when Cargo was launched through rustup. For these checks,
-prepend `$(rustup run stable rustc --print sysroot)/bin` to `PATH` and set
-`RUSTC` to `$(rustup which --toolchain stable rustc)`. Confirm the actual compiler
-path, not just `rustup run stable rustc --version`.
+If Homebrew comes first on `PATH`, prepend
+`$(rustup run stable rustc --print sysroot)/bin` to `PATH` and set `RUSTC` to
+`$(rustup which --toolchain stable rustc)` for these checks. Confirm the actual
+compiler path. Hosted checks install the latest stable toolchain, so local
+validation must use the same compiler; the local Clippy command also includes
+all targets.
 
-Why this matters:
-- CI uses `dtolnay/rust-toolchain@stable` which installs the latest stable at
-  run time (e.g. 1.95), so new clippy lints (`collapsible_match`,
-  `useless_conversion`, `sort_by_key`, …) fire there first.
-- Homebrew `rustc` may lag stable by several minor versions — do not trust it
-  for "clippy clean" verdicts.
-- Silently shipping a commit that fails CI wastes ~20 min per retry (runner
-  disk-free step + full workspace build). Always verify locally first.
+For desktop frontend changes, install dependencies using `npm ci` when needed,
+then run `npm run test:unit` and `npm run build`. For packaging script changes,
+run `python3 -B -m unittest discover -s tests/scripts -v`.
 
-If a commit must be pushed before CI completes, immediately tail the run
-(`gh run list --limit 1; gh run view <id>`) and fix failures before
-moving on to other work.
+For website or shared frontend changes, ensure root and website dependencies
+are installed (`npm ci` and `npm --prefix website ci` when needed), then run
+`npm --prefix website run build:check`. The website embeds root `src/` code and
+copies `public/icons/`, so changes to those shared inputs also need this check.
+Documentation-only changes outside these build inputs do not require a full
+Rust build; report the checks actually performed and any checks left unrun.
+
+Do not dispatch hosted CI after every completed task, and do not wait for a CI
+run after an ordinary `master` push. Dispatch only when the user requests
+hosted validation or as part of an explicitly authorized release validation.
+When hosted validation is requested, record the intended commit SHA, dispatch
+`ci.yml` against its branch, find the resulting `workflow_dispatch` run with
+that exact `head_sha`, and watch that run by ID. A green run for another commit
+does not validate the task. Inspect automatic PR checks for the current PR SHA
+when working on a pull request.
+
+Website publication is independent of Rust CI: `deploy-website.yml` builds and
+deploys automatically only when website/shared frontend/build inputs change on
+`master`, and also supports manual dispatch. Do not assume a backend-only push
+publishes the website. Dispatch website deployment only when deployment is
+requested. Application releases remain explicit `release.yml` dispatches; the
+existing release-triggered Docker/package delivery remains part of a release.
 
 ### Privacy Policy (CRITICAL)
 - **No telemetry** - zero analytics or tracking
@@ -220,7 +240,7 @@ do not use it for feature tracking.
 1. Check the newest dated files in `plan/` for current work and context
 2. Read relevant architecture docs
 3. Implement with tests
-4. Run `cargo test && cargo clippy && cargo fmt`
+4. Run the applicable local checks under Local Validation and On-Demand CI; record results before pushing
 5. Commit with Conventional Commits: `<type>(<scope>): <description>`
 6. **Always commit and push your own completed, validated changes at the end of a task** — stage your task's changes and automatic catalog updates, preserving unrelated user changes. The user has given standing authorization to push; see Commit and push above. Honor an explicit instruction not to push.
 

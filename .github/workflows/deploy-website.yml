@@ -2,10 +2,17 @@ name: Deploy Website to GitHub Pages
 
 on:
   workflow_dispatch:
-  workflow_run:
-    workflows: ['CI']
-    types: [completed]
+  push:
     branches: [master]
+    paths:
+      - 'website/**'
+      - 'src/**'
+      - 'public/icons/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.nvmrc'
+      - '.npmrc'
+      - '.github/workflows/deploy-website.yml'
 
 permissions:
   contents: read
@@ -20,15 +27,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.event == 'push' &&
-       github.event.workflow_run.conclusion == 'success')
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Setup Node
         uses: actions/setup-node@v4
