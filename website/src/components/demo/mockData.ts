@@ -1394,6 +1394,14 @@ export const mockData = {
 
   monitorEvents: [
     {
+      id: "mon-secret-scan", sequence: 8, timestamp: new Date(Date.now() - 50).toISOString(),
+      event_type: "secret_scan", session_id: "sess-001", client_id: "client-1", client_name: "Claude Code",
+      status: "complete", duration_ms: 12,
+      summary: "Secret scan — no secrets detected",
+      question: "Scan outbound request before sending to provider", answer: "No secrets detected · allowed",
+      data: { type: "secret_scan", findings_count: 0, action_taken: "allow", latency_ms: 12, findings: [] },
+    },
+    {
       id: "mon-live", sequence: 7, timestamp: new Date().toISOString(),
       event_type: "llm_call", session_id: "sess-001", client_id: "client-1", client_name: "Claude Code",
       status: "pending", duration_ms: null,

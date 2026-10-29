@@ -5,9 +5,11 @@ test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem('monitor.filter', JSON.stringify({ event_types: ['llm_call'] }))
     localStorage.setItem('theme', 'light')
+    localStorage.setItem('localrouter.dashboard.usage-limits.collapsed', '1')
   })
   await page.goto('/demo')
   await expect(page.getByRole('region', { name: 'Request monitor' })).toBeVisible()
+  await expect(page.getByTestId('monitor-event-list').locator('tbody tr').first()).toBeVisible()
 })
 
 test('content previews truncate, single-type filter hides Type, and both payloads are visible', async ({ page }) => {
@@ -15,7 +17,7 @@ test('content previews truncate, single-type filter hides Type, and both payload
   await expect(page.getByRole('columnheader', { name: 'Answer', exact: true })).toBeVisible()
   await expect(page.getByRole('columnheader', { name: 'Type', exact: true })).toHaveCount(0)
   const row = page.getByRole('row').filter({ hasText: 'How should I retry failed API requests?' })
-  const question = row.locator('td').nth(3)
+  const question = row.locator('td').nth(4)
   expect(await question.evaluate(el => ({
     overflow: el.scrollWidth > el.clientWidth,
     ellipsis: getComputedStyle(el).textOverflow,
@@ -32,7 +34,7 @@ test('content previews truncate, single-type filter hides Type, and both payload
   await page.screenshot({ path: 'test-results/monitor/monitor-llm.png' })
   await page.getByRole('tab', { name: 'Details' }).click()
   await expect(page.getByText('mon-001', { exact: true })).toBeVisible()
-  await expect(page.getByRole('region', { name: 'Usage' })).toContainText('800 (67%)')
+  await expect(page.getByRole('region', { name: 'Usage', exact: true })).toContainText('800 (67%)')
   // The chosen tab carries over to the next event that has it.
   await page.getByRole('row').filter({ hasText: 'Summarize the open pull requests.' }).click()
   await expect(page.getByRole('tab', { name: 'Details' })).toHaveAttribute('aria-selected', 'true')
@@ -53,7 +55,7 @@ test('multiple types restore Type and errors are shown within Response', async (
 
 test('narrow detail panes stack the exchange without horizontal overflow', async ({ page }) => {
   await page.setViewportSize({ width: 850, height: 950 })
-  await page.locator('tbody tr').first().click()
+  await page.getByTestId('monitor-event-list').locator('tbody tr').first().click()
   const request = await page.getByRole('region', { name: 'Request', exact: true }).boundingBox()
   const response = await page.getByRole('region', { name: 'Response', exact: true }).boundingBox()
   expect(response!.y).toBeGreaterThanOrEqual(request!.y + request!.height)
@@ -153,7 +155,7 @@ test('Codex request and streamed answer display from truncated legacy captures',
         raw_request: JSON.stringify(request), response_body: truncated, raw_response: stream, content_preview: null, error: null } }
     }
   }, { request: codexRequest, stream: codexStream, truncated: codexTruncated })
-  await page.locator('tbody tr').first().click()
+  await page.getByTestId('monitor-event-list').locator('tbody tr').first().click()
   await expect(page.getByRole('region', { name: 'Request', exact: true })).toContainText('Assess this synthetic request.')
   const response = page.getByRole('region', { name: 'Response', exact: true })
   await expect(response).toContainText('Synthetic assessment')
@@ -163,7 +165,7 @@ test('Codex request and streamed answer display from truncated legacy captures',
 })
 
 test('the selected event shows below the list and ignores late details', async ({ page }) => {
-  await page.locator('tbody tr').first().click()
+  await page.getByTestId('monitor-event-list').locator('tbody tr').first().click()
   await expect(page.getByRole('region', { name: 'Response', exact: true })).toBeVisible()
   await expect(page.getByRole('separator')).toHaveCount(1)
   const list = (await page.getByTestId('monitor-event-list').boundingBox())!
@@ -179,9 +181,9 @@ test('the selected event shows below the list and ignores late details', async (
       return cmd === 'get_monitor_event_detail' ? new Promise(resolve => target.monitorPending.push({ resolve, result: result as Pending['result'] })) : result
     }
   })
-  await page.locator('tbody tr').nth(1).click()
+  await page.getByTestId('monitor-event-list').locator('tbody tr').nth(1).click()
   await expect(page.getByRole('status').filter({ hasText: 'Loading event details' })).toBeVisible()
-  await page.locator('tbody tr').nth(2).click()
+  await page.getByTestId('monitor-event-list').locator('tbody tr').nth(2).click()
   await page.evaluate(() => {
     const target = window as unknown as { monitorPending: { resolve: (value: unknown) => void; result: { data: Record<string, unknown> } }[] }
     const latest = target.monitorPending[1]
@@ -210,7 +212,7 @@ test('failed and missing detail loads keep the pane available for retry', async 
       return original(cmd, args)
     }
   })
-  await page.locator('tbody tr').first().click()
+  await page.getByTestId('monitor-event-list').locator('tbody tr').first().click()
   await expect(page.getByRole('status')).toContainText('Unable to load event details.')
   await expect(page.getByTestId('monitor-event-detail')).toBeVisible()
   await page.getByRole('button', { name: 'Retry', exact: true }).click()
@@ -233,7 +235,7 @@ test('large captured bodies show labeled question and answer excerpts when raw c
       return { ...event, data: { ...event.data, request_body: marker, response_body: marker, raw_request: undefined, raw_response: undefined, content_preview: null } }
     }
   })
-  await page.locator('tbody tr').first().click()
+  await page.getByTestId('monitor-event-list').locator('tbody tr').first().click()
   await expect(page.getByRole('region', { name: 'Request', exact: true })).toContainText('Question excerpt')
   await expect(page.getByRole('region', { name: 'Response', exact: true })).toContainText('Answer excerpt')
   await expect(page.getByText('Captured excerpt', { exact: true })).toHaveCount(2)
@@ -266,7 +268,7 @@ test('a translated call shows its client and upstream APIs in the list and detai
 })
 
 test('the detail docks on the right by toggle or by dragging, and back below', async ({ page }) => {
-  await page.locator('tbody tr').first().click()
+  await page.getByTestId('monitor-event-list').locator('tbody tr').first().click()
   const list = page.getByTestId('monitor-event-list')
   const detail = page.getByTestId('monitor-event-detail')
   await page.getByRole('button', { name: 'Dock details on the right' }).click()
@@ -291,4 +293,21 @@ test('the detail docks on the right by toggle or by dragging, and back below', a
 
   await page.getByRole('button', { name: 'Close details' }).click()
   await expect(detail).toHaveCount(0)
+})
+
+
+test('request tracks connect secret scans and LLM events and highlight the selected group', async ({ page }) => {
+  await page.getByRole('button', { name: 'LLM', exact: true }).click()
+  await page.getByLabel('All Events', { exact: true }).click()
+  await page.keyboard.press('Escape')
+  const scan = page.getByRole('row').filter({ hasText: 'Scan outbound request before sending to provider' })
+  const request = page.getByRole('row').filter({ hasText: 'How should I retry failed API requests?' })
+  await expect(scan.getByTestId('event-links').locator('circle')).toHaveCount(1)
+  await scan.click()
+  await expect(request.getByTestId('event-links')).toHaveAttribute('data-related', 'true')
+  await expect(page.getByText('4 related events · highlighted')).toBeVisible()
+  await expect(page.getByRole('row').filter({ hasText: 'Write a unit test for the retry helper.' }).getByTestId('event-links')).not.toHaveAttribute('data-related', 'true')
+  await page.getByRole('region', { name: 'Request monitor' }).screenshot({ path: 'test-results/monitor/monitor-relationships-selected.png' })
+  await page.getByRole('button', { name: 'Close details', exact: true }).click()
+  await page.getByRole('region', { name: 'Request monitor' }).screenshot({ path: 'test-results/monitor/monitor-relationships.png' })
 })
