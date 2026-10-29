@@ -30,43 +30,66 @@ export default function SecretRedactionPreview() {
 /** Real desktop view with mocked IPC, for lifecycle and race regressions. */
 function NativeApprovalPreview() {
   const [closed, setClosed] = useState(false)
+  const [requestId, setRequestId] = useState('preview')
+  const [, refresh] = useState(0)
   const query = new URLSearchParams(window.location.search)
-  const [backend] = useState(() => ({ pending: !query.has('missing'), submits: 0, dismisses: 0, closes: 0 }))
-  mockWindows('firewall-approval-preview')
-  mockIPC(async (command) => {
+  const [backend] = useState(() => ({
+    pending: !query.has('missing'), nextPending: false,
+    submits: 0, attempts: 0, dismisses: 0, closes: 0, forwarded: false,
+  }))
+  mockWindows(`firewall-approval-${requestId}`)
+  mockIPC(async (command, args) => {
+    const id = (args as { requestId?: string } | undefined)?.requestId
     if (command === 'get_firewall_approval_details') {
-      if (!backend.pending) return null
+      if (id === 'preview-next' ? !backend.nextPending : !backend.pending) return null
       if (query.has('endDuringLoad')) {
         backend.pending = false
         await emit('firewall-approval-ended')
       }
       return {
-        request_id: 'preview', client_id: 'client', client_name: 'Cursor',
+        request_id: id, client_id: 'client', client_name: 'Cursor',
         tool_name: 'gpt-4o', server_name: 'Secret Scan', arguments_preview: '',
         timeout_seconds: 86400, created_at_secs_ago: 0,
         is_secret_scan_request: true, is_notify_only: false,
-        secret_scan_details: { findings: [FINDINGS[0]], scan_duration_ms: 1, request_json: null, llm_source: 'OpenAI' },
+        secret_scan_details: { findings: [FINDINGS[id === 'preview-next' ? 1 : 0]], scan_duration_ms: 1, request_json: null, llm_source: 'OpenAI' },
       }
     }
     if (command === 'plugin:window|is_focused') return true
     if (command === 'submit_firewall_approval') {
+      backend.attempts++
+      if (query.has('lostOnSubmit')) backend.pending = false
+      const pending = id === 'preview-next' ? backend.nextPending : backend.pending
+      if (!pending) {
+        refresh(value => value + 1)
+        const action = (args as { action?: string }).action
+        if (action === 'redact_once') throw 'Redaction is only available for a pending blocking secret scan'
+        throw `Invalid parameters: Firewall approval request ${id} not found or expired`
+      }
       backend.submits++
-      backend.pending = false
-      if (query.has('lostOnSubmit')) throw 'Invalid parameters: Firewall approval request preview not found or expired'
+      if (id === 'preview-next') backend.nextPending = false
+      else {
+        backend.pending = false
+        backend.nextPending = query.has('multiple')
+      }
+      backend.forwarded = !backend.pending && !backend.nextPending
+      refresh(value => value + 1)
       await emit('firewall-approval-ended')
     }
     if (command === 'dismiss_firewall_notification') backend.dismisses++
     if (command === 'plugin:window|close') {
       backend.closes++
-      if (query.has('closeFailure') && backend.closes === 1) throw 'Window close failed'
+      const failures = query.has('closeFailureTwice') ? 2 : query.has('closeFailure') ? 1 : 0
+      if (backend.closes <= failures) throw 'Window close failed'
       setClosed(true)
     }
     return null
   })
   return <main className="dark bg-background text-foreground">
     <button onClick={async () => { backend.pending = false; await emit('firewall-approval-ended') }}>End backend approval</button>
+    <button onClick={() => { setRequestId('preview-next'); setClosed(false) }}>Review next approval</button>
+    <output data-testid="backend-state">Submissions {backend.submits} · attempts {backend.attempts} · second pending {String(backend.nextPending)} · forwarded {String(backend.forwarded)}</output>
     <div data-testid="native-approval" style={{ width: 440, height: 620 }}>
-      {closed ? <p>Window closed · submissions {backend.submits} · dismissals {backend.dismisses}</p> : <FirewallApproval />}
+      {closed ? <p>Window closed · submissions {backend.submits} · dismissals {backend.dismisses}</p> : <FirewallApproval key={requestId} />}
     </div>
   </main>
 }

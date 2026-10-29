@@ -242,3 +242,36 @@ test('desktop closes after its own successful approval', async ({ page }) => {
   await popup.getByRole('button', { name: 'Redact once', exact: true }).click()
   await expect(popup).toContainText('Window closed · submissions 1')
 })
+
+
+test('a close failure after the first redaction cannot approve or consume the second finding', async ({ page }) => {
+  await page.goto('/__preview/secret-redaction?native&multiple&closeFailure')
+  const popup = page.getByTestId('native-approval')
+  await popup.getByRole('button', { name: 'Redact once', exact: true }).click()
+  await expect(popup).toContainText('Your decision was accepted, but this window could not close')
+  await expect(popup).not.toContainText("The request's final outcome is unknown here")
+  await expect(page.getByTestId('backend-state')).toContainText('Submissions 1 · attempts 1 · second pending true · forwarded false')
+  await popup.getByRole('button', { name: 'Dismiss', exact: true }).click()
+  await page.getByRole('button', { name: 'Review next approval' }).click()
+  await expect(popup).toContainText('q8Zr2L********************5zQ2')
+  await expect(popup.getByRole('button', { name: 'Redact once', exact: true })).toBeEnabled()
+  await expect(page.getByTestId('backend-state')).toContainText('second pending true · forwarded false')
+  await popup.getByRole('button', { name: 'Redact once', exact: true }).click()
+  await expect(popup).toContainText('Window closed · submissions 2')
+  await expect(page.getByTestId('backend-state')).toContainText('Submissions 2 · attempts 2 · second pending false · forwarded true')
+})
+
+
+test('Dismiss remains usable if window closure fails again after an accepted redaction', async ({ page }) => {
+  await page.goto('/__preview/secret-redaction?native&multiple&closeFailureTwice')
+  const popup = page.getByTestId('native-approval')
+  await popup.getByRole('button', { name: 'Redact once', exact: true }).click()
+  await expect(popup).toContainText('Your decision was accepted, but this window could not close')
+  const dismiss = popup.getByRole('button', { name: 'Dismiss', exact: true })
+  await dismiss.click()
+  await expect(popup.getByRole('alert')).toHaveText('Could not close this window. Try Dismiss again.')
+  await expect(dismiss).toBeEnabled()
+  await expect(page.getByTestId('backend-state')).toContainText('Submissions 1 · attempts 1 · second pending true · forwarded false')
+  await dismiss.click()
+  await expect(popup).toContainText('Window closed · submissions 1')
+})

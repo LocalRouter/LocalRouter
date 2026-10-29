@@ -84,6 +84,7 @@ export function FirewallApproval() {
   const [submitting, setSubmitting] = useState(false)
   const submittingRef = useRef(false)
   const [inactive, setInactive] = useState(false)
+  const [decisionAccepted, setDecisionAccepted] = useState(false)
   const inactiveRef = useRef(false)
   const [error, setError] = useState<string | null>(null)
   const [buttonsReady, setButtonsReady] = useState(false)
@@ -501,7 +502,10 @@ export function FirewallApproval() {
       await win.close()
       await win.destroy()
     } catch {
-      // The window may already have been closed.
+      // Keep Dismiss usable if the window manager rejects closure again.
+      submittingRef.current = false
+      setSubmitting(false)
+      setError("Could not close this window. Try Dismiss again.")
     }
   }
 
@@ -584,6 +588,7 @@ export function FirewallApproval() {
       }
 
       await invoke("submit_firewall_approval", params)
+      setDecisionAccepted(true)
     } catch (err) {
       console.error("Failed to submit approval:", err)
       setError(typeof err === "string" ? err : "Failed to submit response")
@@ -958,6 +963,7 @@ export function FirewallApproval() {
           isSecretScanRequest={details.is_secret_scan_request}
           isNotifyOnly={details.is_notify_only}
           isInactive={inactive}
+          decisionAccepted={decisionAccepted}
           guardrailVerdicts={details.guardrail_details?.verdicts}
           guardrailDirection={details.guardrail_details?.scan_direction}
           guardrailActions={details.guardrail_details?.actions_required}

@@ -184,6 +184,8 @@ export interface FirewallApprovalCardProps {
   isNotifyOnly?: boolean
   /** Backend session ended unexpectedly; retain context and offer only Dismiss. */
   isInactive?: boolean
+  /** The backend accepted this window's own decision before teardown failed. */
+  decisionAccepted?: boolean
   secretScanFindings?: SecretFindingSummary[]
   secretScanRequestJson?: string | null
   secretScanLlmSource?: string | null
@@ -239,6 +241,7 @@ export function FirewallApprovalCard({
   isSecretScanRequest,
   isNotifyOnly,
   isInactive,
+  decisionAccepted,
   secretScanFindings,
   secretScanRequestJson,
   secretScanLlmSource,
@@ -331,8 +334,9 @@ export function FirewallApprovalCard({
 
       {isInactive && (
         <p role="status" className="text-xs text-muted-foreground py-3">
-          This approval is no longer active. This window can no longer block or change the request.
-          The request's final outcome is unknown here.
+          {decisionAccepted
+            ? "Your decision was accepted, but this window could not close. Dismiss it to continue reviewing any remaining approvals."
+            : "This approval is no longer active. This window can no longer block or change the request. The request's final outcome is unknown here."}
         </p>
       )}
       {/* Details Grid */}
