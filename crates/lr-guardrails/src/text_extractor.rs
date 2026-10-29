@@ -53,6 +53,42 @@ pub fn extract_request_text(body: &serde_json::Value) -> Vec<ExtractedText> {
                 } else if let Some(parts) = content.as_array() {
                     // Content parts array (multimodal)
                     for part in parts {
+                        // Anthropic tool calls/results carry structured JSON,
+                        // not a `text` field. Preserve keys as detection context.
+                        let tool_value = match part.get("type").and_then(|t| t.as_str()) {
+                            Some("tool_use") => part.get("input"),
+                            Some("tool_result") => part.get("content"),
+                            _ => None,
+                        };
+                        if let Some(value) = tool_value {
+                            let text = if part.get("type").and_then(|t| t.as_str())
+                                == Some("tool_result")
+                            {
+                                // Tool-result arrays may also hold images. Only
+                                // text blocks are inspectable; skip binary data.
+                                match value {
+                                    serde_json::Value::String(text) => text.clone(),
+                                    serde_json::Value::Array(blocks) => blocks
+                                        .iter()
+                                        .filter_map(|block| {
+                                            block.get("text").and_then(|t| t.as_str())
+                                        })
+                                        .collect::<Vec<_>>()
+                                        .join("\n"),
+                                    _ => String::new(),
+                                }
+                            } else {
+                                inspectable_tool_input(value)
+                            };
+                            if !text.is_empty() {
+                                texts.push(ExtractedText {
+                                    text,
+                                    message_index: Some(i),
+                                    label: format!("{} tool content", role),
+                                    role: role.to_string(),
+                                });
+                            }
+                        }
                         if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
                             if !text.is_empty() {
                                 texts.push(ExtractedText {
@@ -186,6 +222,33 @@ pub fn extract_request_text(body: &serde_json::Value) -> Vec<ExtractedText> {
     }
 
     texts
+}
+
+/// Render field context without JSON-escaping string values. A scanner's
+/// capture must be a substring of the original value, so revealing/redacting
+/// multiline keys and Unicode passwords works on the actual outbound body.
+/// This is inspectable text, not a wire-format serializer.
+fn inspectable_tool_input(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(text) => format!("\"{text}\""),
+        serde_json::Value::Object(fields) => fields
+            .iter()
+            .map(|(key, value)| {
+                format!(
+                    "{}: {}",
+                    serde_json::to_string(key).unwrap_or_default(),
+                    inspectable_tool_input(value)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        serde_json::Value::Array(items) => items
+            .iter()
+            .map(inspectable_tool_input)
+            .collect::<Vec<_>>()
+            .join("\n"),
+        other => other.to_string(),
+    }
 }
 
 /// Push a JSON value as text: strings as-is, anything else as pretty JSON.
@@ -602,5 +665,26 @@ mod tests {
         let snippet = extract_snippet(text, 20, 49, 10);
         assert!(snippet.contains("ignore previous instructions"));
         assert!(snippet.starts_with("..."));
+    }
+}
+
+#[cfg(test)]
+mod tool_content_tests {
+    #[test]
+    fn tool_results_scan_text_but_skip_image_payloads() {
+        let body = serde_json::json!({"messages":[{"role":"user", "content":[
+            {"type":"tool_result", "tool_use_id":"1", "content":[
+                {"type":"image", "source":{"type":"base64", "data":"binary-payload"}},
+                {"type":"text", "text":"inspect this text"}
+            ]},
+            {"type":"tool_result", "tool_use_id":"2", "content":"plain result"},
+            {"type":"tool_use", "input":{"password":"a value"}}
+        ]}]});
+        let texts = super::extract_request_text(&body);
+        assert_eq!(texts.len(), 3);
+        assert_eq!(texts[0].text, "inspect this text");
+        assert_eq!(texts[1].text, "plain result");
+        assert!(texts[2].text.contains("password"));
+        assert!(!texts.iter().any(|t| t.text.contains("binary-payload")));
     }
 }

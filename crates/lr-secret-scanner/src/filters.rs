@@ -10,7 +10,7 @@
 //! Two strengths, chosen per rule:
 //!
 //! - [`PlaceholderPolicy::Strict`] for rules anchored on a vendor prefix
-//!   (`ghp_`, `AKIA`, `sk-ant-`). The prefix already makes a match high
+//!   (`ghp_`, `sk-ant-`). The prefix already makes a match high
 //!   confidence, so only values that are unmistakably fake are dropped.
 //! - [`PlaceholderPolicy::Generic`] for keyword and URI rules, where the value
 //!   itself is the only evidence. Adds checks for human-readable words,
@@ -25,6 +25,9 @@ pub enum PlaceholderPolicy {
     /// long runs such as `AAAAA` are normal; the rule's validator and entropy
     /// gate do the work instead.
     Off,
+    /// Contextual opaque credentials (e.g. STS tokens) can contain repeated
+    /// encoded runs. Reject explicit stand-ins, not their internal structure.
+    Contextual,
     /// Drop only values that are unmistakably fake.
     Strict,
     /// Also drop values that read as words, identifiers, or test fixtures.
@@ -78,16 +81,41 @@ const GENERIC_WORDS: &[&str] = &[
     "getenv",
 ];
 
+/// AWS access key IDs identify a credential but do not authenticate requests.
+/// Keep them out of generic rules as well as the built-in rule list.
+pub fn is_aws_access_key_id(value: &str) -> bool {
+    value.len() == 20
+        && ["AKIA", "ASIA", "ABIA", "ACCA"]
+            .iter()
+            .any(|p| value.starts_with(p))
+        && value[4..]
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+}
+
 /// Whether `value` is a placeholder rather than a real secret.
 pub fn is_placeholder(value: &str, policy: PlaceholderPolicy) -> bool {
     match policy {
         PlaceholderPolicy::Off => false,
+        PlaceholderPolicy::Contextual => is_explicit_placeholder(value),
         PlaceholderPolicy::Strict => is_strict_placeholder(value),
         PlaceholderPolicy::Generic => is_strict_placeholder(value) || is_generic_placeholder(value),
     }
 }
 
-fn is_strict_placeholder(value: &str) -> bool {
+// A random credential can contain "test", "here", or "your" by chance.
+// Match whole components instead of silently allowing such credentials.
+fn contains_placeholder_word(value: &str, words: &[&str]) -> bool {
+    words.iter().any(|word| {
+        value.match_indices(word).any(|(start, matched)| {
+            let end = start + matched.len();
+            (start == 0 || !value.as_bytes()[start - 1].is_ascii_alphanumeric())
+                && (end == value.len() || !value.as_bytes()[end].is_ascii_alphanumeric())
+        })
+    })
+}
+
+fn is_explicit_placeholder(value: &str) -> bool {
     // Template and variable references: ${VAR}, {{var}}, $VAR, <password>, %s.
     if value.starts_with('$')
         || value.contains("${")
@@ -102,7 +130,18 @@ fn is_strict_placeholder(value: &str) -> bool {
         return true;
     }
     let lower = value.to_ascii_lowercase();
-    if STRICT_WORDS.iter().any(|w| lower.contains(w)) {
+    if matches!(
+        lower.as_str(),
+        "akiaiosfodnn7example" | "wjalrxutnfemi/k7mdeng/bpxrficyexamplekey"
+    ) || contains_placeholder_word(&lower, STRICT_WORDS)
+    {
+        return true;
+    }
+    false
+}
+
+fn is_strict_placeholder(value: &str) -> bool {
+    if is_explicit_placeholder(value) {
         return true;
     }
     // xxxxx / 00000 / AAAAA filler.
@@ -120,7 +159,7 @@ fn is_generic_placeholder(value: &str) -> bool {
         return true;
     }
     let lower = value.to_ascii_lowercase();
-    if GENERIC_WORDS.iter().any(|w| lower.contains(w)) {
+    if contains_placeholder_word(&lower, GENERIC_WORDS) {
         return true;
     }
     // URLs and filesystem paths, not secrets.
@@ -316,6 +355,28 @@ pub fn uri_password_is_real(caps: &regex::Captures<'_>) -> bool {
     !(host.contains("example") || host.contains("your") || host == "host" || host == "hostname")
 }
 
+/// RFC 7617 encodes user:password, not encrypted material. Check the decoded
+/// password so base64-encoded documentation examples do not become findings.
+pub fn basic_auth_has_secret_password(caps: &regex::Captures<'_>) -> bool {
+    let Some(encoded) = caps.get(1).map(|m| m.as_str()) else {
+        return false;
+    };
+    let Ok(bytes) = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .or_else(|_| base64::engine::general_purpose::STANDARD_NO_PAD.decode(encoded))
+    else {
+        return false;
+    };
+    let Ok(decoded) = std::str::from_utf8(&bytes) else {
+        return false;
+    };
+    decoded.split_once(':').is_some_and(|(_, password)| {
+        password.chars().count() >= 8
+            && crate::entropy::shannon_entropy(password) >= 3.0
+            && !is_placeholder(password, PlaceholderPolicy::Generic)
+    })
+}
+
 /// Validator for the JWT rule: the header segment must decode to a JSON
 /// object naming an algorithm. Rejects `eyJ`-prefixed strings that are not
 /// tokens. Capture group 1 = header segment.
@@ -372,6 +433,8 @@ const NON_SECRET_KEY_WORDS: &[&str] = &[
     "expires",
     "expiration",
     "ttl",
+    "public",
+    "publishable",
 ];
 
 /// Split an identifier into lowercase words on `_`, `-`, `.` and camelCase

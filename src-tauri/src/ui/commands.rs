@@ -3497,7 +3497,7 @@ pub async fn debug_trigger_firewall_popup(
             DebugFirewallType::SecretScan | DebugFirewallType::SecretScanNotify => (
                 "claude-3-5-sonnet".to_string(),
                 "Secret Scan".to_string(),
-                "[Cloud Provider] AWS Access Key ID (entropy: 3.42)\n[Version Control] GitHub Personal Access Token (entropy: 4.12)".to_string(),
+                "[Cloud Provider] AWS Secret Access Key (entropy: 4.80)\n[Version Control] GitHub Personal Access Token (entropy: 4.12)".to_string(),
                 false,
                 false,
             ),
@@ -3551,17 +3551,17 @@ pub async fn debug_trigger_firewall_popup(
         Some(lr_mcp::gateway::firewall::SecretScanApprovalDetails {
             findings: vec![
                 lr_mcp::gateway::firewall::SecretFindingSummary {
-                    rule_id: "aws-access-key-id".to_string(),
-                    rule_description: "AWS Access Key ID".to_string(),
+                    rule_id: "aws-secret-access-key".to_string(),
+                    rule_description: "AWS Secret Access Key".to_string(),
                     category: "Cloud Provider".to_string(),
-                    matched_text: "AKIA**********MPLE".to_string(),
-                    raw_text: "AKIAIOSFODNN7EXAMPLE".to_string(),
-                    entropy: 3.42,
+                    matched_text: "6nmCEa********************ldQr".to_string(),
+                    raw_text: "6nmCEa00cbNmH0B4zKPSYOPP5z1oYFR26doJldQr".to_string(),
+                    entropy: 4.8,
                     request_match: None,
                     context: Some(lr_mcp::gateway::firewall::SecretFindingContext {
                         source: "Message 2 · user message".into(),
                         line: 1,
-                        before: "Check the deployment configuration:\nAWS_ACCESS_KEY_ID=".into(),
+                        before: "Check the deployment configuration:\nAWS_SECRET_ACCESS_KEY=".into(),
                         after: "\nAuthentication fails.".into(),
                     }),
                 },
@@ -3583,7 +3583,7 @@ pub async fn debug_trigger_firewall_popup(
             ],
             scan_duration_ms: 1,
             llm_source: Some("OpenAI".into()),
-            request_json: Some(serde_json::json!({"model": "demo", "messages": [{"role": "user", "content": "AWS_ACCESS_KEY_ID=[REDACTED: secret removed by LocalRouter] GITHUB_TOKEN=[REDACTED: secret removed by LocalRouter]"}]}).to_string()),
+            request_json: Some(serde_json::json!({"model": "demo", "messages": [{"role": "user", "content": "AWS_SECRET_ACCESS_KEY=[REDACTED: secret removed by LocalRouter] GITHUB_TOKEN=[REDACTED: secret removed by LocalRouter]"}]}).to_string()),
         })
     } else {
         None

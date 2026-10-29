@@ -347,8 +347,257 @@ fn dedupe_prefers_the_more_specific_rule() {
 /// Distinct secrets are all reported, in text order.
 #[test]
 fn distinct_secrets_are_all_reported_in_order() {
-    let text = format!("first {GITHUB_PAT} then AKIAZ7Q3VJ2M4XK9PLR6");
+    let text = format!("first {GITHUB_PAT} then aws_secret_access_key={RANDOM_40}");
     let findings = scan(&[&text]);
     let ids: Vec<&str> = findings.iter().map(|f| f.rule_id.as_str()).collect();
-    assert_eq!(ids, ["github-pat", "aws-access-key-id"]);
+    assert_eq!(ids, ["github-pat", "aws-secret-access-key"]);
+}
+
+// AWS key IDs never authenticate by themselves, including when a generic
+// assignment would otherwise identify the field as sensitive.
+#[test]
+fn aws_identifiers_are_not_secrets() {
+    for prefix in ["AKIA", "ASIA", "ABIA", "ACCA"] {
+        let id = format!("{prefix}Z7Q3VJ2M4XK9PLR6");
+        for text in [
+            id.clone(),
+            format!("AWS_ACCESS_KEY_ID={id}"),
+            format!(r#"api_key="{id}""#),
+            format!(r#"token="{id}""#),
+            format!("Authorization: Bearer {id}"),
+        ] {
+            assert_clean(&text);
+        }
+    }
+}
+
+#[test]
+fn aws_secrets_work_across_config_spellings_and_encodings() {
+    for key in [
+        "AWS_SECRET_ACCESS_KEY",
+        "aws-secret-access-key",
+        "awsSecretAccessKey",
+        "SecretAccessKey",
+        "secret_access_key",
+        "AWS_SECRET_KEY",
+        "AWS Secret Access Key",
+    ] {
+        for text in [
+            format!("export {key}={RANDOM_40}"),
+            format!("{key}: '{RANDOM_40}'"),
+            serde_json::json!({key: RANDOM_40}).to_string(),
+            serde_json::json!({"arguments": serde_json::json!({key: RANDOM_40}).to_string()})
+                .to_string(),
+        ] {
+            assert_single(&text, "aws-secret-access-key", RANDOM_40);
+        }
+    }
+    // The key ID is left intact when a paired secret is redacted, everywhere.
+    let text = format!(
+        "AWS_ACCESS_KEY_ID=AKIAZ7Q3VJ2M4XK9PLR6\nAWS_SECRET_ACCESS_KEY={RANDOM_40}\n{RANDOM_40}"
+    );
+    let finding = assert_single(&text, "aws-secret-access-key", RANDOM_40);
+    let mut redaction = crate::redaction::Redaction::default();
+    redaction.add(&finding.raw_text);
+    let output = redaction.apply_text(&text);
+    assert!(output.contains("AKIAZ7Q3VJ2M4XK9PLR6"));
+    assert!(!output.contains(RANDOM_40));
+    assert_eq!(
+        output.matches(crate::redaction::REDACTION_MESSAGE).count(),
+        2
+    );
+    assert_clean(&format!("aws_secret_access_key={}x", RANDOM_40));
+    assert_clean(RANDOM_40); // no contextual evidence
+    assert_clean("aws_secret_access_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY");
+}
+
+#[test]
+fn aws_session_tokens_are_complete_and_variable_length() {
+    // STS encodings contain long repeated runs; they are not random API keys.
+    let token = format!("{RANDOM_40}//////////AAAAAA{RANDOM_SIG}==");
+    for key in [
+        "AWS_SESSION_TOKEN",
+        "aws_security_token",
+        "SessionToken",
+        "sessionToken",
+        "X-Amz-Security-Token",
+    ] {
+        assert_single(&format!("{key}={token}"), "aws-session-token", &token);
+        assert_single(
+            &serde_json::json!({key: token}).to_string(),
+            "aws-session-token",
+            &token,
+        );
+    }
+    let long = token.repeat(12);
+    assert_single(
+        &format!("AWS_SESSION_TOKEN={long}"),
+        "aws-session-token",
+        &long,
+    );
+}
+
+#[test]
+fn unquoted_generic_credentials_are_detected_without_capturing_delimiters() {
+    for (key, value, rule) in [
+        ("API_KEY", RANDOM_24, "generic-api-key-unquoted"),
+        ("apiSecret", RANDOM_24, "generic-api-key-unquoted"),
+        ("apiToken", RANDOM_24, "generic-api-key-unquoted"),
+        ("CLIENT_SECRET", RANDOM_24, "generic-secret-unquoted"),
+        (
+            "DB_PASSWORD",
+            "Xk9!mP2vQ7?zR4tL",
+            "generic-password-unquoted",
+        ),
+    ] {
+        for suffix in ["", "\n", " ./run", ";", ",", "}", "&next=1"] {
+            assert_single(&format!("export {key}={value}{suffix}"), rule, value);
+        }
+    }
+    for key in [
+        "nextPageToken",
+        "token_id",
+        "public_api_key",
+        "publishableApiKey",
+        "password_hash",
+        "password_file",
+    ] {
+        assert_clean(&format!("{key}={RANDOM_40}"));
+        assert_clean(&format!(r#"{key}="{RANDOM_40}""#));
+    }
+    for value in [
+        "$API_KEY",
+        "${API_KEY}",
+        "<API_KEY>",
+        "your_api_key_here",
+        "sk-demo-key-1234567890",
+    ] {
+        assert_clean(&format!("API_KEY={value}"));
+    }
+}
+
+#[test]
+fn common_words_inside_random_credentials_do_not_suppress_them() {
+    for word in ["test", "here", "your", "insert", "demo"] {
+        let value = format!("{RANDOM_24}{word}{RANDOM_24}");
+        assert_single(
+            &format!(r#"api_key="{value}""#),
+            "generic-api-key-assignment",
+            &value,
+        );
+        let pat = format!("ghp_{value}");
+        assert_single(&pat, "github-pat", &pat);
+    }
+}
+
+#[test]
+fn adjacent_assignments_do_not_lose_shared_delimiters() {
+    let text = format!("client_secret={RANDOM_24} client_secret={RANDOM_40}");
+    let findings = scan(&[&text]);
+    assert_eq!(findings.len(), 2);
+    assert_eq!(findings[0].raw_text, RANDOM_24);
+    assert_eq!(findings[1].raw_text, RANDOM_40);
+}
+
+#[test]
+fn short_passwords_are_masked_in_serialization_and_debug() {
+    let secret = "K7!pQ2zR";
+    let finding = assert_single(
+        &format!("password='{secret}'"),
+        "generic-password-assignment",
+        secret,
+    );
+    assert!(!finding.matched_text.contains(secret));
+    assert!(finding.matched_text.chars().all(|c| c == '*'));
+    assert!(!serde_json::to_string(&finding).unwrap().contains(secret));
+    assert!(!format!("{finding:?}").contains(secret));
+}
+
+#[test]
+fn basic_auth_is_checked_after_decoding_and_redacts_the_encoded_credential() {
+    use base64::Engine as _;
+    let encoded = base64::engine::general_purpose::STANDARD.encode("deploy:Xk9!mP2vQ7?zR4tL");
+    assert_single(
+        &format!("Authorization: Basic {encoded}"),
+        "basic-auth-header",
+        &encoded,
+    );
+    assert_single(
+        &format!(r#"{{"Authorization":"Basic {encoded}"}}"#),
+        "basic-auth-header",
+        &encoded,
+    );
+    for credential in [
+        "user:password",
+        "deploy:${PASSWORD}",
+        "not-a-credential",
+        "user:",
+    ] {
+        let encoded = base64::engine::general_purpose::STANDARD.encode(credential);
+        assert_clean(&format!("Authorization: Basic {encoded}"));
+    }
+    assert_clean("Authorization: Basic ////////////////");
+}
+
+#[test]
+fn long_bearer_tokens_are_never_truncated() {
+    let token = RANDOM_40.repeat(40);
+    assert_single(
+        &format!("Authorization: Bearer {token}"),
+        "bearer-token-header",
+        &token,
+    );
+}
+
+/// Each vendor rule needs a working positive example, not just a regex that
+/// compiles. Shared prefixes must still choose the most specific rule.
+#[test]
+fn vendor_rule_detection_matrix() {
+    for (rule, token) in [
+        ("gcp-api-key", format!("AIza{}", &RANDOM_40[..35])),
+        (
+            "azure-storage-key",
+            format!("AccountKey={}==", &RANDOM_40.repeat(3)[..86]),
+        ),
+        (
+            "openai-api-key",
+            format!("sk-{RANDOM_40}T3BlbkFJ{RANDOM_40}"),
+        ),
+        ("openai-api-key-v2", format!("sk-proj-{RANDOM_40}")),
+        (
+            "anthropic-api-key",
+            format!("sk-ant-api03-{}", RANDOM_40.repeat(3)),
+        ),
+        ("anthropic-api-key-v2", format!("sk-ant-{RANDOM_40}")),
+        ("groq-api-key", format!("gsk_{}", RANDOM_40.repeat(2))),
+        ("cohere-api-key", format!("COHERE_API_KEY={RANDOM_40}")),
+        ("huggingface-token", format!("hf_{RANDOM_40}")),
+        ("github-pat", GITHUB_PAT.to_string()),
+        ("github-oauth", format!("gho_{RANDOM_40}")),
+        ("github-app-token", format!("ghs_{RANDOM_40}")),
+        (
+            "github-fine-grained-pat",
+            format!("github_pat_{}", RANDOM_40.repeat(3)),
+        ),
+        ("gitlab-pat", format!("glpat-{RANDOM_40}")),
+        ("stripe-secret-key", format!("sk_live_{RANDOM_24}")),
+        ("stripe-restricted-key", format!("rk_live_{RANDOM_24}")),
+        (
+            "slack-bot-token",
+            format!("xoxb-7392048176-9372840165-{RANDOM_24}"),
+        ),
+        (
+            "slack-user-token",
+            format!("xoxp-7392048176-9372840165-8371920465-{}", &RANDOM_40[..32]),
+        ),
+        (
+            "slack-webhook",
+            format!("https://hooks.slack.com/services/T39LQ8N/B92JH7M/{RANDOM_24}"),
+        ),
+    ] {
+        let findings = scan(&[&token]);
+        assert_eq!(findings.len(), 1, "{rule}: {findings:?}");
+        assert_eq!(findings[0].rule_id, rule);
+        assert!(token.contains(&findings[0].raw_text));
+    }
 }

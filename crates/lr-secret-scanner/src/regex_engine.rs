@@ -221,13 +221,17 @@ impl RegexEngine {
 
         for rule_idx in candidate_rules {
             let rule = &self.rules[rule_idx];
-            for captures in rule.compiled_regex.captures_iter(&text.text) {
+            // Resume after the captured value, not the full match: a rule's
+            // trailing delimiter can also begin the next assignment.
+            let mut offset = 0;
+            while let Some(captures) = rule.compiled_regex.captures_at(&text.text, offset) {
                 let Some(secret) = captures.get(rule.secret_group) else {
-                    continue;
+                    break;
                 };
                 if secret.as_str().is_empty() {
-                    continue;
+                    break;
                 }
+                offset = secret.end();
                 let (start, end) = (secret.start(), secret.end());
                 if claimed.iter().any(|&(s, e)| start < e && s < end) {
                     continue;
@@ -278,7 +282,10 @@ impl RegexEngine {
             return None;
         }
 
-        if is_placeholder(secret, rule.placeholder) {
+        // AWS identifiers are public identifiers even in api_key/token
+        // assignments. Their secret access key is detected contextually.
+        if crate::filters::is_aws_access_key_id(secret) || is_placeholder(secret, rule.placeholder)
+        {
             return None;
         }
         if rule.validate.is_some_and(|validate| !validate(captures)) {
@@ -313,8 +320,8 @@ impl RegexEngine {
 fn truncate_matched_text(text: &str, max_len: usize) -> String {
     let count = text.chars().count();
     // Slice at character boundaries: generic password rules can match Unicode.
-    if count < 10 {
-        return text.to_string();
+    if count <= 16 {
+        return "*".repeat(count);
     }
     let prefix: String = text.chars().take(6).collect();
     let suffix: String = text.chars().skip(count - 4).collect();
@@ -350,10 +357,12 @@ mod tests {
     #[test]
     fn test_aws_key_detection() {
         let engine = RegexEngine::new(3.0, &[]).unwrap();
-        let texts = make_text("My AWS key is AKIAZ7Q3VJ2M4XK9PLR6 and it works");
+        let texts = make_text("aws_secret_access_key = 6nmCEa00cbNmH0B4zKPSYOPP5z1oYFR26doJldQr");
         let findings = engine.scan(&texts, None);
         assert!(
-            findings.iter().any(|f| f.rule_id == "aws-access-key-id"),
+            findings
+                .iter()
+                .any(|f| f.rule_id == "aws-secret-access-key"),
             "Should detect AWS key. Findings: {:?}",
             findings
         );
@@ -373,12 +382,14 @@ mod tests {
 
     #[test]
     fn test_allowlist_excludes() {
-        let allowlist = vec!["AKIAZ7Q3VJ2M4XK9PLR6".to_string()];
+        let allowlist = vec!["6nmCEa00cbNmH0B4zKPSYOPP5z1oYFR26doJldQr".to_string()];
         let engine = RegexEngine::new(3.0, &allowlist).unwrap();
-        let texts = make_text("My AWS key is AKIAZ7Q3VJ2M4XK9PLR6");
+        let texts = make_text("aws_secret_access_key = 6nmCEa00cbNmH0B4zKPSYOPP5z1oYFR26doJldQr");
         let findings = engine.scan(&texts, None);
         assert!(
-            !findings.iter().any(|f| f.rule_id == "aws-access-key-id"),
+            !findings
+                .iter()
+                .any(|f| f.rule_id == "aws-secret-access-key"),
             "Allowlisted key should not be detected"
         );
     }
@@ -388,19 +399,19 @@ mod tests {
     #[test]
     fn test_raw_text_captured_but_not_serialized() {
         let engine = RegexEngine::new(3.0, &[]).unwrap();
-        let texts = make_text("my key is AKIAZ7Q3VJ2M4XK9PLR6");
+        let texts = make_text("aws_secret_access_key = 6nmCEa00cbNmH0B4zKPSYOPP5z1oYFR26doJldQr");
         let findings = engine.scan(&texts, None);
         let finding = findings
             .iter()
-            .find(|f| f.rule_id == "aws-access-key-id")
+            .find(|f| f.rule_id == "aws-secret-access-key")
             .expect("AWS key detected");
 
-        assert_eq!(finding.raw_text, "AKIAZ7Q3VJ2M4XK9PLR6");
+        assert_eq!(finding.raw_text, "6nmCEa00cbNmH0B4zKPSYOPP5z1oYFR26doJldQr");
         assert_ne!(finding.matched_text, finding.raw_text, "preview is masked");
 
         let json = serde_json::to_string(finding).unwrap();
         assert!(
-            !json.contains("AKIAZ7Q3VJ2M4XK9PLR6"),
+            !json.contains("6nmCEa00cbNmH0B4zKPSYOPP5z1oYFR26doJldQr"),
             "serialized finding leaked the plaintext secret: {json}"
         );
     }
@@ -424,11 +435,8 @@ mod tests {
 
     #[test]
     fn unicode_secret_previews_are_masked_at_character_boundaries() {
-        assert_eq!(truncate_matched_text("🔑密码测试", 40), "🔑密码测试");
-        assert_eq!(
-            truncate_matched_text("🔑abcdefghi🔑j", 40),
-            "🔑abcde**hi🔑j"
-        );
+        assert_eq!(truncate_matched_text("🔑密码测试", 40), "*****");
+        assert_eq!(truncate_matched_text("🔑abcdefghi🔑j", 40), "************");
         let text = "🔑".repeat(50);
         assert_eq!(
             truncate_matched_text(&text, 40),
@@ -438,7 +446,7 @@ mod tests {
 
     #[test]
     fn test_truncate_matched_text() {
-        assert_eq!(truncate_matched_text("short", 40), "short");
+        assert_eq!(truncate_matched_text("short", 40), "*****");
         let long = "AKIAIOSFODNN7EXAMPLEKEY";
         let truncated = truncate_matched_text(long, 40);
         assert!(truncated.contains("AKIAIO"));

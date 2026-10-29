@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 
-const SECRET = 'AKIAZ7Q3VJ2M4XK9PLR6'
+const SECRET = '6nmCEa00cbNmH0B4zKPSYOPP5z1oYFR26doJldQr'
 const MARKER = '[REDACTED: secret removed by LocalRouter]'
 
 test.beforeEach(async ({ page }) => { await page.goto('/__preview/secret-redaction') })
@@ -46,12 +46,12 @@ test('Block and Allow preserve their original behavior', async ({ page }) => {
   await expect(page.getByTestId('outgoing-payload')).toContainText(SECRET)
 })
 
-const SECOND_SECRET = 'AKIAX9Q7W5E3R1T8Y6U4'
+const SECOND_SECRET = 'q8Zr2LmX7vKp4NwT9sYb3HdJ6fGc1eRa0uVi5zQ2'
 
 test('multiple secrets appear sequentially; block stops without showing later secrets', async ({ page }) => {
   await page.goto('/__preview/secret-redaction?multiple')
-  await expect(page.getByText('AKIA************PLR6', { exact: true }).first()).toBeVisible()
-  await expect(page.getByText('AKIA************Y6U4', { exact: true })).toHaveCount(0)
+  await expect(page.getByText('6nmCEa********************ldQr', { exact: true }).first()).toBeVisible()
+  await expect(page.getByText('q8Zr2L********************5zQ2', { exact: true })).toHaveCount(0)
   await page.getByRole('button', { name: 'Block', exact: true }).click()
   await expect(page.getByTestId('approval-popup')).toHaveCount(0)
   await expect(page.getByRole('status')).toContainText('remaining secrets were not shown')
@@ -61,7 +61,7 @@ test('multiple secrets appear sequentially; block stops without showing later se
 test('redact then allow only forwards after both secrets are reviewed', async ({ page }) => {
   await page.goto('/__preview/secret-redaction?multiple')
   await page.getByRole('button', { name: 'Redact once', exact: true }).click()
-  await expect(page.getByText('AKIA************Y6U4', { exact: true }).first()).toBeVisible()
+  await expect(page.getByText('q8Zr2L********************5zQ2', { exact: true }).first()).toBeVisible()
   await expect(page.getByTestId('outgoing-payload')).toHaveText('Not forwarded')
   await page.getByRole('button', { name: 'Allow', exact: true }).click()
   await expect(page.getByTestId('outgoing-payload')).toContainText(MARKER)
@@ -73,11 +73,11 @@ test('Always redact only remembers the displayed secret; remaining secret still 
   await page.goto('/__preview/secret-redaction?multiple')
   await page.getByRole('button', { name: 'More redaction options' }).click()
   await page.getByRole('menuitem', { name: 'Always redact this secret', exact: true }).click()
-  await expect(page.getByText('AKIA************Y6U4', { exact: true }).first()).toBeVisible()
+  await expect(page.getByText('q8Zr2L********************5zQ2', { exact: true }).first()).toBeVisible()
   await page.getByRole('button', { name: 'Allow', exact: true }).click()
   await page.getByRole('button', { name: 'Send the same request again' }).click()
-  await expect(page.getByTestId('approval-popup').getByText('AKIA************Y6U4', { exact: true }).first()).toBeVisible()
-  await expect(page.getByTestId('approval-popup').getByText('AKIA************PLR6', { exact: true })).toHaveCount(0)
+  await expect(page.getByTestId('approval-popup').getByText('q8Zr2L********************5zQ2', { exact: true }).first()).toBeVisible()
+  await expect(page.getByTestId('approval-popup').getByText('6nmCEa********************ldQr', { exact: true })).toHaveCount(0)
   await expect(page.getByTestId('stored-hash')).toHaveCount(1)
 })
 
@@ -96,7 +96,7 @@ test('dark yellow action has white text and secrets match regular popup text siz
   const redact = page.getByRole('button', { name: 'Redact once', exact: true })
   await expect(redact).toHaveCSS('background-color', 'rgb(128, 112, 0)')
   await expect(redact).toHaveCSS('color', 'rgb(255, 255, 255)')
-  await expect(page.getByText('AKIA************PLR6', { exact: true }).first()).toHaveCSS('font-size', '12px')
+  await expect(page.getByText('6nmCEa********************ldQr', { exact: true }).first()).toHaveCSS('font-size', '12px')
   await page.getByRole('button', { name: 'Reveal secret', exact: true }).click()
   await expect(page.getByText(SECRET, { exact: true }).first()).toHaveCSS('font-size', '12px')
   await expect(page.getByText('Redaction replaces this secret with', { exact: false })).toHaveCount(0)
@@ -121,10 +121,10 @@ test('full request is visible by default, highlighted and centered on the select
   await expect(popup.getByText('OpenAI', { exact: true })).toBeVisible()
   await expect(popup.getByRole('tab')).toHaveCount(0)
   await expect(popup).not.toContainText('cloud provider')
-  const titleRow = popup.getByText('AWS Access Key ID', { exact: true }).locator('..')
+  const titleRow = popup.getByText('AWS Secret Access Key', { exact: true }).locator('..')
   await expect(titleRow.getByRole('button', { name: 'Reveal secret', exact: true })).toBeVisible()
   const request = popup.getByLabel('Complete request JSON')
-  await expect(request.locator('mark')).toHaveText('AKIA************PLR6')
+  await expect(request.locator('mark')).toHaveText('6nmCEa********************ldQr')
   await expect(request.locator('mark')).toBeInViewport()
   expect(await request.evaluate(node => node.scrollTop)).toBeGreaterThan(0)
   await expect(request).toContainText('Previous conversation message')
@@ -150,12 +150,12 @@ test('each sequential finding focuses its own occurrence in the full request and
   await page.goto('/__preview/secret-redaction?multiple')
   const popup = page.getByTestId('approval-popup')
   const request = popup.getByLabel('Complete request JSON')
-  await expect(request.locator('mark')).toHaveText('AKIA************PLR6')
+  await expect(request.locator('mark')).toHaveText('6nmCEa********************ldQr')
   await expect(request).toContainText(MARKER)
   await popup.getByRole('button', { name: 'Redact once', exact: true }).click()
-  await expect(request.locator('mark')).toHaveText('AKIA************Y6U4')
+  await expect(request.locator('mark')).toHaveText('q8Zr2L********************5zQ2')
   await expect(request.locator('mark')).toBeInViewport()
-  await expect(request).toContainText(`aws_access_key_id_1=${MARKER}`)
+  await expect(request).toContainText(`aws_secret_access_key_1=${MARKER}`)
   await popup.getByRole('button', { name: 'Reveal secret', exact: true }).click()
   await expect(request.locator('mark')).toHaveText(SECOND_SECRET)
   await expect(request).not.toContainText(SECRET)
@@ -165,7 +165,7 @@ test('notify popups show the full request focused on the secret and still dismis
   await page.goto('/__preview/secret-redaction?notify')
   const popup = page.getByTestId('approval-popup')
   const request = popup.getByLabel('Complete request JSON')
-  await expect(request.locator('mark')).toHaveText('AKIA************PLR6')
+  await expect(request.locator('mark')).toHaveText('6nmCEa********************ldQr')
   await expect(request.locator('mark')).toBeInViewport()
   await expect(request).toContainText('End of the deployment request')
   await page.getByRole('button', { name: 'Dismiss', exact: true }).click()

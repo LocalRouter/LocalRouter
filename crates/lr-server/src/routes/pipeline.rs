@@ -1629,6 +1629,13 @@ pub async fn scan_request_for_secrets_with_source(
     let scan_start = std::time::Instant::now();
     let mut result = scanner.scan(&texts);
 
+    // Mask monitor previews before filtering remembered secrets, too.
+    let monitor_preview = if result.findings.is_empty() {
+        String::new()
+    } else {
+        secret_scan_mask(&result).apply_text(texts.first().map(|t| t.text.as_str()).unwrap_or(""))
+    };
+
     // Build context before filtering remembered secrets so those values are
     // masked too, including during sequential approvals of later findings.
     let mut popup_details = (!result.findings.is_empty()).then(|| {
@@ -1739,7 +1746,7 @@ pub async fn scan_request_for_secrets_with_source(
         state,
         Some(&client_ctx),
         None,
-        texts.first().map(|t| t.text.as_str()).unwrap_or(""),
+        &monitor_preview,
         scanner.rule_metadata().len(),
         result.findings.len(),
         findings_json,
@@ -1810,6 +1817,17 @@ fn secret_scan_llm_source(
         .unwrap_or_else(|| instance.to_string())
 }
 
+/// Use all findings, including remembered values, when displaying context.
+fn secret_scan_mask(
+    result: &lr_secret_scanner::ScanResult,
+) -> lr_secret_scanner::redaction::Redaction {
+    let mut mask = lr_secret_scanner::redaction::Redaction::default();
+    for finding in &result.findings {
+        mask.add(&finding.raw_text);
+    }
+    mask
+}
+
 /// Build structured findings with masked source context from a scan result. Shared by the Ask (approval) and
 /// Notify (informational) popup paths.
 fn secret_scan_popup_content(
@@ -1819,10 +1837,7 @@ fn secret_scan_popup_content(
 ) -> lr_mcp::gateway::firewall::SecretScanApprovalDetails {
     use lr_mcp::gateway::firewall::{SecretFindingSummary, SecretScanApprovalDetails};
 
-    let mut mask = lr_secret_scanner::redaction::Redaction::default();
-    for finding in &result.findings {
-        mask.add(&finding.raw_text);
-    }
+    let mask = secret_scan_mask(result);
     let mut masked_body = body.clone();
     mask.apply(&mut masked_body);
     let request_json = serde_json::to_string_pretty(&masked_body).ok();
@@ -2762,8 +2777,8 @@ mod tests {
     #[test]
     fn secret_popup_context_uses_matching_source_and_never_serializes_plaintext() {
         use lr_secret_scanner::{SecretScanEngine, SecretScanEngineConfig};
-        let first = "AKIAZ7Q3VJ2M4XK9PLR6";
-        let second = "AKIAX9Q7W5E3R1T8Y6U4";
+        let first = "ghp_q8Zr2LmX7vKp4NwT9sYb3HdJ6fGc1eRa0uVi";
+        let second = "ghp_6nmCEa00cbNmH0B4zKPSYOPP5z1oYFR26doJl";
         let body = serde_json::json!({"messages": [
             {"role": "assistant", "content": "Earlier response"},
             {"role": "user", "content": [
@@ -2924,7 +2939,7 @@ mod tests {
             "model": "gpt-5.5",
             "messages": [{
                 "role": "user",
-                "content": "aws key AKIAZ7Q3VJ2M4XK9PLR6 and token ghp_q8Zr2LmX7vKp4NwT9sYb3HdJ6fGc1eRa0uVi"
+                "content": "aws_secret_access_key=6nmCEa00cbNmH0B4zKPSYOPP5z1oYFR26doJldQr and token ghp_q8Zr2LmX7vKp4NwT9sYb3HdJ6fGc1eRa0uVi"
             }]
         });
         let findings = findings_for(&body);
@@ -2936,7 +2951,7 @@ mod tests {
         // Dismiss just the AWS key, exactly as the popup's ignore button does.
         let aws = findings
             .iter()
-            .find(|f| f.rule_id == "aws-access-key-id")
+            .find(|f| f.rule_id == "aws-secret-access-key")
             .expect("AWS key detected");
         let salt = lr_secret_scanner::new_salt().unwrap();
         let hashes = [lr_secret_scanner::hash_secret(&aws.raw_text, &salt, 10).unwrap()];
@@ -2953,11 +2968,15 @@ mod tests {
         remaining.retain(|f| !cache.is_dismissed("client-1", Some(&salt), &digests, &f.raw_text));
 
         assert!(
-            !remaining.iter().any(|f| f.rule_id == "aws-access-key-id"),
+            !remaining
+                .iter()
+                .any(|f| f.rule_id == "aws-secret-access-key"),
             "the dismissed AWS key must not be reported again"
         );
         assert!(
-            remaining.iter().any(|f| f.rule_id != "aws-access-key-id"),
+            remaining
+                .iter()
+                .any(|f| f.rule_id != "aws-secret-access-key"),
             "other secrets in the same request must still be flagged"
         );
     }
@@ -2973,11 +2992,11 @@ mod tests {
             "input": [{
                 "role": "user",
                 "content": [{"type": "input_text",
-                             "text": "Is this my AWS key AKIAZ7Q3VJ2M4XK9PLR6"}]
+                             "text": "aws_secret_access_key=6nmCEa00cbNmH0B4zKPSYOPP5z1oYFR26doJldQr"}]
             }]
         }));
         assert_eq!(findings.len(), 1, "expected the AWS key to be detected");
-        assert_eq!(findings[0].rule_id, "aws-access-key-id");
+        assert_eq!(findings[0].rule_id, "aws-secret-access-key");
     }
 
     /// The same body as a websocket `response.create` message, which the proxy
@@ -2990,7 +3009,7 @@ mod tests {
             "input": [{
                 "role": "user",
                 "content": [{"type": "input_text",
-                             "text": "Is this my AWS key AKIAZ7Q3VJ2M4XK9PLR6"}]
+                             "text": "aws_secret_access_key=6nmCEa00cbNmH0B4zKPSYOPP5z1oYFR26doJldQr"}]
             }]
         }));
         assert_eq!(findings.len(), 1, "websocket messages must be scanned too");
@@ -3005,7 +3024,7 @@ mod tests {
             "messages": [{
                 "role": "user",
                 "content": [{"type": "text",
-                             "text": "Is this my AWS key AKIAZ7Q3VJ2M4XK9PLR6"}]
+                             "text": "aws_secret_access_key=6nmCEa00cbNmH0B4zKPSYOPP5z1oYFR26doJldQr"}]
             }]
         }));
         assert_eq!(findings.len(), 1, "expected the AWS key to be detected");
@@ -3016,15 +3035,15 @@ mod tests {
     #[test]
     fn skips_system_prompts_across_formats() {
         assert!(findings_for(&serde_json::json!({
-            "instructions": "Use key AKIAZ7Q3VJ2M4XK9PLR6",
+            "instructions": "aws_secret_access_key=6nmCEa00cbNmH0B4zKPSYOPP5z1oYFR26doJldQr",
         }))
         .is_empty());
         assert!(findings_for(&serde_json::json!({
-            "system": "Use key AKIAZ7Q3VJ2M4XK9PLR6",
+            "system": "aws_secret_access_key=6nmCEa00cbNmH0B4zKPSYOPP5z1oYFR26doJldQr",
         }))
         .is_empty());
         assert!(findings_for(&serde_json::json!({
-            "messages": [{"role": "system", "content": "Use key AKIAZ7Q3VJ2M4XK9PLR6"}],
+            "messages": [{"role": "system", "content": "aws_secret_access_key=6nmCEa00cbNmH0B4zKPSYOPP5z1oYFR26doJldQr"}],
         }))
         .is_empty());
     }
@@ -3159,5 +3178,85 @@ mod tests {
     fn global_ask_prevents_the_short_circuit() {
         let actions = vec![entry("__global", "ask")];
         assert!(!guardrails_allow_everything(&actions));
+    }
+}
+
+#[cfg(test)]
+mod secret_scan_quality_tests {
+    use super::*;
+
+    #[test]
+    fn structured_tool_private_keys_redact_the_original_multiline_value() {
+        let material = "whtWShJK3py2Nh1bWey7TsPWCMmmPRsRIs0cg240wR5nPxMgnPFkNj6Dl0IbSfxxVikEf/GcBB/TEZ5PhCH5a2Px9L8ihbSWxS+T2qPjUrE3Xtt5QSqydTGneV72XJxG";
+        let pem = format!("-----BEGIN PRIVATE KEY-----\n{material}\n-----END PRIVATE KEY-----\n");
+        let mut body = serde_json::json!({"messages":[{"role":"assistant", "content":[{
+            "type":"tool_use", "name":"write", "input":{"private_key":pem}
+        }]}]});
+        let texts = lr_guardrails::text_extractor::extract_request_text(&body);
+        let engine =
+            lr_secret_scanner::SecretScanEngine::new(&lr_secret_scanner::SecretScanEngineConfig {
+                entropy_threshold: 3.5,
+                allowlist: vec![],
+                scan_system_messages: false,
+            })
+            .unwrap();
+        let result = engine.scan(
+            &texts
+                .iter()
+                .enumerate()
+                .map(|(i, t)| lr_secret_scanner::ExtractedText {
+                    text: t.text.clone(),
+                    label: t.label.clone(),
+                    message_index: i,
+                })
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(result.findings.len(), 1);
+        assert_eq!(result.findings[0].raw_text, pem);
+        let mask = secret_scan_mask(&result);
+        let details = secret_scan_popup_content(&result, &texts, &body);
+        assert!(!details.request_json.unwrap().contains(material));
+        mask.apply(&mut body);
+        assert!(!body.to_string().contains(material));
+        assert_eq!(
+            body["messages"][0]["content"][0]["input"]["private_key"],
+            lr_secret_scanner::redaction::REDACTION_MESSAGE
+        );
+    }
+
+    #[test]
+    fn scanner_extracts_anthropic_tools_and_masks_monitor_excerpt() {
+        let secret = "6nmCEa00cbNmH0B4zKPSYOPP5z1oYFR26doJldQr";
+        for content in [
+            serde_json::json!({"type":"tool_use", "id":"1", "name":"run", "input":{"AWS_SECRET_ACCESS_KEY":secret}}),
+            serde_json::json!({"type":"tool_result", "tool_use_id":"1", "content":[{"type":"text", "text":format!("AWS_SECRET_ACCESS_KEY={secret}")}]}),
+        ] {
+            let body = serde_json::json!({"messages":[{"role":"user", "content":[content]}]});
+            let texts = lr_guardrails::text_extractor::extract_request_text(&body);
+            let engine = lr_secret_scanner::SecretScanEngine::new(
+                &lr_secret_scanner::SecretScanEngineConfig {
+                    entropy_threshold: 3.0,
+                    allowlist: vec![],
+                    scan_system_messages: false,
+                },
+            )
+            .unwrap();
+            let result = engine.scan(
+                &texts
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| lr_secret_scanner::ExtractedText {
+                        label: t.label.clone(),
+                        text: t.text.clone(),
+                        message_index: i,
+                    })
+                    .collect::<Vec<_>>(),
+            );
+            assert_eq!(result.findings.len(), 1);
+            assert_eq!(result.findings[0].raw_text, secret);
+            let preview = secret_scan_mask(&result).apply_text(&texts[0].text);
+            assert!(!preview.contains(secret));
+            assert!(preview.contains(lr_secret_scanner::redaction::REDACTION_MESSAGE));
+        }
     }
 }

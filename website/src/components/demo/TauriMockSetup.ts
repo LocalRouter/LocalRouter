@@ -5296,25 +5296,25 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     toast.success('Client secret scanning configuration saved (demo)')
     return null
   },
-  'test_secret_scan': () => ({
-    findings: [
+  'test_secret_scan': (args?: { input?: string }) => ({
+    findings: /(?:aws[_-]?)?secret[_-]?access[_-]?key["']?\s*[=:]\s*["']?[A-Za-z0-9/+=]{40}(?:[^A-Za-z0-9/+=]|$)/i.test(args?.input ?? '') ? [
       {
-        rule_id: 'aws-access-key-id',
-        rule_description: 'AWS Access Key ID',
+        rule_id: 'aws-secret-access-key',
+        rule_description: 'AWS Secret Access Key',
         category: 'Cloud Provider',
-        regex_pattern: '(?:^|[^A-Za-z0-9/+=])(AKIA[0-9A-Z]{16})(?:[^A-Za-z0-9/+=]|$)',
-        keywords: ['AKIA'],
-        rule_entropy_threshold: 3.0,
+        regex_pattern: '(?i)aws_secret_access_key\\s*[=:]\\s*([A-Za-z0-9/+=]{40})',
+        keywords: ['secret'],
+        rule_entropy_threshold: 4.0,
         message_index: 0,
-        matched_text: 'AKIA**************MPLE',
-        entropy: 3.42,
+        matched_text: '6nmCEa********************ldQr',
+        entropy: 4.8,
       },
-    ],
+    ] : [],
     scan_duration_ms: 1,
     rules_evaluated: 30,
   }),
   'get_secret_scanning_patterns': () => [
-    { id: 'aws-access-key-id', description: 'AWS Access Key ID', regex: '(?:^|[^A-Za-z0-9/+=])(AKIA[0-9A-Z]{16})(?:[^A-Za-z0-9/+=]|$)', category: 'Cloud Provider', entropy_threshold: 3.0, keywords: ['AKIA'] },
+    { id: 'aws-secret-access-key', description: 'AWS Secret Access Key', regex: '(?i)aws_secret_access_key\\s*[=:]\\s*([A-Za-z0-9/+=]{40})', category: 'Cloud Provider', entropy_threshold: 4.0, keywords: ['secret'] },
     { id: 'github-pat', description: 'GitHub Personal Access Token', regex: 'ghp_[A-Za-z0-9]{36,}', category: 'Version Control', entropy_threshold: 3.5, keywords: ['ghp_'] },
   ],
 

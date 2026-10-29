@@ -2,16 +2,16 @@ import { useState } from 'react'
 import { FirewallApprovalCard, type ApprovalAction } from '@app/components/shared/FirewallApprovalCard'
 import type { SecretFindingSummary } from '@app/types/tauri-commands'
 
-const SAMPLES = ['AKIAZ7Q3VJ2M4XK9PLR6', 'AKIAX9Q7W5E3R1T8Y6U4']
+const SAMPLES = ['6nmCEa00cbNmH0B4zKPSYOPP5z1oYFR26doJldQr', 'q8Zr2LmX7vKp4NwT9sYb3HdJ6fGc1eRa0uVi5zQ2']
 const MARKER = '[REDACTED: secret removed by LocalRouter]'
 const INTRO = ['Beginning of the deployment request', ...Array.from({ length: 60 }, (_, i) => `Earlier deployment detail ${i + 1}`)].join('\n')
 const OUTRO = [...Array.from({ length: 60 }, (_, i) => `Later deployment detail ${i + 1}`), 'End of the deployment request'].join('\n')
 const FINDINGS: SecretFindingSummary[] = SAMPLES.map((_, i) => ({
-  rule_id: 'aws-access-token', rule_description: 'AWS Access Key ID', category: 'cloud_provider',
+  rule_id: 'aws-secret-access-key', rule_description: 'AWS Secret Access Key', category: 'cloud_provider',
   request_match: null,
-  matched_text: i === 0 ? 'AKIA************PLR6' : 'AKIA************Y6U4', entropy: 4.12,
+  matched_text: i === 0 ? '6nmCEa********************ldQr' : 'q8Zr2L********************5zQ2', entropy: 4.12,
   context: { source: 'Message 2 · user message', line: 63,
-    before: `${INTRO}\nHelp me configure the deployment.\naws_access_key_id_${i + 1}=`,
+    before: `${INTRO}\nHelp me configure the deployment.\naws_secret_access_key_${i + 1}=`,
     after: `\nPlease check why authentication fails.\n${OUTRO}`,  },
 }))
 type Choice = 'redact' | 'allow'
@@ -21,7 +21,7 @@ type SavedPolicy = { choice: Choice; hash: string }
  * No requests are sent; saved hashes remain in memory. */
 export default function SecretRedactionPreview() {
   const count = new URLSearchParams(window.location.search).has('multiple') ? 2 : 1
-  const source = `${INTRO}\n${SAMPLES.slice(0, count).map((secret, i) => `aws_access_key_id_${i + 1}=${secret}`).join('\n')}\n${OUTRO}`
+  const source = `${INTRO}\n${SAMPLES.slice(0, count).map((secret, i) => `aws_secret_access_key_${i + 1}=${secret}`).join('\n')}\n${OUTRO}`
   const requestJson = JSON.stringify({ model: 'gpt-4o', messages: [{ role: 'assistant', content: 'Previous conversation message' }, { role: 'user', content: SAMPLES.reduce((text, secret) => text.split(secret).join(MARKER), source) }], temperature: 0.7 }, null, 2)
   const offsets = Array.from(requestJson.matchAll(/\[REDACTED: secret removed by LocalRouter\]/g), match => match.index!)
   const [current, setCurrent] = useState<number | null>(0)

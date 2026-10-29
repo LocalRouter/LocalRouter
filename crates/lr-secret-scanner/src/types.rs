@@ -63,7 +63,7 @@ pub struct SecretRule {
 }
 
 /// A single secret match found during scanning
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct SecretFinding {
     pub rule_id: String,
     pub rule_description: String,
@@ -90,6 +90,19 @@ pub struct SecretFinding {
     /// Shannon entropy (bits/char) of the secret part that gated the match
     /// (the rule's entropy group — e.g. a URI's password, a JWT's signature)
     pub entropy: f32,
+}
+
+// Debug is used by diagnostics and enclosing scan results. Never expose raw
+// material there; serde(skip) alone protects serialization, not formatting.
+impl std::fmt::Debug for SecretFinding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SecretFinding")
+            .field("rule_id", &self.rule_id)
+            .field("message_index", &self.message_index)
+            .field("matched_text", &self.matched_text)
+            .field("entropy", &self.entropy)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Result of scanning a request

@@ -95,7 +95,7 @@ pub struct SecretFindingRequestMatch {
 }
 
 /// Summary of a single secret finding for the approval popup
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct SecretFindingSummary {
     pub rule_id: String,
     pub rule_description: String,
@@ -113,6 +113,17 @@ pub struct SecretFindingSummary {
     pub context: Option<SecretFindingContext>,
     #[serde(default)]
     pub request_match: Option<SecretFindingRequestMatch>,
+}
+
+// Approval sessions are Debug too; keep reveal-only material out of logs.
+impl std::fmt::Debug for SecretFindingSummary {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SecretFindingSummary")
+            .field("rule_id", &self.rule_id)
+            .field("matched_text", &self.matched_text)
+            .field("entropy", &self.entropy)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Guardrail approval details (sent to popup)
@@ -1123,6 +1134,7 @@ mod tests {
             "serialized approval details leaked the plaintext secret: {json}"
         );
         assert!(json.contains("AKIA**********MPLE"), "mask should survive");
+        assert!(!format!("{details:?}").contains("AKIAIOSFODNN7EXAMPLE"));
     }
 
     /// A pending Ask approval for a client must not suppress its notify popup

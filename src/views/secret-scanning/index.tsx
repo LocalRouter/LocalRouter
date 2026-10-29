@@ -40,7 +40,8 @@ const BUTTON_STYLES: Record<SecretScanAction, string> = {
 }
 
 const DEFAULT_TEST_INPUT = [
-  "My AWS key is AKIAZ7Q3VJ2M4XK9PLR6",
+  "AWS_SECRET_ACCESS_KEY=6nmCEa00cbNmH0B4zKPSYOPP5z1oYFR26doJldQr",
+  "Access key ID (should NOT match): AKIAZ7Q3VJ2M4XK9PLR6",
   "GitHub token: ghp_q8Zr2LmX7vKp4NwT9sYb3HdJ6fGc1eRa0uVi",
   "password = 'super_s3cret_P@ssw0rd!'",
   "DATABASE_URL=postgres://app:Hq3vT8mZ2xLp9wKr@db:5432/main",

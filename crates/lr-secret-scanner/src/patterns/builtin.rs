@@ -74,23 +74,26 @@ pub fn builtin_patterns() -> Vec<PatternDef> {
     vec![
         // === Cloud Provider Keys ===
         PatternDef {
-            id: "aws-access-key-id",
-            description: "AWS Access Key ID",
-            regex: r"(?:^|[^A-Za-z0-9/+=])((?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16})(?:[^A-Za-z0-9/+=]|$)",
+            id: "aws-secret-access-key",
+            description: "AWS Secret Access Key",
+            regex: r#"(?i)\b(?:(?:aws[_ -]?)?secret[_ -]?access[_ -]?key|aws[_ -]?secret[_ -]?key)\\?['"]?\s*[=:]\s*\\?['"]?([A-Za-z0-9/+=]{40})(?:[^A-Za-z0-9/+=]|$)"#,
             secret_group: 1,
-            entropy: Some(3.0),
-            keywords: &["AKIA", "ASIA", "ABIA", "ACCA"],
+            entropy: Some(4.0),
+            keywords: &["secret"],
             category: SecretCategory::CloudProvider,
             ..BASE
         },
+        // STS session tokens are opaque, variable-length credentials. Match
+        // named fields and signed-request headers, not arbitrary base64 text.
         PatternDef {
-            id: "aws-secret-access-key",
-            description: "AWS Secret Access Key",
-            regex: r#"(?i)(?:aws_secret_access_key|aws_secret_key|secret_access_key|secretaccesskey)\\?['"]?\s*[=:]\s*\\?['"]?([A-Za-z0-9/+=]{40})(?:[^A-Za-z0-9/+=]|$)"#,
-            secret_group: 1,
-            entropy: Some(4.0),
-            keywords: &["aws_secret", "secret_access_key", "secretaccesskey"],
+            id: "aws-session-token",
+            description: "AWS Session Token",
+            regex: r#"(?i)\b((?:aws[_-]?)?(?:session|security)[_-]?token|x-amz-security-token)\\?['"]?\s*[=:]\s*\\?['"]?([A-Za-z0-9/+=]{20,})(?:[^A-Za-z0-9/+=]|$)"#,
+            secret_group: 2,
+            entropy: Some(3.5),
+            keywords: &["token"],
             category: SecretCategory::CloudProvider,
+            placeholder: PlaceholderPolicy::Contextual,
             ..BASE
         },
         PatternDef {
@@ -395,6 +398,8 @@ pub fn builtin_patterns() -> Vec<PatternDef> {
                 "api_token",
                 "api-token",
                 "api-secret",
+                "apisecret",
+                "apitoken",
             ],
             category: SecretCategory::Generic,
             placeholder: PlaceholderPolicy::Generic,
@@ -404,12 +409,13 @@ pub fn builtin_patterns() -> Vec<PatternDef> {
         PatternDef {
             id: "generic-password-assignment",
             description: "Generic Password Assignment",
-            regex: r#"(?i)([A-Za-z0-9_.-]*(?:password|passwd|passphrase|pwd))\\?['"]?\s*[=:]\s*\\?['"]([^\s'"\\`]{8,64})\\?['"]"#,
+            regex: r#"(?i)([A-Za-z0-9_.-]*(?:password|passwd|passphrase|pwd))\\?['"]?\s*[=:]\s*\\?['"]([^\s'"\\`]{8,256})\\?['"]"#,
             secret_group: 2,
-            entropy: Some(3.2),
+            entropy: Some(3.0),
             keywords: &["password", "passwd", "passphrase", "pwd"],
             category: SecretCategory::Generic,
             placeholder: PlaceholderPolicy::Generic,
+            validate: Some(filters::assignment_key_is_secret),
             ..BASE
         },
         PatternDef {
@@ -424,15 +430,71 @@ pub fn builtin_patterns() -> Vec<PatternDef> {
             validate: Some(filters::assignment_key_is_secret),
             ..BASE
         },
+        // Bare .env / shell / YAML values. Keep these separate from quoted
+        // rules so punctuation cannot truncate a quoted password silently.
+        PatternDef {
+            id: "generic-api-key-unquoted",
+            description: "Generic API Key Assignment (unquoted)",
+            regex: r#"(?i)\b([A-Za-z0-9_.-]*(?:api[_-]?key|apikey|api[_-]?secret|api[_-]?token))\s*[=:]\s*([A-Za-z0-9_\-/.+=~]{20,256})(?:[\s,;}\]&]|$)"#,
+            secret_group: 2,
+            entropy: Some(3.5),
+            keywords: &[
+                "api_key",
+                "apikey",
+                "api-key",
+                "apisecret",
+                "api_secret",
+                "api-secret",
+                "apitoken",
+                "api_token",
+                "api-token",
+            ],
+            placeholder: PlaceholderPolicy::Generic,
+            validate: Some(filters::assignment_key_is_secret),
+            ..BASE
+        },
+        PatternDef {
+            id: "generic-password-unquoted",
+            description: "Generic Password Assignment (unquoted)",
+            regex: r#"(?i)\b([A-Za-z0-9_.-]*(?:password|passwd|passphrase|pwd))\s*[=:]\s*([^\s'"\\`$<>{}\[\],;&]{8,256})(?:[\s,;}\]&]|$)"#,
+            secret_group: 2,
+            entropy: Some(3.0),
+            keywords: &["password", "passwd", "passphrase", "pwd"],
+            placeholder: PlaceholderPolicy::Generic,
+            validate: Some(filters::assignment_key_is_secret),
+            ..BASE
+        },
+        PatternDef {
+            id: "generic-secret-unquoted",
+            description: "Generic Secret Assignment (unquoted)",
+            regex: r#"(?i)\b([A-Za-z0-9_.-]*(?:secret|token|credential))\s*[=:]\s*([A-Za-z0-9_\-/.+=~]{20,256})(?:[\s,;}\]&]|$)"#,
+            secret_group: 2,
+            entropy: Some(3.5),
+            keywords: &["secret", "token", "credential"],
+            placeholder: PlaceholderPolicy::Generic,
+            validate: Some(filters::assignment_key_is_secret),
+            ..BASE
+        },
         PatternDef {
             id: "bearer-token-header",
             description: "Bearer Token in Header",
-            regex: r#"(?i)authorization\\?['"]?\s*[=:]\s*\\?['"]?bearer\s+([A-Za-z0-9_\-/.+=~]{20,512})"#,
+            regex: r#"(?i)authorization\\?['"]?\s*[=:]\s*\\?['"]?bearer\s+([A-Za-z0-9_\-/.+=~]{20,})"#,
             secret_group: 1,
             entropy: Some(3.5),
             keywords: &["authorization"],
             category: SecretCategory::Generic,
             placeholder: PlaceholderPolicy::Generic,
+            ..BASE
+        },
+        PatternDef {
+            id: "basic-auth-header",
+            description: "HTTP Basic Authentication Credentials",
+            regex: r#"(?i)\bauthorization\\?['"]?\s*[=:]\s*\\?['"]?basic\s+([A-Za-z0-9+/]{12,}={0,2})(?:[^A-Za-z0-9+/=]|$)"#,
+            secret_group: 1,
+            entropy: Some(3.0),
+            keywords: &["authorization"],
+            placeholder: PlaceholderPolicy::Off,
+            validate: Some(filters::basic_auth_has_secret_password),
             ..BASE
         },
         // Any other scheme with inline credentials (https://user:token@host,

@@ -156,6 +156,7 @@ async fn clean_secret_scan_records_no_event() {
         scan_request_for_secrets(&state, "client", "gpt-5.5", &chat_body("hello there")).await;
     assert!(matches!(outcome, SecretScanOutcome::Allow));
     assert_eq!(state.monitor_store.list(0, 10, None).total, 0);
+    assert!(state.mcp_gateway.firewall_manager.list_pending().is_empty());
 }
 
 /// A scan with findings records one finished event carrying them.
@@ -166,7 +167,7 @@ async fn secret_scan_with_findings_records_one_event() {
         &state,
         "client",
         "gpt-5.5",
-        &chat_body("aws key AKIAZ7Q3VJ2M4XK9PLR6"),
+        &chat_body("token ghp_q8Zr2LmX7vKp4NwT9sYb3HdJ6fGc1eRa0uVi"),
     )
     .await;
     let listed = state.monitor_store.list(0, 10, None);
@@ -181,8 +182,11 @@ async fn secret_scan_with_findings_records_one_event() {
         MonitorEventData::SecretScan {
             findings_count,
             action_taken,
+            text_preview,
             ..
         } => {
+            assert!(!text_preview.contains(REDACTION_SECRET));
+            assert!(text_preview.contains(lr_secret_scanner::redaction::REDACTION_MESSAGE));
             assert!(findings_count.unwrap_or(0) >= 1);
             assert_eq!(action_taken.as_deref(), Some("notify"));
         }
@@ -190,7 +194,7 @@ async fn secret_scan_with_findings_records_one_event() {
     }
 }
 
-const REDACTION_SECRET: &str = "AKIAZ7Q3VJ2M4XK9PLR6";
+const REDACTION_SECRET: &str = "ghp_q8Zr2LmX7vKp4NwT9sYb3HdJ6fGc1eRa0uVi";
 
 fn remember_redaction(state: &AppState) {
     let salt = lr_secret_scanner::new_salt().unwrap();
@@ -207,9 +211,9 @@ fn remember_redaction(state: &AppState) {
             id: "redact-entry".into(),
             hash: lr_secret_scanner::hash_secret(REDACTION_SECRET, &salt, 10).unwrap(),
             iterations: 10,
-            rule_id: "aws-access-token".into(),
-            rule_description: "AWS Access Key".into(),
-            hint: "AKIA************PLR6".into(),
+            rule_id: "github-pat".into(),
+            rule_description: "GitHub Personal Access Token".into(),
+            hint: "ghp_q8********************0uVi".into(),
             dismissed_at: "2026-10-21T00:00:00Z".into(),
         });
     // Simulate a settings save/load, including compatibility of stored hashes.
@@ -336,7 +340,7 @@ async fn remembered_redaction_does_not_allow_other_secrets() {
             "client",
             "gpt-5.5",
             &chat_body(&format!(
-                "aws key {REDACTION_SECRET} other aws key AKIAX9Q7W5E3R1T8Y6U4"
+                "aws key {REDACTION_SECRET} other token ghp_6nmCEa00cbNmH0B4zKPSYOPP5z1oYFR26doJl"
             )),
         )
         .await
@@ -397,7 +401,7 @@ async fn next_secret_approval(state: &AppState) -> lr_mcp::gateway::firewall::Pe
 #[tokio::test]
 async fn secrets_are_approved_one_at_a_time_and_denial_stops_the_sequence() {
     use lr_mcp::gateway::firewall::FirewallApprovalAction as Action;
-    const SECOND: &str = "AKIAX9Q7W5E3R1T8Y6U4";
+    const SECOND: &str = "ghp_6nmCEa00cbNmH0B4zKPSYOPP5z1oYFR26doJl";
     for actions in [
         vec![Action::Deny],
         vec![Action::AllowOnce, Action::Deny],
@@ -409,7 +413,7 @@ async fn secrets_are_approved_one_at_a_time_and_denial_stops_the_sequence() {
             .config_manager
             .update(|cfg| cfg.secret_scanning.action = lr_config::SecretScanAction::Ask)
             .unwrap();
-        let body = chat_body(&format!("aws key {REDACTION_SECRET}, second key {SECOND}"));
+        let body = chat_body(&format!("token {REDACTION_SECRET}, second token {SECOND}"));
         let scan_state = state.clone();
         let scan_body = body.clone();
         let scan = tokio::spawn(async move {
@@ -482,7 +486,7 @@ async fn remembered_allow_only_allows_this_specific_secret() {
             "client",
             "gpt-5.5",
             &chat_body(&format!(
-                "aws key {REDACTION_SECRET}, second key AKIAX9Q7W5E3R1T8Y6U4"
+                "token {REDACTION_SECRET}, second token ghp_6nmCEa00cbNmH0B4zKPSYOPP5z1oYFR26doJl"
             )),
         )
         .await
@@ -501,4 +505,20 @@ async fn remembered_allow_only_allows_this_specific_secret() {
         )
         .unwrap();
     assert!(matches!(scan.await.unwrap(), SecretScanOutcome::Deny(_)));
+}
+
+#[tokio::test]
+async fn aws_identifiers_proceed_without_prompt_or_monitor_event() {
+    let state = secret_scan_state().await;
+    remember_redaction(&state); // Ask enabled; no approval should be necessary.
+    let outcome = scan_request_for_secrets(
+        &state,
+        "client",
+        "gpt-5.5",
+        &chat_body("AWS_ACCESS_KEY_ID=AKIAZ7Q3VJ2M4XK9PLR6"),
+    )
+    .await;
+    assert!(matches!(outcome, SecretScanOutcome::Allow));
+    assert_eq!(state.monitor_store.list(0, 10, None).total, 0);
+    assert!(state.mcp_gateway.firewall_manager.list_pending().is_empty());
 }
