@@ -1599,6 +1599,30 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                                     continue;
                                 }
 
+                                // Resolution also arrives when the HTTP request is cancelled.
+                                // Destroy rather than hide: close() is intercepted by the
+                                // app-wide minimize-to-tray handler for auxiliary windows.
+                                if notification.method == "firewall/approvalResolved" {
+                                    if let Some(window) = app_handle_for_firewall.get_webview_window(
+                                        &format!("firewall-approval-{}", request_id),
+                                    ) {
+                                        crate::ui::popup_activation::retire(window);
+                                    }
+                                    continue;
+                                }
+                                if notification.method != "firewall/approvalRequired" {
+                                    continue;
+                                }
+                                // Broadcasts can queue while a request is cancelled or
+                                // answered elsewhere. Never open an obsolete approval.
+                                let state = app_handle_for_firewall
+                                    .state::<Arc<lr_server::state::AppState>>();
+                                if !state.mcp_gateway.firewall_manager.list_pending().iter()
+                                    .any(|info| info.request_id == request_id)
+                                {
+                                    continue;
+                                }
+
                                 // Notify-only popups are informational (request
                                 // already allowed) — same window, different title
                                 let is_notify_only = notification

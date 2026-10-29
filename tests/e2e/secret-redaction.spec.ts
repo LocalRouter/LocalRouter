@@ -69,6 +69,19 @@ test('redact then allow only forwards after both secrets are reviewed', async ({
   await expect(page.getByTestId('outgoing-payload')).toContainText(SECOND_SECRET)
 })
 
+test('redacting every sequential secret completes without leaving an actionable popup', async ({ page }) => {
+  await page.goto('/__preview/secret-redaction?multiple')
+  const redact = page.getByRole('button', { name: 'Redact once', exact: true })
+  await redact.click()
+  await expect(page.getByText('q8Zr2L********************5zQ2', { exact: true }).first()).toBeVisible()
+  await expect(page.getByTestId('outgoing-payload')).toHaveText('Not forwarded')
+  await redact.click()
+  await expect(page.getByTestId('approval-popup')).toHaveCount(0)
+  await expect(page.getByTestId('outgoing-payload')).not.toContainText(SECRET)
+  await expect(page.getByTestId('outgoing-payload')).not.toContainText(SECOND_SECRET)
+  await expect(page.getByTestId('outgoing-payload')).toContainText(MARKER)
+})
+
 test('Always redact only remembers the displayed secret; remaining secret still asks next time', async ({ page }) => {
   await page.goto('/__preview/secret-redaction?multiple')
   await page.getByRole('button', { name: 'More redaction options' }).click()

@@ -561,12 +561,19 @@ export function FirewallApproval() {
       }
 
       await invoke("submit_firewall_approval", params)
-      await getCurrentWebviewWindow().close()
     } catch (err) {
       console.error("Failed to submit approval:", err)
       setError(typeof err === "string" ? err : "Failed to submit response")
       submittingRef.current = false
       setSubmitting(false)
+      return
+    }
+    // Submission has consumed the session. A window teardown failure must
+    // never re-enable actions against that already-resolved request.
+    try {
+      await getCurrentWebviewWindow().close()
+    } catch {
+      // The backend resolution listener may already have destroyed it.
     }
   }
 
