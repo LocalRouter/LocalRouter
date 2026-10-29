@@ -5,7 +5,8 @@ export const mockIPC = (handler: (cmd: string, args: unknown) => unknown) => {
   (window as unknown as { __TAURI_IPC_HANDLER__: typeof handler }).__TAURI_IPC_HANDLER__ = handler
 }
 
-export const mockWindows = () => {}
+export let currentWindowLabel = 'main'
+export const mockWindows = (label = 'main') => { currentWindowLabel = label }
 
 export const clearMocks = () => {
   delete (window as unknown as { __TAURI_IPC_HANDLER__?: unknown }).__TAURI_IPC_HANDLER__

@@ -144,8 +144,9 @@ export function getHeaderContent(requestType: RequestType, notifyOnly?: boolean)
 }
 
 /** Header section - exported for reuse in edit mode */
-export function FirewallApprovalHeader({ requestType, notifyOnly }: { requestType: RequestType; notifyOnly?: boolean }) {
+export function FirewallApprovalHeader({ requestType, notifyOnly, inactive }: { requestType: RequestType; notifyOnly?: boolean; inactive?: boolean }) {
   const header = getHeaderContent(requestType, notifyOnly)
+  if (inactive) header.description = "This approval is no longer active."
   return (
     <div className="mb-3 flex-shrink-0">
       <div className="flex items-center gap-2 mb-0.5">
@@ -181,6 +182,8 @@ export interface FirewallApprovalCardProps {
   isSecretScanRequest?: boolean
   /** Non-blocking notification: request already allowed, show Dismiss only */
   isNotifyOnly?: boolean
+  /** Backend session ended unexpectedly; retain context and offer only Dismiss. */
+  isInactive?: boolean
   secretScanFindings?: SecretFindingSummary[]
   secretScanRequestJson?: string | null
   secretScanLlmSource?: string | null
@@ -235,6 +238,7 @@ export function FirewallApprovalCard({
   isAutoRouterRequest,
   isSecretScanRequest,
   isNotifyOnly,
+  isInactive,
   secretScanFindings,
   secretScanRequestJson,
   secretScanLlmSource,
@@ -260,12 +264,12 @@ export function FirewallApprovalCard({
   const savingPolicyRef = useRef(false)
 
   const act = (action: ApprovalAction) => {
-    if (!savingPolicyRef.current && !submitting) onAction?.(action)
+    if (!isInactive && !savingPolicyRef.current && !submitting) onAction?.(action)
   }
 
   const rememberSecret = async (index: number, policy: "redact" | "allow") => {
     const save = policy === "redact" ? onRedactPermanently : onAllowSecretPermanently
-    if (!onAction || !save || savingPolicyRef.current || submitting) return
+    if (isInactive || !onAction || !save || savingPolicyRef.current || submitting) return
     savingPolicyRef.current = true
     setSavingPolicy(true)
     setPolicyErrors({})
@@ -289,7 +293,7 @@ export function FirewallApprovalCard({
       })
       return
     }
-    if (!onReveal) return
+    if (isInactive || !onReveal) return
     try {
       const value = await onReveal(index)
       if (value === null) {
@@ -323,8 +327,14 @@ export function FirewallApprovalCard({
   return (
     <div className={className}>
       {/* Header */}
-      <FirewallApprovalHeader requestType={requestType} notifyOnly={isNotifyOnly} />
+      <FirewallApprovalHeader requestType={requestType} notifyOnly={isNotifyOnly || isInactive} inactive={isInactive} />
 
+      {isInactive && (
+        <p role="status" className="text-xs text-muted-foreground py-3">
+          This approval is no longer active. This window can no longer block or change the request.
+          The request's final outcome is unknown here.
+        </p>
+      )}
       {/* Details Grid */}
       <div className="flex-1 overflow-auto">
         <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-xs">
@@ -519,6 +529,7 @@ export function FirewallApprovalCard({
                     <button
                       className="shrink-0 p-1 text-muted-foreground hover:text-foreground"
                       onClick={() => { void toggleReveal(i) }}
+                      disabled={isInactive && revealed[i] === undefined}
                       title={revealed[i] !== undefined ? "Hide secret" : "Reveal secret"}
                       aria-label={revealed[i] !== undefined ? "Hide secret" : "Reveal secret"}
                     >
@@ -555,17 +566,17 @@ export function FirewallApprovalCard({
       {/* Notify-only: informational popup — Dismiss, with escalation options.
           The dropdown reuses the Ask actions: allow_1_hour = 1-hour scan
           bypass for this client, deny_always = per-client action set to Off. */}
-      {isNotifyOnly ? (
+      {isNotifyOnly || isInactive ? (
         <div className="flex gap-2 pt-3 mt-auto flex-shrink-0">
           <div className="flex flex-1">
             <Button
-              className="flex-1 h-10 rounded-r-none font-bold"
+              className={`flex-1 h-10 font-bold ${isInactive ? "" : "rounded-r-none"}`}
               onClick={onDismiss}
-              disabled={!onDismiss || submitting || savingPolicy}
+              disabled={!onDismiss || (!isInactive && (submitting || savingPolicy))}
             >
               Dismiss
             </Button>
-            <DropdownMenu>
+            {!isInactive && <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button
                   className="h-10 px-2 rounded-l-none border-l border-background/30"
@@ -582,7 +593,7 @@ export function FirewallApprovalCard({
                   Ignore Secrets for Client
                 </DropdownMenuItem>
               </DropdownMenuContent>
-            </DropdownMenu>
+            </DropdownMenu>}
           </div>
         </div>
       ) : (

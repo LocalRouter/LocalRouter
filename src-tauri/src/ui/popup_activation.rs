@@ -98,21 +98,6 @@ pub async fn show(window: WebviewWindow) -> Result<(), String> {
     rx.await.map_err(|e| e.to_string())?
 }
 
-/// Retire an answered or cancelled approval without leaving a hidden window.
-/// Preserve the same macOS focus restoration as the title-bar close path.
-pub fn retire(window: WebviewWindow) {
-    let app = window.app_handle().clone();
-    if let Err(error) = app.run_on_main_thread(move || {
-        #[cfg(target_os = "macos")]
-        restore_after_close(&window.as_ref().window());
-        if let Err(error) = window.destroy() {
-            tracing::debug!("Could not retire approval window: {error}");
-        }
-    }) {
-        tracing::error!("Failed to schedule approval retirement: {error}");
-    }
-}
-
 #[cfg(target_os = "macos")]
 fn restore_after_close(window: &tauri::Window) {
     let focused = window.is_focused().unwrap_or(false);

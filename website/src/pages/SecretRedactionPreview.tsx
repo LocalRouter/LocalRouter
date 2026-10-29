@@ -1,4 +1,7 @@
 import { useState } from 'react'
+import { mockIPC, mockWindows } from '@tauri-apps/api/mocks'
+import { emit } from '@tauri-apps/api/event'
+import { FirewallApproval } from '@app/views/firewall-approval'
 import { FirewallApprovalCard, type ApprovalAction } from '@app/components/shared/FirewallApprovalCard'
 import type { SecretFindingSummary } from '@app/types/tauri-commands'
 
@@ -20,6 +23,55 @@ type SavedPolicy = { choice: Choice; hash: string }
 /** Development-only review using the real approval component and simulated requests.
  * No requests are sent; saved hashes remain in memory. */
 export default function SecretRedactionPreview() {
+  return new URLSearchParams(window.location.search).has('native')
+    ? <NativeApprovalPreview /> : <SharedApprovalPreview />
+}
+
+/** Real desktop view with mocked IPC, for lifecycle and race regressions. */
+function NativeApprovalPreview() {
+  const [closed, setClosed] = useState(false)
+  const query = new URLSearchParams(window.location.search)
+  const [backend] = useState(() => ({ pending: !query.has('missing'), submits: 0, dismisses: 0, closes: 0 }))
+  mockWindows('firewall-approval-preview')
+  mockIPC(async (command) => {
+    if (command === 'get_firewall_approval_details') {
+      if (!backend.pending) return null
+      if (query.has('endDuringLoad')) {
+        backend.pending = false
+        await emit('firewall-approval-ended')
+      }
+      return {
+        request_id: 'preview', client_id: 'client', client_name: 'Cursor',
+        tool_name: 'gpt-4o', server_name: 'Secret Scan', arguments_preview: '',
+        timeout_seconds: 86400, created_at_secs_ago: 0,
+        is_secret_scan_request: true, is_notify_only: false,
+        secret_scan_details: { findings: [FINDINGS[0]], scan_duration_ms: 1, request_json: null, llm_source: 'OpenAI' },
+      }
+    }
+    if (command === 'plugin:window|is_focused') return true
+    if (command === 'submit_firewall_approval') {
+      backend.submits++
+      backend.pending = false
+      if (query.has('lostOnSubmit')) throw 'Invalid parameters: Firewall approval request preview not found or expired'
+      await emit('firewall-approval-ended')
+    }
+    if (command === 'dismiss_firewall_notification') backend.dismisses++
+    if (command === 'plugin:window|close') {
+      backend.closes++
+      if (query.has('closeFailure') && backend.closes === 1) throw 'Window close failed'
+      setClosed(true)
+    }
+    return null
+  })
+  return <main className="dark bg-background text-foreground">
+    <button onClick={async () => { backend.pending = false; await emit('firewall-approval-ended') }}>End backend approval</button>
+    <div data-testid="native-approval" style={{ width: 440, height: 620 }}>
+      {closed ? <p>Window closed · submissions {backend.submits} · dismissals {backend.dismisses}</p> : <FirewallApproval />}
+    </div>
+  </main>
+}
+
+function SharedApprovalPreview() {
   const count = new URLSearchParams(window.location.search).has('multiple') ? 2 : 1
   const source = `${INTRO}\n${SAMPLES.slice(0, count).map((secret, i) => `aws_secret_access_key_${i + 1}=${secret}`).join('\n')}\n${OUTRO}`
   const requestJson = JSON.stringify({ model: 'gpt-4o', messages: [{ role: 'assistant', content: 'Previous conversation message' }, { role: 'user', content: SAMPLES.reduce((text, secret) => text.split(secret).join(MARKER), source) }], temperature: 0.7 }, null, 2)
@@ -30,6 +82,7 @@ export default function SecretRedactionPreview() {
   const [payload, setPayload] = useState<string | null>(null)
   const [status, setStatus] = useState('Request paused for your decision')
   const [saving, setSaving] = useState(false)
+  const [inactive, setInactive] = useState(false)
 
   const finish = (choices: Record<number, Choice>) => {
     setCurrent(null)
@@ -75,8 +128,8 @@ export default function SecretRedactionPreview() {
       <div><p className="text-xs uppercase tracking-widest text-blue-400">Local preview · no requests sent</p><h1 className="text-2xl font-semibold mt-2">Secret redaction</h1><p className="text-sm text-muted-foreground mt-2">Actual approval UI with simulated requests and in-memory hashes.</p><a className="text-sm underline text-muted-foreground" href={count === 1 ? '?multiple' : '?'}>{count === 1 ? 'Try a request with two secrets' : 'Try a request with one secret'}</a></div>
       <div className="grid gap-8 lg:grid-cols-2 items-start">
         <div className="space-y-4">
-          {current !== null ? <div className="rounded-lg border shadow-xl w-[440px] max-w-full" style={{ height: new URLSearchParams(window.location.search).has('notify') ? 415 : 480 }} data-testid="approval-popup"><FirewallApprovalCard key={current} className="flex h-full flex-col p-4 overflow-hidden" clientName="Cursor" toolName="gpt-4o" serverName="openai" isSecretScanRequest secretScanLlmSource={new URLSearchParams(window.location.search).get('llmSource') ?? 'OpenAI'} secretScanRequestJson={requestJson} isNotifyOnly={new URLSearchParams(window.location.search).has('notify')} onDismiss={() => setCurrent(null)} secretScanFindings={[{ ...FINDINGS[current], request_match: { start: offsets[current], end: offsets[current] + MARKER.length } }]} onAction={action} onReveal={async () => SAMPLES[current]} onAllowSecretPermanently={() => remember('allow')} onRedactPermanently={() => remember('redact')} submitting={saving} /></div> : <div className="rounded-lg border p-6 text-sm" role="status">{status}</div>}
-          <div className="flex gap-3 text-sm"><button className="rounded border px-3 py-2 hover:bg-muted" onClick={nextRequest}>Send the same request again</button><button className="rounded border px-3 py-2 hover:bg-muted" onClick={() => { setPolicies({}); setDecisions({}); setCurrent(0); setPayload(null); setStatus('Request paused for your decision') }}>Reset preview</button></div>
+          {current !== null ? <div className="rounded-lg border shadow-xl w-[440px] max-w-full" style={{ height: new URLSearchParams(window.location.search).has('notify') ? 415 : 480 }} data-testid="approval-popup"><FirewallApprovalCard key={current} className="flex h-full flex-col p-4 overflow-hidden" clientName="Cursor" toolName="gpt-4o" serverName="openai" isSecretScanRequest isInactive={inactive} secretScanLlmSource={new URLSearchParams(window.location.search).get('llmSource') ?? 'OpenAI'} secretScanRequestJson={requestJson} isNotifyOnly={new URLSearchParams(window.location.search).has('notify')} onDismiss={() => setCurrent(null)} secretScanFindings={[{ ...FINDINGS[current], request_match: { start: offsets[current], end: offsets[current] + MARKER.length } }]} onAction={action} onReveal={async () => SAMPLES[current]} onAllowSecretPermanently={() => remember('allow')} onRedactPermanently={() => remember('redact')} submitting={saving} /></div> : <div className="rounded-lg border p-6 text-sm" role="status">{status}</div>}
+          <div className="flex gap-3 text-sm"><button className="rounded border px-3 py-2 hover:bg-muted" onClick={() => { setInactive(false); nextRequest() }}>Send the same request again</button><button className="rounded border px-3 py-2 hover:bg-muted" onClick={() => { setInactive(false); setPolicies({}); setDecisions({}); setCurrent(0); setPayload(null); setStatus('Request paused for your decision') }}>Reset preview</button><button className="rounded border px-3 py-2 hover:bg-muted" onClick={() => setInactive(true)}>Simulate ended approval</button></div>
         </div>
         <div className="space-y-5 text-sm">
           <section className="rounded-lg border p-4 space-y-2"><h2 className="font-medium">Outgoing request</h2><pre className="whitespace-pre-wrap break-words text-xs font-mono bg-muted rounded p-3" data-testid="outgoing-payload">{payload ?? 'Not forwarded'}</pre><p className="text-xs text-muted-foreground">{status}</p></section>

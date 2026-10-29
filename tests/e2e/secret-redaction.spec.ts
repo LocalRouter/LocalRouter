@@ -194,3 +194,51 @@ test('secret popup shows the supplied LLM provider source instead of a model id'
   await expect(popup.getByRole('tab')).toHaveCount(0)
   await expect(popup.getByLabel('Complete request JSON').locator('mark')).toBeInViewport()
 })
+
+
+test('an ended approval stays visible with its context and only Dismiss', async ({ page }) => {
+  await page.goto('/__preview/secret-redaction?multiple')
+  const popup = page.getByTestId('approval-popup')
+  await page.getByRole('button', { name: 'Simulate ended approval' }).click()
+  await expect(popup).toBeVisible()
+  await expect(popup).toContainText('This approval is no longer active')
+  await expect(popup).toContainText("The request's final outcome is unknown here")
+  await expect(popup).toContainText('AWS Secret Access Key')
+  await expect(popup).not.toContainText('Potential secrets were sent')
+  await expect(popup.getByLabel('Complete request JSON')).toBeVisible()
+  await expect(popup.getByRole('button', { name: 'Redact once', exact: true })).toHaveCount(0)
+  await expect(popup.getByRole('button', { name: 'Allow', exact: true })).toHaveCount(0)
+  await expect(popup.getByRole('button', { name: 'Block', exact: true })).toHaveCount(0)
+  await expect(popup.getByRole('button', { name: 'More redaction options' })).toHaveCount(0)
+  await expect(popup.getByRole('button', { name: 'Reveal secret', exact: true })).toBeDisabled()
+  await popup.getByRole('button', { name: 'Dismiss', exact: true }).click()
+  await expect(popup).toHaveCount(0)
+})
+
+
+for (const query of ['native', 'native&missing', 'native&endDuringLoad', 'native&lostOnSubmit', 'native&closeFailure']) {
+  test(`desktop approval remains visible when its session ends: ${query}`, async ({ page }) => {
+    await page.goto(`/__preview/secret-redaction?${query}`)
+    const popup = page.getByTestId('native-approval')
+    if (query === 'native') {
+      await expect(popup.getByRole('button', { name: 'Redact once', exact: true })).toBeEnabled()
+      await page.getByRole('button', { name: 'End backend approval' }).click()
+    }
+    if (query.includes('lostOnSubmit') || query.includes('closeFailure')) {
+      await popup.getByRole('button', { name: 'Redact once', exact: true }).click()
+    }
+    await expect(popup).toContainText('This approval is no longer active')
+    await expect(popup).not.toContainText('Window closed')
+    await expect(popup.getByRole('button', { name: 'Redact once', exact: true })).toHaveCount(0)
+    await popup.getByRole('button', { name: 'Dismiss', exact: true }).click()
+    await expect(popup).toContainText('Window closed')
+    await expect(popup).toContainText('dismissals 0')
+  })
+}
+
+test('desktop closes after its own successful approval', async ({ page }) => {
+  await page.goto('/__preview/secret-redaction?native')
+  const popup = page.getByTestId('native-approval')
+  await popup.getByRole('button', { name: 'Redact once', exact: true }).click()
+  await expect(popup).toContainText('Window closed · submissions 1')
+})

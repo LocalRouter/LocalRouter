@@ -312,8 +312,9 @@ struct PendingRequestGuard {
 impl Drop for PendingRequestGuard {
     fn drop(&mut self) {
         self.pending.remove(&self.id);
-        // Also runs when the awaiting HTTP request is dropped. The popup must
-        // not outlive its blocking session, even if no response was submitted.
+        // Also runs when the awaiting HTTP request is dropped. Tell the popup
+        // to stop offering blocking actions, preserving it as information until
+        // the user dismisses it even if no response was submitted.
         if let Some(broadcast) = &self.notification_broadcast {
             let _ = broadcast.send((
                 "_firewall".to_string(),
