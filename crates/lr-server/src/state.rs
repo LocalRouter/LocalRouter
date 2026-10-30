@@ -1065,6 +1065,27 @@ impl AppState {
         // Share the same approval manager between gateway and server
         mcp_gateway.set_sampling_approval_manager(self.sampling_approval_manager.clone());
 
+        // Push Relay settings, and remembered upstream capabilities written
+        // back to the config as derived state (no config-changed event)
+        mcp_gateway.update_push_relay_config(&self.config_manager.get().push_relay);
+        let snapshot_config = self.config_manager.clone();
+        mcp_gateway.set_capability_snapshot_persister(Arc::new(move |snapshots| {
+            let config_manager = snapshot_config.clone();
+            Box::pin(async move {
+                match config_manager.record_capability_snapshots(&snapshots) {
+                    Ok(true) => {
+                        if let Err(e) = config_manager.save().await {
+                            tracing::warn!("Failed to save remembered MCP capabilities: {}", e);
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(e) => {
+                        tracing::warn!("Failed to record remembered MCP capabilities: {}", e)
+                    }
+                }
+            })
+        }));
+
         // Wire passthrough: forward server→client requests via SSE connection manager
         let sse_mgr = self.sse_connection_manager.clone();
         mcp_gateway.set_client_request_sender(move |client_id, request| {
