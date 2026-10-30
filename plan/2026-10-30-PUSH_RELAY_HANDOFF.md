@@ -12,7 +12,7 @@ raw as before, and `initialize` never waits longer than its existing 2 s.
 
 | Item | Notes |
 | --- | --- |
-| `PushRelayConfig` | `AppConfig.push_relay`; `enabled` (true) and `default_permission` (`Allow`) — the only global settings. Omitted from YAML while default. Unknown keys (`limits`, `webhook_egress_enabled`, `allow_loopback_http`, `ask_timeout_secs`) are ignored on load. |
+| `PushRelayConfig` | `AppConfig.push_relay`; `enabled` (true), `default_permission` (`Allow`), `channel_messages_per_minute` (10, 1–600), `history_retention_hours` (24, 1–720) and `history_max_events` (10,000, 100–1,000,000) — the only global settings. `PushRelayConfig::validate` checks the bounds. Omitted from YAML while default; each absent field takes its default. Unknown keys (`limits`, `webhook_egress_enabled`, `allow_loopback_http`, `ask_timeout_secs`) are ignored on load. |
 | `PushPermission` | `Allow | Ask | Block`, snake_case. |
 | `PushPermissions` | `Client.push_permissions`: `global: Option<_>`, `servers: {server_id: _}`, `events: {"server_id__event_name": _}` (`PushPermissions::event_key`, unqualified upstream event name). `effective(app_default, server_id, event_name)` = event → server → client → app default; `effective_for_server`. |
 | `Client::push_permission(&cfg.push_relay, server, event)` | Same, but `Block` when Push Relay is disabled. Combine with `McpPermissions` yourself: push never widens MCP access. |
@@ -192,8 +192,13 @@ returns an uninitialised `Arc<dyn Transport>` (you must send `initialize` /
 - Fingerprint covers stdio command + args, not `cwd` (plan names command + args).
 - `EventDeliveryMode` also records `webhook` (so webhook-only types can be shown as unsupported);
   an `events/list` entry without `delivery` counts as poll; unknown modes are ignored.
-- Every limit is an internal constant in `crates/lr-mcp/src/gateway/push_relay/limits.rs`
-  (`PushRelayLimits::default()`), not configuration; tests shrink them with `PushRelay::set_limits`.
+- Three limits come from settings: `PushRelayLimits::apply_config` sets `channel_rate_per_minute`,
+  `journal_retention_secs` and `journal_max_events` from `channel_messages_per_minute`,
+  `history_retention_hours` and `history_max_events`. `PushRelay::new` starts from the config and
+  `PushRelay::update_config` re-applies it, pruning every journal to the new bounds at once. Every
+  other limit is an internal constant in `crates/lr-mcp/src/gateway/push_relay/limits.rs`
+  (`PushRelayLimits::default()`), not configuration; tests shrink them with `PushRelay::set_limits`
+  (which replaces the settings-derived three as well until the next `update_config`).
   `webhook_retries` is `webhook_retry_delays_secs: [5, 30, 120, 600, 1800]` (first try + one
   retry per delay = 6 attempts).
 - `observed_at` is when the content last changed, not when it was last confirmed (writing on
@@ -235,7 +240,7 @@ always `Some` after `with_mcp`). All types are `Serialize`.
 
 | Need | API |
 | --- | --- |
-| Global settings | `config.push_relay` (`PushRelayConfig`: `enabled`, `default_permission`). Save with `config_manager.update` + `save()`; a `config-changed` listener in `main.rs` then calls `AppState::apply_push_relay_config`, so a command only has to save. (Calling `state.apply_push_relay_config(&cfg.push_relay)` directly is also fine and idempotent.) |
+| Global settings | `config.push_relay` (`PushRelayConfig`: `enabled`, `default_permission`, `channel_messages_per_minute`, `history_retention_hours`, `history_max_events`). `update_push_relay_config` validates through `apply_push_relay_update` (an out-of-bounds value changes nothing), then saves with `config_manager.update` + `save()`; a `config-changed` listener in `main.rs` then calls `AppState::sync_push_relay_settings`, so a command only has to save. The Info tab's Settings card (`src/views/push-relay/RelaySettingsCard.tsx`) edits the three numeric settings. |
 | Per-client fields | `Client.push_permissions` (`PushPermissions { global, servers, events }`) and `push_webhook_urls`. The fallback tools have no setting: they are shown unless the session declared MCP Events. Saving the client fires `clients-changed`, which calls `relay.notify_clients_changed()` (list_changed to sessions, held events re-evaluated, blocked streams end). Helpers: `Client::set_push_event_permission(server_id, event, Option<PushPermission>)`, `Client::approve_push_webhook_url(url)`. |
 | Permission tree data | `relay.client_event_types(client_id) -> Vec<ClientEventTypeInfo { qualified_name, server_id, event_name, permission (effective), session_override }>` — only servers the client may see under MCP permissions. Session overrides come from "for this session" decisions; clear one with `relay.clear_session_override(client_id, server_id, event_name)`. |
 | Upstream sources | `relay.upstream_sources() -> Vec<UpstreamSourceInfo { server_id, server_name, enabled, transport (stdio/http/websocket), connection (shared/per_session), snapshot_current, protocol_version, observed_at, channels, resource_subscribe, event_types: [UpstreamEventTypeInfo { name, description, modes, ingress (push/poll/channel/null), supported, unsupported_reason ("webhook-only — not supported") }] }>`. Built from the remembered capability snapshots. |

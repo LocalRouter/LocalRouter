@@ -10,8 +10,9 @@ consume — translating between forms where they differ. Clients with no native 
 LocalRouter's own polling tools as a fallback.
 
 It is enabled by default, with Block / Ask / Allow at the global, per-client, per-server and
-per-event-type levels. The only global settings are the on/off switch and the global default
-permission; every bound is an internal constant (see "Limits").
+per-event-type levels. The global settings are the on/off switch, the global default
+permission, the Claude Channels rate and the per-client event history; every other bound is an
+internal constant (see "Limits").
 
 LocalRouter is a **proxy with control over every event**, never a passthrough: every occurrence
 flows through LocalRouter, where it can be seen in Monitor, held for approval, edited or dropped.
@@ -493,17 +494,30 @@ it as a fixture.
 
 ## Limits
 
-None of these is configuration. Every value is an internal constant, defined in one place
-(`PushRelayLimits::default()` in `crates/lr-mcp/src/gateway/push_relay/limits.rs`, plus
-`FIRST_DISCOVERY_WAIT` beside it). They are deliberately generous: they exist to bound memory and
-runaway loops, not to ration normal use. Tests shrink them through `PushRelay::set_limits` and
-`McpGateway::set_first_discovery_wait` to reach a bound quickly.
+Two global settings, in `push_relay` in the config and on the Push Relay page's Info tab, control
+how the relay delivers and keeps events:
+
+| Setting | Default | Bounds | What it controls |
+| --- | --- | --- | --- |
+| `channel_messages_per_minute` | 10 per session | 1–600 | Claude Channels messages per client session per minute. Beyond it, events are coalesced into one "N more events — use `EventPoll`" message, sent once the minute allows. Limits how often Claude is woken and how much of its context events take. |
+| `history_retention_hours` | 24 h | 1–720 | Age after which an occurrence leaves the client's journal (later cursors see `truncated`): how far back a polling or reconnecting client can catch up. |
+| `history_max_events` | 10,000 per client | 100–1,000,000 | Occurrences held in each client's journal; the oldest go first. |
+
+`update_push_relay_config` refuses a value out of its bounds and changes nothing. A config without
+these keys takes the defaults, and a setting at its default is not written. They reach the relay
+through `AppState::sync_push_relay_settings` at startup and on every change
+(`PushRelayLimits::apply_config`); the rate applies to the next channel message, and existing
+journals adopt the history bounds at once, dropping their oldest entries when a bound is lowered.
+
+Everything else is an internal constant, defined in one place (`PushRelayLimits::default()` in
+`crates/lr-mcp/src/gateway/push_relay/limits.rs`, plus `FIRST_DISCOVERY_WAIT` beside it). They
+are deliberately generous: they exist to bound memory and runaway loops, not to ration normal
+use. Tests shrink them through `PushRelay::set_limits` and `McpGateway::set_first_discovery_wait`
+to reach a bound quickly.
 
 | Limit | Value | What it bounds |
 | --- | --- | --- |
-| `journal_max_events` | 10,000 per client | Occurrences held for polling / replay |
-| `journal_max_bytes` | 64 MiB per client | Same, by size (first limit wins) |
-| `journal_retention` | 24 h | Age after which occurrences are dropped (later cursors see `truncated`) |
+| `journal_max_bytes` | 64 MiB per client | Journal size by event data, beside `history_max_events` (first limit wins) |
 | `max_event_bytes` | 1 MiB | One occurrence's `data`; larger events are dropped with a Monitor error |
 | `ask_hold_cap` | 1,000 per client | Held events awaiting a decision (they have no timeout); beyond it Ask events are denied with a Monitor record |
 | `first_discovery_wait` | 10 s | Wait for a server with no snapshot on first discovery |
@@ -516,7 +530,6 @@ runaway loops, not to ration normal use. Tests shrink them through `PushRelay::s
 | `poll_max_wait` | 50 s | Ceiling on `EventPoll`'s `wait_seconds` (kept under common client tool timeouts) |
 | `watch_max_lifetime` | 24 h | `/events/watch` connection lifetime (re-arm after) |
 | `channel_max_content` | 16 KiB | Rendered `content` per channel message; longer is truncated with a pointer to `EventPoll` |
-| `channel_rate` | 60 / min per session | Beyond this, events are coalesced into one "N more events — use `EventPoll`" message |
 | `webhook_timeout` | 10 s | Per delivery attempt |
 | `webhook_retries` | 6 attempts: 5 s, 30 s, 2 min, 10 min, 30 min | Then the subscription is suspended until refreshed |
 | `webhook_max_subscriptions` | 100 per client | Active webhook subscriptions |
@@ -524,8 +537,9 @@ runaway loops, not to ration normal use. Tests shrink them through `PushRelay::s
 
 ## Configuration and UI
 
-- `lr-config`: `PushRelayConfig { enabled (default true), default_permission (default Allow) }`
-  — nothing else is global. `capability_snapshot` on each MCP server entry; on `Client`:
+- `lr-config`: `PushRelayConfig { enabled (default true), default_permission (default Allow),
+  channel_messages_per_minute (default 10), history_retention_hours (default 24),
+  history_max_events (default 10,000) }` — nothing else is global (bounds in "Limits"). `capability_snapshot` on each MCP server entry; on `Client`:
   `push_permissions` (the client/server/event tree, `Option` at the root meaning inherit) and
   `push_webhook_urls` (approved callback URLs). Serialise only when non-default. Unknown keys are
   ignored, so a config carrying keys LocalRouter does not read (`push_relay.limits`,
@@ -539,13 +553,14 @@ runaway loops, not to ration normal use. Tests shrink them through `PushRelay::s
   `OPTIMIZE_FEATURES`) and a Push Relay card on the Optimize overview (with the master switch,
   and a pill in its MCP pipeline diagram). The Push Relay page has one **Info** tab: the master
   switch, the default permission, a sample approval popup, each client's effective permission,
-  and the upstream sources with their remembered capabilities and ingress modes (webhook-only
+  a **Settings** card with the channel rate and the two event-history bounds (unit, default and
+  bounds shown beside each), and the upstream sources with their remembered capabilities and ingress modes (webhook-only
   ones marked unsupported). A **Push** card on each client: the permission tree with its sample
   popup, a note on the automatic fallback tools, approved webhook URLs, and for Claude Code the
   STDIO bridge notice and launch command. Held events are answered in the approval popup. Each
   Tauri command is updated in all four places per `AGENTS.md` (Rust, `src/types/tauri-commands.ts`,
   `TauriMockSetup.ts`, usage): `get_push_relay_config`, `update_push_relay_config` (enabled,
-  default permission), `list_push_sources`, `list_pending_push_approvals` and
+  default permission, channel rate, history hours and events — validated against their bounds), `list_push_sources`, `list_pending_push_approvals` and
   `submit_push_approval` (the popup), `get_client_push_settings`, `set_client_push_permission`,
   `remove_client_push_webhook_url`, `get_claude_code_mcp_setup`,
   `switch_claude_code_to_stdio_bridge`.

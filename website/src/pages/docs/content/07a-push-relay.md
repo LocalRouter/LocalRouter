@@ -7,7 +7,7 @@ LocalRouter is a proxy with control over every event, never a passthrough. Every
 **Key points:**
 
 - Enabled by default, with Block / Ask / Allow at the global, per-client, per-server and per-event-type levels
-- The global settings are the on/off switch and the default permission; everything else is per client, and every bound (journal size, poll page size, webhook retries) is fixed internally
+- The global settings are the on/off switch, the default permission, the Claude Code Channels message rate and how much event history each client keeps; everything else is per client, and every other bound (journal byte size, poll page size, webhook retries) is fixed internally
 - Push is exposed to a client only when at least one upstream server it can already use offers push; Push Relay never widens a client's MCP permissions
 - Every delivery form shares the same event id, so an app that combines mechanisms can deduplicate
 - Apps with no native push mechanism get LocalRouter's polling tools instead
@@ -46,6 +46,16 @@ Event names are qualified with the server name, as tools are: `vocalcord__messag
 | Fallback tools | Every other client | `EventList`, `EventPoll`, `EventWait` |
 
 The client chooses a native mode by calling it (`events/stream`, `events/poll` or `events/subscribe`). Webhook subscriptions are always accepted. Webhook deliveries are outbound only and happen after the event has passed permissions, Ask and Monitor. Callback URLs must be HTTPS, except `http://` to a loopback address (`127.0.0.1`, `::1`, `localhost`), which is always accepted for local clients, and the first delivery to a new callback URL asks for approval.
+
+**Settings.** The Push Relay page's Info tab has a Settings card that applies to every client:
+
+| Setting | Default | Range | What it controls |
+| --- | --- | --- | --- |
+| Channel messages per minute | 10 per session | 1–600 | How often Claude Code is woken by Channel messages, and so how much of its context events take. Beyond the rate, further events are combined into one "N more events — use `EventPoll`" message once the minute allows; nothing is lost, because every event stays in the journal. |
+| Event history | 24 hours | 1–720 hours | How far back a polling or reconnecting client can catch up. Older events leave the client's journal, and a cursor that pointed before them reports that events were missed. |
+| Event history size | 10,000 events per client | 100–1,000,000 | The most events each client's journal keeps; the oldest go first. |
+
+Channel delivery itself has no switch: it is always on for a client that accepts Channels. A change applies at once; lowering either history bound trims existing journals immediately.
 
 <!-- @entry push-relay-permissions -->
 
