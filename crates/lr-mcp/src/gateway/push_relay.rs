@@ -17,8 +17,8 @@ pub mod webhook;
 
 pub use ask::{HeldPushEventInfo, PushDecision, PushDecisionAction};
 pub use relay::{
-    ClientEventTypeInfo, ClientLookup, PushConfigChange, PushConfigPersister, PushRelay,
-    UpstreamSourceInfo, WatchError, WebhookSubscriptionInfo,
+    ClientEventTypeInfo, ClientLookup, HeldChangedListener, PushConfigChange, PushConfigPersister,
+    PushRelay, UpstreamSourceInfo, WatchError, WebhookSubscriptionInfo,
 };
 pub use upstream::{connect_relay_upstream, SubscriptionInfo};
 

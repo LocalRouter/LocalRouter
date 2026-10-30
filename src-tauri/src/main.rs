@@ -1522,23 +1522,34 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                         )
                         .await;
                     });
-                    // Push permissions and fallback-tool settings may have changed
-                    if let Some(relay) = &app_state_for_clients.push_relay {
-                        relay.notify_clients_changed();
-                    }
                 });
                 info!("Registered clients-changed listener for permission notifications");
 
-                // Push Relay settings take effect as soon as the config is saved
-                let app_state_for_push = app_state.clone();
-                let config_manager_for_push = config_manager.clone();
-                app.listen("config-changed", move |_event| {
-                    let push_relay = config_manager_for_push.get().push_relay;
-                    let app_state = app_state_for_push.clone();
-                    tauri::async_runtime::spawn(async move {
-                        app_state.apply_push_relay_config(&push_relay);
+                // Push Relay settings take effect as soon as they are written.
+                // Every settings write goes through `ConfigManager::update`
+                // (which emits config-changed after syncing the client
+                // manager the relay reads clients from); client edits also
+                // emit clients-changed. Both reach the relay through
+                // `sync_push_relay_settings`, which is idempotent.
+                for event in ["config-changed", "clients-changed"] {
+                    let app_state = app_state.clone();
+                    app.listen(event, move |_event| {
+                        let app_state = app_state.clone();
+                        tauri::async_runtime::spawn(async move {
+                            app_state.sync_push_relay_settings();
+                        });
                     });
-                });
+                }
+
+                // The held (Ask) queue changed: the Push Relay page refreshes
+                if let Some(relay) = &app_state.push_relay {
+                    let app_handle = app.handle().clone();
+                    relay.set_held_changed_listener(std::sync::Arc::new(move || {
+                        if let Err(e) = app_handle.emit("push-approvals-changed", ()) {
+                            tracing::debug!("Failed to emit push-approvals-changed: {}", e);
+                        }
+                    }));
+                }
 
                 // Re-evaluate pending firewall approvals when permissions or strategies change.
                 // clients-changed: covers client permission updates (MCP, model, guardrails)
@@ -2983,6 +2994,9 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands_push_relay::get_push_relay_config,
             ui::commands_push_relay::update_push_relay_config,
             ui::commands_push_relay::list_push_sources,
+            ui::commands_push_relay::list_pending_push_approvals,
+            ui::commands_push_relay::submit_push_approval,
+            ui::commands_push_relay::list_active_push_subscriptions,
             ui::commands_push_relay::get_client_push_settings,
             ui::commands_push_relay::set_client_push_permission,
             ui::commands_push_relay::set_client_push_fallback_tools,

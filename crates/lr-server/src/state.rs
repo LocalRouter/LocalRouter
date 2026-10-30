@@ -1235,15 +1235,24 @@ impl AppState {
         }
     }
 
-    /// Apply changed Push Relay settings (call after saving `push_relay`).
-    pub fn apply_push_relay_config(&self, config: &lr_config::PushRelayConfig) {
+    /// The one path by which saved settings reach the Push Relay. Call after
+    /// any configuration write: global `push_relay` settings, a client's push
+    /// permissions or fallback mode, and MCP permission changes (which can
+    /// newly hide a server, so its events must stop). Changed global settings
+    /// are applied; either way held events are re-evaluated against the new
+    /// permissions, list changes are announced and streams that became
+    /// blocked end. Idempotent.
+    pub fn sync_push_relay_settings(&self) {
+        let config = self.config_manager.get().push_relay;
         match &self.push_relay {
             Some(relay) => {
-                if relay.config() != *config {
-                    relay.update_config(config);
+                if relay.config() != config {
+                    relay.update_config(&config);
+                } else {
+                    relay.notify_clients_changed();
                 }
             }
-            None => self.mcp_gateway.update_push_relay_config(config),
+            None => self.mcp_gateway.update_push_relay_config(&config),
         }
     }
 

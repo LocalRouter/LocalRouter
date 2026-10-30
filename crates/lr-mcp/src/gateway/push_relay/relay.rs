@@ -67,6 +67,10 @@ const CHANNEL_DEDUPE_WINDOW: usize = 512;
 /// Looks up a client's current configuration.
 pub type ClientLookup = Arc<dyn Fn(&str) -> Option<lr_config::Client> + Send + Sync>;
 
+/// Called whenever the held (Ask) queue changes: an event is held, decided
+/// or released. The desktop app refreshes its pending-approvals view on it.
+pub type HeldChangedListener = Arc<dyn Fn() + Send + Sync>;
+
 /// A change Push Relay writes back to a client's configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PushConfigChange {
@@ -151,6 +155,13 @@ pub struct ClientEventTypeInfo {
 pub struct WebhookSubscriptionInfo {
     pub id: String,
     pub client_id: String,
+    pub client_name: String,
+    pub server_id: String,
+    /// Slugified server name (the prefix of `event`).
+    pub server_name: String,
+    /// The upstream's own event name.
+    pub event_name: String,
+    /// Qualified name, `<server slug>__<event>`.
     pub event: String,
     pub url: String,
     /// `awaiting_approval`, `active`, `suspended`, `denied`.
@@ -354,6 +365,7 @@ pub struct PushRelay {
     limits: Arc<RwLock<lr_config::PushRelayLimits>>,
     clients: ClientLookup,
     persister: RwLock<Option<PushConfigPersister>>,
+    held_listener: RwLock<Option<HeldChangedListener>>,
     cursor_key: CursorKey,
     journals: DashMap<String, Arc<Mutex<ClientJournal>>>,
     sessions: DashMap<String, SessionInfo>,
@@ -398,6 +410,7 @@ impl PushRelay {
                 limits,
                 clients,
                 persister: RwLock::new(None),
+                held_listener: RwLock::new(None),
                 cursor_key: CursorKey::new(),
                 journals: DashMap::new(),
                 sessions: DashMap::new(),
@@ -432,6 +445,18 @@ impl PushRelay {
     /// Install the callback that writes permanent decisions to the config.
     pub fn set_persister(&self, persister: PushConfigPersister) {
         *self.persister.write() = Some(persister);
+    }
+
+    /// Install the callback told about every change to the held queue.
+    pub fn set_held_changed_listener(&self, listener: HeldChangedListener) {
+        *self.held_listener.write() = Some(listener);
+    }
+
+    fn held_changed(&self) {
+        let listener = self.held_listener.read().clone();
+        if let Some(listener) = listener {
+            listener();
+        }
     }
 
     /// Base URL of LocalRouter's HTTP server (`http://127.0.0.1:<port>`),
@@ -1191,6 +1216,7 @@ impl PushRelay {
             }
             ask.workers.insert(queue.clone())
         };
+        self.held_changed();
         if start_worker {
             let relay = self.this();
             tokio::spawn(async move { relay.ask_worker(queue.0, queue.1).await });
@@ -1280,6 +1306,7 @@ impl PushRelay {
             };
             let popped = self.ask.lock().queues.pop(&client_id, &name, &head.hold_id);
             if let Some(held) = popped {
+                self.held_changed();
                 self.resolve(held, decision).await;
             }
         }
@@ -1428,6 +1455,7 @@ impl PushRelay {
                 .is_some_and(|head| head.hold_id == hold_id);
             (queue, is_head)
         };
+        self.held_changed();
         // Only the head is being asked about; later events wait their turn
         if is_head {
             if let Some(waker) = self.ask_wakers.get(&queue) {
@@ -2276,6 +2304,10 @@ impl PushRelay {
             .map(|w| WebhookSubscriptionInfo {
                 id: w.id.clone(),
                 client_id: w.client_id.clone(),
+                client_name: w.client_name.clone(),
+                server_id: w.entry.server_id.clone(),
+                server_name: w.entry.server_slug.clone(),
+                event_name: w.entry.upstream_name.clone(),
                 event: w.entry.qualified_name.clone(),
                 url: w.url.clone(),
                 state: w.state.lock().as_str().to_string(),

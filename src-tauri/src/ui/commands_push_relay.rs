@@ -17,19 +17,10 @@ use tauri::{Emitter, State};
 use crate::launcher::integrations::claude_code;
 use crate::ui::commands_clients::LaunchResult;
 
-// ============================================================================
-// Relay hook
-// ============================================================================
-
-/// Tell the running gateway (and through it the Push Relay) that the global
-/// Push Relay settings changed. Every command that writes `push_relay` calls
-/// this, so this is the one place to forward the change to the relay core.
-pub fn notify_push_relay_config_changed(
-    state: &lr_server::state::AppState,
-    config: &PushRelayConfig,
-) {
-    state.mcp_gateway.update_push_relay_config(config);
-}
+// Every settings write below goes through `ConfigManager::update`, which emits
+// `config-changed`; `main.rs` forwards that (and `clients-changed`) to the
+// relay through `AppState::sync_push_relay_settings`, the one path by which
+// settings reach it. No command here talks to the relay about settings.
 
 fn emit_clients_changed(app: &tauri::AppHandle) {
     if let Err(e) = app.emit("clients-changed", ()) {
@@ -156,7 +147,6 @@ pub async fn update_push_relay_config(
     allow_loopback_http: Option<bool>,
     limits: Option<PushRelayLimits>,
     config_manager: State<'_, ConfigManager>,
-    state: State<'_, Arc<lr_server::state::AppState>>,
 ) -> Result<PushRelayConfigView, String> {
     if let Some(limits) = &limits {
         validate_push_relay_limits(limits)?;
@@ -183,7 +173,6 @@ pub async fn update_push_relay_config(
         .map_err(|e| e.to_string())?;
 
     let new_config = config_manager.get().push_relay.clone();
-    notify_push_relay_config_changed(&state, &new_config);
     config_manager.save().await.map_err(|e| e.to_string())?;
     Ok(PushRelayConfigView::from(&new_config))
 }
@@ -555,6 +544,315 @@ pub async fn set_client_claude_channels_launched(
 }
 
 // ============================================================================
+// Held events (Ask) and active subscriptions
+// ============================================================================
+
+fn relay(
+    state: &lr_server::state::AppState,
+) -> Result<&Arc<lr_mcp::gateway::push_relay::PushRelay>, String> {
+    state
+        .push_relay
+        .as_ref()
+        .ok_or_else(|| "Push Relay is not running".to_string())
+}
+
+/// One held (Ask) event awaiting a decision for one client.
+#[derive(Debug, Clone, Serialize)]
+pub struct PendingPushApproval {
+    /// The held event's id (`hold_id`); pass it to `submit_push_approval`.
+    pub request_id: String,
+    pub client_id: String,
+    pub client_name: String,
+    pub server_id: String,
+    /// Slugified server name, as used in qualified event names.
+    pub server_name: String,
+    /// The upstream's own event name.
+    pub event_name: String,
+    /// `<server slug>__<event>`.
+    pub qualified_name: String,
+    pub event_id: String,
+    /// `push`, `poll` or `channel`.
+    pub ingress: String,
+    /// When the event was held (RFC 3339).
+    pub received_at: String,
+    /// When an unanswered hold is denied (RFC 3339).
+    pub expires_at: String,
+    /// The event's `data`, as it would be delivered.
+    pub data: serde_json::Value,
+    /// Position in its (client, event type) queue; 0 is being asked now.
+    pub position: usize,
+    /// Other held events of the same type for the same client.
+    pub pending_of_type: usize,
+    /// Already decided, waiting for the events ahead of it.
+    pub decided: bool,
+    /// The approval popup asking about it, while one is open.
+    pub firewall_request_id: Option<String>,
+}
+
+/// Convert the relay's held events into the UI's shape.
+pub fn pending_push_approvals(
+    held: Vec<lr_mcp::gateway::push_relay::HeldPushEventInfo>,
+) -> Vec<PendingPushApproval> {
+    let mut per_type: std::collections::HashMap<(String, String), usize> = Default::default();
+    for e in &held {
+        *per_type
+            .entry((e.client_id.clone(), e.qualified_name.clone()))
+            .or_default() += 1;
+    }
+    held.into_iter()
+        .map(|e| {
+            let of_type = per_type
+                .get(&(e.client_id.clone(), e.qualified_name.clone()))
+                .copied()
+                .unwrap_or(1);
+            let expires = e.held_at + chrono::Duration::seconds(e.timeout_secs as i64);
+            PendingPushApproval {
+                request_id: e.hold_id,
+                client_id: e.client_id,
+                client_name: e.client_name,
+                server_id: e.server_id,
+                server_name: e.server_name,
+                event_name: e.event_name,
+                qualified_name: e.qualified_name,
+                event_id: e.event_id,
+                ingress: e.ingress_mode,
+                received_at: e.held_at.to_rfc3339(),
+                expires_at: expires.to_rfc3339(),
+                data: e.data,
+                position: e.position,
+                pending_of_type: of_type.saturating_sub(1),
+                decided: e.decided,
+                firewall_request_id: e.firewall_request_id,
+            }
+        })
+        .collect()
+}
+
+/// Held events awaiting a decision, oldest first (all clients, or one).
+#[tauri::command]
+pub async fn list_pending_push_approvals(
+    client_id: Option<String>,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<Vec<PendingPushApproval>, String> {
+    let relay = relay(&state)?;
+    Ok(pending_push_approvals(
+        relay.pending_events(client_id.as_deref()),
+    ))
+}
+
+/// An answer to a held event. The `*_type_*` actions apply to every later
+/// event of the type for that client; `*_always` are written to its config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PushApprovalAction {
+    Allow,
+    AllowEdited,
+    Deny,
+    AllowAllPendingOfType,
+    AllowTypeSession,
+    DenyTypeSession,
+    AllowTypeAlways,
+    DenyTypeAlways,
+}
+
+/// The relay decision an action maps to, and whether it applies to every
+/// held event of the type rather than just this one.
+pub fn push_decision_for(
+    action: PushApprovalAction,
+    edited_data: Option<serde_json::Value>,
+) -> Result<(lr_mcp::gateway::push_relay::PushDecision, bool), String> {
+    use lr_mcp::gateway::push_relay::{PushDecision, PushDecisionAction as A};
+    let (decision_action, all_of_type) = match action {
+        PushApprovalAction::Allow => (A::Allow, false),
+        PushApprovalAction::AllowEdited => {
+            let data = edited_data.ok_or("allow_edited needs editedData")?;
+            return Ok((
+                PushDecision {
+                    action: A::Allow,
+                    edited_data: Some(data),
+                },
+                false,
+            ));
+        }
+        PushApprovalAction::Deny => (A::Deny, false),
+        PushApprovalAction::AllowAllPendingOfType => (A::Allow, true),
+        PushApprovalAction::AllowTypeSession => (A::AllowSession, false),
+        PushApprovalAction::DenyTypeSession => (A::DenySession, false),
+        PushApprovalAction::AllowTypeAlways => (A::AllowAlways, false),
+        PushApprovalAction::DenyTypeAlways => (A::DenyAlways, false),
+    };
+    Ok((PushDecision::new(decision_action), all_of_type))
+}
+
+/// Answer one held event (`request_id` from `list_pending_push_approvals`).
+/// Returns how many held events the answer decided.
+#[tauri::command]
+pub async fn submit_push_approval(
+    request_id: String,
+    action: PushApprovalAction,
+    edited_data: Option<serde_json::Value>,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<usize, String> {
+    let relay = relay(&state)?;
+    let (decision, all_of_type) = push_decision_for(action, edited_data)?;
+    if !all_of_type {
+        relay.decide(&request_id, decision)?;
+        return Ok(1);
+    }
+    let held = relay
+        .pending_events(None)
+        .into_iter()
+        .find(|e| e.hold_id == request_id)
+        .ok_or_else(|| format!("No held event {request_id}"))?;
+    Ok(relay.decide_all(&held.client_id, &held.qualified_name, decision))
+}
+
+/// One live subscription: an upstream subscription the relay holds open
+/// (`kind: upstream`, shared by every client consuming it, or on one
+/// session's own connection for stdio upstreams) or a client's webhook
+/// delivery (`kind: webhook`).
+#[derive(Debug, Clone, Serialize)]
+pub struct ActivePushSubscription {
+    pub subscription_id: String,
+    /// `upstream` or `webhook`.
+    pub kind: String,
+    pub server_id: String,
+    pub server_name: String,
+    /// The upstream's own event name.
+    pub event_name: String,
+    /// Subscription arguments (upstream subscriptions; empty for webhooks).
+    pub arguments: serde_json::Map<String, serde_json::Value>,
+    /// `shared` (relay-owned connection) or `session` (one session's own
+    /// connection). `null` for webhooks.
+    pub scope: Option<String>,
+    /// The client a session-scoped or webhook subscription belongs to;
+    /// `null` for shared upstream subscriptions.
+    pub client_id: Option<String>,
+    pub client_name: Option<String>,
+    /// `push` or `poll` once an upstream subscription is running.
+    pub ingress: Option<String>,
+    /// Upstream: `active` or `reconnecting`. Webhook: `awaiting_approval`,
+    /// `active`, `suspended` or `denied`.
+    pub status: String,
+    /// Upstream: events received. Webhook: deliveries made.
+    pub event_count: u64,
+    pub last_event_at: Option<String>,
+    pub last_error: Option<String>,
+    pub reconnects: u64,
+    pub webhook_url: Option<String>,
+    pub lease_expires_at: Option<String>,
+}
+
+fn upstream_subscription(
+    s: lr_mcp::gateway::push_relay::SubscriptionInfo,
+    server_name: String,
+    session_client: Option<(String, String)>,
+) -> ActivePushSubscription {
+    use lr_mcp::gateway::push_relay::upstream::ConnectionScope;
+    let (scope, scope_id) = match &s.scope {
+        ConnectionScope::Shared => ("shared", "shared".to_string()),
+        ConnectionScope::Session(key) => ("session", format!("session:{key}")),
+    };
+    let args = serde_json::to_string(&s.arguments).unwrap_or_default();
+    let (client_id, client_name) = session_client.unzip();
+    ActivePushSubscription {
+        subscription_id: format!("{scope_id}|{}|{}|{args}", s.server_id, s.event),
+        kind: "upstream".to_string(),
+        server_id: s.server_id,
+        server_name,
+        event_name: s.event,
+        arguments: s.arguments,
+        scope: Some(scope.to_string()),
+        client_id,
+        client_name,
+        ingress: s.status.ingress_mode,
+        status: if s.status.connected {
+            "active"
+        } else {
+            "reconnecting"
+        }
+        .to_string(),
+        event_count: s.status.events_received,
+        last_event_at: s.status.last_event_at.map(|t| t.to_rfc3339()),
+        last_error: s.status.last_error,
+        reconnects: s.status.reconnects,
+        webhook_url: None,
+        lease_expires_at: None,
+    }
+}
+
+fn webhook_subscription(
+    w: lr_mcp::gateway::push_relay::WebhookSubscriptionInfo,
+) -> ActivePushSubscription {
+    ActivePushSubscription {
+        subscription_id: format!("webhook:{}", w.id),
+        kind: "webhook".to_string(),
+        server_id: w.server_id,
+        server_name: w.server_name,
+        event_name: w.event_name,
+        arguments: Default::default(),
+        scope: None,
+        client_id: Some(w.client_id),
+        client_name: Some(w.client_name),
+        ingress: None,
+        status: w.state,
+        event_count: w.delivered,
+        last_event_at: None,
+        last_error: w.last_error,
+        reconnects: 0,
+        webhook_url: Some(w.url),
+        lease_expires_at: Some(w.expires_at.to_rfc3339()),
+    }
+}
+
+/// Upstream subscriptions the relay holds open and clients' webhook
+/// deliveries.
+#[tauri::command]
+pub async fn list_active_push_subscriptions(
+    config_manager: State<'_, ConfigManager>,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<Vec<ActivePushSubscription>, String> {
+    use lr_mcp::gateway::push_relay::upstream::ConnectionScope;
+    let relay = relay(&state)?;
+    let config = config_manager.get();
+    let server_name = |id: &str| {
+        config
+            .mcp_servers
+            .iter()
+            .find(|s| s.id == id)
+            .map(|s| s.name.clone())
+            .unwrap_or_else(|| id.to_string())
+    };
+    let mut out = Vec::new();
+    for s in relay.active_subscriptions() {
+        let session_client = match &s.scope {
+            ConnectionScope::Session(key) => state
+                .mcp_gateway
+                .push_session_context(key)
+                .await
+                .map(|ctx| (ctx.client_id, ctx.client_name)),
+            ConnectionScope::Shared => None,
+        };
+        let name = server_name(&s.server_id);
+        out.push(upstream_subscription(s, name, session_client));
+    }
+    out.extend(
+        relay
+            .webhook_subscriptions(None)
+            .into_iter()
+            .map(webhook_subscription),
+    );
+    out.sort_by(|a, b| {
+        (&a.server_name, &a.event_name, &a.subscription_id).cmp(&(
+            &b.server_name,
+            &b.event_name,
+            &b.subscription_id,
+        ))
+    });
+    Ok(out)
+}
+
+// ============================================================================
 // Claude Code STDIO bridge
 // ============================================================================
 
@@ -818,5 +1116,146 @@ mod tests {
                 .is_enabled()
         );
         assert_eq!(access.effective, PushPermission::Ask);
+    }
+
+    fn held(
+        hold_id: &str,
+        name: &str,
+        position: usize,
+    ) -> lr_mcp::gateway::push_relay::HeldPushEventInfo {
+        lr_mcp::gateway::push_relay::HeldPushEventInfo {
+            hold_id: hold_id.to_string(),
+            client_id: "c1".to_string(),
+            client_name: "Claude".to_string(),
+            server_id: "vc-id".to_string(),
+            server_name: "vocalcord".to_string(),
+            event_name: name.to_string(),
+            qualified_name: format!("vocalcord__{name}"),
+            event_id: format!("vocalcord__{hold_id}"),
+            ingress_mode: "push".to_string(),
+            data: serde_json::json!({"text": "hi"}),
+            held_at: chrono::DateTime::parse_from_rfc3339("2026-10-30T10:00:00Z")
+                .unwrap()
+                .with_timezone(&chrono::Utc),
+            held_secs: 5,
+            timeout_secs: 1_800,
+            position,
+            firewall_request_id: (position == 0).then(|| "fw-1".to_string()),
+            decided: false,
+        }
+    }
+
+    #[test]
+    fn pending_approvals_count_others_of_the_same_type() {
+        let out = pending_push_approvals(vec![
+            held("h1", "message.received", 0),
+            held("h2", "message.received", 1),
+            held("h3", "reaction.added", 0),
+        ]);
+        assert_eq!(out[0].request_id, "h1");
+        assert_eq!(out[0].pending_of_type, 1);
+        assert_eq!(out[1].pending_of_type, 1);
+        assert_eq!(out[2].pending_of_type, 0);
+        assert_eq!(out[0].firewall_request_id.as_deref(), Some("fw-1"));
+        assert!(out[0].expires_at.starts_with("2026-10-30T10:30:00"));
+        let json = serde_json::to_value(&out[0]).unwrap();
+        assert_eq!(json["ingress"], "push");
+        assert_eq!(json["qualified_name"], "vocalcord__message.received");
+    }
+
+    #[test]
+    fn approval_actions_map_to_relay_decisions() {
+        use lr_mcp::gateway::push_relay::PushDecisionAction as A;
+        let cases = [
+            (PushApprovalAction::Allow, A::Allow, false),
+            (PushApprovalAction::Deny, A::Deny, false),
+            (PushApprovalAction::AllowAllPendingOfType, A::Allow, true),
+            (PushApprovalAction::AllowTypeSession, A::AllowSession, false),
+            (PushApprovalAction::DenyTypeSession, A::DenySession, false),
+            (PushApprovalAction::AllowTypeAlways, A::AllowAlways, false),
+            (PushApprovalAction::DenyTypeAlways, A::DenyAlways, false),
+        ];
+        for (action, expected, all) in cases {
+            let (decision, all_of_type) = push_decision_for(action, None).unwrap();
+            assert_eq!(decision.action, expected, "{action:?}");
+            assert_eq!(all_of_type, all, "{action:?}");
+            assert!(decision.edited_data.is_none());
+        }
+        assert!(push_decision_for(PushApprovalAction::AllowEdited, None).is_err());
+        let (decision, all) = push_decision_for(
+            PushApprovalAction::AllowEdited,
+            Some(serde_json::json!({"text": "edited"})),
+        )
+        .unwrap();
+        assert_eq!(decision.action, A::Allow);
+        assert!(!all);
+        assert_eq!(decision.edited_data.unwrap()["text"], "edited");
+        let parsed: PushApprovalAction =
+            serde_json::from_value(serde_json::json!("allow_all_pending_of_type")).unwrap();
+        assert_eq!(parsed, PushApprovalAction::AllowAllPendingOfType);
+    }
+
+    #[test]
+    fn subscriptions_describe_upstream_and_webhook_paths() {
+        use lr_mcp::gateway::push_relay::upstream::{ConnectionScope, SubscriptionStatus};
+        let shared = upstream_subscription(
+            lr_mcp::gateway::push_relay::SubscriptionInfo {
+                server_id: "vc-id".to_string(),
+                event: "message.received".to_string(),
+                arguments: Default::default(),
+                scope: ConnectionScope::Shared,
+                status: SubscriptionStatus {
+                    ingress_mode: Some("push".to_string()),
+                    connected: true,
+                    events_received: 3,
+                    ..Default::default()
+                },
+            },
+            "VocalCord".to_string(),
+            None,
+        );
+        assert_eq!(shared.kind, "upstream");
+        assert_eq!(shared.scope.as_deref(), Some("shared"));
+        assert_eq!(shared.status, "active");
+        assert_eq!(shared.event_count, 3);
+        assert!(shared.client_id.is_none());
+
+        let session = upstream_subscription(
+            lr_mcp::gateway::push_relay::SubscriptionInfo {
+                server_id: "ng-id".to_string(),
+                event: "llm.request.pending".to_string(),
+                arguments: Default::default(),
+                scope: ConnectionScope::Session("s1".to_string()),
+                status: SubscriptionStatus::default(),
+            },
+            "NetGet".to_string(),
+            Some(("c1".to_string(), "Claude".to_string())),
+        );
+        assert_eq!(session.scope.as_deref(), Some("session"));
+        assert_eq!(session.status, "reconnecting");
+        assert_eq!(session.client_name.as_deref(), Some("Claude"));
+        assert_ne!(session.subscription_id, shared.subscription_id);
+
+        let hook = webhook_subscription(lr_mcp::gateway::push_relay::WebhookSubscriptionInfo {
+            id: "w1".to_string(),
+            client_id: "c1".to_string(),
+            client_name: "Claude".to_string(),
+            server_id: "vc-id".to_string(),
+            server_name: "vocalcord".to_string(),
+            event_name: "message.received".to_string(),
+            event: "vocalcord__message.received".to_string(),
+            url: "http://127.0.0.1:9000/hook".to_string(),
+            state: "awaiting_approval".to_string(),
+            expires_at: chrono::Utc::now(),
+            delivered: 0,
+            last_error: None,
+        });
+        assert_eq!(hook.kind, "webhook");
+        assert_eq!(hook.status, "awaiting_approval");
+        assert_eq!(
+            hook.webhook_url.as_deref(),
+            Some("http://127.0.0.1:9000/hook")
+        );
+        assert!(hook.lease_expires_at.is_some());
     }
 }

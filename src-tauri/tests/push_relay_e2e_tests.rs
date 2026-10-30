@@ -1168,6 +1168,44 @@ async fn ask_holds_until_allowed_with_an_edit() {
 }
 
 #[tokio::test]
+async fn held_queue_changes_are_announced_and_a_new_block_releases_them() {
+    let (upstream, _) = http_upstream().await;
+    let h = harness(vec![http_server(upstream.uri())], fast_config());
+    let changes = Arc::new(AtomicUsize::new(0));
+    let counter = changes.clone();
+    h.relay.set_held_changed_listener(Arc::new(move || {
+        counter.fetch_add(1, Ordering::SeqCst);
+    }));
+    h.set_client(ask_client("msg"));
+    h.initialize("s1", json!({})).await;
+
+    h.relay.admit(
+        CLIENT,
+        occurrence(HTTP_ID, "http-push", "msg", "m1", json!({"text": "one"})),
+    );
+    wait_until("held", || !h.relay.pending_events(Some(CLIENT)).is_empty()).await;
+    let after_hold = changes.load(Ordering::SeqCst);
+    assert!(after_hold >= 1, "holding an event is announced");
+
+    // The user blocks the type: the held event is denied without an answer
+    let mut blocked = ask_client("msg");
+    blocked.push_permissions.events.insert(
+        PushPermissions::event_key(HTTP_ID, "msg"),
+        PushPermission::Block,
+    );
+    h.set_client(blocked);
+    wait_until("released", || {
+        h.relay.pending_events(Some(CLIENT)).is_empty()
+    })
+    .await;
+    assert!(changes.load(Ordering::SeqCst) > after_hold);
+    wait_until("monitor", || {
+        h.monitor_decisions("http-push__msg") == vec!["denied"]
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn ask_is_fifo_per_type_and_denial_drops() {
     let (upstream, _) = http_upstream().await;
     let h = harness(vec![http_server(upstream.uri())], fast_config());
