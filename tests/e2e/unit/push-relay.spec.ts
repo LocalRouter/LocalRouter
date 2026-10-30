@@ -1,5 +1,7 @@
 import { test, expect } from '@playwright/test'
-import type { PushRelayLimits, PushSourceInfo } from '../../../src/types/tauri-commands'
+import type { PushEventDecision, PushRelayLimits, PushSourceInfo } from '../../../src/types/tauri-commands'
+import { PUSH_DECISION_LABELS, pushDecisionDelivered, pushDecisionLabel, pushPayloadEdited } from '../../../src/views/monitor/push-event'
+import { payloadPreview } from '../../../src/views/push-relay/format'
 import { LIMIT_GROUPS, noPushReason } from '../../../src/views/push-relay/push-relay-utils'
 import { CLAUDE_CHANNELS_LAUNCH_COMMAND, claudeCodeStdioConfig } from '../../../src/components/client/claude-code-bridge-config'
 import { defaultPushRelayLimits } from '../../../website/src/components/demo/mockPushRelay'
@@ -42,4 +44,21 @@ test('Claude Code defaults to the STDIO bridge with the channels flag', () => {
     env: { LOCALROUTER_CLIENT_SECRET: 'sec' },
   })
   expect(CLAUDE_CHANNELS_LAUNCH_COMMAND).toBe('claude --dangerously-load-development-channels server:localrouter')
+})
+
+test('Monitor push records label every decision and detect edits structurally', () => {
+  const decisions: PushEventDecision[] = ['pending', 'allowed', 'asked_allowed', 'asked_edited', 'denied', 'timeout', 'blocked', 'hold_cap', 'too_large']
+  for (const d of decisions) expect(PUSH_DECISION_LABELS[d]).toBeTruthy()
+  expect(pushDecisionLabel('something_new')).toBe('something_new')
+  expect(pushDecisionDelivered('asked_edited')).toBe(true)
+  expect(pushDecisionDelivered('timeout')).toBe(false)
+  expect(pushPayloadEdited({ a: 1, b: 2 }, { b: 2, a: 1 })).toBe(false)
+  expect(pushPayloadEdited({ text: 'x' }, { text: 'y' })).toBe(true)
+  expect(pushPayloadEdited({ text: 'x' }, undefined)).toBe(false)
+})
+
+test('payload previews are pretty-printed and bounded', () => {
+  expect(payloadPreview({ a: 1 })).toBe('{\n  "a": 1\n}')
+  expect(payloadPreview('x'.repeat(500), 10)).toBe('xxxxxxxxxx…')
+  expect(payloadPreview(undefined)).toBe('null')
 })

@@ -14,6 +14,7 @@ import { markdownLinkComponents } from '@/components/shared/MarkdownLink'
 import remarkGfm from 'remark-gfm'
 import { capturedExcerpt, capturedRequestBody, capturedResponseMessages, contentText, requestMessages } from './message-content'
 import { LLM_API_LABELS, llmApiFlow, type ApiFlow } from './llm-api'
+import { PUSH_EGRESS_LABELS, PUSH_INGRESS_LABELS, pushDecisionDelivered, pushDecisionLabel, pushPayloadEdited } from './push-event'
 import type { EventStatus, LlmProtocol, MonitorEvent, ReadMemoryArchiveFileParams } from '@/types/tauri-commands'
 import { decisionAnswersForView, decisionQuestionsForView } from '@/utils/decisions'
 import type { SystemOneAnswer, SystemOneQuestion } from '@/types/systemone'
@@ -354,6 +355,7 @@ function TypeDetail({ data, status }: { data: EventData; status: EventStatus }) 
     case 'rate_limit_event': return <RateLimitDetail data={data} />
     case 'validation_error': return <ValidationErrorDetail data={data} />
     case 'mcp_server_event': return <McpServerEventDetail data={data} />
+    case 'mcp_push_event': return <McpPushEventDetail data={data} />
     case 'oauth_event': return <OAuthEventDetail data={data} />
     case 'internal_error': return <InternalErrorDetail data={data} />
     case 'moderation_event': return <ModerationEventDetail data={data} />
@@ -368,7 +370,7 @@ function TypeDetail({ data, status }: { data: EventData; status: EventStatus }) 
   }
 }
 
-const TYPE_NAMES: Record<string, string> = { llm_call: 'LLM call', mcp_tool_call: 'MCP tool call', mcp_resource_read: 'MCP resource read', mcp_prompt_get: 'MCP prompt', mcp_elicitation: 'MCP elicitation', mcp_sampling: 'MCP sampling' }
+const TYPE_NAMES: Record<string, string> = { llm_call: 'LLM call', mcp_tool_call: 'MCP tool call', mcp_resource_read: 'MCP resource read', mcp_prompt_get: 'MCP prompt', mcp_elicitation: 'MCP elicitation', mcp_sampling: 'MCP sampling', mcp_push_event: 'MCP push event' }
 
 function formatTimestamp(timestamp: string | number): string {
   const date = new Date(timestamp)
@@ -1467,6 +1469,58 @@ function McpServerEventDetail({ data }: { data: EventData }) {
             {data.message as string}
           </pre>
         </section>
+      )}
+    </div>
+  )
+}
+
+/** One pushed event relayed (or held, or dropped) for one client. */
+function McpPushEventDetail({ data }: { data: EventData }) {
+  const decision = (data.decision as string) ?? ''
+  const egress = (data.egress_modes as string[] | undefined) ?? []
+  const original = data.original_payload
+  const delivered = data.delivered_payload
+  const edited = pushPayloadEdited(original, delivered)
+  const held = typeof data.held_ms === 'number' ? data.held_ms : null
+  const tone = decision === 'pending'
+    ? 'warning'
+    : pushDecisionDelivered(decision) ? 'success' : 'destructive'
+  return (
+    <div className="space-y-4">
+      <Section title="Event">
+        <Properties items={[
+          ['Server', (data.server_name || data.server_id) as string],
+          ['Event', <Mono>{data.event_name as string}</Mono>],
+          ['Event id', <Mono>{data.event_id as string}</Mono>],
+          ['Received via', PUSH_INGRESS_LABELS[data.ingress_mode as string] ?? (data.ingress_mode as string)],
+          ['Delivered via', egress.length > 0 ? egress.map((m) => PUSH_EGRESS_LABELS[m] ?? m).join(', ') : null],
+          ['Decision', <Badge variant={tone} className="text-[10px] px-1.5 py-0">{pushDecisionLabel(decision)}</Badge>],
+          ['Held for', held !== null ? `${(held / 1000).toFixed(held < 10_000 ? 1 : 0)} s` : null],
+        ]} />
+      </Section>
+      {decision === 'pending' && (
+        <p className="text-xs text-muted-foreground">
+          Waiting for a decision. Answer it in the approval popup, or under Pending approvals on the Push Relay page.
+        </p>
+      )}
+      {typeof data.error === 'string' && data.error && (
+        <pre className="p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive">{data.error}</pre>
+      )}
+      {edited ? (
+        <ExchangeGrid>
+          <Section title="Received" description="As the upstream server sent it">
+            <JsonBlock data={original} label="data" />
+          </Section>
+          <Section title="Delivered" description="Edited before approval">
+            <JsonBlock data={delivered} label="data" />
+          </Section>
+        </ExchangeGrid>
+      ) : original !== undefined || delivered !== undefined ? (
+        <Section title="Payload">
+          <JsonBlock data={delivered ?? original} label="data" />
+        </Section>
+      ) : (
+        <p className="text-xs italic text-muted-foreground">Payload not recorded (this client's privacy settings redact payloads).</p>
       )}
     </div>
   )

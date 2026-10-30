@@ -1796,6 +1796,41 @@ export interface PendingPushApproval {
   firewall_request_id: string | null
 }
 
+/**
+ * What a Push Relay approval popup asks about.
+ * Rust: crates/lr-mcp/src/gateway/firewall.rs - PushApprovalKind enum
+ */
+export type PushApprovalKind = 'event' | 'webhook_url'
+
+/**
+ * Push Relay details on a firewall approval (`push_event_details`).
+ * Rust: crates/lr-mcp/src/gateway/firewall.rs - PushEventApprovalDetails struct
+ */
+export interface PushEventApprovalDetails {
+  kind: PushApprovalKind
+  /** Relay id of the held item (`request_id` for submit_push_approval) */
+  hold_id: string
+  server_id: string
+  /** Slugified server name */
+  server_name: string
+  /** Upstream (unqualified) event name */
+  event_name: string
+  /** `<server slug>__<event>` */
+  qualified_name: string
+  event_id: string
+  /** `push`, `poll` or `channel` (empty for webhook URL approvals) */
+  ingress_mode: string
+  /** The event's data as received (`{url}` for webhook URL approvals) */
+  data: unknown
+  /** How the event is rendered for Claude Code Channels */
+  rendered_content: string
+  webhook_url?: string | null
+  /** Held events of this client waiting for a decision */
+  pending_for_client: number
+  /** Of those, of this event type (including this one) */
+  pending_of_type: number
+}
+
 /** Answer to a held event. Type-level actions apply to later events of the type; `_always` writes the client's permission tree. */
 export type PushApprovalAction =
   | 'allow'
@@ -3856,7 +3891,7 @@ export interface GetFirewallFullArgumentsParams {
 
 /** Params for debug_trigger_firewall_popup */
 export interface DebugTriggerFirewallPopupParams {
-  popupType?: "mcp_tool" | "llm_model" | "skill" | "marketplace" | "free_tier_fallback" | null
+  popupType?: "mcp_tool" | "llm_model" | "skill" | "marketplace" | "free_tier_fallback" | "coding_agent" | "guardrail" | "secret_scan" | "secret_scan_notify" | "push_event" | null
   sendMultiple?: boolean | null
 }
 
@@ -5272,7 +5307,7 @@ export interface MemoryReindexComplete {
 export type MonitorEventType =
   | 'llm_call'
   | 'mcp_tool_call' | 'mcp_resource_read' | 'mcp_prompt_get'
-  | 'mcp_elicitation' | 'mcp_sampling'
+  | 'mcp_elicitation' | 'mcp_sampling' | 'mcp_push_event'
   | 'guardrail_scan' | 'guardrail_response_scan' | 'secret_scan'
   | 'route_llm_classify'
   | 'routing_decision' | 'auth_error' | 'access_denied'
@@ -5462,6 +5497,7 @@ export type InterceptCategory =
   | 'secret_scan'
   | 'sampling'
   | 'elicitation'
+  | 'push_event'
 
 /** Active intercept rule for the monitor page (transient, not persisted) */
 /** Rust: crates/lr-mcp/src/gateway/firewall.rs - InterceptRule struct */

@@ -1559,6 +1559,33 @@ export const mockData = {
       data: { type: "mcp_server_event", server_id: "filesystem", server_name: "Filesystem MCP", action: "connection_failed", message: "Failed to spawn process: No such file or directory (os error 2)" },
     },
     {
+      id: "mon-push-1", sequence: 0, timestamp: new Date(Date.now() - 52000).toISOString(),
+      event_type: "mcp_push_event", session_id: null, client_id: "client-4", client_name: "Cline",
+      status: "complete", duration_ms: 18000,
+      summary: "push vocalcord__message.received (asked_edited)",
+      question: "vocalcord__message.received", answer: "{\"channel\":\"telegram\",\"from\":\"Dana\",\"text\":\"[redacted]\"}",
+      data: {
+        type: "mcp_push_event", server_id: "mcp-vocalcord", server_name: "vocalcord",
+        event_name: "vocalcord__message.received", event_id: "vocalcord__msg-549", ingress_mode: "push",
+        egress_modes: ["tools", "webhook"], decision: "asked_edited", held_ms: 18000,
+        original_payload: { channel: "telegram", from: "Dana", text: "The staging password is hunter2" },
+        delivered_payload: { channel: "telegram", from: "Dana", text: "[redacted]" },
+      },
+    },
+    {
+      id: "mon-push-2", sequence: 0, timestamp: new Date(Date.now() - 30000).toISOString(),
+      event_type: "mcp_push_event", session_id: null, client_id: "client-2", client_name: "Claude Code",
+      status: "pending", duration_ms: null,
+      summary: "push netget__intercept.parked (pending)",
+      question: "netget__intercept.parked", answer: "{\"protocol\":\"redis\",\"command\":\"GET session:42\"}",
+      data: {
+        type: "mcp_push_event", server_id: "mcp-netget", server_name: "netget",
+        event_name: "netget__intercept.parked", event_id: "netget__evt-7781", ingress_mode: "push",
+        egress_modes: ["channel"], decision: "pending",
+        original_payload: { server_id: 3, protocol: "redis", peer: "127.0.0.1:52811", event: "redis_command", command: "GET session:42" },
+      },
+    },
+    {
       id: "mon-012", sequence: 0, timestamp: new Date(Date.now() - 60000).toISOString(),
       event_type: "json_repair", session_id: "sess-001", conversation: { id: "conv-demo-retry", title: "How should I retry failed API requests?", source: "explicit" }, client_id: "client-1", client_name: "Claude Code",
       status: "complete", duration_ms: null,

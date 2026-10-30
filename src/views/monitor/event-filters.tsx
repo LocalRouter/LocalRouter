@@ -22,7 +22,7 @@ const TYPE_GROUPS: { key: string; label: string; types: MonitorEventType[] }[] =
   { key: 'llm', label: 'LLM', types: ['llm_call'] },
   { key: 'mcp', label: 'MCP', types: [
     'mcp_tool_call', 'mcp_resource_read', 'mcp_prompt_get',
-    'mcp_elicitation', 'mcp_sampling', 'mcp_server_event',
+    'mcp_elicitation', 'mcp_sampling', 'mcp_server_event', 'mcp_push_event',
   ]},
   { key: 'auth', label: 'Auth & Access', types: ['auth_error', 'access_denied', 'oauth_event'] },
   { key: 'security', label: 'Security', types: ['guardrail_scan', 'guardrail_response_scan', 'secret_scan'] },
@@ -61,6 +61,7 @@ const ALL_INTERCEPT_CATEGORIES: { label: string; value: InterceptCategory }[] = 
   { label: 'Secret Scan', value: 'secret_scan' },
   { label: 'Sampling', value: 'sampling' },
   { label: 'Elicitation', value: 'elicitation' },
+  { label: 'Push Events', value: 'push_event' },
 ]
 
 const ALL_CATEGORY_VALUES = ALL_INTERCEPT_CATEGORIES.map(c => c.value)

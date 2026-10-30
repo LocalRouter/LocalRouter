@@ -4,7 +4,7 @@ import { singleLinePreview } from './monitor-events'
 import { EventDuration } from './event-duration'
 import { LLM_API_LABELS, LLM_API_SHORT, llmApiFlow } from './llm-api'
 import { cn } from '@/lib/utils'
-import { Wrench, Shield, GitBranch, Link, AlertTriangle, Loader2, CheckCircle2, XCircle, KeyRound, Gauge, AlertCircle, Server, Ban, Minimize2, Database, Forward } from 'lucide-react'
+import { Wrench, Shield, GitBranch, Link, AlertTriangle, Loader2, CheckCircle2, XCircle, KeyRound, Gauge, AlertCircle, Server, Ban, Minimize2, Database, Forward, RadioTower } from 'lucide-react'
 import { ProvidersIcon } from '@/components/icons/category-icons'
 import type { MonitorEventSummary, MonitorEventType, EventStatus } from '@/types/tauri-commands'
 
@@ -24,6 +24,7 @@ const categoryConfig: Record<string, { icon: React.ComponentType<{ className?: s
   llm: { icon: ProvidersIcon, color: 'text-blue-500' },
   mcp: { icon: Wrench, color: 'text-green-500' },
   mcp_server: { icon: Server, color: 'text-emerald-500' },
+  mcp_push: { icon: RadioTower, color: 'text-sky-500' },
   guardrail: { icon: Shield, color: 'text-red-500' },
   secret_scan: { icon: KeyRound, color: 'text-orange-500' },
   routing: { icon: GitBranch, color: 'text-purple-500' },
@@ -44,6 +45,7 @@ const categoryConfig: Record<string, { icon: React.ComponentType<{ className?: s
 function getCategory(type: MonitorEventType): string {
   if (type === 'llm_call') return 'llm'
   if (type === 'mcp_server_event') return 'mcp_server'
+  if (type === 'mcp_push_event') return 'mcp_push'
   if (type.startsWith('mcp_')) return 'mcp'
   if (type.startsWith('guardrail')) return 'guardrail'
   if (type === 'secret_scan') return 'secret_scan'
