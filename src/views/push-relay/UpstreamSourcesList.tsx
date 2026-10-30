@@ -1,5 +1,3 @@
-import { useState } from "react"
-import { ChevronDown, ChevronRight } from "lucide-react"
 import { Badge } from "@/components/ui/Badge"
 import { cn } from "@/lib/utils"
 import type { EventDeliveryMode, PushSourceInfo } from "@/types/tauri-commands"
@@ -13,21 +11,10 @@ const MODE_LABELS: Record<EventDeliveryMode, string> = {
 }
 
 function SourceRow({ source }: { source: PushSourceInfo }) {
-  const [open, setOpen] = useState(source.events.length > 0 && source.events.length <= 6)
   const reason = noPushReason(source)
   return (
     <div className="rounded-md border">
-      <button
-        type="button"
-        className="w-full flex items-center gap-2 p-3 text-left hover:bg-muted/30"
-        onClick={() => setOpen((o) => !o)}
-        disabled={source.events.length === 0}
-      >
-        {source.events.length > 0 ? (
-          open ? <ChevronDown className="h-4 w-4 text-muted-foreground shrink-0" /> : <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
-        ) : (
-          <span className="w-4 shrink-0" />
-        )}
+      <div className="flex items-center gap-2 p-3">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-sm font-medium">{source.server_name}</span>
@@ -47,11 +34,11 @@ function SourceRow({ source }: { source: PushSourceInfo }) {
             {source.observed_at && ` · seen ${formatRelativeTime(source.observed_at)}`}
           </p>
         </div>
-      </button>
-      {open && source.events.length > 0 && (
+      </div>
+      {source.events.length > 0 && (
         <div className="border-t divide-y divide-border/50">
           {source.events.map((event) => (
-            <div key={event.name} className={cn("flex items-center justify-between gap-2 px-3 py-1.5 pl-9", !event.supported && "opacity-70")}>
+            <div key={event.name} className={cn("flex items-center justify-between gap-2 px-3 py-1.5 pl-6", !event.supported && "opacity-70")}>
               <div className="min-w-0">
                 <code className="text-xs">{event.name}</code>
                 {event.description && <p className="text-xs text-muted-foreground truncate">{event.description}</p>}
@@ -83,48 +70,28 @@ interface UpstreamSourcesListProps {
   sources: PushSourceInfo[]
 }
 
-/** Upstream MCP servers with their remembered push capabilities. */
+/** Every upstream MCP server with its remembered push capabilities, servers with push first. */
 export function UpstreamSourcesList({ sources }: UpstreamSourcesListProps) {
-  const [showOthers, setShowOthers] = useState(false)
   const withPush = sources.filter((s) => s.has_consumable_push)
-  const others = sources.filter((s) => !s.has_consumable_push)
-  // Servers that list event types but none LocalRouter can consume are worth
-  // seeing even when collapsed: they look like push sources and are not.
-  const webhookOnly = others.filter((s) => s.events.length > 0)
-  const rest = others.filter((s) => s.events.length === 0)
+  // Servers that list event types but none LocalRouter can consume come next:
+  // they look like push sources and are not.
+  const webhookOnly = sources.filter((s) => !s.has_consumable_push && s.events.length > 0)
+  const rest = sources.filter((s) => !s.has_consumable_push && s.events.length === 0)
 
   return (
     <div className="space-y-2">
-      {withPush.length === 0 && webhookOnly.length === 0 && (
+      {sources.length === 0 && (
+        <p className="text-sm text-muted-foreground">No MCP servers are configured.</p>
+      )}
+      {sources.length > 0 && withPush.length === 0 && (
         <p className="text-sm text-muted-foreground">
           No upstream server offers push yet. LocalRouter remembers what each server offers the first
-          time it connects; servers with MCP Events or Claude Channels appear here.
+          time it connects; servers with MCP Events or Claude Channels are listed first.
         </p>
       )}
-      {withPush.map((s) => <SourceRow key={s.server_id} source={s} />)}
-      {webhookOnly.map((s) => <SourceRow key={s.server_id} source={s} />)}
-      {rest.length > 0 && (
-        <div>
-          <button
-            type="button"
-            className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-            onClick={() => setShowOthers((v) => !v)}
-          >
-            {showOthers ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-            {rest.length} other server{rest.length === 1 ? "" : "s"} without push
-          </button>
-          {showOthers && (
-            <div className="mt-1.5 space-y-1">
-              {rest.map((s) => (
-                <div key={s.server_id} className="flex items-center justify-between px-3 py-1.5 rounded-md bg-muted/30">
-                  <span className="text-sm">{s.server_name}</span>
-                  <span className="text-xs text-muted-foreground">{noPushReason(s)}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
+      {[...withPush, ...webhookOnly, ...rest].map((s) => (
+        <SourceRow key={s.server_id} source={s} />
+      ))}
     </div>
   )
 }
