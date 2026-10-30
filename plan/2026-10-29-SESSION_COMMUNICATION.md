@@ -2,7 +2,10 @@
 - [x] Check official MCP documentation and optional adapter examples for identity and delivery limitations.
 - [x] Compare within-client and cross-client scopes; propose a minimal first release.
 - [x] Incorporate the user's clarification: the core feature supports generic clients; app-specific integrations are optional.
-- [ ] Phase 0: prove portable enrollment and messaging with two generic participants, including shared/stateless transport.
+- [x] Record unresolved push and native-conversation identity problems, the two-Claude-CLI case, MCP SEP-2575, and Claude Channels.
+- [x] Archive this proposal as deferred; make documentation the only authorized change for now.
+- [ ] Phase 0: resolve native-conversation identity and targeted push feasibility before choosing a support level.
+- [ ] Phase 0b: prove portable enrollment and messaging with two generic participants, including shared/stateless transport.
 - [ ] Phase 1: implement participant capabilities and bounded same-client mailboxes.
 - [ ] Phase 2: expose MCP tools, permissions, and minimal desktop controls; verify two-session exchange.
 - [ ] Phase 3: optionally add proven client-specific delivery adapters, such as Claude Channels.
@@ -16,11 +19,25 @@
 
 # Session communication within and across clients
 
-Date: 2026-10-29. Status: proposed feature; this task delivers a plan only, with no application changes. Initial code inspection: `c3a49e10`; client-neutral revision based on user clarification, reviewed at `5a6f2fe5`.
+Created: 2026-10-29. Updated: 2026-10-30. **Status: deferred proposal / ideas and open problems. Do not implement for now.** The user requested that the documentation be saved on master; all unchecked implementation steps above are possible future work and require a new implementation request. Initial code inspection: `c3a49e10`; latest documentation review: `c62f81a1`.
 
-## Recommendation
+## Feasibility status and open problems
 
-Build **client-neutral session communication**, initially scoped to participants sharing one configured LocalRouter client. Any client that can call the communication tools and retain its participant capability can publish a short description, discover peers, exchange direct messages, and reply. No Claude-specific identity, hook, channel, or lifecycle event is required by the core protocol.
+This is not a completed solution to automatic inter-conversation communication. Code and official documentation have been inspected; no two-client messaging prototype, native conversation-isolation experiment, or targeted idle-wake experiment has been run.
+
+| Requirement | Candidate idea | What remains unresolved |
+| --- | --- | --- |
+| Separate explicitly registered inboxes | Server-issued participant ID and private capability | Proposed only; needs implementation and tests |
+| Reliably associate an inbox with one native conversation | Host-held binding or a verified per-instance bridge | Generic tool clients expose no universal native conversation identity; copied/lost handles, forks, resumes, and resets need handling |
+| Push a notification to a subscribed host | MCP SEP-2575 `subscriptions/listen` and resource-change notifications | Inbox resource support, participant authorization, subscription scoping, reconnect recovery, and host compatibility |
+| Make an idle model process the message in the right conversation | Cooperating host turn API or an optional adapter such as Claude Channels | No universal MCP guarantee; each supported integration needs end-to-end proof |
+| Communication across configured clients | Explicit user-created collaboration spaces | Still a future product/policy choice; same-client scope remains the first candidate |
+
+**A mailbox protocol alone does not satisfy reliable native-conversation identity or automatic push-to-model delivery.** Future implementation must either prove those stronger guarantees for a declared support matrix or explicitly agree on a narrower pull-mailbox scope. This document does not silently choose the narrower feature on the user's behalf.
+
+## Candidate direction if revisited
+
+Consider **client-neutral session communication**, initially scoped to participants sharing one configured LocalRouter client. The portable mailbox candidate lets clients call communication tools and retain participant capabilities to publish a short description, discover peers, exchange direct messages, and reply. No Claude-specific mechanism is required for that logical mailbox protocol; reliable native-conversation binding and automatic delivery have the additional requirements documented here.
 
 Defer cross-client access until the first workflow is useful. Later, add explicit collaboration spaces containing selected LocalRouter client IDs. Do not introduce a global directory or infer permission from app brand, project path, or shared machine.
 
@@ -69,6 +86,14 @@ Older MCP transport sessions describe client/server interactions, not user conve
 
 MCP resource updates are application-controlled signals; they do not guarantee a model turn. Use tool-based inbox retrieval as the portable baseline. Adding virtual resources would also expand the existing tool-only virtual-server interface. See [MCP resources](https://modelcontextprotocol.io/specification/2026-07-28/server/resources).
 
+### Concrete case: two separately launched Claude CLI sessions
+
+Two independently launched `claude` processes normally have separate MCP client transports. With stdio, each owns a local server/bridge subprocess and its own pipes. With direct HTTP/SSE, each creates its own client transport to the same endpoint. Sharing configuration or credentials does not itself share a live connection. This follows the documented [Claude Code stdio startup and shutdown behavior](https://code.claude.com/docs/en/mcp#how-claude-code-stops-a-stdio-server); it has not been reproduced locally as part of this plan.
+
+LocalRouter can nevertheless share gateway state between those transports when requests fall back to `client_id`. Current stateful Streamable HTTP initialization issues separate `Mcp-Session-Id` values and keys them by client plus session. Headerless/stateless paths need separate examination; the current `StdioBridge` forwards authenticated HTTP requests without preserving the returned session header. That is a gateway/bridge identity problem, rather than evidence that Claude shares one connection. Relevant code: `crates/lr-server/src/routes/mcp.rs`, `crates/lr-mcp/src/gateway/types.rs`, and `crates/lr-mcp/src/bridge/stdio_bridge.rs`.
+
+Per-instance bindings therefore look practical for two concurrent CLI processes. A transport still cannot establish a durable conversation identity across reconnects, `/clear`, forks, or resumes without lifecycle evidence. Do not use TCP source ports or a persistent connection alone as a conversation ID.
+
 ## Identity and lifecycle
 
 Keep these identities distinct: authenticated `client_id`, public LocalRouter `participant_id`, secret participant capability, participant generation, and optional host/native-conversation binding. A participant is an explicitly enrolled communication identity; the core does not certify which native chat window owns it.
@@ -85,6 +110,21 @@ Keep these identities distinct: authenticated `client_id`, public LocalRouter `p
 
 Sharing one client credential is already sharing an authentication boundary. Participant capabilities prevent accidental routing and ordinary public-ID spoofing; this feature does not promise isolation against a malicious host controlling sessions under that credential.
 
+### Stronger candidate: cooperating-host conversation binding
+
+For reliable native-conversation targeting, a client-neutral host contract could require the host to:
+
+1. Maintain its conversation identity, generation, and live-instance ownership, and bind these to a LocalRouter participant.
+2. Keep the participant capability outside model context and attach it to tool calls, inbox reads, and subscriptions.
+3. Report lifecycle changes, including independent forks and resets. Decide how concurrent resumes of one native conversation are owned before enabling them.
+4. Subscribe for targeted inbox-change events and route them to that exact native conversation.
+5. Start a supported model turn when idle, or queue the message at a safe boundary while busy; arbitrary interruption is not assumed.
+6. Report acceptance into the intended conversation separately from transport receipt, model acknowledgment, and reply.
+
+One host subscription may multiplex multiple participants if every event is authorized and routed correctly. Treat events as hints: the broker's inbox, message IDs, fetch cursor, and explicit acknowledgments remain authoritative. Reconnect must refetch pending messages rather than assume notification replay.
+
+This is an integration contract, not a capability already available in every MCP host. A model-held capability remains a possible fallback for explicit mailbox use, with the retention/copying limitations above. The host contract and its supported-client matrix remain design/prototype work.
+
 ## Proposed tools and message contract
 
 Names below are proposals, to be aligned with existing built-in naming during implementation.
@@ -99,7 +139,7 @@ Names below are proposals, to be aligned with existing built-in naming during im
 
 The envelope contains a server message ID, trusted sender/recipient identities and generations, server time, expiry, plain-text body, and optional reply linkage. The server validates that `reply_to` belongs to an exchange visible to both participants. No attachments, remote URLs fetched by LocalRouter, transcript references, automatic execution, or structured action payloads. Plain-text code snippets are valid messages.
 
-`SessionSend` is nonblocking with respect to the recipient. A recipient may reply later; sender tools never wait indefinitely for a model response. Use immediate inbox fetch in v1; bounded waiting can be added only if real client testing justifies it.
+`SessionSend` is nonblocking with respect to the recipient. A recipient may reply later; sender tools never wait indefinitely for a model response. Immediate inbox fetch is the simplest mailbox candidate. Another idea is `SessionReceive(wait_ms)`: hold a bounded receive call until a message arrives or the wait expires. Completing that tool result can continue an already waiting agent turn, subject to host behavior. It cannot wake a finished/idle turn without a pending call. Timeouts, cancellation, background-tool behavior, and repeated timeout/model-turn costs require testing; long-polling is not a resolved substitute for push.
 
 Use at-least-once collection until acknowledgment, rather than deleting before a tool response reaches the caller. Acknowledgment means collection, not understanding or successful work. Scope idempotency to sender generation and request key; a retry with a different payload fails. Retain bounded deduplication records for a documented retry window and return a clear result for a duplicate already expired or revoked.
 
@@ -125,11 +165,23 @@ Use explicit text/byte/count limits from the first implementation. Initial value
 
 | Mode | Supported promise | Release position |
 | --- | --- | --- |
-| Generic MCP tools | Any capable client can join, retain its capability, discover/send/check its inbox during a turn | Required baseline, including shared/stateless connections |
-| Generic host-managed integration | Host retains participant capability and supplies it for its conversation | Optional ergonomics/lifecycle improvement |
-| Client-specific push/hook adapter | Host receives an event or inbox hint through a supported mechanism | Optional; never a prerequisite for core messaging |
+| Generic MCP tools | Any capable client can join, retain its capability, discover/send/check its inbox during a turn | Candidate mailbox baseline, including shared/stateless connections |
+| Generic host-managed integration | Host owns conversation binding, retains its capability, and can route events/schedule delivery | Candidate for stronger native-conversation and push guarantees |
+| Client-specific push/hook adapter | Host receives an event or inbox hint through a supported mechanism | Optional way to supply stronger guarantees; unnecessary for pull-only mailboxes |
 
-Baseline acceptance uses generic protocol clients and real tool-capable hosts. No application-specific adapter is needed to establish identity or exchange messages. Generic clients check their inbox when running; neither an open connection nor a resource notification guarantees an idle model starts a turn.
+These are proposed capability levels, not claims of implemented or tested support. Generic tools can establish logical participant identity and mailbox exchange without an app-specific adapter. The stronger native-conversation and idle-wake guarantees need a cooperating host or an adapter that supplies them. The feature as originally discussed must not be declared complete solely because pull-mailbox acceptance passes.
+
+### MCP SEP-2575: standard push-notification transport
+
+[SEP-2575, Make MCP Stateless](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/seps/2575-stateless-mcp.md), is Final and introduces `subscriptions/listen`. It opens a long-lived notification subscription over an HTTP POST response stream or stdio. Clients opt into supported change types, including `resourceSubscriptions`; notifications carry `io.modelcontextprotocol/subscriptionId` for correlation. This is a real standard mechanism for pushing changes to a listening client. It does not introduce a universal native-conversation identifier or a model-turn scheduling API.
+
+The subscription acknowledgment confirms establishment of the notification stream, not message collection, model processing, or a reply.
+
+Use the current [2026-07-28 specification changelog](https://modelcontextprotocol.io/specification/2026-07-28/changelog) and [Streamable HTTP contract](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http) for normative behavior; the accepted SEP is a historical record and has subsequent corrections. Earlier revisions already provided notification mechanisms; SEP-2575 replaces their subscription/transport arrangement rather than inventing all server-to-client push.
+
+A possible inbox mapping is a per-participant resource URI, subscribed through `resourceSubscriptions`, with `notifications/resources/updated` acting as an inbox-change hint. The host would fetch queued messages and acknowledge them through the mailbox contract. Resource URI, subscription request ID, and transport connection are routing references, not participant credentials. Authorizing resource reads/subscriptions with the same participant proof remains an explicit design problem, especially for generic hosts that only know how to pass that proof as a tool argument. Do not expose a private inbox merely because a caller knows its URI.
+
+LocalRouter already handles `subscriptions/listen` and filters supported notification types in `crates/lr-server/src/routes/mcp.rs`. It has no communication inbox resource or per-participant notification authorization yet, and the virtual-server abstraction currently supplies tools rather than resources. Reusing that transport requires a fresh isolation audit; its presence does not establish that this feature is implemented. Extending virtual resources is a separate scope choice, so tool-based inbox retrieval remains an alternative.
 
 ### Optional example: Claude Code
 
@@ -139,7 +191,7 @@ Claude Code Channels are a research preview using a local stdio subprocess with 
 
 Current Claude Code docs also say channels negotiating MCP 2026-07-28 are not registered. Prototype an earlier-protocol adapter locally; avoid changing every configured server’s protocol or enabling telemetry/flag fetching for this feature. If it cannot work under the user’s existing settings, show it as unavailable. See [MCP channel compatibility](https://code.claude.com/docs/en/mcp#push-messages-with-channels). Recheck these preview limitations at implementation time.
 
-An adapter is a thin per-conversation bridge to the same broker, not a second messaging system. Keep push optional; do not repurpose sampling or resource-list notifications to imply an existing chat received a user turn. Other apps can use the generic tools without implementing an equivalent to Channels. App-specific automatic discovery/wake claims need separate proof; do not expose LocalRouter publicly to make a cloud connector reach localhost.
+An adapter is a thin per-conversation bridge to the same broker, not a second messaging system. Keep app-specific adapters optional; full targeted-delivery acceptance still needs a proven host/push path unless a narrower mailbox scope is explicitly chosen. Do not repurpose sampling or resource-list notifications to imply an existing chat received a user turn. Other apps can use the generic tools without implementing an equivalent to Channels. App-specific automatic discovery/wake claims need separate proof; do not expose LocalRouter publicly to make a cloud connector reach localhost.
 
 ## Implementation shape
 
@@ -166,13 +218,17 @@ Likely touched areas:
 - `src/views/clients/`: a Session Communication card under Client → MCP; simple participant/status view with withdrawal and administrator revocation controls. No separate global chat application or permanent message history.
 - `src-tauri/src/ui/`, `src/types/tauri-commands.ts`, and `website/src/components/demo/TauriMockSetup.ts`: synchronized commands/types/demo data for the settings and participant view. Rust snake_case params, frontend camelCase, nullable optional fields, established icons, and Radix dialogs.
 
-## Implementation phases and acceptance gates
+## Possible future phases and acceptance gates — all deferred
 
-**Phase 0 — prove the portable protocol.** Enroll two independent participants using the same configured client over a shared/stateless MCP connection. Exchange a message and reply, and prove that a public participant ID cannot fetch its inbox. Exercise reconnect, capability loss, orphaned enrollment, duplicate/copy behavior, lease expiry, current policy checks, and capability redaction in generic capture paths. Then exercise two real generic tool-capable hosts without app-specific hooks/channels and verify their actual callable tool catalog. Record any tool-state retention limitations honestly. This planning task inspected code/docs only; no protocol or native-host experiment has been run.
+Do not execute these phases now. A future implementation request must revisit the unresolved requirements and choose the intended support level first.
+
+**Phase 0 — resolve identity and delivery feasibility.** Audit two separately launched CLI processes, multiple conversations sharing one host connection, legacy stateful HTTP, stateless/headerless calls, and the stdio bridge. Record actual gateway keys alongside available native conversation IDs. Test reconnect/resume/reset/fork and distinguish logical inbox separation from native-chat binding. Prove standard subscription notification delivery separately from waking an idle model; test at least one cooperating-host or Channels path for targeted wake. If the stronger guarantees cannot be established, record the unsupported cases and revisit scope rather than calling pull-only support equivalent. No protocol or native-host experiment has been run during this planning task.
+
+**Phase 0b — prove the portable mailbox candidate.** Enroll two participants on one credential over a shared/stateless transport; exchange a message and reply; reject public-ID-only inbox access. Exercise capability loss/copy, orphaned enrollment, leases, policy checks, and capture redaction. Test real generic tool-capable hosts and optional bounded waiting with their actual timeouts. This is baseline protocol evidence, not proof of automatic native conversation discovery or idle delivery.
 
 **Phase 1 — broker and identity.** Implement default-Off policy, portable capability registration/resolution, generations/leases, same-client scope, direct messages, receipts, deduplication, expiry, revocation, and memory/rate bounds. Cross-client access is hard-denied. Keep the policy entry point reusable without shipping dormant cross-client configuration.
 
-**Phase 2 — useful generic within-client experience.** Add the five tools and concise instructions for retaining capabilities, pairing-aware Ask behavior, settings, participants/status view, privacy-safe Monitor metadata, mocks/types, and real conversations exchanging a review request and reply. Verify the actual sessions loaded the tools. Explain that inbox checks are required and capability loss requires re-enrollment. No client-specific identity/hook adapter is required to pass core acceptance.
+**Phase 2 — useful generic within-client experience.** Add the five tools and concise instructions for retaining capabilities, pairing-aware Ask behavior, settings, participants/status view, privacy-safe Monitor metadata, mocks/types, and real conversations exchanging a review request and reply. Verify the actual sessions loaded the tools. Explain when inbox checks are required and capability loss requires re-enrollment. Mailbox acceptance and full native-conversation/push acceptance are separate requirements.
 
 **Phase 3 — optional host and delivery adapters.** Add host-held capability management, native lifecycle signals, or push mechanisms only where useful. Claude Code hooks/channels are one possible integration, not the defining client. Add explicit setup and capability reporting only after real tests prove it works. Preserve pending messages when notification delivery fails. Track adapter collection, transport handoff, and explicit recipient-agent acknowledgment separately. Core mailbox rollout never depends on client-specific or research-preview support.
 
@@ -184,7 +240,7 @@ Test two participants on one credential and shared/stateless transport, two cred
 
 Test concurrent sends/readers, order within an inbox, duplicate/reordered retries, acknowledgment ownership, forged reply links, queue/byte/rate limits, cleanup bounds, Unicode byte limits, full queues, partial adapter failure, no listeners, expired messages, process restart, and error redaction. Verify that capabilities and bodies never enter LocalRouter Monitor/indexing/Memory/logs/replay through generic tool arguments or response previews. A recipient reply loop must remain bounded and cancellable.
 
-Verify no tool exposure or background work when Off, live listing refresh or honest reload guidance when enabled, existing privacy ingress on every path, no additional model requests, and no reliance on Monitor retention. Core acceptance requires an actual message and reply between two independently enrolled participants without native hooks/channels, not only a successful MCP handshake or notification write. Advertise client-specific automatic delivery only after its separate native acceptance passes.
+Verify no tool exposure or background work when Off, live listing refresh or honest reload guidance when enabled, existing privacy ingress on every path, and no reliance on Monitor retention. LocalRouter must not initiate inference for discovery, titles, or relaying; receiving hosts may make their normal provider requests to process delivered messages. Mailbox acceptance requires an actual message and reply between two independently enrolled participants without native hooks/channels. Full native-conversation/push acceptance additionally requires two real conversations with verified separate ownership, targeted idle delivery, busy-turn queuing, reconnect recovery, and receipts. A handshake or notification write alone satisfies neither. Advertise automatic delivery only for integrations whose native acceptance passes.
 
 For Rust/workspace changes, update and pin rustup stable, confirm actual compiler path, then run workspace Clippy with all targets and warnings denied, formatting check, and workspace tests per AGENTS.md. For desktop/shared frontend, run `npx tsc --noEmit`, `npm run test:unit`, `npm run build`, and `npm --prefix website run build:check` with dependencies installed. Run packaging-script tests if adapter packaging changes those scripts. Do not dispatch hosted CI unless requested; an ordinary master push does not imply hosted validation.
 
@@ -192,4 +248,4 @@ Complete the checklist’s Plan Review, Test Coverage Review, and Bug Hunt after
 
 ## Planning-delivery validation
 
-Reviewed against current repository code and official protocol/client documentation, with independent architecture, product/privacy, protocol, and generic capability reviews. Incorporates the user's client-neutral scope: portable enrollment works without app-specific adapters; Claude Channels is an optional extension. Corrected enrollment approval, rejoin/reconnect behavior, OAuth refresh semantics, sender receipt visibility, and capability ownership/privacy limitations. Checked repository references, Markdown structure, whitespace, and the planning-only diff. No Rust or frontend builds were run for this documentation-only task; no protocol or native-host compatibility result is claimed. Commit/push outcome is reported with delivery.
+Reviewed against repository code and official protocol/client documentation, with independent architecture, product/privacy, protocol, and generic capability reviews. The 2026-10-30 consolidation preserves client neutrality, optional cross-client scope, MCP SEP-2575, Claude Channels, the two-CLI transport distinction, candidate mailbox/host contracts, and unresolved guarantees. Implementation is explicitly deferred by the user. Document structure, all 14 listed repository references, requested-topic coverage, and whitespace checks passed; the task diff contains only this plan. SEP-2575 and Channels source links were checked against their official documentation. No Rust/frontend builds or runtime messaging experiments were run for this documentation-only task. Commit/push outcome is reported with delivery.
