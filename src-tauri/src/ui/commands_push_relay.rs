@@ -1,4 +1,4 @@
-//! Push Relay Tauri commands: global settings and limits, per-client push
+//! Push Relay Tauri commands: the global switch and default permission, per-client push
 //! settings, the upstream push sources LocalRouter remembers, and the Claude
 //! Code STDIO bridge setup.
 //!
@@ -8,8 +8,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use lr_config::{
-    ConfigManager, EventDeliveryMode, PushFallbackTools, PushPermission, PushPermissions,
-    PushRelayConfig, PushRelayLimits,
+    ConfigManager, EventDeliveryMode, PushPermission, PushPermissions, PushRelayConfig,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, State};
@@ -32,16 +31,12 @@ fn emit_clients_changed(app: &tauri::AppHandle) {
 // Global settings
 // ============================================================================
 
-/// Global Push Relay settings for the UI. Unlike the YAML form, `limits` is
-/// always present, and the defaults are included so the UI can show them.
+/// Global Push Relay settings: the master switch and the default
+/// permission. Every limit is internal to the relay and not configurable.
 #[derive(Debug, Clone, Serialize)]
 pub struct PushRelayConfigView {
     pub enabled: bool,
     pub default_permission: PushPermission,
-    pub webhook_egress_enabled: bool,
-    pub allow_loopback_http: bool,
-    pub limits: PushRelayLimits,
-    pub default_limits: PushRelayLimits,
 }
 
 impl From<&PushRelayConfig> for PushRelayConfigView {
@@ -49,84 +44,8 @@ impl From<&PushRelayConfig> for PushRelayConfigView {
         Self {
             enabled: c.enabled,
             default_permission: c.default_permission,
-            webhook_egress_enabled: c.webhook_egress_enabled,
-            allow_loopback_http: c.allow_loopback_http,
-            limits: c.limits.clone(),
-            default_limits: PushRelayLimits::default(),
         }
     }
-}
-
-/// Reject limits that would make the relay unusable or contradict each other.
-pub fn validate_push_relay_limits(l: &PushRelayLimits) -> Result<(), String> {
-    let nonzero: [(&str, u64); 15] = [
-        ("journal_max_events", l.journal_max_events as u64),
-        ("journal_max_bytes", l.journal_max_bytes),
-        ("journal_retention_secs", l.journal_retention_secs),
-        ("max_event_bytes", l.max_event_bytes),
-        ("ask_timeout_secs", l.ask_timeout_secs),
-        ("ask_hold_cap", l.ask_hold_cap as u64),
-        (
-            "upstream_poll_min_interval_ms",
-            l.upstream_poll_min_interval_ms,
-        ),
-        (
-            "upstream_heartbeat_timeout_secs",
-            l.upstream_heartbeat_timeout_secs,
-        ),
-        ("downstream_heartbeat_secs", l.downstream_heartbeat_secs),
-        ("max_streams_per_session", l.max_streams_per_session as u64),
-        ("poll_max_events", l.poll_max_events as u64),
-        ("poll_default_events", l.poll_default_events as u64),
-        (
-            "channel_max_content_bytes",
-            l.channel_max_content_bytes as u64,
-        ),
-        ("webhook_timeout_secs", l.webhook_timeout_secs),
-        ("webhook_lease_min_secs", l.webhook_lease_min_secs),
-    ];
-    if let Some((name, _)) = nonzero.iter().find(|(_, v)| *v == 0) {
-        return Err(format!("{name} must be greater than zero"));
-    }
-    let ordered: [(&str, u64, &str, u64); 5] = [
-        (
-            "upstream_poll_min_interval_ms",
-            l.upstream_poll_min_interval_ms,
-            "upstream_poll_max_interval_ms",
-            l.upstream_poll_max_interval_ms,
-        ),
-        (
-            "upstream_reconnect_backoff_min_ms",
-            l.upstream_reconnect_backoff_min_ms,
-            "upstream_reconnect_backoff_max_ms",
-            l.upstream_reconnect_backoff_max_ms,
-        ),
-        (
-            "poll_default_events",
-            l.poll_default_events as u64,
-            "poll_max_events",
-            l.poll_max_events as u64,
-        ),
-        (
-            "webhook_lease_min_secs",
-            l.webhook_lease_min_secs,
-            "webhook_lease_default_secs",
-            l.webhook_lease_default_secs,
-        ),
-        (
-            "webhook_lease_default_secs",
-            l.webhook_lease_default_secs,
-            "webhook_lease_max_secs",
-            l.webhook_lease_max_secs,
-        ),
-    ];
-    if let Some((a, _, b, _)) = ordered.iter().find(|(_, lo, _, hi)| lo > hi) {
-        return Err(format!("{a} must not exceed {b}"));
-    }
-    if l.max_event_bytes > l.journal_max_bytes {
-        return Err("max_event_bytes must not exceed journal_max_bytes".to_string());
-    }
-    Ok(())
 }
 
 /// Get the global Push Relay settings.
@@ -137,20 +56,13 @@ pub async fn get_push_relay_config(
     Ok(PushRelayConfigView::from(&config_manager.get().push_relay))
 }
 
-/// Update the global Push Relay settings. Every argument is optional; `limits`
-/// replaces the whole limits block (send the defaults to reset it).
+/// Update the global Push Relay settings. Both arguments are optional.
 #[tauri::command]
 pub async fn update_push_relay_config(
     enabled: Option<bool>,
     default_permission: Option<PushPermission>,
-    webhook_egress_enabled: Option<bool>,
-    allow_loopback_http: Option<bool>,
-    limits: Option<PushRelayLimits>,
     config_manager: State<'_, ConfigManager>,
 ) -> Result<PushRelayConfigView, String> {
-    if let Some(limits) = &limits {
-        validate_push_relay_limits(limits)?;
-    }
     config_manager
         .update(|cfg| {
             let push = &mut cfg.push_relay;
@@ -159,15 +71,6 @@ pub async fn update_push_relay_config(
             }
             if let Some(v) = default_permission {
                 push.default_permission = v;
-            }
-            if let Some(v) = webhook_egress_enabled {
-                push.webhook_egress_enabled = v;
-            }
-            if let Some(v) = allow_loopback_http {
-                push.allow_loopback_http = v;
-            }
-            if let Some(v) = limits {
-                push.limits = v;
             }
         })
         .map_err(|e| e.to_string())?;
@@ -330,9 +233,7 @@ pub struct ClientPushServerAccess {
 pub struct ClientPushSettings {
     pub client_id: String,
     pub permissions: PushPermissions,
-    pub fallback_tools: PushFallbackTools,
     pub webhook_urls: Vec<String>,
-    pub claude_channels_launched: bool,
     /// The global default the client inherits.
     pub global_default: PushPermission,
     /// The client-level effective permission (client override or default).
@@ -350,9 +251,7 @@ fn client_push_settings(
     ClientPushSettings {
         client_id: client.id.clone(),
         permissions: client.push_permissions.clone(),
-        fallback_tools: client.push_fallback_tools,
         webhook_urls: client.push_webhook_urls.clone(),
-        claude_channels_launched: client.claude_channels_launched,
         global_default: default,
         effective_client: client.push_permissions.global.unwrap_or(default),
         relay_enabled: config.push_relay.enabled,
@@ -494,22 +393,6 @@ pub async fn set_client_push_permission(
     Ok(())
 }
 
-/// Set when the fallback polling tools are shown to a client.
-#[tauri::command]
-pub async fn set_client_push_fallback_tools(
-    client_id: String,
-    mode: PushFallbackTools,
-    config_manager: State<'_, ConfigManager>,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    update_client(&config_manager, &client_id, |client| {
-        client.push_fallback_tools = mode;
-    })
-    .await?;
-    emit_clients_changed(&app);
-    Ok(())
-}
-
 /// Revoke an approved webhook callback URL. The next delivery to it asks
 /// again.
 #[tauri::command]
@@ -527,24 +410,8 @@ pub async fn remove_client_push_webhook_url(
     Ok(())
 }
 
-/// Record whether Claude Code is launched with the development-channels flag.
-#[tauri::command]
-pub async fn set_client_claude_channels_launched(
-    client_id: String,
-    launched: bool,
-    config_manager: State<'_, ConfigManager>,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    update_client(&config_manager, &client_id, |client| {
-        client.claude_channels_launched = launched;
-    })
-    .await?;
-    emit_clients_changed(&app);
-    Ok(())
-}
-
 // ============================================================================
-// Held events (Ask) and active subscriptions
+// Held events (Ask)
 // ============================================================================
 
 fn relay(
@@ -575,8 +442,6 @@ pub struct PendingPushApproval {
     pub ingress: String,
     /// When the event was held (RFC 3339).
     pub received_at: String,
-    /// When an unanswered hold is denied (RFC 3339).
-    pub expires_at: String,
     /// The event's `data`, as it would be delivered.
     pub data: serde_json::Value,
     /// Position in its (client, event type) queue; 0 is being asked now.
@@ -605,7 +470,6 @@ pub fn pending_push_approvals(
                 .get(&(e.client_id.clone(), e.qualified_name.clone()))
                 .copied()
                 .unwrap_or(1);
-            let expires = e.held_at + chrono::Duration::seconds(e.timeout_secs as i64);
             PendingPushApproval {
                 request_id: e.hold_id,
                 client_id: e.client_id,
@@ -617,7 +481,6 @@ pub fn pending_push_approvals(
                 event_id: e.event_id,
                 ingress: e.ingress_mode,
                 received_at: e.held_at.to_rfc3339(),
-                expires_at: expires.to_rfc3339(),
                 data: e.data,
                 position: e.position,
                 pending_of_type: of_type.saturating_sub(1),
@@ -707,151 +570,6 @@ pub async fn submit_push_approval(
     Ok(relay.decide_all(&held.client_id, &held.qualified_name, decision))
 }
 
-/// One live subscription: an upstream subscription the relay holds open
-/// (`kind: upstream`, shared by every client consuming it, or on one
-/// session's own connection for stdio upstreams) or a client's webhook
-/// delivery (`kind: webhook`).
-#[derive(Debug, Clone, Serialize)]
-pub struct ActivePushSubscription {
-    pub subscription_id: String,
-    /// `upstream` or `webhook`.
-    pub kind: String,
-    pub server_id: String,
-    pub server_name: String,
-    /// The upstream's own event name.
-    pub event_name: String,
-    /// Subscription arguments (upstream subscriptions; empty for webhooks).
-    pub arguments: serde_json::Map<String, serde_json::Value>,
-    /// `shared` (relay-owned connection) or `session` (one session's own
-    /// connection). `null` for webhooks.
-    pub scope: Option<String>,
-    /// The client a session-scoped or webhook subscription belongs to;
-    /// `null` for shared upstream subscriptions.
-    pub client_id: Option<String>,
-    pub client_name: Option<String>,
-    /// `push` or `poll` once an upstream subscription is running.
-    pub ingress: Option<String>,
-    /// Upstream: `active` or `reconnecting`. Webhook: `awaiting_approval`,
-    /// `active`, `suspended` or `denied`.
-    pub status: String,
-    /// Upstream: events received. Webhook: deliveries made.
-    pub event_count: u64,
-    pub last_event_at: Option<String>,
-    pub last_error: Option<String>,
-    pub reconnects: u64,
-    pub webhook_url: Option<String>,
-    pub lease_expires_at: Option<String>,
-}
-
-fn upstream_subscription(
-    s: lr_mcp::gateway::push_relay::SubscriptionInfo,
-    server_name: String,
-    session_client: Option<(String, String)>,
-) -> ActivePushSubscription {
-    use lr_mcp::gateway::push_relay::upstream::ConnectionScope;
-    let (scope, scope_id) = match &s.scope {
-        ConnectionScope::Shared => ("shared", "shared".to_string()),
-        ConnectionScope::Session(key) => ("session", format!("session:{key}")),
-    };
-    let args = serde_json::to_string(&s.arguments).unwrap_or_default();
-    let (client_id, client_name) = session_client.unzip();
-    ActivePushSubscription {
-        subscription_id: format!("{scope_id}|{}|{}|{args}", s.server_id, s.event),
-        kind: "upstream".to_string(),
-        server_id: s.server_id,
-        server_name,
-        event_name: s.event,
-        arguments: s.arguments,
-        scope: Some(scope.to_string()),
-        client_id,
-        client_name,
-        ingress: s.status.ingress_mode,
-        status: if s.status.connected {
-            "active"
-        } else {
-            "reconnecting"
-        }
-        .to_string(),
-        event_count: s.status.events_received,
-        last_event_at: s.status.last_event_at.map(|t| t.to_rfc3339()),
-        last_error: s.status.last_error,
-        reconnects: s.status.reconnects,
-        webhook_url: None,
-        lease_expires_at: None,
-    }
-}
-
-fn webhook_subscription(
-    w: lr_mcp::gateway::push_relay::WebhookSubscriptionInfo,
-) -> ActivePushSubscription {
-    ActivePushSubscription {
-        subscription_id: format!("webhook:{}", w.id),
-        kind: "webhook".to_string(),
-        server_id: w.server_id,
-        server_name: w.server_name,
-        event_name: w.event_name,
-        arguments: Default::default(),
-        scope: None,
-        client_id: Some(w.client_id),
-        client_name: Some(w.client_name),
-        ingress: None,
-        status: w.state,
-        event_count: w.delivered,
-        last_event_at: None,
-        last_error: w.last_error,
-        reconnects: 0,
-        webhook_url: Some(w.url),
-        lease_expires_at: Some(w.expires_at.to_rfc3339()),
-    }
-}
-
-/// Upstream subscriptions the relay holds open and clients' webhook
-/// deliveries.
-#[tauri::command]
-pub async fn list_active_push_subscriptions(
-    config_manager: State<'_, ConfigManager>,
-    state: State<'_, Arc<lr_server::state::AppState>>,
-) -> Result<Vec<ActivePushSubscription>, String> {
-    use lr_mcp::gateway::push_relay::upstream::ConnectionScope;
-    let relay = relay(&state)?;
-    let config = config_manager.get();
-    let server_name = |id: &str| {
-        config
-            .mcp_servers
-            .iter()
-            .find(|s| s.id == id)
-            .map(|s| s.name.clone())
-            .unwrap_or_else(|| id.to_string())
-    };
-    let mut out = Vec::new();
-    for s in relay.active_subscriptions() {
-        let session_client = match &s.scope {
-            ConnectionScope::Session(key) => state
-                .mcp_gateway
-                .push_session_context(key)
-                .await
-                .map(|ctx| (ctx.client_id, ctx.client_name)),
-            ConnectionScope::Shared => None,
-        };
-        let name = server_name(&s.server_id);
-        out.push(upstream_subscription(s, name, session_client));
-    }
-    out.extend(
-        relay
-            .webhook_subscriptions(None)
-            .into_iter()
-            .map(webhook_subscription),
-    );
-    out.sort_by(|a, b| {
-        (&a.server_name, &a.event_name, &a.subscription_id).cmp(&(
-            &b.server_name,
-            &b.event_name,
-            &b.subscription_id,
-        ))
-    });
-    Ok(out)
-}
-
 // ============================================================================
 // Claude Code STDIO bridge
 // ============================================================================
@@ -865,7 +583,6 @@ pub struct ClaudeCodeMcpSetup {
     pub launch_command: String,
     /// The LocalRouter binary the bridge entry runs.
     pub binary_path: Option<String>,
-    pub channels_launched: bool,
 }
 
 /// Inspect `~/.claude.json` for the client's Claude Code MCP setup.
@@ -875,7 +592,7 @@ pub async fn get_claude_code_mcp_setup(
     config_manager: State<'_, ConfigManager>,
 ) -> Result<ClaudeCodeMcpSetup, String> {
     let config = config_manager.get();
-    let client = find_client(&config, &client_id)?;
+    find_client(&config, &client_id)?;
     let transport = match claude_code::installed_transport()? {
         claude_code::ClaudeMcpTransport::None => "none",
         claude_code::ClaudeMcpTransport::Http => "http",
@@ -887,7 +604,6 @@ pub async fn get_claude_code_mcp_setup(
         config_path: claude_code::mcp_config_display_path(),
         launch_command: claude_code::CHANNELS_LAUNCH_COMMAND.to_string(),
         binary_path: claude_code::localrouter_binary().ok(),
-        channels_launched: client.claude_channels_launched,
     })
 }
 
@@ -916,43 +632,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_limits_are_valid() {
-        validate_push_relay_limits(&PushRelayLimits::default()).unwrap();
-    }
-
-    #[test]
-    fn rejects_zero_and_inverted_limits() {
-        let limits = PushRelayLimits {
-            poll_max_events: 0,
-            ..Default::default()
-        };
-        assert!(validate_push_relay_limits(&limits)
-            .unwrap_err()
-            .contains("poll_max_events"));
-
-        let limits = PushRelayLimits {
-            upstream_poll_min_interval_ms: 10_000,
-            upstream_poll_max_interval_ms: 5_000,
-            ..Default::default()
-        };
-        assert!(validate_push_relay_limits(&limits)
-            .unwrap_err()
-            .contains("upstream_poll_min_interval_ms"));
-
-        let limits = PushRelayLimits {
-            webhook_lease_default_secs: 10,
-            ..Default::default()
-        };
-        assert!(validate_push_relay_limits(&limits).is_err());
-    }
-
-    #[test]
-    fn view_always_carries_limits_and_defaults() {
+    fn view_carries_only_the_switch_and_default() {
         let view = PushRelayConfigView::from(&PushRelayConfig::default());
         let json = serde_json::to_value(&view).unwrap();
-        assert_eq!(json["limits"]["journal_max_events"], 10_000);
-        assert_eq!(json["default_limits"]["ask_timeout_secs"], 1_800);
-        assert_eq!(json["default_permission"], "allow");
+        assert_eq!(
+            json,
+            serde_json::json!({"enabled": true, "default_permission": "allow"})
+        );
     }
 
     #[test]
@@ -1138,7 +824,6 @@ mod tests {
                 .unwrap()
                 .with_timezone(&chrono::Utc),
             held_secs: 5,
-            timeout_secs: 1_800,
             position,
             firewall_request_id: (position == 0).then(|| "fw-1".to_string()),
             decided: false,
@@ -1157,7 +842,7 @@ mod tests {
         assert_eq!(out[1].pending_of_type, 1);
         assert_eq!(out[2].pending_of_type, 0);
         assert_eq!(out[0].firewall_request_id.as_deref(), Some("fw-1"));
-        assert!(out[0].expires_at.starts_with("2026-10-30T10:30:00"));
+        assert!(out[0].received_at.starts_with("2026-10-30T10:00:00"));
         let json = serde_json::to_value(&out[0]).unwrap();
         assert_eq!(json["ingress"], "push");
         assert_eq!(json["qualified_name"], "vocalcord__message.received");
@@ -1193,69 +878,5 @@ mod tests {
         let parsed: PushApprovalAction =
             serde_json::from_value(serde_json::json!("allow_all_pending_of_type")).unwrap();
         assert_eq!(parsed, PushApprovalAction::AllowAllPendingOfType);
-    }
-
-    #[test]
-    fn subscriptions_describe_upstream_and_webhook_paths() {
-        use lr_mcp::gateway::push_relay::upstream::{ConnectionScope, SubscriptionStatus};
-        let shared = upstream_subscription(
-            lr_mcp::gateway::push_relay::SubscriptionInfo {
-                server_id: "vc-id".to_string(),
-                event: "message.received".to_string(),
-                arguments: Default::default(),
-                scope: ConnectionScope::Shared,
-                status: SubscriptionStatus {
-                    ingress_mode: Some("push".to_string()),
-                    connected: true,
-                    events_received: 3,
-                    ..Default::default()
-                },
-            },
-            "VocalCord".to_string(),
-            None,
-        );
-        assert_eq!(shared.kind, "upstream");
-        assert_eq!(shared.scope.as_deref(), Some("shared"));
-        assert_eq!(shared.status, "active");
-        assert_eq!(shared.event_count, 3);
-        assert!(shared.client_id.is_none());
-
-        let session = upstream_subscription(
-            lr_mcp::gateway::push_relay::SubscriptionInfo {
-                server_id: "ng-id".to_string(),
-                event: "llm.request.pending".to_string(),
-                arguments: Default::default(),
-                scope: ConnectionScope::Session("s1".to_string()),
-                status: SubscriptionStatus::default(),
-            },
-            "NetGet".to_string(),
-            Some(("c1".to_string(), "Claude".to_string())),
-        );
-        assert_eq!(session.scope.as_deref(), Some("session"));
-        assert_eq!(session.status, "reconnecting");
-        assert_eq!(session.client_name.as_deref(), Some("Claude"));
-        assert_ne!(session.subscription_id, shared.subscription_id);
-
-        let hook = webhook_subscription(lr_mcp::gateway::push_relay::WebhookSubscriptionInfo {
-            id: "w1".to_string(),
-            client_id: "c1".to_string(),
-            client_name: "Claude".to_string(),
-            server_id: "vc-id".to_string(),
-            server_name: "vocalcord".to_string(),
-            event_name: "message.received".to_string(),
-            event: "vocalcord__message.received".to_string(),
-            url: "http://127.0.0.1:9000/hook".to_string(),
-            state: "awaiting_approval".to_string(),
-            expires_at: chrono::Utc::now(),
-            delivered: 0,
-            last_error: None,
-        });
-        assert_eq!(hook.kind, "webhook");
-        assert_eq!(hook.status, "awaiting_approval");
-        assert_eq!(
-            hook.webhook_url.as_deref(),
-            Some("http://127.0.0.1:9000/hook")
-        );
-        assert!(hook.lease_expires_at.is_some());
     }
 }

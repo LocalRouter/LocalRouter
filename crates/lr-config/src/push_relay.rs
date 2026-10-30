@@ -1,4 +1,4 @@
-//! Push Relay configuration: global settings and limits, per-client push
+//! Push Relay configuration: the global switch and default permission, per-client push
 //! permissions, and the upstream capabilities remembered on each MCP server.
 //!
 //! See `plan/2026-10-30-PUSH_RELAY.md`.
@@ -6,7 +6,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
-use std::time::Duration;
 
 use crate::{McpAuthConfig, McpServerConfig, McpTransportConfig};
 
@@ -32,6 +31,12 @@ pub enum PushPermission {
 }
 
 /// Global Push Relay settings (`push_relay` in the config).
+///
+/// Only the master switch and the global default permission are
+/// configurable. Every bound (journal size, poll page size, webhook retries,
+/// ...) is an internal constant of the relay. Unknown keys are ignored, so a
+/// config written with the older `limits`, `webhook_egress_enabled`,
+/// `allow_loopback_http` or `ask_timeout_secs` keys still loads.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PushRelayConfig {
     /// Master switch. When off, no push is advertised or relayed to anyone.
@@ -42,19 +47,6 @@ pub struct PushRelayConfig {
     /// overrides say otherwise.
     #[serde(default)]
     pub default_permission: PushPermission,
-
-    /// Whether clients may subscribe by webhook (`events/subscribe`), with
-    /// LocalRouter signing and POSTing each event.
-    #[serde(default = "default_true")]
-    pub webhook_egress_enabled: bool,
-
-    /// Accept `http://` callback URLs that point at a loopback address.
-    #[serde(default = "default_true")]
-    pub allow_loopback_http: bool,
-
-    /// Bounds on memory, waiting and retries.
-    #[serde(default, skip_serializing_if = "PushRelayLimits::is_default")]
-    pub limits: PushRelayLimits,
 }
 
 impl Default for PushRelayConfig {
@@ -62,9 +54,6 @@ impl Default for PushRelayConfig {
         Self {
             enabled: true,
             default_permission: PushPermission::Allow,
-            webhook_egress_enabled: true,
-            allow_loopback_http: true,
-            limits: PushRelayLimits::default(),
         }
     }
 }
@@ -72,179 +61,6 @@ impl Default for PushRelayConfig {
 impl PushRelayConfig {
     pub fn is_default(&self) -> bool {
         self == &Self::default()
-    }
-}
-
-const MIB: u64 = 1024 * 1024;
-
-/// Every limit from the plan's "Limits" table. Durations are stored as whole
-/// seconds (`_secs`) or milliseconds (`_ms`); use the accessor methods for a
-/// [`Duration`].
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct PushRelayLimits {
-    /// Occurrences held per client for polling and replay.
-    pub journal_max_events: usize,
-    /// Same, by total size of event data per client (first limit wins).
-    pub journal_max_bytes: u64,
-    /// Age after which journal entries are dropped.
-    pub journal_retention_secs: u64,
-    /// Largest accepted `data` of one occurrence; larger events are dropped.
-    pub max_event_bytes: u64,
-    /// A held (Ask) event is denied after this long without a decision.
-    pub ask_timeout_secs: u64,
-    /// Held events per client awaiting a decision; further Ask events are denied.
-    pub ask_hold_cap: usize,
-    /// How long `initialize` / `server/discover` waits for a server with no
-    /// (or a stale) capability snapshot.
-    pub first_discovery_wait_ms: u64,
-    /// Lower clamp on an upstream's `nextPollMs`.
-    pub upstream_poll_min_interval_ms: u64,
-    /// Upper clamp on an upstream's `nextPollMs`.
-    pub upstream_poll_max_interval_ms: u64,
-    /// First delay before reconnecting a dropped upstream `events/stream`.
-    pub upstream_reconnect_backoff_min_ms: u64,
-    /// Largest reconnect delay (the backoff is jittered between the bounds).
-    pub upstream_reconnect_backoff_max_ms: u64,
-    /// An upstream stream with no heartbeat for this long is treated as dead.
-    pub upstream_heartbeat_timeout_secs: u64,
-    /// Interval of `notifications/events/heartbeat` sent to clients.
-    pub downstream_heartbeat_secs: u64,
-    /// Concurrent `events/stream` requests per client session.
-    pub max_streams_per_session: usize,
-    /// Ceiling on events per `events/poll` / `EventPoll` page.
-    pub poll_max_events: usize,
-    /// Page size of `EventPoll` when the caller gives no limit.
-    pub poll_default_events: usize,
-    /// Ceiling on `EventPoll`'s `wait_seconds`.
-    pub poll_max_wait_secs: u64,
-    /// Lifetime of one `/events/watch` connection.
-    pub watch_max_lifetime_secs: u64,
-    /// Rendered `content` per channel message; longer content is truncated.
-    pub channel_max_content_bytes: usize,
-    /// Channel messages per minute per session before coalescing.
-    pub channel_rate_per_minute: u32,
-    /// Timeout of one webhook delivery attempt.
-    pub webhook_timeout_secs: u64,
-    /// Delay before each retry of a failed webhook delivery. The first attempt
-    /// plus one retry per entry is the total number of attempts; after the
-    /// last the subscription is suspended until refreshed.
-    pub webhook_retry_delays_secs: Vec<u64>,
-    /// Active webhook subscriptions per client.
-    pub webhook_max_subscriptions: usize,
-    /// Webhook subscription TTL when the client asks for none.
-    pub webhook_lease_default_secs: u64,
-    /// Shortest webhook subscription TTL accepted.
-    pub webhook_lease_min_secs: u64,
-    /// Longest webhook subscription TTL accepted.
-    pub webhook_lease_max_secs: u64,
-}
-
-impl Default for PushRelayLimits {
-    fn default() -> Self {
-        Self {
-            journal_max_events: 10_000,
-            journal_max_bytes: 64 * MIB,
-            journal_retention_secs: 24 * 60 * 60,
-            max_event_bytes: MIB,
-            ask_timeout_secs: 30 * 60,
-            ask_hold_cap: 1_000,
-            first_discovery_wait_ms: 10_000,
-            upstream_poll_min_interval_ms: 1_000,
-            upstream_poll_max_interval_ms: 5 * 60 * 1_000,
-            upstream_reconnect_backoff_min_ms: 1_000,
-            upstream_reconnect_backoff_max_ms: 60_000,
-            upstream_heartbeat_timeout_secs: 90,
-            downstream_heartbeat_secs: 30,
-            max_streams_per_session: 64,
-            poll_max_events: 500,
-            poll_default_events: 50,
-            poll_max_wait_secs: 50,
-            watch_max_lifetime_secs: 24 * 60 * 60,
-            channel_max_content_bytes: 16 * 1024,
-            channel_rate_per_minute: 60,
-            webhook_timeout_secs: 10,
-            webhook_retry_delays_secs: vec![5, 30, 120, 600, 1_800],
-            webhook_max_subscriptions: 100,
-            webhook_lease_default_secs: 60 * 60,
-            webhook_lease_min_secs: 60,
-            webhook_lease_max_secs: 24 * 60 * 60,
-        }
-    }
-}
-
-impl PushRelayLimits {
-    pub fn is_default(&self) -> bool {
-        self == &Self::default()
-    }
-
-    pub fn journal_retention(&self) -> Duration {
-        Duration::from_secs(self.journal_retention_secs)
-    }
-
-    pub fn ask_timeout(&self) -> Duration {
-        Duration::from_secs(self.ask_timeout_secs)
-    }
-
-    pub fn first_discovery_wait(&self) -> Duration {
-        Duration::from_millis(self.first_discovery_wait_ms)
-    }
-
-    pub fn upstream_poll_min_interval(&self) -> Duration {
-        Duration::from_millis(self.upstream_poll_min_interval_ms)
-    }
-
-    pub fn upstream_poll_max_interval(&self) -> Duration {
-        Duration::from_millis(self.upstream_poll_max_interval_ms)
-    }
-
-    pub fn upstream_reconnect_backoff_min(&self) -> Duration {
-        Duration::from_millis(self.upstream_reconnect_backoff_min_ms)
-    }
-
-    pub fn upstream_reconnect_backoff_max(&self) -> Duration {
-        Duration::from_millis(self.upstream_reconnect_backoff_max_ms)
-    }
-
-    pub fn upstream_heartbeat_timeout(&self) -> Duration {
-        Duration::from_secs(self.upstream_heartbeat_timeout_secs)
-    }
-
-    pub fn downstream_heartbeat(&self) -> Duration {
-        Duration::from_secs(self.downstream_heartbeat_secs)
-    }
-
-    pub fn poll_max_wait(&self) -> Duration {
-        Duration::from_secs(self.poll_max_wait_secs)
-    }
-
-    pub fn watch_max_lifetime(&self) -> Duration {
-        Duration::from_secs(self.watch_max_lifetime_secs)
-    }
-
-    pub fn webhook_timeout(&self) -> Duration {
-        Duration::from_secs(self.webhook_timeout_secs)
-    }
-
-    /// Total delivery attempts per webhook event (first try plus retries).
-    pub fn webhook_attempts(&self) -> usize {
-        self.webhook_retry_delays_secs.len() + 1
-    }
-
-    /// Clamp a requested webhook lease to the configured bounds.
-    pub fn webhook_lease(&self, requested_secs: Option<u64>) -> Duration {
-        let secs = requested_secs
-            .unwrap_or(self.webhook_lease_default_secs)
-            .clamp(self.webhook_lease_min_secs, self.webhook_lease_max_secs);
-        Duration::from_secs(secs)
-    }
-
-    /// Clamp an upstream's `nextPollMs` to the configured bounds.
-    pub fn clamp_upstream_poll_interval(&self, next_poll_ms: u64) -> Duration {
-        Duration::from_millis(next_poll_ms.clamp(
-            self.upstream_poll_min_interval_ms,
-            self.upstream_poll_max_interval_ms,
-        ))
     }
 }
 
@@ -303,26 +119,6 @@ impl PushPermissions {
             .or(self.global.as_ref())
             .copied()
             .unwrap_or(global_default)
-    }
-}
-
-/// When the fallback polling tools (`EventList`, `EventPoll`, `EventWait`)
-/// are shown to a client.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum PushFallbackTools {
-    /// Shown unless the client has a native mechanism (see the plan).
-    #[default]
-    Auto,
-    /// Shown whenever any push source is available.
-    Always,
-    /// Never shown.
-    Never,
-}
-
-impl PushFallbackTools {
-    pub fn is_auto(&self) -> bool {
-        matches!(self, Self::Auto)
     }
 }
 
@@ -487,27 +283,21 @@ pub fn fingerprint_for(server: &McpServerConfig) -> String {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ClientPushSettings {
     pub permissions: PushPermissions,
-    pub fallback_tools: PushFallbackTools,
     pub webhook_urls: Vec<String>,
-    pub claude_channels_launched: bool,
 }
 
 impl ClientPushSettings {
     pub fn from_client(client: &crate::Client) -> Self {
         Self {
             permissions: client.push_permissions.clone(),
-            fallback_tools: client.push_fallback_tools,
             webhook_urls: client.push_webhook_urls.clone(),
-            claude_channels_launched: client.claude_channels_launched,
         }
     }
 
     /// Copy these settings onto a client.
     pub fn apply_to(&self, client: &mut crate::Client) {
         client.push_permissions = self.permissions.clone();
-        client.push_fallback_tools = self.fallback_tools;
         client.push_webhook_urls = self.webhook_urls.clone();
-        client.claude_channels_launched = self.claude_channels_launched;
     }
 }
 
@@ -610,9 +400,7 @@ mcp_servers:
         assert_eq!(config.push_relay.default_permission, PushPermission::Allow);
         let client = &config.clients[0];
         assert!(client.push_permissions.is_empty());
-        assert_eq!(client.push_fallback_tools, PushFallbackTools::Auto);
         assert!(client.push_webhook_urls.is_empty());
-        assert!(!client.claude_channels_launched);
         assert!(config.mcp_servers[0].capability_snapshot.is_none());
     }
 
@@ -627,9 +415,7 @@ mcp_servers:
         for key in [
             "push_relay",
             "push_permissions",
-            "push_fallback_tools",
             "push_webhook_urls",
-            "claude_channels_launched",
             "capability_snapshot",
         ] {
             assert!(!yaml.contains(key), "{key} serialized at default:\n{yaml}");
@@ -640,9 +426,7 @@ mcp_servers:
     fn non_default_settings_round_trip() {
         let mut config = AppConfig::default();
         config.push_relay.default_permission = PushPermission::Ask;
-        config.push_relay.webhook_egress_enabled = false;
-        config.push_relay.limits.first_discovery_wait_ms = 2_500;
-        config.push_relay.limits.webhook_retry_delays_secs = vec![1, 2];
+        config.push_relay.enabled = false;
 
         let mut client = Client::new_with_strategy("c".into(), "s".into());
         client.push_permissions.global = Some(PushPermission::Block);
@@ -654,9 +438,7 @@ mcp_servers:
             PushPermissions::event_key("m1", "message.received"),
             PushPermission::Ask,
         );
-        client.push_fallback_tools = PushFallbackTools::Never;
         client.push_webhook_urls = vec!["http://127.0.0.1:9000/hook".into()];
-        client.claude_channels_launched = true;
         config.clients.push(client);
 
         let mut server = stdio_server("echo");
@@ -665,7 +447,7 @@ mcp_servers:
 
         let yaml = serde_yaml::to_string(&config).unwrap();
         assert!(yaml.contains("default_permission: ask"));
-        assert!(yaml.contains("push_fallback_tools: never"));
+        assert!(yaml.contains("enabled: false"));
         let parsed: AppConfig = serde_yaml::from_str(&yaml).unwrap();
         assert_eq!(parsed.push_relay, config.push_relay);
         assert_eq!(parsed.clients[0], config.clients[0]);
@@ -673,33 +455,48 @@ mcp_servers:
     }
 
     #[test]
-    fn partial_limits_keep_other_defaults() {
-        let limits: PushRelayLimits =
-            serde_yaml::from_str("ask_timeout_secs: 60\npoll_max_events: 10\n").unwrap();
-        assert_eq!(limits.ask_timeout(), Duration::from_secs(60));
-        assert_eq!(limits.poll_max_events, 10);
-        assert_eq!(limits.first_discovery_wait(), Duration::from_secs(10));
-        assert_eq!(limits.journal_max_bytes, 64 * MIB);
-        assert_eq!(limits.webhook_attempts(), 6);
-    }
-
-    #[test]
-    fn limit_helpers_clamp() {
-        let limits = PushRelayLimits::default();
-        assert_eq!(limits.webhook_lease(None), Duration::from_secs(3600));
-        assert_eq!(limits.webhook_lease(Some(1)), Duration::from_secs(60));
+    fn config_with_removed_settings_still_loads() {
+        let yaml = r#"
+version: 1
+push_relay:
+  enabled: false
+  default_permission: ask
+  webhook_egress_enabled: false
+  allow_loopback_http: false
+  ask_timeout_secs: 60
+  limits:
+    journal_max_events: 5
+    ask_timeout_secs: 60
+    ask_hold_cap: 2
+    webhook_retry_delays_secs: [1, 2]
+clients:
+  - id: c1
+    name: Client
+    created_at: "2026-01-01T00:00:00Z"
+    strategy_id: s1
+    push_fallback_tools: never
+    claude_channels_launched: true
+    push_webhook_urls: ["http://127.0.0.1:9000/hook"]
+"#;
+        let config: AppConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(!config.push_relay.enabled);
+        assert_eq!(config.push_relay.default_permission, PushPermission::Ask);
         assert_eq!(
-            limits.webhook_lease(Some(10_000_000)),
-            Duration::from_secs(86_400)
+            config.clients[0].push_webhook_urls,
+            vec!["http://127.0.0.1:9000/hook".to_string()]
         );
-        assert_eq!(
-            limits.clamp_upstream_poll_interval(10),
-            Duration::from_secs(1)
-        );
-        assert_eq!(
-            limits.clamp_upstream_poll_interval(u64::MAX),
-            Duration::from_secs(300)
-        );
+        // Saving drops the removed keys
+        let saved = serde_yaml::to_string(&config).unwrap();
+        for key in [
+            "limits",
+            "webhook_egress_enabled",
+            "allow_loopback_http",
+            "ask_timeout_secs",
+            "push_fallback_tools",
+            "claude_channels_launched",
+        ] {
+            assert!(!saved.contains(key), "{key} still saved:\n{saved}");
+        }
     }
 
     #[test]

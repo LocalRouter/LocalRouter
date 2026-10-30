@@ -438,12 +438,8 @@ pub struct ClientInfo {
     pub json_repair_active: bool,
     /// Push Relay permission tree (client → server → event type; absent = inherit)
     pub push_permissions: lr_config::PushPermissions,
-    /// When the Push Relay fallback polling tools are shown
-    pub push_fallback_tools: lr_config::PushFallbackTools,
     /// Webhook callback URLs the user approved for this client
     pub push_webhook_urls: Vec<String>,
-    /// Claude Code is launched with the development-channels flag
-    pub claude_channels_launched: bool,
 }
 
 /// List all clients
@@ -491,9 +487,7 @@ pub async fn list_clients(
                 guardrails_active: guardrails_active_for(&c, &config),
                 json_repair_active: c.json_repair.enabled.unwrap_or(config.json_repair.enabled),
                 push_permissions: c.push_permissions.clone(),
-                push_fallback_tools: c.push_fallback_tools,
                 push_webhook_urls: c.push_webhook_urls.clone(),
-                claude_channels_launched: c.claude_channels_launched,
             }
         })
         .collect())
@@ -665,9 +659,7 @@ pub async fn create_client(
                 .unwrap_or(cfg.json_repair.enabled)
         },
         push_permissions: client.push_permissions.clone(),
-        push_fallback_tools: client.push_fallback_tools,
         push_webhook_urls: client.push_webhook_urls.clone(),
-        claude_channels_launched: client.claude_channels_launched,
     };
 
     Ok((secret, client_info))
@@ -857,11 +849,9 @@ pub async fn clone_client(
         memory_enabled: source_client.memory_enabled,
         memory_folder: Some(new_memory_folder),
         push_permissions: source_client.push_permissions.clone(),
-        push_fallback_tools: source_client.push_fallback_tools,
-        // Approved webhook URLs and the channels launch flag describe the
-        // original app's setup, not the clone's.
+        // Approved webhook URLs describe the original app's setup, not the
+        // clone's.
         push_webhook_urls: Vec::new(),
-        claude_channels_launched: false,
     };
 
     // Add to config
@@ -936,9 +926,7 @@ pub async fn clone_client(
                 .unwrap_or(cfg.json_repair.enabled)
         },
         push_permissions: new_client.push_permissions.clone(),
-        push_fallback_tools: new_client.push_fallback_tools,
         push_webhook_urls: new_client.push_webhook_urls.clone(),
-        claude_channels_launched: new_client.claude_channels_launched,
     };
 
     Ok((secret, client_info))

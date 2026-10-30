@@ -65,9 +65,7 @@ fn create_test_client(id: &str, name: &str, enabled: bool, strategy_id: &str) ->
         memory_enabled: None,
         memory_folder: None,
         push_permissions: Default::default(),
-        push_fallback_tools: Default::default(),
         push_webhook_urls: Vec::new(),
-        claude_channels_launched: false,
     }
 }
 

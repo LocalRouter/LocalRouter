@@ -9,6 +9,7 @@
 pub mod ask;
 pub mod cursor;
 pub mod journal;
+pub mod limits;
 pub mod relay;
 pub mod render;
 pub mod tools;
@@ -16,6 +17,7 @@ pub mod upstream;
 pub mod webhook;
 
 pub use ask::{HeldPushEventInfo, PushDecision, PushDecisionAction};
+pub use limits::PushRelayLimits;
 pub use relay::{
     ClientEventTypeInfo, ClientLookup, HeldChangedListener, PushConfigChange, PushConfigPersister,
     PushRelay, UpstreamSourceInfo, WatchError, WebhookSubscriptionInfo,

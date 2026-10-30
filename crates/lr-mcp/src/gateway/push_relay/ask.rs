@@ -2,7 +2,9 @@
 //!
 //! Held events queue per (client, event type) and are decided in order, so a
 //! client never sees event N+1 of a type before an approved event N; other
-//! types are not blocked. Each client holds at most `ask_hold_cap` events.
+//! types are not blocked. A held event waits for its decision indefinitely;
+//! each client holds at most `ask_hold_cap` events (an internal bound, see
+//! `limits.rs`).
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -136,7 +138,6 @@ pub struct HeldPushEventInfo {
     pub data: Value,
     pub held_at: chrono::DateTime<chrono::Utc>,
     pub held_secs: u64,
-    pub timeout_secs: u64,
     /// Position in its (client, event type) queue; 0 is being asked now.
     pub position: usize,
     /// Firewall request id of the popup asking about it, while one is open.
@@ -276,6 +277,7 @@ mod tests {
                 upstream_cursor: None,
                 ingress: IngressMode::Push,
                 args_key: "{}".into(),
+                origin_session: None,
             }),
             held_at: Instant::now(),
             held_at_utc: chrono::Utc::now(),

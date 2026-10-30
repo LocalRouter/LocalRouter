@@ -25,6 +25,7 @@ use tokio_util::sync::CancellationToken;
 use super::ask::{AskQueues, HeldEvent, HeldPushEventInfo, PushDecision, PushDecisionAction};
 use super::cursor::{canonical_json, CursorError, CursorKey, CursorPosition, CursorScope};
 use super::journal::{ClientJournal, IngressMode, JournalLimits, Occurrence, ReadScope};
+use super::limits::PushRelayLimits;
 use super::render;
 use super::upstream::{
     ConnectionScope, SubscriptionInfo, SubscriptionKey, SubscriptionSpec, UpstreamHub,
@@ -39,7 +40,7 @@ use crate::gateway::firewall::{InterceptCategory, PushApprovalKind, PushEventApp
 use crate::gateway::McpGateway;
 use crate::protocol::{JsonRpcError, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
 use crate::transport::SUBSCRIPTION_ID_META_KEY;
-use lr_config::{EventDeliveryMode, PushFallbackTools, PushPermission, PushRelayConfig};
+use lr_config::{EventDeliveryMode, PushPermission, PushRelayConfig};
 use lr_types::AppResult;
 
 /// SEP-3415 `NotFound`.
@@ -185,8 +186,6 @@ pub struct ToolsView {
 pub struct PushToolsState {
     pub client_id: String,
     pub session_key: Option<String>,
-    pub fallback: PushFallbackTools,
-    pub channels_launched: bool,
     pub is_stdio_bridge: bool,
     pub declares_events: bool,
     pub visible_servers: Vec<String>,
@@ -217,6 +216,9 @@ impl HolderKind {
 /// One consumer's demand for upstream subscriptions.
 struct Holder {
     client_id: String,
+    /// The downstream session that reads for this consumer; `None` for
+    /// webhook deliveries and `/events/watch`, which no session reads.
+    session_key: Option<String>,
     kind: HolderKind,
     keys: HashMap<SubscriptionKey, SubscriptionSpec>,
     expires: Option<Instant>,
@@ -362,7 +364,7 @@ pub struct PushRelay {
     weak: Weak<PushRelay>,
     gateway: McpGateway,
     config: RwLock<PushRelayConfig>,
-    limits: Arc<RwLock<lr_config::PushRelayLimits>>,
+    limits: Arc<RwLock<PushRelayLimits>>,
     clients: ClientLookup,
     persister: RwLock<Option<PushConfigPersister>>,
     held_listener: RwLock<Option<HeldChangedListener>>,
@@ -384,7 +386,7 @@ pub struct PushRelay {
 
 impl PushRelay {
     pub fn new(gateway: McpGateway, config: PushRelayConfig, clients: ClientLookup) -> Arc<Self> {
-        let limits = Arc::new(RwLock::new(config.limits.clone()));
+        let limits = Arc::new(RwLock::new(PushRelayLimits::default()));
         Arc::new_cyclic(|weak: &Weak<PushRelay>| {
             let ingest_weak = weak.clone();
             let channel_weak = weak.clone();
@@ -404,7 +406,7 @@ impl PushRelay {
             );
             Self {
                 weak: weak.clone(),
-                http: webhook::http_client(config.limits.webhook_timeout()),
+                http: webhook::http_client(PushRelayLimits::default().webhook_timeout()),
                 gateway,
                 config: RwLock::new(config),
                 limits,
@@ -468,9 +470,15 @@ impl PushRelay {
     /// Apply changed Push Relay settings (also forwarded to the gateway).
     pub fn update_config(&self, config: &PushRelayConfig) {
         *self.config.write() = config.clone();
-        *self.limits.write() = config.limits.clone();
         self.gateway.update_push_relay_config(config);
         self.refresh();
+    }
+
+    /// Replace the internal limits. They are not configuration; tests use
+    /// this to reach a bound quickly.
+    #[doc(hidden)]
+    pub fn set_limits(&self, limits: PushRelayLimits) {
+        *self.limits.write() = limits;
     }
 
     /// Re-evaluate permissions after client settings changed: list changes
@@ -662,10 +670,7 @@ impl PushRelay {
 
     /// The `events/list` descriptor of an entry for this relay's delivery modes.
     fn descriptor(&self, entry: &CatalogueEntry) -> Value {
-        let mut delivery = vec!["poll", "push"];
-        if self.config.read().webhook_egress_enabled {
-            delivery.push("webhook");
-        }
+        let delivery = ["poll", "push", "webhook"];
         let upstream_description = entry
             .descriptor
             .get("description")
@@ -778,6 +783,7 @@ impl PushRelay {
         &self,
         id: String,
         client_id: &str,
+        session_key: Option<&str>,
         kind: HolderKind,
         keys: HashMap<SubscriptionKey, SubscriptionSpec>,
         lease: Option<Duration>,
@@ -786,6 +792,7 @@ impl PushRelay {
             id,
             Holder {
                 client_id: client_id.to_string(),
+                session_key: session_key.map(str::to_string),
                 kind,
                 keys,
                 expires: lease.map(|l| Instant::now() + l),
@@ -828,6 +835,44 @@ impl PushRelay {
         clients.sort();
         clients.dedup();
         clients
+    }
+
+    /// The one downstream session an occurrence reaches for this client, if
+    /// exactly one is known: the session whose own upstream connection
+    /// produced it, or the only session reading the subscription. `None`
+    /// when several sessions read it, or a webhook or `/events/watch` (which
+    /// no session reads) consumes it too. Monitor groups the record with that
+    /// session's requests (see "Monitor grouping" in the plan).
+    fn delivery_session(&self, client_id: &str, occurrence: &Occurrence) -> Option<String> {
+        let mut sessions: HashSet<String> = HashSet::new();
+        if let Some(origin) = &occurrence.origin_session {
+            sessions.insert(origin.clone());
+        }
+        if occurrence.ingress != IngressMode::Channel {
+            let key = SubscriptionKey {
+                scope: match &occurrence.origin_session {
+                    Some(session_key) => ConnectionScope::Session(session_key.clone()),
+                    None => ConnectionScope::Shared,
+                },
+                server_id: occurrence.server_id.clone(),
+                event: occurrence.upstream_name.clone(),
+                args_key: occurrence.args_key.clone(),
+            };
+            let now = Instant::now();
+            for holder in self.holders.lock().values().filter(|h| {
+                h.client_id == client_id
+                    && h.expires.is_none_or(|e| e > now)
+                    && h.keys.contains_key(&key)
+            }) {
+                // A consumer no session reads (webhook, `/events/watch`)
+                sessions.insert(holder.session_key.clone()?);
+            }
+        }
+        if sessions.len() == 1 {
+            sessions.into_iter().next()
+        } else {
+            None
+        }
     }
 
     fn egress_modes(&self, client_id: &str) -> Vec<String> {
@@ -888,7 +933,7 @@ impl PushRelay {
         for id in expired {
             self.end_webhook(&id);
         }
-        let limits = JournalLimits::from_config(&self.limits.read());
+        let limits = JournalLimits::from_limits(&self.limits.read());
         for journal in self.journals.iter() {
             journal.lock().prune(&limits);
         }
@@ -956,6 +1001,7 @@ impl PushRelay {
         event: &Value,
         mode: IngressMode,
         args_key: String,
+        origin_session: Option<String>,
     ) -> Option<Arc<Occurrence>> {
         let config = self.gateway.server_manager.get_config(server_id)?;
         let slug = crate::gateway::types::slugify(&config.name);
@@ -984,6 +1030,7 @@ impl PushRelay {
                 .map(str::to_string),
             ingress: mode,
             args_key,
+            origin_session,
         }))
     }
 
@@ -994,6 +1041,10 @@ impl PushRelay {
             &event,
             mode,
             key.args_key.clone(),
+            match &key.scope {
+                ConnectionScope::Session(session_key) => Some(session_key.clone()),
+                ConnectionScope::Shared => None,
+            },
         ) else {
             return;
         };
@@ -1006,6 +1057,7 @@ impl PushRelay {
         &self,
         server_id: &str,
         notification: &JsonRpcNotification,
+        origin_session: Option<String>,
     ) -> Option<Arc<Occurrence>> {
         let params = notification.params.clone().unwrap_or(Value::Null);
         let data = json!({
@@ -1018,13 +1070,14 @@ impl PushRelay {
             &json!({ "data": data }),
             IngressMode::Channel,
             String::new(),
+            origin_session,
         )
     }
 
     /// A channel notification on a relay-owned connection: every client
     /// consuming anything from that server receives it.
     fn ingest_shared_channel(&self, server_id: &str, notification: JsonRpcNotification) {
-        let Some(occurrence) = self.channel_occurrence(server_id, &notification) else {
+        let Some(occurrence) = self.channel_occurrence(server_id, &notification, None) else {
             return;
         };
         let clients: HashSet<String> = self
@@ -1087,7 +1140,7 @@ impl PushRelay {
     }
 
     fn append(&self, client_id: &str, occurrence: Arc<Occurrence>, data: Value) {
-        let limits = JournalLimits::from_config(&self.limits.read());
+        let limits = JournalLimits::from_limits(&self.limits.read());
         self.journal(client_id)
             .lock()
             .append(occurrence, data, &limits);
@@ -1105,11 +1158,14 @@ impl PushRelay {
         error: Option<String>,
     ) -> String {
         let keep_payload = !client.security.privacy.redact_payloads();
+        let monitor_session = self
+            .delivery_session(&client.id, occurrence)
+            .and_then(|session_key| self.gateway.monitor_session_id(&session_key));
         self.gateway.emit_monitor_event(
             lr_monitor::MonitorEventType::McpPushEvent,
             Some(client.id.clone()),
             Some(client.name.clone()),
-            None,
+            monitor_session,
             lr_monitor::MonitorEventData::McpPushEvent {
                 server_id: occurrence.server_id.clone(),
                 server_name: Some(occurrence.server_slug.clone()),
@@ -1272,35 +1328,25 @@ impl PushRelay {
                     }
                 }
             };
-            let decision: Option<PushDecision> = match head.decision.clone() {
-                Some(decision) => Some(decision),
+            // A held event waits for its decision for as long as it takes
+            let decision = match head.decision.clone() {
+                Some(decision) => decision,
                 None => {
-                    let remaining = self
-                        .limits
-                        .read()
-                        .ask_timeout()
-                        .saturating_sub(head.held_at.elapsed());
-                    if remaining.is_zero() {
-                        None
-                    } else {
-                        let details = self.approval_details(&head);
-                        let approval = self.gateway.firewall_manager.request_push_event_approval(
-                            head.client_id.clone(),
-                            head.client_name.clone(),
-                            details,
-                            remaining.as_secs() + 60,
-                        );
-                        tokio::select! {
-                            response = approval => Some(match response {
-                                Ok(response) => PushDecision {
-                                    action: PushDecisionAction::from(&response.action),
-                                    edited_data: response.edited_arguments,
-                                },
-                                Err(_) => PushDecision::new(PushDecisionAction::Deny),
-                            }),
-                            _ = tokio::time::sleep(remaining) => None,
-                            _ = waker.notified() => continue,
-                        }
+                    let details = self.approval_details(&head);
+                    let approval = self.gateway.firewall_manager.request_push_event_approval(
+                        head.client_id.clone(),
+                        head.client_name.clone(),
+                        details,
+                    );
+                    tokio::select! {
+                        response = approval => match response {
+                            Ok(response) => PushDecision {
+                                action: PushDecisionAction::from(&response.action),
+                                edited_data: response.edited_arguments,
+                            },
+                            Err(_) => PushDecision::new(PushDecisionAction::Deny),
+                        },
+                        _ = waker.notified() => continue,
                     }
                 }
             };
@@ -1312,21 +1358,10 @@ impl PushRelay {
         }
     }
 
-    /// Apply a decision (`None` = timed out) to a held event.
-    async fn resolve(&self, held: HeldEvent, decision: Option<PushDecision>) {
+    /// Apply a decision to a held event.
+    async fn resolve(&self, held: HeldEvent, decision: PushDecision) {
         let held_ms = held.held_at.elapsed().as_millis() as u64;
         let occurrence = held.occurrence.clone();
-        let Some(decision) = decision else {
-            self.update_monitor(
-                &held.monitor_id,
-                "timeout",
-                None,
-                lr_monitor::EventStatus::Error,
-                held_ms,
-                self.egress_modes(&held.client_id),
-            );
-            return;
-        };
         if let Some(permission) = decision.action.permission() {
             self.overrides.insert(
                 (
@@ -1401,7 +1436,6 @@ impl PushRelay {
 
     /// Held events awaiting a decision (all clients, or one).
     pub fn pending_events(&self, client_id: Option<&str>) -> Vec<HeldPushEventInfo> {
-        let timeout = self.limits.read().ask_timeout_secs;
         let held = self.ask.lock().queues.list();
         let mut out: Vec<HeldPushEventInfo> = held
             .into_iter()
@@ -1423,7 +1457,6 @@ impl PushRelay {
                 data: e.occurrence.data.clone(),
                 held_at: e.held_at_utc,
                 held_secs: e.held_at.elapsed().as_secs(),
-                timeout_secs: timeout,
                 position,
                 decided: e.decision.is_some(),
             })
@@ -1748,7 +1781,7 @@ impl PushRelay {
             names.join(","),
             canonical_json(&Value::Object(arguments.clone()))
         );
-        self.set_holder(id, client_id, kind, keys, Some(POLL_LEASE));
+        self.set_holder(id, client_id, session_key, kind, keys, Some(POLL_LEASE));
     }
 
     async fn send_stream_notification(
@@ -1843,6 +1876,7 @@ impl PushRelay {
         self.set_holder(
             holder_id.clone(),
             &ctx.client_id,
+            Some(&ctx.session_key),
             HolderKind::Stream,
             keys,
             None,
@@ -1985,15 +2019,7 @@ impl PushRelay {
         request: JsonRpcRequest,
     ) -> JsonRpcResponse {
         let id = request.id.clone().unwrap_or(Value::Null);
-        let config = self.config.read().clone();
-        if !config.webhook_egress_enabled {
-            return error_response(
-                id,
-                ERROR_UNSUPPORTED,
-                "Unsupported",
-                Some(json!({"feature": "deliveryMode", "deliveryMode": "webhook"})),
-            );
-        }
+        let limits = self.limits.read().clone();
         let params = match parse_event_params(request.params.as_ref()) {
             Ok(p) => p,
             Err(e) => return invalid_params(id, e),
@@ -2017,7 +2043,7 @@ impl PushRelay {
         let Some(secret) = delivery.get("secret").and_then(Value::as_str) else {
             return invalid_params(id, "delivery.secret is required");
         };
-        if let Err(e) = webhook::validate_callback_url(url, config.allow_loopback_http) {
+        if let Err(e) = webhook::validate_callback_url(url) {
             return invalid_params(id, e.0);
         }
         let secret = match webhook::decode_secret(secret) {
@@ -2038,7 +2064,7 @@ impl PushRelay {
         let args_key = canonical_json(&Value::Object(params.arguments.clone()));
         let sub_id = Self::webhook_id(&ctx.client_id, url, &entry.qualified_name, &args_key);
         let ttl_secs = raw.get("ttlMs").and_then(Value::as_u64).map(|ms| ms / 1000);
-        let lease = config.limits.webhook_lease(ttl_secs);
+        let lease = limits.webhook_lease(ttl_secs);
         let expires_at = chrono::Utc::now()
             + chrono::Duration::from_std(lease).unwrap_or_else(|_| chrono::Duration::hours(1));
         let names = vec![entry.qualified_name.clone()];
@@ -2067,14 +2093,12 @@ impl PushRelay {
             .iter()
             .filter(|w| w.client_id == ctx.client_id)
             .count();
-        if active >= config.limits.webhook_max_subscriptions {
+        if active >= limits.webhook_max_subscriptions {
             return error_response(
                 id,
                 ERROR_RESOURCE_EXHAUSTED,
                 "Too many event subscriptions",
-                Some(
-                    json!({"limit": "subscriptions", "max": config.limits.webhook_max_subscriptions}),
-                ),
+                Some(json!({"limit": "subscriptions", "max": limits.webhook_max_subscriptions})),
             );
         }
         let (position, reset) =
@@ -2121,6 +2145,7 @@ impl PushRelay {
         self.set_holder(
             format!("webhook:{sub_id}"),
             &ctx.client_id,
+            None,
             HolderKind::Webhook,
             keys,
             None,
@@ -2196,12 +2221,10 @@ impl PushRelay {
             pending_for_client: 0,
             pending_of_type: 0,
         };
-        let timeout = self.limits.read().ask_timeout();
         let approval = self.gateway.firewall_manager.request_push_event_approval(
             subscription.client_id.clone(),
             subscription.client_name.clone(),
             details,
-            timeout.as_secs(),
         );
         let decision = tokio::select! {
             _ = subscription.cancel.cancelled() => return false,
@@ -2347,7 +2370,14 @@ impl PushRelay {
             .get(&holder_id)
             .is_some_and(|h| h.keys.keys().collect::<HashSet<_>>() == keys.keys().collect());
         if !unchanged {
-            self.set_holder(holder_id, &ctx.client_id, HolderKind::Channel, keys, None);
+            self.set_holder(
+                holder_id,
+                &ctx.client_id,
+                Some(&ctx.session_key),
+                HolderKind::Channel,
+                keys,
+                None,
+            );
         }
         let start = {
             let Some(mut session) = self.sessions.get_mut(&ctx.session_key) else {
@@ -2469,14 +2499,9 @@ impl PushRelay {
     // ---------------------------------------------------------------
 
     fn tools_view_for_ctx(&self, ctx: &PushRelaySessionContext) -> ToolsView {
-        let Some(client) = self.client(&ctx.client_id) else {
-            return ToolsView::default();
-        };
         self.tools_view(&PushToolsState {
             client_id: ctx.client_id.clone(),
             session_key: Some(ctx.session_key.clone()),
-            fallback: client.push_fallback_tools,
-            channels_launched: client.claude_channels_launched,
             is_stdio_bridge: ctx.is_stdio_bridge,
             declares_events: ctx.client_declares_events(),
             visible_servers: ctx.visible_servers.clone(),
@@ -2491,26 +2516,15 @@ impl PushRelay {
         if !gate {
             return ToolsView::default();
         }
-        let all = ToolsView {
+        // A client that declared MCP Events has a native mechanism. Nothing
+        // tells a server whether Claude Code was launched with channels, so
+        // STDIO bridge sessions keep the tools like every other client.
+        let show = !state.declares_events;
+        ToolsView {
             gate,
-            list: true,
-            poll: true,
-            wait: true,
-        };
-        match state.fallback {
-            PushFallbackTools::Never => ToolsView {
-                gate,
-                ..Default::default()
-            },
-            PushFallbackTools::Always => all,
-            PushFallbackTools::Auto if state.declares_events => ToolsView {
-                gate,
-                ..Default::default()
-            },
-            PushFallbackTools::Auto if state.is_stdio_bridge && state.channels_launched => {
-                ToolsView { wait: false, ..all }
-            }
-            PushFallbackTools::Auto => all,
+            list: show,
+            poll: show,
+            wait: show,
         }
     }
 
@@ -2543,11 +2557,7 @@ impl PushRelay {
         if catalogue.is_empty() {
             return "No events are available.".into();
         }
-        let native = if self.config.read().webhook_egress_enabled {
-            "events/stream, events/poll, events/subscribe (webhook)"
-        } else {
-            "events/stream, events/poll"
-        };
+        let native = "events/stream, events/poll, events/subscribe (webhook)";
         let mut out = format!("{} event type(s):\n", catalogue.len());
         for entry in &catalogue {
             let description = entry
@@ -2834,7 +2844,14 @@ impl PushRelay {
             .iter()
             .filter_map(|e| self.subscription_for(&client_id, None, e, &filter))
             .collect();
-        self.set_holder(holder_id.clone(), &client_id, HolderKind::Watch, keys, None);
+        self.set_holder(
+            holder_id.clone(),
+            &client_id,
+            None,
+            HolderKind::Watch,
+            keys,
+            None,
+        );
         let relay = self.this();
         let lifetime = self.limits.read().watch_max_lifetime();
         let read_scope = Self::read_scope(&names, &filter);
@@ -2974,7 +2991,9 @@ impl PushRelayService for PushRelay {
             return false;
         }
         if n.notification.method == CLAUDE_CHANNEL_NOTIFICATION {
-            if let Some(occurrence) = self.channel_occurrence(&n.server_id, &n.notification) {
+            if let Some(occurrence) =
+                self.channel_occurrence(&n.server_id, &n.notification, Some(n.session_key.clone()))
+            {
                 self.admit(&n.client_id, occurrence);
             }
         }

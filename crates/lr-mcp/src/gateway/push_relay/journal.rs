@@ -54,6 +54,10 @@ pub struct Occurrence {
     pub ingress: IngressMode,
     /// Canonical arguments of the upstream subscription it came from.
     pub args_key: String,
+    /// The downstream session whose own upstream connection produced it (a
+    /// stdio subscription or a channel message on that session's process);
+    /// `None` for a relay-owned connection shared by every consumer.
+    pub origin_session: Option<String>,
 }
 
 impl Occurrence {
@@ -145,7 +149,7 @@ pub struct JournalLimits {
 }
 
 impl JournalLimits {
-    pub fn from_config(limits: &lr_config::PushRelayLimits) -> Self {
+    pub fn from_limits(limits: &super::limits::PushRelayLimits) -> Self {
         Self {
             max_events: limits.journal_max_events.max(1),
             max_bytes: limits.journal_max_bytes.max(1),
@@ -290,6 +294,7 @@ mod tests {
             upstream_cursor: None,
             ingress: IngressMode::Push,
             args_key: args_key.to_string(),
+            origin_session: None,
         })
     }
 

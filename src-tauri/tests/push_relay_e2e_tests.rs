@@ -12,7 +12,7 @@ use localrouter::config::{
 use localrouter::mcp::gateway::push_relay::journal::{IngressMode, Occurrence};
 use localrouter::mcp::gateway::push_relay::relay::PushToolsState;
 use localrouter::mcp::gateway::push_relay::{
-    webhook, PushConfigChange, PushDecision, PushDecisionAction, PushRelay,
+    webhook, PushConfigChange, PushDecision, PushDecisionAction, PushRelay, PushRelayLimits,
     CLAUDE_CHANNEL_CAPABILITY, EVENTS_EXTENSION_ID,
 };
 use localrouter::mcp::gateway::types::session_notification_key;
@@ -24,8 +24,8 @@ use localrouter::monitoring::storage::MetricsDatabase;
 use localrouter::providers::registry::ProviderRegistry;
 use localrouter::router::{RateLimiterManager, Router};
 use lr_config::{
-    EventDeliveryMode, PermissionState, PushFallbackTools, PushPermission, PushPermissions,
-    PushRelayConfig, UpstreamCapabilitySnapshot, UpstreamPushSummary,
+    EventDeliveryMode, PermissionState, PushPermission, PushPermissions, PushRelayConfig,
+    UpstreamCapabilitySnapshot, UpstreamPushSummary,
 };
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
@@ -64,13 +64,14 @@ fn test_router() -> Arc<Router> {
     ))
 }
 
-fn fast_config() -> PushRelayConfig {
-    let mut config = PushRelayConfig::default();
-    config.limits.upstream_poll_min_interval_ms = 50;
-    config.limits.upstream_reconnect_backoff_min_ms = 50;
-    config.limits.upstream_reconnect_backoff_max_ms = 200;
-    config.limits.first_discovery_wait_ms = 2_000;
-    config
+/// Internal limits shrunk so the tests run fast.
+fn fast_limits() -> PushRelayLimits {
+    PushRelayLimits {
+        upstream_poll_min_interval_ms: 50,
+        upstream_reconnect_backoff_min_ms: 50,
+        upstream_reconnect_backoff_max_ms: 200,
+        ..PushRelayLimits::default()
+    }
 }
 
 fn snapshot(
@@ -197,7 +198,8 @@ struct Harness {
     servers: Vec<String>,
 }
 
-fn harness(servers: Vec<McpServerConfig>, config: PushRelayConfig) -> Harness {
+fn harness(servers: Vec<McpServerConfig>, limits: PushRelayLimits) -> Harness {
+    let config = PushRelayConfig::default();
     let manager = Arc::new(McpServerManager::new());
     let server_ids = servers.iter().map(|s| s.id.clone()).collect();
     for server in servers {
@@ -212,6 +214,7 @@ fn harness(servers: Vec<McpServerConfig>, config: PushRelayConfig) -> Harness {
         Some(broadcast),
     ));
     gateway.update_push_relay_config(&config);
+    gateway.set_first_discovery_wait(Duration::from_secs(2));
     let clients = Arc::new(parking_lot::RwLock::new(HashMap::new()));
     clients.write().insert(CLIENT.to_string(), client(CLIENT));
     let lookup = clients.clone();
@@ -220,6 +223,7 @@ fn harness(servers: Vec<McpServerConfig>, config: PushRelayConfig) -> Harness {
         config,
         Arc::new(move |id| lookup.read().get(id).cloned()),
     );
+    relay.set_limits(limits);
     let persisted = Arc::new(parking_lot::Mutex::new(Vec::new()));
     let seen = persisted.clone();
     relay.set_persister(Arc::new(move |client_id, change| {
@@ -444,6 +448,7 @@ fn occurrence(
         upstream_cursor: None,
         ingress: IngressMode::Push,
         args_key: "{}".to_string(),
+        origin_session: None,
     })
 }
 
@@ -559,7 +564,7 @@ async fn http_upstream_with(
 #[tokio::test]
 async fn gate_advertises_push_only_with_a_permitted_source() {
     let (upstream, _) = http_upstream().await;
-    let h = harness(vec![http_server(upstream.uri())], fast_config());
+    let h = harness(vec![http_server(upstream.uri())], fast_limits());
 
     let init = h.initialize("plain", json!({})).await.result.unwrap();
     let caps = &init["capabilities"];
@@ -648,45 +653,24 @@ async fn gate_advertises_push_only_with_a_permitted_source() {
 #[tokio::test]
 async fn fallback_tools_follow_the_show_rules() {
     let (upstream, _) = http_upstream().await;
-    let h = harness(vec![http_server(upstream.uri())], fast_config());
-    let state = |fallback, declares_events, bridge, launched| PushToolsState {
+    let h = harness(vec![http_server(upstream.uri())], fast_limits());
+    let state = |declares_events, bridge| PushToolsState {
         client_id: CLIENT.into(),
         session_key: Some("s".into()),
-        fallback,
-        channels_launched: launched,
         is_stdio_bridge: bridge,
         declares_events,
         visible_servers: vec![HTTP_ID.into()],
     };
-    let view = h
-        .relay
-        .tools_view(&state(PushFallbackTools::Auto, false, false, false));
+    let view = h.relay.tools_view(&state(false, false));
     assert!(view.gate && view.list && view.poll && view.wait);
     // A client with native Events support does not need them
-    let view = h
-        .relay
-        .tools_view(&state(PushFallbackTools::Auto, true, false, false));
+    let view = h.relay.tools_view(&state(true, false));
     assert!(view.gate && !view.list && !view.poll && !view.wait);
-    // Bridge without a confirmed channels launch: still all
-    let view = h
-        .relay
-        .tools_view(&state(PushFallbackTools::Auto, false, true, false));
-    assert!(view.wait);
-    // Launched with channels: no EventWait, reading tools stay
-    let view = h
-        .relay
-        .tools_view(&state(PushFallbackTools::Auto, false, true, true));
-    assert!(view.list && view.poll && !view.wait);
-    let view = h
-        .relay
-        .tools_view(&state(PushFallbackTools::Always, true, true, true));
+    // A bridge session gets all three: channel activation is undetectable
+    let view = h.relay.tools_view(&state(false, true));
     assert!(view.list && view.poll && view.wait);
-    let view = h
-        .relay
-        .tools_view(&state(PushFallbackTools::Never, false, false, false));
-    assert!(view.gate && !view.list && !view.poll && !view.wait);
-    // No push source: nothing, whatever the mode
-    let mut no_source = state(PushFallbackTools::Always, false, false, false);
+    // No push source: nothing
+    let mut no_source = state(false, false);
     no_source.visible_servers.clear();
     assert_eq!(h.relay.tools_view(&no_source), Default::default());
 
@@ -703,7 +687,7 @@ async fn fallback_tools_follow_the_show_rules() {
 #[tokio::test]
 async fn webhook_only_event_types_are_reported_unsupported() {
     let (upstream, _) = http_upstream().await;
-    let h = harness(vec![http_server(upstream.uri())], fast_config());
+    let h = harness(vec![http_server(upstream.uri())], fast_limits());
     let sources = h.relay.upstream_sources();
     let source = sources.iter().find(|s| s.server_id == HTTP_ID).unwrap();
     assert_eq!(source.connection, "shared");
@@ -728,7 +712,7 @@ async fn webhook_only_event_types_are_reported_unsupported() {
 #[tokio::test]
 async fn upstream_poll_reaches_events_poll_and_the_poll_tool() {
     let (upstream, calls, _) = http_upstream_with(true).await;
-    let h = harness(vec![http_server(upstream.uri())], fast_config());
+    let h = harness(vec![http_server(upstream.uri())], fast_limits());
     h.initialize("s1", json!({})).await;
 
     // Bootstrap: no history, a cursor at "now"
@@ -815,7 +799,7 @@ where
 #[tokio::test]
 async fn shared_upstream_subscription_serves_several_clients() {
     let (upstream, calls, release) = http_upstream_with(false).await;
-    let h = harness(vec![http_server(upstream.uri())], fast_config());
+    let h = harness(vec![http_server(upstream.uri())], fast_limits());
     h.clients
         .write()
         .insert("client-2".into(), client("client-2"));
@@ -864,7 +848,7 @@ async fn shared_upstream_subscription_serves_several_clients() {
 #[cfg(unix)]
 #[tokio::test]
 async fn upstream_stream_reaches_downstream_events_stream() {
-    let mut h = harness(vec![stdio_server()], fast_config());
+    let mut h = harness(vec![stdio_server()], fast_limits());
     h.initialize("s1", json!({})).await;
 
     let sinks = h.gateway.push_stream_sinks();
@@ -937,7 +921,7 @@ async fn upstream_stream_reaches_downstream_events_stream() {
 #[cfg(unix)]
 #[tokio::test]
 async fn upstream_channel_reaches_poll_and_bridge_channel() {
-    let mut h = harness(vec![stdio_server()], fast_config());
+    let mut h = harness(vec![stdio_server()], fast_limits());
     h.gateway.set_stdio_bridge_session("bridge", true);
     let init = h.initialize("bridge", json!({})).await.result.unwrap();
     assert_eq!(
@@ -974,7 +958,7 @@ async fn upstream_channel_reaches_poll_and_bridge_channel() {
 #[tokio::test]
 async fn channel_copies_stop_once_the_session_uses_events_for_the_name() {
     let (upstream, _) = http_upstream().await;
-    let mut h = harness(vec![http_server(upstream.uri())], fast_config());
+    let mut h = harness(vec![http_server(upstream.uri())], fast_limits());
     h.gateway.set_stdio_bridge_session("bridge", true);
     h.initialize("bridge", json!({})).await;
     let key = session_notification_key("bridge");
@@ -1029,10 +1013,10 @@ async fn channel_copies_stop_once_the_session_uses_events_for_the_name() {
 #[tokio::test]
 async fn channel_content_and_rate_limits_hold_at_their_bounds() {
     let (upstream, _) = http_upstream().await;
-    let mut config = fast_config();
-    config.limits.channel_max_content_bytes = 120;
-    config.limits.channel_rate_per_minute = 2;
-    let mut h = harness(vec![http_server(upstream.uri())], config);
+    let mut limits = fast_limits();
+    limits.channel_max_content_bytes = 120;
+    limits.channel_rate_per_minute = 2;
+    let mut h = harness(vec![http_server(upstream.uri())], limits);
     h.gateway.set_stdio_bridge_session("bridge", true);
     h.initialize("bridge", json!({})).await;
     let key = session_notification_key("bridge");
@@ -1085,7 +1069,7 @@ fn ask_client(event: &str) -> lr_config::Client {
 #[tokio::test]
 async fn ask_holds_until_allowed_with_an_edit() {
     let (upstream, _) = http_upstream().await;
-    let h = harness(vec![http_server(upstream.uri())], fast_config());
+    let h = harness(vec![http_server(upstream.uri())], fast_limits());
     h.set_client(ask_client("msg"));
     h.initialize("s1", json!({})).await;
     let start = h.poll("s1", "http-push__msg", None).await["cursor"]
@@ -1170,7 +1154,7 @@ async fn ask_holds_until_allowed_with_an_edit() {
 #[tokio::test]
 async fn held_queue_changes_are_announced_and_a_new_block_releases_them() {
     let (upstream, _) = http_upstream().await;
-    let h = harness(vec![http_server(upstream.uri())], fast_config());
+    let h = harness(vec![http_server(upstream.uri())], fast_limits());
     let changes = Arc::new(AtomicUsize::new(0));
     let counter = changes.clone();
     h.relay.set_held_changed_listener(Arc::new(move || {
@@ -1208,7 +1192,7 @@ async fn held_queue_changes_are_announced_and_a_new_block_releases_them() {
 #[tokio::test]
 async fn ask_is_fifo_per_type_and_denial_drops() {
     let (upstream, _) = http_upstream().await;
-    let h = harness(vec![http_server(upstream.uri())], fast_config());
+    let h = harness(vec![http_server(upstream.uri())], fast_limits());
     let mut c = ask_client("msg");
     c.push_permissions.events.insert(
         PushPermissions::event_key(HTTP_ID, "alert"),
@@ -1305,12 +1289,11 @@ async fn ask_is_fifo_per_type_and_denial_drops() {
 }
 
 #[tokio::test]
-async fn ask_times_out_closed_and_respects_the_hold_cap() {
+async fn held_events_wait_without_a_timeout_and_respect_the_hold_cap() {
     let (upstream, _) = http_upstream().await;
-    let mut config = fast_config();
-    config.limits.ask_timeout_secs = 1;
-    config.limits.ask_hold_cap = 2;
-    let h = harness(vec![http_server(upstream.uri())], config);
+    let mut limits = fast_limits();
+    limits.ask_hold_cap = 2;
+    let h = harness(vec![http_server(upstream.uri())], limits);
     h.set_client(ask_client("msg"));
     h.initialize("s1", json!({})).await;
     let start = h.poll("s1", "http-push__msg", None).await["cursor"]
@@ -1328,34 +1311,134 @@ async fn ask_times_out_closed_and_respects_the_hold_cap() {
     assert!(h
         .monitor_decisions("http-push__msg")
         .contains(&"hold_cap".to_string()));
-    wait_until("timeouts", || {
-        h.monitor_decisions("http-push__msg")
-            .iter()
-            .filter(|d| *d == "timeout")
-            .count()
-            == 2
-    })
-    .await;
-    assert_eq!(
-        h.poll("s1", "http-push__msg", Some(&start)).await["events"],
-        json!([])
-    );
-    assert!(h.relay.pending_events(None).is_empty());
-    // The popup was withdrawn
-    wait_until("popup gone", || {
-        !h.gateway
+    wait_until("popup open", || {
+        h.gateway
             .firewall_manager
             .list_pending()
             .iter()
             .any(|p| p.is_push_event_request)
     })
     .await;
+    // Nothing decides the held events: they stay held and the popup stays
+    tokio::time::sleep(Duration::from_millis(1_500)).await;
+    assert!(h.gateway.firewall_manager.cleanup_expired().is_empty());
+    assert_eq!(h.relay.pending_events(None).len(), 2);
+    assert_eq!(
+        h.monitor_decisions("http-push__msg")
+            .iter()
+            .filter(|d| *d == "pending")
+            .count(),
+        2
+    );
+    assert_eq!(
+        h.poll("s1", "http-push__msg", Some(&start)).await["events"],
+        json!([])
+    );
+    // A decision still releases them, in order
+    let first = h.relay.pending_events(None)[0].hold_id.clone();
+    h.relay
+        .decide(&first, PushDecision::new(PushDecisionAction::Allow))
+        .unwrap();
+    wait_until("first delivered", || {
+        h.monitor_decisions("http-push__msg")
+            .contains(&"asked_allowed".to_string())
+    })
+    .await;
+    assert_eq!(h.relay.pending_events(None).len(), 1);
+}
+
+/// The Monitor request id of the push record for one upstream event id.
+fn monitor_request_of(h: &Harness, event_id: &str) -> Option<String> {
+    h.monitor
+        .lock()
+        .iter()
+        .find(|e| {
+            matches!(&e.data, lr_monitor::MonitorEventData::McpPushEvent { event_id: id, .. } if id == event_id)
+        })
+        .expect("push record")
+        .session_id
+        .clone()
+}
+
+#[tokio::test]
+async fn monitor_records_join_the_one_reading_session() {
+    let (upstream, _) = http_upstream().await;
+    let h = harness(vec![http_server(upstream.uri())], fast_limits());
+    h.initialize("s1", json!({})).await;
+    h.gateway
+        .get_session("s1")
+        .unwrap()
+        .write()
+        .await
+        .monitor_session_id = Some("req-1".into());
+    h.poll("s1", "http-push__msg", None).await;
+    let admit = |id: &str, origin: Option<&str>| {
+        let mut occurrence = (*occurrence(HTTP_ID, "http-push", "msg", id, json!({}))).clone();
+        occurrence.origin_session = origin.map(str::to_string);
+        h.relay.admit(CLIENT, Arc::new(occurrence));
+    };
+
+    // Only s1 reads the subscription: its request id
+    admit("a1", None);
+    assert_eq!(
+        monitor_request_of(&h, "http-push__a1").as_deref(),
+        Some("req-1")
+    );
+
+    // An event from s1's own upstream connection belongs to s1
+    admit("a2", Some("s1"));
+    assert_eq!(
+        monitor_request_of(&h, "http-push__a2").as_deref(),
+        Some("req-1")
+    );
+
+    // A session without a Monitor request id groups nothing, like its tool calls
+    h.initialize("s2", json!({})).await;
+    admit("a3", Some("s2"));
+    assert_eq!(monitor_request_of(&h, "http-push__a3"), None);
+
+    // Two sessions read the same subscription: no single session, standalone
+    h.poll("s2", "http-push__msg", None).await;
+    admit("a4", None);
+    assert_eq!(monitor_request_of(&h, "http-push__a4"), None);
+}
+
+#[tokio::test]
+async fn monitor_records_read_by_no_session_stand_alone() {
+    let (upstream, _) = http_upstream().await;
+    let h = harness(vec![http_server(upstream.uri())], fast_limits());
+    h.initialize("s1", json!({})).await;
+    h.gateway
+        .get_session("s1")
+        .unwrap()
+        .write()
+        .await
+        .monitor_session_id = Some("req-1".into());
+    // EventWait from s1: the events are read by the watcher command, which
+    // no session is
+    let text = h
+        .call_tool("s1", "EventWait", json!({"events": ["http-push__msg"]}))
+        .await;
+    let url_start = text.find("http://127.0.0.1:3625/events/watch?").unwrap();
+    let url = &text[url_start..text[url_start..].find('"').unwrap() + url_start];
+    let parsed = reqwest::Url::parse(url).unwrap();
+    let query: HashMap<String, String> = parsed.query_pairs().into_owned().collect();
+    let watch = h
+        .relay
+        .open_watch(&query["token"], query.get("cursor").map(String::as_str))
+        .unwrap();
+    h.relay.admit(
+        CLIENT,
+        occurrence(HTTP_ID, "http-push", "msg", "w1", json!({})),
+    );
+    assert_eq!(monitor_request_of(&h, "http-push__w1"), None);
+    drop(watch);
 }
 
 #[tokio::test]
 async fn permanent_decisions_persist_and_apply_to_later_events() {
     let (upstream, _) = http_upstream().await;
-    let h = harness(vec![http_server(upstream.uri())], fast_config());
+    let h = harness(vec![http_server(upstream.uri())], fast_limits());
     h.set_client(ask_client("msg"));
     h.initialize("s1", json!({})).await;
     let start = h.poll("s1", "http-push__msg", None).await["cursor"]
@@ -1415,9 +1498,9 @@ async fn permanent_decisions_persist_and_apply_to_later_events() {
 #[tokio::test]
 async fn blocked_and_oversized_events_are_not_delivered() {
     let (upstream, _) = http_upstream().await;
-    let mut config = fast_config();
-    config.limits.max_event_bytes = 64;
-    let h = harness(vec![http_server(upstream.uri())], config);
+    let mut limits = fast_limits();
+    limits.max_event_bytes = 64;
+    let h = harness(vec![http_server(upstream.uri())], limits);
     h.initialize("s1", json!({})).await;
     let start = h.poll("s1", "http-push__msg", None).await["cursor"]
         .as_str()
@@ -1471,9 +1554,9 @@ async fn blocked_and_oversized_events_are_not_delivered() {
 #[tokio::test]
 async fn cursors_are_scoped_and_report_truncation() {
     let (upstream, _) = http_upstream().await;
-    let mut config = fast_config();
-    config.limits.journal_max_events = 2;
-    let h = harness(vec![http_server(upstream.uri())], config);
+    let mut limits = fast_limits();
+    limits.journal_max_events = 2;
+    let h = harness(vec![http_server(upstream.uri())], limits);
     h.initialize("s1", json!({})).await;
     let start = h.poll("s1", "http-push__msg", None).await["cursor"]
         .as_str()
@@ -1517,7 +1600,7 @@ async fn cursors_are_scoped_and_report_truncation() {
         .await;
     assert_eq!(bad.error.unwrap().code, -32602);
     // A cursor from another LocalRouter run resets with truncation
-    let other_relay = harness(vec![http_server(upstream.uri())], fast_config());
+    let other_relay = harness(vec![http_server(upstream.uri())], fast_limits());
     other_relay.initialize("x", json!({})).await;
     let foreign = other_relay.poll("x", "http-push__msg", None).await["cursor"]
         .as_str()
@@ -1540,9 +1623,9 @@ async fn cursors_are_scoped_and_report_truncation() {
 #[tokio::test]
 async fn stream_limit_per_session_holds() {
     let (upstream, _) = http_upstream().await;
-    let mut config = fast_config();
-    config.limits.max_streams_per_session = 1;
-    let h = harness(vec![http_server(upstream.uri())], config);
+    let mut limits = fast_limits();
+    limits.max_streams_per_session = 1;
+    let h = harness(vec![http_server(upstream.uri())], limits);
     h.initialize("s1", json!({})).await;
     let sinks = h.gateway.push_stream_sinks();
     let (_rx, _guard) = sinks.register("s1", &json!(1), 8);
@@ -1597,7 +1680,7 @@ async fn stream_limit_per_session_holds() {
 #[tokio::test]
 async fn event_wait_command_watches_events() {
     let (upstream, _) = http_upstream().await;
-    let h = harness(vec![http_server(upstream.uri())], fast_config());
+    let h = harness(vec![http_server(upstream.uri())], fast_limits());
     h.initialize("s1", json!({})).await;
     let text = h
         .call_tool("s1", "EventWait", json!({"events": ["http-push__alert"]}))
@@ -1673,9 +1756,9 @@ impl Respond for Receiver {
 #[tokio::test]
 async fn webhook_subscription_asks_for_new_urls_signs_and_retries() {
     let (upstream, _) = http_upstream().await;
-    let mut config = fast_config();
-    config.limits.webhook_retry_delays_secs = vec![0, 0];
-    let h = harness(vec![http_server(upstream.uri())], config);
+    let mut limits = fast_limits();
+    limits.webhook_retry_delays_secs = vec![0, 0];
+    let h = harness(vec![http_server(upstream.uri())], limits);
     h.initialize("s1", json!({})).await;
 
     let receiver = MockServer::start().await;
@@ -1769,21 +1852,6 @@ async fn webhook_subscription_asks_for_new_urls_signs_and_retries() {
         .await;
     assert!(gone.error.is_none());
     assert!(h.relay.webhook_subscriptions(Some(CLIENT)).is_empty());
-}
-
-#[tokio::test]
-async fn webhook_egress_can_be_switched_off() {
-    let (upstream, _) = http_upstream().await;
-    let mut config = fast_config();
-    config.webhook_egress_enabled = false;
-    let h = harness(vec![http_server(upstream.uri())], config);
-    h.initialize("s1", json!({})).await;
-    let response = h
-        .send("s1", "events/subscribe", Some(json!({"name": "http-push__msg", "delivery": {"url": "https://example.com", "secret": "whsec_AAAA"}})))
-        .await;
-    assert_eq!(response.error.unwrap().code, -32026);
-    let list = h.send("s1", "events/list", None).await.result.unwrap();
-    assert_eq!(list["events"][0]["delivery"], json!(["poll", "push"]));
 }
 
 // ---------------------------------------------------------------------------

@@ -195,8 +195,6 @@ impl VirtualMcpServer for PushRelayTools {
     fn create_session_state(&self, client: &lr_config::Client) -> Box<dyn VirtualSessionState> {
         Box::new(ToolsSessionState(PushToolsState {
             client_id: client.id.clone(),
-            fallback: client.push_fallback_tools,
-            channels_launched: client.claude_channels_launched,
             ..Default::default()
         }))
     }
@@ -208,8 +206,6 @@ impl VirtualMcpServer for PushRelayTools {
     ) {
         if let Some(s) = state.as_any_mut().downcast_mut::<ToolsSessionState>() {
             s.0.client_id = client.id.clone();
-            s.0.fallback = client.push_fallback_tools;
-            s.0.channels_launched = client.claude_channels_launched;
         }
     }
 

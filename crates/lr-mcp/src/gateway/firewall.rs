@@ -251,7 +251,9 @@ pub struct FirewallApprovalSession {
 impl FirewallApprovalSession {
     /// Check if this session has expired
     pub fn is_expired(&self) -> bool {
-        self.created_at.elapsed() > Duration::from_secs(self.timeout_seconds)
+        // Held push events have no timeout
+        !self.is_push_event_request
+            && self.created_at.elapsed() > Duration::from_secs(self.timeout_seconds)
     }
 }
 
@@ -449,8 +451,10 @@ impl FirewallManager {
         client_id: String,
         client_name: String,
         details: PushEventApprovalDetails,
-        timeout_secs: u64,
     ) -> AppResult<FirewallApprovalResponse> {
+        // A held push event waits for its decision for as long as it takes:
+        // no timeout, and the expiry sweep skips it.
+        let timeout_secs = 0;
         let request_id = Uuid::new_v4().to_string();
         let (tx, rx) = oneshot::channel();
         let tool_name = match details.kind {
@@ -520,10 +524,7 @@ impl FirewallManager {
             action: FirewallApprovalAction::Deny,
             edited_arguments: None,
         };
-        match tokio::time::timeout(Duration::from_secs(timeout_secs), rx).await {
-            Ok(Ok(response)) => Ok(response),
-            Ok(Err(_)) | Err(_) => Ok(denied),
-        }
+        Ok(rx.await.unwrap_or(denied))
     }
 
     /// The firewall request id of a pending Push Relay item.

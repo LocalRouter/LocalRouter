@@ -590,9 +590,7 @@ async fn first_discovery_wait_is_bounded() {
     let upstream = push_upstream(Duration::from_millis(4500)).await;
     let gateway = gateway_with(vec![http_server(SERVER_ID, upstream.uri())], None);
     gateway.set_push_relay(Arc::new(FakeRelay::default()));
-    let mut config = lr_config::PushRelayConfig::default();
-    config.limits.first_discovery_wait_ms = 2_500;
-    gateway.update_push_relay_config(&config);
+    gateway.set_first_discovery_wait(Duration::from_millis(2_500));
 
     let started = Instant::now();
     let response = initialize(&gateway, "s1").await.result.unwrap();

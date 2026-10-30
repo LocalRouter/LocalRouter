@@ -29,18 +29,13 @@ fn is_loopback_host(url: &reqwest::Url) -> bool {
             .is_ok_and(|ip| ip.is_loopback())
 }
 
-/// Validate a callback URL: HTTPS, or `http://` to a loopback address when
-/// allowed; no credentials, no fragment.
-pub fn validate_callback_url(
-    url: &str,
-    allow_loopback_http: bool,
-) -> Result<reqwest::Url, WebhookInputError> {
+/// Validate a callback URL: HTTPS, or `http://` to a loopback address; no
+/// credentials, no fragment.
+pub fn validate_callback_url(url: &str) -> Result<reqwest::Url, WebhookInputError> {
     let refuse = || {
-        WebhookInputError(if allow_loopback_http {
-            "delivery.url must be HTTPS (or http:// to a loopback address) without credentials or a fragment".into()
-        } else {
-            "delivery.url must be HTTPS without credentials or a fragment".into()
-        })
+        WebhookInputError(
+            "delivery.url must be HTTPS (or http:// to a loopback address) without credentials or a fragment".into(),
+        )
     };
     if url.len() > MAX_URL_LEN {
         return Err(refuse());
@@ -48,7 +43,7 @@ pub fn validate_callback_url(
     let parsed = reqwest::Url::parse(url).map_err(|_| refuse())?;
     let scheme_ok = match parsed.scheme() {
         "https" => true,
-        "http" => allow_loopback_http && is_loopback_host(&parsed),
+        "http" => is_loopback_host(&parsed),
         _ => false,
     };
     if !scheme_ok
@@ -195,18 +190,17 @@ mod tests {
 
     #[test]
     fn callback_urls_follow_the_rules() {
-        assert!(validate_callback_url("https://example.com/hook", false).is_ok());
-        assert!(validate_callback_url("http://127.0.0.1:9000/hook", true).is_ok());
-        assert!(validate_callback_url("http://localhost/hook", true).is_ok());
-        assert!(validate_callback_url("http://[::1]:1/hook", true).is_ok());
-        assert!(validate_callback_url("http://127.0.0.1:9000/hook", false).is_err());
-        assert!(validate_callback_url("http://example.com/hook", true).is_err());
-        assert!(validate_callback_url("https://user:pw@example.com/hook", true).is_err());
-        assert!(validate_callback_url("https://example.com/hook#frag", true).is_err());
-        assert!(validate_callback_url("ftp://example.com/hook", true).is_err());
-        assert!(validate_callback_url("not a url", true).is_err());
+        assert!(validate_callback_url("https://example.com/hook").is_ok());
+        assert!(validate_callback_url("http://127.0.0.1:9000/hook").is_ok());
+        assert!(validate_callback_url("http://localhost/hook").is_ok());
+        assert!(validate_callback_url("http://[::1]:1/hook").is_ok());
+        assert!(validate_callback_url("http://example.com/hook").is_err());
+        assert!(validate_callback_url("https://user:pw@example.com/hook").is_err());
+        assert!(validate_callback_url("https://example.com/hook#frag").is_err());
+        assert!(validate_callback_url("ftp://example.com/hook").is_err());
+        assert!(validate_callback_url("not a url").is_err());
         let long = format!("https://example.com/{}", "a".repeat(MAX_URL_LEN));
-        assert!(validate_callback_url(&long, true).is_err());
+        assert!(validate_callback_url(&long).is_err());
     }
 
     #[test]

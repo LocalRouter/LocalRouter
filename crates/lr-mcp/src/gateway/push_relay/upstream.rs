@@ -24,12 +24,13 @@ use serde_json::{json, Map, Value};
 use tokio_util::sync::CancellationToken;
 
 use super::journal::IngressMode;
+use super::limits::PushRelayLimits;
 use crate::gateway::types::InitializeResult;
 use crate::gateway::McpGateway;
 use crate::manager::McpServerManager;
 use crate::protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
 use crate::transport::{RpcStream, RpcStreamMessage, Transport};
-use lr_config::{EventDeliveryMode, PushRelayLimits};
+use lr_config::EventDeliveryMode;
 use lr_types::{AppError, AppResult};
 
 /// Timeout of the relay-owned connection's handshake.

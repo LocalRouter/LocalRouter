@@ -208,6 +208,7 @@ mod tests {
             upstream_cursor: None,
             ingress,
             args_key: "{}".into(),
+            origin_session: None,
         });
         let limits = JournalLimits {
             max_events: 10,

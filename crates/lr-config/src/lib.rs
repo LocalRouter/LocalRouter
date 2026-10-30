@@ -420,9 +420,7 @@ impl ConfigManager {
             memory_enabled: None,
             memory_folder: Some(memory_folder),
             push_permissions: PushPermissions::default(),
-            push_fallback_tools: PushFallbackTools::default(),
             push_webhook_urls: Vec::new(),
-            claude_channels_launched: false,
         };
 
         self.update(|cfg| {

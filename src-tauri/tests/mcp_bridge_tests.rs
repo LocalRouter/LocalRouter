@@ -62,9 +62,7 @@ fn test_config() -> AppConfig {
                 memory_enabled: None,
                 memory_folder: None,
                 push_permissions: Default::default(),
-                push_fallback_tools: Default::default(),
                 push_webhook_urls: Vec::new(),
-                claude_channels_launched: false,
             },
             Client {
                 id: "disabled_client".to_string(),
@@ -110,9 +108,7 @@ fn test_config() -> AppConfig {
                 memory_enabled: None,
                 memory_folder: None,
                 push_permissions: Default::default(),
-                push_fallback_tools: Default::default(),
                 push_webhook_urls: Vec::new(),
-                claude_channels_launched: false,
             },
             Client {
                 id: "no_mcp_client".to_string(),
@@ -158,9 +154,7 @@ fn test_config() -> AppConfig {
                 memory_enabled: None,
                 memory_folder: None,
                 push_permissions: Default::default(),
-                push_fallback_tools: Default::default(),
                 push_webhook_urls: Vec::new(),
-                claude_channels_launched: false,
             },
         ],
         ..Default::default()

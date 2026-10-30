@@ -3694,18 +3694,9 @@ pub struct Client {
     #[serde(default, skip_serializing_if = "crate::PushPermissions::is_empty")]
     pub push_permissions: crate::PushPermissions,
 
-    /// When LocalRouter's fallback polling tools are shown to this client.
-    #[serde(default, skip_serializing_if = "crate::PushFallbackTools::is_auto")]
-    pub push_fallback_tools: crate::PushFallbackTools,
-
     /// Webhook callback URLs the user approved for this client.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub push_webhook_urls: Vec<String>,
-
-    /// The Claude Code setup flow recorded that Claude is launched with the
-    /// development-channels flag, so channel messages reach the agent.
-    #[serde(default, skip_serializing_if = "crate::push_relay::is_false")]
-    pub claude_channels_launched: bool,
 }
 
 impl Client {
@@ -5146,9 +5137,7 @@ impl Client {
             memory_enabled: None,
             memory_folder: None,
             push_permissions: crate::PushPermissions::default(),
-            push_fallback_tools: crate::PushFallbackTools::default(),
             push_webhook_urls: Vec::new(),
-            claude_channels_launched: false,
         }
     }
 

@@ -160,8 +160,12 @@ pub struct McpGateway {
     /// Push Relay, when registered (see [`Self::set_push_relay`]).
     pub(crate) push_relay: Arc<parking_lot::RwLock<Option<Arc<dyn PushRelayService>>>>,
 
-    /// Live Push Relay settings (limits such as the first-discovery wait).
+    /// Live Push Relay settings (the master switch).
     pub(crate) push_relay_config: Arc<parking_lot::RwLock<lr_config::PushRelayConfig>>,
+
+    /// How long discovery waits for a server with no current capability
+    /// snapshot ([`super::push_relay::limits::FIRST_DISCOVERY_WAIT`]).
+    pub(crate) first_discovery_wait: Arc<parking_lot::RwLock<Duration>>,
 
     /// Session keys whose requests come through the STDIO bridge, recorded by
     /// the HTTP route before each request (see [`Self::set_stdio_bridge_session`]).
@@ -266,6 +270,9 @@ impl McpGateway {
             push_relay: Arc::new(parking_lot::RwLock::new(None)),
             push_relay_config: Arc::new(parking_lot::RwLock::new(
                 lr_config::PushRelayConfig::default(),
+            )),
+            first_discovery_wait: Arc::new(parking_lot::RwLock::new(
+                super::push_relay::limits::FIRST_DISCOVERY_WAIT,
             )),
             stdio_bridge_sessions: Arc::new(dashmap::DashSet::new()),
             snapshot_recorder: Arc::new(SnapshotRecorder::new()),
@@ -431,6 +438,12 @@ impl McpGateway {
     /// Override how long changed snapshots are batched before persisting.
     pub fn set_capability_snapshot_debounce(&self, debounce: Duration) {
         self.snapshot_recorder.set_debounce(debounce);
+    }
+
+    /// Override the first-discovery wait (tests reach its bound with it).
+    #[doc(hidden)]
+    pub fn set_first_discovery_wait(&self, wait: Duration) {
+        *self.first_discovery_wait.write() = wait;
     }
 
     /// Record whether requests for a session arrive through the STDIO bridge.
@@ -1400,8 +1413,7 @@ impl McpGateway {
             self.servers_awaiting_first_discovery(&requested)
         };
         if !awaiting_discovery.is_empty() {
-            let deadline = tokio::time::Instant::now()
-                + self.push_relay_config.read().limits.first_discovery_wait();
+            let deadline = tokio::time::Instant::now() + *self.first_discovery_wait.read();
             let needs_backends = {
                 let state = session.read().await;
                 state.transports.is_none() && !state.initialization_pending
@@ -2888,7 +2900,7 @@ impl McpGateway {
         if outcome.is_err() && !awaiting_discovery.is_empty() {
             // A server never seen before (or reconfigured) gets longer: its
             // capabilities decide what this session can be offered.
-            let deadline = started + self.push_relay_config.read().limits.first_discovery_wait();
+            let deadline = started + *self.first_discovery_wait.read();
             tokio::select! {
                 result = &mut receiver => outcome = Ok(result),
                 _ = self.wait_for_first_discovery(&session, &awaiting_discovery, deadline) => {}
@@ -2900,8 +2912,7 @@ impl McpGateway {
                 // capabilities are remembered (they are read in the
                 // background): wait for them within the same bound, then
                 // advertise what they allow.
-                let deadline =
-                    started + self.push_relay_config.read().limits.first_discovery_wait();
+                let deadline = started + *self.first_discovery_wait.read();
                 self.wait_for_first_discovery(&session, &awaiting_discovery, deadline)
                     .await;
                 if let Some(capabilities) = response
@@ -4274,6 +4285,17 @@ impl McpGateway {
     }
 
     /// Get all sessions for a client ID (iterates all sessions)
+    /// The Monitor request id a session's MCP events are recorded under
+    /// (`GatewaySession::monitor_session_id`), if it has one. Never waits: a
+    /// session locked for writing right now reports none.
+    pub fn monitor_session_id(&self, session_key: &str) -> Option<String> {
+        self.get_session(session_key)?
+            .try_read()
+            .ok()?
+            .monitor_session_id
+            .clone()
+    }
+
     pub fn get_sessions_for_client(
         &self,
         client_id: &str,
