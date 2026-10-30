@@ -87,11 +87,13 @@ pub(crate) fn resolve_endpoint(base_url: &str, endpoint: &str) -> Option<String>
 /// Notification callback type for SSE transport
 pub type SseNotificationCallback = Arc<dyn Fn(JsonRpcNotification) + Send + Sync>;
 
-/// Produces fresh auth headers (e.g. `Authorization`) after the server
-/// rejects a request with 401 — OAuth access tokens expire while a
-/// long-lived transport keeps running.
+/// Resolve current auth before a request (`false`), or force a refresh after
+/// an HTTP 401 (`true`). Long-lived connections must observe saved expiry and
+/// browser reauthentication rather than retaining their original bearer token.
 pub type AuthRefresher = Arc<
-    dyn Fn()
+    dyn Fn(
+            bool,
+        )
             -> Pin<Box<dyn std::future::Future<Output = AppResult<HashMap<String, String>>> + Send>>
         + Send
         + Sync,
@@ -603,7 +605,8 @@ impl SseTransport {
                 request = request.header(key, value);
             }
             request = request.header("Accept", "text/event-stream");
-            if let Some(id) = session_id.read().clone() {
+            let request_session = session_id.read().clone();
+            if let Some(id) = &request_session {
                 request = request.header("Mcp-Session-Id", id);
             }
 
@@ -661,6 +664,11 @@ impl SseTransport {
 
                 // 404 Not Found also means no SSE endpoint exists - don't retry
                 if status == reqwest::StatusCode::NOT_FOUND {
+                    if request_session.is_some() {
+                        *last_error.write() = Some("Upstream MCP session expired".into());
+                        *closed.write() = true;
+                        break;
+                    }
                     tracing::info!(
                         "SSE endpoint not found at {} (404). Transport will use inline responses only.",
                         url
@@ -675,7 +683,7 @@ impl SseTransport {
                     let refresher = auth_refresher.read().clone();
                     if let Some(refresher) = refresher {
                         auth_refreshed = true;
-                        if let Ok(new_headers) = refresher().await {
+                        if let Ok(new_headers) = refresher(true).await {
                             headers.write().extend(new_headers);
                             continue;
                         }
@@ -1006,23 +1014,14 @@ impl SseTransport {
         *self.auth_refresher.write() = Some(refresher);
     }
 
-    /// Run the auth refresher, merging the returned headers. Returns whether
-    /// the request should be retried.
-    async fn refresh_auth(&self) -> bool {
+    /// Resolve current credentials before sending, or force a refresh after 401.
+    async fn resolve_auth(&self, force: bool) -> AppResult<bool> {
         let Some(refresher) = self.auth_refresher.read().clone() else {
-            return false;
+            return Ok(false);
         };
-        match refresher().await {
-            Ok(new_headers) => {
-                tracing::info!("SSE transport: refreshed auth after 401 for {}", self.url);
-                self.headers.write().extend(new_headers);
-                true
-            }
-            Err(e) => {
-                tracing::warn!("SSE transport: auth refresh for {} failed: {}", self.url, e);
-                false
-            }
-        }
+        let new_headers = refresher(force).await?;
+        self.headers.write().extend(new_headers);
+        Ok(true)
     }
 
     /// Check if the transport is healthy
@@ -1060,6 +1059,11 @@ impl Transport for SseTransport {
         if *self.closed.read() {
             return Err(AppError::Mcp("Transport is closed".to_string()));
         }
+
+        // Long-lived transports must not retain a token after its saved expiry.
+        // This also handles servers that return authentication errors inside
+        // HTTP 200 tool results instead of issuing an HTTP 401 challenge.
+        self.resolve_auth(false).await?;
 
         // Check if this is a notification (no ID, starts with "notifications/")
         // Notifications are fire-and-forget - no response expected
@@ -1185,7 +1189,7 @@ impl Transport for SseTransport {
 
             if response.status() == reqwest::StatusCode::UNAUTHORIZED
                 && !auth_refreshed
-                && self.refresh_auth().await
+                && self.resolve_auth(true).await?
             {
                 auth_refreshed = true;
                 continue;
@@ -1197,6 +1201,9 @@ impl Transport for SseTransport {
         if !post_response.status().is_success() {
             self.pending.write().remove(&request_id);
             let status = post_response.status();
+            if status == reqwest::StatusCode::NOT_FOUND && self.session_id.read().is_some() {
+                return Err(AppError::McpSessionExpired);
+            }
             let headers = post_response.headers().clone();
             let body = post_response.text().await.unwrap_or_default();
             tracing::error!(
@@ -1285,6 +1292,8 @@ impl Transport for SseTransport {
             return Err(AppError::Mcp("Transport is closed".to_string()));
         }
 
+        self.resolve_auth(false).await?;
+
         // Generate unique request ID
         let request_id = {
             let id = self.next_request_id();
@@ -1301,32 +1310,48 @@ impl Transport for SseTransport {
             request.params = Some(serde_json::json!({"stream": true}));
         }
 
-        // Build POST request
-        let mut req_builder = self.client.post(&self.url).json(&request);
-        if let Some(id) = self.session_id.read().clone() {
-            req_builder = req_builder.header("Mcp-Session-Id", id);
-        }
+        let mut auth_refreshed = false;
+        let response = loop {
+            // Build POST request
+            let mut req_builder = self.client.post(&self.url).json(&request);
+            if let Some(id) = self.session_id.read().clone() {
+                req_builder = req_builder.header("Mcp-Session-Id", id);
+            }
 
-        // Add standard MCP request headers (SEP-2243)
-        for (key, value) in mcp_request_headers(&request, self.negotiated_version.read().as_deref())
-        {
-            req_builder = req_builder.header(key, value);
-        }
+            // Add standard MCP request headers (SEP-2243)
+            for (key, value) in
+                mcp_request_headers(&request, self.negotiated_version.read().as_deref())
+            {
+                req_builder = req_builder.header(key, value);
+            }
 
-        // Add headers
-        for (key, value) in self.headers.read().clone() {
-            req_builder = req_builder.header(key, value);
-        }
-        req_builder = req_builder.header("Accept", "text/event-stream");
+            // Add headers
+            for (key, value) in self.headers.read().clone() {
+                req_builder = req_builder.header(key, value);
+            }
+            req_builder = req_builder.header("Accept", "text/event-stream");
 
-        // Send POST request
-        let response = req_builder
-            .send()
-            .await
-            .map_err(|e| AppError::Mcp(format!("Failed to send streaming request: {}", e)))?;
-
-        // Check status
+            let response = req_builder.send().await.map_err(|e| {
+                AppError::Mcp(format!(
+                    "Failed to send streaming request: {}",
+                    e.without_url()
+                ))
+            })?;
+            if response.status() == reqwest::StatusCode::UNAUTHORIZED
+                && !auth_refreshed
+                && self.resolve_auth(true).await?
+            {
+                auth_refreshed = true;
+                continue;
+            }
+            break response;
+        };
         if !response.status().is_success() {
+            if response.status() == reqwest::StatusCode::NOT_FOUND
+                && self.session_id.read().is_some()
+            {
+                return Err(AppError::McpSessionExpired);
+            }
             return Err(AppError::Mcp(format!(
                 "Server returned error status: {}",
                 response.status()
@@ -1604,7 +1629,7 @@ mod tests {
         });
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counter = calls.clone();
-        let refresher: AuthRefresher = Arc::new(move || {
+        let refresher: AuthRefresher = Arc::new(move |_force| {
             counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             Box::pin(async {
                 Ok(HashMap::from([(
@@ -1759,7 +1784,10 @@ mod tests {
         let transport = SseTransport::connect(url, headers).await.unwrap();
         let refreshes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let refresh_count = refreshes.clone();
-        transport.set_auth_refresher(Arc::new(move || {
+        transport.set_auth_refresher(Arc::new(move |force| {
+            if !force {
+                return Box::pin(async { Ok(HashMap::new()) });
+            }
             refresh_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Box::pin(async {
                 Ok(HashMap::from([(
@@ -1787,6 +1815,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn current_credentials_are_resolved_before_every_request_without_401() {
+        let (url, rejected) = spawn_token_checking_server().await;
+        let transport = SseTransport::connect(
+            url,
+            HashMap::from([("Authorization".into(), "Bearer stale".into())]),
+        )
+        .await
+        .unwrap();
+        let resolutions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = resolutions.clone();
+        transport.set_auth_refresher(Arc::new(move |force| {
+            assert!(
+                !force,
+                "expiry must be handled before the upstream rejects it"
+            );
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async {
+                Ok(HashMap::from([(
+                    "Authorization".into(),
+                    "Bearer fresh".into(),
+                )]))
+            })
+        }));
+        for id in 1..=2 {
+            transport
+                .send_request(JsonRpcRequest::with_id(id, "tools/list".into(), None))
+                .await
+                .unwrap();
+        }
+        assert_eq!(resolutions.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(rejected.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn streaming_request_refreshes_rejected_credentials_once() {
+        let (url, rejected) = spawn_token_checking_server().await;
+        let transport = SseTransport::connect(
+            url,
+            HashMap::from([("Authorization".into(), "Bearer stale".into())]),
+        )
+        .await
+        .unwrap();
+        let refreshes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = refreshes.clone();
+        transport.set_auth_refresher(Arc::new(move |force| {
+            if !force {
+                return Box::pin(async { Ok(HashMap::new()) });
+            }
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async {
+                Ok(HashMap::from([(
+                    "Authorization".into(),
+                    "Bearer fresh".into(),
+                )]))
+            })
+        }));
+        let _stream = transport
+            .stream_request(JsonRpcRequest::with_id(1, "tools/call".into(), None))
+            .await
+            .unwrap();
+        assert_eq!(refreshes.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(rejected.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
     async fn unauthorized_without_refresher_fails() {
         let (url, _rejected) = spawn_token_checking_server().await;
         let headers = HashMap::from([("Authorization".to_string(), "Bearer stale".to_string())]);
@@ -1802,7 +1895,10 @@ mod tests {
     async fn failed_refresh_does_not_loop() {
         let (url, rejected) = spawn_token_checking_server().await;
         let transport = SseTransport::connect(url, HashMap::new()).await.unwrap();
-        transport.set_auth_refresher(Arc::new(|| {
+        transport.set_auth_refresher(Arc::new(|force| {
+            if !force {
+                return Box::pin(async { Ok(HashMap::new()) });
+            }
             Box::pin(async {
                 Ok(HashMap::from([(
                     "Authorization".to_string(),

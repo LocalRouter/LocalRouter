@@ -357,6 +357,15 @@ impl JsonRpcRequest {
 }
 
 impl JsonRpcResponse {
+    /// Tool failures use a successful JSON-RPC envelope with `isError: true`.
+    pub fn is_tool_error(&self) -> bool {
+        self.result
+            .as_ref()
+            .and_then(|result| result.get("isError"))
+            .and_then(Value::as_bool)
+            == Some(true)
+    }
+
     /// Create a success response
     pub fn success(id: Value, result: Value) -> Self {
         Self {

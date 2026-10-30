@@ -46,6 +46,12 @@ pub enum AppError {
     #[error("MCP error: {0}")]
     Mcp(String),
 
+    /// A legacy MCP server explicitly rejected the session before executing
+    /// the operation. This is safe to re-handshake and retry once, unlike a
+    /// dropped response whose operation may already have completed.
+    #[error("MCP upstream session expired; reconnect required")]
+    McpSessionExpired,
+
     #[error("OAuth browser flow error: {0}")]
     OAuthBrowser(String),
 

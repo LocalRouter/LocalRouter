@@ -146,12 +146,18 @@ pub enum HealthStatus {
 impl McpServerManager {
     /// Create a new MCP server manager
     pub fn new() -> Self {
+        Self::new_with_oauth_manager(Arc::new(McpOAuthManager::new()))
+    }
+
+    /// Login, health probes and client transports share credential caches and
+    /// refresh locks, including providers with rotating refresh tokens.
+    pub fn new_with_oauth_manager(oauth_manager: Arc<McpOAuthManager>) -> Self {
         Self {
             stdio_transports: Arc::new(DashMap::new()),
             sse_transports: Arc::new(DashMap::new()),
             websocket_transports: Arc::new(DashMap::new()),
             configs: Arc::new(DashMap::new()),
-            oauth_manager: Arc::new(McpOAuthManager::new()),
+            oauth_manager,
             notification_handlers: Arc::new(DashMap::new()),
             next_handler_id: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             monitor_emit: Arc::new(parking_lot::RwLock::new(None)),
@@ -597,6 +603,15 @@ impl McpServerManager {
     /// Callers are responsible for setting notification/request callbacks and closing
     /// the transport when done.
     pub async fn create_transport(&self, server_id: &str) -> AppResult<Arc<dyn Transport>> {
+        self.create_transport_snapshot(server_id)
+            .await
+            .map(|(transport, _)| transport)
+    }
+
+    pub(crate) async fn create_transport_snapshot(
+        &self,
+        server_id: &str,
+    ) -> AppResult<(Arc<dyn Transport>, McpServerConfig)> {
         let config = self
             .configs
             .get(server_id)
@@ -608,7 +623,7 @@ impl McpServerManager {
         }
 
         #[allow(deprecated)]
-        match config.transport {
+        let transport = match config.transport {
             McpTransportType::Stdio => self.create_stdio_transport_impl(server_id, &config).await,
             McpTransportType::Sse | McpTransportType::HttpSse => {
                 self.create_sse_transport_impl(server_id, &config).await
@@ -617,7 +632,8 @@ impl McpServerManager {
                 self.create_websocket_transport_impl(server_id, &config)
                     .await
             }
-        }
+        }?;
+        Ok((transport, config))
     }
 
     /// Create transports for multiple servers in parallel.
@@ -690,8 +706,11 @@ impl McpServerManager {
                 async move {
                     tracing::info!("Creating transport for MCP server '{}'...", server_name);
                     let start = std::time::Instant::now();
-                    let result =
-                        tokio::time::timeout(timeout, manager.create_transport(&server_id)).await;
+                    let result = tokio::time::timeout(
+                        timeout,
+                        manager.create_transport_snapshot(&server_id),
+                    )
+                    .await;
                     manager.report_startup_phase(
                         &server_id,
                         "transport_connect",
@@ -717,8 +736,8 @@ impl McpServerManager {
 
         for (server_id, result) in results {
             match result {
-                Ok(Ok(transport)) => {
-                    transport_set.insert(server_id, transport);
+                Ok(Ok((transport, config))) => {
+                    transport_set.insert_configured(server_id, transport, config);
                 }
                 Ok(Err(e)) => {
                     failures.push(ServerFailure {
@@ -859,16 +878,24 @@ impl McpServerManager {
     fn auth_refresher(&self, server_id: &str) -> crate::transport::sse::AuthRefresher {
         let manager = self.clone();
         let server_id = server_id.to_string();
-        Arc::new(move || {
+        Arc::new(move |force_refresh| {
             let manager = manager.clone();
             let server_id = server_id.clone();
             Box::pin(async move {
                 let config = manager
                     .get_config(&server_id)
                     .ok_or_else(|| AppError::Mcp(format!("Server not found: {}", server_id)))?;
+                if !force_refresh
+                    && !matches!(
+                        config.auth_config,
+                        Some(lr_config::McpAuthConfig::OAuthBrowser { .. })
+                    )
+                {
+                    return Ok(HashMap::new());
+                }
                 let mut headers = HashMap::new();
                 manager
-                    .apply_auth_headers_with(&server_id, &config, &mut headers, true)
+                    .apply_auth_headers_with(&server_id, &config, &mut headers, force_refresh)
                     .await?;
                 Ok(headers)
             })
@@ -963,7 +990,12 @@ impl McpServerManager {
                     }
                 };
 
-                let client = reqwest::Client::new();
+                let client = reqwest::Client::builder()
+                    .connect_timeout(std::time::Duration::from_secs(10))
+                    .timeout(std::time::Duration::from_secs(30))
+                    .redirect(reqwest::redirect::Policy::none())
+                    .build()
+                    .expect("MCP OAuth token client");
                 let mut form_params = vec![
                     ("grant_type", "client_credentials"),
                     ("client_id", client_id.as_str()),

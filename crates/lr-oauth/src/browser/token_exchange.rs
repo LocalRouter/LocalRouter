@@ -39,6 +39,27 @@ struct TokenResponse {
 /// it is never sent upstream.
 pub const USE_JSON_BODY_PARAM: &str = "_use_json_body";
 
+/// Only standard error codes reach logs/UI. OAuth endpoints can echo secrets
+/// in arbitrary descriptions, bodies or redirect URLs.
+fn token_error_detail(body: &str) -> &'static str {
+    let value = serde_json::from_str::<serde_json::Value>(body).ok();
+    match value
+        .as_ref()
+        .and_then(|v| v.get("error"))
+        .and_then(|v| v.as_str())
+    {
+        Some("invalid_grant") => {
+            "invalid_grant; sign in again because the refresh token or grant is expired or revoked"
+        }
+        Some("invalid_client") => "invalid_client; check the registered OAuth app credentials",
+        Some("invalid_scope") => "invalid_scope; review the authorized scopes and sign in again",
+        Some("access_denied") => "access_denied; review provider authorization",
+        Some("temporarily_unavailable") => "temporarily_unavailable; retry later",
+        Some("server_error") => "server_error; retry later",
+        _ => "token endpoint rejected the request",
+    }
+}
+
 /// Token exchanger for OAuth flows
 pub struct TokenExchanger {
     client: Client,
@@ -48,7 +69,12 @@ impl TokenExchanger {
     /// Create a new token exchanger
     pub fn new() -> Self {
         Self {
-            client: Client::new(),
+            client: Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(10))
+                .timeout(std::time::Duration::from_secs(30))
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .expect("OAuth token HTTP client"),
         }
     }
 
@@ -106,27 +132,34 @@ impl TokenExchanger {
             .token_request(&config.token_url, params)
             .send()
             .await
-            .map_err(|e| AppError::OAuthBrowser(format!("Failed to send token request: {}", e)))?;
+            .map_err(|e| {
+                AppError::OAuthBrowser(format!("Failed to send token request: {}", e.without_url()))
+            })?;
 
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            error!("Token exchange failed with status {}: {}", status, body);
+            let detail = token_error_detail(&body);
+            error!("Token exchange failed with status {}: {}", status, detail);
             return Err(AppError::OAuthBrowser(format!(
                 "Token exchange failed with status {}: {}",
-                status, body
+                status, detail
             )));
         }
 
         // Parse token response
         let token_response: TokenResponse = response.json().await.map_err(|e| {
-            AppError::OAuthBrowser(format!("Failed to parse token response: {}", e))
+            AppError::OAuthBrowser(format!(
+                "Failed to parse token response: {}",
+                e.without_url()
+            ))
         })?;
 
         // Calculate expiration time (with 5-minute buffer for safety)
-        let expires_at = token_response
-            .expires_in
-            .map(|expires_in| Utc::now() + Duration::seconds(expires_in - 300));
+        let expires_at = token_response.expires_in.map(|expires_in| {
+            Utc::now()
+                + Duration::seconds(expires_in.saturating_sub((expires_in / 10).clamp(0, 300)))
+        });
 
         // Create token structure
         let tokens = OAuthTokens {
@@ -162,6 +195,21 @@ impl TokenExchanger {
         refresh_token: &str,
         keychain: &CachedKeychain,
     ) -> AppResult<OAuthTokens> {
+        let tokens = self
+            .refresh_tokens_unstored(config, refresh_token, keychain)
+            .await?;
+        self.store_tokens(&tokens, config, keychain)?;
+        Ok(tokens)
+    }
+
+    /// Fetch a refreshed grant without committing it. Consumers with concurrent
+    /// revocation can validate ownership under their credential lock before saving.
+    pub async fn refresh_tokens_unstored(
+        &self,
+        config: &OAuthFlowConfig,
+        refresh_token: &str,
+        keychain: &CachedKeychain,
+    ) -> AppResult<OAuthTokens> {
         info!("Refreshing tokens for: {}", config.account_id);
 
         // Build refresh request parameters
@@ -191,28 +239,36 @@ impl TokenExchanger {
             .send()
             .await
             .map_err(|e| {
-                AppError::OAuthBrowser(format!("Failed to send refresh request: {}", e))
+                AppError::OAuthBrowser(format!(
+                    "Failed to send refresh request: {}",
+                    e.without_url()
+                ))
             })?;
 
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            error!("Token refresh failed with status {}: {}", status, body);
+            let detail = token_error_detail(&body);
+            error!("Token refresh failed with status {}: {}", status, detail);
             return Err(AppError::OAuthBrowser(format!(
                 "Token refresh failed with status {}: {}",
-                status, body
+                status, detail
             )));
         }
 
         // Parse token response
         let token_response: TokenResponse = response.json().await.map_err(|e| {
-            AppError::OAuthBrowser(format!("Failed to parse refresh response: {}", e))
+            AppError::OAuthBrowser(format!(
+                "Failed to parse refresh response: {}",
+                e.without_url()
+            ))
         })?;
 
         // Calculate expiration time (with 5-minute buffer)
-        let expires_at = token_response
-            .expires_in
-            .map(|expires_in| Utc::now() + Duration::seconds(expires_in - 300));
+        let expires_at = token_response.expires_in.map(|expires_in| {
+            Utc::now()
+                + Duration::seconds(expires_in.saturating_sub((expires_in / 10).clamp(0, 300)))
+        });
 
         // Create token structure (preserve original refresh token if not provided)
         let tokens = OAuthTokens {
@@ -226,9 +282,6 @@ impl TokenExchanger {
             scope: token_response.scope.clone(),
             acquired_at: Utc::now(),
         };
-
-        // Store tokens in keychain
-        self.store_tokens(&tokens, config, keychain)?;
 
         info!("Token refresh successful for: {}", config.account_id);
 
@@ -256,7 +309,7 @@ impl TokenExchanger {
     }
 
     /// Store tokens in keychain
-    fn store_tokens(
+    pub fn store_tokens(
         &self,
         tokens: &OAuthTokens,
         config: &OAuthFlowConfig,
@@ -322,6 +375,76 @@ impl Default for TokenExchanger {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn token_errors_never_echo_provider_descriptions_or_credentials() {
+        let error = token_error_detail(
+            r#"{"error":"invalid_grant","error_description":"refresh_token=super-secret"}"#,
+        );
+        assert!(error.contains("sign in again"));
+        assert!(!error.contains("super-secret"));
+        assert_eq!(
+            token_error_detail("Bearer super-secret"),
+            "token endpoint rejected the request"
+        );
+        assert_eq!(
+            token_error_detail(r#"{"error":"super-secret"}"#),
+            "token endpoint rejected the request"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_preserves_rotation_and_buffers_short_lived_tokens() {
+        use axum::{routing::post, Form, Json, Router};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let app = Router::new().route(
+            "/token",
+            post(|Form(body): Form<HashMap<String, String>>| async move {
+                assert_eq!(
+                    body.get("refresh_token").map(String::as_str),
+                    Some("original-refresh")
+                );
+                Json(serde_json::json!({"access_token":"short-lived", "expires_in":60}))
+            }),
+        );
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let keychain = CachedKeychain::new(std::sync::Arc::new(lr_api_keys::MockKeychain::new()));
+        let config = OAuthFlowConfig {
+            client_id: "public".into(),
+            client_secret: None,
+            auth_url: format!("{origin}/authorize"),
+            token_url: format!("{origin}/token"),
+            scopes: vec![],
+            redirect_uri: "http://localhost:8080/callback".into(),
+            callback_port: 8080,
+            keychain_service: "test-oauth".into(),
+            account_id: "short".into(),
+            extra_auth_params: HashMap::new(),
+            extra_token_params: HashMap::new(),
+            expected_issuer: None,
+        };
+        let tokens = TokenExchanger::new()
+            .refresh_tokens(&config, "original-refresh", &keychain)
+            .await
+            .unwrap();
+        assert_eq!(tokens.refresh_token.as_deref(), Some("original-refresh"));
+        let remaining = (tokens.expires_at.unwrap() - Utc::now()).num_seconds();
+        assert!(
+            (50..=54).contains(&remaining),
+            "short tokens must remain usable: {remaining}"
+        );
+        assert_eq!(
+            keychain
+                .get("test-oauth", "short_refresh_token")
+                .unwrap()
+                .as_deref(),
+            Some("original-refresh")
+        );
+        task.abort();
+    }
 
     #[test]
     fn test_token_exchanger_creation() {

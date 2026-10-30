@@ -266,7 +266,13 @@ fn process_auth_config(
                 let keychain = lr_api_keys::CachedKeychain::auto()
                     .map_err(|e| format!("Failed to access keychain: {}", e))?;
 
-                let key = format!("{}_oauth_browser_secret", server_id);
+                // A new reference prevents a running connection from reusing a cached
+                // registered-app secret after the user replaces it.
+                let key = format!(
+                    "{}_oauth_browser_secret_{}",
+                    server_id,
+                    uuid::Uuid::new_v4()
+                );
                 keychain
                     .store(lr_config::MCP_KEYRING_SERVICE, &key, &secret)
                     .map_err(|e| format!("Failed to store OAuth secret in keychain: {}", e))?;

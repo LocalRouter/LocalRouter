@@ -27,7 +27,11 @@ type FailureCallback = Arc<dyn Fn(&str, Option<&str>) + Send + Sync>;
 pub struct SessionTransportSet {
     pub(crate) failures: Arc<SessionFailures>,
     failure_callback: parking_lot::RwLock<Option<FailureCallback>>,
-    transports: DashMap<String, Arc<dyn Transport>>,
+    transports: Arc<DashMap<String, Arc<dyn Transport>>>,
+    /// An interrupted response has an uncertain outcome. Never replay it;
+    /// rebuild the affected connection before a later client request instead.
+    reconnect_required: Arc<dashmap::DashSet<String>>,
+    configurations: DashMap<String, lr_config::McpServerConfig>,
 
     /// Protocol revision negotiated per backend (absent = legacy).
     /// Set by the gateway after a successful `server/discover` probe.
@@ -50,7 +54,9 @@ impl SessionTransportSet {
         Self {
             failures: Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
             failure_callback: parking_lot::RwLock::new(None),
-            transports: DashMap::new(),
+            transports: Arc::new(DashMap::new()),
+            reconnect_required: Arc::new(dashmap::DashSet::new()),
+            configurations: DashMap::new(),
             revisions: DashMap::new(),
             client_capabilities: parking_lot::RwLock::new(None),
         }
@@ -78,6 +84,7 @@ impl SessionTransportSet {
             transport.set_protocol_revision(revision);
         }
         if revision.is_stateless() {
+            self.reconnect_required.remove(server_id);
             let recovered = {
                 let mut failures = self.failures.write();
                 if let Some(methods) = failures.get_mut(server_id) {
@@ -151,7 +158,42 @@ impl SessionTransportSet {
 
     /// Insert a transport for a server.
     pub fn insert(&self, server_id: String, transport: Arc<dyn Transport>) {
+        self.reconnect_required.remove(&server_id);
         self.transports.insert(server_id, transport);
+    }
+
+    pub(crate) fn insert_configured(
+        &self,
+        server_id: String,
+        transport: Arc<dyn Transport>,
+        config: lr_config::McpServerConfig,
+    ) {
+        self.configurations.insert(server_id.clone(), config);
+        self.insert(server_id, transport);
+    }
+
+    pub(crate) fn configuration_matches(
+        &self,
+        server_id: &str,
+        config: &lr_config::McpServerConfig,
+    ) -> bool {
+        self.configurations
+            .get(server_id)
+            .is_none_or(|saved| saved.value() == config)
+    }
+
+    pub async fn needs_reconnect(&self, server_id: &str) -> bool {
+        if self.reconnect_required.contains(server_id) {
+            return true;
+        }
+        match self.get(server_id) {
+            Some(transport) => !transport.is_healthy().await,
+            None => true,
+        }
+    }
+
+    pub(crate) fn mark_connecting(&self, server_id: &str) {
+        self.reconnect_required.insert(server_id.to_string());
     }
 
     /// Check if a server has an active transport.
@@ -184,26 +226,61 @@ impl SessionTransportSet {
         let request = self.prepare_request_for(server_id, request);
         let method = request.method.clone();
         let result = transport.send_request(request).await;
+        // A late response from a replaced connection must not mark the new
+        // connection broken (or clear its failures). Concurrent session-expiry
+        // responses otherwise trigger a cascade of unnecessary reconnects.
+        let current = self.transports.get(server_id);
+        if !current
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current.value(), &transport))
+        {
+            return result;
+        }
+        // Keep the read guard until diagnostic publication finishes so replacing
+        // this transport cannot race a late error's reconnect marker.
+        let _current_transport = current;
         match &result {
-            Err(_) if method != "server/discover" => self.record_failure(server_id, &method, &format!("MCP connection failed during {method}; check authentication and server availability")),
-            Ok(response) if response.error.is_none() => {
+            Err(_) if method != "server/discover" => {
+                self.reconnect_required.insert(server_id.to_string());
+                self.record_failure(server_id, &method, &format!("MCP connection failed during {method}; check authentication and server availability"));
+            }
+            Ok(response) if response.error.is_none() && !response.is_tool_error() => {
+                if method == "initialize" {
+                    self.reconnect_required.remove(server_id);
+                }
                 let recovered = {
                     let mut failures = self.failures.write();
                     if let Some(methods) = failures.get_mut(server_id) {
                         let mut recovered = methods.remove(&method).is_some();
-                        if method == "initialize" { recovered |= methods.remove("_connect").is_some(); }
-                        if methods.is_empty() { failures.remove(server_id); }
+                        if method == "initialize" {
+                            recovered |= methods.remove("_connect").is_some();
+                        }
+                        if methods.is_empty() {
+                            failures.remove(server_id);
+                        }
                         recovered
-                    } else { false }
+                    } else {
+                        false
+                    }
                 };
                 if recovered {
-                    if let Some(callback) = self.failure_callback.read().clone() { callback(server_id, None); }
+                    if let Some(callback) = self.failure_callback.read().clone() {
+                        callback(server_id, None);
+                    }
                 }
             }
-            Ok(response) if matches!(method.as_str(), "initialize" | "tools/list" | "resources/list" | "prompts/list")
-                && response.error.as_ref().is_some_and(|e| e.code != -32601) => {
-                    self.record_failure(server_id, &method, &format!("MCP {method} rejected; check authentication and permissions"));
-                }
+            Ok(response)
+                if matches!(
+                    method.as_str(),
+                    "initialize" | "tools/list" | "resources/list" | "prompts/list"
+                ) && response.error.as_ref().is_some_and(|e| e.code != -32601) =>
+            {
+                self.record_failure(
+                    server_id,
+                    &method,
+                    &format!("MCP {method} rejected; check authentication and permissions"),
+                );
+            }
             _ => {}
         }
         result
@@ -221,14 +298,60 @@ impl SessionTransportSet {
             .map(|e| e.value().clone())
             .ok_or_else(|| AppError::Mcp(format!("Server not running: {}", server_id)))?;
 
+        use futures_util::StreamExt;
         let request = self.prepare_request_for(server_id, request);
-        transport.stream_request(request).await
+        let method = request.method.clone();
+        let stream = match transport.stream_request(request).await {
+            Ok(stream) => stream,
+            Err(error) => {
+                let current = self.transports.get(server_id);
+                if current
+                    .as_ref()
+                    .is_some_and(|current| Arc::ptr_eq(current.value(), &transport))
+                {
+                    self.reconnect_required.insert(server_id.to_string());
+                    self.record_failure(server_id, &method, "MCP streaming request failed; check authentication and server availability");
+                }
+                return Err(error);
+            }
+        };
+        let current_transports = self.transports.clone();
+        let reconnect = self.reconnect_required.clone();
+        let failures = self.failures.clone();
+        let callback = self.failure_callback.read().clone();
+        let id = server_id.to_string();
+        Ok(Box::pin(stream.inspect(move |chunk| {
+            let current = current_transports.get(&id);
+            if chunk.is_err()
+                && current
+                    .as_ref()
+                    .is_some_and(|current| Arc::ptr_eq(current.value(), &transport))
+            {
+                let error = "MCP response stream interrupted; the operation outcome is unknown";
+                reconnect.insert(id.clone());
+                failures
+                    .write()
+                    .entry(id.clone())
+                    .or_default()
+                    .insert(method.clone(), error.into());
+                if let Some(callback) = &callback {
+                    callback(&id, Some(error));
+                }
+            }
+        })))
     }
 
     /// Close and remove a single server's transport.
     pub async fn close_server(&self, server_id: &str) {
+        let transport = self
+            .transports
+            .remove(server_id)
+            .map(|(_, transport)| transport);
         self.failures.write().remove(server_id);
-        if let Some((_, transport)) = self.transports.remove(server_id) {
+        self.reconnect_required.remove(server_id);
+        self.revisions.remove(server_id);
+        self.configurations.remove(server_id);
+        if let Some(transport) = transport {
             if let Err(e) = transport.close().await {
                 tracing::warn!("Error closing transport for server {}: {}", server_id, e);
             }

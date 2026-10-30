@@ -181,6 +181,10 @@ impl McpOAuthBrowserManager {
 
         // Start flow via unified manager
         let start_result = self.flow_manager.start_flow(config).await?;
+        // Explicit reauthentication invalidates the previous grant before the
+        // new browser flow can commit. An old in-flight refresh cannot replace
+        // the new login or restore revoked credentials afterwards.
+        self.oauth_manager.clear_token(server_id);
 
         // Track flow_id for this server
         self.server_flows

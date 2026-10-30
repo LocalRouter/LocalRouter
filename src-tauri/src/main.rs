@@ -281,16 +281,22 @@ async fn run_gui_mode() -> anyhow::Result<()> {
         api_keys::keychain_trait::CachedKeychain::system()
     });
 
+    // Share credentials and refresh locks across login, health and transports.
+    let mcp_oauth_manager = Arc::new(mcp::oauth::McpOAuthManager::new_with_keychain(
+        keychain.clone(),
+    ));
+
     // Initialize MCP server manager
     let mcp_server_manager = {
         let config = config_manager.get();
-        let manager = Arc::new(mcp::McpServerManager::new());
+        let manager = Arc::new(mcp::McpServerManager::new_with_oauth_manager(
+            mcp_oauth_manager.clone(),
+        ));
         manager.load_configs(config.mcp_servers.clone());
         manager
     };
 
     // Initialize MCP OAuth managers
-    let mcp_oauth_manager = Arc::new(mcp::oauth::McpOAuthManager::new());
     let mcp_oauth_browser_manager = Arc::new(mcp::oauth_browser::McpOAuthBrowserManager::new(
         keychain.clone(),
         mcp_oauth_manager.clone(),

@@ -213,6 +213,7 @@ pub struct GatewaySession {
     /// Remote warm-up may outlive the foreground initialize response.
     pub initialization_pending: bool,
     pub initialization_deferred: bool,
+    /// Cancels initial warm-up or a later discovery-triggered backend recovery.
     pub initialization_abort: Option<tokio::task::AbortHandle>,
 
     /// Protocol revision the downstream client speaks.
@@ -228,6 +229,9 @@ pub struct GatewaySession {
     /// concurrent first requests can't double-create transports (which
     /// would leak the first set's stdio processes).
     pub lazy_init_lock: Arc<tokio::sync::Mutex<()>>,
+
+    /// Bound retries of unavailable backends on this client's next relevant request.
+    pub backend_retry_after: HashMap<String, Instant>,
 }
 
 impl GatewaySession {
@@ -320,6 +324,7 @@ impl GatewaySession {
             protocol_revision: crate::protocol::ProtocolRevision::default(),
             log_level: None,
             lazy_init_lock: Arc::new(tokio::sync::Mutex::new(())),
+            backend_retry_after: HashMap::new(),
         }
     }
 

@@ -57,7 +57,24 @@ impl McpGateway {
         const MAX_INPUT_ROUNDS: usize = 3;
 
         for _round in 0..=MAX_INPUT_ROUNDS {
-            let response = transports.send_request(server_id, request.clone()).await?;
+            let response = match transports.send_request(server_id, request.clone()).await {
+                Err(AppError::McpSessionExpired) => {
+                    // A 404 with a negotiated session ID means the server did
+                    // not execute this call. Repair and retry just this explicit
+                    // rejection; never replay a timeout or broken response stream.
+                    let session = self.sessions.get(session_key).map(|s| s.value().clone());
+                    let Some(session) = session else {
+                        return Err(AppError::McpSessionExpired);
+                    };
+                    self.recover_session_servers(&session, vec![server_id.to_string()])
+                        .await;
+                    if transports.needs_reconnect(server_id).await {
+                        return Err(AppError::McpSessionExpired);
+                    }
+                    transports.send_request(server_id, request.clone()).await?
+                }
+                other => other?,
+            };
 
             let Some(result) = response.result.as_ref() else {
                 return Ok(response);
@@ -606,8 +623,17 @@ impl McpGateway {
                     .as_ref()
                     .map(|r| serde_json::to_string_pretty(r).unwrap_or_default())
                     .unwrap_or_default();
-                let error_msg = response.error.as_ref().map(|e| e.message.clone());
-                let success = response.error.is_none();
+                let error_msg = response
+                    .error
+                    .as_ref()
+                    .map(|e| e.message.clone())
+                    .or_else(|| {
+                        response.is_tool_error().then(|| {
+                            "Upstream MCP tool returned an error; inspect the tool result"
+                                .to_string()
+                        })
+                    });
+                let success = response.error.is_none() && !response.is_tool_error();
                 let status = if success {
                     lr_monitor::EventStatus::Complete
                 } else {

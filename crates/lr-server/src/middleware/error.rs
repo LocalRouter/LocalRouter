@@ -130,6 +130,9 @@ impl From<lr_mcp_via_llm::McpViaLlmError> for ApiErrorResponse {
 impl From<AppError> for ApiErrorResponse {
     fn from(err: AppError) -> Self {
         match err {
+            AppError::McpSessionExpired => {
+                ApiErrorResponse::bad_gateway("Upstream MCP session expired; reconnect and retry")
+            }
             AppError::Config(msg) => {
                 ApiErrorResponse::bad_request(format!("Configuration error: {}", msg))
             }
@@ -276,6 +279,17 @@ mod tests {
                 "error"
             );
         }
+    }
+
+    #[test]
+    fn upstream_mcp_session_expiry_does_not_expire_the_downstream_session() {
+        let response: ApiErrorResponse = AppError::McpSessionExpired.into();
+        assert_eq!(response.status, StatusCode::BAD_GATEWAY);
+        assert!(response
+            .error
+            .error
+            .message
+            .contains("Upstream MCP session expired"));
     }
 
     #[test]

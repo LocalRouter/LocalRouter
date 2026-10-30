@@ -28,6 +28,24 @@ use super::virtual_server::VirtualMcpServer;
 /// notifications; this only bounds client-side polling.
 const LIST_RESULT_TTL_MS: u64 = 60_000;
 
+fn session_initialization_results(
+    state: &GatewaySession,
+) -> (Vec<(String, InitializeResult)>, Vec<ServerFailure>) {
+    let mut successes = Vec::new();
+    let mut failures = Vec::new();
+    for (id, status) in &state.server_init_status {
+        match status {
+            InitStatus::Completed(result) => successes.push((id.clone(), result.clone())),
+            InitStatus::Failed { error, .. } => failures.push(ServerFailure {
+                server_id: id.clone(),
+                error: error.clone(),
+            }),
+            _ => {}
+        }
+    }
+    (successes, failures)
+}
+
 /// MCP Gateway - Unified endpoint for multiple MCP servers
 #[allow(clippy::type_complexity)]
 #[derive(Clone)]
@@ -809,6 +827,8 @@ impl McpGateway {
             }
         }
 
+        self.recover_backends_for_request(&session, &request).await;
+
         // Keep pending discovery on the normal response path so stateless
         // clients receive result and private-cache metadata as usual.
         let mut result = if let Some(response) = self
@@ -1493,102 +1513,321 @@ impl McpGateway {
         }
     }
 
-    /// Start and handshake transports for servers granted to a live session
-    /// (e.g. a marketplace install), then route to them — without rebuilding
-    /// the session and losing its state. Servers that fail to start are
-    /// skipped; a later session rebuild retries them.
+    /// Retry only relevant unavailable backends, under the existing initialization
+    /// lock. Healthy tools and local virtual calls never wait for unrelated servers.
+    async fn recover_backends_for_request(
+        &self,
+        session: &Arc<RwLock<GatewaySession>>,
+        request: &JsonRpcRequest,
+    ) {
+        let (transports, requested, prefix, retry_after) = {
+            let state = session.read().await;
+            if state.initialization_pending {
+                return;
+            }
+            let Some(transports) = state.transports.clone() else {
+                return;
+            };
+            let prefix = match request.method.as_str() {
+                "tools/list" | "resources/list" | "prompts/list" => None,
+                "tools/call" | "prompts/get" => {
+                    let Some(name) = request
+                        .params
+                        .as_ref()
+                        .and_then(|p| p.get("name"))
+                        .and_then(Value::as_str)
+                    else {
+                        return;
+                    };
+                    let mapped = if request.method == "tools/call" {
+                        state.tool_mapping.get(name)
+                    } else {
+                        state.prompt_mapping.get(name)
+                    };
+                    if let Some((id, _)) = mapped {
+                        self.server_manager.get_config(id).map(|c| slugify(&c.name))
+                    } else {
+                        let Some((prefix, _)) = parse_namespace(name) else {
+                            return;
+                        };
+                        Some(prefix)
+                    }
+                }
+                "resources/read" => {
+                    let Some(params) = request.params.as_ref() else {
+                        return;
+                    };
+                    let mapped = params
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .and_then(|name| state.resource_mapping.get(name))
+                        .or_else(|| {
+                            params
+                                .get("uri")
+                                .and_then(Value::as_str)
+                                .and_then(|uri| state.resource_uri_mapping.get(uri))
+                        });
+                    let Some((id, _)) = mapped else {
+                        return;
+                    };
+                    self.server_manager.get_config(id).map(|c| slugify(&c.name))
+                }
+                _ => return,
+            };
+            (
+                transports,
+                state.requested_servers.clone(),
+                prefix,
+                state.backend_retry_after.clone(),
+            )
+        };
+        let mut candidates = Vec::new();
+        for id in requested {
+            let Some(config) = self.server_manager.get_config(&id).filter(|c| c.enabled) else {
+                continue;
+            };
+            if prefix.as_ref().is_some_and(|p| *p != slugify(&config.name)) {
+                continue;
+            }
+            if retry_after
+                .get(&id)
+                .is_some_and(|at| *at > std::time::Instant::now())
+            {
+                continue;
+            }
+            let failed = !matches!(
+                session.read().await.server_init_status.get(&id),
+                Some(InitStatus::Completed(_))
+            );
+            if failed
+                || !transports.configuration_matches(&id, &config)
+                || transports.needs_reconnect(&id).await
+            {
+                candidates.push(id);
+            }
+        }
+        if candidates.is_empty() {
+            return;
+        }
+        if request.method.ends_with("/list") {
+            // Discovery and local tools stay responsive while an unavailable
+            // remote reconnects. Reuse the session's existing abort handle so
+            // teardown cancels recovery exactly like initial warm-up.
+            let mut state = session.write().await;
+            if state
+                .initialization_abort
+                .as_ref()
+                .is_some_and(|task| !task.is_finished())
+            {
+                return;
+            }
+            let gateway = self.clone();
+            let background_session = session.clone();
+            let task = tokio::spawn(async move {
+                gateway
+                    .recover_session_servers(&background_session, candidates)
+                    .await;
+                background_session.write().await.initialization_abort = None;
+            });
+            state.initialization_abort = Some(task.abort_handle());
+        } else {
+            self.recover_session_servers(session, candidates).await;
+        }
+    }
+
+    pub(super) async fn recover_session_servers(
+        &self,
+        session: &Arc<RwLock<GatewaySession>>,
+        candidates: Vec<String>,
+    ) {
+        let (transports, lock) = {
+            let state = session.read().await;
+            let Some(transports) = state.transports.clone() else {
+                return;
+            };
+            (transports, state.lazy_init_lock.clone())
+        };
+        let _guard = lock.lock().await;
+        let mut retry = Vec::new();
+        for id in candidates {
+            let failed = !matches!(
+                session.read().await.server_init_status.get(&id),
+                Some(InitStatus::Completed(_))
+            );
+            let config_changed = self
+                .server_manager
+                .get_config(&id)
+                .is_some_and(|config| !transports.configuration_matches(&id, &config));
+            if failed || config_changed || transports.needs_reconnect(&id).await {
+                let mut state = session.write().await;
+                if !state.requested_servers.contains(&id) || state.initialization_pending {
+                    continue;
+                }
+                if state
+                    .backend_retry_after
+                    .get(&id)
+                    .is_some_and(|at| *at > std::time::Instant::now())
+                {
+                    continue;
+                }
+                state.backend_retry_after.insert(
+                    id.clone(),
+                    std::time::Instant::now() + Duration::from_secs(30),
+                );
+                retry.push(id);
+            }
+        }
+        if !retry.is_empty() {
+            self.attach_servers_to_session(session, retry).await;
+        }
+    }
+
+    /// Use the same handshake for newly granted and recovering servers. Rebuild
+    /// just their transports; never replay the operation whose outcome was lost.
     pub(crate) async fn attach_servers_to_session(
         &self,
         session: &Arc<RwLock<GatewaySession>>,
         server_ids: Vec<String>,
     ) {
         let (transports, client_id, session_key, client_mode, capabilities) = {
-            let s = session.read().await;
+            let state = session.read().await;
             (
-                s.transports.clone(),
-                s.client_id.clone(),
-                s.session_key.clone(),
-                s.client_mode,
-                s.client_capabilities
+                state.transports.clone(),
+                state.client_id.clone(),
+                state.session_key.clone(),
+                state.client_mode,
+                state
+                    .client_capabilities
                     .as_ref()
                     .and_then(|c| serde_json::to_value(c).ok())
                     .unwrap_or_else(|| json!({})),
             )
         };
-        // Not initialized yet: the initialize flow will start them
         let Some(transports) = transports else {
             return;
         };
         let timeout = Duration::from_secs(self.config.server_timeout_seconds.max(15));
-
-        for server_id in server_ids {
-            if !transports.is_running(&server_id) {
-                let transport = match tokio::time::timeout(
-                    timeout,
-                    self.server_manager.create_transport(&server_id),
-                )
-                .await
-                {
-                    Ok(Ok(t)) => t,
-                    Ok(Err(e)) => {
-                        tracing::warn!("Could not start newly granted server {}: {}", server_id, e);
-                        continue;
+        {
+            let mut state = session.write().await;
+            for id in &server_ids {
+                state
+                    .server_init_status
+                    .insert(id.clone(), InitStatus::NotStarted);
+            }
+        }
+        let results = futures::future::join_all(server_ids.iter().map(|server_id| {
+            let transports = transports.clone();
+            let capabilities = capabilities.clone();
+            let client_id = client_id.clone();
+            let session_key = session_key.clone();
+            async move {
+                // An enabled check here also protects attachment after a settings
+                // change while a failed connection was waiting for its retry.
+                let result = async {
+                    if !self.server_manager.get_config(server_id).is_some_and(|c| c.enabled) {
+                        return Err(AppError::Mcp("MCP server is disabled or removed".into()));
                     }
-                    Err(_) => {
-                        tracing::warn!("Starting newly granted server {} timed out", server_id);
-                        continue;
+                    if !self.sessions.get(&session_key).is_some_and(|entry| Arc::ptr_eq(entry.value(), session)) {
+                        return Err(AppError::Mcp("MCP client session ended during reconnection".into()));
                     }
-                };
-                transports.insert(server_id.clone(), transport);
-                let ids = vec![server_id.clone()];
-                self.register_request_handlers_on_transports(
-                    &ids,
-                    &client_id,
-                    &session_key,
-                    client_mode,
-                    &transports,
-                );
-                self.register_notification_handlers_on_transports(&ids, session, &transports);
-
-                let init = JsonRpcRequest::new(
-                    Some(json!("_attach_init")),
-                    "initialize".to_string(),
-                    Some(json!({
+                    transports.close_server(server_id).await;
+                    let (transport, config) = self.server_manager.create_transport_snapshot(server_id).await?;
+                    transports.insert_configured(server_id.clone(), transport, config);
+                    transports.mark_connecting(server_id);
+                    let ids = vec![server_id.clone()];
+                    self.register_request_handlers_on_transports(&ids, &client_id, &session_key, client_mode, &transports);
+                    self.register_notification_handlers_on_transports(&ids, session, &transports);
+                    // Re-probe during recovery: the endpoint or protocol may
+                    // have changed since the cached legacy classification.
+                    if let Some(result) = self.probe_server_discover(&transports, server_id, Duration::from_secs(2)).await {
+                        transports.set_revision(server_id, crate::protocol::ProtocolRevision::V2026_07_28);
+                        self.backend_revision_cache.insert(server_id.clone(), crate::protocol::ProtocolRevision::V2026_07_28);
+                        return Ok(result);
+                    }
+                    let init = JsonRpcRequest::new(Some(json!("_attach_init")), "initialize".into(), Some(json!({
                         "protocolVersion": crate::protocol::MCP_PROTOCOL_VERSION,
                         "capabilities": capabilities,
-                        "clientInfo": {
-                            "name": "LocalRouter MCP Gateway",
-                            "version": env!("CARGO_PKG_VERSION"),
-                        },
-                    })),
-                );
-                let initialized = matches!(
-                    tokio::time::timeout(timeout, transports.send_request(&server_id, init)).await,
-                    Ok(Ok(ref response)) if response.error.is_none()
-                );
-                if !initialized {
-                    tracing::warn!("Newly granted server {} failed to initialize", server_id);
-                    transports.close_server(&server_id).await;
-                    continue;
+                        "clientInfo": {"name":"LocalRouter MCP Gateway", "version":env!("CARGO_PKG_VERSION")}
+                    })));
+                    let response = transports.send_request(server_id, init).await?;
+                    if response.error.is_some() { return Err(AppError::Mcp("MCP initialize rejected".into())); }
+                    let result: InitializeResult = serde_json::from_value(response.result.unwrap_or(Value::Null))
+                        .map_err(|_| AppError::Mcp("Invalid MCP initialize response".into()))?;
+                    transports.send_request(server_id, JsonRpcRequest::new(None, "notifications/initialized".into(), Some(json!({})))).await?;
+                    self.backend_revision_cache.insert(server_id.clone(), crate::protocol::ProtocolRevision::V2025_11_25);
+                    Ok(result)
+                };
+                let result = match tokio::time::timeout(timeout, result).await {
+                    Ok(result) => result,
+                    Err(_) => Err(AppError::Mcp("MCP backend reconnection timed out".into())),
+                };
+                let result = if !self.sessions.get(&session_key).is_some_and(|entry| Arc::ptr_eq(entry.value(), session)) {
+                    Err(AppError::Mcp("MCP client session ended during reconnection".into()))
+                } else { result };
+                if result.is_err() { transports.close_server(server_id).await; }
+                (server_id.clone(), result)
+            }
+        })).await;
+        let mut changed = false;
+        {
+            let mut state = session.write().await;
+            for (id, result) in results {
+                match result {
+                    Ok(result) => {
+                        state
+                            .server_init_status
+                            .insert(id.clone(), InitStatus::Completed(result));
+                        if !state.allowed_servers.contains(&id) {
+                            state.allowed_servers.push(id.clone());
+                        }
+                        state.backend_retry_after.remove(&id);
+                        state.last_broadcast_failures.retain(|f| f.server_id != id);
+                        changed = true;
+                    }
+                    Err(error) => {
+                        tracing::warn!(server_id = %id, "MCP reconnection failed: {error}");
+                        let error = "MCP upstream connection failed; check authentication and server availability".to_string();
+                        transports.record_failure(&id, "_connect", &error);
+                        state.allowed_servers.retain(|server| server != &id);
+                        state.server_init_status.insert(
+                            id,
+                            InitStatus::Failed {
+                                error,
+                                retry_count: 0,
+                            },
+                        );
+                    }
                 }
-                let _ = transports
-                    .send_request(
-                        &server_id,
-                        JsonRpcRequest::new(
-                            None,
-                            "notifications/initialized".to_string(),
-                            Some(json!({})),
-                        ),
-                    )
-                    .await;
             }
-
-            let mut sw = session.write().await;
-            if !sw.allowed_servers.contains(&server_id) {
-                sw.allowed_servers.push(server_id.clone());
+            let (successes, failures) = session_initialization_results(&state);
+            state.merged_capabilities = Some(merge_initialize_results(successes, failures));
+            if !changed {
+                state.invalidate_all_caches();
             }
-            sw.invalidate_all_caches();
-            tracing::info!("Attached server {} to session {}", server_id, session_key);
+        }
+        if !self
+            .sessions
+            .get(&session_key)
+            .is_some_and(|entry| Arc::ptr_eq(entry.value(), session))
+        {
+            transports.close_all().await;
+            return;
+        }
+        if changed {
+            let (successes, failures) = {
+                let state = session.read().await;
+                session_initialization_results(&state)
+            };
+            self.refresh_session_catalogs(session, successes, failures)
+                .await;
+            self.send_list_changed(
+                &session_notification_key(&session_key),
+                super::session::ListChanges {
+                    tools: true,
+                    resources: true,
+                    prompts: true,
+                },
+            );
         }
     }
 
@@ -2350,6 +2589,7 @@ impl McpGateway {
         let session_read = session.read().await;
         let allowed_servers = session_read.allowed_servers.clone();
         drop(session_read);
+        session.write().await.client_capabilities = client_capabilities.clone();
 
         // Create per-session transports for all allowed servers
         let start_timeout = tokio::time::Duration::from_secs(15);
@@ -2782,10 +3022,43 @@ impl McpGateway {
             session_write.client_capabilities = client_capabilities.clone();
         }
 
+        let instructions = self
+            .refresh_session_catalogs(
+                &session,
+                init_results_for_instructions,
+                merged.failures.clone(),
+            )
+            .await;
+
+        // Build response
+        let mut result = json!({
+            "protocolVersion": merged.protocol_version,
+            "capabilities": merged.capabilities,
+            "serverInfo": merged.server_info,
+        });
+        if let Some(inst) = &instructions {
+            result["instructions"] = json!(inst);
+        }
+
+        Ok(JsonRpcResponse::success(
+            request.id.unwrap_or(Value::Null),
+            result,
+        ))
+    }
+
+    /// Rebuild discovery and indexing after initial startup or a repaired
+    /// backend, retaining the client's activations, approvals and response index.
+    async fn refresh_session_catalogs(
+        &self,
+        session: &Arc<RwLock<GatewaySession>>,
+        init_results_for_instructions: Vec<(String, InitializeResult)>,
+        failures: Vec<ServerFailure>,
+    ) -> Option<String> {
+        let transport_set = session.read().await.transports.clone()?;
         // Build gateway instructions based on the full context
         let client_id_for_log = session.read().await.client_id.clone();
 
-        let virtual_instructions = self.collect_virtual_instructions(&session).await;
+        let virtual_instructions = self.collect_virtual_instructions(session).await;
 
         // Catalog indexing and deferral run only when MCP Catalog Indexing
         // (catalog compression) is on; Tool Responses Indexing alone leaves
@@ -2849,9 +3122,61 @@ impl McpGateway {
             self.fetch_and_merge_resources(&resource_servers, resources_request, &transport_set),
             self.fetch_and_merge_prompts(&prompt_servers, prompts_request, &transport_set),
         );
-        let tools_catalog = tools_result.map(|(items, _)| items).unwrap_or_default();
-        let resources_catalog = resources_result.map(|(items, _)| items).unwrap_or_default();
-        let prompts_catalog = prompts_result.map(|(items, _)| items).unwrap_or_default();
+        let (mut tools_catalog, tool_failures) = tools_result.unwrap_or_default();
+        let (mut resources_catalog, resource_failures) = resources_result.unwrap_or_default();
+        let (mut prompts_catalog, prompt_failures) = prompts_result.unwrap_or_default();
+        {
+            let mut state = session.write().await;
+            // Preserve known catalogs for unrelated backends that fail a fresh
+            // probe during recovery, just as their routing mappings are kept.
+            if let Some(cache) = &state.cached_tools {
+                tools_catalog.extend(
+                    cache
+                        .data
+                        .iter()
+                        .filter(|t| tool_failures.iter().any(|f| f.server_id == t.server_id))
+                        .cloned(),
+                );
+            }
+            if let Some(cache) = &state.cached_resources {
+                resources_catalog.extend(
+                    cache
+                        .data
+                        .iter()
+                        .filter(|r| resource_failures.iter().any(|f| f.server_id == r.server_id))
+                        .cloned(),
+                );
+            }
+            if let Some(cache) = &state.cached_prompts {
+                prompts_catalog.extend(
+                    cache
+                        .data
+                        .iter()
+                        .filter(|p| prompt_failures.iter().any(|f| f.server_id == p.server_id))
+                        .cloned(),
+                );
+            }
+            // Initial startup leaves catalog fetch/caching to the normal list
+            // handlers. Recovery must replace existing mappings and caches now.
+            if !state.initialization_pending {
+                state.update_tool_mappings(&tools_catalog, &tool_failures);
+                state.update_resource_mappings(&resources_catalog, &resource_failures);
+                state.update_prompt_mappings(&prompts_catalog, &prompt_failures);
+                let ttl = state.cache_ttl_manager.get_ttl();
+                state.cached_tools = Some(
+                    CachedList::new(tools_catalog.clone(), ttl)
+                        .with_failures(tool_failures.clone()),
+                );
+                state.cached_resources = Some(
+                    CachedList::new(resources_catalog.clone(), ttl)
+                        .with_failures(resource_failures),
+                );
+                state.cached_prompts = Some(
+                    CachedList::new(prompts_catalog.clone(), ttl).with_failures(prompt_failures),
+                );
+                state.last_broadcast_failures = tool_failures;
+            }
+        }
 
         let server_infos = self.build_server_instruction_infos(
             &init_results_for_instructions,
@@ -2859,7 +3184,7 @@ impl McpGateway {
             &resources_catalog,
             &prompts_catalog,
         );
-        let unavailable = self.build_unavailable_server_infos(&merged.failures);
+        let unavailable = self.build_unavailable_server_infos(&failures);
 
         // Context management: index catalog into native FTS5 store synchronously
         // (before computing compression plan, which needs index results).
@@ -2919,10 +3244,31 @@ impl McpGateway {
                 let store_idx = store.clone();
                 let client_id_idx = client_id_bg.clone();
                 let gateway_perms = gateway_indexing.clone();
+                let stale_catalog_sources: Vec<String> = {
+                    let state = session.read().await;
+                    state
+                        .virtual_server_state
+                        .get("_context_mode")
+                        .and_then(|s| {
+                            s.as_any()
+                                .downcast_ref::<super::context_mode::ContextModeSessionState>()
+                        })
+                        .map(|cm| {
+                            cm.catalog_sources
+                                .keys()
+                                .filter(|label| label.starts_with("mcp/"))
+                                .cloned()
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                };
 
                 let indexing_result = tokio::task::spawn_blocking(move || {
                     let mut indexed_count = 0u32;
                     let mut skipped_count = 0u32;
+                    for source in stale_catalog_sources {
+                        let _ = store_idx.delete(&source);
+                    }
 
                     for info in &server_infos_idx {
                         let slug = super::types::slugify(&info.name);
@@ -3023,6 +3369,18 @@ impl McpGateway {
                             .as_any_mut()
                             .downcast_mut::<super::context_mode::ContextModeSessionState>(
                         ) {
+                            cm_state
+                                .catalog_sources
+                                .retain(|label, _| !label.starts_with("mcp/"));
+                            cm_state
+                                .activated_tools
+                                .retain(|name| tools_catalog_bg.iter().any(|t| &t.name == name));
+                            cm_state.activated_resources.retain(|name| {
+                                resources_catalog_bg.iter().any(|r| &r.name == name)
+                            });
+                            cm_state
+                                .activated_prompts
+                                .retain(|name| prompts_catalog_bg.iter().any(|p| &p.name == name));
                             for info in &server_infos_bg {
                                 let slug = super::types::slugify(&info.name);
                                 cm_state.catalog_sources.insert(
@@ -3116,20 +3474,7 @@ impl McpGateway {
             session_write.instructions_context = Some(ctx_snapshot);
         }
 
-        // Build response
-        let mut result = json!({
-            "protocolVersion": merged.protocol_version,
-            "capabilities": merged.capabilities,
-            "serverInfo": merged.server_info,
-        });
-        if let Some(inst) = &instructions {
-            result["instructions"] = json!(inst);
-        }
-
-        Ok(JsonRpcResponse::success(
-            request.id.unwrap_or(Value::Null),
-            result,
-        ))
+        instructions
     }
 
     /// Broadcast and return first successful response (for ping, logging/setLevel)

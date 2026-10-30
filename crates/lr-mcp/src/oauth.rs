@@ -950,14 +950,15 @@ impl McpOAuthManager {
         resource_url: &str,
         force_refresh: bool,
     ) -> AppResult<String> {
-        // Refresh slightly before expiry so a token is never sent just as it lapses
-        const EXPIRY_MARGIN_SECS: i64 = 60;
+        // TokenExchanger persists an expiry buffered by up to five minutes.
+        // Do not subtract another minute: short-lived tokens would immediately
+        // become unusable and trigger a refresh on every request.
         let refresh_lock = self
             .browser_refresh_locks
             .entry(server_id.to_string())
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
             .clone();
-        let _refresh_guard = refresh_lock.lock().await;
+        let refresh_guard = refresh_lock.lock_owned().await;
         let lr_config::McpAuthConfig::OAuthBrowser {
             client_id,
             client_secret_ref,
@@ -975,10 +976,7 @@ impl McpOAuthManager {
             .keychain
             .get(MCP_OAUTH_SERVICE, &format!("{server_id}_expires_at"))?
             .and_then(|value| value.parse::<i64>().ok());
-        if !force_refresh
-            && expiry
-                .is_none_or(|timestamp| timestamp > Utc::now().timestamp() + EXPIRY_MARGIN_SECS)
-        {
+        if !force_refresh && expiry.is_none_or(|timestamp| timestamp > Utc::now().timestamp()) {
             if let Some(token) = self
                 .keychain
                 .get(MCP_OAUTH_SERVICE, &format!("{server_id}_access_token"))?
@@ -1013,10 +1011,44 @@ impl McpOAuthManager {
             extra_token_params: HashMap::from([("resource".into(), resource.to_string())]),
             expected_issuer: issuer.clone(),
         };
-        let tokens = lr_oauth::browser::TokenExchanger::new()
-            .refresh_tokens(&flow, &refresh, &self.keychain)
-            .await?;
-        self.update_token_cache(server_id, &tokens.access_token, tokens.expires_at)?;
+        let keychain = self.keychain.clone();
+        let cache = self.token_cache.clone();
+        let server_id = server_id.to_string();
+        // Connection/health deadlines must not cancel a refresh after the issuer
+        // has rotated the grant. The bounded task owns the lock through commit.
+        let tokens = tokio::spawn(async move {
+            let _refresh_guard = refresh_guard;
+            let exchanger = lr_oauth::browser::TokenExchanger::new();
+            let tokens = exchanger
+                .refresh_tokens_unstored(&flow, &refresh, &keychain)
+                .await?;
+            let mut cache = cache.write();
+            // Revoke/re-authentication wins over an older in-flight refresh.
+            if keychain
+                .get(MCP_OAUTH_SERVICE, &format!("{server_id}_refresh_token"))?
+                .as_deref()
+                != Some(refresh.as_str())
+            {
+                return Err(AppError::OAuthBrowser(
+                    "OAuth credentials changed during refresh; retry with current authorization"
+                        .into(),
+                ));
+            }
+            exchanger.store_tokens(&tokens, &flow, &keychain)?;
+            cache.insert(
+                server_id,
+                CachedTokenInfo {
+                    access_token: tokens.access_token.clone(),
+                    expires_at: tokens
+                        .expires_at
+                        .unwrap_or_else(|| Utc::now() + Duration::hours(1)),
+                    refresh_token: tokens.refresh_token.clone(),
+                },
+            );
+            Ok(tokens)
+        })
+        .await
+        .map_err(|_| AppError::OAuthBrowser("OAuth refresh task stopped".into()))??;
         Ok(tokens.access_token)
     }
 
@@ -1314,7 +1346,10 @@ impl McpOAuthManager {
     /// # Arguments
     /// * `server_id` - MCP server ID
     pub fn clear_token(&self, server_id: &str) {
-        self.token_cache.write().remove(server_id);
+        // Serialize revocation with refresh commit, so a completed network
+        // request cannot restore credentials after they have been cleared.
+        let mut cache = self.token_cache.write();
+        cache.remove(server_id);
         self.keychain
             .delete(MCP_OAUTH_SERVICE, &format!("{}_access_token", server_id))
             .ok();
@@ -1830,6 +1865,147 @@ mod tests {
             Some("rotated")
         );
         task.abort();
+    }
+
+    #[tokio::test]
+    async fn browser_refresh_survives_caller_cancellation_without_undoing_revocation() {
+        use axum::{routing::post, Json};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let requests = Arc::new(AtomicUsize::new(0));
+        let arrived = Arc::new(tokio::sync::Notify::new());
+        let count = requests.clone();
+        let signal = arrived.clone();
+        let app = Router::new().route("/token", post(move || {
+            let count = count.clone(); let signal = signal.clone();
+            async move {
+                count.fetch_add(1, Ordering::SeqCst);
+                signal.notify_one();
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                Json(serde_json::json!({"access_token":"fresh", "refresh_token":"rotated", "expires_in":3600}))
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let keychain = CachedKeychain::new(Arc::new(lr_api_keys::MockKeychain::new()));
+        let manager = Arc::new(McpOAuthManager::new_with_keychain(keychain.clone()));
+        let mut auth = browser_config();
+        if let lr_config::McpAuthConfig::OAuthBrowser { token_url, .. } = &mut auth {
+            *token_url = format!("{origin}/token");
+        }
+        let resource = format!("{origin}/mcp");
+        for revoke in [false, true] {
+            keychain
+                .store(MCP_OAUTH_SERVICE, "srv_access_token", "expired")
+                .unwrap();
+            keychain
+                .store(MCP_OAUTH_SERVICE, "srv_refresh_token", "original")
+                .unwrap();
+            keychain
+                .store(MCP_OAUTH_SERVICE, "srv_expires_at", "1")
+                .unwrap();
+            let m = manager.clone();
+            let a = auth.clone();
+            let url = resource.clone();
+            let caller = tokio::spawn(async move { m.get_browser_token("srv", &a, &url).await });
+            tokio::time::timeout(std::time::Duration::from_secs(2), arrived.notified())
+                .await
+                .unwrap();
+            if revoke {
+                manager.clear_token("srv");
+            }
+            caller.abort();
+            assert!(caller.await.unwrap_err().is_cancelled());
+            if revoke {
+                // Wait for the owned refresh guard: the network response must
+                // finish without restoring the cleared access/refresh tokens.
+                let lock = manager.browser_refresh_locks.get("srv").unwrap().clone();
+                let _guard = lock.lock().await;
+                assert!(keychain
+                    .get(MCP_OAUTH_SERVICE, "srv_access_token")
+                    .unwrap()
+                    .is_none());
+                assert!(keychain
+                    .get(MCP_OAUTH_SERVICE, "srv_refresh_token")
+                    .unwrap()
+                    .is_none());
+            } else {
+                assert_eq!(
+                    manager
+                        .get_browser_token("srv", &auth, &resource)
+                        .await
+                        .unwrap(),
+                    "fresh"
+                );
+                assert_eq!(
+                    keychain
+                        .get(MCP_OAUTH_SERVICE, "srv_refresh_token")
+                        .unwrap()
+                        .as_deref(),
+                    Some("rotated")
+                );
+            }
+        }
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            2,
+            "cancelled callers must not repeat token exchanges"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn shared_browser_credentials_observe_new_login_and_short_lived_tokens() {
+        let keychain = CachedKeychain::new(Arc::new(lr_api_keys::MockKeychain::new()));
+        let manager = Arc::new(McpOAuthManager::new_with_keychain(keychain.clone()));
+        let connections = crate::manager::McpServerManager::new_with_oauth_manager(manager.clone());
+        assert!(Arc::ptr_eq(&manager, &connections.oauth_manager()));
+        keychain
+            .store(MCP_OAUTH_SERVICE, "srv_access_token", "old-login")
+            .unwrap();
+        keychain
+            .store(MCP_OAUTH_SERVICE, "srv_refresh_token", "old-refresh")
+            .unwrap();
+        keychain
+            .store(
+                MCP_OAUTH_SERVICE,
+                "srv_expires_at",
+                &(Utc::now().timestamp() + 30).to_string(),
+            )
+            .unwrap();
+        let auth = browser_config();
+        assert_eq!(
+            connections
+                .oauth_manager()
+                .get_browser_token("srv", &auth, "https://example.test/mcp")
+                .await
+                .unwrap(),
+            "old-login"
+        );
+        // Browser token exchange writes through this same shared keychain. A
+        // connection that cached the first login must observe its replacement.
+        keychain
+            .store(MCP_OAUTH_SERVICE, "srv_access_token", "new-login")
+            .unwrap();
+        keychain
+            .store(MCP_OAUTH_SERVICE, "srv_refresh_token", "new-refresh")
+            .unwrap();
+        assert_eq!(
+            connections
+                .oauth_manager()
+                .get_browser_token("srv", &auth, "https://example.test/mcp")
+                .await
+                .unwrap(),
+            "new-login"
+        );
+        manager.clear_token("srv");
+        assert!(connections
+            .oauth_manager()
+            .get_browser_token("srv", &auth, "https://example.test/mcp")
+            .await
+            .is_err());
     }
 
     #[tokio::test]

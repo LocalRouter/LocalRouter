@@ -193,7 +193,7 @@ fn allow_all() -> McpPermissions {
     }
 }
 
-async fn send(
+async fn send_result(
     gateway: &McpGateway,
     session: &str,
     allowed: &[&str],
@@ -201,7 +201,7 @@ async fn send(
     overrides: Option<ContextManagementOverrides>,
     method: &str,
     params: Option<Value>,
-) -> JsonRpcResponse {
+) -> lr_types::AppResult<JsonRpcResponse> {
     gateway
         .handle_request_with_skills(
             "client-1",
@@ -223,6 +223,19 @@ async fn send(
             JsonRpcRequest::new(Some(json!(1)), method.to_string(), params),
             None,
         )
+        .await
+}
+
+async fn send(
+    gateway: &McpGateway,
+    session: &str,
+    allowed: &[&str],
+    perms: &McpPermissions,
+    overrides: Option<ContextManagementOverrides>,
+    method: &str,
+    params: Option<Value>,
+) -> JsonRpcResponse {
+    send_result(gateway, session, allowed, perms, overrides, method, params)
         .await
         .unwrap_or_else(|e| panic!("{method} failed: {e}"))
 }
@@ -1646,4 +1659,582 @@ async fn compressed_skill_catalog_is_indexed_before_remote_warmup() {
         .is_ok());
     drop(state);
     gateway.terminate_session("indexed-warmup").await.unwrap();
+}
+
+// Failed transports must recover inside the same client session. Tool writes
+// with uncertain outcomes are never automatically replayed.
+async fn wait_for_recovery(gateway: &McpGateway, key: &str) {
+    tokio::time::timeout(std::time::Duration::from_secs(8), async {
+        loop {
+            let session = gateway.get_session(key).unwrap();
+            let state = session.read().await;
+            if !state.initialization_pending
+                && state
+                    .initialization_abort
+                    .as_ref()
+                    .is_none_or(|task| task.is_finished())
+            {
+                break;
+            }
+            drop(state);
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("background recovery must finish");
+}
+
+async fn recovery_backend(server: &MockServer) {
+    mock(
+        server,
+        "initialize",
+        Some(json!({
+            "protocolVersion":"2025-11-25", "capabilities":{"tools":{}},
+            "serverInfo":{"name":"recovering", "version":"1"}
+        })),
+    )
+    .await;
+    mock(
+        server,
+        "tools/list",
+        Some(json!({"tools":[{
+            "name":"write", "inputSchema":{"type":"object"}
+        }]})),
+    )
+    .await;
+    mock(
+        server,
+        "tools/call",
+        Some(json!({"content":[{"type":"text","text":"ok"}]})),
+    )
+    .await;
+}
+
+async fn method_count(server: &MockServer, method: &str) -> usize {
+    server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| {
+            serde_json::from_slice::<Value>(&r.body)
+                .ok()
+                .is_some_and(|v| v["method"] == method)
+        })
+        .count()
+}
+
+#[tokio::test]
+async fn recovery_reattaches_failed_startup_without_rebuilding_the_client() {
+    let recovering = MockServer::start().await;
+    mock(&recovering, "initialize", None).await;
+    let (gateway, _echo) = setup_full(
+        None,
+        vec![http_server(
+            "recovering",
+            "Recovering",
+            recovering.uri(),
+            true,
+        )],
+    )
+    .await;
+    initialize(
+        &gateway,
+        "recovery",
+        &[ECHO_ID, "recovering"],
+        &allow_all(),
+        None,
+    )
+    .await;
+    let before = gateway.get_session("recovery").unwrap();
+    let attempts = method_count(&recovering, "initialize").await;
+    assert!(attempts > 0);
+    // A healthy tool is independent of the failed backend.
+    send(
+        &gateway,
+        "recovery",
+        &[ECHO_ID, "recovering"],
+        &allow_all(),
+        None,
+        "tools/call",
+        Some(json!({"name":"echo-server__echo","arguments":{}})),
+    )
+    .await;
+    assert_eq!(method_count(&recovering, "initialize").await, attempts);
+    recovering.reset().await;
+    recovery_backend(&recovering).await;
+    let _ = send(
+        &gateway,
+        "recovery",
+        &[ECHO_ID, "recovering"],
+        &allow_all(),
+        None,
+        "tools/list",
+        None,
+    )
+    .await;
+    wait_for_recovery(&gateway, "recovery").await;
+    let response = send(
+        &gateway,
+        "recovery",
+        &[ECHO_ID, "recovering"],
+        &allow_all(),
+        None,
+        "tools/list",
+        None,
+    )
+    .await;
+    assert!(tool_names(&response).contains(&"recovering__write".to_string()));
+    assert!(tool_names(&response).contains(&"echo-server__echo".to_string()));
+    assert!(Arc::ptr_eq(
+        &before,
+        &gateway.get_session("recovery").unwrap()
+    ));
+    assert!(before.read().await.get_failed_servers().is_empty());
+    assert!(response.result.unwrap().get("_meta").is_none());
+    assert_eq!(method_count(&recovering, "initialize").await, 1);
+}
+
+#[tokio::test]
+async fn recovery_bounds_failed_retries_and_respects_revoked_server_access() {
+    let recovering = MockServer::start().await;
+    mock(&recovering, "initialize", None).await;
+    let (gateway, _echo) = setup_full(
+        None,
+        vec![http_server(
+            "recovering",
+            "Recovering",
+            recovering.uri(),
+            true,
+        )],
+    )
+    .await;
+    initialize(
+        &gateway,
+        "cooldown",
+        &[ECHO_ID, "recovering"],
+        &allow_all(),
+        None,
+    )
+    .await;
+    send(
+        &gateway,
+        "cooldown",
+        &[ECHO_ID, "recovering"],
+        &allow_all(),
+        None,
+        "tools/list",
+        None,
+    )
+    .await;
+    wait_for_recovery(&gateway, "cooldown").await;
+    let attempts = method_count(&recovering, "initialize").await;
+    send(
+        &gateway,
+        "cooldown",
+        &[ECHO_ID, "recovering"],
+        &allow_all(),
+        None,
+        "tools/list",
+        None,
+    )
+    .await;
+    assert_eq!(method_count(&recovering, "initialize").await, attempts);
+    recovering.reset().await;
+    recovery_backend(&recovering).await;
+    let list = send(
+        &gateway,
+        "cooldown",
+        &[ECHO_ID],
+        &allow_all(),
+        None,
+        "tools/list",
+        None,
+    )
+    .await;
+    assert!(!tool_names(&list).contains(&"recovering__write".to_string()));
+    assert_eq!(method_count(&recovering, "initialize").await, 0);
+}
+
+#[tokio::test]
+async fn recovery_updates_running_connections_after_endpoint_changes() {
+    let old = MockServer::start().await;
+    recovery_backend(&old).await;
+    let new = MockServer::start().await;
+    recovery_backend(&new).await;
+    let manager = Arc::new(McpServerManager::new_for_test());
+    manager.add_config(http_server("changing", "Changing", old.uri(), true));
+    let gateway = McpGateway::new(manager.clone(), GatewayConfig::default(), test_router());
+    initialize(
+        &gateway,
+        "endpoint-change",
+        &["changing"],
+        &allow_all(),
+        None,
+    )
+    .await;
+    let before = gateway.get_session("endpoint-change").unwrap();
+    manager.add_config(http_server("changing", "Changing", new.uri(), true));
+    send(
+        &gateway,
+        "endpoint-change",
+        &["changing"],
+        &allow_all(),
+        None,
+        "tools/call",
+        Some(json!({"name":"changing__write","arguments":{}})),
+    )
+    .await;
+    assert_eq!(method_count(&old, "tools/call").await, 0);
+    assert_eq!(method_count(&new, "initialize").await, 1);
+    assert_eq!(method_count(&new, "tools/call").await, 1);
+    assert!(Arc::ptr_eq(
+        &before,
+        &gateway.get_session("endpoint-change").unwrap()
+    ));
+}
+
+#[tokio::test]
+async fn recovery_retries_explicitly_expired_sessions_but_not_uncertain_writes() {
+    use axum::{
+        body::{Body, Bytes},
+        http::{HeaderMap, StatusCode},
+        response::IntoResponse,
+        routing::get,
+        Json, Router as HttpRouter,
+    };
+    use futures::StreamExt;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let initialized = Arc::new(AtomicUsize::new(0));
+    let writes = Arc::new(AtomicUsize::new(0));
+    let mode = Arc::new(AtomicUsize::new(0));
+    let init = initialized.clone();
+    let written = writes.clone();
+    let failure = mode.clone();
+    let app=HttpRouter::new().route("/mcp",get(|| async {StatusCode::METHOD_NOT_ALLOWED}).post(move |headers:HeaderMap,Json(request):Json<Value>| {
+        let init=init.clone();let written=written.clone();let failure=failure.clone();
+        async move {
+            let result=match request["method"].as_str().unwrap_or_default() {
+                "initialize"=>{
+                    let generation=init.fetch_add(1,Ordering::SeqCst)+1;
+                    return ([("Mcp-Session-Id",format!("upstream-{generation}"))],Json(json!({"jsonrpc":"2.0","id":request["id"],"result":{
+                        "protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"recovery","version":"1"}
+                    }}))).into_response();
+                }
+                "tools/list"=>json!({"tools":[{"name":"write","inputSchema":{"type":"object"}}]}),
+                "tools/call"=>{
+                    if failure.load(Ordering::SeqCst)==1 && headers.get("Mcp-Session-Id").is_some_and(|h| h=="upstream-1") {
+                        return StatusCode::NOT_FOUND.into_response();
+                    }
+                    written.fetch_add(1,Ordering::SeqCst);
+                    if failure.load(Ordering::SeqCst)==2 {
+                        // Headers and a partial SSE event arrive, then the body
+                        // fails. The write happened; replay would duplicate it.
+                        let body=futures::stream::once(async {
+                            Ok::<Bytes,std::io::Error>(Bytes::from_static(b"data: {\"jsonrpc\":"))
+                        }).chain(futures::stream::once(async {
+                            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                            Err(std::io::Error::other("fixture stream reset"))
+                        }));
+                        return ([("content-type","text/event-stream")],Body::from_stream(body)).into_response();
+                    }
+                    json!({"content":[{"type":"text","text":"written"}]})
+                }
+                "notifications/initialized"=>return StatusCode::ACCEPTED.into_response(),
+                _=>return Json(json!({"jsonrpc":"2.0","id":request["id"],"error":{"code":-32601,"message":"unsupported"}})).into_response(),
+            };
+            Json(json!({"jsonrpc":"2.0","id":request["id"],"result":result})).into_response()
+        }
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+    let task = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let manager = Arc::new(McpServerManager::new_for_test());
+    manager.add_config(http_server("reset", "Reset", url, true));
+    let gateway = McpGateway::new(manager, GatewayConfig::default(), test_router());
+    initialize(&gateway, "reset-session", &["reset"], &allow_all(), None).await;
+    let before = gateway.get_session("reset-session").unwrap();
+    mode.store(1, Ordering::SeqCst);
+    let responses = futures::future::join_all((0..8).map(|_| async {
+        send(
+            &gateway,
+            "reset-session",
+            &["reset"],
+            &allow_all(),
+            None,
+            "tools/call",
+            Some(json!({"name":"reset__write","arguments":{}})),
+        )
+        .await
+    }))
+    .await;
+    assert!(responses.iter().all(|r| r.error.is_none()));
+    assert_eq!(
+        initialized.load(Ordering::SeqCst),
+        2,
+        "concurrent expired-session responses must share one repair"
+    );
+    assert_eq!(
+        writes.load(Ordering::SeqCst),
+        8,
+        "404 rejections never executed a write"
+    );
+    mode.store(2, Ordering::SeqCst);
+    let error = send_result(
+        &gateway,
+        "reset-session",
+        &["reset"],
+        &allow_all(),
+        None,
+        "tools/call",
+        Some(json!({"name":"reset__write","arguments":{}})),
+    )
+    .await;
+    assert!(error
+        .unwrap_err()
+        .to_string()
+        .contains("MCP response stream failed"));
+    assert_eq!(
+        writes.load(Ordering::SeqCst),
+        9,
+        "broken response must not replay a write"
+    );
+    mode.store(0, Ordering::SeqCst);
+    send(
+        &gateway,
+        "reset-session",
+        &["reset"],
+        &allow_all(),
+        None,
+        "tools/call",
+        Some(json!({"name":"reset__write","arguments":{}})),
+    )
+    .await;
+    assert_eq!(initialized.load(Ordering::SeqCst), 3);
+    assert_eq!(writes.load(Ordering::SeqCst), 10);
+    assert!(Arc::ptr_eq(
+        &before,
+        &gateway.get_session("reset-session").unwrap()
+    ));
+    gateway.terminate_session("reset-session").await.unwrap();
+    task.abort();
+}
+
+#[tokio::test]
+async fn recovery_monitor_marks_tool_errors_inside_successful_http_responses() {
+    let (gateway, server) = setup().await;
+    let events = Arc::new(parking_lot::Mutex::new(std::collections::HashMap::<
+        String,
+        lr_monitor::MonitorEvent,
+    >::new()));
+    let emitted = events.clone();
+    gateway.set_on_monitor_event(
+        move |event_type, client_id, client_name, session_id, data, status, duration_ms| {
+            let id = uuid::Uuid::new_v4().to_string();
+            emitted.lock().insert(
+                id.clone(),
+                lr_monitor::MonitorEvent {
+                    payload_redacted: false,
+                    id: id.clone(),
+                    sequence: 0,
+                    timestamp: Utc::now(),
+                    event_type,
+                    client_id,
+                    client_name,
+                    session_id,
+                    conversation: None,
+                    data,
+                    status,
+                    duration_ms,
+                },
+            );
+            id
+        },
+    );
+    let updated = events.clone();
+    gateway.set_on_monitor_update(Arc::new(move |id, update| {
+        if let Some(event) = updated.lock().get_mut(id) {
+            update(event);
+        }
+    }));
+    initialize(&gateway, "tool-error", &[ECHO_ID], &allow_all(), None).await;
+    Mock::given(http_method("POST")).and(JsonRpcMethod("tools/call"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"jsonrpc":"2.0","id":1,"result":{
+            "isError":true,"content":[{"type":"text","text":"Unauthorized; scope does not match"}]
+        }}))).with_priority(1).mount(&server).await;
+    let response = send(
+        &gateway,
+        "tool-error",
+        &[ECHO_ID],
+        &allow_all(),
+        None,
+        "tools/call",
+        Some(json!({"name":"echo-server__echo","arguments":{}})),
+    )
+    .await;
+    assert!(response.is_tool_error());
+    {
+        let events = events.lock();
+        let event = events
+            .values()
+            .find(|e| e.event_type == lr_monitor::MonitorEventType::McpToolCall)
+            .unwrap();
+        assert_eq!(event.status, lr_monitor::EventStatus::Error);
+        assert!(matches!(
+            event.data,
+            lr_monitor::MonitorEventData::McpToolCall {
+                success: Some(false),
+                ..
+            }
+        ));
+    }
+    // A scope denial is not treated as a dropped transport and does not trigger
+    // replay or repeated reinitialization of a healthy MCP connection.
+    assert_eq!(method_count(&server, "initialize").await, 1);
+    assert_eq!(method_count(&server, "tools/call").await, 1);
+}
+
+#[tokio::test]
+async fn recovery_negotiates_stateless_backends_after_failed_legacy_startup() {
+    let server = MockServer::start().await;
+    mock(&server, "initialize", None).await;
+    let manager = Arc::new(McpServerManager::new_for_test());
+    manager.add_config(http_server("modern", "Modern", server.uri(), true));
+    let gateway = McpGateway::new(manager, GatewayConfig::default(), test_router());
+    register_context_mode(&gateway);
+    let cm = overrides(false, true);
+    initialize(
+        &gateway,
+        "modern-recovery",
+        &["modern"],
+        &allow_all(),
+        cm.clone(),
+    )
+    .await;
+    server.reset().await;
+    mock(
+        &server,
+        "server/discover",
+        Some(json!({
+            "protocolVersions":["2026-07-28"],"capabilities":{"tools":{}},
+            "serverInfo":{"name":"modern","version":"2"}
+        })),
+    )
+    .await;
+    mock(&server,"tools/list",Some(json!({"tools":[{"name":"fresh","description":"Recovered tool","inputSchema":{"type":"object"}}]}))).await;
+    send(
+        &gateway,
+        "modern-recovery",
+        &["modern"],
+        &allow_all(),
+        cm.clone(),
+        "tools/list",
+        None,
+    )
+    .await;
+    wait_for_recovery(&gateway, "modern-recovery").await;
+    let session = gateway.get_session("modern-recovery").unwrap();
+    let state = session.read().await;
+    assert!(state
+        .transports
+        .as_ref()
+        .unwrap()
+        .revision("modern")
+        .is_stateless());
+    let context = state
+        .virtual_server_state
+        .get("_context_mode")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<localrouter::mcp::gateway::context_mode::ContextModeSessionState>()
+        .unwrap();
+    assert!(context
+        .full_tool_catalog
+        .iter()
+        .any(|t| t.name == "modern__fresh"));
+    assert!(context
+        .catalog_sources
+        .keys()
+        .any(|label| label.contains("modern__fresh")));
+    drop(state);
+    assert_eq!(
+        method_count(&server, "initialize").await,
+        0,
+        "modern recovery must not require legacy initialize"
+    );
+}
+
+#[tokio::test]
+async fn recovery_discovery_stays_responsive_and_teardown_cancels_reconnect() {
+    let server = MockServer::start().await;
+    mock(&server, "initialize", None).await;
+    let (gateway, _echo) = setup_full(
+        None,
+        vec![http_server(
+            "slow-recovery",
+            "Slow Recovery",
+            server.uri(),
+            true,
+        )],
+    )
+    .await;
+    initialize(
+        &gateway,
+        "cancel-recovery",
+        &[ECHO_ID, "slow-recovery"],
+        &allow_all(),
+        None,
+    )
+    .await;
+    server.reset().await;
+    Mock::given(http_method("POST")).and(JsonRpcMethod("initialize"))
+        .respond_with(ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(6)).set_body_json(json!({
+            "jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"slow","version":"1"}}
+        }))).mount(&server).await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        send(
+            &gateway,
+            "cancel-recovery",
+            &[ECHO_ID, "slow-recovery"],
+            &allow_all(),
+            None,
+            "tools/list",
+            None,
+        ),
+    )
+    .await
+    .expect("failed remote recovery must not block discovery");
+    let session = gateway.get_session("cancel-recovery").unwrap();
+    let recovery = session
+        .read()
+        .await
+        .initialization_abort
+        .clone()
+        .expect("recovery is tracked for teardown");
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while method_count(&server, "initialize").await == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    gateway.terminate_session("cancel-recovery").await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while !recovery.is_finished() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("session teardown must abort recovery");
+    assert!(session
+        .read()
+        .await
+        .transports
+        .as_ref()
+        .unwrap()
+        .running_server_ids()
+        .is_empty());
 }
