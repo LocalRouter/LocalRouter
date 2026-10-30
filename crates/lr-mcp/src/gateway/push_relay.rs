@@ -6,6 +6,22 @@
 //! per-session context handed to it, and the capability snapshot machinery
 //! that remembers what each upstream offers.
 
+pub mod ask;
+pub mod cursor;
+pub mod journal;
+pub mod relay;
+pub mod render;
+pub mod tools;
+pub mod upstream;
+pub mod webhook;
+
+pub use ask::{HeldPushEventInfo, PushDecision, PushDecisionAction};
+pub use relay::{
+    ClientEventTypeInfo, ClientLookup, PushConfigChange, PushConfigPersister, PushRelay,
+    UpstreamSourceInfo, WatchError, WebhookSubscriptionInfo,
+};
+pub use upstream::{connect_relay_upstream, SubscriptionInfo};
+
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -325,7 +341,7 @@ pub trait PushRelayService: Send + Sync {
 
 /// Delivery modes of one `events/list` entry. A missing `delivery` field
 /// means poll, the one mode every SEP-3415 server supports.
-fn delivery_modes(entry: &Value) -> Vec<EventDeliveryMode> {
+pub(crate) fn delivery_modes(entry: &Value) -> Vec<EventDeliveryMode> {
     let Some(modes) = entry.get("delivery").and_then(Value::as_array) else {
         return vec![EventDeliveryMode::Poll];
     };
