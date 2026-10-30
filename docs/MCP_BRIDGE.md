@@ -1,461 +1,181 @@
 # MCP Bridge Mode
 
-LocalRouter can run in **bridge mode**, acting as a lightweight STDIO ↔ HTTP proxy that allows external MCP clients (Claude Desktop, Cursor, VS Code, etc.) to connect to LocalRouter's unified MCP gateway.
+`localrouter --mcp-bridge` runs LocalRouter as a **STDIO ↔ HTTP bridge**: an MCP
+client that launches stdio servers (Claude Code, Claude Desktop, Cursor, VS Code,
+…) starts the bridge as a subprocess, and the bridge relays MCP in both
+directions between the client's stdin/stdout and the running LocalRouter app's
+unified MCP gateway.
 
-## Overview
+The bridge is the only way Claude Code can receive pushed events from
+LocalRouter: Claude Code Channels (`notifications/claude/channel`) are delivered
+only by a stdio server that connects on the handshake from before MCP revision
+2026-07-28. Over plain HTTP, LocalRouter can serve tools but cannot wake Claude
+when an event arrives.
 
-### Architecture
+## Architecture
 
 ```
-External Client (e.g., Claude Desktop)
-    ↓ STDIO (via command invocation)
-LocalRouter STDIO Bridge Process (--mcp-bridge)
-    ↓ HTTP Client (localhost:3625/mcp)
-    Authorization: Bearer <client_secret>
-    ↓
-LocalRouter GUI Instance (ALREADY RUNNING)
-    ↓ HTTP Server (Axum on :3625)
-    ↓ MCP Gateway (aggregates multiple MCP servers)
-    ↓
-Multiple MCP Servers (filesystem, web, github, etc.)
+MCP client (e.g. Claude Code)
+    ↕ stdio: newline-delimited JSON-RPC
+localrouter --mcp-bridge
+    → POST  /mcp   every client message (requests, notifications, responses)
+    ← GET   /mcp   held SSE stream: server notifications and requests
+    → DELETE /mcp  ends the session when stdin closes
+    Authorization: Bearer <client secret>
+    X-LocalRouter-Bridge: stdio
+    Mcp-Session-Id: <issued by initialize>
+    ↕
+LocalRouter app (must already be running) → MCP gateway → MCP servers
 ```
 
-### How It Works
+The bridge loads the config only to find the client's secret and the gateway
+address; it starts no managers and no MCP servers itself.
 
-1. **GUI Mode** (default): Full desktop application with HTTP server, managers, and Tauri window
-2. **Bridge Mode** (`--mcp-bridge`): Lightweight STDIO proxy (no GUI, no managers, just HTTP client)
+## What the bridge does
 
-The bridge reads JSON-RPC requests from stdin, forwards them to the running LocalRouter HTTP server on `localhost:3625`, and writes responses back to stdout. This allows any MCP client that supports STDIO transport to access LocalRouter's unified MCP gateway.
+**Client → LocalRouter.** Each stdin line is one JSON-RPC message.
+
+- *Requests* are POSTed concurrently, so a long `tools/call` or a long-lived
+  `events/stream` never blocks the next request.
+- `initialize` is POSTed first and on its own. The `Mcp-Session-Id` header of
+  its response is kept and sent on every later request, the GET stream and the
+  final DELETE, so every message lands on the same gateway session (the one
+  that recorded the client's capabilities).
+- *Notifications* (no `id`) are POSTed in order. LocalRouter answers `202
+  Accepted` with an empty body, and the bridge writes nothing to stdout.
+- *Responses* (an `id` with `result` or `error` and no `method`) are the
+  client's answers to server-initiated requests (sampling, elicitation, roots).
+  They are POSTed so the gateway can resolve the pending request; nothing is
+  written to stdout.
+- Unparseable lines get a `-32700` parse error; JSON that is not a JSON-RPC
+  message (including batch arrays) gets `-32600`.
+
+**LocalRouter → client.**
+
+- A POST may be answered with a JSON body or with an SSE stream (Streamable
+  HTTP). Every JSON-RPC message in an SSE body is written to stdout in order,
+  until the stream ends. No total timeout applies: an `events/stream` request
+  delivers notifications for as long as it is open, then its final result. If a
+  stream ends without answering the request, the client gets an error for it.
+- A request answered `202 Accepted` is answered later on the GET stream.
+- After `initialize`, the bridge holds the session's GET SSE stream and writes
+  every message on it to stdout **verbatim**: list-changed notifications,
+  progress, logging, server-initiated requests, and methods the bridge does not
+  know about (`notifications/claude/channel`, `notifications/events/*`). If the
+  stream drops, the bridge reconnects with backoff (250 ms doubling to 30 s).
+  The legacy `endpoint` event is ignored.
+- Errors keep the request's `id`. A JSON-RPC error body on a non-2xx status is
+  forwarded as is; otherwise the bridge writes a `-32603` error explaining the
+  status (bad credentials, no MCP access, unknown session, app not running).
+- All stdout output goes through a single writer, one message per line, so
+  concurrent responses and notifications never interleave.
+
+**Shutdown.** On stdin EOF (or when stdout closes) the bridge stops the GET
+stream and any in-flight requests, sends `DELETE` with the session id, flushes
+what is already queued for stdout, and exits.
+
+## Protocol version toward the client
+
+The bridge does **not** support MCP revision 2026-07-28 toward its stdio client,
+whatever the gateway behind it speaks. Claude Code probes stdio servers for that
+revision and does not register a server that negotiates it as a channel; a
+server that declines connects on the earlier handshake and registers as before.
+This affects only LocalRouter, unlike Claude Code's `MCP_PROTOCOL_NEGOTIATION`
+variable, which LocalRouter neither needs nor sets.
+
+| Client sends | Bridge answers |
+| --- | --- |
+| `server/discover` (the 2026-07-28 probe) | `-32601 Method not found`, no `data`, without contacting LocalRouter. The 2026-07-28 stdio transport and TypeScript SDK v2 treat this as a legacy server and fall back to `initialize`. `-32022 UnsupportedProtocolVersion` is never sent: it marks a server as modern and forbids the fallback. |
+| Any other request before `initialize` whose `_meta["io.modelcontextprotocol/protocolVersion"]` is newer than 2025-11-25 | `-32600 Server not initialized`, not forwarded |
+| `initialize` asking for a version newer than 2025-11-25 | Forwarded asking for 2025-11-25, with any 2026-07-28 `_meta` version declaration removed |
+| `initialize` asking for 2025-11-25 or older | Forwarded unchanged |
+| An `initialize` result whose `protocolVersion` is newer than what was negotiated | `protocolVersion` rewritten to the negotiated version |
+
+Subsequent requests carry `MCP-Protocol-Version` with the negotiated version.
+
+The bridge keeps no state between processes and binds nothing, so a client that
+probes on a short-lived extra copy of the server (as TypeScript SDK v2's base
+stdio transport does) is harmless.
 
 ## Setup
 
-### Step 1: Configure Client in LocalRouter
-
-Edit your LocalRouter configuration file (`~/.localrouter/config.yaml`):
-
-```yaml
-clients:
-  - id: claude_desktop
-    name: Claude Desktop
-    enabled: true
-    allowed_mcp_servers:
-      - filesystem
-      - web
-      - github
-    mcp_deferred_loading: true  # Optional: enable deferred loading
-```
-
-### Step 2: Start LocalRouter GUI
-
-The bridge requires the LocalRouter GUI to be running (to provide the HTTP server). Start it normally:
-
-```bash
-# macOS
-open /Applications/LocalRouter\ AI.app
-
-# Or via command line
-localrouter
-```
-
-### Step 3: Configure External MCP Client
-
-Configure your MCP client to invoke LocalRouter in bridge mode. See client-specific instructions below.
-
-## Client Authentication
-
-The bridge supports three authentication methods:
-
-### 1. Environment Variable (Recommended)
-
-Set `LOCALROUTER_CLIENT_SECRET` to your client secret:
-
-```bash
-export LOCALROUTER_CLIENT_SECRET=lr_your_secret_here
-```
-
-Then invoke bridge mode:
-
-```bash
-localrouter --mcp-bridge --client-id claude_desktop
-```
-
-### 2. Auto-Detection (Simplest)
-
-If you've run the LocalRouter GUI at least once, client secrets are stored in your OS keychain. Simply invoke:
-
-```bash
-localrouter --mcp-bridge --client-id claude_desktop
-```
-
-The bridge will automatically load the secret from the keychain.
-
-### 3. First Enabled Client
-
-If you don't specify `--client-id`, the bridge auto-detects the first enabled client with MCP servers:
-
-```bash
-localrouter --mcp-bridge
-```
-
-## Usage
-
-### Command Line Options
-
-```bash
-# Auto-detect first enabled client with MCP servers
-localrouter --mcp-bridge
-
-# Specify client ID explicitly
-localrouter --mcp-bridge --client-id claude_desktop
-
-# With client secret via environment variable
-LOCALROUTER_CLIENT_SECRET=lr_secret localrouter --mcp-bridge --client-id claude_desktop
-```
-
-### Environment Variables
-
-- `LOCALROUTER_CLIENT_SECRET`: Client secret for authentication (overrides keychain)
-- `LOCALROUTER_KEYCHAIN`: Force keychain type (`file` or `system`)
-- `RUST_LOG`: Logging level (e.g., `localrouter=debug`)
-
-## Integration Examples
-
-### Claude Desktop
-
-Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
+1. In LocalRouter, create a client (or use an existing one) and grant it MCP
+   access. Its secret is shown in the app.
+2. Keep the LocalRouter app running; the bridge connects to it.
+3. Configure your MCP client to launch the bridge:
 
 ```json
 {
   "mcpServers": {
     "localrouter": {
+      "type": "stdio",
       "command": "/Applications/LocalRouter.app/Contents/MacOS/localrouter",
-      "args": ["--mcp-bridge", "--client-id", "claude_desktop"],
-      "env": {
-        "LOCALROUTER_CLIENT_SECRET": "lr_your_secret_here"
-      }
+      "args": ["--mcp-bridge", "--client-id", "<client id>"],
+      "env": { "LOCALROUTER_CLIENT_SECRET": "<client secret>" }
     }
   }
 }
 ```
 
-**Note**: Replace the `command` path with the actual path to your LocalRouter binary:
+For Claude Code, launch with
+`claude --dangerously-load-development-channels server:localrouter` to receive
+channel messages. The flag works only in interactive sessions, an
+organisation's `channelsEnabled` policy can block it, and an upstream server
+that newly offers push takes effect after restarting `claude`.
 
-- macOS app: `/Applications/LocalRouter.app/Contents/MacOS/localrouter`
-- macOS Homebrew: `/usr/local/bin/localrouter`
-- Linux: `/usr/bin/localrouter` or `~/.local/bin/localrouter`
-- Windows: `C:\Program Files\LocalRouter\localrouter.exe`
+### Options
 
-Get your client secret from the LocalRouter GUI (Clients tab → Create/View Client).
+| Option | Meaning |
+| --- | --- |
+| `--client-id <id>` | Client to authenticate as. Without it, the first enabled client with MCP access is used. |
+| `--url <url>` | Gateway URL, e.g. `http://127.0.0.1:3625/mcp`. |
 
-### Cursor
+| Environment variable | Meaning |
+| --- | --- |
+| `LOCALROUTER_CLIENT_SECRET` | Client secret. Without it the secret is read from the OS keychain (the app must have run once). |
+| `LOCALROUTER_URL` | Gateway URL, used when `--url` is not given. |
+| `LOCALROUTER_KEYCHAIN` | Force the keychain type (`file` or `system`). `file` stores secrets in plain text; use it only for development. |
+| `RUST_LOG` | Log filter, e.g. `lr_mcp=debug`. |
 
-Edit `~/.cursor/mcp.json`:
+### Gateway address
 
-```json
-{
-  "mcpServers": {
-    "localrouter": {
-      "command": "/path/to/localrouter",
-      "args": ["--mcp-bridge", "--client-id", "cursor"],
-      "env": {
-        "LOCALROUTER_CLIENT_SECRET": "lr_your_secret_here"
-      }
-    }
-  }
-}
-```
+Without `--url` or `LOCALROUTER_URL`, the bridge uses the server host and port
+from the LocalRouter config it loads: `http://127.0.0.1:3625/mcp` for release
+builds and `http://127.0.0.1:33625/mcp` for debug builds (which also use the
+`~/.localrouter-dev` config). A host of `0.0.0.0` or `::` is reached through
+loopback.
 
-### VS Code (with MCP Extension)
-
-Edit `.vscode/mcp.json` in your workspace:
-
-```json
-{
-  "servers": {
-    "localrouter": {
-      "command": "/path/to/localrouter",
-      "args": ["--mcp-bridge", "--client-id", "vscode"],
-      "env": {
-        "LOCALROUTER_CLIENT_SECRET": "lr_your_secret_here"
-      }
-    }
-  }
-}
-```
-
-## Deferred Loading
-
-Enable deferred loading in your client configuration to reduce token consumption:
-
-```yaml
-clients:
-  - id: claude_desktop
-    name: Claude Desktop
-    enabled: true
-    allowed_mcp_servers:
-      - filesystem
-      - web
-      - github
-    mcp_deferred_loading: true  # Enable deferred loading
-```
-
-When enabled:
-
-- Only a `search` tool is initially visible
-- Tools are activated on-demand through search queries
-- Dramatically reduces token consumption for large MCP server catalogs
-- Example: Search for "file" to activate filesystem tools
-
-## Troubleshooting
-
-### Bridge Won't Start
-
-**Error**: `Could not connect to LocalRouter at localhost:3625. Is the app running?`
-
-**Solution**: Start the LocalRouter GUI first. The bridge requires the HTTP server to be running.
-
----
-
-**Error**: `Client 'xyz' not found in config.yaml`
-
-**Solution**: Add the client to your `config.yaml` file (see Setup section).
-
----
-
-**Error**: `Client 'xyz' is disabled`
-
-**Solution**: Set `enabled: true` for the client in `config.yaml`.
-
----
-
-**Error**: `Client secret not found`
-
-**Solution**:
-
-1. Run LocalRouter GUI at least once to create credentials, OR
-2. Set `LOCALROUTER_CLIENT_SECRET` environment variable, OR
-3. Generate a client secret in the GUI (Clients tab → Create Client)
-
-### Connection Errors During Use
-
-**Error**: `Invalid client credentials`
-
-**Solution**: Your client secret is incorrect. Regenerate it in the LocalRouter GUI.
-
----
-
-**Error**: `Client 'xyz' is not allowed to access MCP servers`
-
-**Solution**: Add MCP servers to `allowed_mcp_servers` in the client configuration.
-
----
-
-**Error**: `HTTP 404 error`
-
-**Solution**: Update to the latest version of LocalRouter. The MCP endpoint may be missing.
-
-### No Tools Visible
-
-**Issue**: External client shows no tools from LocalRouter
-
-**Solutions**:
-
-1. Check that `allowed_mcp_servers` includes the servers you want to use
-2. Verify MCP servers are enabled in LocalRouter GUI (MCP tab)
-3. Check bridge logs (stderr) for error messages
-4. Restart both LocalRouter GUI and the external client
-
-### Performance Issues
-
-**Issue**: Bridge is slow or unresponsive
-
-**Solutions**:
-
-1. Enable `mcp_deferred_loading: true` to reduce token overhead
-2. Limit `allowed_mcp_servers` to only the servers you need
-3. Check LocalRouter GUI logs for errors
-4. Ensure LocalRouter GUI has sufficient system resources
+If the app found its configured port taken at startup it listens on the next
+free port, which the bridge cannot discover; pass `--url` in that case.
 
 ## Logging
 
-Bridge mode logs to **stderr only** (stdout is reserved for JSON-RPC responses).
-
-### View Logs
-
-When running from terminal:
+The bridge logs to **stderr** only; stdout carries nothing but JSON-RPC. MCP
+clients usually keep a server's stderr in their own logs (Claude Code:
+`claude --debug`; Claude Desktop: `~/Library/Logs/Claude/mcp*.log`).
 
 ```bash
-localrouter --mcp-bridge 2>&1 | tee bridge.log
+RUST_LOG=lr_mcp=debug localrouter --mcp-bridge --client-id <id>
 ```
 
-When configured in external client, check the client's log files:
+## Troubleshooting
 
-- Claude Desktop: `~/Library/Logs/Claude/mcp*.log` (macOS)
-- Cursor: `~/.cursor/logs/`
-- VS Code: Check Output panel → MCP extension
-
-### Adjust Log Level
-
-```bash
-RUST_LOG=localrouter=debug localrouter --mcp-bridge
-```
-
-Log levels: `error`, `warn`, `info`, `debug`, `trace`
-
-## Security Considerations
-
-### Client Secrets
-
-- **Never commit** client secrets to version control
-- Store secrets in environment variables or OS keychain
-- Rotate secrets regularly in the LocalRouter GUI
-- Each external client should have its own client ID and secret
-
-### Network Security
-
-- Bridge connects to `localhost:3625` only (no external network access)
-- HTTP server is localhost-only by default
-- Use firewall rules if you need to restrict access further
-
-### Access Control
-
-- `allowed_mcp_servers` controls which MCP servers the client can access
-- Each client can have different permissions
-- Disabled clients cannot authenticate (even with valid secrets)
-
-## Advanced Usage
-
-### Multiple Clients
-
-Run multiple bridge instances for different clients:
-
-```bash
-# Terminal 1: Claude Desktop
-LOCALROUTER_CLIENT_SECRET=lr_secret1 localrouter --mcp-bridge --client-id claude_desktop
-
-# Terminal 2: Cursor
-LOCALROUTER_CLIENT_SECRET=lr_secret2 localrouter --mcp-bridge --client-id cursor
-```
-
-Each bridge instance is isolated and uses its own client configuration.
-
-### Custom Server URL
-
-By default, the bridge connects to `http://localhost:3625/mcp`. To use a different URL, modify the source code in `src-tauri/src/mcp/bridge/stdio_bridge.rs`:
-
-```rust
-server_url: "http://custom-host:custom-port/mcp".to_string(),
-```
-
-### File-Based Keychain (Development)
-
-For development, use file-based keychain to avoid macOS keychain prompts:
-
-```bash
-LOCALROUTER_KEYCHAIN=file localrouter --mcp-bridge
-```
-
-**WARNING**: File-based keychain stores secrets in **plain text**. Only use for development with test credentials.
-
-## Comparison with HTTP MCP Gateway
-
-| Feature                | Bridge Mode (STDIO)      | HTTP Gateway              |
-| ---------------------- | ------------------------ | ------------------------- |
-| **Transport**          | STDIO (stdin/stdout)     | HTTP POST /mcp            |
-| **Client Support**     | Claude Desktop, Cursor, VS Code | Any HTTP client           |
-| **Authentication**     | Client secret (Bearer)   | Client secret (Bearer)    |
-| **Process Model**      | Separate process per client | Single HTTP server        |
-| **Resource Usage**     | ~10MB per bridge         | Shared HTTP server        |
-| **Startup Time**       | < 100ms                  | N/A (always running)      |
-| **Use Case**           | External MCP clients     | OpenAI-compatible clients |
-
-## Performance
-
-- **Startup time**: < 100ms (minimal initialization)
-- **Request overhead**: < 10ms (STDIO parsing + HTTP POST + localhost latency)
-- **Memory usage**: < 10MB per bridge instance (very lightweight)
-- **Latency**: Dominated by MCP server calls (10-100ms), HTTP overhead negligible
+| Message | Cause |
+| --- | --- |
+| `Could not connect to LocalRouter at …. Is the app running?` | The app is not running, or is listening elsewhere (see "Gateway address"). |
+| `Client '…' not found` / `is disabled` | Wrong `--client-id`, or the client is disabled in LocalRouter. |
+| `Client secret not found` | Set `LOCALROUTER_CLIENT_SECRET`, or run the app once so the secret is in the keychain. |
+| `Invalid client credentials` | The secret is wrong; copy it again from the app. |
+| `not allowed to access MCP servers` | Grant the client MCP access in LocalRouter. |
+| `LocalRouter no longer knows this MCP session` | The app restarted; restart the MCP client to start a new session. |
+| `LocalRouter offers no server stream` (stderr) | The gateway refused the GET stream; server notifications cannot reach the client. |
 
 ## Limitations
 
-1. **Requires Running GUI**: Bridge mode requires the LocalRouter GUI to be running (for the HTTP server)
-2. **No Standalone Mode**: Cannot run bridge without GUI (for now)
-3. **Localhost Only**: Bridge connects to localhost:3625 only (no remote servers)
-4. **No WebSocket**: Currently only supports STDIO transport (no WebSocket support)
-
-## Roadmap
-
-Future enhancements planned:
-
-- [ ] Standalone bridge mode (no GUI required)
-- [ ] WebSocket transport support
-- [ ] Remote server support (connect to LocalRouter on another machine)
-- [ ] Multi-client bridge (single process for multiple clients)
-- [ ] Bridge metrics and monitoring
-- [ ] Hot config reload (no restart needed)
-
-## FAQ
-
-### Q: Do I need to run the LocalRouter GUI to use bridge mode?
-
-**A**: Yes, the bridge requires the LocalRouter GUI to be running. The bridge is a lightweight proxy that forwards requests to the HTTP server running in the GUI.
-
-### Q: Can I use bridge mode without installing the GUI?
-
-**A**: Not currently. Future versions may support standalone bridge mode.
-
-### Q: How do I get a client secret?
-
-**A**: Client secrets are generated automatically when you create a client in the LocalRouter GUI (Clients tab → Create Client). You can also view existing secrets by clicking on a client.
-
-### Q: Can I use the same client for both HTTP and STDIO?
-
-**A**: Yes! The same client configuration works for both HTTP requests (OpenAI-compatible API) and STDIO bridge mode (MCP).
-
-### Q: What's the difference between a client and an MCP server?
-
-**A**:
-
-- **Client**: External application that *uses* LocalRouter (e.g., Claude Desktop, Cursor, your custom app)
-- **MCP Server**: Tool provider that LocalRouter *connects to* (e.g., filesystem, web, GitHub)
-
-Clients consume tools from MCP servers via LocalRouter's unified gateway.
-
-### Q: How do I enable deferred loading?
-
-**A**: Set `mcp_deferred_loading: true` in your client configuration. This reduces token consumption by only loading tools on-demand through search queries.
-
-### Q: Can I use bridge mode with custom MCP servers?
-
-**A**: Yes! Configure your custom MCP servers in LocalRouter (MCP tab), then add them to `allowed_mcp_servers` for your client.
-
-### Q: Does bridge mode support all MCP features?
-
-**A**: Yes, bridge mode supports all MCP features including:
-
-- Tools (list, call)
-- Resources (list, read, subscribe)
-- Prompts (list, get)
-- Notifications
-- Deferred loading (search tool)
-
-### Q: How do I debug bridge mode?
-
-**A**:
-
-1. Check stderr output (all logs go there)
-2. Set `RUST_LOG=localrouter=debug` for verbose logs
-3. Check LocalRouter GUI logs (Help → View Logs)
-4. Check external client logs (see Logging section)
-
-## Support
-
-For issues, questions, or feature requests:
-
-- GitHub Issues: https://github.com/yourusername/localrouterai/issues
-- Documentation: https://localrouter.ai/docs
-- Discord: https://discord.gg/localrouter
-
-## License
-
-LocalRouter is licensed under the AGPL-3.0-or-later license. See LICENSE file for details.
+- The LocalRouter app must be running; the bridge is not a standalone gateway.
+- Server-initiated requests (sampling, elicitation, roots) reach the client
+  only when the gateway delivers them on the session's GET stream and resolves
+  the client's POSTed response by its `Mcp-Session-Id`. The bridge does both of
+  its parts; see the Push Relay plan for the gateway side.
+- The server → client channel is the Streamable HTTP GET stream; the bridge
+  does not use `/mcp/ws` or 2026-07-28 `subscriptions/listen`.

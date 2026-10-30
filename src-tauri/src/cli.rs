@@ -13,10 +13,11 @@ use clap::Parser;
 pub struct Cli {
     /// Run in MCP bridge mode (STDIO ↔ HTTP proxy)
     ///
-    /// In bridge mode, LocalRouter acts as a lightweight proxy that:
-    /// - Reads JSON-RPC requests from stdin
-    /// - Forwards them to the running LocalRouter HTTP server
-    /// - Writes responses back to stdout
+    /// In bridge mode, LocalRouter relays MCP between stdin/stdout and the
+    /// running LocalRouter app's HTTP gateway, in both directions: client
+    /// messages are POSTed to the gateway, and responses, server
+    /// notifications and server requests (including pushed events) are
+    /// written to stdout.
     ///
     /// This allows external MCP clients (Claude Desktop, Cursor, VS Code)
     /// to connect to LocalRouter's unified MCP gateway.
@@ -37,6 +38,16 @@ pub struct Cli {
     /// Example: --client-id claude_desktop
     #[arg(long, requires = "mcp_bridge")]
     pub client_id: Option<String>,
+
+    /// Gateway URL for bridge mode
+    ///
+    /// Defaults to the LOCALROUTER_URL environment variable, then to the
+    /// server address in the LocalRouter config (http://127.0.0.1:3625/mcp,
+    /// or port 33625 for debug builds).
+    ///
+    /// Example: --url http://127.0.0.1:3625/mcp
+    #[arg(long, requires = "mcp_bridge")]
+    pub url: Option<String>,
 }
 
 impl Cli {
@@ -85,5 +96,18 @@ mod tests {
         // --client-id requires --mcp-bridge
         let cli = Cli::try_parse_from(["localrouter", "--client-id", "test_client"]);
         assert!(cli.is_err());
+    }
+
+    #[test]
+    fn test_cli_bridge_url() {
+        let cli = Cli::try_parse_from([
+            "localrouter",
+            "--mcp-bridge",
+            "--url",
+            "http://127.0.0.1:4000/mcp",
+        ])
+        .unwrap();
+        assert_eq!(cli.url.as_deref(), Some("http://127.0.0.1:4000/mcp"));
+        assert!(Cli::try_parse_from(["localrouter", "--url", "http://x/mcp"]).is_err());
     }
 }
