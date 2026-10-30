@@ -156,7 +156,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Branch based on mode
     if args.mcp_bridge {
-        run_bridge_mode(args.client_id).await
+        run_bridge_mode(args.client_id, args.url).await
     } else {
         run_gui_mode().await
     }
@@ -186,32 +186,33 @@ fn init_logging() {
 ///
 /// # Arguments
 /// * `client_id` - Optional client ID (auto-detects if None)
+/// * `url` - Optional gateway URL (`--url`; else LOCALROUTER_URL, else config)
 ///
 /// # Returns
 /// Ok on clean shutdown, Err on fatal errors
-async fn run_bridge_mode(client_id: Option<String>) -> anyhow::Result<()> {
+async fn run_bridge_mode(client_id: Option<String>, url: Option<String>) -> anyhow::Result<()> {
     eprintln!("==========================================================");
     eprintln!("LocalRouter - MCP Bridge Mode");
     eprintln!("==========================================================");
     eprintln!();
-    eprintln!("Connecting to LocalRouter server at http://localhost:3625");
-    eprintln!("Make sure the LocalRouter GUI is running!");
-    eprintln!();
 
-    // Create and run bridge (loads config for client secret only)
-    let bridge = mcp::StdioBridge::new(client_id, None).await.map_err(|e| {
-        eprintln!("ERROR: Failed to initialize bridge: {}", e);
-        eprintln!();
-        eprintln!("Common issues:");
-        eprintln!("  - LocalRouter GUI not running (start it first)");
-        eprintln!("  - Client not configured in config.yaml");
-        eprintln!("  - Client secret not found (run GUI once)");
-        eprintln!("  - LOCALROUTER_CLIENT_SECRET not set (if using env var)");
-        eprintln!();
-        e
-    })?;
+    // Create and run bridge (loads config for the client secret and port)
+    let bridge = mcp::StdioBridge::new(client_id, None, url)
+        .await
+        .map_err(|e| {
+            eprintln!("ERROR: Failed to initialize bridge: {}", e);
+            eprintln!();
+            eprintln!("Common issues:");
+            eprintln!("  - LocalRouter GUI not running (start it first)");
+            eprintln!("  - Client not configured in config.yaml");
+            eprintln!("  - Client secret not found (run GUI once)");
+            eprintln!("  - LOCALROUTER_CLIENT_SECRET not set (if using env var)");
+            eprintln!();
+            e
+        })?;
 
-    eprintln!("Bridge ready! Forwarding JSON-RPC requests...");
+    eprintln!("Bridge ready! Relaying MCP to {}", bridge.server_url());
+    eprintln!("Make sure the LocalRouter app is running!");
     eprintln!("==========================================================");
     eprintln!();
 
