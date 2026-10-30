@@ -203,3 +203,118 @@ returns an uninitialised `Arc<dyn Transport>` (you must send `initialize` /
   per-request `_meta` capabilities of stateless clients do not update it.
 - The STDIO bridge header is consumed but the bridge does not send it yet (parallel worktree
   `localrouterai-push-bridge`).
+
+# Phase 1 backend — handoff to the UI agent
+
+The relay core is implemented and registered (`crates/lr-mcp/src/gateway/push_relay/`,
+`AppState::with_mcp`). Everything below is backend API the desktop UI (Tauri commands, TS
+types, `TauriMockSetup.ts`, Push Relay page, client Push card, approval popup) builds on. No
+Tauri command for Push Relay exists yet.
+
+## Where things live
+
+| Module (`gateway/push_relay/`) | Contents |
+| --- | --- |
+| `relay.rs` | `PushRelay`: implements `PushRelayService`, owns everything below. Public API in the table that follows. |
+| `journal.rs` | `Occurrence` (normalised event: `event_id` `<slug>__<upstream id>`, `name` `<slug>__<event>`, `server_id`, `server_slug`, `upstream_name`, `timestamp`, `data`, `upstream_cursor`, `ingress`, `args_key`), the per-client `ClientJournal` (count / bytes / retention bounds, truncation). |
+| `cursor.rs` | HMAC cursors `lr1.…` (epoch, position, scope digest, bound to the client). Foreign epoch → reset to now + `truncated`. Also signs watch tokens. |
+| `upstream.rs` | `UpstreamHub` (demand-driven subscriptions), `RelayConnection` + `connect_relay_upstream` (relay-owned, initialised upstream connection), `SessionPort`, backoff/heartbeat. |
+| `ask.rs` | Held-event queues, `PushDecision` / `PushDecisionAction`, `HeldPushEventInfo`. |
+| `webhook.rs` | Callback URL rules, `whsec_` secrets, Standard Webhooks signing, challenge, delivery. |
+| `tools.rs` | `_push_relay` virtual server (`EventList`, `EventPoll`, `EventWait`, `<events>` block). |
+| `render.rs` | Event blocks, channel content, instructions, watcher commands. |
+
+Server identity in names is the **slugified server name** (the tool-prefix convention), e.g.
+`vocalcord__message.received`. Permission keys stay `server_id__event` (`PushPermissions::event_key`).
+
+## Backend API for the UI
+
+Get the relay from `state.push_relay` (`Option<Arc<PushRelay>>` on `lr_server::state::AppState`;
+always `Some` after `with_mcp`). All types are `Serialize`.
+
+| Need | API |
+| --- | --- |
+| Global settings | `config.push_relay` (`PushRelayConfig`, incl. `limits`). Save with `config_manager.update` + `save()`; a `config-changed` listener in `main.rs` then calls `AppState::apply_push_relay_config`, so a command only has to save. (Calling `state.apply_push_relay_config(&cfg.push_relay)` directly is also fine and idempotent.) |
+| Per-client fields | `Client.push_permissions` (`PushPermissions { global, servers, events }`), `push_fallback_tools` (`auto`/`always`/`never`), `push_webhook_urls`, `claude_channels_launched`. Saving the client fires `clients-changed`, which calls `relay.notify_clients_changed()` (list_changed to sessions, held events re-evaluated, blocked streams end). Helpers: `Client::set_push_event_permission(server_id, event, Option<PushPermission>)`, `Client::approve_push_webhook_url(url)`. |
+| Permission tree data | `relay.client_event_types(client_id) -> Vec<ClientEventTypeInfo { qualified_name, server_id, event_name, permission (effective), session_override }>` — only servers the client may see under MCP permissions. Session overrides come from "for this session" decisions; clear one with `relay.clear_session_override(client_id, server_id, event_name)`. |
+| Upstream sources | `relay.upstream_sources() -> Vec<UpstreamSourceInfo { server_id, server_name, enabled, transport (stdio/http/websocket), connection (shared/per_session), snapshot_current, protocol_version, observed_at, channels, resource_subscribe, event_types: [UpstreamEventTypeInfo { name, description, modes, ingress (push/poll/channel/null), supported, unsupported_reason ("webhook-only — not supported") }] }>`. Built from the remembered capability snapshots. |
+| Active subscriptions | `relay.active_subscriptions() -> Vec<SubscriptionInfo { server_id, event, arguments, scope ({kind: shared} or {kind: session, session_key}), status { ingress_mode, connected, events_received, last_event_at, last_error, reconnects } }>`. |
+| Webhook subscriptions | `relay.webhook_subscriptions(Option<client_id>) -> Vec<WebhookSubscriptionInfo { id, client_id, event, url, state (awaiting_approval/active/suspended/denied), expires_at, delivered, last_error }>`. |
+| Pending held events | `relay.pending_events(Option<client_id>) -> Vec<HeldPushEventInfo { hold_id, client_id, client_name, server_id, server_name, event_name, qualified_name, event_id, ingress_mode, data, held_at, held_secs, timeout_secs, position, firewall_request_id, decided }>` (oldest first; `position` 0 = being asked now). |
+| Decide | `relay.decide(hold_id, PushDecision { action, edited_data })` with `action` = `allow` / `deny` / `allow_session` / `deny_session` / `allow_always` / `deny_always` (`PushDecisionAction`, snake_case). `edited_data` replaces the event's `data` (edit-then-allow). Works for a queued (not yet asked) event too: it is applied in order. Webhook URL approvals use `hold_id = "webhook:<subscription id>"`. `relay.decide_all(client_id, qualified_name, decision)` = "allow/deny all pending of this type". Permanent decisions are written to the client's config by the relay. |
+| Monitor | `MonitorEventType::McpPushEvent` (`mcp_push_event`, category `mcp`), data `McpPushEvent { server_id, server_name, event_name, event_id, ingress_mode, egress_modes[], decision, original_payload?, delivered_payload?, held_ms?, error? }`. `decision`: `pending` (status Pending while held), `allowed`, `asked_allowed`, `asked_edited`, `denied`, `timeout`, `blocked`, `hold_cap`, `too_large`. Payloads are omitted for clients whose privacy redacts payloads. The TS monitor types/filters do not know the variant yet. |
+
+### Approval popup
+
+Each held event at the head of its (client, event type) queue opens a regular firewall approval
+(`_firewall` broadcast → `main.rs` opens the window), with `is_push_event_request: true` and
+`push_event_details: PushEventApprovalDetails { kind (event/webhook_url), hold_id, server_id,
+server_name, event_name, qualified_name, event_id, ingress_mode, data, rendered_content,
+webhook_url?, pending_for_client, pending_of_type }` on both the notification and
+`PendingApprovalInfo`. `full_arguments` is the event data, so the existing edit mode edits
+`data`. The popup must offer: Allow (`allow_once`), Edit then allow (`allow_once` +
+`edited_arguments`), Deny (`deny`), Allow/Deny this event type for the session
+(`allow_session` / `deny_session`) or permanently (`allow_permanent` / `deny_always`), and show
+`pending_of_type` / `pending_for_client` ("N more waiting"). `submit_firewall_approval` already
+skips its own permission writes for these (the relay applies them) and
+`reevaluate_pending_approvals` skips them. One popup per (client, event type) is open at a time;
+a single per-client queue window built on `pending_events` + `decide` / `decide_all` is up to the
+UI.
+
+## What clients see (implemented)
+
+- Gate: push is advertised only when a visible, enabled server's current snapshot has push/poll
+  event types or channels that are not Blocked for the client, the relay is enabled, and the
+  client has no restricted privacy profile. Then: `extensions["io.modelcontextprotocol/events"]
+  = {listChanged:true}`, top-level `events: {}`, `experimental["claude/channel"]` for STDIO
+  bridge sessions, the `_push_relay` tools per the show rules, and the `<events>` block.
+- `events/list` (`delivery`: poll, push, webhook if enabled), `events/poll`, `events/stream`
+  (HTTP: a long-lived SSE POST response; legacy SSE: via the connection, no 15 s cut),
+  `events/subscribe` / `events/unsubscribe` (webhook), on legacy and 2026-07-28 sessions.
+- Claude Channels for bridge sessions, `GET /events/watch` for `EventWait`.
+- `notifications/events/list_changed` + `notifications/tools/list_changed` when a session's
+  catalogue or tool set changes (checked every 10 s and on config/client changes).
+
+## Not done / deviations
+
+- **Stdio upstreams are subscribed on the session's own process**, not on a relay-owned shared
+  connection: each downstream session runs its own stdio process and that process's events
+  belong to it (NetGet's queue, for instance). HTTP and WebSocket upstreams use one relay-owned
+  connection shared by all clients (`RelayConnection`). Webhook and watch consumers of a stdio
+  upstream use any live session of the client.
+- Relay-owned connections always use the legacy `initialize` handshake.
+- A channel message from a relay-owned (HTTP) connection is delivered to the clients consuming
+  anything from that server; Claude channels are stdio-only in practice.
+- "Session" decisions (`allow_session` / `deny_session`) last until LocalRouter restarts or the
+  override is cleared; they are per client, not per MCP session.
+- `/events/watch` authenticates with a watch token minted by `EventWait` (HMAC, bound to the
+  client, the event types and filter, valid for `watch_max_lifetime`), not the client's bearer
+  token, so no secret is echoed into tool output.
+- `EventPoll`: default 20, max `min(100, poll_max_events)`; `events/poll`: default
+  `poll_default_events`, max `poll_max_events`.
+- The webhook verification challenge runs synchronously in `events/subscribe`; the new-URL Ask
+  happens before the first delivery.
+- `InterceptCategory::PushEvent` (`push_event`) is new: the TS `InterceptCategory` list and the
+  Monitor intercept picker need it. It covers held events and the `_push_relay` tool calls.
+- Monitor "Ask for this event type from now on" is a client config write
+  (`set_push_event_permission(.., Some(Ask))`); the Monitor intercept rule with
+  `InterceptCategory::PushEvent` turns Allow into Ask while active.
+- Not implemented: U5 / D6 (resource updates), the Channels permission relay, guardrails over
+  payloads (P2/P3 per plan); UI, TS types, docs, website, demo (UI agent).
+- Real peers: `netget_events_reach_a_client_through_the_real_bridge` (`#[ignore]`d) starts the
+  real HTTP server with `netget --mcp --llm-agent` as a stdio upstream and drives it through
+  the real `localrouter --mcp-bridge`: legacy handshake advertises `claude/channel` + events,
+  `events/list`, `EventPoll` tool, `netget__start_server`, a TCP request → NetGet's
+  `llm.request.pending` arrives at the client as a Claude channel message. Run with
+  `NETGET_BIN=<netget ≥ 0.3.9> cargo test -p localrouter --test push_relay_e2e_tests -- --ignored`.
+  The installed `/Users/matus/bin/netget` is 0.3.5 (no Events); the run used a debug build of
+  netget HEAD (`dbe5763fd`+) in a temp target. Two gateway fixes came out of it: the backend
+  `server/discover` probe also accepts rmcp's `supportedVersions` (NetGet otherwise rejected
+  the following legacy `initialize`), and `initialize` waits for a first-seen server's snapshot
+  even when the handshake itself finished within 2 s.
+- Because NetGet now negotiates 2026-07-28 with LocalRouter, it sends no Claude channel
+  messages of its own on that connection (it only does after a legacy `initialize`); its MCP
+  Events are what reach the client. Channel ingress (U4) is covered by the scripted stdio
+  upstream test instead.
+- Not covered by an automated route-level test: the HTTP SSE answer to `events/stream` and the
+  bridge GET-stream registration (exercised by the real bridge run above).

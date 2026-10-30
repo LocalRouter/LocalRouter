@@ -1049,6 +1049,7 @@ impl McpGateway {
             "_skills" => firewall::InterceptCategory::Skill,
             "_marketplace" => firewall::InterceptCategory::Marketplace,
             "_coding_agents" => firewall::InterceptCategory::CodingAgent,
+            "_push_relay" => firewall::InterceptCategory::PushEvent,
             _ => firewall::InterceptCategory::Mcp,
         };
         let decision = match firewall_result {

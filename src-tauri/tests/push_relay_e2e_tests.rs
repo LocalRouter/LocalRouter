@@ -1823,9 +1823,8 @@ impl BridgeProcess {
 }
 
 /// `netget --mcp --llm-agent` behind LocalRouter, reached by a client through
-/// the real `localrouter --mcp-bridge`: NetGet's Claude channel messages and
-/// its MCP Events both come back to the client as Claude Code channel
-/// messages, and its events are readable with `events/poll`.
+/// the real `localrouter --mcp-bridge`: NetGet's MCP Events come back to the
+/// client as Claude Code channel messages, and are readable with `events/poll`.
 ///
 /// Needs the netget binary (`NETGET_BIN`, default `/Users/matus/bin/netget`)
 /// and a built `localrouter` binary next to this test.
@@ -2014,8 +2013,9 @@ async fn netget_events_reach_a_client_through_the_real_bridge() {
     use tokio::io::AsyncWriteExt;
     tcp.write_all(b"hello\n").await.unwrap();
 
-    // NetGet's MCP Events (relayed from its events/stream) and its own Claude
-    // channel message both arrive as channel messages, attributed
+    // NetGet's MCP Events (relayed from its events/stream) arrive as Claude
+    // channel messages, attributed. (NetGet speaks 2026-07-28 to LocalRouter,
+    // a revision on which it sends no channel messages of its own.)
     let relayed = bridge
         .read_until(Duration::from_secs(60), |v| {
             v["method"] == "notifications/claude/channel"
@@ -2027,14 +2027,7 @@ async fn netget_events_reach_a_client_through_the_real_bridge() {
         .as_str()
         .unwrap()
         .contains("netget__llm.request.pending"));
-    let channel = bridge
-        .read_until(Duration::from_secs(60), |v| {
-            v["method"] == "notifications/claude/channel"
-                && v["params"]["meta"]["event"] == "netget__channel.message"
-        })
-        .await
-        .expect("NetGet's own channel message");
-    assert_eq!(channel["params"]["meta"]["source"], "netget");
+    assert_eq!(relayed["params"]["meta"]["source"], "netget");
 
     // events/poll reads the same journal
     let read = bridge

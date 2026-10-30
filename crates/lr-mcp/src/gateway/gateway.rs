@@ -1339,8 +1339,10 @@ impl McpGateway {
         }
         let value = response.result?;
 
+        // Some SDKs (rmcp) name the list `supportedVersions`
         let supports_stateless = value
             .get("protocolVersions")
+            .or_else(|| value.get("supportedVersions"))
             .and_then(|v| v.as_array())
             .is_some_and(|arr| {
                 arr.iter()
@@ -2893,6 +2895,25 @@ impl McpGateway {
             }
         }
         match outcome {
+            Ok(Ok(Ok(mut response))) if !awaiting_discovery.is_empty() => {
+                // The handshake can finish before the new server's
+                // capabilities are remembered (they are read in the
+                // background): wait for them within the same bound, then
+                // advertise what they allow.
+                let deadline =
+                    started + self.push_relay_config.read().limits.first_discovery_wait();
+                self.wait_for_first_discovery(&session, &awaiting_discovery, deadline)
+                    .await;
+                if let Some(capabilities) = response
+                    .result
+                    .as_mut()
+                    .and_then(|result| result.get_mut("capabilities"))
+                {
+                    let state = session.read().await;
+                    self.apply_push_advertisement(&state, capabilities);
+                }
+                Ok(response)
+            }
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err(AppError::Mcp("MCP initialization task stopped".into())),
             Err(_) => {
