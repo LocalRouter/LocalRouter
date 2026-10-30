@@ -8,7 +8,7 @@
 - [x] Test Coverage Review: cover modified success, failure, concurrency, expiry, recovery and permission paths.
 - [x] Bug Hunt: review races, cancellation, refresh rotation, session identity, safe retry boundaries and secret redaction.
 - [x] Validate with rustup stable workspace all-target Clippy, formatting and workspace tests; run frontend and website checks if shared inputs change.
-- [ ] Commit task changes and automatic catalog updates, integrate into the original branch without disturbing unrelated changes, and push its configured upstream normally. Report local validation separately from hosted CI and installed-app state.
+- [x] Commit task changes and automatic catalog updates, integrate into the original branch without disturbing unrelated changes, and push its configured upstream normally. Report local validation separately from hosted CI and installed-app state.
 
 # MCP OAuth and connection recovery
 
@@ -18,11 +18,11 @@ Investigate and use existing native initialization/attachment paths before addin
 
 ## Authorized release follow-up
 
-- [ ] Verify the current upstream and latest stable release; choose the next unused patch version immediately before dispatch.
-- [ ] Validate the exact integrated release candidate locally and through exact-SHA hosted CI as release validation.
-- [ ] Dispatch the standard release.yml workflow, preserving its normal version, signing, asset and packaging behavior.
-- [ ] Watch the release run by ID and verify tag ancestry, updater metadata, signatures and normal Docker/package follow-ups.
-- [ ] Commit and push the final validation/release record; report installed-app state separately.
+- [x] Verify the current upstream and latest stable release; choose the next unused patch version immediately before dispatch.
+- [x] Validate the exact integrated release candidate locally and through exact-SHA hosted CI as release validation.
+- [x] Dispatch the standard release.yml workflow, preserving its normal version, signing, asset and packaging behavior.
+- [x] Watch the release run by ID and verify tag ancestry, updater metadata, signatures and normal Docker/package follow-ups.
+- [x] Commit and push the final validation/release record; report installed-app state separately.
 
 ## Live findings
 
@@ -49,3 +49,17 @@ The final rotation audit found and fixed caller-cancellation during refresh: a b
 Final local stable workspace Clippy with all targets and warnings denied passes; formatting check passes. Full workspace tests pass on the same pinned stable 1.99.1 compiler: 4,713 passed, 69 ignored, zero failed across 111 suites. Existing dependency `block 0.1.6` emits a future-incompatibility notice; no Clippy warnings were suppressed. No frontend or command schema changed, so local frontend builds are not required for this patch; the authorized exact-candidate release CI includes frontend and website builds.
 
 Final pre-commit validation: stable 1.99.1 compiler resolved to /Users/matus/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc, with its sysroot/bin first on PATH and RUSTC pinned; sccache was disabled for these commands only. Workspace all-target Clippy with -D warnings, cargo fmt --all -- --check, git diff --check and cargo test --workspace pass. All 28 gateway stability regressions pass within that full run, including the partial-SSE-body failure assertion. Validation logs are /tmp/localrouter-mcp-recovery-{clippy,fmt,workspace}.log. The automatically refreshed models.dev snapshot is included under the project catalog policy. No package/script/frontend implementation changed.
+
+## Release and final validation record
+
+Implementation commit `b4eaad5390d915c963b2a3c27230cfcabd5f8df6` was pushed normally to master. SSH authentication was unavailable in this agent session; the normal, non-force push used the existing authenticated GitHub HTTPS credential helper without changing the configured upstream or exposing credentials.
+
+Exact-candidate hosted CI [41071891184](https://github.com/LocalRouter/LocalRouter/actions/runs/41071891184) passed with event workflow_dispatch and head_sha b4eaad5390d915c963b2a3c27230cfcabd5f8df6. Linux Rust tests reported 4,700 passed, 69 ignored and zero failed across 111 suites; Clippy and formatting passed. Desktop unit tests, packaging script regressions, desktop build and website build:check passed. Local macOS stable validation reported 4,713 passed, 69 ignored and zero failed across 111 suites. Hosted action Node deprecation/runner migration annotations are infrastructure notices, not failed checks.
+
+The user explicitly authorized a new release after the fixes. Preflight confirmed v0.0.171 was latest, v0.0.172 was unused and no competing release was active. Standard [release run 41074591549](https://github.com/LocalRouter/LocalRouter/actions/runs/41074591549) passed and published [v0.0.172](https://github.com/LocalRouter/LocalRouter/releases/tag/v0.0.172) at 2026-10-30T15:25:04Z. Its tag is c62f81a189c8deb59bad98d01c1912fcb631e8d9, a descendant of the validated candidate. The tag adds only the four expected version files; Cargo.lock differs only in workspace version numbers, with dependency versions unchanged. All five native targets and both architectures of Snap and Flatpak passed. The package-manager publication job and Snap Store upload remain disabled as configured; no external package-manager delivery is claimed.
+
+Downloaded and hashed all 24 unique release assets, including native installers and Snap/Flatpak bundles, against the release API SHA-256 digests. All six updater/installer signatures passed minisign verification with the bundled updater public key. All five latest.json platforms resolve to this version and carry the matching signatures. Both macOS bundle Info.plist versions are 0.0.172. All eight stable aliases match their versioned asset sizes/digests; 32 published assets are nonempty. Verification summary and downloaded artifacts are under /tmp/localrouter-0.0.172-verification/; the summary is verification.json.
+
+Normal [Docker follow-up 41080558457](https://github.com/LocalRouter/LocalRouter/actions/runs/41080558457) passed. Registry inspection confirms tags 0.0.172, v0.0.172 and latest share digest sha256:8ccea9f735f80d3af3a419d2578f55a5dbcfd34d634e4836b3d3be8510ed53ff and include linux/amd64 and linux/arm64. The Nix pin update passed and both hashes match the release Debian packages used by the flake. Unrelated concurrently committed session-communication documentation was preserved.
+
+The configured Atlassian endpoint repair and successful read-only Jira/Datadog checks were exercised in the installed app. The installed /Applications/LocalRouter.app still reports 0.0.171; the newly published runtime changes require updating the app. No app replacement/restart, new OAuth consent, direct Keychain CLI read or external notification was performed during release verification. Four pre-existing untracked release plans were preserved. Final documentation-only validation uses git diff --check; no new runtime code was added after the validated candidate.
