@@ -1606,13 +1606,20 @@ export interface PushPermissions {
 export type EventDeliveryMode = 'push' | 'poll' | 'webhook'
 
 /**
- * Global Push Relay settings: the master switch and the default permission.
- * Every limit is internal to the relay and not configurable.
+ * Global Push Relay settings: the master switch, the default permission, the
+ * Claude Channels rate and how much event history each client keeps. Every
+ * other limit is internal to the relay and not configurable.
  * Rust: src-tauri/src/ui/commands_push_relay.rs - PushRelayConfigView struct
  */
 export interface PushRelayConfig {
   enabled: boolean
   default_permission: PushPermission
+  /** Claude Channels messages per client session per minute (default 10, 1–600) */
+  channel_messages_per_minute: number
+  /** Hours an event stays in a client's journal (default 24, 1–720) */
+  history_retention_hours: number
+  /** Events kept in each client's journal (default 10,000, 100–1,000,000) */
+  history_max_events: number
 }
 
 /**
@@ -5536,10 +5543,13 @@ export interface DiscoverResourceIconParams { endpointUrl: string }
 
 /** Params for get_push_relay_config */
 export type GetPushRelayConfigParams = Record<string, never>
-/** Params for update_push_relay_config */
+/** Params for update_push_relay_config (a value out of its bounds is refused) */
 export interface UpdatePushRelayConfigParams {
   enabled?: boolean
   defaultPermission?: PushPermission
+  channelMessagesPerMinute?: number
+  historyRetentionHours?: number
+  historyMaxEvents?: number
 }
 /** Params for list_push_sources */
 export type ListPushSourcesParams = Record<string, never>

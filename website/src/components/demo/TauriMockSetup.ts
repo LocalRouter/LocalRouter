@@ -4011,6 +4011,9 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'update_push_relay_config': (args): PushRelayConfig => {
     if (args?.enabled !== undefined) mockPushRelayConfig.enabled = args.enabled
     if (args?.defaultPermission !== undefined) mockPushRelayConfig.default_permission = args.defaultPermission
+    if (args?.channelMessagesPerMinute !== undefined) mockPushRelayConfig.channel_messages_per_minute = args.channelMessagesPerMinute
+    if (args?.historyRetentionHours !== undefined) mockPushRelayConfig.history_retention_hours = args.historyRetentionHours
+    if (args?.historyMaxEvents !== undefined) mockPushRelayConfig.history_max_events = args.historyMaxEvents
     setTimeout(() => emit('clients-changed', {}), 10)
     return { ...mockPushRelayConfig }
   },

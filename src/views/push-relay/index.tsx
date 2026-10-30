@@ -22,6 +22,7 @@ import type {
   PushSourceInfo,
   UpdatePushRelayConfigParams,
 } from "@/types/tauri-commands"
+import { RelaySettingsCard } from "./RelaySettingsCard"
 import { UpstreamSourcesList } from "./UpstreamSourcesList"
 
 interface PushRelayViewProps {
@@ -215,6 +216,10 @@ export function PushRelayView({ activeSubTab, onTabChange }: PushRelayViewProps)
                   )}
                 </CardContent>
               </Card>
+            )}
+
+            {config && (
+              <RelaySettingsCard config={config} disabled={saving || !config.enabled} onUpdate={update} />
             )}
 
             <Card>

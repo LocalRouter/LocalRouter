@@ -18,6 +18,9 @@ import type {
 export const mockPushRelayConfig: PushRelayConfig = {
   enabled: true,
   default_permission: 'allow',
+  channel_messages_per_minute: 10,
+  history_retention_hours: 24,
+  history_max_events: 10_000,
 }
 
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString()
