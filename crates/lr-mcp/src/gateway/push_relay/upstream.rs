@@ -36,6 +36,9 @@ use lr_types::{AppError, AppResult};
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Events requested per upstream `events/poll`.
 const UPSTREAM_POLL_BATCH: u64 = 100;
+/// Upstream event ids remembered per subscription, so events replayed after
+/// a reconnect are not relayed twice.
+const REPLAY_WINDOW: usize = 1024;
 
 /// Whose connection a subscription runs on.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
@@ -321,6 +324,7 @@ struct Runner {
     cancel: CancellationToken,
     cursor: Option<String>,
     backoff: Duration,
+    seen: std::collections::VecDeque<String>,
 }
 
 impl Runner {
@@ -342,6 +346,15 @@ impl Runner {
         }
         if let Some(obj) = event.as_object_mut() {
             obj.remove("_meta");
+        }
+        if let Some(id) = event.get("eventId").and_then(Value::as_str) {
+            if self.seen.iter().any(|seen| seen == id) {
+                return;
+            }
+            self.seen.push_back(id.to_string());
+            if self.seen.len() > REPLAY_WINDOW {
+                self.seen.pop_front();
+            }
         }
         {
             let mut status = self.status.lock();
@@ -581,6 +594,7 @@ impl UpstreamHub {
                 cancel: cancel.clone(),
                 cursor: None,
                 backoff: Duration::ZERO,
+                seen: std::collections::VecDeque::new(),
             };
             tokio::spawn(runner.run());
             subscriptions.insert(

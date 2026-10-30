@@ -919,6 +919,9 @@ pub struct AppState {
 
     /// In-memory monitor event store for real-time traffic inspection
     pub monitor_store: Arc<lr_monitor::MonitorEventStore>,
+
+    /// Push Relay (set up by [`Self::with_mcp`]).
+    pub push_relay: Option<Arc<lr_mcp::gateway::push_relay::PushRelay>>,
 }
 
 impl AppState {
@@ -1036,6 +1039,7 @@ impl AppState {
                 lr_mcp::gateway::sampling_approval::SamplingPassthroughManager::new(120),
             ),
             monitor_store: Arc::new(lr_monitor::MonitorEventStore::new(1000)),
+            push_relay: None,
         };
 
         let capture_config = result.config_manager.clone();
@@ -1122,6 +1126,31 @@ impl AppState {
             })
         }));
 
+        // Push Relay: relays upstream push to clients. It reads clients from
+        // the client manager and writes permanent decisions to the config.
+        let client_manager = self.client_manager.clone();
+        let push_relay = lr_mcp::gateway::push_relay::PushRelay::new(
+            mcp_gateway.as_ref().clone(),
+            self.config_manager.get().push_relay,
+            Arc::new(move |client_id| client_manager.get_client(client_id)),
+        );
+        let persist_config = self.config_manager.clone();
+        push_relay.set_persister(Arc::new(move |client_id, change| {
+            let config_manager = persist_config.clone();
+            Box::pin(async move {
+                config_manager
+                    .update(|cfg| {
+                        if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
+                            apply_push_config_change(client, &change);
+                        }
+                    })
+                    .map_err(|e| e.to_string())?;
+                config_manager.save().await.map_err(|e| e.to_string())
+            })
+        }));
+        mcp_gateway.set_push_relay(push_relay.clone());
+        mcp_gateway.register_virtual_server(push_relay.tools_server());
+
         // Wire passthrough: forward server→client requests via SSE connection manager
         let sse_mgr = self.sse_connection_manager.clone();
         mcp_gateway.set_client_request_sender(move |client_id, request| {
@@ -1201,7 +1230,20 @@ impl AppState {
         Self {
             mcp_server_manager,
             mcp_gateway,
+            push_relay: Some(push_relay),
             ..self
+        }
+    }
+
+    /// Apply changed Push Relay settings (call after saving `push_relay`).
+    pub fn apply_push_relay_config(&self, config: &lr_config::PushRelayConfig) {
+        match &self.push_relay {
+            Some(relay) => {
+                if relay.config() != *config {
+                    relay.update_config(config);
+                }
+            }
+            None => self.mcp_gateway.update_push_relay_config(config),
         }
     }
 
@@ -1535,6 +1577,24 @@ impl ModelSelection {
                 // For now, allow all models (will be handled by router logic)
                 true
             }
+        }
+    }
+}
+
+/// Write a Push Relay decision into a client's configuration.
+pub fn apply_push_config_change(
+    client: &mut lr_config::Client,
+    change: &lr_mcp::gateway::push_relay::PushConfigChange,
+) {
+    use lr_mcp::gateway::push_relay::PushConfigChange;
+    match change {
+        PushConfigChange::EventPermission {
+            server_id,
+            event_name,
+            permission,
+        } => client.set_push_event_permission(server_id, event_name, Some(*permission)),
+        PushConfigChange::WebhookUrl { url } => {
+            client.approve_push_webhook_url(url);
         }
     }
 }

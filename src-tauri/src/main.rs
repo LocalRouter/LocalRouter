@@ -1522,8 +1522,23 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                         )
                         .await;
                     });
+                    // Push permissions and fallback-tool settings may have changed
+                    if let Some(relay) = &app_state_for_clients.push_relay {
+                        relay.notify_clients_changed();
+                    }
                 });
                 info!("Registered clients-changed listener for permission notifications");
+
+                // Push Relay settings take effect as soon as the config is saved
+                let app_state_for_push = app_state.clone();
+                let config_manager_for_push = config_manager.clone();
+                app.listen("config-changed", move |_event| {
+                    let push_relay = config_manager_for_push.get().push_relay;
+                    let app_state = app_state_for_push.clone();
+                    tauri::async_runtime::spawn(async move {
+                        app_state.apply_push_relay_config(&push_relay);
+                    });
+                });
 
                 // Re-evaluate pending firewall approvals when permissions or strategies change.
                 // clients-changed: covers client permission updates (MCP, model, guardrails)

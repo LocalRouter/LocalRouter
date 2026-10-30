@@ -1960,7 +1960,15 @@ pub async fn submit_firewall_approval(
     // (config_manager.update() synchronously calls sync_clients()).
     // Wrapped in an async block so that errors don't prevent submit_response (Phase 2)
     // from being called — the current request must always get a response.
+    // Push Relay applies its own decisions (session overrides, permanent
+    // permissions and approved webhook URLs) when the response reaches it.
+    let is_push_relay_request = pending_info
+        .as_ref()
+        .is_some_and(|info| info.is_push_event_request);
     let phase1_err = async {
+    if is_push_relay_request {
+        return Ok::<(), String>(());
+    }
     match action {
         FirewallApprovalAction::AllowPermanent => {
             if let Some(ref info) = pending_info {
@@ -2392,7 +2400,8 @@ pub(crate) fn reevaluate_pending_approvals(
         // not derived from client permissions — no config change can resolve
         // them, and the fallback MCP-tool context below would misread their
         // "Secret Scan" server name as a real MCP server.
-        if info.is_secret_scan_request || info.is_notify_only {
+        // Push Relay re-evaluates its own held events against push permissions
+        if info.is_secret_scan_request || info.is_notify_only || info.is_push_event_request {
             continue;
         }
 

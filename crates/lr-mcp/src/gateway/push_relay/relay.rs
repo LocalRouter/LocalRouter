@@ -465,6 +465,23 @@ impl PushRelay {
                 self.ensure_channel(&ctx);
             }
         }
+        // Held events whose type is no longer Ask follow the new permission
+        let held = self.ask.lock().queues.list();
+        for (_, event) in held.into_iter().filter(|(_, e)| e.decision.is_none()) {
+            let Some(client) = self.client(&event.client_id) else {
+                continue;
+            };
+            let action = match self.permission(
+                &client,
+                &event.occurrence.server_id,
+                &event.occurrence.upstream_name,
+            ) {
+                PushPermission::Allow => PushDecisionAction::Allow,
+                PushPermission::Block => PushDecisionAction::Deny,
+                PushPermission::Ask => continue,
+            };
+            let _ = self.decide(&event.hold_id, PushDecision::new(action));
+        }
         self.check_list_changed();
         self.reconcile();
     }
