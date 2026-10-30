@@ -1747,3 +1747,310 @@ async fn webhook_egress_can_be_switched_off() {
     let list = h.send("s1", "events/list", None).await.result.unwrap();
     assert_eq!(list["events"][0]["delivery"], json!(["poll", "push"]));
 }
+
+// ---------------------------------------------------------------------------
+// Real peers: `netget --mcp` upstream, the real STDIO bridge downstream
+// ---------------------------------------------------------------------------
+
+/// The first `127.0.0.1:<port>` or `port <n>` / `port: <n>` in a text.
+fn find_port(text: &str) -> Option<u16> {
+    let digits = |rest: &str| -> Option<u16> {
+        let n: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        n.parse().ok().filter(|p| *p > 0)
+    };
+    for marker in ["127.0.0.1:", "port: ", "port ", "Port: ", "Port "] {
+        for (i, _) in text.match_indices(marker) {
+            if let Some(port) = digits(&text[i + marker.len()..]) {
+                return Some(port);
+            }
+        }
+    }
+    None
+}
+
+struct BridgeProcess {
+    child: tokio::process::Child,
+    stdin: tokio::process::ChildStdin,
+    lines: tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>,
+    seen: Vec<Value>,
+}
+
+impl BridgeProcess {
+    async fn write(&mut self, message: Value) {
+        use tokio::io::AsyncWriteExt;
+        self.stdin
+            .write_all(format!("{message}\n").as_bytes())
+            .await
+            .unwrap();
+        self.stdin.flush().await.unwrap();
+    }
+
+    /// Read lines until one satisfies `want` (every line is kept in `seen`).
+    async fn read_until(
+        &mut self,
+        timeout: Duration,
+        want: impl Fn(&Value) -> bool,
+    ) -> Option<Value> {
+        if let Some(found) = self.seen.iter().find(|v| want(v)) {
+            return Some(found.clone());
+        }
+        let deadline = Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let line = tokio::time::timeout(remaining, self.lines.next_line())
+                .await
+                .ok()?
+                .ok()??;
+            let Ok(value) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            self.seen.push(value.clone());
+            if want(&value) {
+                return Some(value);
+            }
+        }
+    }
+
+    async fn request(&mut self, id: u64, method: &str, params: Value) -> Value {
+        self.write(json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))
+            .await;
+        self.read_until(Duration::from_secs(60), |v| {
+            v["id"] == json!(id) && v.get("method").is_none()
+        })
+        .await
+        .unwrap_or_else(|| panic!("no answer to {method}"))
+    }
+}
+
+/// `netget --mcp --llm-agent` behind LocalRouter, reached by a client through
+/// the real `localrouter --mcp-bridge`: NetGet's Claude channel messages and
+/// its MCP Events both come back to the client as Claude Code channel
+/// messages, and its events are readable with `events/poll`.
+///
+/// Needs the netget binary (`NETGET_BIN`, default `/Users/matus/bin/netget`)
+/// and a built `localrouter` binary next to this test.
+#[tokio::test]
+#[ignore = "drives the real netget binary and the real STDIO bridge; run with --ignored"]
+async fn netget_events_reach_a_client_through_the_real_bridge() {
+    use localrouter::clients::{ClientManager, TokenStore};
+    use tokio::io::AsyncBufReadExt;
+
+    let netget = std::env::var("NETGET_BIN").unwrap_or_else(|_| "/Users/matus/bin/netget".into());
+    assert!(
+        std::path::Path::new(&netget).exists(),
+        "netget binary not found at {netget}"
+    );
+    let bridge_bin =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/debug/localrouter");
+    assert!(bridge_bin.exists(), "build the localrouter binary first");
+
+    let mut netget_server = stdio_server();
+    netget_server.id = "netget".into();
+    netget_server.name = "NetGet".into();
+    netget_server.transport_config = McpTransportConfig::Stdio {
+        command: netget.clone(),
+        args: vec!["--mcp".into(), "--llm-agent".into()],
+        env: HashMap::new(),
+        cwd: Some(std::env::temp_dir().to_string_lossy().to_string()),
+    };
+    netget_server.capability_snapshot = None;
+
+    let mut pr_client = client("pr-e2e");
+    pr_client.enabled = true;
+    let config = AppConfig {
+        clients: vec![pr_client.clone()],
+        strategies: vec![lr_config::Strategy::new("Default".to_string())],
+        mcp_servers: vec![netget_server.clone()],
+        ..Default::default()
+    };
+    let config_manager = Arc::new(ConfigManager::new(
+        config,
+        std::env::temp_dir().join(format!("pr_e2e_{}.yaml", uuid::Uuid::new_v4())),
+    ));
+    let mcp_server_manager = Arc::new(McpServerManager::new());
+    mcp_server_manager.add_config(netget_server);
+    let metrics_db = Arc::new(
+        MetricsDatabase::new(
+            std::env::temp_dir().join(format!("pr_e2e_{}.db", uuid::Uuid::new_v4())),
+        )
+        .unwrap(),
+    );
+    let metrics_collector = Arc::new(MetricsCollector::new(metrics_db));
+    let provider_registry = Arc::new(ProviderRegistry::new());
+    let rate_limiter = Arc::new(RateLimiterManager::new(None));
+    let router = Arc::new(Router::new(
+        config_manager.clone(),
+        provider_registry.clone(),
+        rate_limiter.clone(),
+        metrics_collector.clone(),
+        Arc::new(lr_router::FreeTierManager::new(None)),
+    ));
+    let token_store = Arc::new(TokenStore::new());
+    let (token, _) = token_store.generate_token("pr-e2e".into()).unwrap();
+    let (state, _handle, port, shutdown) = localrouter::server::start_server(
+        localrouter::server::ServerConfig {
+            host: "127.0.0.1".into(),
+            port: 0,
+            enable_cors: false,
+        },
+        router,
+        mcp_server_manager,
+        rate_limiter,
+        provider_registry,
+        config_manager,
+        Arc::new(ClientManager::new(vec![pr_client])),
+        token_store,
+        metrics_collector,
+        None,
+    )
+    .await
+    .expect("server");
+
+    let home = std::env::temp_dir().join(format!("pr_e2e_home_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    let mut child = tokio::process::Command::new(&bridge_bin)
+        .args(["--mcp-bridge", "--client-id", "pr-e2e", "--url"])
+        .arg(format!("http://127.0.0.1:{port}/mcp"))
+        .env("LOCALROUTER_CLIENT_SECRET", &token)
+        .env("HOME", &home)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("bridge");
+    let mut bridge = BridgeProcess {
+        stdin: child.stdin.take().unwrap(),
+        lines: tokio::io::BufReader::new(child.stdout.take().unwrap()).lines(),
+        child,
+        seen: Vec::new(),
+    };
+
+    // Claude Code's legacy handshake through the bridge
+    let init = bridge
+        .request(
+            1,
+            "initialize",
+            json!({"protocolVersion": "2025-11-25", "capabilities": {},
+            "clientInfo": {"name": "claude-code", "version": "2"}}),
+        )
+        .await;
+    let caps = &init["result"]["capabilities"];
+    assert_eq!(
+        caps["experimental"][CLAUDE_CHANNEL_CAPABILITY],
+        json!({}),
+        "{init}"
+    );
+    assert_eq!(
+        caps["extensions"][EVENTS_EXTENSION_ID],
+        json!({"listChanged": true})
+    );
+    bridge
+        .write(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+        .await;
+
+    let list = bridge.request(2, "events/list", json!({})).await;
+    let names: Vec<String> = list["result"]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["name"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        names.contains(&"netget__llm.request.pending".to_string()),
+        "{names:?}"
+    );
+    assert!(
+        names.contains(&"netget__channel.message".to_string()),
+        "{names:?}"
+    );
+    let tools = bridge.request(3, "tools/list", json!({})).await;
+    let tool_names: Vec<&str> = tools["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert!(tool_names.contains(&"EventPoll"), "{tool_names:?}");
+    let poll = bridge
+        .request(
+            4,
+            "events/poll",
+            json!({"name": "netget__access_log.recorded"}),
+        )
+        .await;
+    let access_cursor = poll["result"]["cursor"].as_str().unwrap().to_string();
+
+    // Make NetGet produce events: a TCP server whose requests queue for the agent
+    let started = bridge
+        .request(
+            5,
+            "tools/call",
+            json!({"name": "netget__start_server", "arguments": {
+            "protocol": "tcp", "port": 0, "instruction": "Answer every line with OK"}}),
+        )
+        .await;
+    let text = started["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(text.contains("started"), "{started}");
+    let listed = bridge
+        .request(
+            50,
+            "tools/call",
+            json!({"name": "netget__list_servers", "arguments": {}}),
+        )
+        .await;
+    let listed = listed["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let tcp_port = find_port(&format!("{text}\n{listed}"))
+        .unwrap_or_else(|| panic!("no port in {text} / {listed}"));
+    let mut tcp = tokio::net::TcpStream::connect(("127.0.0.1", tcp_port))
+        .await
+        .unwrap();
+    use tokio::io::AsyncWriteExt;
+    tcp.write_all(b"hello\n").await.unwrap();
+
+    // NetGet's MCP Events (relayed from its events/stream) and its own Claude
+    // channel message both arrive as channel messages, attributed
+    let relayed = bridge
+        .read_until(Duration::from_secs(60), |v| {
+            v["method"] == "notifications/claude/channel"
+                && v["params"]["meta"]["event"] == "netget__llm.request.pending"
+        })
+        .await
+        .expect("relayed MCP Event as a channel message");
+    assert!(relayed["params"]["content"]
+        .as_str()
+        .unwrap()
+        .contains("netget__llm.request.pending"));
+    let channel = bridge
+        .read_until(Duration::from_secs(60), |v| {
+            v["method"] == "notifications/claude/channel"
+                && v["params"]["meta"]["event"] == "netget__channel.message"
+        })
+        .await
+        .expect("NetGet's own channel message");
+    assert_eq!(channel["params"]["meta"]["source"], "netget");
+
+    // events/poll reads the same journal
+    let read = bridge
+        .request(
+            6,
+            "events/poll",
+            json!({"name": "netget__access_log.recorded", "cursor": access_cursor}),
+        )
+        .await;
+    assert!(read["result"]["events"].is_array(), "{read}");
+
+    drop(tcp);
+    let _ = bridge.child.kill().await;
+    shutdown.cancel();
+    if let Some(relay) = &state.push_relay {
+        relay.notify_clients_changed();
+    }
+    let _ = std::fs::remove_dir_all(&home);
+}

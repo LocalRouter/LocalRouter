@@ -222,10 +222,8 @@ pub async fn mcp_gateway_get_handler(
         // Send endpoint event first (MCP SSE transport spec)
         // Include sessionId in the endpoint URL so POST requests are routed back to this connection
         tracing::debug!("SSE stream started: client={}, session={}", &client_id[..8.min(client_id.len())], &session_id[..8]);
-        if !is_streamable {
-            let endpoint = format!("/?sessionId={}", session_id);
-            yield Ok::<_, Infallible>(Event::default().event("endpoint").data(endpoint));
-        }
+        let endpoint = format!("/?sessionId={}", session_id);
+        yield Ok::<_, Infallible>(Event::default().event("endpoint").data(endpoint));
 
         loop {
             // Use biased select to prioritize responses over notifications

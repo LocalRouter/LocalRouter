@@ -1241,6 +1241,7 @@ impl PushRelay {
                     Some(head) => head,
                     None => {
                         ask.workers.remove(&queue);
+                        self.ask_wakers.remove(&queue);
                         break;
                     }
                 }
@@ -1282,7 +1283,6 @@ impl PushRelay {
                 self.resolve(held, decision).await;
             }
         }
-        self.ask_wakers.remove(&queue);
     }
 
     /// Apply a decision (`None` = timed out) to a held event.
@@ -1417,12 +1417,22 @@ impl PushRelay {
                 )
                 .map_err(|e| e.to_string());
         }
-        let queue = self.ask.lock().queues.decide(hold_id, decision);
-        let Some(queue) = queue else {
-            return Err(format!("No held event {hold_id}"));
+        let (queue, is_head) = {
+            let mut ask = self.ask.lock();
+            let Some(queue) = ask.queues.decide(hold_id, decision) else {
+                return Err(format!("No held event {hold_id}"));
+            };
+            let is_head = ask
+                .queues
+                .front(&queue.0, &queue.1)
+                .is_some_and(|head| head.hold_id == hold_id);
+            (queue, is_head)
         };
-        if let Some(waker) = self.ask_wakers.get(&queue) {
-            waker.notify_waiters();
+        // Only the head is being asked about; later events wait their turn
+        if is_head {
+            if let Some(waker) = self.ask_wakers.get(&queue) {
+                waker.notify_one();
+            }
         }
         Ok(())
     }
@@ -1704,8 +1714,9 @@ impl PushRelay {
         let mut names: Vec<&str> = entries.iter().map(|e| e.qualified_name.as_str()).collect();
         names.sort_unstable();
         let id = format!(
-            "{}:{client_id}:{}:{}",
+            "{}:{client_id}:{}:{}:{}",
             kind.egress(),
+            session_key.unwrap_or_default(),
             names.join(","),
             canonical_json(&Value::Object(arguments.clone()))
         );

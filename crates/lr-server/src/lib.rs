@@ -466,16 +466,17 @@ fn build_app(state: AppState, enable_cors: bool, shutdown: CancellationToken) ->
     // Merge OAuth routes (no auth required - these ARE the auth endpoints)
     router = router.merge(oauth_routes);
 
-    // Merge MCP routes (these use OAuth auth, not API key auth)
-    router = router.merge(mcp_routes);
-
     // Push Relay's event watch authenticates with the watch token minted
-    // for the client by its `EventWait` tool
+    // for the client by its `EventWait` tool. Merged before the MCP routes,
+    // whose authenticated fallback answers unknown paths.
     router = router.merge(
         Router::new()
             .route("/events/watch", get(routes::events_watch_handler))
             .with_state(state.clone()),
     );
+
+    // Merge MCP routes (these use OAuth auth, not API key auth)
+    router = router.merge(mcp_routes);
 
     // Cross-hop request trace (must sit inside logging so the scope covers
     // the whole handler, including every upstream call it makes).
