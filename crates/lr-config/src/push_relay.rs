@@ -30,13 +30,52 @@ pub enum PushPermission {
     Block,
 }
 
+/// Default of [`PushRelayConfig::channel_messages_per_minute`].
+pub const DEFAULT_CHANNEL_MESSAGES_PER_MINUTE: u32 = 10;
+/// Bounds of [`PushRelayConfig::channel_messages_per_minute`].
+pub const CHANNEL_MESSAGES_PER_MINUTE_RANGE: std::ops::RangeInclusive<u32> = 1..=600;
+/// Default of [`PushRelayConfig::history_retention_hours`].
+pub const DEFAULT_HISTORY_RETENTION_HOURS: u32 = 24;
+/// Bounds of [`PushRelayConfig::history_retention_hours`].
+pub const HISTORY_RETENTION_HOURS_RANGE: std::ops::RangeInclusive<u32> = 1..=720;
+/// Default of [`PushRelayConfig::history_max_events`].
+pub const DEFAULT_HISTORY_MAX_EVENTS: u32 = 10_000;
+/// Bounds of [`PushRelayConfig::history_max_events`].
+pub const HISTORY_MAX_EVENTS_RANGE: std::ops::RangeInclusive<u32> = 100..=1_000_000;
+
+fn default_channel_messages_per_minute() -> u32 {
+    DEFAULT_CHANNEL_MESSAGES_PER_MINUTE
+}
+
+fn is_default_channel_messages_per_minute(value: &u32) -> bool {
+    *value == DEFAULT_CHANNEL_MESSAGES_PER_MINUTE
+}
+
+fn default_history_retention_hours() -> u32 {
+    DEFAULT_HISTORY_RETENTION_HOURS
+}
+
+fn is_default_history_retention_hours(value: &u32) -> bool {
+    *value == DEFAULT_HISTORY_RETENTION_HOURS
+}
+
+fn default_history_max_events() -> u32 {
+    DEFAULT_HISTORY_MAX_EVENTS
+}
+
+fn is_default_history_max_events(value: &u32) -> bool {
+    *value == DEFAULT_HISTORY_MAX_EVENTS
+}
+
 /// Global Push Relay settings (`push_relay` in the config).
 ///
-/// Only the master switch and the global default permission are
-/// configurable. Every bound (journal size, poll page size, webhook retries,
-/// ...) is an internal constant of the relay. Unknown keys are ignored, so a
-/// config written with the older `limits`, `webhook_egress_enabled`,
-/// `allow_loopback_http` or `ask_timeout_secs` keys still loads.
+/// The master switch, the global default permission, the Claude Channels
+/// rate and how much event history each client keeps. Every other bound
+/// (journal byte size, poll page size, webhook retries, ...) is an internal
+/// constant of the relay. Unknown keys are ignored, so a config written with
+/// the older `limits`, `webhook_egress_enabled`, `allow_loopback_http` or
+/// `ask_timeout_secs` keys still loads, and each setting absent from a
+/// config takes its default.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PushRelayConfig {
     /// Master switch. When off, no push is advertised or relayed to anyone.
@@ -47,6 +86,29 @@ pub struct PushRelayConfig {
     /// overrides say otherwise.
     #[serde(default)]
     pub default_permission: PushPermission,
+
+    /// Claude Channels messages sent per client session per minute. Events
+    /// beyond it are coalesced into one message pointing at `EventPoll`.
+    #[serde(
+        default = "default_channel_messages_per_minute",
+        skip_serializing_if = "is_default_channel_messages_per_minute"
+    )]
+    pub channel_messages_per_minute: u32,
+
+    /// Age after which an event leaves a client's journal (the history
+    /// available to polling and reconnecting clients).
+    #[serde(
+        default = "default_history_retention_hours",
+        skip_serializing_if = "is_default_history_retention_hours"
+    )]
+    pub history_retention_hours: u32,
+
+    /// Events kept per client's journal; the oldest go first.
+    #[serde(
+        default = "default_history_max_events",
+        skip_serializing_if = "is_default_history_max_events"
+    )]
+    pub history_max_events: u32,
 }
 
 impl Default for PushRelayConfig {
@@ -54,6 +116,9 @@ impl Default for PushRelayConfig {
         Self {
             enabled: true,
             default_permission: PushPermission::Allow,
+            channel_messages_per_minute: DEFAULT_CHANNEL_MESSAGES_PER_MINUTE,
+            history_retention_hours: DEFAULT_HISTORY_RETENTION_HOURS,
+            history_max_events: DEFAULT_HISTORY_MAX_EVENTS,
         }
     }
 }
@@ -61,6 +126,41 @@ impl Default for PushRelayConfig {
 impl PushRelayConfig {
     pub fn is_default(&self) -> bool {
         self == &Self::default()
+    }
+
+    /// Check every numeric setting against its bounds, naming the first one
+    /// out of range.
+    pub fn validate(&self) -> Result<(), String> {
+        fn check(
+            name: &str,
+            value: u32,
+            range: &std::ops::RangeInclusive<u32>,
+        ) -> Result<(), String> {
+            if range.contains(&value) {
+                Ok(())
+            } else {
+                Err(format!(
+                    "{name} must be between {} and {}, got {value}",
+                    range.start(),
+                    range.end()
+                ))
+            }
+        }
+        check(
+            "channel_messages_per_minute",
+            self.channel_messages_per_minute,
+            &CHANNEL_MESSAGES_PER_MINUTE_RANGE,
+        )?;
+        check(
+            "history_retention_hours",
+            self.history_retention_hours,
+            &HISTORY_RETENTION_HOURS_RANGE,
+        )?;
+        check(
+            "history_max_events",
+            self.history_max_events,
+            &HISTORY_MAX_EVENTS_RANGE,
+        )
     }
 }
 
@@ -481,6 +581,9 @@ clients:
         let config: AppConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(!config.push_relay.enabled);
         assert_eq!(config.push_relay.default_permission, PushPermission::Ask);
+        assert_eq!(config.push_relay.channel_messages_per_minute, 10);
+        assert_eq!(config.push_relay.history_retention_hours, 24);
+        assert_eq!(config.push_relay.history_max_events, 10_000);
         assert_eq!(
             config.clients[0].push_webhook_urls,
             vec!["http://127.0.0.1:9000/hook".to_string()]
@@ -690,5 +793,71 @@ clients:
             manager.get().mcp_servers[0].capability_snapshot,
             Some(changed)
         );
+    }
+
+    #[test]
+    fn rate_and_history_settings_default_and_round_trip() {
+        let defaults = PushRelayConfig::default();
+        assert_eq!(defaults.channel_messages_per_minute, 10);
+        assert_eq!(defaults.history_retention_hours, 24);
+        assert_eq!(defaults.history_max_events, 10_000);
+
+        // A config that names only the older keys takes the defaults
+        let old: PushRelayConfig =
+            serde_yaml::from_str("enabled: true\ndefault_permission: allow\n").unwrap();
+        assert_eq!(old, defaults);
+
+        // Defaults are not written
+        let yaml = serde_yaml::to_string(&defaults).unwrap();
+        for key in [
+            "channel_messages_per_minute",
+            "history_retention_hours",
+            "history_max_events",
+        ] {
+            assert!(!yaml.contains(key), "{key} saved at its default:\n{yaml}");
+        }
+
+        // Non-default values are written and read back
+        let custom = PushRelayConfig {
+            channel_messages_per_minute: 30,
+            history_retention_hours: 72,
+            history_max_events: 500,
+            ..PushRelayConfig::default()
+        };
+        let yaml = serde_yaml::to_string(&custom).unwrap();
+        assert!(yaml.contains("channel_messages_per_minute: 30"), "{yaml}");
+        assert!(yaml.contains("history_retention_hours: 72"), "{yaml}");
+        assert!(yaml.contains("history_max_events: 500"), "{yaml}");
+        let parsed: PushRelayConfig = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(parsed, custom);
+        assert!(!custom.is_default());
+    }
+
+    #[test]
+    fn validate_checks_bounds() {
+        assert!(PushRelayConfig::default().validate().is_ok());
+        let with = |f: fn(&mut PushRelayConfig)| {
+            let mut c = PushRelayConfig::default();
+            f(&mut c);
+            c.validate()
+        };
+        assert!(with(|c| c.channel_messages_per_minute = 1).is_ok());
+        assert!(with(|c| c.channel_messages_per_minute = 600).is_ok());
+        assert!(with(|c| c.channel_messages_per_minute = 0)
+            .unwrap_err()
+            .contains("channel_messages_per_minute"));
+        assert!(with(|c| c.channel_messages_per_minute = 601).is_err());
+        assert!(with(|c| c.history_retention_hours = 1).is_ok());
+        assert!(with(|c| c.history_retention_hours = 720).is_ok());
+        assert!(with(|c| c.history_retention_hours = 0).is_err());
+        assert!(with(|c| c.history_retention_hours = 721)
+            .unwrap_err()
+            .contains("history_retention_hours"));
+        assert!(with(|c| c.history_max_events = 100).is_ok());
+        assert!(with(|c| c.history_max_events = 1_000_000).is_ok());
+        assert!(with(|c| c.history_max_events = 99).is_err());
+        assert!(with(|c| c.history_max_events = 1_000_001)
+            .unwrap_err()
+            .contains("history_max_events"));
     }
 }

@@ -386,7 +386,7 @@ pub struct PushRelay {
 
 impl PushRelay {
     pub fn new(gateway: McpGateway, config: PushRelayConfig, clients: ClientLookup) -> Arc<Self> {
-        let limits = Arc::new(RwLock::new(PushRelayLimits::default()));
+        let limits = Arc::new(RwLock::new(PushRelayLimits::from_config(&config)));
         Arc::new_cyclic(|weak: &Weak<PushRelay>| {
             let ingest_weak = weak.clone();
             let channel_weak = weak.clone();
@@ -468,17 +468,42 @@ impl PushRelay {
     }
 
     /// Apply changed Push Relay settings (also forwarded to the gateway).
+    /// The channel rate takes effect on the next message; existing journals
+    /// adopt the history bounds at once, dropping their oldest entries when
+    /// the bounds were lowered.
     pub fn update_config(&self, config: &PushRelayConfig) {
         *self.config.write() = config.clone();
+        self.limits.write().apply_config(config);
+        self.prune_journals();
         self.gateway.update_push_relay_config(config);
         self.refresh();
     }
 
-    /// Replace the internal limits. They are not configuration; tests use
-    /// this to reach a bound quickly.
+    /// Replace every limit, the user settings included until the next
+    /// [`Self::update_config`]. Tests use this to reach a bound quickly.
     #[doc(hidden)]
     pub fn set_limits(&self, limits: PushRelayLimits) {
         *self.limits.write() = limits;
+    }
+
+    /// The limits in force.
+    pub fn limits(&self) -> PushRelayLimits {
+        self.limits.read().clone()
+    }
+
+    /// Entries held in a client's journal (0 when it has none).
+    pub fn journal_len(&self, client_id: &str) -> usize {
+        self.journals
+            .get(client_id)
+            .map(|j| j.lock().len())
+            .unwrap_or(0)
+    }
+
+    fn prune_journals(&self) {
+        let limits = JournalLimits::from_limits(&self.limits.read());
+        for journal in self.journals.iter() {
+            journal.lock().prune(&limits);
+        }
     }
 
     /// Re-evaluate permissions after client settings changed: list changes
@@ -933,10 +958,7 @@ impl PushRelay {
         for id in expired {
             self.end_webhook(&id);
         }
-        let limits = JournalLimits::from_limits(&self.limits.read());
-        for journal in self.journals.iter() {
-            journal.lock().prune(&limits);
-        }
+        self.prune_journals();
         self.check_list_changed();
         self.reconcile();
     }

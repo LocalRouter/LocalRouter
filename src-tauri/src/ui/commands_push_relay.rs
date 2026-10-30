@@ -31,12 +31,19 @@ fn emit_clients_changed(app: &tauri::AppHandle) {
 // Global settings
 // ============================================================================
 
-/// Global Push Relay settings: the master switch and the default
-/// permission. Every limit is internal to the relay and not configurable.
+/// Global Push Relay settings: the master switch, the default permission,
+/// the Claude Channels rate and how much event history each client keeps.
+/// Every other limit is internal to the relay and not configurable.
 #[derive(Debug, Clone, Serialize)]
 pub struct PushRelayConfigView {
     pub enabled: bool,
     pub default_permission: PushPermission,
+    /// Claude Channels messages per client session per minute.
+    pub channel_messages_per_minute: u32,
+    /// Hours an event stays in a client's journal.
+    pub history_retention_hours: u32,
+    /// Events kept in each client's journal.
+    pub history_max_events: u32,
 }
 
 impl From<&PushRelayConfig> for PushRelayConfigView {
@@ -44,8 +51,48 @@ impl From<&PushRelayConfig> for PushRelayConfigView {
         Self {
             enabled: c.enabled,
             default_permission: c.default_permission,
+            channel_messages_per_minute: c.channel_messages_per_minute,
+            history_retention_hours: c.history_retention_hours,
+            history_max_events: c.history_max_events,
         }
     }
+}
+
+/// A partial update of the global settings; `None` leaves a field as it is.
+#[derive(Debug, Clone, Default)]
+pub struct PushRelayConfigUpdate {
+    pub enabled: Option<bool>,
+    pub default_permission: Option<PushPermission>,
+    pub channel_messages_per_minute: Option<u32>,
+    pub history_retention_hours: Option<u32>,
+    pub history_max_events: Option<u32>,
+}
+
+/// Apply `update` to `push`, refusing (and leaving `push` unchanged) when a
+/// value is out of its bounds.
+pub fn apply_push_relay_update(
+    push: &mut PushRelayConfig,
+    update: &PushRelayConfigUpdate,
+) -> Result<(), String> {
+    let mut next = push.clone();
+    if let Some(v) = update.enabled {
+        next.enabled = v;
+    }
+    if let Some(v) = update.default_permission {
+        next.default_permission = v;
+    }
+    if let Some(v) = update.channel_messages_per_minute {
+        next.channel_messages_per_minute = v;
+    }
+    if let Some(v) = update.history_retention_hours {
+        next.history_retention_hours = v;
+    }
+    if let Some(v) = update.history_max_events {
+        next.history_max_events = v;
+    }
+    next.validate()?;
+    *push = next;
+    Ok(())
 }
 
 /// Get the global Push Relay settings.
@@ -56,24 +103,32 @@ pub async fn get_push_relay_config(
     Ok(PushRelayConfigView::from(&config_manager.get().push_relay))
 }
 
-/// Update the global Push Relay settings. Both arguments are optional.
+/// Update the global Push Relay settings. Every argument is optional; a value
+/// out of its bounds is refused and nothing is changed.
 #[tauri::command]
 pub async fn update_push_relay_config(
     enabled: Option<bool>,
     default_permission: Option<PushPermission>,
+    channel_messages_per_minute: Option<u32>,
+    history_retention_hours: Option<u32>,
+    history_max_events: Option<u32>,
     config_manager: State<'_, ConfigManager>,
 ) -> Result<PushRelayConfigView, String> {
+    let update = PushRelayConfigUpdate {
+        enabled,
+        default_permission,
+        channel_messages_per_minute,
+        history_retention_hours,
+        history_max_events,
+    };
+    // Check the values before writing, so a refusal changes nothing
+    let mut probe = config_manager.get().push_relay;
+    apply_push_relay_update(&mut probe, &update)?;
+    let mut result = Ok(());
     config_manager
-        .update(|cfg| {
-            let push = &mut cfg.push_relay;
-            if let Some(v) = enabled {
-                push.enabled = v;
-            }
-            if let Some(v) = default_permission {
-                push.default_permission = v;
-            }
-        })
+        .update(|cfg| result = apply_push_relay_update(&mut cfg.push_relay, &update))
         .map_err(|e| e.to_string())?;
+    result?;
 
     let new_config = config_manager.get().push_relay.clone();
     config_manager.save().await.map_err(|e| e.to_string())?;
@@ -632,13 +687,74 @@ mod tests {
     use super::*;
 
     #[test]
-    fn view_carries_only_the_switch_and_default() {
+    fn view_carries_the_global_settings() {
         let view = PushRelayConfigView::from(&PushRelayConfig::default());
         let json = serde_json::to_value(&view).unwrap();
         assert_eq!(
             json,
-            serde_json::json!({"enabled": true, "default_permission": "allow"})
+            serde_json::json!({
+                "enabled": true,
+                "default_permission": "allow",
+                "channel_messages_per_minute": 10,
+                "history_retention_hours": 24,
+                "history_max_events": 10000,
+            })
         );
+    }
+
+    #[test]
+    fn update_applies_values_within_bounds() {
+        let mut push = PushRelayConfig::default();
+        apply_push_relay_update(
+            &mut push,
+            &PushRelayConfigUpdate {
+                channel_messages_per_minute: Some(600),
+                history_retention_hours: Some(1),
+                history_max_events: Some(1_000_000),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(push.channel_messages_per_minute, 600);
+        assert_eq!(push.history_retention_hours, 1);
+        assert_eq!(push.history_max_events, 1_000_000);
+        assert!(push.enabled, "untouched fields stay");
+    }
+
+    #[test]
+    fn update_refuses_out_of_bounds_values_and_changes_nothing() {
+        for update in [
+            PushRelayConfigUpdate {
+                channel_messages_per_minute: Some(0),
+                ..Default::default()
+            },
+            PushRelayConfigUpdate {
+                channel_messages_per_minute: Some(601),
+                ..Default::default()
+            },
+            PushRelayConfigUpdate {
+                history_retention_hours: Some(0),
+                ..Default::default()
+            },
+            PushRelayConfigUpdate {
+                history_retention_hours: Some(721),
+                ..Default::default()
+            },
+            PushRelayConfigUpdate {
+                history_max_events: Some(99),
+                ..Default::default()
+            },
+            PushRelayConfigUpdate {
+                // A valid field beside an invalid one is not applied either
+                enabled: Some(false),
+                history_max_events: Some(1_000_001),
+                ..Default::default()
+            },
+        ] {
+            let mut push = PushRelayConfig::default();
+            assert!(apply_push_relay_update(&mut push, &update).is_err());
+            assert_eq!(push, PushRelayConfig::default(), "{update:?}");
+        }
     }
 
     #[test]

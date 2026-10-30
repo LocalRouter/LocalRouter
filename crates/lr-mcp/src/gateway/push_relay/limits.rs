@@ -1,12 +1,17 @@
-//! Push Relay's internal limits.
+//! Push Relay's limits.
 //!
-//! None of these are user configuration. They bound memory and runaway
-//! loops, and are deliberately generous so they never ration normal use.
-//! [`PushRelayLimits::default`] is the one place their values are defined.
-//! Tests shrink them through `PushRelay::set_limits` to reach a bound
-//! quickly.
+//! Three of them are user settings in [`PushRelayConfig`] and are applied by
+//! [`PushRelayLimits::apply_config`]: the Claude Channels rate
+//! (`channel_rate_per_minute`) and the journal's age and count bounds
+//! (`journal_retention_secs`, `journal_max_events`). Every other bound is
+//! internal: they bound memory and runaway loops, and are deliberately
+//! generous so they never ration normal use. [`PushRelayLimits::default`] is
+//! the one place their values are defined. Tests shrink them through
+//! `PushRelay::set_limits` to reach a bound quickly.
 
 use std::time::Duration;
+
+use lr_config::PushRelayConfig;
 
 const MIB: u64 = 1024 * 1024;
 
@@ -18,11 +23,13 @@ pub const FIRST_DISCOVERY_WAIT: Duration = Duration::from_secs(10);
 /// milliseconds (`_ms`); use the accessor methods for a [`Duration`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PushRelayLimits {
-    /// Occurrences held per client for polling and replay.
+    /// Occurrences held per client for polling and replay (user setting
+    /// `history_max_events`).
     pub journal_max_events: usize,
     /// Same, by total size of event data per client (first limit wins).
     pub journal_max_bytes: u64,
-    /// Age after which journal entries are dropped.
+    /// Age after which journal entries are dropped (user setting
+    /// `history_retention_hours`).
     pub journal_retention_secs: u64,
     /// Largest accepted `data` of one occurrence; larger events are dropped.
     pub max_event_bytes: u64,
@@ -54,7 +61,8 @@ pub struct PushRelayLimits {
     pub watch_max_lifetime_secs: u64,
     /// Rendered `content` per channel message; longer content is truncated.
     pub channel_max_content_bytes: usize,
-    /// Channel messages per minute per session before coalescing.
+    /// Channel messages per minute per session before coalescing (user
+    /// setting `channel_messages_per_minute`).
     pub channel_rate_per_minute: u32,
     /// Timeout of one webhook delivery attempt.
     pub webhook_timeout_secs: u64,
@@ -73,11 +81,13 @@ pub struct PushRelayLimits {
 }
 
 impl Default for PushRelayLimits {
+    /// The internal bounds with every user setting at its default.
     fn default() -> Self {
+        let settings = PushRelayConfig::default();
         Self {
-            journal_max_events: 10_000,
+            journal_max_events: settings.history_max_events as usize,
             journal_max_bytes: 64 * MIB,
-            journal_retention_secs: 24 * 60 * 60,
+            journal_retention_secs: u64::from(settings.history_retention_hours) * 60 * 60,
             max_event_bytes: MIB,
             ask_hold_cap: 1_000,
             upstream_poll_min_interval_ms: 1_000,
@@ -92,7 +102,7 @@ impl Default for PushRelayLimits {
             poll_max_wait_secs: 50,
             watch_max_lifetime_secs: 24 * 60 * 60,
             channel_max_content_bytes: 16 * 1024,
-            channel_rate_per_minute: 60,
+            channel_rate_per_minute: settings.channel_messages_per_minute,
             webhook_timeout_secs: 10,
             webhook_retry_delays_secs: vec![5, 30, 120, 600, 1_800],
             webhook_max_subscriptions: 100,
@@ -104,6 +114,21 @@ impl Default for PushRelayLimits {
 }
 
 impl PushRelayLimits {
+    /// The internal bounds with the user settings of `config` applied.
+    pub fn from_config(config: &PushRelayConfig) -> Self {
+        let mut limits = Self::default();
+        limits.apply_config(config);
+        limits
+    }
+
+    /// Apply the user settings of `config`, leaving the internal bounds as
+    /// they are.
+    pub fn apply_config(&mut self, config: &PushRelayConfig) {
+        self.channel_rate_per_minute = config.channel_messages_per_minute.max(1);
+        self.journal_max_events = (config.history_max_events as usize).max(1);
+        self.journal_retention_secs = u64::from(config.history_retention_hours.max(1)) * 60 * 60;
+    }
+
     pub fn journal_retention(&self) -> Duration {
         Duration::from_secs(self.journal_retention_secs)
     }
@@ -181,5 +206,34 @@ mod tests {
         );
         assert_eq!(limits.webhook_attempts(), 6);
         assert_eq!(limits.ask_hold_cap, 1_000);
+    }
+
+    #[test]
+    fn user_settings_apply_and_leave_internal_bounds() {
+        let defaults = PushRelayLimits::default();
+        assert_eq!(defaults.channel_rate_per_minute, 10);
+        assert_eq!(defaults.journal_max_events, 10_000);
+        assert_eq!(defaults.journal_retention_secs, 24 * 3600);
+        assert_eq!(defaults.journal_max_bytes, 64 * MIB);
+        assert_eq!(
+            PushRelayLimits::from_config(&PushRelayConfig::default()),
+            defaults
+        );
+
+        let mut limits = PushRelayLimits {
+            poll_max_events: 7,
+            ..PushRelayLimits::default()
+        };
+        limits.apply_config(&PushRelayConfig {
+            channel_messages_per_minute: 120,
+            history_retention_hours: 2,
+            history_max_events: 300,
+            ..PushRelayConfig::default()
+        });
+        assert_eq!(limits.channel_rate_per_minute, 120);
+        assert_eq!(limits.journal_retention_secs, 7200);
+        assert_eq!(limits.journal_max_events, 300);
+        assert_eq!(limits.poll_max_events, 7);
+        assert_eq!(limits.journal_max_bytes, 64 * MIB);
     }
 }

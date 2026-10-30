@@ -1052,6 +1052,117 @@ async fn channel_content_and_rate_limits_hold_at_their_bounds() {
         .all(|c| c.len() <= 120 && c.contains("EventPoll")));
 }
 
+#[tokio::test]
+async fn default_channel_rate_coalesces_the_eleventh_message_in_a_minute() {
+    let (upstream, _) = http_upstream().await;
+    let mut h = harness(vec![http_server(upstream.uri())], fast_limits());
+    assert_eq!(h.relay.limits().channel_rate_per_minute, 10);
+    h.gateway.set_stdio_bridge_session("bridge", true);
+    h.initialize("bridge", json!({})).await;
+    // Poll from another session: polling a name on the bridge session would
+    // stop its channel copies of that name
+    h.initialize("poller", json!({})).await;
+    let start = h.poll("poller", "http-push__msg", None).await["cursor"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let key = session_notification_key("bridge");
+    for i in 0..11 {
+        h.relay.admit(
+            CLIENT,
+            occurrence(HTTP_ID, "http-push", "msg", &format!("m{i}"), json!(i)),
+        );
+    }
+    let mut ids = Vec::new();
+    while let Some(n) = h
+        .next_notification("notifications/claude/channel", &key, Duration::from_secs(3))
+        .await
+    {
+        ids.push(n.params.unwrap()["meta"]["event_id"].clone());
+        if ids.len() > 10 {
+            break;
+        }
+    }
+    assert_eq!(ids.len(), 10, "ten channel messages per minute: {ids:?}");
+    assert!(!ids.contains(&json!("http-push__m10")));
+    // The coalesced event is still in the journal for EventPoll
+    let batch = h.poll("poller", "http-push__msg", Some(&start)).await;
+    assert_eq!(batch["events"].as_array().unwrap().len(), 11);
+}
+
+#[tokio::test]
+async fn rate_and_history_settings_apply_to_the_running_relay() {
+    let (upstream, _) = http_upstream().await;
+    let h = harness(vec![http_server(upstream.uri())], fast_limits());
+    h.initialize("s1", json!({})).await;
+    let start = h.poll("s1", "http-push__msg", None).await["cursor"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    for i in 0..150 {
+        h.relay.admit(
+            CLIENT,
+            occurrence(HTTP_ID, "http-push", "msg", &format!("m{i}"), json!(i)),
+        );
+    }
+    assert_eq!(h.relay.journal_len(CLIENT), 150);
+
+    // Lowering the history bound trims the existing journal at once
+    h.relay.update_config(&PushRelayConfig {
+        channel_messages_per_minute: 42,
+        history_retention_hours: 2,
+        history_max_events: 100,
+        ..PushRelayConfig::default()
+    });
+    let limits = h.relay.limits();
+    assert_eq!(limits.channel_rate_per_minute, 42);
+    assert_eq!(limits.journal_retention_secs, 2 * 3600);
+    assert_eq!(limits.journal_max_events, 100);
+    assert_eq!(
+        limits.upstream_poll_min_interval_ms, 50,
+        "internal bounds kept"
+    );
+    assert_eq!(h.relay.journal_len(CLIENT), 100);
+    let batch = h.poll("s1", "http-push__msg", Some(&start)).await;
+    assert_eq!(batch["truncated"], json!(true));
+
+    // The new bound holds for later events too
+    for i in 150..160 {
+        h.relay.admit(
+            CLIENT,
+            occurrence(HTTP_ID, "http-push", "msg", &format!("m{i}"), json!(i)),
+        );
+    }
+    assert_eq!(h.relay.journal_len(CLIENT), 100);
+
+    // Back to the defaults
+    h.relay.update_config(&PushRelayConfig::default());
+    let limits = h.relay.limits();
+    assert_eq!(limits.channel_rate_per_minute, 10);
+    assert_eq!(limits.journal_retention_secs, 24 * 3600);
+    assert_eq!(limits.journal_max_events, 10_000);
+}
+
+#[tokio::test]
+async fn relay_starts_with_the_configured_settings() {
+    let config = PushRelayConfig {
+        channel_messages_per_minute: 5,
+        history_retention_hours: 48,
+        history_max_events: 2_000,
+        ..PushRelayConfig::default()
+    };
+    let gateway = McpGateway::new(
+        Arc::new(McpServerManager::new()),
+        GatewayConfig::default(),
+        test_router(),
+    );
+    let relay = PushRelay::new(gateway, config, Arc::new(|_| None));
+    let limits = relay.limits();
+    assert_eq!(limits.channel_rate_per_minute, 5);
+    assert_eq!(limits.journal_retention_secs, 48 * 3600);
+    assert_eq!(limits.journal_max_events, 2_000);
+}
+
 // ---------------------------------------------------------------------------
 // Ask
 // ---------------------------------------------------------------------------
