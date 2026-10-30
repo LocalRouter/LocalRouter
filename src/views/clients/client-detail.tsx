@@ -10,13 +10,14 @@ import { ClientConfigTab } from "./tabs/config-tab"
 import { UnifiedModelsTab } from "./tabs/unified-models-tab"
 import { ClientMcpTab } from "./tabs/mcp-tab"
 import { ClientContextTab } from "./tabs/context-tab"
+import { ClientPushCard } from "./tabs/push-tab"
 import { ClientLlmOptimizeTab } from "./tabs/llm-optimize-tab"
 import { ClientSettingsTab } from "./tabs/settings-tab"
 import { LlmTab } from "@/views/try-it-out/llm-tab"
 import { McpTab } from "@/views/try-it-out/mcp-tab"
 import type { McpPermissions, SkillsPermissions, ModelPermissions, PermissionState } from "@/components/permissions"
 import type { CodingAgentType } from "@/types/tauri-commands"
-import type { LlmMode, McpMode, ClientReverseProxy } from "@/types/tauri-commands"
+import type { LlmMode, McpMode, ClientReverseProxy, PushPermissions, PushFallbackTools } from "@/types/tauri-commands"
 import { combineClientMode } from "@/components/client/ClientTemplates"
 
 interface Client {
@@ -41,6 +42,11 @@ interface Client {
   reverse_proxy?: ClientReverseProxy | null
   guardrails_active: boolean
   json_repair_active: boolean
+  /** Push Relay settings (see ClientPushCard) */
+  push_permissions?: PushPermissions
+  push_fallback_tools?: PushFallbackTools
+  push_webhook_urls?: string[]
+  claude_channels_launched?: boolean
   created_at: string
   last_used: string | null
 }
@@ -278,6 +284,9 @@ export function ClientDetail({
               )}
               {showMcpTab && (
                 <ClientContextTab client={client} onUpdate={loadClient} onViewChange={onViewChange} />
+              )}
+              {showMcpTab && (
+                <ClientPushCard client={client} onUpdate={loadClient} onViewChange={onViewChange} />
               )}
             </div>
           </TabsContent>
