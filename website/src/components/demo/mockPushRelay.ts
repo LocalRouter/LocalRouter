@@ -8,7 +8,9 @@
  * offer no push.
  */
 import type {
+  ActivePushSubscription,
   ClientPushSettings,
+  PendingPushApproval,
   PushFallbackTools,
   PushPermissions,
   PushRelayConfig,
@@ -174,3 +176,64 @@ export const mockClaudeCodeTransport: Record<string, 'none' | 'http' | 'stdio_br
   // An existing setup from before the STDIO bridge default, so the demo shows the switch notice.
   'client-2': 'http',
 }
+
+const minutesFromNow = (m: number) => new Date(Date.now() + m * 60_000).toISOString()
+
+/** Held (Ask) events: NetGet is Ask for Claude Code, everything is Ask for Cline. */
+export const mockPendingPushApprovals: PendingPushApproval[] = [
+  {
+    request_id: 'hold-1', client_id: 'client-2', client_name: 'Claude Code',
+    server_id: 'mcp-netget', server_name: 'netget', event_name: 'intercept.parked',
+    qualified_name: 'netget__intercept.parked', event_id: 'netget__evt-7781', ingress: 'push',
+    received_at: minutesAgo(2), expires_at: minutesFromNow(13),
+    data: { server_id: 3, protocol: 'redis', peer: '127.0.0.1:52811', event: 'redis_command', command: 'GET session:42' },
+    position: 0, pending_of_type: 1, decided: false, firewall_request_id: null,
+  },
+  {
+    request_id: 'hold-2', client_id: 'client-2', client_name: 'Claude Code',
+    server_id: 'mcp-netget', server_name: 'netget', event_name: 'intercept.parked',
+    qualified_name: 'netget__intercept.parked', event_id: 'netget__evt-7782', ingress: 'push',
+    received_at: minutesAgo(1), expires_at: minutesFromNow(14),
+    data: { server_id: 3, protocol: 'redis', peer: '127.0.0.1:52811', event: 'redis_command', command: 'SET session:42 active' },
+    position: 1, pending_of_type: 1, decided: false, firewall_request_id: null,
+  },
+  {
+    request_id: 'hold-3', client_id: 'client-4', client_name: 'Cline',
+    server_id: 'mcp-vocalcord', server_name: 'vocalcord', event_name: 'message.received',
+    qualified_name: 'vocalcord__message.received', event_id: 'vocalcord__msg-551', ingress: 'poll',
+    received_at: minutesAgo(4), expires_at: minutesFromNow(11),
+    data: { channel: 'telegram', from: 'Dana', text: 'Can you look at the failing deploy?' },
+    position: 0, pending_of_type: 0, decided: false, firewall_request_id: null,
+  },
+]
+
+export const mockActivePushSubscriptions: ActivePushSubscription[] = [
+  {
+    subscription_id: 'shared|mcp-vocalcord|message.received|{}', kind: 'upstream',
+    server_id: 'mcp-vocalcord', server_name: 'VocalCord', event_name: 'message.received', arguments: {},
+    scope: 'shared', client_id: null, client_name: null, ingress: 'push', status: 'active',
+    event_count: 128, last_event_at: minutesAgo(4), last_error: null, reconnects: 0,
+    webhook_url: null, lease_expires_at: null,
+  },
+  {
+    subscription_id: 'shared|mcp-vocalcord|call.missed|{}', kind: 'upstream',
+    server_id: 'mcp-vocalcord', server_name: 'VocalCord', event_name: 'call.missed', arguments: {},
+    scope: 'shared', client_id: null, client_name: null, ingress: 'poll', status: 'active',
+    event_count: 3, last_event_at: minutesAgo(95), last_error: null, reconnects: 1,
+    webhook_url: null, lease_expires_at: null,
+  },
+  {
+    subscription_id: 'session:sess-002|mcp-netget|intercept.parked|{}', kind: 'upstream',
+    server_id: 'mcp-netget', server_name: 'NetGet', event_name: 'intercept.parked', arguments: {},
+    scope: 'session', client_id: 'client-2', client_name: 'Claude Code', ingress: 'push', status: 'active',
+    event_count: 17, last_event_at: minutesAgo(1), last_error: null, reconnects: 0,
+    webhook_url: null, lease_expires_at: null,
+  },
+  {
+    subscription_id: 'webhook:wh-1', kind: 'webhook',
+    server_id: 'mcp-vocalcord', server_name: 'vocalcord', event_name: 'message.received', arguments: {},
+    scope: null, client_id: 'client-4', client_name: 'Cline', ingress: null, status: 'active',
+    event_count: 42, last_event_at: null, last_error: null, reconnects: 0,
+    webhook_url: 'http://127.0.0.1:8787/hooks/localrouter', lease_expires_at: minutesFromNow(60 * 20),
+  },
+]

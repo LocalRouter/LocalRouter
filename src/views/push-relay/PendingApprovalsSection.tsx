@@ -4,10 +4,10 @@ import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card"
 import type { PendingPushApproval, PushApprovalAction } from "@/types/tauri-commands"
-import { formatRelativeTime } from "./format"
+import { formatRelativeTime, payloadPreview } from "./format"
 
 export interface PendingApprovalsSectionProps {
-  /** Held occurrences; `null` while the relay core provides no source (section hidden). */
+  /** Held events; `null` until the first load (section hidden). */
   approvals: PendingPushApproval[] | null
   /**
    * Answer one held occurrence (`submit_push_approval`). `editedData` is set
@@ -37,7 +37,7 @@ export function PendingApprovalsSection({ approvals, onDecide, onOpenClient }: P
   const groups = useMemo(() => {
     const map = new Map<string, ApprovalGroup>()
     for (const a of approvals ?? []) {
-      const key = `${a.client_id}|${a.server_id}|${a.event_name}`
+      const key = `${a.client_id}|${a.qualified_name}`
       const group = map.get(key) ?? {
         key,
         client_id: a.client_id,
@@ -81,7 +81,10 @@ export function PendingApprovalsSection({ approvals, onDecide, onOpenClient }: P
           <p className="text-sm text-muted-foreground">Nothing is waiting for approval.</p>
         ) : (
           groups.map((group) => {
-            const first = group.items[0]
+            // The head of the queue is the one being asked about; already
+            // decided events only wait for the ones ahead of them.
+            const first = group.items.find((i) => !i.decided) ?? group.items[0]
+            const undecided = group.items.filter((i) => !i.decided).length
             return (
               <div key={group.key} className="rounded-md border p-3 space-y-2">
                 <div className="flex items-center justify-between gap-2">
@@ -98,35 +101,31 @@ export function PendingApprovalsSection({ approvals, onDecide, onOpenClient }: P
                       )}
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      {group.items.length} held · oldest {formatRelativeTime(first.received_at)} · denied{" "}
+                      {group.items.length} held · oldest {formatRelativeTime(group.items[0].received_at)} · denied{" "}
                       {formatRelativeTime(first.expires_at)}
                     </p>
                   </div>
-                  {onDecide && group.items.length > 1 && (
+                  {onDecide && undecided > 1 && (
                     <Button
                       size="sm"
                       variant="outline"
                       disabled={busy !== null}
                       onClick={() => decide(first.request_id, "allow_all_pending_of_type")}
                     >
-                      Allow all {group.items.length}
+                      Allow all {undecided}
                     </Button>
                   )}
                 </div>
                 <pre className="text-xs bg-muted rounded p-2 whitespace-pre-wrap break-words max-h-24 overflow-y-auto">
-                  {first.preview}
+                  {payloadPreview(first.data)}
                 </pre>
-                {first.webhook_url && (
-                  <p className="text-xs text-amber-600">
-                    First delivery to a new callback URL: <code>{first.webhook_url}</code>
-                  </p>
-                )}
-                {onDecide && (
+                {onDecide && !first.decided && (
                   <div className="flex flex-wrap gap-1.5">
                     {(
                       [
                         ["allow", "Allow"],
                         ["deny", "Deny"],
+                        ["allow_type_session", "Allow type this session"],
                         ["allow_type_always", "Always allow this type"],
                         ["deny_type_always", "Always block this type"],
                       ] as [PushApprovalAction, string][]

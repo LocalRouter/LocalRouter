@@ -25,8 +25,8 @@ import type { ShowApprovalPopupResult, NativeOperation, GetClientNativeOperation
 import { toast } from 'sonner'
 import { mockReplay } from './mockReplay'
 import { mockData } from './mockData'
-import { clientPush, mockClaudeCodeTransport, mockClientPushSettings, mockPushRelayConfig, mockPushSources } from './mockPushRelay'
-import type { ClaudeCodeMcpSetup, ClientPushSettings, PushRelayConfig, PushSourceInfo } from '@app/types/tauri-commands'
+import { clientPush, mockActivePushSubscriptions, mockClaudeCodeTransport, mockClientPushSettings, mockPendingPushApprovals, mockPushRelayConfig, mockPushSources } from './mockPushRelay'
+import type { ActivePushSubscription, ClaudeCodeMcpSetup, ClientPushSettings, PendingPushApproval, PushRelayConfig, PushSourceInfo } from '@app/types/tauri-commands'
 
 import { mockNativeOperations, mockUpstreamTools, mockClientPrivacy, mockClientSecurity, mockClientSecrets } from './mockClientPolicies'
 import { routingPolicyIssue } from '@app/components/strategy/routing-policy-status'
@@ -4026,6 +4026,26 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     return { ...mockPushRelayConfig }
   },
   'list_push_sources': (): PushSourceInfo[] => mockPushSources,
+  'list_pending_push_approvals': (args): PendingPushApproval[] =>
+    mockPendingPushApprovals.filter(a => !args?.clientId || a.client_id === args.clientId),
+  'submit_push_approval': (args): number => {
+    const target = mockPendingPushApprovals.find(a => a.request_id === args?.requestId)
+    if (!target) throw `No held event ${args?.requestId}`
+    if (args?.action === 'allow_edited' && args?.editedData == null) throw 'allow_edited needs editedData'
+    // Type-wide answers release every held event of the type, like the relay does.
+    const typeWide = args?.action !== 'allow' && args?.action !== 'allow_edited' && args?.action !== 'deny'
+    const decided = mockPendingPushApprovals.filter(a =>
+      typeWide ? a.client_id === target.client_id && a.qualified_name === target.qualified_name : a === target)
+    for (const a of decided) mockPendingPushApprovals.splice(mockPendingPushApprovals.indexOf(a), 1)
+    for (const a of mockPendingPushApprovals) {
+      const sameType = mockPendingPushApprovals.filter(o => o.client_id === a.client_id && o.qualified_name === a.qualified_name)
+      a.position = sameType.indexOf(a)
+      a.pending_of_type = sameType.length - 1
+    }
+    setTimeout(() => emit('push-approvals-changed', {}), 10)
+    return decided.length
+  },
+  'list_active_push_subscriptions': (): ActivePushSubscription[] => mockActivePushSubscriptions,
   'get_client_push_settings': (args): ClientPushSettings => {
     const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
     const id = client?.id ?? args?.clientId

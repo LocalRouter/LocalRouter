@@ -17,11 +17,14 @@ import type {
   ActivePushSubscription,
   ClientFeatureStatus,
   GetFeatureClientsStatusParams,
+  ListPendingPushApprovalsParams,
   PendingPushApproval,
+  PushApprovalAction,
   PushPermission,
   PushRelayConfig,
   PushRelayLimits,
   PushSourceInfo,
+  SubmitPushApprovalParams,
   UpdatePushRelayConfigParams,
 } from "@/types/tauri-commands"
 import { LimitsEditor } from "./LimitsEditor"
@@ -46,10 +49,9 @@ export function PushRelayView({ activeSubTab, onTabChange }: PushRelayViewProps)
   const [clientStatuses, setClientStatuses] = useState<ClientFeatureStatus[]>([])
   const [saving, setSaving] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
-  // Supplied by the relay core (list_pending_push_approvals /
-  // list_active_push_subscriptions). While null, neither section renders.
-  const [pendingApprovals] = useState<PendingPushApproval[] | null>(null)
-  const [subscriptions] = useState<ActivePushSubscription[] | null>(null)
+  // Null until loaded; a failed load (relay not running) keeps the section hidden.
+  const [pendingApprovals, setPendingApprovals] = useState<PendingPushApproval[] | null>(null)
+  const [subscriptions, setSubscriptions] = useState<ActivePushSubscription[] | null>(null)
 
   const tab = activeSubTab || "info"
   const handleTabChange = (newTab: string) => onTabChange?.("push-relay", newTab)
@@ -83,15 +85,46 @@ export function PushRelayView({ activeSubTab, onTabChange }: PushRelayViewProps)
     }
   }, [])
 
+  const loadApprovals = useCallback(async () => {
+    try {
+      setPendingApprovals(
+        await invoke<PendingPushApproval[]>("list_pending_push_approvals", {} satisfies ListPendingPushApprovalsParams),
+      )
+    } catch (err) {
+      console.error("Failed to load pending push approvals:", err)
+    }
+  }, [])
+
+  const loadSubscriptions = useCallback(async () => {
+    try {
+      setSubscriptions(await invoke<ActivePushSubscription[]>("list_active_push_subscriptions"))
+    } catch (err) {
+      console.error("Failed to load push subscriptions:", err)
+    }
+  }, [])
+
   useEffect(() => {
     loadConfig()
     loadSources()
     loadClientStatuses()
-  }, [loadConfig, loadSources, loadClientStatuses])
+    loadApprovals()
+    loadSubscriptions()
+  }, [loadConfig, loadSources, loadClientStatuses, loadApprovals, loadSubscriptions])
+
+  // Subscriptions change with client demand, which raises no event: refresh
+  // them while the page is open.
+  useEffect(() => {
+    const timer = window.setInterval(loadSubscriptions, 5000)
+    return () => window.clearInterval(timer)
+  }, [loadSubscriptions])
 
   useEffect(() => {
     const listeners = [
       listenSafe("clients-changed", loadClientStatuses),
+      listenSafe("push-approvals-changed", () => {
+        loadApprovals()
+        loadSubscriptions()
+      }),
       listenSafe("config-changed", () => {
         loadConfig()
         loadSources()
@@ -99,7 +132,21 @@ export function PushRelayView({ activeSubTab, onTabChange }: PushRelayViewProps)
       }),
     ]
     return () => listeners.forEach((l) => l.cleanup())
-  }, [loadConfig, loadSources, loadClientStatuses])
+  }, [loadConfig, loadSources, loadClientStatuses, loadApprovals, loadSubscriptions])
+
+  const decide = async (requestId: string, action: PushApprovalAction, editedData?: unknown) => {
+    try {
+      await invoke<number>("submit_push_approval", {
+        requestId,
+        action,
+        editedData: editedData ?? null,
+      } satisfies SubmitPushApprovalParams)
+    } catch (err) {
+      toast.error(`Failed to answer the held event: ${err}`)
+    } finally {
+      loadApprovals()
+    }
+  }
 
   const update = async (params: UpdatePushRelayConfigParams) => {
     setSaving(true)
@@ -233,7 +280,7 @@ export function PushRelayView({ activeSubTab, onTabChange }: PushRelayViewProps)
               </Card>
             )}
 
-            <PendingApprovalsSection approvals={pendingApprovals} onOpenClient={openClient} />
+            <PendingApprovalsSection approvals={pendingApprovals} onDecide={decide} onOpenClient={openClient} />
             <ActiveSubscriptionsSection subscriptions={subscriptions} onOpenClient={openClient} />
 
             <Card>

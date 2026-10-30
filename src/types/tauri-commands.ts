@@ -1734,52 +1734,69 @@ export interface ClaudeCodeMcpSetup {
   channels_launched: boolean
 }
 
-// --- Planned (relay core): pending approvals and active subscriptions -------
-// These shapes are what the Push Relay page renders. The relay core provides
-// the commands (proposed: `list_pending_push_approvals`,
-// `submit_push_approval`, `list_active_push_subscriptions`, and a
-// `push-approvals-changed` event); until then the page renders neither section.
-
-/** Decision recorded for a pushed event (Monitor `McpPushEvent` record). */
-export type PushEventDecision = 'allowed' | 'asked_allowed' | 'asked_edited' | 'denied' | 'timeout' | 'blocked'
-
-/** How an occurrence reached LocalRouter. */
-export type PushIngressMode = 'push' | 'poll' | 'channel' | 'resource_update'
-
-/** How an occurrence is delivered to a client. */
-export type PushEgressMode = 'events_stream' | 'events_poll' | 'channel' | 'webhook' | 'fallback_tools' | 'watch'
+// --- Held events (Ask) and active subscriptions ------------------------------
+// Rust: src-tauri/src/ui/commands_push_relay.rs. The `push-approvals-changed`
+// event fires whenever the held queue changes.
 
 /**
- * One held (Ask) occurrence awaiting a decision for one client.
- * Planned Rust: relay core - pending approval entry
+ * Decision recorded for a pushed event (Monitor `McpPushEvent` record).
+ * Rust: crates/lr-mcp/src/gateway/push_relay/relay.rs - monitor decisions
+ */
+export type PushEventDecision =
+  | 'pending'
+  | 'allowed'
+  | 'asked_allowed'
+  | 'asked_edited'
+  | 'denied'
+  | 'timeout'
+  | 'blocked'
+  | 'hold_cap'
+  | 'too_large'
+
+/** How an occurrence reached LocalRouter (Rust: journal.rs - IngressMode). */
+export type PushIngressMode = 'push' | 'poll' | 'channel'
+
+/**
+ * How an occurrence is delivered to a client (Monitor `egress_modes`).
+ * Rust: relay.rs - HolderKind::egress (`tools` covers EventPoll/EventWait).
+ */
+export type PushEgressMode = 'stream' | 'poll' | 'channel' | 'webhook' | 'tools'
+
+/**
+ * One held (Ask) event awaiting a decision for one client.
+ * Rust: src-tauri/src/ui/commands_push_relay.rs - PendingPushApproval struct
  */
 export interface PendingPushApproval {
+  /** The held event's id; pass to submit_push_approval */
   request_id: string
   client_id: string
   client_name: string
   server_id: string
+  /** Slugified server name, as used in qualified event names */
   server_name: string
   /** Upstream (unqualified) event name */
   event_name: string
+  /** `<server slug>__<event>` */
+  qualified_name: string
   event_id: string
   ingress: PushIngressMode
-  /** RFC 3339 */
+  /** When the event was held (RFC 3339) */
   received_at: string
-  /** When the hold fails closed (ask_timeout) */
+  /** When an unanswered hold is denied (RFC 3339) */
   expires_at: string
-  /** Redacted, truncated payload preview */
-  preview: string
-  /** Full `data` for edit-then-allow (null when hidden by privacy settings) */
-  data: unknown | null
-  /** Rendered channel `content`, when delivered over Channels */
-  channel_content: string | null
-  /** Other held occurrences of the same event type for this client */
+  /** The event's `data`, as it would be delivered */
+  data: unknown
+  /** Position in its (client, event type) queue; 0 = being asked now */
+  position: number
+  /** Other held events of the same type for this client */
   pending_of_type: number
-  /** A new webhook callback URL needs approval before first delivery */
-  webhook_url: string | null
+  /** Already decided, waiting for the events ahead of it */
+  decided: boolean
+  /** The approval popup asking about it, while one is open */
+  firewall_request_id: string | null
 }
 
-/** Answer to a held occurrence. Type-level actions write back to the permission tree. */
+/** Answer to a held event. Type-level actions apply to later events of the type; `_always` writes the client's permission tree. */
 export type PushApprovalAction =
   | 'allow'
   | 'allow_edited'
@@ -1791,31 +1808,40 @@ export type PushApprovalAction =
   | 'deny_type_always'
 
 /**
- * One active delivery path to a client.
- * Planned Rust: relay core - subscription entry
+ * One live subscription: an upstream subscription the relay holds open
+ * (`upstream`, shared by every client consuming it, or on one session's own
+ * connection for stdio upstreams) or a client's webhook delivery (`webhook`).
+ * Rust: src-tauri/src/ui/commands_push_relay.rs - ActivePushSubscription struct
  */
 export interface ActivePushSubscription {
   subscription_id: string
-  client_id: string
-  client_name: string
-  egress: PushEgressMode
+  kind: 'upstream' | 'webhook'
   server_id: string
   server_name: string
-  /** Upstream event names; empty = every permitted type */
-  event_names: string[]
-  ingress: PushIngressMode
-  status: 'active' | 'reconnecting' | 'suspended'
+  /** Upstream (unqualified) event name */
+  event_name: string
+  /** Subscription arguments (empty for webhooks) */
+  arguments: Record<string, unknown>
+  /** Relay-owned shared connection, or one session's own; null for webhooks */
+  scope: 'shared' | 'session' | null
+  /** Owner of a session-scoped or webhook subscription; null when shared */
+  client_id: string | null
+  client_name: string | null
+  /** `push` or `poll` once an upstream subscription runs */
+  ingress: 'push' | 'poll' | null
+  /** Upstream: active / reconnecting. Webhook: awaiting_approval / active / suspended / denied */
+  status: 'active' | 'reconnecting' | 'awaiting_approval' | 'suspended' | 'denied'
+  /** Upstream: events received. Webhook: deliveries made */
+  event_count: number
   /** RFC 3339 */
-  started_at: string
   last_event_at: string | null
-  delivered_count: number
-  held_count: number
+  last_error: string | null
+  reconnects: number
   webhook_url: string | null
+  /** RFC 3339 */
   lease_expires_at: string | null
 }
 
-/** Planned params for submit_push_approval */
-export interface SubmitPushApprovalParams { requestId: string; action: PushApprovalAction; editedData?: unknown | null }
 
 /**
  * Effective context management configuration (every field resolved).
@@ -5573,6 +5599,12 @@ export interface UpdatePushRelayConfigParams {
 }
 /** Params for list_push_sources */
 export type ListPushSourcesParams = Record<string, never>
+/** Params for list_pending_push_approvals (all clients when clientId is omitted) */
+export interface ListPendingPushApprovalsParams { clientId?: string | null }
+/** Params for submit_push_approval (returns how many held events were decided) */
+export interface SubmitPushApprovalParams { requestId: string; action: PushApprovalAction; editedData?: unknown | null }
+/** Params for list_active_push_subscriptions */
+export type ListActivePushSubscriptionsParams = Record<string, never>
 /** Params for get_client_push_settings */
 export interface GetClientPushSettingsParams { clientId: string }
 /** Params for set_client_push_permission (state null = inherit) */
