@@ -89,8 +89,11 @@ pub fn merge_initialize_results(
 
     // Merge capabilities (union of all capabilities)
     let mut merged_capabilities = ServerCapabilities::default();
+    let mut providers = CapabilityProviders::default();
 
-    for (_, result) in &results {
+    for (server_id, result) in &results {
+        providers.insert(server_id.clone(), result.capabilities.clone());
+
         if let Some(tools) = &result.capabilities.tools {
             let existing = merged_capabilities
                 .tools
@@ -140,12 +143,25 @@ pub fn merge_initialize_results(
                 .get_or_insert_with(|| serde_json::Value::Object(Default::default()));
             if let Some(merged_map) = merged_ext.as_object_mut() {
                 for (key, value) in ext {
+                    // Events are relayed by Push Relay, which advertises them
+                    // itself when it can carry them; never pass them through.
+                    if key == super::push_relay::EVENTS_EXTENSION_ID {
+                        continue;
+                    }
                     merged_map
                         .entry(key.clone())
                         .or_insert_with(|| value.clone());
                 }
             }
         }
+    }
+    if merged_capabilities
+        .extensions
+        .as_ref()
+        .and_then(|e| e.as_object())
+        .is_some_and(|e| e.is_empty())
+    {
+        merged_capabilities.extensions = None;
     }
 
     // Build server description with catalog listing
@@ -163,6 +179,7 @@ pub fn merge_initialize_results(
         server_info,
         failures,
         instructions: None, // Set later via build_gateway_instructions when full context is available
+        providers,
     }
 }
 

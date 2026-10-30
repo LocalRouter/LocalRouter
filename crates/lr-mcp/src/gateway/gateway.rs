@@ -18,6 +18,10 @@ use super::merger::{
     format_tool_as_markdown, merge_initialize_results, InstructionsContext,
     McpServerInstructionInfo, UnavailableServerInfo,
 };
+use super::push_relay::{
+    PushMethod, PushRelayService, PushRelaySessionContext, RememberedPushSource, SnapshotRecorder,
+    UpstreamPushNotification,
+};
 use super::router::{broadcast_request, separate_results, should_broadcast};
 use super::session::GatewaySession;
 use super::types::*;
@@ -152,6 +156,19 @@ pub struct McpGateway {
     /// Callback to update an existing monitor event (wired to MonitorEventStore)
     pub(crate) on_monitor_update:
         Arc<parking_lot::RwLock<Option<super::super::manager::MonitorUpdateFn>>>,
+
+    /// Push Relay, when registered (see [`Self::set_push_relay`]).
+    pub(crate) push_relay: Arc<parking_lot::RwLock<Option<Arc<dyn PushRelayService>>>>,
+
+    /// Live Push Relay settings (limits such as the first-discovery wait).
+    pub(crate) push_relay_config: Arc<parking_lot::RwLock<lr_config::PushRelayConfig>>,
+
+    /// Session keys whose requests come through the STDIO bridge, recorded by
+    /// the HTTP route before each request (see [`Self::set_stdio_bridge_session`]).
+    pub(crate) stdio_bridge_sessions: Arc<dashmap::DashSet<String>>,
+
+    /// Remembers upstream capabilities in the server configs.
+    pub(crate) snapshot_recorder: Arc<SnapshotRecorder>,
 }
 
 impl McpGateway {
@@ -243,6 +260,12 @@ impl McpGateway {
             on_context_saved: Arc::new(parking_lot::RwLock::new(None)),
             on_monitor_event: Arc::new(parking_lot::RwLock::new(None)),
             on_monitor_update: Arc::new(parking_lot::RwLock::new(None)),
+            push_relay: Arc::new(parking_lot::RwLock::new(None)),
+            push_relay_config: Arc::new(parking_lot::RwLock::new(
+                lr_config::PushRelayConfig::default(),
+            )),
+            stdio_bridge_sessions: Arc::new(dashmap::DashSet::new()),
+            snapshot_recorder: Arc::new(SnapshotRecorder::new()),
         }
     }
 
@@ -365,6 +388,191 @@ impl McpGateway {
     }
 
     /// Register a virtual MCP server (skills, marketplace, coding agents, etc.)
+    /// Register the Push Relay. From then on downstream `events/*` requests,
+    /// push capabilities and instructions, and upstream push notifications
+    /// go through it.
+    pub fn set_push_relay(&self, service: Arc<dyn PushRelayService>) {
+        *self.push_relay.write() = Some(service);
+    }
+
+    /// The registered Push Relay, if any.
+    pub fn push_relay(&self) -> Option<Arc<dyn PushRelayService>> {
+        self.push_relay.read().clone()
+    }
+
+    /// Apply changed Push Relay settings.
+    pub fn update_push_relay_config(&self, config: &lr_config::PushRelayConfig) {
+        *self.push_relay_config.write() = config.clone();
+    }
+
+    /// Current Push Relay settings.
+    pub fn push_relay_config(&self) -> lr_config::PushRelayConfig {
+        self.push_relay_config.read().clone()
+    }
+
+    /// Install the callback that writes remembered capabilities to the config
+    /// file (debounced batches of changed snapshots only).
+    pub fn set_capability_snapshot_persister(
+        &self,
+        persister: super::push_relay::CapabilitySnapshotPersister,
+    ) {
+        self.snapshot_recorder.set_persister(persister);
+    }
+
+    /// Override how long changed snapshots are batched before persisting.
+    pub fn set_capability_snapshot_debounce(&self, debounce: Duration) {
+        self.snapshot_recorder.set_debounce(debounce);
+    }
+
+    /// Record whether requests for a session arrive through the STDIO bridge.
+    /// The HTTP route calls this before every request, from the
+    /// `X-LocalRouter-Bridge` header.
+    pub fn set_stdio_bridge_session(&self, session_key: &str, is_stdio_bridge: bool) {
+        if is_stdio_bridge {
+            self.stdio_bridge_sessions.insert(session_key.to_string());
+        } else {
+            self.stdio_bridge_sessions.remove(session_key);
+        }
+    }
+
+    /// The Push Relay context of a live session.
+    pub async fn push_session_context(&self, session_key: &str) -> Option<PushRelaySessionContext> {
+        let session = self.get_session(session_key)?;
+        let state = session.read().await;
+        Some(push_context(&state))
+    }
+
+    /// Each upstream's declared capabilities for a live session (which
+    /// servers have events, channels, ...). `None` until it initialised.
+    pub async fn session_capability_providers(
+        &self,
+        session_key: &str,
+    ) -> Option<CapabilityProviders> {
+        let session = self.get_session(session_key)?;
+        let state = session.read().await;
+        state
+            .merged_capabilities
+            .as_ref()
+            .map(|merged| merged.providers.clone())
+    }
+
+    /// Servers among `server_ids` that are enabled and whose remembered
+    /// capabilities (still matching their configuration) include push.
+    /// Resource updates count only when `include_resource_updates` is set.
+    pub fn remembered_push_sources(
+        &self,
+        server_ids: &[String],
+        include_resource_updates: bool,
+    ) -> Vec<RememberedPushSource> {
+        server_ids
+            .iter()
+            .filter_map(|id| {
+                let config = self.server_manager.get_config(id)?;
+                if !config.enabled {
+                    return None;
+                }
+                let snapshot = config.current_capability_snapshot()?.clone();
+                snapshot
+                    .push
+                    .has_consumable_push(include_resource_updates)
+                    .then(|| RememberedPushSource {
+                        server_id: id.clone(),
+                        server_name: config.name.clone(),
+                        snapshot,
+                    })
+            })
+            .collect()
+    }
+
+    /// [`Self::remembered_push_sources`] for the servers a session's client
+    /// may see.
+    pub async fn remembered_push_sources_for_session(
+        &self,
+        session_key: &str,
+        include_resource_updates: bool,
+    ) -> Vec<RememberedPushSource> {
+        let Some(session) = self.get_session(session_key) else {
+            return Vec::new();
+        };
+        let visible = session.read().await.requested_servers.clone();
+        self.remembered_push_sources(&visible, include_resource_updates)
+    }
+
+    /// Send an arbitrary request (e.g. `events/list`, `events/poll`) to one
+    /// upstream over a session's own connection, under the normal request
+    /// timeout.
+    pub async fn upstream_request(
+        &self,
+        session_key: &str,
+        server_id: &str,
+        method: &str,
+        params: Option<Value>,
+    ) -> AppResult<JsonRpcResponse> {
+        let transports = self.session_transports_for(session_key, server_id).await?;
+        let request = JsonRpcRequest::new(
+            Some(json!(format!("_lr_push_{}", uuid::Uuid::new_v4()))),
+            method.to_string(),
+            params,
+        );
+        transports.send_request(server_id, request).await
+    }
+
+    /// Open a long-lived request (e.g. `events/stream`) on one upstream over
+    /// a session's own connection. See [`crate::transport::RpcStream`].
+    pub async fn open_upstream_stream(
+        &self,
+        session_key: &str,
+        server_id: &str,
+        method: &str,
+        params: Option<Value>,
+        buffer: usize,
+    ) -> AppResult<crate::transport::RpcStream> {
+        let transports = self.session_transports_for(session_key, server_id).await?;
+        let request = JsonRpcRequest::new(
+            Some(json!(format!("_lr_push_{}", uuid::Uuid::new_v4()))),
+            method.to_string(),
+            params,
+        );
+        transports.open_rpc_stream(server_id, request, buffer).await
+    }
+
+    async fn session_transports_for(
+        &self,
+        session_key: &str,
+        server_id: &str,
+    ) -> AppResult<Arc<SessionTransportSet>> {
+        let session = self
+            .get_session(session_key)
+            .ok_or_else(|| AppError::Mcp(format!("Session not found: {session_key}")))?;
+        let state = session.read().await;
+        if !state.requested_servers.iter().any(|id| id == server_id) {
+            return Err(AppError::Mcp(format!(
+                "Server {server_id} is not visible to this session"
+            )));
+        }
+        state
+            .transports
+            .clone()
+            .filter(|transports| transports.is_running(server_id))
+            .ok_or_else(|| AppError::Mcp(format!("Server not running: {server_id}")))
+    }
+
+    /// Deliver a notification to one session's client (its SSE / WebSocket
+    /// / `subscriptions/listen` connection). Returns whether anyone listened.
+    pub fn send_session_notification(
+        &self,
+        session_key: &str,
+        notification: JsonRpcNotification,
+    ) -> bool {
+        self.notification_broadcast
+            .as_ref()
+            .is_some_and(|broadcast| {
+                broadcast
+                    .send((session_notification_key(session_key), notification))
+                    .is_ok()
+            })
+    }
+
     pub fn register_virtual_server(&self, server: Arc<dyn VirtualMcpServer>) {
         self.virtual_servers.write().push(server);
     }
@@ -440,8 +648,125 @@ impl McpGateway {
             }
         }
 
+        if let Some(service) = self.push_relay() {
+            if let Some(content) = service.instructions(&push_context(&session_read)) {
+                result.push(super::virtual_server::VirtualInstructions {
+                    section_title: "Events".to_string(),
+                    content,
+                    tool_names: Vec::new(),
+                    priority: 25,
+                });
+            }
+        }
+
         result.sort_by_key(|v| v.priority);
         result
+    }
+
+    /// Add what the Push Relay advertises for this session to serialised
+    /// capabilities. No-op without a registered relay.
+    fn apply_push_advertisement(&self, state: &GatewaySession, capabilities: &mut Value) {
+        if let Some(service) = self.push_relay() {
+            service
+                .advertisement(&push_context(state))
+                .apply_to(capabilities);
+        }
+    }
+
+    /// Route a downstream `events/*` request to the Push Relay, or answer
+    /// method-not-found when none is registered. Never forwarded upstream.
+    async fn handle_push_request(
+        &self,
+        session: Arc<RwLock<GatewaySession>>,
+        method: PushMethod,
+        request: JsonRpcRequest,
+    ) -> AppResult<JsonRpcResponse> {
+        let Some(service) = self.push_relay() else {
+            return Ok(JsonRpcResponse::error(
+                request.id.unwrap_or(Value::Null),
+                JsonRpcError::method_not_found(&request.method),
+            ));
+        };
+        let ctx = push_context(&*session.read().await);
+        match method {
+            PushMethod::List => service.events_list(&ctx, request).await,
+            PushMethod::Poll => service.events_poll(&ctx, request).await,
+            PushMethod::Stream => service.events_stream(&ctx, request).await,
+            PushMethod::Subscribe => service.events_subscribe(&ctx, request).await,
+            PushMethod::Unsubscribe => service.events_unsubscribe(&ctx, request).await,
+        }
+    }
+
+    /// Visible, enabled servers with no remembered capabilities (or ones that
+    /// no longer match their configuration). Empty unless a Push Relay is
+    /// registered and enabled: only it reads the snapshots.
+    fn servers_awaiting_first_discovery(&self, servers: &[String]) -> Vec<String> {
+        if self.push_relay().is_none() || !self.push_relay_config.read().enabled {
+            return Vec::new();
+        }
+        servers
+            .iter()
+            .filter(|id| {
+                self.server_manager.get_config(id).is_some_and(|config| {
+                    config.enabled && config.current_capability_snapshot().is_none()
+                })
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Wait until every server in `servers` has remembered capabilities or
+    /// has failed to start, or until `deadline`.
+    async fn wait_for_first_discovery(
+        &self,
+        session: &Arc<RwLock<GatewaySession>>,
+        servers: &[String],
+        deadline: tokio::time::Instant,
+    ) {
+        let mut ticker = tokio::time::interval(Duration::from_millis(50));
+        loop {
+            let settled = {
+                let state = session.read().await;
+                let backends_done = !state.initialization_pending && state.transports.is_some();
+                servers.iter().all(|id| {
+                    let remembered = self
+                        .server_manager
+                        .get_config(id)
+                        .is_some_and(|c| c.current_capability_snapshot().is_some());
+                    remembered
+                        || matches!(
+                            state.server_init_status.get(id),
+                            Some(InitStatus::Failed { .. })
+                        )
+                        || (backends_done && !state.allowed_servers.contains(id))
+                })
+            };
+            if settled || tokio::time::Instant::now() >= deadline {
+                return;
+            }
+            tokio::select! {
+                _ = ticker.tick() => {}
+                _ = tokio::time::sleep_until(deadline) => return,
+            }
+        }
+    }
+
+    /// Remember what each freshly initialised upstream offers, in the
+    /// background so the handshake never waits on it.
+    fn observe_upstream_capabilities(
+        &self,
+        transports: &Arc<SessionTransportSet>,
+        results: &[(String, InitializeResult)],
+    ) {
+        for (server_id, init) in results {
+            spawn_capability_observation(
+                self.server_manager.clone(),
+                self.snapshot_recorder.clone(),
+                transports.clone(),
+                server_id.clone(),
+                init.clone(),
+            );
+        }
     }
 
     /// Build `McpServerInstructionInfo` list from init results and catalogs.
@@ -688,6 +1013,7 @@ impl McpGateway {
                 super::session::ClientListingSnapshot::from_client(&synthetic_client),
             );
             session_write.client_name = client_name;
+            session_write.is_stdio_bridge = self.stdio_bridge_sessions.contains(session_key);
             session_write.mcp_sampling_permission = mcp_sampling_permission;
             session_write.mcp_elicitation_permission = mcp_elicitation_permission;
             session_write.client_mode = client_mode;
@@ -1044,12 +1370,44 @@ impl McpGateway {
         session: Arc<RwLock<GatewaySession>>,
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
+        // A server never seen before (or reconfigured) is started and waited
+        // for, bounded, so its capabilities can be remembered before this
+        // client is told what it may use.
+        let awaiting_discovery = {
+            let requested = session.read().await.requested_servers.clone();
+            self.servers_awaiting_first_discovery(&requested)
+        };
+        if !awaiting_discovery.is_empty() {
+            let deadline = tokio::time::Instant::now()
+                + self.push_relay_config.read().limits.first_discovery_wait();
+            let needs_backends = {
+                let state = session.read().await;
+                state.transports.is_none() && !state.initialization_pending
+            };
+            if needs_backends {
+                let gateway = self.clone();
+                let background = session.clone();
+                let client_meta =
+                    crate::protocol::RequestClientMeta::from_params(request.params.as_ref());
+                tokio::spawn(async move {
+                    if let Err(e) = gateway
+                        .initialize_session_backends(&background, &client_meta)
+                        .await
+                    {
+                        tracing::debug!("Backend start for first discovery failed: {}", e);
+                    }
+                });
+            }
+            self.wait_for_first_discovery(&session, &awaiting_discovery, deadline)
+                .await;
+        }
+
         // Use merged capabilities when backends are already running;
         // otherwise advertise the gateway's full capability surface (a
         // superset — list endpoints simply return fewer items when a
         // capability has no providing backend).
         let merged = session.read().await.merged_capabilities.clone();
-        let capabilities = match merged {
+        let mut capabilities = match merged {
             Some(m) => serde_json::to_value(&m.capabilities)
                 .unwrap_or_else(|_| json!({ "tools": { "listChanged": true } })),
             None => json!({
@@ -1059,6 +1417,7 @@ impl McpGateway {
                 "completions": {}
             }),
         };
+        self.apply_push_advertisement(&*session.read().await, &mut capabilities);
 
         let result = crate::protocol::ServerDiscoverResult {
             protocol_versions: crate::protocol::SUPPORTED_PROTOCOL_VERSIONS
@@ -1769,11 +2128,13 @@ impl McpGateway {
             }
         })).await;
         let mut changed = false;
+        let mut recovered = Vec::new();
         {
             let mut state = session.write().await;
             for (id, result) in results {
                 match result {
                     Ok(result) => {
+                        recovered.push((id.clone(), result.clone()));
                         state
                             .server_init_status
                             .insert(id.clone(), InitStatus::Completed(result));
@@ -1814,6 +2175,7 @@ impl McpGateway {
             return;
         }
         if changed {
+            self.observe_upstream_capabilities(&transports, &recovered);
             let (successes, failures) = {
                 let state = session.read().await;
                 session_initialization_results(&state)
@@ -1854,17 +2216,62 @@ impl McpGateway {
             let session_weak = Arc::downgrade(session);
             let server_id_clone = server_id.clone();
             let broadcast_clone = self.notification_broadcast.clone();
+            let push_relay = self.push_relay.clone();
+            let server_manager = self.server_manager.clone();
+            let snapshot_recorder = self.snapshot_recorder.clone();
 
             let callback: NotificationCallback =
                 Arc::new(move |notification: JsonRpcNotification| {
                     let session_weak = session_weak.clone();
                     let server_id_inner = server_id_clone.clone();
                     let broadcast_inner = broadcast_clone.clone();
+                    let push_relay = push_relay.clone();
+                    let server_manager = server_manager.clone();
+                    let snapshot_recorder = snapshot_recorder.clone();
 
                     tokio::spawn(async move {
                         let Some(session_inner) = session_weak.upgrade() else {
                             return; // session already closed
                         };
+                        let method = notification.method.as_str();
+                        if method == super::push_relay::EVENTS_LIST_CHANGED_NOTIFICATION {
+                            let (transports, init) = {
+                                let state = session_inner.read().await;
+                                let init = match state.server_init_status.get(&server_id_inner) {
+                                    Some(InitStatus::Completed(init)) => Some(init.clone()),
+                                    _ => None,
+                                };
+                                (state.transports.clone(), init)
+                            };
+                            if let (Some(transports), Some(init)) = (transports, init) {
+                                spawn_capability_observation(
+                                    server_manager,
+                                    snapshot_recorder,
+                                    transports,
+                                    server_id_inner.clone(),
+                                    init,
+                                );
+                            }
+                        }
+                        if method == super::push_relay::CLAUDE_CHANNEL_NOTIFICATION
+                            || method.starts_with(super::push_relay::EVENTS_NOTIFICATION_PREFIX)
+                        {
+                            let service = push_relay.read().clone();
+                            if let Some(service) = service {
+                                let (session_key, client_id) = {
+                                    let state = session_inner.read().await;
+                                    (state.session_key.clone(), state.client_id.clone())
+                                };
+                                if service.on_upstream_notification(UpstreamPushNotification {
+                                    server_id: server_id_inner.clone(),
+                                    session_key,
+                                    client_id,
+                                    notification: notification.clone(),
+                                }) {
+                                    return;
+                                }
+                            }
+                        }
                         match notification.method.as_str() {
                             "notifications/tools/list_changed" => {
                                 tracing::info!(
@@ -2076,6 +2483,10 @@ impl McpGateway {
                 self.handle_resource_templates_list(session, request).await
             }
             "prompts/list" => self.handle_prompts_list(session, request).await,
+            method if PushMethod::from_method(method).is_some() => {
+                let method = PushMethod::from_method(method).expect("matched above");
+                self.handle_push_request(session, method, request).await
+            }
             "ping" if !session.read().await.protocol_revision.is_stateless() => Ok(
                 JsonRpcResponse::success(request.id.unwrap_or(Value::Null), json!({})),
             ),
@@ -2141,6 +2552,13 @@ impl McpGateway {
             "resources/subscribe" => self.handle_resources_subscribe(session, request).await,
 
             "resources/unsubscribe" => self.handle_resources_unsubscribe(session, request).await,
+
+            // MCP Events (SEP-3415): only the Push Relay may answer these;
+            // they are never broadcast or forwarded upstream.
+            method if PushMethod::from_method(method).is_some() => {
+                let method = PushMethod::from_method(method).expect("matched above");
+                self.handle_push_request(session, method, request).await
+            }
 
             _ => {
                 // Return JSON-RPC error for unknown methods
@@ -2370,9 +2788,14 @@ impl McpGateway {
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
         let request_id = request.id.clone().unwrap_or(Value::Null);
+        let started = tokio::time::Instant::now();
+        let awaiting_discovery = {
+            let requested = session.read().await.requested_servers.clone();
+            self.servers_awaiting_first_discovery(&requested)
+        };
         let gateway = self.clone();
         let background_session = session.clone();
-        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let (sender, mut receiver) = tokio::sync::oneshot::channel();
         {
             let mut state = session.write().await;
             // Local skill search must be ready before any remote startup. The
@@ -2439,7 +2862,17 @@ impl McpGateway {
             });
             state.initialization_abort = Some(task.abort_handle());
         }
-        match tokio::time::timeout(Duration::from_secs(2), receiver).await {
+        let mut outcome = tokio::time::timeout(Duration::from_secs(2), &mut receiver).await;
+        if outcome.is_err() && !awaiting_discovery.is_empty() {
+            // A server never seen before (or reconfigured) gets longer: its
+            // capabilities decide what this session can be offered.
+            let deadline = started + self.push_relay_config.read().limits.first_discovery_wait();
+            tokio::select! {
+                result = &mut receiver => outcome = Ok(result),
+                _ = self.wait_for_first_discovery(&session, &awaiting_discovery, deadline) => {}
+            }
+        }
+        match outcome {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err(AppError::Mcp("MCP initialization task stopped".into())),
             Err(_) => {
@@ -2486,6 +2919,7 @@ impl McpGateway {
                 if let Some(instructions) = instructions {
                     value["instructions"] = json!(instructions);
                 }
+                self.apply_push_advertisement(&state, &mut value["capabilities"]);
                 Ok(JsonRpcResponse::success(request_id, value))
             }
         }
@@ -2589,7 +3023,11 @@ impl McpGateway {
         let session_read = session.read().await;
         let allowed_servers = session_read.allowed_servers.clone();
         drop(session_read);
-        session.write().await.client_capabilities = client_capabilities.clone();
+        {
+            let mut state = session.write().await;
+            state.client_capabilities = client_capabilities.clone();
+            state.client_capabilities_raw = raw_capabilities.cloned();
+        }
 
         // Create per-session transports for all allowed servers
         let start_timeout = tokio::time::Duration::from_secs(15);
@@ -2636,7 +3074,7 @@ impl McpGateway {
                     prompts: None,
                     logging: None,
                     completions: None,
-                    extensions: None,
+                    ..Default::default()
                 },
                 server_info: ServerInfo {
                     name: "LocalRouter MCP Gateway".to_string(),
@@ -2645,6 +3083,7 @@ impl McpGateway {
                 },
                 failures: start_failures,
                 instructions: instructions.clone(),
+                providers: CapabilityProviders::default(),
             };
 
             let mut response_value = json!({
@@ -2665,6 +3104,7 @@ impl McpGateway {
                 let mut session_write = session.write().await;
                 session_write.merged_capabilities = Some(merged);
                 session_write.transports = Some(transport_set.clone());
+                self.apply_push_advertisement(&session_write, &mut response_value["capabilities"]);
             }
 
             return Ok(JsonRpcResponse::success(
@@ -2930,6 +3370,8 @@ impl McpGateway {
             session_write.transports = Some(transport_set.clone());
         }
 
+        self.observe_upstream_capabilities(&transport_set, &init_results);
+
         // If all servers failed, check if virtual servers can serve as fallback
         if init_results.is_empty() && !failures.is_empty() {
             let has_virtual = !self.virtual_servers.read().is_empty();
@@ -2960,7 +3402,7 @@ impl McpGateway {
                         prompts: None,
                         logging: None,
                         completions: None,
-                        extensions: None,
+                        ..Default::default()
                     },
                     server_info: ServerInfo {
                         name: "LocalRouter MCP Gateway (skills-only)".to_string(),
@@ -2969,6 +3411,7 @@ impl McpGateway {
                     },
                     failures,
                     instructions: instructions.clone(),
+                    providers: CapabilityProviders::default(),
                 };
 
                 let mut response_value = json!({
@@ -2989,6 +3432,10 @@ impl McpGateway {
                     let mut session_write = session.write().await;
                     session_write.merged_capabilities = Some(merged);
                     session_write.transports = Some(transport_set.clone());
+                    self.apply_push_advertisement(
+                        &session_write,
+                        &mut response_value["capabilities"],
+                    );
                 }
 
                 return Ok(JsonRpcResponse::success(
@@ -3039,6 +3486,7 @@ impl McpGateway {
         if let Some(inst) = &instructions {
             result["instructions"] = json!(inst);
         }
+        self.apply_push_advertisement(&*session.read().await, &mut result["capabilities"]);
 
         Ok(JsonRpcResponse::success(
             request.id.unwrap_or(Value::Null),
@@ -3556,6 +4004,7 @@ impl McpGateway {
 
         for (session_key, session) in to_remove {
             self.sessions.remove(&session_key);
+            self.stdio_bridge_sessions.remove(&session_key);
             close_session_transports(&session).await;
             tracing::info!("Removed expired gateway session: {}", session_key);
         }
@@ -3866,6 +4315,7 @@ impl McpGateway {
     /// Terminate a session by session key (direct lookup).
     /// Closes all per-session transports before removing.
     pub async fn terminate_session(&self, session_key: &str) -> Result<(), String> {
+        self.stdio_bridge_sessions.remove(session_key);
         if let Some((_, session)) = self.sessions.remove(session_key) {
             close_session_transports(&session).await;
             tracing::info!(
@@ -4473,4 +4923,42 @@ async fn close_session_transports(session: &Arc<RwLock<GatewaySession>>) {
     if let Some(transports) = transports {
         transports.close_all().await;
     }
+}
+
+/// The Push Relay's view of a session.
+fn push_context(state: &GatewaySession) -> PushRelaySessionContext {
+    PushRelaySessionContext {
+        client_id: state.client_id.clone(),
+        session_key: state.session_key.clone(),
+        client_name: state.client_name.clone(),
+        is_stdio_bridge: state.is_stdio_bridge,
+        protocol_revision: state.protocol_revision,
+        client_capabilities: state.client_capabilities_raw.clone(),
+        visible_servers: state.requested_servers.clone(),
+        running_servers: state.allowed_servers.clone(),
+        notification_key: session_notification_key(&state.session_key),
+    }
+}
+
+/// Snapshot one upstream's capabilities (and event catalogue) in the
+/// background and remember them if they changed.
+fn spawn_capability_observation(
+    manager: Arc<McpServerManager>,
+    recorder: Arc<SnapshotRecorder>,
+    transports: Arc<SessionTransportSet>,
+    server_id: String,
+    init: InitializeResult,
+) {
+    tokio::spawn(async move {
+        if let Some(snapshot) =
+            super::push_relay::observe_upstream(&manager, &transports, &server_id, &init).await
+        {
+            if recorder.record(&manager, &server_id, snapshot) {
+                tracing::info!(
+                    "Remembered changed capabilities of MCP server {}",
+                    server_id
+                );
+            }
+        }
+    });
 }

@@ -374,8 +374,36 @@ impl McpServerManager {
     }
 
     /// Add a server configuration
-    pub fn add_config(&self, config: McpServerConfig) {
+    ///
+    /// A configuration carrying no capability snapshot keeps the one already
+    /// remembered here when it still describes the server: the copy may have
+    /// been read before a recent snapshot was persisted.
+    pub fn add_config(&self, mut config: McpServerConfig) {
+        if config.capability_snapshot.is_none() {
+            if let Some(existing) = self.configs.get(&config.id) {
+                config.capability_snapshot = existing
+                    .capability_snapshot
+                    .clone()
+                    .filter(|snapshot| snapshot.is_current_for(&config));
+            }
+        }
         self.configs.insert(config.id.clone(), config);
+    }
+
+    /// Remember what a server offered when it last initialised (in memory;
+    /// persisting to the config file is the gateway's snapshot recorder's job).
+    /// Returns `false` when the server is unknown.
+    pub fn set_capability_snapshot(
+        &self,
+        server_id: &str,
+        snapshot: Option<lr_config::UpstreamCapabilitySnapshot>,
+    ) -> bool {
+        if let Some(mut config) = self.configs.get_mut(server_id) {
+            config.capability_snapshot = snapshot;
+            true
+        } else {
+            false
+        }
     }
 
     /// Remove a server configuration

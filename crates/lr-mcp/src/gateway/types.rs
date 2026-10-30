@@ -334,6 +334,7 @@ impl<T> CachedList<T> {
 
 /// Initialization status for a server
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)] // one per server per session
 pub enum InitStatus {
     NotStarted,
     InProgress,
@@ -473,6 +474,51 @@ pub struct ServerCapabilities {
     /// extension-specific configuration. Passed through from backends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extensions: Option<serde_json::Value>,
+
+    /// Experimental capabilities (e.g. `claude/channel`). Kept per upstream;
+    /// never merged into what the gateway advertises.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub experimental: Option<serde_json::Value>,
+
+    /// Top-level fields this type does not model (e.g. the `events`
+    /// capability ChatGPT and OpenClaw read), kept so nothing an upstream
+    /// declares is lost.
+    #[serde(flatten)]
+    pub other: serde_json::Map<String, serde_json::Value>,
+}
+
+impl ServerCapabilities {
+    /// Configuration of an extension (`extensions[id]`), if declared.
+    pub fn extension(&self, id: &str) -> Option<&serde_json::Value> {
+        self.extensions.as_ref()?.get(id)
+    }
+
+    /// An experimental capability (`experimental[key]`), if declared.
+    pub fn experimental_capability(&self, key: &str) -> Option<&serde_json::Value> {
+        self.experimental.as_ref()?.get(key)
+    }
+
+    /// MCP Events (SEP-3415), declared under the extension id or as the
+    /// top-level `events` capability.
+    pub fn has_events(&self) -> bool {
+        self.extension(super::push_relay::EVENTS_EXTENSION_ID)
+            .is_some()
+            || self.other.contains_key("events")
+    }
+
+    /// Claude Code Channels (`experimental["claude/channel"]`).
+    pub fn has_claude_channel(&self) -> bool {
+        self.experimental_capability(super::push_relay::CLAUDE_CHANNEL_CAPABILITY)
+            .is_some()
+    }
+
+    /// Classic resource subscriptions (`resources.subscribe`).
+    pub fn has_resource_subscribe(&self) -> bool {
+        self.resources
+            .as_ref()
+            .and_then(|r| r.subscribe)
+            .unwrap_or(false)
+    }
 }
 
 /// Completions capability (argument auto-completion)
@@ -587,6 +633,58 @@ pub struct MergedCapabilities {
     pub failures: Vec<ServerFailure>,
     /// Instructions for the LLM on how to use this gateway
     pub instructions: Option<String>,
+    /// Each upstream's own capabilities, unmerged: which server provides what.
+    pub providers: CapabilityProviders,
+}
+
+/// Each initialised upstream's capabilities exactly as it declared them
+/// (including `experimental` and unknown top-level fields), keyed by server id.
+#[derive(Debug, Clone, Default)]
+pub struct CapabilityProviders {
+    servers: std::collections::BTreeMap<String, ServerCapabilities>,
+}
+
+impl CapabilityProviders {
+    pub fn insert(&mut self, server_id: String, capabilities: ServerCapabilities) {
+        self.servers.insert(server_id, capabilities);
+    }
+
+    /// One server's declared capabilities.
+    pub fn get(&self, server_id: &str) -> Option<&ServerCapabilities> {
+        self.servers.get(server_id)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &ServerCapabilities)> {
+        self.servers.iter()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.servers.is_empty()
+    }
+
+    /// Servers matching a predicate, in id order.
+    pub fn servers_where(&self, predicate: impl Fn(&ServerCapabilities) -> bool) -> Vec<&str> {
+        self.servers
+            .iter()
+            .filter(|(_, caps)| predicate(caps))
+            .map(|(id, _)| id.as_str())
+            .collect()
+    }
+
+    /// Servers declaring MCP Events (either location).
+    pub fn servers_with_events(&self) -> Vec<&str> {
+        self.servers_where(ServerCapabilities::has_events)
+    }
+
+    /// Servers declaring Claude Code Channels.
+    pub fn servers_with_claude_channel(&self) -> Vec<&str> {
+        self.servers_where(ServerCapabilities::has_claude_channel)
+    }
+
+    /// Servers declaring an extension id.
+    pub fn servers_with_extension(&self, id: &str) -> Vec<&str> {
+        self.servers_where(|caps| caps.extension(id).is_some())
+    }
 }
 
 /// Header carrying a Streamable HTTP session id (issued on `initialize`).

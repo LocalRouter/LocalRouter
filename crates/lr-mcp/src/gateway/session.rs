@@ -104,6 +104,13 @@ pub struct GatewaySession {
     /// Client capabilities (from initialize request params)
     pub client_capabilities: Option<ClientCapabilities>,
 
+    /// The client's capabilities exactly as sent, including fields the typed
+    /// form drops (`extensions`, top-level `events`).
+    pub client_capabilities_raw: Option<serde_json::Value>,
+
+    /// Served through the STDIO bridge (`X-LocalRouter-Bridge: stdio`).
+    pub is_stdio_bridge: bool,
+
     /// Tool name mapping: namespaced_name -> (server_id, original_name)
     pub tool_mapping: HashMap<String, (String, String)>,
 
@@ -287,6 +294,8 @@ impl GatewaySession {
             server_init_status,
             merged_capabilities: None,
             client_capabilities: None,
+            client_capabilities_raw: None,
+            is_stdio_bridge: false,
             tool_mapping: HashMap::new(),
             resource_mapping: HashMap::new(),
             resource_uri_mapping: HashMap::new(),
