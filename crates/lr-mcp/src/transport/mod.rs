@@ -7,11 +7,13 @@
 
 #![allow(dead_code)]
 
+pub mod rpc_stream;
 pub mod session_transport_set;
 pub mod sse;
 pub mod stdio;
 pub mod websocket;
 
+pub use rpc_stream::{RpcStream, RpcStreamMessage, SUBSCRIPTION_ID_META_KEY};
 pub use session_transport_set::SessionTransportSet;
 pub use sse::SseTransport;
 pub use stdio::{StdioRequestCallback, StdioTransport};
@@ -104,6 +106,28 @@ pub trait Transport: Send + Sync {
 
     /// Check if the transport supports streaming responses
     fn supports_streaming(&self) -> bool {
+        false
+    }
+
+    /// Issue a long-lived request (e.g. `events/stream`) and receive every
+    /// correlated notification plus the final result as an [`RpcStream`].
+    ///
+    /// Unlike [`Self::send_request`] there is no total timeout; `buffer`
+    /// bounds the messages held for a slow consumer before the transport
+    /// waits. Dropping the stream before its result cancels the request.
+    async fn open_rpc_stream(
+        &self,
+        request: JsonRpcRequest,
+        buffer: usize,
+    ) -> AppResult<RpcStream> {
+        let _ = (request, buffer);
+        Err(lr_types::AppError::Mcp(
+            "This MCP transport does not support streaming requests".to_string(),
+        ))
+    }
+
+    /// Whether [`Self::open_rpc_stream`] is implemented.
+    fn supports_rpc_streams(&self) -> bool {
         false
     }
 

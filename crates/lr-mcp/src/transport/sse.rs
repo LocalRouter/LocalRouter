@@ -9,6 +9,7 @@
 use crate::protocol::{
     JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, StreamingChunk,
 };
+use crate::transport::rpc_stream::{self, RpcStream, SseEventSplitter, StreamRegistry};
 use crate::transport::Transport;
 use async_trait::async_trait;
 use futures_util::{Stream, StreamExt};
@@ -156,6 +157,10 @@ pub struct SseTransport {
     /// Background task handle for SSE stream reader
     #[allow(dead_code)]
     stream_task: Arc<RwLock<Option<JoinHandle<()>>>>,
+
+    /// Open long-lived requests (see [`Transport::open_rpc_stream`]). Legacy
+    /// servers may deliver their messages on the GET stream.
+    streams: StreamRegistry,
 }
 
 /// Derive the standard MCP HTTP headers for an outgoing POST (SEP-2243).
@@ -442,6 +447,8 @@ impl SseTransport {
         let negotiated_version = Arc::new(RwLock::new(None));
         let stream_negotiated_version = negotiated_version.clone();
         let headers: SharedHeaders = Arc::new(RwLock::new(headers));
+        let streams: StreamRegistry = Arc::new(RwLock::new(HashMap::new()));
+        let stream_streams = streams.clone();
 
         // Start persistent SSE stream in background
         let stream_url = url.clone();
@@ -470,6 +477,7 @@ impl SseTransport {
                 stream_negotiated_version,
                 stream_error,
                 stream_auth_refresher,
+                stream_streams,
             )
             .await;
         })));
@@ -541,6 +549,7 @@ impl SseTransport {
             notification_callback,
             request_callback,
             stream_task: Arc::new(RwLock::new(stream_task.0.take())),
+            streams,
         };
 
         tracing::info!("MCP SSE transport connected successfully with persistent stream");
@@ -570,6 +579,7 @@ impl SseTransport {
         negotiated_version: Arc<RwLock<Option<String>>>,
         last_error: Arc<RwLock<Option<String>>>,
         auth_refresher: Arc<RwLock<Option<AuthRefresher>>>,
+        streams: StreamRegistry,
     ) {
         tracing::info!("Starting persistent SSE stream task for: {}", url);
 
@@ -839,10 +849,17 @@ impl SseTransport {
                                                 id_str,
                                                 pending_keys
                                             );
-                                            if let Some(sender) = pending.write().remove(&id_str) {
+                                            let sender = pending.write().remove(&id_str);
+                                            if let Some(sender) = sender {
                                                 if sender.send(response).is_err() {
                                                     tracing::warn!("Failed to send response to pending request: {}", id_str);
                                                 }
+                                            } else if let Some(stream) =
+                                                rpc_stream::take_stream_for_response(
+                                                    &streams, &response,
+                                                )
+                                            {
+                                                stream.finish(response).await;
                                             } else {
                                                 tracing::warn!(
                                                     "Received response for unknown request ID: {} (pending_keys={:?})",
@@ -852,9 +869,17 @@ impl SseTransport {
                                             }
                                         }
                                         JsonRpcMessage::Notification(notification) => {
-                                            // Invoke notification callback
-                                            if let Some(callback) =
-                                                notification_callback.read().as_ref()
+                                            if let Some(stream) =
+                                                rpc_stream::stream_for_notification(
+                                                    &streams,
+                                                    &notification,
+                                                )
+                                            {
+                                                if !stream.notify(notification).await {
+                                                    streams.write().retain(|_, s| !s.is_closed());
+                                                }
+                                            } else if let Some(callback) =
+                                                notification_callback.read().clone()
                                             {
                                                 callback(notification);
                                             }
@@ -1435,6 +1460,212 @@ impl Transport for SseTransport {
         };
 
         Ok(Box::pin(stream))
+    }
+
+    async fn open_rpc_stream(
+        &self,
+        mut request: JsonRpcRequest,
+        buffer: usize,
+    ) -> AppResult<RpcStream> {
+        if *self.closed.read() {
+            return Err(AppError::Mcp("Transport is closed".to_string()));
+        }
+        self.resolve_auth(false).await?;
+
+        let original_id = request.id.clone().unwrap_or(Value::Null);
+        let wire_id = self.next_request_id();
+        request.id = Some(Value::Number(wire_id.into()));
+        let key = wire_id.to_string();
+        let (mut stream, sink) = RpcStream::channel(original_id, buffer, None);
+        self.streams.write().insert(key.clone(), sink.clone());
+
+        let post_url = self
+            .message_endpoint
+            .read()
+            .clone()
+            .unwrap_or_else(|| self.url.clone());
+
+        // The stream client has no total deadline: the response body stays
+        // open for as long as the subscription does.
+        let mut auth_refreshed = false;
+        let response = loop {
+            let mut builder = STREAM_CLIENT
+                .post(&post_url)
+                .json(&request)
+                .header("Accept", "application/json, text/event-stream");
+            if let Some(id) = self.session_id.read().clone() {
+                builder = builder.header("Mcp-Session-Id", id);
+            }
+            for (key, value) in
+                mcp_request_headers(&request, self.negotiated_version.read().as_deref())
+            {
+                builder = builder.header(key, value);
+            }
+            for (key, value) in self.headers.read().clone() {
+                builder = builder.header(key, value);
+            }
+            let response = match builder.send().await {
+                Ok(response) => response,
+                Err(e) => {
+                    self.streams.write().remove(&key);
+                    return Err(AppError::Mcp(format!(
+                        "Failed to send streaming request: {}",
+                        e.without_url()
+                    )));
+                }
+            };
+            if response.status() == reqwest::StatusCode::UNAUTHORIZED && !auth_refreshed {
+                match self.resolve_auth(true).await {
+                    Ok(true) => {
+                        auth_refreshed = true;
+                        continue;
+                    }
+                    Ok(false) => {}
+                    Err(e) => {
+                        self.streams.write().remove(&key);
+                        return Err(e);
+                    }
+                }
+            }
+            break response;
+        };
+
+        let status = response.status();
+        if !status.is_success() {
+            self.streams.write().remove(&key);
+            if status == reqwest::StatusCode::NOT_FOUND && self.session_id.read().is_some() {
+                return Err(AppError::McpSessionExpired);
+            }
+            let body = response.text().await.unwrap_or_default();
+            if let Ok(error) = serde_json::from_str::<JsonRpcResponse>(&body) {
+                if error.error.is_some() {
+                    sink.finish(error).await;
+                    return Ok(stream);
+                }
+            }
+            return Err(AppError::Mcp(format!(
+                "Server returned error status: {status}"
+            )));
+        }
+
+        let is_sse = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.starts_with("text/event-stream"));
+
+        if !is_sse {
+            let text = response
+                .text()
+                .await
+                .map_err(|e| AppError::Mcp(format!("Failed to read MCP response: {e}")))?;
+            if let Some(json) = Self::inline_response_json(&text) {
+                self.streams.write().remove(&key);
+                let response: JsonRpcResponse = serde_json::from_str(&json)
+                    .map_err(|e| AppError::Mcp(format!("Invalid MCP JSON response: {e}")))?;
+                sink.finish(response).await;
+                return Ok(stream);
+            }
+            // Acknowledged only: a legacy server answers on the GET stream,
+            // which routes through the registry.
+            let streams = self.streams.clone();
+            stream.set_cancel(Box::new(move || {
+                streams.write().remove(&key);
+            }));
+            return Ok(stream);
+        }
+
+        let streams = self.streams.clone();
+        let notification_callback = self.notification_callback.clone();
+        let request_callback = self.request_callback.clone();
+        let reply_headers = self.headers.clone();
+        let session_id = self.session_id.clone();
+        let negotiated_version = self.negotiated_version.clone();
+        let task_key = key.clone();
+        let reader = tokio::spawn(async move {
+            let mut body = response.bytes_stream();
+            let mut splitter = SseEventSplitter::default();
+            while let Some(chunk) = body.next().await {
+                let Ok(chunk) = chunk else {
+                    break;
+                };
+                let Ok(events) = splitter.push(&chunk) else {
+                    break;
+                };
+                for data in events {
+                    let Ok(message) = serde_json::from_str::<JsonRpcMessage>(&data) else {
+                        tracing::debug!("Ignoring unparseable event on MCP stream");
+                        continue;
+                    };
+                    match message {
+                        JsonRpcMessage::Response(response)
+                            if rpc_stream::id_key(&response.id) == task_key =>
+                        {
+                            streams.write().remove(&task_key);
+                            sink.finish(response).await;
+                            return;
+                        }
+                        JsonRpcMessage::Response(response) => {
+                            tracing::debug!(
+                                "Ignoring response {} on the stream of request {}",
+                                response.id,
+                                task_key
+                            );
+                        }
+                        JsonRpcMessage::Notification(notification) => {
+                            if let Some(target) =
+                                rpc_stream::stream_for_notification(&streams, &notification)
+                            {
+                                if !target.notify(notification).await {
+                                    streams.write().retain(|_, s| !s.is_closed());
+                                    if sink.is_closed() {
+                                        return;
+                                    }
+                                }
+                            } else if let Some(callback) = notification_callback.read().clone() {
+                                callback(notification);
+                            }
+                        }
+                        JsonRpcMessage::Request(server_request) => {
+                            let Some(callback) = request_callback.read().clone() else {
+                                continue;
+                            };
+                            let reply = callback(server_request).await;
+                            let mut post = HTTP_CLIENT
+                                .post(&post_url)
+                                .json(&reply)
+                                .header("Accept", "application/json, text/event-stream");
+                            for (key, value) in reply_headers.read().clone() {
+                                post = post.header(key, value);
+                            }
+                            if let Some(id) = session_id.read().clone() {
+                                post = post.header("Mcp-Session-Id", id);
+                            }
+                            if let Some(version) = negotiated_version.read().clone() {
+                                post = post.header("MCP-Protocol-Version", version);
+                            }
+                            if let Err(e) = post.send().await {
+                                tracing::warn!("Failed to answer MCP server request: {}", e);
+                            }
+                        }
+                    }
+                }
+            }
+            // The body ended without a final result: dropping the sinks ends
+            // the consumer's stream with an error.
+            streams.write().remove(&task_key);
+        });
+        let streams = self.streams.clone();
+        let abort = reader.abort_handle();
+        stream.set_cancel(Box::new(move || {
+            streams.write().remove(&key);
+            abort.abort();
+        }));
+        Ok(stream)
+    }
+
+    fn supports_rpc_streams(&self) -> bool {
+        true
     }
 
     fn set_protocol_revision(&self, revision: crate::protocol::ProtocolRevision) {
@@ -2201,6 +2432,240 @@ mod tests {
         task.abort();
     }
 
+    async fn next_stream_message(
+        stream: &mut RpcStream,
+    ) -> crate::transport::rpc_stream::RpcStreamMessage {
+        tokio::time::timeout(Duration::from_secs(5), stream.next())
+            .await
+            .expect("stream message in time")
+            .expect("stream not ended")
+            .expect("stream message ok")
+    }
+
+    /// Signals when the server's response body is dropped (client went away).
+    struct DropSignal(Option<tokio::sync::oneshot::Sender<()>>);
+
+    impl Drop for DropSignal {
+        fn drop(&mut self) {
+            if let Some(tx) = self.0.take() {
+                let _ = tx.send(());
+            }
+        }
+    }
+
+    /// Streamable HTTP: one POST answered with an SSE body carrying several
+    /// correlated notifications before the final result. Uncorrelated
+    /// notifications reach the generic callback.
+    #[tokio::test]
+    async fn rpc_stream_reads_many_results_from_post_sse() {
+        use crate::transport::rpc_stream::RpcStreamMessage;
+        use axum::{
+            response::IntoResponse,
+            routing::{get, post},
+            Json, Router,
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let app = Router::new().route(
+            "/mcp",
+            get(|| async { axum::http::StatusCode::METHOD_NOT_ALLOWED }).merge(post(
+                |Json(request): Json<JsonRpcRequest>| async move {
+                    assert_eq!(request.method, "events/stream");
+                    let id = request.id.clone().unwrap();
+                    let tag = json!({ "io.modelcontextprotocol/subscriptionId": id });
+                    let events = vec![
+                        json!({"jsonrpc":"2.0","method":"notifications/events/active","params":{"_meta":tag}}),
+                        json!({"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info"}}),
+                        json!({"jsonrpc":"2.0","method":"notifications/events/event","params":{"n":1,"_meta":tag}}),
+                        json!({"jsonrpc":"2.0","method":"notifications/events/heartbeat","params":{"_meta":tag}}),
+                        json!({"jsonrpc":"2.0","id":id,"result":{"resultType":"complete"}}),
+                    ];
+                    let stream = async_stream::stream! {
+                        for event in events {
+                            tokio::time::sleep(Duration::from_millis(20)).await;
+                            yield Ok::<_, std::convert::Infallible>(format!("event: message\ndata: {event}\n\n"));
+                        }
+                    };
+                    ([("Content-Type", "text/event-stream")], axum::body::Body::from_stream(stream))
+                        .into_response()
+                },
+            )),
+        );
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let transport = SseTransport::connect(url, HashMap::new()).await.unwrap();
+        let generic = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let seen = generic.clone();
+        transport.set_notification_callback(Arc::new(move |n: JsonRpcNotification| {
+            seen.lock().push(n.method)
+        }));
+
+        let mut stream = transport
+            .open_rpc_stream(
+                JsonRpcRequest::with_id(5, "events/stream".into(), Some(json!({}))),
+                8,
+            )
+            .await
+            .unwrap();
+        let mut methods = Vec::new();
+        loop {
+            match next_stream_message(&mut stream).await {
+                RpcStreamMessage::Notification(n) => {
+                    assert_eq!(
+                        crate::transport::rpc_stream::subscription_id(&n),
+                        Some(&json!(5))
+                    );
+                    methods.push(n.method);
+                }
+                RpcStreamMessage::Result(r) => {
+                    assert_eq!(r.id, json!(5));
+                    assert_eq!(r.result, Some(json!({"resultType": "complete"})));
+                    break;
+                }
+            }
+        }
+        assert_eq!(
+            methods,
+            vec![
+                "notifications/events/active",
+                "notifications/events/event",
+                "notifications/events/heartbeat"
+            ]
+        );
+        assert!(stream.next().await.is_none());
+        assert_eq!(*generic.lock(), vec!["notifications/message".to_string()]);
+        transport.disconnect().await.unwrap();
+        task.abort();
+    }
+
+    /// Dropping the stream drops the HTTP response body, which is how a
+    /// Streamable HTTP request is cancelled.
+    #[tokio::test]
+    async fn dropping_rpc_stream_closes_the_http_body() {
+        use axum::{
+            response::IntoResponse,
+            routing::{get, post},
+            Json, Router,
+        };
+        let (closed_tx, closed_rx) = tokio::sync::oneshot::channel();
+        let closed_tx = Arc::new(parking_lot::Mutex::new(Some(closed_tx)));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let app = Router::new().route(
+            "/mcp",
+            get(|| async { axum::http::StatusCode::METHOD_NOT_ALLOWED }).merge(post(
+                move |Json(request): Json<JsonRpcRequest>| {
+                    let closed_tx = closed_tx.clone();
+                    async move {
+                        let id = request.id.clone().unwrap();
+                        let guard = DropSignal(closed_tx.lock().take());
+                        let stream = async_stream::stream! {
+                            let _guard = guard;
+                            yield Ok::<_, std::convert::Infallible>(format!(
+                                "data: {}\n\n",
+                                json!({"jsonrpc":"2.0","method":"notifications/events/active",
+                                       "params":{"_meta":{"io.modelcontextprotocol/subscriptionId":id}}})
+                            ));
+                            std::future::pending::<()>().await;
+                        };
+                        ([("Content-Type", "text/event-stream")], axum::body::Body::from_stream(stream))
+                            .into_response()
+                    }
+                },
+            )),
+        );
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let transport = SseTransport::connect(url, HashMap::new()).await.unwrap();
+        let mut stream = transport
+            .open_rpc_stream(JsonRpcRequest::with_id(1, "events/stream".into(), None), 4)
+            .await
+            .unwrap();
+        next_stream_message(&mut stream).await;
+        drop(stream);
+        tokio::time::timeout(Duration::from_secs(5), closed_rx)
+            .await
+            .expect("server saw the body closed")
+            .unwrap();
+        assert!(transport.streams.read().is_empty());
+        transport.disconnect().await.unwrap();
+        task.abort();
+    }
+
+    /// Legacy servers acknowledge the POST and deliver the stream's messages
+    /// on the persistent GET stream.
+    #[tokio::test]
+    async fn rpc_stream_routes_messages_from_the_get_stream() {
+        use crate::transport::rpc_stream::RpcStreamMessage;
+        use axum::{
+            response::IntoResponse,
+            routing::{get, post},
+            Json, Router,
+        };
+        let (events_tx, _) = tokio::sync::broadcast::channel::<String>(16);
+        let get_events = events_tx.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let app = Router::new().route(
+            "/mcp",
+            get(move || {
+                let mut rx = get_events.subscribe();
+                async move {
+                    let stream = async_stream::stream! {
+                        yield Ok::<_, std::convert::Infallible>(": open\n\n".to_string());
+                        while let Ok(event) = rx.recv().await {
+                            yield Ok(format!("data: {event}\n\n"));
+                        }
+                    };
+                    ([("Content-Type", "text/event-stream")], axum::body::Body::from_stream(stream))
+                        .into_response()
+                }
+            })
+            .merge(post(move |Json(request): Json<JsonRpcRequest>| {
+                let events_tx = events_tx.clone();
+                async move {
+                    let id = request.id.clone().unwrap();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        let tag = json!({ "io.modelcontextprotocol/subscriptionId": id });
+                        let _ = events_tx.send(json!({"jsonrpc":"2.0","method":"notifications/events/event","params":{"_meta":tag}}).to_string());
+                        let _ = events_tx.send(json!({"jsonrpc":"2.0","id":id,"result":{"resultType":"complete"}}).to_string());
+                    });
+                    (axum::http::StatusCode::ACCEPTED, "Accepted").into_response()
+                }
+            })),
+        );
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let transport = SseTransport::connect(url, HashMap::new()).await.unwrap();
+        let mut stream = transport
+            .open_rpc_stream(
+                JsonRpcRequest::new(Some(json!("s-1")), "events/stream".into(), None),
+                4,
+            )
+            .await
+            .unwrap();
+        match next_stream_message(&mut stream).await {
+            RpcStreamMessage::Notification(n) => {
+                assert_eq!(n.method, "notifications/events/event");
+                assert_eq!(
+                    crate::transport::rpc_stream::subscription_id(&n),
+                    Some(&json!("s-1"))
+                );
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        match next_stream_message(&mut stream).await {
+            RpcStreamMessage::Result(r) => assert_eq!(r.id, json!("s-1")),
+            other => panic!("unexpected {other:?}"),
+        }
+        transport.disconnect().await.unwrap();
+        task.abort();
+    }
+
     #[tokio::test]
     async fn test_request_id_generation() {
         let transport = SseTransport {
@@ -2218,6 +2683,7 @@ mod tests {
             notification_callback: Arc::new(RwLock::new(None)),
             request_callback: Arc::new(RwLock::new(None)),
             stream_task: Arc::new(RwLock::new(None)),
+            streams: Arc::new(RwLock::new(HashMap::new())),
         };
 
         assert_eq!(transport.next_request_id(), 1);

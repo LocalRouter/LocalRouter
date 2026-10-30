@@ -4,6 +4,7 @@
 //! This is the most common transport type for MCP servers.
 
 use crate::protocol::{JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
+use crate::transport::rpc_stream::{self, RpcStream, StreamRegistry};
 use crate::transport::Transport;
 use async_trait::async_trait;
 use lr_types::{AppError, AppResult};
@@ -78,6 +79,9 @@ pub struct StdioTransport {
 
     /// Background reader task handle (for cancellation)
     reader_task: Arc<RwLock<Option<JoinHandle<()>>>>,
+
+    /// Open long-lived requests (see [`Transport::open_rpc_stream`])
+    streams: StreamRegistry,
 }
 
 impl StdioTransport {
@@ -195,6 +199,7 @@ impl StdioTransport {
         let notification_callback = Arc::new(RwLock::new(None));
         let request_callback = Arc::new(RwLock::new(None));
         let stdin = Arc::new(Mutex::new(Some(stdin)));
+        let streams: StreamRegistry = Arc::new(RwLock::new(HashMap::new()));
 
         // Start reading stdout in background
         let reader_task = Self::start_stdout_reader(
@@ -204,6 +209,7 @@ impl StdioTransport {
             notification_callback.clone(),
             request_callback.clone(),
             stdin.clone(),
+            streams.clone(),
         );
 
         let transport = Self {
@@ -215,6 +221,7 @@ impl StdioTransport {
             notification_callback,
             request_callback,
             reader_task: Arc::new(RwLock::new(Some(reader_task))),
+            streams,
         };
 
         tracing::debug!("MCP STDIO process spawned successfully");
@@ -248,6 +255,7 @@ impl StdioTransport {
         notification_callback: Arc<RwLock<Option<StdioNotificationCallback>>>,
         request_callback: Arc<RwLock<Option<StdioRequestCallback>>>,
         stdin: Arc<Mutex<Option<ChildStdin>>>,
+        streams: StreamRegistry,
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
             let mut reader = BufReader::new(stdout);
@@ -291,7 +299,8 @@ impl StdioTransport {
                             Ok(JsonRpcMessage::Response(response)) => {
                                 // Handle response using normalized ID
                                 let id_str = normalize_response_id(&response.id);
-                                if let Some(sender) = pending.write().remove(&id_str) {
+                                let sender = pending.write().remove(&id_str);
+                                if let Some(sender) = sender {
                                     // Send response to waiting caller
                                     if sender.send(response).is_err() {
                                         tracing::warn!(
@@ -299,6 +308,10 @@ impl StdioTransport {
                                             id_str
                                         );
                                     }
+                                } else if let Some(stream) =
+                                    rpc_stream::take_stream_for_response(&streams, &response)
+                                {
+                                    stream.finish(response).await;
                                 } else {
                                     tracing::warn!(
                                         "Received response for unknown request ID: {}",
@@ -309,7 +322,16 @@ impl StdioTransport {
                             Ok(JsonRpcMessage::Notification(notification)) => {
                                 // Handle notification
                                 tracing::debug!("Received notification: {}", notification.method);
-                                if let Some(callback) = notification_callback.read().as_ref() {
+                                if let Some(stream) =
+                                    rpc_stream::stream_for_notification(&streams, &notification)
+                                {
+                                    // Waiting here is the backpressure: a full
+                                    // consumer buffer stops reading the pipe.
+                                    if !stream.notify(notification).await {
+                                        streams.write().retain(|_, s| !s.is_closed());
+                                    }
+                                } else if let Some(callback) = notification_callback.read().clone()
+                                {
                                     callback(notification);
                                 }
                             }
@@ -403,6 +425,8 @@ impl StdioTransport {
             for (id, _sender) in pending.drain() {
                 tracing::warn!("Request ID {} terminated without response", id);
             }
+            // Dropping the sinks ends each open stream with an error
+            streams.write().clear();
         })
     }
 
@@ -469,6 +493,28 @@ impl StdioTransport {
 
         Ok(())
     }
+}
+
+/// Write one JSON-RPC message as a line on the child's stdin.
+async fn write_message(
+    stdin: &Mutex<Option<ChildStdin>>,
+    message: &JsonRpcRequest,
+) -> AppResult<()> {
+    let mut json = serde_json::to_string(message)
+        .map_err(|e| AppError::Mcp(format!("Failed to serialize request: {}", e)))?;
+    json.push('\n');
+    let mut guard = stdin.lock().await;
+    let stdin = guard
+        .as_mut()
+        .ok_or_else(|| AppError::Mcp("Stdin not available".to_string()))?;
+    stdin
+        .write_all(json.as_bytes())
+        .await
+        .map_err(|e| AppError::Mcp(format!("Failed to write to stdin: {}", e)))?;
+    stdin
+        .flush()
+        .await
+        .map_err(|e| AppError::Mcp(format!("Failed to flush stdin: {}", e)))
 }
 
 impl Drop for StdioTransport {
@@ -629,6 +675,65 @@ impl Transport for StdioTransport {
         Ok(response)
     }
 
+    async fn open_rpc_stream(
+        &self,
+        mut request: JsonRpcRequest,
+        buffer: usize,
+    ) -> AppResult<RpcStream> {
+        if *self.closed.read() {
+            return Err(AppError::Mcp("Transport is closed".to_string()));
+        }
+        let original_id = request.id.clone().unwrap_or(Value::Null);
+        let wire_id = self.next_request_id();
+        request.id = Some(Value::Number(wire_id.into()));
+        let key = wire_id.to_string();
+
+        let (mut stream, sink) = RpcStream::channel(original_id, buffer, None);
+        self.streams.write().insert(key.clone(), sink);
+
+        let streams = self.streams.clone();
+        let stdin = self.stdin.clone();
+        let closed = self.closed.clone();
+        let cancel_key = key.clone();
+        stream.set_cancel(Box::new(move || {
+            // Already finished or never sent: nothing to cancel upstream
+            if streams.write().remove(&cancel_key).is_none() || *closed.read() {
+                return;
+            }
+            let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+                return;
+            };
+            runtime.spawn(async move {
+                let cancelled = JsonRpcRequest::new(
+                    None,
+                    "notifications/cancelled".to_string(),
+                    Some(serde_json::json!({
+                        "requestId": wire_id,
+                        "reason": "Stream closed by LocalRouter",
+                    })),
+                );
+                if let Err(e) = write_message(&stdin, &cancelled).await {
+                    tracing::debug!("Could not cancel MCP stream {}: {}", wire_id, e);
+                }
+            });
+        }));
+
+        tracing::debug!(
+            "STDIO opening stream: method={}, id={}",
+            request.method,
+            wire_id
+        );
+        if let Err(e) = write_message(&self.stdin, &request).await {
+            self.streams.write().remove(&key);
+            return Err(e);
+        }
+        Ok(stream)
+    }
+
+    fn supports_rpc_streams(&self) -> bool {
+        true
+    }
+
     async fn is_healthy(&self) -> bool {
         self.is_alive()
     }
@@ -749,6 +854,162 @@ mod tests {
         );
     }
 
+    /// Spawn `sh -c script` as a fake MCP server.
+    #[cfg(unix)]
+    async fn fake_server(script: &str) -> StdioTransport {
+        StdioTransport::spawn(
+            "sh".to_string(),
+            vec!["-c".to_string(), script.to_string()],
+            HashMap::new(),
+        )
+        .await
+        .expect("spawn fake server")
+    }
+
+    #[cfg(unix)]
+    async fn next_message(stream: &mut RpcStream) -> rpc_stream::RpcStreamMessage {
+        use futures_util::StreamExt;
+        tokio::time::timeout(std::time::Duration::from_secs(5), stream.next())
+            .await
+            .expect("stream message in time")
+            .expect("stream not ended")
+            .expect("stream message ok")
+    }
+
+    /// One request yields every correlated notification and then its result;
+    /// uncorrelated notifications keep going to the generic callback, and an
+    /// ordinary request on the same transport is answered in between.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rpc_stream_delivers_many_results_alongside_requests() {
+        use rpc_stream::RpcStreamMessage;
+        let transport = fake_server(
+            r#"read stream_request
+read plain_request
+echo '{"jsonrpc":"2.0","method":"notifications/events/active","params":{"_meta":{"io.modelcontextprotocol/subscriptionId":1}}}'
+echo '{"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info"}}'
+echo '{"jsonrpc":"2.0","id":2,"result":{"plain":true}}'
+echo '{"jsonrpc":"2.0","method":"notifications/events/event","params":{"name":"e","_meta":{"io.modelcontextprotocol/subscriptionId":1}}}'
+echo '{"jsonrpc":"2.0","method":"notifications/events/event","params":{"name":"other","_meta":{"io.modelcontextprotocol/subscriptionId":99}}}'
+echo '{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete"}}'
+sleep 30"#,
+        )
+        .await;
+        let generic = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let seen = generic.clone();
+        Transport::set_notification_callback(
+            &transport,
+            Arc::new(move |n: JsonRpcNotification| seen.lock().push(n.method)),
+        );
+
+        let mut stream = transport
+            .open_rpc_stream(
+                JsonRpcRequest::with_id(7, "events/stream".into(), Some(json!({}))),
+                8,
+            )
+            .await
+            .unwrap();
+        assert_eq!(stream.request_id(), &json!(7));
+        let plain = transport
+            .send_request(JsonRpcRequest::with_id(8, "tools/list".into(), None))
+            .await
+            .unwrap();
+        assert_eq!(plain.id, json!(8));
+        assert_eq!(plain.result, Some(json!({"plain": true})));
+
+        match next_message(&mut stream).await {
+            RpcStreamMessage::Notification(n) => {
+                assert_eq!(n.method, "notifications/events/active");
+                assert_eq!(rpc_stream::subscription_id(&n), Some(&json!(7)));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        match next_message(&mut stream).await {
+            RpcStreamMessage::Notification(n) => {
+                assert_eq!(n.params.unwrap()["name"], "e")
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        match next_message(&mut stream).await {
+            RpcStreamMessage::Result(r) => {
+                assert_eq!(r.id, json!(7));
+                assert_eq!(r.result, Some(json!({"resultType": "complete"})));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        {
+            use futures_util::StreamExt;
+            assert!(stream.next().await.is_none());
+        }
+        let generic = generic.lock().clone();
+        assert!(generic.contains(&"notifications/message".to_string()));
+        assert!(generic.contains(&"notifications/events/event".to_string()));
+        assert_eq!(generic.len(), 2, "{generic:?}");
+        transport.kill().await.unwrap();
+    }
+
+    /// Dropping a stream before its result sends `notifications/cancelled`
+    /// for the wire id of the request.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_rpc_stream_cancels_upstream() {
+        let transport = fake_server(
+            r#"read stream_request
+echo '{"jsonrpc":"2.0","method":"notifications/events/active","params":{"_meta":{"io.modelcontextprotocol/subscriptionId":1}}}'
+read cancellation
+printf '{"jsonrpc":"2.0","method":"notifications/echo","params":{"line":%s}}
+' "$cancellation"
+sleep 30"#,
+        )
+        .await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        Transport::set_notification_callback(
+            &transport,
+            Arc::new(move |n: JsonRpcNotification| {
+                let _ = tx.send(n);
+            }),
+        );
+        let mut stream = transport
+            .open_rpc_stream(JsonRpcRequest::with_id(1, "events/stream".into(), None), 4)
+            .await
+            .unwrap();
+        next_message(&mut stream).await;
+        drop(stream);
+
+        let echoed = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(echoed.method, "notifications/echo");
+        let line = &echoed.params.unwrap()["line"];
+        assert_eq!(line["method"], "notifications/cancelled");
+        assert_eq!(line["params"]["requestId"], json!(1));
+        transport.kill().await.unwrap();
+    }
+
+    /// A process that exits mid-stream ends the stream with an error, not a
+    /// result, so the consumer knows to reconnect.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rpc_stream_errors_when_process_exits() {
+        use futures_util::StreamExt;
+        let transport = fake_server(
+            r#"read stream_request
+echo '{"jsonrpc":"2.0","method":"notifications/events/active","params":{"_meta":{"io.modelcontextprotocol/subscriptionId":1}}}'"#,
+        )
+        .await;
+        let mut stream = transport
+            .open_rpc_stream(JsonRpcRequest::with_id(1, "events/stream".into(), None), 4)
+            .await
+            .unwrap();
+        next_message(&mut stream).await;
+        let end = tokio::time::timeout(std::time::Duration::from_secs(5), stream.next())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(end.is_err());
+    }
+
     #[tokio::test]
     async fn test_request_id_generation() {
         let transport = StdioTransport {
@@ -760,6 +1021,7 @@ mod tests {
             notification_callback: Arc::new(RwLock::new(None)),
             request_callback: Arc::new(RwLock::new(None)),
             reader_task: Arc::new(RwLock::new(None)),
+            streams: Arc::new(RwLock::new(HashMap::new())),
         };
 
         assert_eq!(transport.next_request_id(), 1);
