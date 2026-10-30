@@ -25,6 +25,8 @@ import type { ShowApprovalPopupResult, NativeOperation, GetClientNativeOperation
 import { toast } from 'sonner'
 import { mockReplay } from './mockReplay'
 import { mockData } from './mockData'
+import { clientPush, mockClaudeCodeTransport, mockClientPushSettings, mockPushRelayConfig, mockPushSources } from './mockPushRelay'
+import type { ClaudeCodeMcpSetup, ClientPushSettings, PushRelayConfig, PushSourceInfo } from '@app/types/tauri-commands'
 
 import { mockNativeOperations, mockUpstreamTools, mockClientPrivacy, mockClientSecurity, mockClientSecrets } from './mockClientPolicies'
 import { routingPolicyIssue } from '@app/components/strategy/routing-policy-status'
@@ -1461,6 +1463,19 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
         ...(active ? { effective_value: routingPolicyIssue(policy) ?? 'routing' } : {}),
       }
     }
+    if (args?.feature === 'push_relay') {
+      const id = (c as unknown as { id: string }).id
+      const p = clientPush(id).permissions
+      const value = mockPushRelayConfig.enabled ? (p.global ?? mockPushRelayConfig.default_permission) : 'block'
+      const overridden = p.global != null || Object.keys(p.servers ?? {}).length > 0 || Object.keys(p.events ?? {}).length > 0
+      return {
+        client_id: c.client_id,
+        client_name: c.name,
+        active: value !== 'block',
+        source: overridden ? 'override' as const : 'global' as const,
+        effective_value: value,
+      }
+    }
     return {
       client_id: c.client_id,
       client_name: c.name,
@@ -1495,6 +1510,10 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       sync_config: false,
       guardrails_active: false,
       json_repair_active: true,
+      push_permissions: {},
+      push_fallback_tools: 'auto' as const,
+      push_webhook_urls: [],
+      claude_channels_launched: false,
     }
     mockData.clients.push(newClient)
     toast.success(`Client "${args?.name}" created (demo)`)
@@ -1843,7 +1862,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       message: 'Run the command below in your terminal:',
       modified_files: [],
       backup_files: [],
-      terminal_command: 'ANTHROPIC_BASE_URL=http://127.0.0.1:3625 ANTHROPIC_API_KEY=lr_demo_secret claude --mcp-config \'{"mcpServers":{"localrouter":{"type":"http","url":"http://127.0.0.1:3625","headers":{"Authorization":"Bearer lr_demo_secret"}}}}\'',
+      terminal_command: 'ANTHROPIC_BASE_URL=http://127.0.0.1:3625 ANTHROPIC_API_KEY=lr_demo_secret claude --mcp-config \'{"mcpServers":{"localrouter":{"type":"stdio","command":"/Applications/LocalRouter.app/Contents/MacOS/LocalRouter","args":["--mcp-bridge","--client-id","claude-code"],"env":{"LOCALROUTER_CLIENT_SECRET":"lr_demo_secret"}}}}\' --dangerously-load-development-channels server:localrouter',
     }
   },
   'configure_app_permanent': (args): LaunchResult => {
@@ -3986,6 +4005,95 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     return toolsBySkill[skill?.name || ''] || [
       { name: `${skill?.name || 'skill'}_execute`, description: 'Execute the skill' },
     ]
+  },
+  // ============================================================================
+  // Push Relay
+  // ============================================================================
+  'get_push_relay_config': (): PushRelayConfig => ({ ...mockPushRelayConfig }),
+  'update_push_relay_config': (args): PushRelayConfig => {
+    if (args?.enabled !== undefined) mockPushRelayConfig.enabled = args.enabled
+    if (args?.defaultPermission !== undefined) mockPushRelayConfig.default_permission = args.defaultPermission
+    if (args?.webhookEgressEnabled !== undefined) mockPushRelayConfig.webhook_egress_enabled = args.webhookEgressEnabled
+    if (args?.allowLoopbackHttp !== undefined) mockPushRelayConfig.allow_loopback_http = args.allowLoopbackHttp
+    if (args?.limits !== undefined) {
+      const l = args.limits
+      if (l.upstream_poll_min_interval_ms > l.upstream_poll_max_interval_ms) {
+        throw 'upstream_poll_min_interval_ms must not exceed upstream_poll_max_interval_ms'
+      }
+      mockPushRelayConfig.limits = { ...l }
+    }
+    setTimeout(() => emit('clients-changed', {}), 10)
+    return { ...mockPushRelayConfig }
+  },
+  'list_push_sources': (): PushSourceInfo[] => mockPushSources,
+  'get_client_push_settings': (args): ClientPushSettings => {
+    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
+    const id = client?.id ?? args?.clientId
+    const perms = client?.mcp_permissions
+    return mockClientPushSettings(id, (serverId) => {
+      const state = perms?.servers?.[serverId] ?? perms?.global ?? 'off'
+      return state !== 'off'
+    })
+  },
+  'set_client_push_permission': (args) => {
+    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
+    const p = clientPush(client?.id ?? args?.clientId).permissions
+    const state = args?.state ?? null
+    if (args?.level === 'global') {
+      p.global = state
+    } else if (args?.level === 'server') {
+      p.servers = { ...(p.servers ?? {}) }
+      if (state) p.servers[args.serverId] = state
+      else delete p.servers[args.serverId]
+    } else if (args?.level === 'event') {
+      const key = `${args.serverId}__${args.eventName}`
+      p.events = { ...(p.events ?? {}) }
+      if (state) p.events[key] = state
+      else delete p.events[key]
+    }
+    setTimeout(() => emit('clients-changed', {}), 10)
+    return null
+  },
+  'set_client_push_fallback_tools': (args) => {
+    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
+    clientPush(client?.id ?? args?.clientId).fallback_tools = args?.mode
+    setTimeout(() => emit('clients-changed', {}), 10)
+    return null
+  },
+  'remove_client_push_webhook_url': (args) => {
+    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
+    const p = clientPush(client?.id ?? args?.clientId)
+    p.webhook_urls = p.webhook_urls.filter(u => u !== args?.url)
+    setTimeout(() => emit('clients-changed', {}), 10)
+    return null
+  },
+  'set_client_claude_channels_launched': (args) => {
+    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
+    clientPush(client?.id ?? args?.clientId).claude_channels_launched = Boolean(args?.launched)
+    setTimeout(() => emit('clients-changed', {}), 10)
+    return null
+  },
+  'get_claude_code_mcp_setup': (args): ClaudeCodeMcpSetup => {
+    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
+    const id = client?.id ?? args?.clientId
+    return {
+      transport: mockClaudeCodeTransport[id] ?? 'stdio_bridge',
+      config_path: `${mockData.homeDir}/.claude.json`,
+      launch_command: 'claude --dangerously-load-development-channels server:localrouter',
+      binary_path: '/Applications/LocalRouter.app/Contents/MacOS/LocalRouter',
+      channels_launched: clientPush(id).claude_channels_launched,
+    }
+  },
+  'switch_claude_code_to_stdio_bridge': (args): LaunchResult => {
+    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
+    mockClaudeCodeTransport[client?.id ?? args?.clientId] = 'stdio_bridge'
+    return {
+      success: true,
+      message: `Switched LocalRouter in ${mockData.homeDir}/.claude.json to the STDIO bridge. Restart Claude Code with the command below to receive pushed events.`,
+      modified_files: [`${mockData.homeDir}/.claude.json`],
+      backup_files: [`${mockData.homeDir}/.claude.json.bak`],
+      terminal_command: 'claude --dangerously-load-development-channels server:localrouter',
+    }
   },
   'get_context_management_config': () => ({
     catalog_compression: true,

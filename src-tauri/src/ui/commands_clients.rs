@@ -436,6 +436,14 @@ pub struct ClientInfo {
     pub guardrails_active: bool,
     /// Whether JSON repair is active (resolved from per-client override or global)
     pub json_repair_active: bool,
+    /// Push Relay permission tree (client → server → event type; absent = inherit)
+    pub push_permissions: lr_config::PushPermissions,
+    /// When the Push Relay fallback polling tools are shown
+    pub push_fallback_tools: lr_config::PushFallbackTools,
+    /// Webhook callback URLs the user approved for this client
+    pub push_webhook_urls: Vec<String>,
+    /// Claude Code is launched with the development-channels flag
+    pub claude_channels_launched: bool,
 }
 
 /// List all clients
@@ -482,6 +490,10 @@ pub async fn list_clients(
                 reverse_proxy: c.reverse_proxy.clone(),
                 guardrails_active: guardrails_active_for(&c, &config),
                 json_repair_active: c.json_repair.enabled.unwrap_or(config.json_repair.enabled),
+                push_permissions: c.push_permissions.clone(),
+                push_fallback_tools: c.push_fallback_tools,
+                push_webhook_urls: c.push_webhook_urls.clone(),
+                claude_channels_launched: c.claude_channels_launched,
             }
         })
         .collect())
@@ -652,6 +664,10 @@ pub async fn create_client(
                 .enabled
                 .unwrap_or(cfg.json_repair.enabled)
         },
+        push_permissions: client.push_permissions.clone(),
+        push_fallback_tools: client.push_fallback_tools,
+        push_webhook_urls: client.push_webhook_urls.clone(),
+        claude_channels_launched: client.claude_channels_launched,
     };
 
     Ok((secret, client_info))
@@ -919,6 +935,10 @@ pub async fn clone_client(
                 .enabled
                 .unwrap_or(cfg.json_repair.enabled)
         },
+        push_permissions: new_client.push_permissions.clone(),
+        push_fallback_tools: new_client.push_fallback_tools,
+        push_webhook_urls: new_client.push_webhook_urls.clone(),
+        claude_channels_launched: new_client.claude_channels_launched,
     };
 
     Ok((secret, client_info))
@@ -1833,6 +1853,29 @@ pub async fn get_feature_clients_status(
                         policy.is_some_and(|p| p.enabled),
                         "global",
                         decision_routing_status(policy).map(str::to_string),
+                    )
+                }
+                "push_relay" => {
+                    let effective = if config.push_relay.enabled {
+                        c.push_permissions
+                            .global
+                            .unwrap_or(config.push_relay.default_permission)
+                    } else {
+                        lr_config::PushPermission::Block
+                    };
+                    let value = match effective {
+                        lr_config::PushPermission::Allow => "allow",
+                        lr_config::PushPermission::Ask => "ask",
+                        lr_config::PushPermission::Block => "block",
+                    };
+                    (
+                        effective != lr_config::PushPermission::Block,
+                        if c.push_permissions.is_empty() {
+                            "global"
+                        } else {
+                            "override"
+                        },
+                        Some(value.to_string()),
                     )
                 }
                 _ => (false, "global", None),

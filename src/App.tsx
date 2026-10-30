@@ -10,6 +10,7 @@ import { ClientsView } from './views/clients'
 import { ResourcesView } from './views/resources'
 import { McpServersView } from './views/mcp-servers'
 import { SkillsView } from './views/skills'
+import { PushRelayView } from './views/push-relay'
 import { SettingsView } from './views/settings'
 import { GuardrailsView } from './views/guardrails'
 import { DecisionRoutingView } from './views/decision-routing'
@@ -287,6 +288,13 @@ function App() {
       case 'response-rag':
         return (
           <ResponseRagView
+            activeSubTab={activeSubTab}
+            onTabChange={handleChildViewChange}
+          />
+        )
+      case 'push-relay':
+        return (
+          <PushRelayView
             activeSubTab={activeSubTab}
             onTabChange={handleChildViewChange}
           />
