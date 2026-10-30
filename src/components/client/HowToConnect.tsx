@@ -13,7 +13,7 @@ import { gatewayBaseUrl } from '@/utils/gateway-connection'
 import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { Copy, Check, Eye, RefreshCw, Cpu, Terminal, Globe, Key, FileJson, Loader2, Rocket, Settings2, ExternalLink, CheckCircle2, XCircle, RefreshCcw, BookOpen, AlertTriangle, Info, ShieldCheck, Network, Play, Square } from "lucide-react"
+import { RefreshCw, Cpu, Terminal, Globe, Key, FileJson, Loader2, Rocket, Settings2, ExternalLink, CheckCircle2, XCircle, RefreshCcw, BookOpen, AlertTriangle, Info, ShieldCheck, Network, Play, Square } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { ExperimentalBadge } from "@/components/shared/ExperimentalBadge"
 import { Button } from "@/components/ui/Button"
@@ -34,6 +34,8 @@ import {
 import { Switch } from "@/components/ui/switch"
 import { CLIENT_TEMPLATES, resolveTemplatePlaceholders } from "./ClientTemplates"
 import type { ClientTemplate } from "./ClientTemplates"
+import { CopyableCode, CopyableCodeBlock } from "./CopyableCode"
+import { ClaudeCodeHttpNotice, ClaudeCodeManualMcpSetup, ClaudeChannelsExplanation } from "./ClaudeCodeBridge"
 import ServiceIcon from "@/components/ServiceIcon"
 import { isValidHttpUrl } from "@/utils/url"
 import { listenSafe } from "@/hooks/useTauriListener"
@@ -60,103 +62,6 @@ interface HowToConnectProps {
   llmMode?: LlmMode
   mcpMode?: McpMode
   syncConfig?: boolean
-}
-
-// Helper component for copyable code blocks
-function CopyableCode({
-  value,
-  masked = false,
-  showValue = true,
-  onToggleShow,
-  loading = false,
-}: {
-  value: string
-  masked?: boolean
-  showValue?: boolean
-  onToggleShow?: () => void
-  loading?: boolean
-}) {
-  const [copied, setCopied] = useState(false)
-  const maskedValue = "••••••••••••••••••••••••••••••••"
-
-  const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(value)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-      toast.success("Copied to clipboard")
-    } catch {
-      toast.error("Failed to copy")
-    }
-  }
-
-  return (
-    <div className="flex items-center gap-2 min-w-0">
-      <code className="flex-1 min-w-0 p-3 text-sm bg-muted rounded-md font-mono break-all">
-        {loading ? (
-          <span className="flex items-center gap-2 text-muted-foreground">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            Loading...
-          </span>
-        ) : masked ? (showValue ? value : maskedValue) : value}
-      </code>
-      {masked && onToggleShow && !showValue && (
-        <Button
-          variant="outline"
-          size="icon"
-          className="shrink-0"
-          onClick={onToggleShow}
-          title="Show"
-          disabled={loading || !value}
-        >
-          <Eye className="h-4 w-4" />
-        </Button>
-      )}
-      <Button
-        variant="outline"
-        size="icon"
-        className="shrink-0"
-        onClick={handleCopy}
-        title="Copy to clipboard"
-        disabled={loading || !value}
-      >
-        {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
-      </Button>
-    </div>
-  )
-}
-
-// Helper component for copyable multi-line code blocks
-function CopyableCodeBlock({ value, copyValue, className = "" }: { value: string; copyValue?: string; className?: string }) {
-  const [copied, setCopied] = useState(false)
-
-  const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(copyValue ?? value)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-      toast.success("Copied to clipboard")
-    } catch {
-      toast.error("Failed to copy")
-    }
-  }
-
-  return (
-    <div className={`relative min-w-0 ${className}`}>
-      <pre className="text-xs font-mono bg-muted p-3 pr-10 rounded-lg whitespace-pre-wrap break-words overflow-hidden">
-        {value}
-      </pre>
-      <Button
-        variant="outline"
-        size="icon"
-        className="absolute top-2 right-2 h-7 w-7 shrink-0"
-        onClick={handleCopy}
-        title="Copy to clipboard"
-      >
-        {copied ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
-      </Button>
-    </div>
-  )
 }
 
 // Helper component to display a LaunchResult (shared between Temporary and Auto tabs)
@@ -200,6 +105,7 @@ function QuickSetupTab({
   configDir,
   models,
   syncConfig,
+  binaryPath,
 }: {
   template: ClientTemplate
   clientId: string
@@ -209,6 +115,8 @@ function QuickSetupTab({
   configDir: string
   models: Array<{ id: string }>
   syncConfig: boolean
+  /** The LocalRouter binary, for STDIO bridge setups */
+  binaryPath: string
 }) {
   const [capabilities, setCapabilities] = useState<AppCapabilities | null>(null)
   const [checkingInstall, setCheckingInstall] = useState(true)
@@ -422,6 +330,10 @@ function QuickSetupTab({
               LocalRouter automatically configures {template.name} and keeps it in sync.
             </p>
 
+            {template.pushChannels && template.supportsMcp && (
+              <ClaudeCodeHttpNotice clientId={clientId} onSwitched={setAutoResult} />
+            )}
+
             {/* What auto-sync will do */}
             <div className="rounded-lg border p-3 space-y-2.5">
               <p className="text-xs font-medium">When enabled, LocalRouter will:</p>
@@ -452,6 +364,7 @@ function QuickSetupTab({
                     <Terminal className="h-3.5 w-3.5 mt-0.5 shrink-0 text-foreground" />
                     <span>
                       Set up MCP proxy connection to LocalRouter's servers and skills
+                      {template.pushChannels && " through the STDIO bridge, so pushed events reach it (an existing HTTP setup is kept until you switch)"}
                       {template.mcpConfigFile && (
                         <> via <code className="bg-muted px-1 py-0.5 rounded break-all">{resolveTemplatePlaceholders(template.mcpConfigFile.path, baseUrl, resolvedSecret, clientId, homeDir, configDir)}</code></>
                       )}
@@ -558,6 +471,9 @@ function QuickSetupTab({
                   {template.name} will also connect to LocalRouter's MCP servers and skills.
                   {template.setupType !== "generic" ? " This is configured automatically." : ""}
                 </p>
+                {template.pushChannels && (
+                  <ClaudeChannelsExplanation className="pt-1" />
+                )}
               </div>
             )}
           </TabsContent>
@@ -609,7 +525,14 @@ function QuickSetupTab({
           {template.supportsMcp && (
             <div className="space-y-2 pt-2 border-t">
               <p className="text-xs font-medium">MCP Proxy</p>
-              {template.mcpConfigFile ? (
+              {template.pushChannels ? (
+                <ClaudeCodeManualMcpSetup
+                  binaryPath={binaryPath}
+                  clientId={clientId}
+                  secret={resolvedSecret}
+                  baseUrl={baseUrl}
+                />
+              ) : template.mcpConfigFile ? (
                 <>
                   {template.mcpConfigFile.description && (
                     <p className="text-xs text-muted-foreground">{template.mcpConfigFile.description}</p>
@@ -1585,6 +1508,7 @@ export function HowToConnect({
             configDir={configDir}
             models={models}
             syncConfig={syncConfig}
+            binaryPath={binaryPath}
           />
         ) : (showModelsTab || showMcpTab) ? (
         /* Custom/generic clients: show Models and MCP tabs */
