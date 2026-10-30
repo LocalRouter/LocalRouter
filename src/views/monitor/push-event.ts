@@ -7,7 +7,6 @@ export const PUSH_DECISION_LABELS: Record<PushEventDecision, string> = {
   asked_allowed: 'Approved',
   asked_edited: 'Approved with edits',
   denied: 'Denied',
-  timeout: 'Denied (approval timed out)',
   blocked: 'Blocked by permission',
   hold_cap: 'Dropped (too many held events)',
   too_large: 'Dropped (too large)',

@@ -224,6 +224,10 @@ export function roundTicks(range: TimeRange, timestamps: number[], bucketMs: num
   })
 }
 
+// Requests a client made. A pushed event (`mcp_push_event`) is listed in the
+// request monitor like every Monitor record, but it is not a request: a held
+// one waits for a decision with no timeout, so counting it would keep the
+// in-flight number up for as long as nobody answers.
 const MCP_REQUESTS = new Set([
   'mcp_tool_call',
   'mcp_resource_read',

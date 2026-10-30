@@ -438,8 +438,7 @@ pub enum MonitorEventData {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         egress_modes: Vec<String>,
         /// `pending` (held for Ask), `allowed`, `asked_allowed`,
-        /// `asked_edited`, `denied`, `timeout`, `blocked`, `hold_cap`,
-        /// `too_large`
+        /// `asked_edited`, `denied`, `blocked`, `hold_cap`, `too_large`
         decision: String,
         /// Data as received from the upstream
         #[serde(skip_serializing_if = "Option::is_none")]

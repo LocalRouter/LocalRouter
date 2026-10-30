@@ -1586,6 +1586,22 @@ export const mockData = {
       },
     },
     {
+      // Read through EventPoll by a session recorded under request sess-001-next,
+      // so it groups with that request's conversation.
+      id: "mon-push-3", sequence: 0, timestamp: new Date(Date.now() - 70000).toISOString(),
+      event_type: "mcp_push_event", session_id: "sess-001-next", conversation: { id: "conv-demo-retry", title: "How should I retry failed API requests?", source: "explicit" }, client_id: "client-1", client_name: "Claude Code",
+      status: "complete", duration_ms: null,
+      summary: "push vocalcord__message.received (allowed)",
+      question: "vocalcord__message.received", answer: "{\"channel\":\"slack\",\"from\":\"Sam\",\"text\":\"Retries are failing again on /v1/orders\"}",
+      data: {
+        type: "mcp_push_event", server_id: "mcp-vocalcord", server_name: "vocalcord",
+        event_name: "vocalcord__message.received", event_id: "vocalcord__msg-553", ingress_mode: "push",
+        egress_modes: ["tools"], decision: "allowed",
+        original_payload: { channel: "slack", from: "Sam", text: "Retries are failing again on /v1/orders" },
+        delivered_payload: { channel: "slack", from: "Sam", text: "Retries are failing again on /v1/orders" },
+      },
+    },
+    {
       id: "mon-012", sequence: 0, timestamp: new Date(Date.now() - 60000).toISOString(),
       event_type: "json_repair", session_id: "sess-001", conversation: { id: "conv-demo-retry", title: "How should I retry failed API requests?", source: "explicit" }, client_id: "client-1", client_name: "Claude Code",
       status: "complete", duration_ms: null,

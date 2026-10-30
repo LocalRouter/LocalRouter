@@ -1500,7 +1500,7 @@ function McpPushEventDetail({ data }: { data: EventData }) {
       </Section>
       {decision === 'pending' && (
         <p className="text-xs text-muted-foreground">
-          Waiting for a decision. Answer it in the approval popup, or under Pending approvals on the Push Relay page.
+          Held until you decide in the approval popup. A held event has no timeout: it waits as long as it takes.
         </p>
       )}
       {typeof data.error === 'string' && data.error && (
