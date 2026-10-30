@@ -22,7 +22,7 @@ import { ClientCreationWizard } from "@/components/wizard/ClientCreationWizard"
 import { ServerTab } from "@/views/settings/server-tab"
 
 import type { McpPermissions, SkillsPermissions, ModelPermissions, PermissionState } from "@/components/permissions"
-import type { CodingAgentType, ClientInfo, CloneClientParams, DeleteClientParams, PushPermissions, PushFallbackTools } from "@/types/tauri-commands"
+import type { CodingAgentType, ClientInfo, CloneClientParams, DeleteClientParams, PushPermissions } from "@/types/tauri-commands"
 
 interface Client {
   id: string
@@ -43,9 +43,7 @@ interface Client {
   json_repair_active: boolean
   /** Push Relay settings (see ClientPushCard) */
   push_permissions?: PushPermissions
-  push_fallback_tools?: PushFallbackTools
   push_webhook_urls?: string[]
-  claude_channels_launched?: boolean
   created_at: string
   last_used: string | null
 }

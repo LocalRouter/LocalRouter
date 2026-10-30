@@ -12,15 +12,3 @@ export function formatRelativeTime(iso: string, now: number = Date.now()): strin
   if (abs < 5) return "just now"
   return diff < 0 ? `${value} ${unit} ago` : `in ${value} ${unit}`
 }
-
-/** A short, single-paragraph preview of an event payload. */
-export function payloadPreview(data: unknown, max = 400): string {
-  let text: string
-  try {
-    text = typeof data === "string" ? data : JSON.stringify(data, null, 2)
-  } catch {
-    text = String(data)
-  }
-  if (text === undefined) text = "null"
-  return text.length > max ? `${text.slice(0, max)}…` : text
-}

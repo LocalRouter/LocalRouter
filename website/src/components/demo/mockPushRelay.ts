@@ -1,5 +1,5 @@
 /**
- * Push Relay demo state: global settings, the upstream push sources the
+ * Push Relay demo state: the global switch and default, the upstream push sources the
  * handlers in TauriMockSetup.ts report, and each client's push settings.
  *
  * Sources: VocalCord (MCP Events, push + poll, one webhook-only type),
@@ -8,54 +8,16 @@
  * offer no push.
  */
 import type {
-  ActivePushSubscription,
   ClientPushSettings,
   PendingPushApproval,
-  PushFallbackTools,
   PushPermissions,
   PushRelayConfig,
-  PushRelayLimits,
   PushSourceInfo,
 } from '@app/types/tauri-commands'
-
-const MIB = 1024 * 1024
-
-export const defaultPushRelayLimits: PushRelayLimits = {
-  journal_max_events: 10_000,
-  journal_max_bytes: 64 * MIB,
-  journal_retention_secs: 24 * 3600,
-  max_event_bytes: MIB,
-  ask_timeout_secs: 30 * 60,
-  ask_hold_cap: 1_000,
-  first_discovery_wait_ms: 10_000,
-  upstream_poll_min_interval_ms: 1_000,
-  upstream_poll_max_interval_ms: 5 * 60 * 1_000,
-  upstream_reconnect_backoff_min_ms: 1_000,
-  upstream_reconnect_backoff_max_ms: 60_000,
-  upstream_heartbeat_timeout_secs: 90,
-  downstream_heartbeat_secs: 30,
-  max_streams_per_session: 64,
-  poll_max_events: 500,
-  poll_default_events: 50,
-  poll_max_wait_secs: 50,
-  watch_max_lifetime_secs: 24 * 3600,
-  channel_max_content_bytes: 16 * 1024,
-  channel_rate_per_minute: 60,
-  webhook_timeout_secs: 10,
-  webhook_retry_delays_secs: [5, 30, 120, 600, 1_800],
-  webhook_max_subscriptions: 100,
-  webhook_lease_default_secs: 3600,
-  webhook_lease_min_secs: 60,
-  webhook_lease_max_secs: 24 * 3600,
-}
 
 export const mockPushRelayConfig: PushRelayConfig = {
   enabled: true,
   default_permission: 'allow',
-  webhook_egress_enabled: true,
-  allow_loopback_http: true,
-  limits: { ...defaultPushRelayLimits, ask_timeout_secs: 15 * 60 },
-  default_limits: defaultPushRelayLimits,
 }
 
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString()
@@ -115,9 +77,7 @@ export const mockPushSources: PushSourceInfo[] = [
 
 export interface MockClientPush {
   permissions: PushPermissions
-  fallback_tools: PushFallbackTools
   webhook_urls: string[]
-  claude_channels_launched: boolean
 }
 
 /** Keyed by client id (`id` in mockData.clients). */
@@ -127,21 +87,17 @@ export const mockClientPush: Record<string, MockClientPush> = {
       servers: { 'mcp-netget': 'ask' },
       events: { 'mcp-vocalcord__message.edited': 'block' },
     },
-    fallback_tools: 'auto',
     webhook_urls: [],
-    claude_channels_launched: false,
   },
   'client-4': {
     permissions: { global: 'ask' },
-    fallback_tools: 'always',
     webhook_urls: ['http://127.0.0.1:8787/hooks/localrouter', 'https://agents.example.com/webhooks/mcp-events'],
-    claude_channels_launched: false,
   },
 }
 
 export function clientPush(clientId: string): MockClientPush {
   if (!mockClientPush[clientId]) {
-    mockClientPush[clientId] = { permissions: {}, fallback_tools: 'auto', webhook_urls: [], claude_channels_launched: false }
+    mockClientPush[clientId] = { permissions: {}, webhook_urls: [] }
   }
   return mockClientPush[clientId]
 }
@@ -157,9 +113,7 @@ export function mockClientPushSettings(
   return {
     client_id: clientId,
     permissions: p.permissions,
-    fallback_tools: p.fallback_tools,
     webhook_urls: p.webhook_urls,
-    claude_channels_launched: p.claude_channels_launched,
     global_default: def,
     effective_client: client,
     relay_enabled: mockPushRelayConfig.enabled,
@@ -177,15 +131,13 @@ export const mockClaudeCodeTransport: Record<string, 'none' | 'http' | 'stdio_br
   'client-2': 'http',
 }
 
-const minutesFromNow = (m: number) => new Date(Date.now() + m * 60_000).toISOString()
-
 /** Held (Ask) events: NetGet is Ask for Claude Code, everything is Ask for Cline. */
 export const mockPendingPushApprovals: PendingPushApproval[] = [
   {
     request_id: 'hold-1', client_id: 'client-2', client_name: 'Claude Code',
     server_id: 'mcp-netget', server_name: 'netget', event_name: 'intercept.parked',
     qualified_name: 'netget__intercept.parked', event_id: 'netget__evt-7781', ingress: 'push',
-    received_at: minutesAgo(2), expires_at: minutesFromNow(13),
+    received_at: minutesAgo(2),
     data: { server_id: 3, protocol: 'redis', peer: '127.0.0.1:52811', event: 'redis_command', command: 'GET session:42' },
     position: 0, pending_of_type: 1, decided: false, firewall_request_id: null,
   },
@@ -193,7 +145,7 @@ export const mockPendingPushApprovals: PendingPushApproval[] = [
     request_id: 'hold-2', client_id: 'client-2', client_name: 'Claude Code',
     server_id: 'mcp-netget', server_name: 'netget', event_name: 'intercept.parked',
     qualified_name: 'netget__intercept.parked', event_id: 'netget__evt-7782', ingress: 'push',
-    received_at: minutesAgo(1), expires_at: minutesFromNow(14),
+    received_at: minutesAgo(1),
     data: { server_id: 3, protocol: 'redis', peer: '127.0.0.1:52811', event: 'redis_command', command: 'SET session:42 active' },
     position: 1, pending_of_type: 1, decided: false, firewall_request_id: null,
   },
@@ -201,39 +153,8 @@ export const mockPendingPushApprovals: PendingPushApproval[] = [
     request_id: 'hold-3', client_id: 'client-4', client_name: 'Cline',
     server_id: 'mcp-vocalcord', server_name: 'vocalcord', event_name: 'message.received',
     qualified_name: 'vocalcord__message.received', event_id: 'vocalcord__msg-551', ingress: 'poll',
-    received_at: minutesAgo(4), expires_at: minutesFromNow(11),
+    received_at: minutesAgo(4),
     data: { channel: 'telegram', from: 'Dana', text: 'Can you look at the failing deploy?' },
     position: 0, pending_of_type: 0, decided: false, firewall_request_id: null,
-  },
-]
-
-export const mockActivePushSubscriptions: ActivePushSubscription[] = [
-  {
-    subscription_id: 'shared|mcp-vocalcord|message.received|{}', kind: 'upstream',
-    server_id: 'mcp-vocalcord', server_name: 'VocalCord', event_name: 'message.received', arguments: {},
-    scope: 'shared', client_id: null, client_name: null, ingress: 'push', status: 'active',
-    event_count: 128, last_event_at: minutesAgo(4), last_error: null, reconnects: 0,
-    webhook_url: null, lease_expires_at: null,
-  },
-  {
-    subscription_id: 'shared|mcp-vocalcord|call.missed|{}', kind: 'upstream',
-    server_id: 'mcp-vocalcord', server_name: 'VocalCord', event_name: 'call.missed', arguments: {},
-    scope: 'shared', client_id: null, client_name: null, ingress: 'poll', status: 'active',
-    event_count: 3, last_event_at: minutesAgo(95), last_error: null, reconnects: 1,
-    webhook_url: null, lease_expires_at: null,
-  },
-  {
-    subscription_id: 'session:sess-002|mcp-netget|intercept.parked|{}', kind: 'upstream',
-    server_id: 'mcp-netget', server_name: 'NetGet', event_name: 'intercept.parked', arguments: {},
-    scope: 'session', client_id: 'client-2', client_name: 'Claude Code', ingress: 'push', status: 'active',
-    event_count: 17, last_event_at: minutesAgo(1), last_error: null, reconnects: 0,
-    webhook_url: null, lease_expires_at: null,
-  },
-  {
-    subscription_id: 'webhook:wh-1', kind: 'webhook',
-    server_id: 'mcp-vocalcord', server_name: 'vocalcord', event_name: 'message.received', arguments: {},
-    scope: null, client_id: 'client-4', client_name: 'Cline', ingress: null, status: 'active',
-    event_count: 42, last_event_at: null, last_error: null, reconnects: 0,
-    webhook_url: 'http://127.0.0.1:8787/hooks/localrouter', lease_expires_at: minutesFromNow(60 * 20),
   },
 ]

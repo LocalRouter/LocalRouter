@@ -17,7 +17,7 @@ import { LlmTab } from "@/views/try-it-out/llm-tab"
 import { McpTab } from "@/views/try-it-out/mcp-tab"
 import type { McpPermissions, SkillsPermissions, ModelPermissions, PermissionState } from "@/components/permissions"
 import type { CodingAgentType } from "@/types/tauri-commands"
-import type { LlmMode, McpMode, ClientReverseProxy, PushPermissions, PushFallbackTools } from "@/types/tauri-commands"
+import type { LlmMode, McpMode, ClientReverseProxy, PushPermissions } from "@/types/tauri-commands"
 import { combineClientMode } from "@/components/client/ClientTemplates"
 
 interface Client {
@@ -44,9 +44,7 @@ interface Client {
   json_repair_active: boolean
   /** Push Relay settings (see ClientPushCard) */
   push_permissions?: PushPermissions
-  push_fallback_tools?: PushFallbackTools
   push_webhook_urls?: string[]
-  claude_channels_launched?: boolean
   created_at: string
   last_used: string | null
 }

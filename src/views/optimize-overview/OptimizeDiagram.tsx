@@ -91,6 +91,7 @@ export function OptimizeDiagram() {
           </FlowLine>
           <FlowLine direction="left">
             <Pill icon={FEATURES.responseRag.icon} label={FEATURES.responseRag.shortName} colorClass={FEATURES.responseRag.color} borderClass={FEATURES.responseRag.borderColor} />
+            <Pill icon={FEATURES.pushRelay.icon} label={FEATURES.pushRelay.shortName} colorClass={FEATURES.pushRelay.color} borderClass={FEATURES.pushRelay.borderColor} />
           </FlowLine>
         </div>
         {/* Column 4: Right arrows (MCP) */}

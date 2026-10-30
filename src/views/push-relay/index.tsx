@@ -12,25 +12,17 @@ import { Switch } from "@/components/ui/Toggle"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { InfoTooltip } from "@/components/ui/info-tooltip"
 import { listenSafe } from "@/hooks/useTauriListener"
+import { SamplePopupButton } from "@/components/shared/SamplePopupButton"
 import { PushPermissionButton, pushPermissionLabel } from "@/components/permissions/PushPermissionButton"
 import type {
-  ActivePushSubscription,
   ClientFeatureStatus,
   GetFeatureClientsStatusParams,
-  ListPendingPushApprovalsParams,
-  PendingPushApproval,
-  PushApprovalAction,
   PushPermission,
   PushRelayConfig,
-  PushRelayLimits,
   PushSourceInfo,
-  SubmitPushApprovalParams,
   UpdatePushRelayConfigParams,
 } from "@/types/tauri-commands"
-import { LimitsEditor } from "./LimitsEditor"
 import { UpstreamSourcesList } from "./UpstreamSourcesList"
-import { PendingApprovalsSection } from "./PendingApprovalsSection"
-import { ActiveSubscriptionsSection } from "./ActiveSubscriptionsSection"
 
 interface PushRelayViewProps {
   activeSubTab?: string | null
@@ -49,9 +41,6 @@ export function PushRelayView({ activeSubTab, onTabChange }: PushRelayViewProps)
   const [clientStatuses, setClientStatuses] = useState<ClientFeatureStatus[]>([])
   const [saving, setSaving] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
-  // Null until loaded; a failed load (relay not running) keeps the section hidden.
-  const [pendingApprovals, setPendingApprovals] = useState<PendingPushApproval[] | null>(null)
-  const [subscriptions, setSubscriptions] = useState<ActivePushSubscription[] | null>(null)
 
   const tab = activeSubTab || "info"
   const handleTabChange = (newTab: string) => onTabChange?.("push-relay", newTab)
@@ -85,46 +74,15 @@ export function PushRelayView({ activeSubTab, onTabChange }: PushRelayViewProps)
     }
   }, [])
 
-  const loadApprovals = useCallback(async () => {
-    try {
-      setPendingApprovals(
-        await invoke<PendingPushApproval[]>("list_pending_push_approvals", {} satisfies ListPendingPushApprovalsParams),
-      )
-    } catch (err) {
-      console.error("Failed to load pending push approvals:", err)
-    }
-  }, [])
-
-  const loadSubscriptions = useCallback(async () => {
-    try {
-      setSubscriptions(await invoke<ActivePushSubscription[]>("list_active_push_subscriptions"))
-    } catch (err) {
-      console.error("Failed to load push subscriptions:", err)
-    }
-  }, [])
-
   useEffect(() => {
     loadConfig()
     loadSources()
     loadClientStatuses()
-    loadApprovals()
-    loadSubscriptions()
-  }, [loadConfig, loadSources, loadClientStatuses, loadApprovals, loadSubscriptions])
-
-  // Subscriptions change with client demand, which raises no event: refresh
-  // them while the page is open.
-  useEffect(() => {
-    const timer = window.setInterval(loadSubscriptions, 5000)
-    return () => window.clearInterval(timer)
-  }, [loadSubscriptions])
+  }, [loadConfig, loadSources, loadClientStatuses])
 
   useEffect(() => {
     const listeners = [
       listenSafe("clients-changed", loadClientStatuses),
-      listenSafe("push-approvals-changed", () => {
-        loadApprovals()
-        loadSubscriptions()
-      }),
       listenSafe("config-changed", () => {
         loadConfig()
         loadSources()
@@ -132,21 +90,7 @@ export function PushRelayView({ activeSubTab, onTabChange }: PushRelayViewProps)
       }),
     ]
     return () => listeners.forEach((l) => l.cleanup())
-  }, [loadConfig, loadSources, loadClientStatuses, loadApprovals, loadSubscriptions])
-
-  const decide = async (requestId: string, action: PushApprovalAction, editedData?: unknown) => {
-    try {
-      await invoke<number>("submit_push_approval", {
-        requestId,
-        action,
-        editedData: editedData ?? null,
-      } satisfies SubmitPushApprovalParams)
-    } catch (err) {
-      toast.error(`Failed to answer the held event: ${err}`)
-    } finally {
-      loadApprovals()
-    }
-  }
+  }, [loadConfig, loadSources, loadClientStatuses])
 
   const update = async (params: UpdatePushRelayConfigParams) => {
     setSaving(true)
@@ -156,14 +100,9 @@ export function PushRelayView({ activeSubTab, onTabChange }: PushRelayViewProps)
       loadClientStatuses()
     } catch (err) {
       toast.error(`Failed to update Push Relay: ${err}`)
-      throw err
     } finally {
       setSaving(false)
     }
-  }
-
-  const saveLimits = async (limits: PushRelayLimits) => {
-    await update({ limits }).then(() => toast.success("Limits saved")).catch(() => {})
   }
 
   const refreshSources = async () => {
@@ -190,15 +129,10 @@ export function PushRelayView({ activeSubTab, onTabChange }: PushRelayViewProps)
       <Tabs value={tab} onValueChange={handleTabChange} className="flex flex-col flex-1 min-h-0">
         <TabsList className="flex-shrink-0 w-fit">
           <TabsTrigger value="info"><TAB_ICONS.info className={TAB_ICON_CLASS} />Info</TabsTrigger>
-          <TabsTrigger value="sources">
-            <FEATURES.pushRelay.icon className={TAB_ICON_CLASS} />Upstream sources
-            {pushSourceCount > 0 && <Badge variant="secondary" className="ml-1.5 text-[10px] px-1.5 py-0">{pushSourceCount}</Badge>}
-          </TabsTrigger>
-          <TabsTrigger value="settings"><TAB_ICONS.settings className={TAB_ICON_CLASS} />Settings</TabsTrigger>
         </TabsList>
 
         <TabsContent value="info" className="flex-1 min-h-0 mt-4">
-          <div className="space-y-4 max-w-2xl overflow-y-auto">
+          <div className="space-y-4 max-w-3xl overflow-y-auto">
             {config && (
               <Card>
                 <CardHeader className="pb-3">
@@ -214,7 +148,7 @@ export function PushRelayView({ activeSubTab, onTabChange }: PushRelayViewProps)
                     <InfoTooltip content="When off, no push is advertised or relayed to any client.">
                       <Switch
                         checked={config.enabled}
-                        onCheckedChange={(enabled) => update({ enabled }).catch(() => {})}
+                        onCheckedChange={(enabled) => update({ enabled })}
                         disabled={saving}
                       />
                     </InfoTooltip>
@@ -226,16 +160,19 @@ export function PushRelayView({ activeSubTab, onTabChange }: PushRelayViewProps)
                       <span className="text-sm font-medium">Default permission</span>
                       <p className="text-xs text-muted-foreground mt-0.5">
                         Applies to every client, server and event type without its own setting. Ask holds each
-                        event until you approve it.
+                        event until you approve, edit or deny it.
                       </p>
                     </div>
-                    <PushPermissionButton
-                      value={config.default_permission}
-                      onChange={(p) => p !== "inherit" && update({ defaultPermission: p }).catch(() => {})}
-                      showInherit={false}
-                      disabled={saving || !config.enabled}
-                      size="sm"
-                    />
+                    <div className="flex items-center gap-2 shrink-0">
+                      <SamplePopupButton popupType="push_event" />
+                      <PushPermissionButton
+                        value={config.default_permission}
+                        onChange={(p) => p !== "inherit" && update({ defaultPermission: p })}
+                        showInherit={false}
+                        disabled={saving || !config.enabled}
+                        size="sm"
+                      />
+                    </div>
                   </div>
                   {clientStatuses.length > 0 && (
                     <div className="border-t pt-3 space-y-1.5">
@@ -280,46 +217,16 @@ export function PushRelayView({ activeSubTab, onTabChange }: PushRelayViewProps)
               </Card>
             )}
 
-            <PendingApprovalsSection approvals={pendingApprovals} onDecide={decide} onOpenClient={openClient} />
-            <ActiveSubscriptionsSection subscriptions={subscriptions} onOpenClient={openClient} />
-
-            <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-base">How clients receive events</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2 text-sm text-muted-foreground">
-                <p>
-                  <span className="text-foreground font-medium">MCP Events clients</span> subscribe with{" "}
-                  <code className="text-xs bg-muted px-1 rounded">events/stream</code>,{" "}
-                  <code className="text-xs bg-muted px-1 rounded">events/poll</code> or a webhook LocalRouter
-                  signs and sends.
-                </p>
-                <p>
-                  <span className="text-foreground font-medium">Claude Code</span> receives events as Claude
-                  Channels messages through the STDIO bridge.
-                </p>
-                <p>
-                  <span className="text-foreground font-medium">Every other client</span> gets the{" "}
-                  <code className="text-xs bg-muted px-1 rounded">EventList</code>,{" "}
-                  <code className="text-xs bg-muted px-1 rounded">EventPoll</code> and{" "}
-                  <code className="text-xs bg-muted px-1 rounded">EventWait</code> tools.
-                </p>
-                <p>
-                  Upstream webhooks are never received: a server that offers only webhooks is shown as not
-                  supported.
-                </p>
-              </CardContent>
-            </Card>
-          </div>
-        </TabsContent>
-
-        <TabsContent value="sources" className="flex-1 min-h-0 mt-4">
-          <div className="space-y-4 max-w-3xl overflow-y-auto">
             <Card>
               <CardHeader className="pb-3">
                 <div className="flex items-center justify-between gap-4">
                   <div>
-                    <CardTitle className="text-base">Upstream sources</CardTitle>
+                    <CardTitle className="text-base flex items-center gap-2">
+                      Upstream sources
+                      {pushSourceCount > 0 && (
+                        <Badge variant="secondary" className="text-[10px] px-1.5 py-0">{pushSourceCount}</Badge>
+                      )}
+                    </CardTitle>
                     <CardDescription>
                       What each MCP server offered the last time it connected. Event types offering only
                       webhooks are not supported.
@@ -334,70 +241,6 @@ export function PushRelayView({ activeSubTab, onTabChange }: PushRelayViewProps)
                 <UpstreamSourcesList sources={sources} />
               </CardContent>
             </Card>
-          </div>
-        </TabsContent>
-
-        <TabsContent value="settings" className="flex-1 min-h-0 mt-4">
-          <div className="space-y-4 max-w-2xl overflow-y-auto">
-            {config && (
-              <>
-                <Card>
-                  <CardHeader className="pb-3">
-                    <CardTitle className="text-base">Webhook delivery</CardTitle>
-                    <CardDescription>
-                      Clients may subscribe with a callback URL; LocalRouter signs each event (Standard
-                      Webhooks) and POSTs it after permissions and approval. The first delivery to a new URL
-                      always asks.
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent className="space-y-4">
-                    <div className="flex items-center justify-between gap-4">
-                      <div>
-                        <span className="text-sm font-medium">Allow webhook subscriptions</span>
-                        <p className="text-xs text-muted-foreground mt-0.5">Accept <code className="text-xs bg-muted px-0.5 rounded">events/subscribe</code> from clients</p>
-                      </div>
-                      <Switch
-                        checked={config.webhook_egress_enabled}
-                        onCheckedChange={(v) => update({ webhookEgressEnabled: v }).catch(() => {})}
-                        disabled={saving || !config.enabled}
-                      />
-                    </div>
-                    <div className="flex items-center justify-between gap-4">
-                      <div>
-                        <span className="text-sm font-medium">Allow http:// to loopback</span>
-                        <p className="text-xs text-muted-foreground mt-0.5">
-                          Callback URLs must be HTTPS, except <code className="text-xs bg-muted px-0.5 rounded">http://127.0.0.1</code> /{" "}
-                          <code className="text-xs bg-muted px-0.5 rounded">localhost</code> for local clients
-                        </p>
-                      </div>
-                      <Switch
-                        checked={config.allow_loopback_http}
-                        onCheckedChange={(v) => update({ allowLoopbackHttp: v }).catch(() => {})}
-                        disabled={saving || !config.enabled || !config.webhook_egress_enabled}
-                      />
-                    </div>
-                  </CardContent>
-                </Card>
-
-                <Card>
-                  <CardHeader className="pb-3">
-                    <CardTitle className="text-base">Advanced: Limits</CardTitle>
-                    <CardDescription>
-                      Bounds on memory, waiting and retries. The defaults are generous: they exist to stop
-                      runaway loops, not to ration normal use.
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <LimitsEditor
-                      limits={config.limits}
-                      defaults={config.default_limits}
-                      onSave={saveLimits}
-                      disabled={saving}
-                    />
-                  </CardContent>
-                </Card>
-              </>
-            )}
           </div>
         </TabsContent>
       </Tabs>

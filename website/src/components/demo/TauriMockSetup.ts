@@ -25,8 +25,8 @@ import type { ShowApprovalPopupResult, NativeOperation, GetClientNativeOperation
 import { toast } from 'sonner'
 import { mockReplay } from './mockReplay'
 import { mockData } from './mockData'
-import { clientPush, mockActivePushSubscriptions, mockClaudeCodeTransport, mockClientPushSettings, mockPendingPushApprovals, mockPushRelayConfig, mockPushSources } from './mockPushRelay'
-import type { ActivePushSubscription, ClaudeCodeMcpSetup, ClientPushSettings, PendingPushApproval, PushRelayConfig, PushSourceInfo } from '@app/types/tauri-commands'
+import { clientPush, mockClaudeCodeTransport, mockClientPushSettings, mockPendingPushApprovals, mockPushRelayConfig, mockPushSources } from './mockPushRelay'
+import type { ClaudeCodeMcpSetup, ClientPushSettings, PendingPushApproval, PushRelayConfig, PushSourceInfo } from '@app/types/tauri-commands'
 
 import { mockNativeOperations, mockUpstreamTools, mockClientPrivacy, mockClientSecurity, mockClientSecrets } from './mockClientPolicies'
 import { routingPolicyIssue } from '@app/components/strategy/routing-policy-status'
@@ -1511,9 +1511,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       guardrails_active: false,
       json_repair_active: true,
       push_permissions: {},
-      push_fallback_tools: 'auto' as const,
       push_webhook_urls: [],
-      claude_channels_launched: false,
     }
     mockData.clients.push(newClient)
     toast.success(`Client "${args?.name}" created (demo)`)
@@ -4013,15 +4011,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'update_push_relay_config': (args): PushRelayConfig => {
     if (args?.enabled !== undefined) mockPushRelayConfig.enabled = args.enabled
     if (args?.defaultPermission !== undefined) mockPushRelayConfig.default_permission = args.defaultPermission
-    if (args?.webhookEgressEnabled !== undefined) mockPushRelayConfig.webhook_egress_enabled = args.webhookEgressEnabled
-    if (args?.allowLoopbackHttp !== undefined) mockPushRelayConfig.allow_loopback_http = args.allowLoopbackHttp
-    if (args?.limits !== undefined) {
-      const l = args.limits
-      if (l.upstream_poll_min_interval_ms > l.upstream_poll_max_interval_ms) {
-        throw 'upstream_poll_min_interval_ms must not exceed upstream_poll_max_interval_ms'
-      }
-      mockPushRelayConfig.limits = { ...l }
-    }
     setTimeout(() => emit('clients-changed', {}), 10)
     return { ...mockPushRelayConfig }
   },
@@ -4045,7 +4034,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     setTimeout(() => emit('push-approvals-changed', {}), 10)
     return decided.length
   },
-  'list_active_push_subscriptions': (): ActivePushSubscription[] => mockActivePushSubscriptions,
   'get_client_push_settings': (args): ClientPushSettings => {
     const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
     const id = client?.id ?? args?.clientId
@@ -4074,22 +4062,10 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     setTimeout(() => emit('clients-changed', {}), 10)
     return null
   },
-  'set_client_push_fallback_tools': (args) => {
-    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
-    clientPush(client?.id ?? args?.clientId).fallback_tools = args?.mode
-    setTimeout(() => emit('clients-changed', {}), 10)
-    return null
-  },
   'remove_client_push_webhook_url': (args) => {
     const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
     const p = clientPush(client?.id ?? args?.clientId)
     p.webhook_urls = p.webhook_urls.filter(u => u !== args?.url)
-    setTimeout(() => emit('clients-changed', {}), 10)
-    return null
-  },
-  'set_client_claude_channels_launched': (args) => {
-    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
-    clientPush(client?.id ?? args?.clientId).claude_channels_launched = Boolean(args?.launched)
     setTimeout(() => emit('clients-changed', {}), 10)
     return null
   },
@@ -4101,7 +4077,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       config_path: `${mockData.homeDir}/.claude.json`,
       launch_command: 'claude --dangerously-load-development-channels server:localrouter',
       binary_path: '/Applications/LocalRouter.app/Contents/MacOS/LocalRouter',
-      channels_launched: clientPush(id).claude_channels_launched,
     }
   },
   'switch_claude_code_to_stdio_bridge': (args): LaunchResult => {

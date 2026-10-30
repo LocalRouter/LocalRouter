@@ -314,12 +314,8 @@ export interface ClientInfo {
   json_repair_active: boolean
   /** Push Relay permission tree (client → server → event type; absent = inherit) */
   push_permissions: PushPermissions
-  /** When the Push Relay fallback polling tools are shown */
-  push_fallback_tools: PushFallbackTools
   /** Webhook callback URLs the user approved for this client */
   push_webhook_urls: string[]
-  /** Claude Code is launched with the development-channels flag */
-  claude_channels_launched: boolean
 }
 
 /**
@@ -1604,62 +1600,19 @@ export interface PushPermissions {
 }
 
 /**
- * When the fallback polling tools (EventList, EventPoll, EventWait) are shown.
- * Rust: crates/lr-config/src/push_relay.rs - PushFallbackTools enum
- */
-export type PushFallbackTools = 'auto' | 'always' | 'never'
-
-/**
  * Delivery mode an upstream offers for an event type (SEP-3415).
  * Rust: crates/lr-config/src/push_relay.rs - EventDeliveryMode enum
  */
 export type EventDeliveryMode = 'push' | 'poll' | 'webhook'
 
 /**
- * Every Push Relay limit. `_secs` / `_ms` are whole seconds / milliseconds.
- * Rust: crates/lr-config/src/push_relay.rs - PushRelayLimits struct
- */
-export interface PushRelayLimits {
-  journal_max_events: number
-  journal_max_bytes: number
-  journal_retention_secs: number
-  max_event_bytes: number
-  ask_timeout_secs: number
-  ask_hold_cap: number
-  first_discovery_wait_ms: number
-  upstream_poll_min_interval_ms: number
-  upstream_poll_max_interval_ms: number
-  upstream_reconnect_backoff_min_ms: number
-  upstream_reconnect_backoff_max_ms: number
-  upstream_heartbeat_timeout_secs: number
-  downstream_heartbeat_secs: number
-  max_streams_per_session: number
-  poll_max_events: number
-  poll_default_events: number
-  poll_max_wait_secs: number
-  watch_max_lifetime_secs: number
-  channel_max_content_bytes: number
-  channel_rate_per_minute: number
-  webhook_timeout_secs: number
-  /** Delay before each retry; attempts = 1 + length */
-  webhook_retry_delays_secs: number[]
-  webhook_max_subscriptions: number
-  webhook_lease_default_secs: number
-  webhook_lease_min_secs: number
-  webhook_lease_max_secs: number
-}
-
-/**
- * Global Push Relay settings, with the default limits for display.
+ * Global Push Relay settings: the master switch and the default permission.
+ * Every limit is internal to the relay and not configurable.
  * Rust: src-tauri/src/ui/commands_push_relay.rs - PushRelayConfigView struct
  */
 export interface PushRelayConfig {
   enabled: boolean
   default_permission: PushPermission
-  webhook_egress_enabled: boolean
-  allow_loopback_http: boolean
-  limits: PushRelayLimits
-  default_limits: PushRelayLimits
 }
 
 /**
@@ -1712,9 +1665,7 @@ export interface ClientPushServerAccess {
 export interface ClientPushSettings {
   client_id: string
   permissions: PushPermissions
-  fallback_tools: PushFallbackTools
   webhook_urls: string[]
-  claude_channels_launched: boolean
   global_default: PushPermission
   effective_client: PushPermission
   relay_enabled: boolean
@@ -1731,10 +1682,9 @@ export interface ClaudeCodeMcpSetup {
   config_path: string
   launch_command: string
   binary_path: string | null
-  channels_launched: boolean
 }
 
-// --- Held events (Ask) and active subscriptions ------------------------------
+// --- Held events (Ask) ---------------------------------------------------------
 // Rust: src-tauri/src/ui/commands_push_relay.rs. The `push-approvals-changed`
 // event fires whenever the held queue changes.
 
@@ -1748,7 +1698,6 @@ export type PushEventDecision =
   | 'asked_allowed'
   | 'asked_edited'
   | 'denied'
-  | 'timeout'
   | 'blocked'
   | 'hold_cap'
   | 'too_large'
@@ -1782,8 +1731,6 @@ export interface PendingPushApproval {
   ingress: PushIngressMode
   /** When the event was held (RFC 3339) */
   received_at: string
-  /** When an unanswered hold is denied (RFC 3339) */
-  expires_at: string
   /** The event's `data`, as it would be delivered */
   data: unknown
   /** Position in its (client, event type) queue; 0 = being asked now */
@@ -1841,42 +1788,6 @@ export type PushApprovalAction =
   | 'deny_type_session'
   | 'allow_type_always'
   | 'deny_type_always'
-
-/**
- * One live subscription: an upstream subscription the relay holds open
- * (`upstream`, shared by every client consuming it, or on one session's own
- * connection for stdio upstreams) or a client's webhook delivery (`webhook`).
- * Rust: src-tauri/src/ui/commands_push_relay.rs - ActivePushSubscription struct
- */
-export interface ActivePushSubscription {
-  subscription_id: string
-  kind: 'upstream' | 'webhook'
-  server_id: string
-  server_name: string
-  /** Upstream (unqualified) event name */
-  event_name: string
-  /** Subscription arguments (empty for webhooks) */
-  arguments: Record<string, unknown>
-  /** Relay-owned shared connection, or one session's own; null for webhooks */
-  scope: 'shared' | 'session' | null
-  /** Owner of a session-scoped or webhook subscription; null when shared */
-  client_id: string | null
-  client_name: string | null
-  /** `push` or `poll` once an upstream subscription runs */
-  ingress: 'push' | 'poll' | null
-  /** Upstream: active / reconnecting. Webhook: awaiting_approval / active / suspended / denied */
-  status: 'active' | 'reconnecting' | 'awaiting_approval' | 'suspended' | 'denied'
-  /** Upstream: events received. Webhook: deliveries made */
-  event_count: number
-  /** RFC 3339 */
-  last_event_at: string | null
-  last_error: string | null
-  reconnects: number
-  webhook_url: string | null
-  /** RFC 3339 */
-  lease_expires_at: string | null
-}
-
 
 /**
  * Effective context management configuration (every field resolved).
@@ -5625,13 +5536,10 @@ export interface DiscoverResourceIconParams { endpointUrl: string }
 
 /** Params for get_push_relay_config */
 export type GetPushRelayConfigParams = Record<string, never>
-/** Params for update_push_relay_config (limits replaces the whole block) */
+/** Params for update_push_relay_config */
 export interface UpdatePushRelayConfigParams {
   enabled?: boolean
   defaultPermission?: PushPermission
-  webhookEgressEnabled?: boolean
-  allowLoopbackHttp?: boolean
-  limits?: PushRelayLimits
 }
 /** Params for list_push_sources */
 export type ListPushSourcesParams = Record<string, never>
@@ -5639,8 +5547,6 @@ export type ListPushSourcesParams = Record<string, never>
 export interface ListPendingPushApprovalsParams { clientId?: string | null }
 /** Params for submit_push_approval (returns how many held events were decided) */
 export interface SubmitPushApprovalParams { requestId: string; action: PushApprovalAction; editedData?: unknown | null }
-/** Params for list_active_push_subscriptions */
-export type ListActivePushSubscriptionsParams = Record<string, never>
 /** Params for get_client_push_settings */
 export interface GetClientPushSettingsParams { clientId: string }
 /** Params for set_client_push_permission (state null = inherit) */
@@ -5651,12 +5557,8 @@ export interface SetClientPushPermissionParams {
   eventName?: string | null
   state: PushPermission | null
 }
-/** Params for set_client_push_fallback_tools */
-export interface SetClientPushFallbackToolsParams { clientId: string; mode: PushFallbackTools }
 /** Params for remove_client_push_webhook_url */
 export interface RemoveClientPushWebhookUrlParams { clientId: string; url: string }
-/** Params for set_client_claude_channels_launched */
-export interface SetClientClaudeChannelsLaunchedParams { clientId: string; launched: boolean }
 /** Params for get_claude_code_mcp_setup */
 export interface GetClaudeCodeMcpSetupParams { clientId: string }
 /** Params for switch_claude_code_to_stdio_bridge */

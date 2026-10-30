@@ -2,12 +2,10 @@ import { useCallback, useEffect, useState } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
 import { Info, Trash2 } from "lucide-react"
-import { cn } from "@/lib/utils"
 import { FEATURES } from "@/constants/features"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card"
-import { Switch } from "@/components/ui/Toggle"
 import { listenSafe } from "@/hooks/useTauriListener"
 import { PushPermissionTree } from "@/components/permissions/PushPermissionTree"
 import { SamplePopupButton } from "@/components/shared/SamplePopupButton"
@@ -20,11 +18,8 @@ import {
 import type {
   ClientPushSettings,
   GetClientPushSettingsParams,
-  PushFallbackTools,
   PushSourceInfo,
   RemoveClientPushWebhookUrlParams,
-  SetClientClaudeChannelsLaunchedParams,
-  SetClientPushFallbackToolsParams,
 } from "@/types/tauri-commands"
 
 interface Client {
@@ -33,9 +28,7 @@ interface Client {
   name: string
   template_id?: string | null
   push_permissions?: unknown
-  push_fallback_tools?: PushFallbackTools
   push_webhook_urls?: string[]
-  claude_channels_launched?: boolean
 }
 
 interface ClientPushCardProps {
@@ -44,17 +37,7 @@ interface ClientPushCardProps {
   onViewChange?: (view: string, subTab?: string | null) => void
 }
 
-const FALLBACK_OPTIONS: { value: PushFallbackTools; label: string; help: string }[] = [
-  {
-    value: "auto",
-    label: "Auto",
-    help: "Shown when a push source is available and the client has no native mechanism (MCP Events). With Claude Channels launched, EventWait is hidden.",
-  },
-  { value: "always", label: "Always", help: "Shown whenever a push source is available." },
-  { value: "never", label: "Never", help: "Never shown; the client relies on its native mechanism." },
-]
-
-/** Push Relay settings for one client: permissions, fallback tools, webhooks, Claude Channels. */
+/** Push Relay settings for one client: permissions, webhooks, and how it receives events. */
 export function ClientPushCard({ client, onUpdate, onViewChange }: ClientPushCardProps) {
   const [settings, setSettings] = useState<ClientPushSettings | null>(null)
   const [sources, setSources] = useState<PushSourceInfo[]>([])
@@ -78,7 +61,7 @@ export function ClientPushCard({ client, onUpdate, onViewChange }: ClientPushCar
 
   useEffect(() => {
     load()
-  }, [load, client.push_permissions, client.push_fallback_tools, client.push_webhook_urls, client.claude_channels_launched])
+  }, [load, client.push_permissions, client.push_webhook_urls])
 
   useEffect(() => {
     const listeners = [listenSafe("clients-changed", load), listenSafe("config-changed", load)]
@@ -99,14 +82,6 @@ export function ClientPushCard({ client, onUpdate, onViewChange }: ClientPushCar
     }
   }
 
-  const setFallback = (mode: PushFallbackTools) =>
-    run(() =>
-      invoke("set_client_push_fallback_tools", {
-        clientId: client.client_id,
-        mode,
-      } satisfies SetClientPushFallbackToolsParams),
-    )
-
   const removeWebhook = (url: string) =>
     run(
       () =>
@@ -115,14 +90,6 @@ export function ClientPushCard({ client, onUpdate, onViewChange }: ClientPushCar
           url,
         } satisfies RemoveClientPushWebhookUrlParams),
       "Webhook URL removed; the next delivery to it will ask again",
-    )
-
-  const setChannelsLaunched = (launched: boolean) =>
-    run(() =>
-      invoke("set_client_claude_channels_launched", {
-        clientId: client.client_id,
-        launched,
-      } satisfies SetClientClaudeChannelsLaunchedParams),
     )
 
   return (
@@ -184,43 +151,16 @@ export function ClientPushCard({ client, onUpdate, onViewChange }: ClientPushCar
         </div>
 
         {/* Fallback tools */}
-        {settings && (
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <p className="text-sm font-medium">Fallback tools</p>
-                <p className="text-xs text-muted-foreground">
-                  <code className="bg-muted px-1 rounded">EventList</code>,{" "}
-                  <code className="bg-muted px-1 rounded">EventPoll</code> and{" "}
-                  <code className="bg-muted px-1 rounded">EventWait</code> for clients without a native push mechanism.
-                </p>
-              </div>
-              <div className={cn("inline-flex rounded-md border border-border bg-muted/50 shrink-0", saving && "opacity-50 pointer-events-none")}>
-                {FALLBACK_OPTIONS.map((o, idx) => (
-                    <button
-                      key={o.value}
-                      type="button"
-                      title={o.help}
-                      onClick={() => setFallback(o.value)}
-                      className={cn(
-                        "px-2 py-0.5 text-xs font-medium transition-colors",
-                        settings.fallback_tools === o.value
-                          ? "bg-primary text-primary-foreground"
-                          : "text-muted-foreground hover:text-foreground hover:bg-muted",
-                        idx === 0 && "rounded-l-md",
-                        idx === FALLBACK_OPTIONS.length - 1 && "rounded-r-md",
-                      )}
-                    >
-                      {o.label}
-                    </button>
-                ))}
-              </div>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              {FALLBACK_OPTIONS.find((o) => o.value === settings.fallback_tools)?.help}
-            </p>
-          </div>
-        )}
+        <div className="space-y-1.5">
+          <p className="text-sm font-medium">Fallback tools</p>
+          <p className="text-xs text-muted-foreground">
+            <code className="bg-muted px-1 rounded">EventList</code>,{" "}
+            <code className="bg-muted px-1 rounded">EventPoll</code> and{" "}
+            <code className="bg-muted px-1 rounded">EventWait</code> are offered automatically whenever a permitted
+            server pushes events, unless the client declares native MCP Events support. Claude Code sessions through the
+            STDIO bridge keep them too: LocalRouter cannot tell whether Claude was launched with channels.
+          </p>
+        </div>
 
         {/* Webhook URLs */}
         {settings && (
@@ -258,21 +198,11 @@ export function ClientPushCard({ client, onUpdate, onViewChange }: ClientPushCar
         {settings && isClaudeCode && (
           <div className="space-y-2">
             <ClaudeCodeHttpNotice clientId={client.client_id} onSwitched={() => load()} />
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <p className="text-sm font-medium">Claude Channels</p>
-                <p className="text-xs text-muted-foreground">
-                  I launch Claude Code with the channels flag. LocalRouter cannot detect the flag; with it recorded,
-                  Auto hides <code className="bg-muted px-1 rounded">EventWait</code> because events already arrive as
-                  channel messages.
-                </p>
-              </div>
-              <Switch
-                checked={settings.claude_channels_launched}
-                onCheckedChange={setChannelsLaunched}
-                disabled={saving}
-                aria-label="Claude Code is launched with channels"
-              />
+            <div>
+              <p className="text-sm font-medium">Claude Channels</p>
+              <p className="text-xs text-muted-foreground">
+                Launch Claude Code with the channels flag so pushed events wake it as channel messages:
+              </p>
             </div>
             <CopyableCode value={CLAUDE_CHANNELS_LAUNCH_COMMAND} />
             <ClaudeChannelsExplanation />

@@ -1,27 +1,14 @@
 import { test, expect } from '@playwright/test'
-import type { PushEventDecision, PushRelayLimits, PushSourceInfo } from '../../../src/types/tauri-commands'
+import type { PushEventDecision, PushSourceInfo } from '../../../src/types/tauri-commands'
 import { PUSH_DECISION_LABELS, pushDecisionDelivered, pushDecisionLabel, pushPayloadEdited } from '../../../src/views/monitor/push-event'
-import { payloadPreview } from '../../../src/views/push-relay/format'
-import { LIMIT_GROUPS, noPushReason } from '../../../src/views/push-relay/push-relay-utils'
+import { formatRelativeTime } from '../../../src/views/push-relay/format'
+import { noPushReason } from '../../../src/views/push-relay/push-relay-utils'
 import { CLAUDE_CHANNELS_LAUNCH_COMMAND, claudeCodeStdioConfig } from '../../../src/components/client/claude-code-bridge-config'
-import { defaultPushRelayLimits } from '../../../website/src/components/demo/mockPushRelay'
 
 const source = (patch: Partial<PushSourceInfo> = {}): PushSourceInfo => ({
   server_id: 's', server_name: 'S', enabled: true, snapshot_status: 'current',
   protocol_version: '2025-11-25', observed_at: null, channels: false, resource_subscribe: false,
   events: [], has_consumable_push: false, ...patch,
-})
-
-test('the limits editor covers every Push Relay limit exactly once', () => {
-  const edited = LIMIT_GROUPS.flatMap(g => g.rows.map(r => r.key as string))
-  expect(new Set(edited).size).toBe(edited.length)
-  // The retry list is edited separately; every other field is numeric and listed.
-  const all = Object.keys(defaultPushRelayLimits).filter(k => k !== 'webhook_retry_delays_secs')
-  expect(edited.sort()).toEqual(all.sort())
-  for (const g of LIMIT_GROUPS) for (const r of g.rows) {
-    const value = defaultPushRelayLimits[r.key as keyof PushRelayLimits] as number
-    expect(Number.isInteger(value / r.scale) || r.scale === 1, `${r.key} default shows as a whole ${r.unit}`).toBe(true)
-  }
 })
 
 test('sources without consumable push say why', () => {
@@ -47,18 +34,20 @@ test('Claude Code defaults to the STDIO bridge with the channels flag', () => {
 })
 
 test('Monitor push records label every decision and detect edits structurally', () => {
-  const decisions: PushEventDecision[] = ['pending', 'allowed', 'asked_allowed', 'asked_edited', 'denied', 'timeout', 'blocked', 'hold_cap', 'too_large']
+  const decisions: PushEventDecision[] = ['pending', 'allowed', 'asked_allowed', 'asked_edited', 'denied', 'blocked', 'hold_cap', 'too_large']
   for (const d of decisions) expect(PUSH_DECISION_LABELS[d]).toBeTruthy()
   expect(pushDecisionLabel('something_new')).toBe('something_new')
   expect(pushDecisionDelivered('asked_edited')).toBe(true)
-  expect(pushDecisionDelivered('timeout')).toBe(false)
+  expect(pushDecisionDelivered('denied')).toBe(false)
   expect(pushPayloadEdited({ a: 1, b: 2 }, { b: 2, a: 1 })).toBe(false)
   expect(pushPayloadEdited({ text: 'x' }, { text: 'y' })).toBe(true)
   expect(pushPayloadEdited({ text: 'x' }, undefined)).toBe(false)
 })
 
-test('payload previews are pretty-printed and bounded', () => {
-  expect(payloadPreview({ a: 1 })).toBe('{\n  "a": 1\n}')
-  expect(payloadPreview('x'.repeat(500), 10)).toBe('xxxxxxxxxx…')
-  expect(payloadPreview(undefined)).toBe('null')
+test('relative times read naturally in both directions', () => {
+  const now = Date.parse('2026-10-30T12:00:00Z')
+  expect(formatRelativeTime('2026-10-30T11:57:00Z', now)).toBe('3 min ago')
+  expect(formatRelativeTime('2026-10-30T14:00:00Z', now)).toBe('in 2 h')
+  expect(formatRelativeTime('2026-10-30T12:00:02Z', now)).toBe('just now')
+  expect(formatRelativeTime('not a date', now)).toBe('not a date')
 })
