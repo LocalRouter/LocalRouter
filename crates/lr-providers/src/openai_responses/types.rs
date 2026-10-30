@@ -282,6 +282,10 @@ pub struct ResponsesSseEnvelope {
     #[serde(default)]
     pub delta: Option<String>,
     #[serde(default)]
+    pub arguments: Option<String>,
+    #[serde(default)]
+    pub input: Option<String>,
+    #[serde(default)]
     pub item: Option<serde_json::Value>,
     #[serde(default)]
     pub response: Option<serde_json::Value>,

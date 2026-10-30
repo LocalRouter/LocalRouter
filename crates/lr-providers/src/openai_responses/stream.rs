@@ -149,6 +149,14 @@ fn find_frame_boundary(buf: &str) -> Option<usize> {
 // Event-to-chunk state machine
 // ============================================================================
 
+#[derive(Default)]
+struct ToolSlot {
+    index: u32,
+    arguments: String,
+    emitted: usize,
+    header: Option<(String, String)>,
+}
+
 struct StreamState {
     provider_id: String,
     model: String,
@@ -156,7 +164,8 @@ struct StreamState {
     created: i64,
     /// Maps a Responses-API `item_id` → the `tool_calls[]` index we
     /// assigned in the emitted chat-completions delta stream.
-    tool_call_slots: HashMap<String, u32>,
+    tool_call_slots: HashMap<String, ToolSlot>,
+    tool_output_ids: HashMap<i64, String>,
     next_tool_index: u32,
     opening_emitted: bool,
 }
@@ -169,6 +178,7 @@ impl StreamState {
             response_id: String::new(),
             created: 0,
             tool_call_slots: HashMap::new(),
+            tool_output_ids: HashMap::new(),
             next_tool_index: 0,
             opening_emitted: false,
         }
@@ -206,6 +216,9 @@ impl StreamState {
             "response.output_text.delta" => self.on_output_text_delta(env),
             "response.function_call_arguments.delta" | "response.custom_tool_call_input.delta" => {
                 self.on_tool_call_args_delta(env)
+            }
+            "response.function_call_arguments.done" | "response.custom_tool_call_input.done" => {
+                self.on_tool_call_args_done(env)
             }
             "response.output_item.done" => self.on_output_item_done(env),
             "response.reasoning_text.delta" | "response.reasoning_summary_text.delta" => {
@@ -256,72 +269,150 @@ impl StreamState {
         })]
     }
 
-    fn on_output_item_added(
-        &mut self,
-        env: ResponsesSseEnvelope,
-    ) -> Vec<AppResult<CompletionChunk>> {
-        // When a new function_call item appears, pre-assign it an
-        // index in our tool_calls[] array so subsequent argument
-        // deltas can reference the same slot consistently.
-        let Some(item) = env.item else {
-            return vec![];
-        };
-        let item_obj = match item {
-            serde_json::Value::Object(m) => m,
-            _ => return vec![],
-        };
-        let kind = item_obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        if kind != "function_call" && kind != "custom_tool_call" {
-            return vec![];
+    fn tool_key(&self, item_id: &str, call_id: &str) -> String {
+        if self.tool_call_slots.contains_key(item_id) {
+            return item_id.to_string();
         }
-        let item_id = env
-            .item_id
-            .or_else(|| {
-                item_obj
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_owned)
-            })
-            .unwrap_or_default();
-        let call_id = item_obj
-            .get("call_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or(&item_id)
-            .to_string();
-        let name = item_obj
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+        self.tool_call_slots
+            .iter()
+            .find(|(_, slot)| slot.header.as_ref().is_some_and(|(id, _)| id == call_id))
+            .map(|(key, _)| key.clone())
+            .unwrap_or_else(|| item_id.to_string())
+    }
 
-        let index = *self.tool_call_slots.entry(item_id).or_insert_with(|| {
-            let i = self.next_tool_index;
+    fn slot(&mut self, item_id: String, output_index: Option<i64>) -> &mut ToolSlot {
+        if let Some(index) = output_index {
+            self.tool_output_ids.insert(index, item_id.clone());
+        }
+        self.tool_call_slots.entry(item_id).or_insert_with(|| {
+            let index = self.next_tool_index;
             self.next_tool_index += 1;
-            i
-        });
+            ToolSlot {
+                index,
+                ..Default::default()
+            }
+        })
+    }
 
-        vec![Ok(CompletionChunk {
+    fn tool_chunk(&self, calls: Vec<ToolCallDelta>) -> CompletionChunk {
+        CompletionChunk {
             choices: vec![ChunkChoice {
                 index: 0,
                 delta: ChunkDelta {
                     annotations: None,
                     role: None,
                     content: None,
-                    tool_calls: Some(vec![ToolCallDelta {
-                        index,
-                        id: Some(call_id),
-                        tool_type: Some("function".into()),
-                        function: Some(FunctionCallDelta {
-                            name: Some(name),
-                            arguments: None,
-                        }),
-                    }]),
+                    tool_calls: Some(calls),
                     reasoning_content: None,
                 },
                 finish_reason: None,
             }],
             ..self.base_chunk()
-        })]
+        }
+    }
+
+    fn take_tool_delta(
+        slot: &mut ToolSlot,
+        header: Option<(String, String)>,
+    ) -> AppResult<Option<ToolCallDelta>> {
+        let announce = slot.header.is_none() && header.is_some();
+        if let Some(header) = header {
+            if slot
+                .header
+                .as_ref()
+                .is_some_and(|previous| previous != &header)
+            {
+                return Err(AppError::Provider(
+                    "Responses tool identity changed after streaming".into(),
+                ));
+            }
+            slot.header = Some(header);
+        }
+        let Some((call_id, name)) = &slot.header else {
+            return Ok(None);
+        };
+        let suffix = &slot.arguments[slot.emitted..];
+        if !announce && suffix.is_empty() {
+            return Ok(None);
+        }
+        let delta = ToolCallDelta {
+            index: slot.index,
+            id: announce.then(|| call_id.clone()),
+            tool_type: announce.then(|| "function".into()),
+            function: Some(FunctionCallDelta {
+                name: announce.then(|| name.clone()),
+                arguments: (!suffix.is_empty()).then(|| suffix.to_string()),
+            }),
+        };
+        slot.emitted = slot.arguments.len();
+        Ok(Some(delta))
+    }
+
+    fn complete_arguments(slot: &mut ToolSlot, arguments: &str) -> AppResult<()> {
+        if !arguments.starts_with(&slot.arguments) {
+            return Err(AppError::Provider(
+                "Responses tool arguments changed after streaming".into(),
+            ));
+        }
+        slot.arguments = arguments.to_string();
+        Ok(())
+    }
+
+    fn tool_item(
+        &mut self,
+        env: ResponsesSseEnvelope,
+        terminal: bool,
+    ) -> AppResult<Option<ToolCallDelta>> {
+        let Some(item) = env.item.as_ref().and_then(|item| item.as_object()) else {
+            return Ok(None);
+        };
+        let kind = item
+            .get("type")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        if !matches!(kind, "function_call" | "custom_tool_call") {
+            return Ok(None);
+        }
+        let item_id = env
+            .item_id
+            .as_deref()
+            .or_else(|| item.get("id").and_then(|value| value.as_str()))
+            .or_else(|| item.get("call_id").and_then(|value| value.as_str()))
+            .ok_or_else(|| AppError::Provider("Responses tool item has no identity".into()))?;
+        let call_id = item
+            .get("call_id")
+            .and_then(|value| value.as_str())
+            .unwrap_or(item_id);
+        let name = item
+            .get("name")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        let key = self.tool_key(item_id, call_id);
+        let slot = self.slot(key, env.output_index);
+        if let Some(arguments) = item
+            .get(if kind == "function_call" {
+                "arguments"
+            } else {
+                "input"
+            })
+            .and_then(|value| value.as_str())
+        {
+            if terminal || !arguments.is_empty() || slot.arguments.is_empty() {
+                Self::complete_arguments(slot, arguments)?;
+            }
+        }
+        Self::take_tool_delta(slot, Some((call_id.to_string(), name.to_string())))
+    }
+
+    fn on_output_item_added(
+        &mut self,
+        env: ResponsesSseEnvelope,
+    ) -> Vec<AppResult<CompletionChunk>> {
+        match self.tool_item(env, false) {
+            Ok(Some(delta)) => vec![Ok(self.tool_chunk(vec![delta]))],
+            Ok(None) => vec![],
+            Err(error) => vec![Err(error)],
+        }
     }
 
     fn on_output_text_delta(
@@ -350,52 +441,61 @@ impl StreamState {
         })]
     }
 
+    fn argument_item_id(&self, env: &ResponsesSseEnvelope) -> Option<String> {
+        env.item_id.clone().or_else(|| {
+            env.output_index
+                .and_then(|index| self.tool_output_ids.get(&index).cloned())
+        })
+    }
+
     fn on_tool_call_args_delta(
         &mut self,
         env: ResponsesSseEnvelope,
     ) -> Vec<AppResult<CompletionChunk>> {
+        let Some(item_id) = self.argument_item_id(&env) else {
+            return vec![];
+        };
         let Some(delta) = env.delta else {
             return vec![];
         };
-        let Some(item_id) = env.item_id else {
+        let slot = self.slot(item_id, env.output_index);
+        slot.arguments.push_str(&delta);
+        match Self::take_tool_delta(slot, None) {
+            Ok(Some(delta)) => vec![Ok(self.tool_chunk(vec![delta]))],
+            Ok(None) => vec![],
+            Err(error) => vec![Err(error)],
+        }
+    }
+
+    fn on_tool_call_args_done(
+        &mut self,
+        env: ResponsesSseEnvelope,
+    ) -> Vec<AppResult<CompletionChunk>> {
+        let Some(item_id) = self.argument_item_id(&env) else {
             return vec![];
         };
-        let index = *self.tool_call_slots.entry(item_id).or_insert_with(|| {
-            let i = self.next_tool_index;
-            self.next_tool_index += 1;
-            i
-        });
-        vec![Ok(CompletionChunk {
-            choices: vec![ChunkChoice {
-                index: 0,
-                delta: ChunkDelta {
-                    annotations: None,
-                    role: None,
-                    content: None,
-                    tool_calls: Some(vec![ToolCallDelta {
-                        index,
-                        id: None,
-                        tool_type: None,
-                        function: Some(FunctionCallDelta {
-                            name: None,
-                            arguments: Some(delta),
-                        }),
-                    }]),
-                    reasoning_content: None,
-                },
-                finish_reason: None,
-            }],
-            ..self.base_chunk()
-        })]
+        let Some(arguments) = env.arguments.or(env.input) else {
+            return vec![];
+        };
+        let slot = self.slot(item_id, env.output_index);
+        match Self::complete_arguments(slot, &arguments)
+            .and_then(|_| Self::take_tool_delta(slot, None))
+        {
+            Ok(Some(delta)) => vec![Ok(self.tool_chunk(vec![delta]))],
+            Ok(None) => vec![],
+            Err(error) => vec![Err(error)],
+        }
     }
 
     fn on_output_item_done(
         &mut self,
-        _env: ResponsesSseEnvelope,
+        env: ResponsesSseEnvelope,
     ) -> Vec<AppResult<CompletionChunk>> {
-        // Nothing to emit — function_call completion is already
-        // signaled by `response.completed`'s finish_reason derivation.
-        vec![]
+        match self.tool_item(env, true) {
+            Ok(Some(delta)) => vec![Ok(self.tool_chunk(vec![delta]))],
+            Ok(None) => vec![],
+            Err(error) => vec![Err(error)],
+        }
     }
 
     fn on_reasoning_delta(&mut self, env: ResponsesSseEnvelope) -> Vec<AppResult<CompletionChunk>> {
@@ -419,28 +519,41 @@ impl StreamState {
     }
 
     fn on_completed(&mut self, raw: &str) -> Vec<AppResult<CompletionChunk>> {
-        // Determine finish_reason by peeking at the final `response.output`:
-        // if any item is a function_call, this turn stopped to invoke
-        // tools. Otherwise it's a plain "stop".
-        let finish_reason = match serde_json::from_str::<CompletedPayload>(raw) {
-            Ok(p) => {
-                let has_tool = p
-                    .response
-                    .output
-                    .iter()
-                    .any(|item| matches!(item, OutputItem::FunctionCall { .. }));
-                if has_tool {
-                    "tool_calls".to_string()
-                } else {
-                    "stop".to_string()
+        let payload = serde_json::from_str::<CompletedPayload>(raw).ok();
+        let mut calls = Vec::new();
+        if let Some(payload) = &payload {
+            for (index, item) in payload.response.output.iter().enumerate() {
+                if let OutputItem::FunctionCall {
+                    id,
+                    call_id,
+                    name,
+                    arguments,
+                } = item
+                {
+                    let key = self.tool_key(id.as_deref().unwrap_or(call_id), call_id);
+                    let slot = self.slot(key, Some(index as i64));
+                    match Self::complete_arguments(slot, arguments).and_then(|_| {
+                        Self::take_tool_delta(slot, Some((call_id.clone(), name.clone())))
+                    }) {
+                        Ok(Some(delta)) => calls.push(delta),
+                        Ok(None) => {}
+                        Err(error) => return vec![Err(error)],
+                    }
                 }
             }
-            Err(_) => "stop".to_string(),
+        }
+        let finish_reason = if payload.as_ref().is_some_and(|payload| {
+            payload
+                .response
+                .output
+                .iter()
+                .any(|item| matches!(item, OutputItem::FunctionCall { .. }))
+        }) {
+            "tool_calls"
+        } else {
+            "stop"
         };
-
-        let usage = serde_json::from_str::<CompletedPayload>(raw)
-            .ok()
-            .and_then(|p| p.response.usage);
+        let usage = payload.and_then(|payload| payload.response.usage);
 
         let extensions = usage.as_ref().map(|u| {
             let mut map = std::collections::HashMap::new();
@@ -466,10 +579,10 @@ impl StreamState {
                     annotations: None,
                     role: None,
                     content: None,
-                    tool_calls: None,
+                    tool_calls: (!calls.is_empty()).then_some(calls),
                     reasoning_content: None,
                 },
-                finish_reason: Some(finish_reason),
+                finish_reason: Some(finish_reason.to_string()),
             }],
             extensions,
             usage: usage.as_ref().map(ResponsesUsage::to_token_usage),
@@ -768,6 +881,227 @@ data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_u\",\"output\
         let ext = last.extensions.as_ref().unwrap();
         assert_eq!(ext["usage"]["prompt_tokens"], 1200);
         assert_eq!(ext["usage"]["completion_tokens"], 87);
+    }
+
+    fn translate_events(events: Vec<serde_json::Value>) -> Vec<AppResult<CompletionChunk>> {
+        let wire = events
+            .iter()
+            .map(|event| format!("data: {event}\r\n\r\n"))
+            .collect::<String>();
+        let bytes = stream::iter(
+            wire.as_bytes()
+                .chunks(7)
+                .map(|bytes| Ok::<_, reqwest::Error>(bytes.to_vec()))
+                .collect::<Vec<_>>(),
+        );
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(
+                responses_to_completion_chunks(bytes, "fixture".into(), "fixture".into()).collect(),
+            )
+    }
+
+    fn tool_item(id: &str, call_id: &str, arguments: &str) -> serde_json::Value {
+        serde_json::json!({"type":"function_call","id":id,"call_id":call_id,"name":"read_section","arguments":arguments})
+    }
+
+    fn projected_tools(
+        chunks: &[CompletionChunk],
+    ) -> std::collections::BTreeMap<u32, (String, String, String)> {
+        let mut tools = std::collections::BTreeMap::<u32, (String, String, String)>::new();
+        for call in chunks
+            .iter()
+            .flat_map(|chunk| &chunk.choices)
+            .flat_map(|choice| choice.delta.tool_calls.iter().flatten())
+        {
+            let tool = tools.entry(call.index).or_default();
+            if let Some(id) = &call.id {
+                assert!(tool.0.is_empty(), "call identity emitted twice");
+                tool.0 = id.clone();
+            }
+            if let Some(function) = &call.function {
+                if let Some(name) = &function.name {
+                    assert!(tool.1.is_empty(), "call name emitted twice");
+                    tool.1 = name.clone();
+                }
+                if let Some(arguments) = &function.arguments {
+                    tool.2.push_str(arguments);
+                }
+            }
+        }
+        tools
+    }
+
+    #[test]
+    fn completed_response_supplies_parallel_arguments_missing_from_deltas() {
+        let first = tool_item("fc_first", "call_first", r#"{"ref":"docs/a.md#/a"}"#);
+        let second = tool_item("fc_second", "call_second", r#"{"ref":"docs/b.md#/b"}"#);
+        for include_added in [false, true] {
+            let mut events = Vec::new();
+            if include_added {
+                for (index, item) in [&first, &second].into_iter().enumerate() {
+                    let mut item = item.clone();
+                    item["arguments"] = serde_json::json!("");
+                    events.push(serde_json::json!({"type":"response.output_item.added","output_index":index,"item":item}));
+                }
+            }
+            events.push(serde_json::json!({"type":"response.completed","response":{"output":[first, second],"usage":{"input_tokens":91,"output_tokens":56,"total_tokens":147}}}));
+            let chunks: Vec<_> = translate_events(events)
+                .into_iter()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            let tools = projected_tools(&chunks);
+            assert_eq!(tools.len(), 2);
+            assert_eq!(
+                tools[&0],
+                (
+                    "call_first".into(),
+                    "read_section".into(),
+                    r#"{"ref":"docs/a.md#/a"}"#.into()
+                )
+            );
+            assert_eq!(
+                tools[&1],
+                (
+                    "call_second".into(),
+                    "read_section".into(),
+                    r#"{"ref":"docs/b.md#/b"}"#.into()
+                )
+            );
+            assert_eq!(
+                chunks.last().unwrap().choices[0].finish_reason.as_deref(),
+                Some("tool_calls")
+            );
+            assert_eq!(
+                chunks.last().unwrap().usage.as_ref().unwrap().total_tokens,
+                147
+            );
+            assert_eq!(
+                chunks
+                    .iter()
+                    .filter(|chunk| chunk
+                        .extensions
+                        .as_ref()
+                        .and_then(|ext| ext.get(NATIVE_RESPONSES_SSE_EXT_KEY))
+                        .is_some_and(|env| env["type"] == "response.completed"))
+                    .count(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn done_variants_flush_only_missing_argument_suffix_once() {
+        let arguments = r#"{"ref":"docs/世界.md#/a"}"#;
+        let item = tool_item("fc", "call", arguments);
+        let events = vec![
+            serde_json::json!({"type":"response.output_item.added","output_index":3,"item":tool_item("fc","call","")}),
+            serde_json::json!({"type":"response.function_call_arguments.delta","output_index":3,"delta":"{\"ref\":\"docs/"}),
+            serde_json::json!({"type":"response.function_call_arguments.done","item_id":"fc","arguments":arguments}),
+            serde_json::json!({"type":"response.output_item.done","output_index":3,"item":item}),
+            serde_json::json!({"type":"response.completed","response":{"output":[item]}}),
+        ];
+        let chunks: Vec<_> = translate_events(events)
+            .into_iter()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(projected_tools(&chunks)[&0].2, arguments);
+    }
+
+    #[test]
+    fn completed_item_and_added_snapshot_supply_arguments_without_delta_events() {
+        for terminal in ["response.output_item.added", "response.output_item.done"] {
+            let arguments = r#"{"ref":"docs/é.md#/a"}"#;
+            let item = tool_item("fc", "call", arguments);
+            let chunks: Vec<_> = translate_events(vec![
+                serde_json::json!({"type":terminal,"item":item}),
+                serde_json::json!({"type":"response.completed","response":{"output":[item]}}),
+            ])
+            .into_iter()
+            .collect::<Result<_, _>>()
+            .unwrap();
+            assert_eq!(projected_tools(&chunks)[&0].2, arguments);
+        }
+    }
+
+    #[test]
+    fn final_call_id_reuses_its_announced_slot_when_item_id_is_omitted() {
+        let mut completed = tool_item("fc", "call", r#"{"ref":"a"}"#);
+        completed.as_object_mut().unwrap().remove("id");
+        let chunks: Vec<_> = translate_events(vec![
+            serde_json::json!({"type":"response.output_item.added","item":tool_item("fc","call","")}),
+            serde_json::json!({"type":"response.completed","response":{"output":[completed]}}),
+        ]).into_iter().collect::<Result<_,_>>().unwrap();
+        let tools = projected_tools(&chunks);
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[&0].2, r#"{"ref":"a"}"#);
+    }
+
+    #[test]
+    fn arguments_before_the_tool_header_are_buffered_until_identity_is_known() {
+        let arguments = r#"{"ref":"a"}"#;
+        let chunks: Vec<_> = translate_events(vec![
+            serde_json::json!({"type":"response.function_call_arguments.delta","item_id":"fc","delta":arguments}),
+            serde_json::json!({"type":"response.output_item.added","item":tool_item("fc","call","")}),
+            serde_json::json!({"type":"response.completed","response":{"output":[tool_item("fc","call",arguments)]}}),
+        ]).into_iter().collect::<Result<_,_>>().unwrap();
+        assert_eq!(projected_tools(&chunks)[&0].2, arguments);
+        assert_eq!(chunks.len(), 2);
+    }
+
+    #[test]
+    fn custom_tool_done_input_preserves_the_existing_chat_projection() {
+        let chunks: Vec<_> = translate_events(vec![
+            serde_json::json!({"type":"response.output_item.added","item":{"type":"custom_tool_call","id":"ct","call_id":"call","name":"code","input":""}}),
+            serde_json::json!({"type":"response.custom_tool_call_input.delta","item_id":"ct","delta":"print("}),
+            serde_json::json!({"type":"response.custom_tool_call_input.done","item_id":"ct","input":"print('hi')"}),
+            serde_json::json!({"type":"response.output_item.done","item":{"type":"custom_tool_call","id":"ct","call_id":"call","name":"code","input":"print('hi')"}}),
+        ]).into_iter().collect::<Result<_,_>>().unwrap();
+        assert_eq!(
+            projected_tools(&chunks)[&0],
+            ("call".into(), "code".into(), "print('hi')".into())
+        );
+    }
+
+    #[test]
+    fn changed_or_missing_tool_identity_is_an_explicit_error() {
+        for changed in [
+            serde_json::json!({"type":"function_call","name":"read_section","arguments":"{}"}),
+            tool_item("fc", "different_call", "{}"),
+            serde_json::json!({"type":"function_call","id":"fc","call_id":"call","name":"different_tool","arguments":"{}"}),
+        ] {
+            let chunks = translate_events(vec![
+                serde_json::json!({"type":"response.output_item.added","item":tool_item("fc","call","")}),
+                serde_json::json!({"type":"response.output_item.done","item":changed}),
+            ]);
+            assert!(chunks.last().unwrap().is_err());
+        }
+    }
+
+    #[test]
+    fn conflicting_final_arguments_fail_instead_of_emitting_a_corrupt_call() {
+        let chunks = translate_events(vec![
+            serde_json::json!({"type":"response.output_item.added","item":tool_item("fc","call","")}),
+            serde_json::json!({"type":"response.function_call_arguments.delta","item_id":"fc","delta":"{\"ref\":\"first"}),
+            serde_json::json!({"type":"response.completed","response":{"output":[tool_item("fc","call",r#"{"ref":"second"}"#)]}}),
+        ]);
+        assert!(chunks
+            .last()
+            .unwrap()
+            .as_ref()
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("arguments changed"));
+        assert!(chunks
+            .iter()
+            .filter_map(|chunk| chunk.as_ref().ok())
+            .all(|chunk| chunk
+                .choices
+                .iter()
+                .all(|choice| choice.finish_reason.is_none())));
     }
 
     #[test]
