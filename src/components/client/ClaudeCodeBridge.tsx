@@ -74,8 +74,7 @@ export function ClaudeCodeManualMcpSetup({
   return (
     <div className="space-y-3">
       <p className="text-xs text-muted-foreground">
-        Add this to <code className="bg-muted px-1 rounded">~/.claude.json</code> (or run{" "}
-        <code className="bg-muted px-1 rounded">claude mcp add-json localrouter &apos;…&apos;</code>):
+        Add this to <code className="bg-muted px-1 rounded">~/.claude.json</code>:
       </p>
       <CopyableCodeBlock value={claudeCodeStdioConfig(binaryPath, clientId, secret)} />
       <div className="space-y-1">

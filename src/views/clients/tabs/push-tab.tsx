@@ -251,6 +251,7 @@ export function ClientPushCard({ client, onUpdate, onViewChange }: ClientPushCar
         {/* Claude Channels */}
         {settings && isClaudeCode && (
           <div className="space-y-2">
+            <ClaudeCodeHttpNotice clientId={client.client_id} onSwitched={() => load()} />
             <div className="flex items-center justify-between gap-4">
               <div>
                 <p className="text-sm font-medium">Claude Channels</p>
@@ -269,7 +270,6 @@ export function ClientPushCard({ client, onUpdate, onViewChange }: ClientPushCar
             </div>
             <CopyableCode value={CLAUDE_CHANNELS_LAUNCH_COMMAND} />
             <ClaudeChannelsExplanation />
-            <ClaudeCodeHttpNotice clientId={client.client_id} onSwitched={() => load()} />
           </div>
         )}
       </CardContent>
