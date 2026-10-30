@@ -282,7 +282,11 @@ impl PassiveInterceptor {
             raw_response: None,
             error: ex.error.clone(),
             routing_info: None,
-            trace_id: ex.trace.as_ref().map(|t| t.trace_id.clone()),
+            trace_id: ex
+                .trace
+                .as_ref()
+                .filter(|_| !ex.connection_trace)
+                .map(|t| t.trace_id.clone()),
             duplicate_hop: duplicate_hop(ex),
         };
 
@@ -290,7 +294,7 @@ impl PassiveInterceptor {
             MonitorEventType::LlmCall,
             Some(ex.client_id.clone()),
             self.client_name(&ex.client_id),
-            None,
+            ex.session_id.clone(),
             data,
             EventStatus::Pending,
             None,
@@ -400,7 +404,11 @@ impl PassiveInterceptor {
             raw_response,
             error: ex.error.clone(),
             routing_info: None,
-            trace_id: ex.trace.as_ref().map(|t| t.trace_id.clone()),
+            trace_id: ex
+                .trace
+                .as_ref()
+                .filter(|_| !ex.connection_trace)
+                .map(|t| t.trace_id.clone()),
             duplicate_hop: duplicate_hop(ex),
         };
 
@@ -408,7 +416,7 @@ impl PassiveInterceptor {
             MonitorEventType::LlmCall,
             Some(ex.client_id.clone()),
             self.client_name(&ex.client_id),
-            None,
+            ex.session_id.clone(),
             data,
             status,
             ex.latency_ms,
@@ -565,6 +573,7 @@ fn passthrough_status(ex: &PassthroughExchange) -> EventStatus {
 fn observed_from_reverse(ex: &crate::reverse::ReverseExchange) -> ObservedExchange {
     ObservedExchange {
         client_id: ex.client_id.clone(),
+        session_id: None,
         event_id: ex.event_id.clone(),
         strategy_id: ex.strategy_id.clone(),
         latency_ms: ex.latency_ms,
@@ -587,6 +596,7 @@ fn observed_from_reverse(ex: &crate::reverse::ReverseExchange) -> ObservedExchan
         source: ExchangeSource::ReverseProxy,
         error: ex.error.clone(),
         trace: ex.trace.clone(),
+        connection_trace: false,
         // Local providers behind the reverse proxy have no usage limits.
         usage_account: None,
     }

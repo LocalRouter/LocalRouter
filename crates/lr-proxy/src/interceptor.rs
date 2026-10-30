@@ -75,6 +75,9 @@ impl RequestAction {
 pub struct ObservedExchange {
     /// The client this exchange belongs to.
     pub client_id: String,
+    /// Per-request identity, shared with scans and approval decisions. Each
+    /// websocket cycle gets its own ID, independently of the connection trace.
+    pub session_id: Option<String>,
     /// Monitor event id of the pending event opened at request time, so the
     /// response half updates it (pending → complete) instead of pushing a new one.
     pub event_id: Option<String>,
@@ -117,6 +120,9 @@ pub struct ObservedExchange {
     /// earlier LocalRouter hop already handled this request: it is passed
     /// through (no firewall) and not counted in metrics.
     pub trace: Option<lr_types::RequestTrace>,
+    /// Websocket handshake traces identify a connection, not an individual
+    /// request. Retain them for hop accounting, but never use them to group turns.
+    pub connection_trace: bool,
     /// Usage account the request bills to (Claude subscription, OpenAI API,
     /// …), classified from how it authenticated. Feeds the usage ledger.
     pub usage_account: Option<lr_usage::AccountRef>,

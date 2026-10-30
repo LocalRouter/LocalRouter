@@ -429,6 +429,7 @@ pub(crate) async fn apply_model_access_checks(
                 request,
                 None,
                 strategy_permission,
+                session_id,
             )
             .await
             .map_err(|e| llm_guard.capture_err(e))?;
@@ -539,6 +540,7 @@ pub(crate) async fn check_model_firewall_permission(
     request: &ChatCompletionRequest,
     mcp_via_llm_tools: Option<serde_json::Value>,
     strategy_permission: Option<lr_config::PermissionState>,
+    session_id: &str,
 ) -> ApiResult<Option<serde_json::Value>> {
     let is_mcp_via_llm = mcp_via_llm_tools.is_some();
     check_model_firewall_for(
@@ -559,6 +561,7 @@ pub(crate) async fn check_model_firewall_permission(
         },
         is_mcp_via_llm,
         strategy_permission,
+        session_id,
     )
     .await
 }
@@ -576,6 +579,7 @@ pub(crate) async fn check_model_firewall_for(
     build_request: impl FnOnce() -> serde_json::Value,
     is_mcp_via_llm: bool,
     strategy_permission: Option<lr_config::PermissionState>,
+    session_id: &str,
 ) -> ApiResult<Option<serde_json::Value>> {
     use lr_mcp::gateway::access_control;
     use lr_mcp::gateway::firewall::FirewallApprovalAction;
@@ -747,6 +751,15 @@ pub(crate) async fn check_model_firewall_for(
                     ApiErrorResponse::internal_error(format!("Firewall approval failed: {}", e))
                 })?;
 
+            super::monitor_helpers::emit_firewall_decision(
+                state,
+                client_context,
+                Some(session_id),
+                "model",
+                model,
+                &format!("{:?}", response.action),
+                None,
+            );
             let edited_arguments = response.edited_arguments;
 
             match response.action {
@@ -840,6 +853,7 @@ pub(crate) async fn run_prompt_compression(
     state: &AppState,
     client_context: Option<&ClientAuthContext>,
     request: &ChatCompletionRequest,
+    session_id: &str,
 ) -> Result<Option<lr_compression::CompressionResult>, String> {
     // Need compression engine
     let engine = state.compression_service.read().clone();
@@ -912,7 +926,7 @@ pub(crate) async fn run_prompt_compression(
         super::monitor_helpers::emit_prompt_compression(
             state,
             client_context,
-            None,
+            Some(session_id),
             result.original_tokens as u64,
             result.compressed_tokens as u64,
             reduction_pct,
@@ -993,6 +1007,7 @@ pub(crate) async fn run_systemone_state_compression(
     state: &AppState,
     client_context: Option<&ClientAuthContext>,
     request: &mut lr_providers::SystemOneRequest,
+    session_id: &str,
 ) -> Result<Option<StateCompressionStats>, String> {
     // Decisions message envelopes contain image URLs/roles: never compress these as text.
     if request.decisions.is_some() && !request.state.is_string() {
@@ -1037,7 +1052,7 @@ pub(crate) async fn run_systemone_state_compression(
         super::monitor_helpers::emit_prompt_compression(
             state,
             client_context,
-            None,
+            Some(session_id),
             stats.original_tokens,
             stats.compressed_tokens,
             reduction_pct,
@@ -1083,13 +1098,21 @@ pub(crate) async fn run_guardrails_scan(
     state: &AppState,
     client_context: Option<&ClientAuthContext>,
     request: &ChatCompletionRequest,
+    session_id: &str,
 ) -> ApiResult<Option<lr_guardrails::SafetyCheckResult>> {
     let Some(client_ctx) = client_context else {
         return Ok(None);
     };
     let body = serde_json::to_value(request).unwrap_or_default();
     let (body, _) = crate::documents::scan_projection(&body).map_err(ApiErrorResponse::from)?;
-    Ok(guardrails_scan_request(state, &client_ctx.client_id, &request.model, &body).await)
+    Ok(guardrails_scan_request(
+        state,
+        &client_ctx.client_id,
+        &request.model,
+        &body,
+        Some(session_id),
+    )
+    .await)
 }
 
 /// Request-side guardrail scan against a raw request body.
@@ -1107,6 +1130,7 @@ pub async fn guardrails_scan_request(
     client_id: &str,
     model: &str,
     request_json: &serde_json::Value,
+    session_id: Option<&str>,
 ) -> Option<lr_guardrails::SafetyCheckResult> {
     let client_ctx = ClientAuthContext {
         client_id: client_id.to_string(),
@@ -1207,7 +1231,7 @@ pub async fn guardrails_scan_request(
     super::monitor_helpers::record_guardrail_scan(
         state,
         client_context,
-        None,
+        session_id,
         "request",
         &text_preview,
         vec!["guardrails".to_string()],
@@ -1233,7 +1257,12 @@ pub(crate) async fn handle_guardrail_approval(
     request: &ChatCompletionRequest,
     result: lr_guardrails::SafetyCheckResult,
     scan_direction: &str,
+    llm_event_id: &str,
 ) -> ApiResult<()> {
+    let session_id = state
+        .monitor_store
+        .get(llm_event_id)
+        .and_then(|e| e.session_id);
     let Some(client_ctx) = client_context else {
         return Ok(());
     };
@@ -1245,6 +1274,7 @@ pub(crate) async fn handle_guardrail_approval(
         &body,
         result,
         scan_direction,
+        session_id.as_deref(),
     )
     .await
 }
@@ -1259,6 +1289,7 @@ pub async fn handle_guardrail_result(
     request_json: &serde_json::Value,
     result: lr_guardrails::SafetyCheckResult,
     scan_direction: &str,
+    session_id: Option<&str>,
 ) -> ApiResult<()> {
     use lr_mcp::gateway::firewall::{FirewallApprovalAction, GuardrailApprovalDetails};
 
@@ -1408,7 +1439,7 @@ pub async fn handle_guardrail_result(
     super::monitor_helpers::emit_firewall_decision(
         state,
         client_context,
-        None,
+        session_id,
         "guardrail",
         model,
         &action_str,
@@ -1461,12 +1492,16 @@ pub async fn scan_request_for_guardrails(
     client_id: &str,
     model: &str,
     body: &serde_json::Value,
+    session_id: Option<&str>,
 ) -> GuardrailScanOutcome {
-    let Some(result) = guardrails_scan_request(state, client_id, model, body).await else {
+    let Some(result) = guardrails_scan_request(state, client_id, model, body, session_id).await
+    else {
         return GuardrailScanOutcome::Allow;
     };
 
-    match handle_guardrail_result(state, client_id, model, body, result, "request").await {
+    match handle_guardrail_result(state, client_id, model, body, result, "request", session_id)
+        .await
+    {
         Ok(()) => GuardrailScanOutcome::Allow,
         Err(e) => GuardrailScanOutcome::Deny(e.error.error.message),
     }
@@ -1514,6 +1549,7 @@ pub(crate) async fn run_secret_scan_check(
     state: &AppState,
     client_ctx: Option<&ClientAuthContext>,
     request: &mut ChatCompletionRequest,
+    session_id: &str,
 ) -> ApiResult<()> {
     let Some(client_ctx) = client_ctx else {
         return Ok(());
@@ -1522,7 +1558,16 @@ pub(crate) async fn run_secret_scan_check(
         ApiErrorResponse::internal_error("Could not serialize request for secret scanning")
     })?;
     let (body, _) = crate::documents::scan_projection(&original).map_err(ApiErrorResponse::from)?;
-    match scan_request_for_secrets(state, &client_ctx.client_id, &request.model, &body).await {
+    match scan_request_for_secrets_with_source(
+        state,
+        &client_ctx.client_id,
+        &request.model,
+        &body,
+        None,
+        Some(session_id),
+    )
+    .await
+    {
         SecretScanOutcome::Allow => Ok(()),
         SecretScanOutcome::Redact(redaction) => {
             crate::documents::redact_text_files(&mut original, &redaction)
@@ -1561,7 +1606,7 @@ pub async fn scan_request_for_secrets(
     model: &str,
     body: &serde_json::Value,
 ) -> SecretScanOutcome {
-    scan_request_for_secrets_with_source(state, client_id, model, body, None).await
+    scan_request_for_secrets_with_source(state, client_id, model, body, None, None).await
 }
 
 /// Native proxy requests already know their provider before scanning.
@@ -1571,7 +1616,12 @@ pub async fn scan_request_for_secrets_with_source(
     model: &str,
     body: &serde_json::Value,
     source_hint: Option<&str>,
+    session_id: Option<&str>,
 ) -> SecretScanOutcome {
+    // Standalone scans still need one identity shared by the scan and all of
+    // its approval decisions. Gateway/proxy callers supply the parent request.
+    let fallback_session = uuid::Uuid::new_v4().to_string();
+    let session_id = session_id.unwrap_or(&fallback_session);
     let config = state.config_manager.get();
     let client = state.client_manager.get_client(client_id);
 
@@ -1745,7 +1795,7 @@ pub async fn scan_request_for_secrets_with_source(
     super::monitor_helpers::record_secret_scan(
         state,
         Some(&client_ctx),
-        None,
+        Some(session_id),
         &monitor_preview,
         scanner.rule_metadata().len(),
         result.findings.len(),
@@ -1774,7 +1824,7 @@ pub async fn scan_request_for_secrets_with_source(
             SecretScanOutcome::Allow
         }
         lr_config::SecretScanAction::Ask => {
-            handle_secret_scan_approval(state, &client_ctx, model, popup_details).await
+            handle_secret_scan_approval(state, &client_ctx, model, popup_details, session_id).await
         }
         lr_config::SecretScanAction::Off => SecretScanOutcome::Allow,
     };
@@ -1966,6 +2016,7 @@ pub(crate) async fn handle_secret_scan_approval(
     client_ctx: &ClientAuthContext,
     model: &str,
     details: lr_mcp::gateway::firewall::SecretScanApprovalDetails,
+    session_id: &str,
 ) -> SecretScanOutcome {
     use lr_mcp::gateway::firewall::FirewallApprovalAction;
 
@@ -2012,7 +2063,7 @@ pub(crate) async fn handle_secret_scan_approval(
         super::monitor_helpers::emit_firewall_decision(
             state,
             Some(client_ctx),
-            None,
+            Some(session_id),
             "secret_scan",
             model,
             &format!("{:?}", response.action),
@@ -2487,7 +2538,7 @@ pub(crate) async fn run_turn_pipeline(
     }
 
     // Stage 4: secret scan
-    run_secret_scan_check(state, client_auth.map(|e| &e.0), &mut chat_req)
+    run_secret_scan_check(state, client_auth.map(|e| &e.0), &mut chat_req, &session_id)
         .await
         .map_err(|e| llm_guard.capture_err(e))?;
 
@@ -2506,13 +2557,20 @@ pub(crate) async fn run_turn_pipeline(
         let state_ref = state.clone();
         let client_ctx = client_auth.map(|e| e.0.clone());
         let request_clone = chat_req.clone();
+        let scan_session = session_id.clone();
         Some(lr_types::spawn_traced(async move {
-            run_guardrails_scan(&state_ref, client_ctx.as_ref(), &request_clone).await
+            run_guardrails_scan(
+                &state_ref,
+                client_ctx.as_ref(),
+                &request_clone,
+                &scan_session,
+            )
+            .await
         }))
     } else {
         // Sequential path: await + block here if the scan denies.
         if let Some(result) =
-            run_guardrails_scan(state, client_auth.map(|e| &e.0), &chat_req).await?
+            run_guardrails_scan(state, client_auth.map(|e| &e.0), &chat_req, &session_id).await?
         {
             handle_guardrail_approval(
                 state,
@@ -2520,6 +2578,7 @@ pub(crate) async fn run_turn_pipeline(
                 &chat_req,
                 result,
                 "request",
+                llm_guard.event_id(),
             )
             .await
             .map_err(|e| llm_guard.capture_err(e))?;
@@ -2541,8 +2600,15 @@ pub(crate) async fn run_turn_pipeline(
         let state_ref = state.clone();
         let client_ctx = client_auth.map(|e| e.0.clone());
         let request_clone = chat_req.clone();
+        let compression_session = session_id.clone();
         Some(lr_types::spawn_traced(async move {
-            run_prompt_compression(&state_ref, client_ctx.as_ref(), &request_clone).await
+            run_prompt_compression(
+                &state_ref,
+                client_ctx.as_ref(),
+                &request_clone,
+                &compression_session,
+            )
+            .await
         }))
     } else {
         None

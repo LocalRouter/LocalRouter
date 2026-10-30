@@ -166,8 +166,15 @@ pub(crate) async fn handle_decision(
         let mut body = request_wire_json(&request)?;
         let model_for_scan = request.model.clone().unwrap_or_default();
 
-        match super::pipeline::scan_request_for_secrets(&state, &client_id, &model_for_scan, &body)
-            .await
+        match super::pipeline::scan_request_for_secrets_with_source(
+            &state,
+            &client_id,
+            &model_for_scan,
+            &body,
+            None,
+            Some(&session_id),
+        )
+        .await
         {
             super::pipeline::SecretScanOutcome::Allow => {}
             super::pipeline::SecretScanOutcome::Redact(redaction) => {
@@ -191,9 +198,14 @@ pub(crate) async fn handle_decision(
             }
         }
 
-        if let Some(result) =
-            super::pipeline::guardrails_scan_request(&state, &client_id, &model_for_scan, &body)
-                .await
+        if let Some(result) = super::pipeline::guardrails_scan_request(
+            &state,
+            &client_id,
+            &model_for_scan,
+            &body,
+            Some(&session_id),
+        )
+        .await
         {
             super::pipeline::handle_guardrail_result(
                 &state,
@@ -202,6 +214,7 @@ pub(crate) async fn handle_decision(
                 &body,
                 result,
                 "request",
+                Some(&session_id),
             )
             .await
             .map_err(|e| llm_guard.capture_err(e))?;
@@ -212,6 +225,7 @@ pub(crate) async fn handle_decision(
             &state,
             client_auth.as_ref().map(|c| &c.0),
             &mut request,
+            &session_id,
         )
         .await
         {
@@ -482,6 +496,7 @@ async fn apply_access_checks(
                 move || snapshot,
                 false,
                 strategy_permission,
+                session_id,
             )
             .await
             .map_err(|e| llm_guard.capture_err(e))?;

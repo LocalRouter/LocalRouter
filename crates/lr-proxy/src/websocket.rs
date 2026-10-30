@@ -295,6 +295,7 @@ enum ClientAction {
 
 /// One in-flight request/response cycle on the websocket.
 struct Cycle {
+    session_id: Option<String>,
     event_id: Option<String>,
     request_body: Vec<u8>,
     /// Server messages, re-shaped as an SSE stream (`data: {...}\n\n`) so the
@@ -318,8 +319,9 @@ impl WsSession {
     pub fn new(
         interceptor: Arc<dyn ProxyInterceptor>,
         format: WireFormat,
-        base: ObservedExchange,
+        mut base: ObservedExchange,
     ) -> Self {
+        base.connection_trace = true;
         Self {
             interceptor,
             format,
@@ -339,21 +341,22 @@ impl WsSession {
     /// cycle for it when it is allowed through.
     async fn on_client_message(&self, payload: &[u8]) -> ClientAction {
         let mut ex = self.base.clone();
+        ex.session_id = Some(uuid::Uuid::new_v4().to_string());
         ex.request_body = Some(payload.to_vec());
         match self.interceptor.on_request(&ex).await {
             RequestAction::Forward => {
-                self.begin_cycle(payload.to_vec()).await;
+                self.begin_cycle(ex).await;
                 ClientAction::Forward
             }
             RequestAction::Replace(body) => {
-                self.begin_cycle(body.clone()).await;
+                ex.request_body = Some(body.clone());
+                self.begin_cycle(ex).await;
                 ClientAction::Replace(body)
             }
             RequestAction::Reject { status, body, .. } => {
                 let reply = reject_event(status, &body);
                 // Record the blocked call in one push, like the HTTP path.
-                let mut blocked = self.base.clone();
-                blocked.request_body = Some(payload.to_vec());
+                let mut blocked = ex;
                 blocked.status = Some(status);
                 blocked.response_body = Some(reply.clone().into_bytes());
                 blocked.latency_ms = Some(0);
@@ -365,12 +368,12 @@ impl WsSession {
 
     /// Open a Pending monitor event for a new cycle (closing out any cycle the
     /// server never terminated).
-    async fn begin_cycle(&self, request_body: Vec<u8>) {
+    async fn begin_cycle(&self, ex: ObservedExchange) {
         self.finish_cycle(None).await;
-        let mut ex = self.base.clone();
-        ex.request_body = Some(request_body.clone());
+        let request_body = ex.request_body.clone().unwrap_or_default();
         let event_id = self.interceptor.begin(&ex);
         *self.cycle.lock() = Some(Cycle {
+            session_id: ex.session_id,
             event_id,
             request_body,
             capture: String::new(),
@@ -431,6 +434,7 @@ impl WsSession {
             return;
         };
         let mut ex = self.base.clone();
+        ex.session_id = cycle.session_id;
         ex.event_id = cycle.event_id;
         ex.request_body = Some(cycle.request_body);
         ex.status = status;
@@ -743,6 +747,36 @@ mod tests {
             .find(|a| a.id == "openai:subscription")
             .unwrap();
         assert!(first.windows.is_empty());
+    }
+
+    #[tokio::test]
+    async fn each_websocket_cycle_has_a_distinct_request_id() {
+        let store = Arc::new(MonitorEventStore::new(16));
+        let mut base = base_exchange();
+        base.trace = Some(lr_types::RequestTrace::parse("connection;hop=1").unwrap());
+        let session = WsSession::new(
+            Arc::new(PassiveInterceptor::new(store.clone())),
+            WireFormat::OpenAiResponses,
+            base,
+        );
+        for _ in 0..2 {
+            session
+                .on_client_message(response_create().as_bytes())
+                .await;
+            let pending = store.list(0, 1, None).events.remove(0);
+            assert!(pending.session_id.is_some());
+            session.on_server_message(&completed_event()).await;
+            let completed = store.list(0, 1, None).events.remove(0);
+            assert_eq!(completed.session_id, pending.session_id);
+        }
+        let events = store.list(0, 10, None).events;
+        assert_eq!(events.len(), 2);
+        assert_ne!(events[0].session_id, events[1].session_id);
+        assert!(events.iter().all(|e| e.trace_id.is_none()));
+        assert_ne!(
+            events[0].conversation.as_ref().unwrap().id,
+            events[1].conversation.as_ref().unwrap().id
+        );
     }
 
     #[tokio::test]

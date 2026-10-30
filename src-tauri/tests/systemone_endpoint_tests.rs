@@ -2509,6 +2509,25 @@ async fn exact_cache_requires_fresh_approval_when_a_temporary_grant_expires() {
         )
         .unwrap();
     assert_eq!(request.await.unwrap().status(), 403);
+    let events = state.monitor_store.list(0, 20, None).events;
+    let decision = events
+        .iter()
+        .find(|e| e.event_type == lr_monitor::MonitorEventType::FirewallDecision)
+        .expect("model denial is captured");
+    assert!(decision.session_id.is_some());
+    let call = events
+        .iter()
+        .find(|e| {
+            e.event_type == lr_monitor::MonitorEventType::LlmCall
+                && e.session_id == decision.session_id
+        })
+        .expect("decision belongs to the denied request");
+    assert_eq!(call.status, lr_monitor::EventStatus::Error);
+    assert_eq!(
+        call.conversation.as_ref().unwrap().id,
+        decision.conversation.as_ref().unwrap().id
+    );
+
     state.model_approval_tracker.add_approval(
         "test-api-key",
         "cached",

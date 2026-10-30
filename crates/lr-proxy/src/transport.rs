@@ -383,6 +383,7 @@ async fn proxy_request(
     // Base exchange (request half); response fields filled at stream end.
     let mut base = ObservedExchange {
         client_id: (*client_id).clone(),
+        session_id: Some(uuid::Uuid::new_v4().to_string()),
         strategy_id: (*strategy_id).clone(),
         host: (*host).clone(),
         port,

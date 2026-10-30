@@ -194,6 +194,76 @@ async fn secret_scan_with_findings_records_one_event() {
     }
 }
 
+#[tokio::test]
+async fn secret_scans_inherit_parent_request_conversation_without_joining_other_requests() {
+    use axum::Extension;
+    use localrouter::server::middleware::client_auth::ClientAuthContext;
+    use localrouter::server::routes::{
+        monitor_helpers, pipeline::scan_request_for_secrets_with_source,
+    };
+    let state = secret_scan_state().await;
+    let client = Extension(ClientAuthContext {
+        client_id: "client".into(),
+    });
+    let body = chat_body(&format!("Inspect token {REDACTION_SECRET}"));
+    let parent = monitor_helpers::emit_llm_call(
+        &state,
+        Some(&client),
+        Some("parent-request"),
+        "/v1/chat/completions",
+        "gpt-5.5",
+        false,
+        &body,
+    );
+    let conversation = state
+        .monitor_store
+        .get(parent.event_id())
+        .unwrap()
+        .conversation
+        .unwrap();
+    for session in ["parent-request", "other-request"] {
+        scan_request_for_secrets_with_source(
+            &state,
+            "client",
+            "gpt-5.5",
+            &body,
+            None,
+            Some(session),
+        )
+        .await;
+    }
+    let events = state.monitor_store.list(0, 10, None).events;
+    let scan = events
+        .iter()
+        .find(|e| {
+            e.event_type == MonitorEventType::SecretScan
+                && e.session_id.as_deref() == Some("parent-request")
+        })
+        .unwrap();
+    assert_eq!(scan.conversation.as_ref().unwrap().id, conversation.id);
+    let other = events
+        .iter()
+        .find(|e| e.session_id.as_deref() == Some("other-request"))
+        .unwrap();
+    assert!(other.conversation.is_none());
+    state.monitor_store.set_payload_policy(|_| true);
+    scan_request_for_secrets_with_source(
+        &state,
+        "client",
+        "gpt-5.5",
+        &body,
+        None,
+        Some("parent-request"),
+    )
+    .await;
+    let redacted = state.monitor_store.list(0, 1, None).events.remove(0);
+    assert!(redacted.payload_redacted);
+    assert!(redacted.session_id.is_none());
+    assert!(redacted.conversation.is_none());
+    assert_eq!(redacted.question, "[payload not retained]");
+    assert_eq!(redacted.answer, "[payload not retained]");
+}
+
 const REDACTION_SECRET: &str = "ghp_q8Zr2LmX7vKp4NwT9sYb3HdJ6fGc1eRa0uVi";
 
 fn remember_redaction(state: &AppState) {
@@ -463,6 +533,19 @@ async fn secrets_are_approved_one_at_a_time_and_denial_stops_the_sequence() {
         assert!(
             state.mcp_gateway.firewall_manager.list_pending().is_empty(),
             "a blocked request must not leave later popups behind"
+        );
+        let events = state.monitor_store.list(0, 20, None).events;
+        assert_eq!(events.len(), actions.len() + 1);
+        let session = events[0].session_id.as_ref().expect("scan request ID");
+        assert!(events
+            .iter()
+            .all(|e| e.session_id.as_ref() == Some(session)));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e.event_type == MonitorEventType::FirewallDecision)
+                .count(),
+            actions.len()
         );
     }
 }

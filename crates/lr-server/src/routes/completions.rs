@@ -193,6 +193,7 @@ pub async fn completions(
                         .map_err(|e| llm_guard.capture_err(e))?,
                     check_result,
                     "request",
+                    llm_guard.event_id(),
                 )
                 .await
                 .map_err(|e| llm_guard.capture_err(e))?;

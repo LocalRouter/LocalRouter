@@ -55,10 +55,22 @@ fn marker(value: &Value, max_bytes: usize) -> Value {
     let serialized = serde_json::to_string(value).unwrap_or_default();
     // Extract content before metadata/tool schemas consume the raw prefix. These
     // excerpts share the existing capture budget rather than increasing it.
-    let preview = serde_json::json!({
+    let mut preview = serde_json::json!({
         "question": crate::preview::request(value),
         "answer": crate::preview::response(value),
     });
+    while serialized_len(&preview) > max_bytes / 2 {
+        let mut shortened = false;
+        for key in ["question", "answer"] {
+            if let Some(text) = preview[key].as_str().filter(|s| !s.is_empty()) {
+                preview[key] = Value::String(text.chars().take(text.chars().count() / 2).collect());
+                shortened = true;
+            }
+        }
+        if !shortened {
+            break;
+        }
+    }
     let preview_size = serialized_len(&preview);
     let keep_preview = preview_size <= max_bytes / 2;
     let prefix_budget = if keep_preview {
@@ -136,6 +148,20 @@ mod tests {
         let out = truncate_json(&value, 4_096);
         assert!(crate::size::json_size(&out) < crate::size::json_size(&value) / 100);
     }
+    #[test]
+    fn unicode_excerpts_shrink_instead_of_disappearing() {
+        let body = serde_json::json!({"prompt":"界".repeat(10_000), "text":"🦀".repeat(10_000)});
+        for cap in [1000, 10_000] {
+            let out = truncate_json(&body, cap);
+            assert!(!crate::preview::request(&out).is_empty());
+            assert!(!crate::preview::response(&out).is_empty());
+            assert!(
+                out["_preview"].as_str().unwrap().len() + serialized_len(&out["_monitor_preview"])
+                    <= cap
+            );
+        }
+    }
+
     #[test]
     fn excerpts_survive_large_metadata_before_user_input_and_output() {
         let request = serde_json::json!({

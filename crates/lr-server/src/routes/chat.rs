@@ -268,6 +268,7 @@ pub(crate) async fn chat_completions_with_endpoint(
                 &request,
                 check_result,
                 "request",
+                llm_guard.event_id(),
             )
             .await
             .map_err(|e| llm_guard.capture_err(e))?;
@@ -364,6 +365,7 @@ async fn handle_mcp_via_llm(
             let state = state.clone();
             let client_auth = client_auth.clone();
             let request = request.clone();
+            let llm_event_id = llm_event_id.clone();
             lr_types::spawn_traced(async move {
                 let result = handle
                     .await
@@ -376,6 +378,7 @@ async fn handle_mcp_via_llm(
                         &request,
                         check_result,
                         "request",
+                        &llm_event_id,
                     )
                     .await
                     .map_err(|e| format!("{:?}", e))?;
@@ -396,6 +399,7 @@ async fn handle_mcp_via_llm(
                     &request,
                     check_result,
                     "request",
+                    &llm_event_id,
                 )
                 .await?;
             }
@@ -448,6 +452,7 @@ async fn handle_mcp_via_llm(
             &request,
             mcp_tools_json,
             mcp_strategy_permission,
+            &session_id,
         )
         .await?;
 
@@ -950,6 +955,7 @@ pub(crate) async fn handle_non_streaming(
                 &request,
                 check_result,
                 "request",
+                &llm_event_id,
             )
             .await?;
         }
@@ -1688,6 +1694,7 @@ async fn handle_streaming_parallel(
         let state = state.clone();
         let client_auth = client_auth.clone();
         let request = request.clone();
+        let llm_event_id = llm_event_id.clone();
         lr_types::spawn_traced(async move {
             let result = handle.await;
             match result {
@@ -1703,6 +1710,7 @@ async fn handle_streaming_parallel(
                         &request,
                         check_result,
                         "request",
+                        &llm_event_id,
                     )
                     .await
                     {

@@ -43,30 +43,69 @@ pub(crate) fn content(value: &Value) -> String {
                 .join(" "),
         ),
         Value::Object(_) => {
+            // Check the block kind before generic text/content fields: reasoning
+            // and signed thinking must never become a table preview.
+            match value.get("type").and_then(Value::as_str) {
+                Some("thinking" | "redacted_thinking" | "reasoning") => return String::new(),
+                Some("function_call_output" | "custom_tool_call_output") => {
+                    return format!(
+                        "[tool result] {}",
+                        value.get("output").map(content).unwrap_or_default()
+                    );
+                }
+                Some("tool_result") => {
+                    return format!(
+                        "[tool result] {}",
+                        value.get("content").map(content).unwrap_or_default()
+                    );
+                }
+                Some("tool_use" | "function_call" | "custom_tool_call") => {
+                    return tool_call(value);
+                }
+                Some("image" | "image_url" | "input_image") => return "[image]".into(),
+                Some("input_audio" | "audio") => return "[audio]".into(),
+                Some("document" | "file" | "input_file") => return "[document]".into(),
+                _ => {}
+            }
             if let Some(text) = value.get("text").and_then(Value::as_str) {
                 return single_line(text);
             }
             if let Some(body) = value.get("content") {
-                return content(body);
+                let text = content(body);
+                if !text.is_empty() {
+                    return text;
+                }
             }
-            match value.get("type").and_then(Value::as_str) {
-                Some("image" | "image_url" | "input_image") => "[image]".into(),
-                Some("input_audio" | "audio") => "[audio]".into(),
-                Some("tool_use" | "function_call") => format!(
-                    "{}({})",
-                    value["name"].as_str().unwrap_or("tool"),
-                    value
-                        .get("input")
-                        .or_else(|| value.get("arguments"))
-                        .map(display_value)
-                        .unwrap_or_default()
-                ),
-                Some("thinking" | "redacted_thinking" | "reasoning") => String::new(),
-                _ => String::new(),
+            if let Some(calls) = value.get("tool_calls").and_then(Value::as_array) {
+                return single_line(
+                    &calls
+                        .iter()
+                        .take(16)
+                        .map(|call| tool_call(call.get("function").unwrap_or(call)))
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                );
             }
+            value
+                .get("refusal")
+                .and_then(Value::as_str)
+                .map(single_line)
+                .unwrap_or_default()
         }
         _ => String::new(),
     }
+}
+
+fn tool_call(value: &Value) -> String {
+    single_line(&format!(
+        "{}({})",
+        value["name"].as_str().unwrap_or("tool"),
+        value
+            .get("input")
+            .or_else(|| value.get("arguments"))
+            .map(display_value)
+            .unwrap_or_default()
+    ))
 }
 
 fn display_value(value: &Value) -> String {
@@ -99,6 +138,22 @@ pub(crate) fn request(body: &Value) -> String {
     {
         if let Some(message) = messages.iter().rev().find(|m| m["role"] == "user") {
             return content(message);
+        }
+        // Incremental tool turns may omit the original user message. Show
+        // the actual tool input without relabelling a system/assistant prompt.
+        if let Some(message) = messages.iter().rev().find(|m| {
+            m["role"] == "tool"
+                || matches!(
+                    m["type"].as_str(),
+                    Some("function_call_output" | "custom_tool_call_output")
+                )
+        }) {
+            let text = content(message);
+            return if message["role"] == "tool" {
+                format!("[tool result] {text}")
+            } else {
+                text
+            };
         }
         // Never show a system prompt as the user's question.
         if body.get("messages").is_some() || messages.iter().any(|m| m.get("role").is_some()) {
@@ -139,24 +194,9 @@ pub(crate) fn response(body: &Value) -> String {
         .and_then(Value::as_array)
         .and_then(|c| c.first())
     {
-        let text = content(&choice["message"]["content"]);
+        let text = content(&choice["message"]);
         if !text.is_empty() {
             return text;
-        }
-        if let Some(calls) = choice["message"]["tool_calls"].as_array() {
-            return single_line(
-                &calls
-                    .iter()
-                    .map(|call| {
-                        format!(
-                            "{}({})",
-                            call["function"]["name"].as_str().unwrap_or("tool"),
-                            display_value(&call["function"]["arguments"])
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("; "),
-            );
         }
         return content(&choice["text"]);
     }
@@ -408,6 +448,66 @@ mod tests {
                 &json!({"choices":[{"message":{"tool_calls":[{"function":{"name":"read_file","arguments":"{}"}}]}}]})
             ),
             "read_file({})"
+        );
+    }
+
+    #[test]
+    fn incremental_tool_turns_and_custom_tools_have_previews() {
+        for kind in ["function_call_output", "custom_tool_call_output"] {
+            assert_eq!(
+                request(
+                    &json!({"input":[{"type":kind,"call_id":"call-1","output":"File contents"}]})
+                ),
+                "[tool result] File contents"
+            );
+        }
+        assert_eq!(
+            request(&json!({"messages":[{"role":"tool","content":"Command succeeded"}]})),
+            "[tool result] Command succeeded"
+        );
+        assert_eq!(
+            request(
+                &json!({"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"call-1","content":[{"type":"text","text":"File contents"}]}]}]})
+            ),
+            "[tool result] File contents"
+        );
+        assert_eq!(
+            response(
+                &json!({"output":[{"type":"custom_tool_call","name":"apply_patch","input":"patch text"}]})
+            ),
+            "apply_patch(patch text)"
+        );
+        assert_eq!(
+            response(
+                &json!({"choices":[{"message":{"content":null,"tool_calls":[{"function":{"name":"read_file","arguments":"{}"}}]}}]})
+            ),
+            "read_file({})"
+        );
+    }
+
+    #[test]
+    fn refusals_and_documents_are_described_without_reasoning_or_binary_data() {
+        assert_eq!(
+            response(&json!({"choices":[{"message":{"content":null,"refusal":"Cannot comply"}}]})),
+            "Cannot comply"
+        );
+        assert_eq!(
+            request(
+                &json!({"input":[{"role":"user","content":[{"type":"input_file","file_data":"data:secret"}]}]})
+            ),
+            "[document]"
+        );
+        for kind in ["thinking", "redacted_thinking", "reasoning"] {
+            assert_eq!(
+                content(&json!({"type":kind,"text":"private","content":"private"})),
+                ""
+            );
+        }
+        assert_eq!(
+            request(
+                &json!({"messages":[{"role":"system","content":"instructions"},{"role":"assistant","content":"Earlier answer"}]})
+            ),
+            ""
         );
     }
 

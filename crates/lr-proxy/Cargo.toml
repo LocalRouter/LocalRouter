@@ -24,6 +24,7 @@ chrono = { workspace = true }
 async-trait = { workspace = true }
 base64 = { workspace = true }
 tokio = { workspace = true }
+uuid = { workspace = true }
 
 # TLS / certificates — pin the ring provider (already a workspace dep) so the
 # proxy's crypto backend is deterministic regardless of workspace feature unions.

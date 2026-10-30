@@ -205,6 +205,7 @@ impl lr_proxy::active::Firewall for AppFirewall {
             req.model.as_deref().unwrap_or_default(),
             &body,
             Some(&req.provider),
+            req.session_id.as_deref(),
         )
         .await
         {
@@ -231,6 +232,7 @@ impl lr_proxy::active::Firewall for AppFirewall {
                 &req.client_id,
                 req.model.as_deref().unwrap_or_default(),
                 &body,
+                req.session_id.as_deref(),
             )
             .await
         {
@@ -271,6 +273,19 @@ impl lr_proxy::active::Firewall for AppFirewall {
                 )
                 .await;
 
+            if let Ok(response) = &resp {
+                lr_server::routes::monitor_helpers::emit_firewall_decision(
+                    &self.state,
+                    Some(&lr_server::middleware::client_auth::ClientAuthContext {
+                        client_id: req.client_id.clone(),
+                    }),
+                    req.session_id.as_deref(),
+                    "model",
+                    req.model.as_deref().unwrap_or_default(),
+                    &format!("{:?}", response.action),
+                    None,
+                );
+            }
             match resp {
                 Ok(r) => match r.action {
                     A::AllowOnce
