@@ -12,6 +12,17 @@ LocalRouter's own polling tools as a fallback.
 It is enabled by default, with Block / Ask / Allow at the global, per-client, per-server and
 per-event-type levels.
 
+LocalRouter is a **proxy with control over every event**, never a passthrough: every occurrence
+flows through LocalRouter, where it can be seen in Monitor, held for approval, edited or dropped.
+Two consequences are deliberate scope decisions:
+
+- **Upstream webhooks are not consumed at all.** An upstream offering webhooks is assumed to offer
+  push or poll as well (VocalCord offers all three); LocalRouter uses those. A webhook-only
+  upstream is treated as having no push and is shown as such in the UI. No inbound webhook
+  listener, tunnel or hosted relay is built.
+- **Clients may subscribe by webhook**, and LocalRouter itself POSTs to the client's endpoint —
+  outbound only, after the event has passed LocalRouter's controls.
+
 Prior art this plan builds on:
 
 - `/tmp/localrouter-mcp-capability-audit.md` (gateway gaps at `256d349e`), summarised under
@@ -33,7 +44,7 @@ Prior art this plan builds on:
 | Methods: `events/list`; poll `events/poll`; push `events/stream` (`notifications/events/{active,event,heartbeat,error,terminated}`, tagged with `_meta["io.modelcontextprotocol/subscriptionId"]`); webhook `events/subscribe` / `events/unsubscribe` (HTTPS callback, `whsec_` secret, Standard Webhooks signatures, verification challenge, TTL lease). | SEP-3415; VocalCord README |
 | Claude Code Channels: server declares `experimental["claude/channel"] = {}` and sends `notifications/claude/channel {content: string, meta?: Record<string,string>}`; the model sees `<channel source="…" k="v">content</channel>`. No acknowledgement; silently dropped if the session did not opt in. Optional permission relay via `experimental["claude/channel/permission"]`. | code.claude.com/docs/en/channels-reference |
 | Channels are **stdio only**, research preview, opt-in at launch: `claude --dangerously-load-development-channels server:<name>` (interactive only; ignored with `-p` / Agent SDK); `--channels` accepts only Anthropic's allowlist or an org's `allowedChannelPlugins`; org switch `channelsEnabled`. | code.claude.com/docs/en/channels |
-| On Claude Code's v2 runtime, **a channel server that negotiates 2026-07-28 is not registered as a channel.** Claude Code asks stdio servers for 2026-07-28 by default; `MCP_PROTOCOL_NEGOTIATION=legacy` forces the old handshake session-wide. | code.claude.com/docs/en/mcp; anthropics/claude-code#102736 |
+| On Claude Code's v2 MCP runtime, a channel server that connects on 2026-07-28 is not registered as a channel ("that revision can't carry channel messages"). Claude Code probes stdio servers for 2026-07-28; **a server that does not support that revision connects on the earlier handshake and registers as a channel as before.** | code.claude.com/docs/en/mcp ("MCP client runtimes", "Push messages with channels") |
 | 2026-07-28 replaced the HTTP GET stream and `resources/subscribe` with `subscriptions/listen` (SEP-2575), and moved Tasks to an extension. | 2026-07-28 changelog |
 
 ## Client support matrix
@@ -69,10 +80,10 @@ forum posts, not source. Re-check at implementation time.
 upstream MCP servers                 LocalRouter                         clients
   Events push (events/stream) ─┐                                      ┌─ Events push (events/stream)
   Events poll (events/poll)  ──┤    ┌──────────────────────────┐      ├─ Events poll (events/poll)
-  Events webhook (subscribe) ──┼──► │ Event store              │ ──►  ├─ Events webhook (LR signs and POSTs)
-  Claude Channels (stdio)    ──┤    │  normalise, journal,     │      ├─ Claude Channels (STDIO bridge only)
-  resources/updated (classic)──┘    │  cursors, permissions,   │      ├─ fallback tools (long-poll, watcher)
-                                    │  Ask queue, Monitor,     │      └─ resources/updated hint (optional)
+  Claude Channels (stdio)    ──┼──► │ Event store              │ ──►  ├─ Events webhook (LR signs and POSTs)
+  resources/updated (classic)──┘    │  normalise, journal,     │      ├─ Claude Channels (STDIO bridge only)
+                                    │  cursors, permissions,   │      ├─ fallback tools (long-poll, watcher)
+  (upstream webhooks: not used)     │  Ask queue, Monitor,     │      └─ resources/updated hint (optional)
                                     │  intercept / edit        │
                                     └──────────────────────────┘
 ```
@@ -85,8 +96,7 @@ upstream MCP servers                 LocalRouter                         clients
   scope (event name + canonical filter arguments). They map back to the owning server and its own
   cursor (the audit's item 4). A cursor from a previous LocalRouter process resets to "now" with
   `truncated: true`.
-- **Journal**: in memory and bounded per client (initial values to validate: 1024 occurrences or
-  4 MiB, first limit wins). No persistence in v1.
+- **Journal**: in memory and bounded per client (see "Limits"). No persistence in v1.
 - **Demand-driven upstream subscriptions**: LocalRouter opens an upstream subscription only while
   at least one client consumes that event type, reference-counted per (upstream credential,
   server, event, arguments), and closes it when the last consumer goes. Claude Channels sessions
@@ -104,13 +114,15 @@ upstream MCP servers                 LocalRouter                         clients
 | --- | --- | --- | --- | --- |
 | U1 | Events push, `events/stream` | stdio; HTTP (POST with SSE response) | Holds the stream; resumes from the last cursor on reconnect; heartbeat watchdog | 1 |
 | U2 | Events poll, `events/poll` | stdio; HTTP | Polls at the server's `nextPollMs` (floor 1 s), drains immediately while `hasMore`, only while a consumer exists | 1 |
-| U3 | Events webhook, `events/subscribe` | HTTP | Needs a public HTTPS callback — see "Webhooks" | 2 |
 | U4 | Claude Channels, `notifications/claude/channel` | stdio | Synthetic event type `<server>__channel.message`, payload `{content, meta}` | 1 |
 | U5 | Classic `notifications/resources/updated` | either | Optional synthetic `<server>__resource.updated {uri}` | 2 |
 
-Ingress preference when an upstream offers several modes: **push → poll → webhook**.
-LocalRouter is a long-running local process, so holding a stream is cheapest and lowest-latency;
-webhooks are the hardest for it to receive.
+Ingress preference when an upstream offers several modes: **push → poll**. LocalRouter is a
+long-running local process, so holding a stream is cheapest and lowest-latency. Upstream
+**webhook** delivery (`events/subscribe` on the upstream) is never used: it would need an inbound
+public HTTPS listener, and every webhook-capable upstream found offers push or poll too. A
+webhook-only event type is left out of the catalogue and shown in the UI as "webhook-only — not
+supported".
 
 ### Egress — what LocalRouter delivers to clients
 
@@ -143,22 +155,55 @@ For each client session, push is exposed only if **at least one upstream server*
 that client under its existing MCP permissions, is not Blocked for push, and offers at least one
 of:
 
-- Events push or poll;
+- Events push or poll on at least one event type (webhook-only event types do not count);
 - Claude Channels (`experimental["claude/channel"]`);
-- Events webhook, but only where LocalRouter can actually serve it — a webhook tunnel is
-  configured, or the client itself subscribes by webhook and passthrough is enabled (see
-  "Webhooks");
 - `resources/updated`, if U5 is enabled.
 
 If nothing qualifies, LocalRouter exposes nothing: no events capability, no channel capability,
 no `<events>` instructions block, no fallback tools. The client sees today's behaviour.
 
-**Timing.** The gateway answers the first discovery request before upstream servers have started
-(audit: "initial stateless discovery advertises static capabilities"). Gate on a **persisted
-per-server capability snapshot**: record each upstream's last-seen capabilities in config every
-time it initialises, and evaluate the gate against the snapshot. Discovery can then answer
-immediately, including for servers started on demand. The first-ever connection to a new server
-has no snapshot and is treated as "no push" until it initialises.
+### Remembered upstream capabilities
+
+The gateway answers the first discovery request before upstream servers have started (audit:
+"initial stateless discovery advertises static capabilities"), so it cannot ask the upstreams in
+time. Instead **each upstream's capabilities are remembered in the config**, on that server's own
+entry, and the gate is evaluated against what was remembered.
+
+**What is stored**, as `capability_snapshot: Option<UpstreamCapabilitySnapshot>` on the MCP server
+config entry:
+
+| Field | Purpose |
+| --- | --- |
+| `fingerprint` | Hash of what defines the server's identity: transport, command + args (stdio), URL (HTTP), and the auth method. Env values and secrets are excluded from the hash input. A changed fingerprint invalidates the snapshot. |
+| `protocol_version` | Version the upstream negotiated |
+| `capabilities` | The raw capabilities JSON, including `experimental`, `extensions` and unknown top-level fields such as `events` |
+| `push` | Derived summary: `events_modes` (push/poll per event type), `channels: bool`, `resource_subscribe: bool` |
+| `event_catalogue` | The upstream's `events/list` result (names, descriptions, schemas, delivery modes) |
+| `observed_at` | When it was last confirmed |
+
+`event_catalogue` doubles as the source for the per-event-type permission tree in the UI, so event
+types can be configured before the server is ever started in a session.
+
+**When it is written.** After every successful upstream initialisation (and after `events/list`
+or `notifications/events/list_changed`), the gateway compares the fresh result with the stored
+snapshot and saves the config **only if something changed**, debounced (5 s) so a burst of
+reconnects writes once. Derived data is serialised with `skip_serializing_if = "Option::is_none"`,
+excluded from config export/sync and from the config-subscription diff that drives UI reloads, so
+remembering capabilities never looks like a user edit.
+
+**First-ever connection: wait.** When a server visible to the client has **no snapshot, or a
+snapshot whose fingerprint no longer matches**, `initialize` / `server/discover` waits for that
+server to initialise before answering — bounded by `first_discovery_wait` (default 10 s). Servers
+that are disabled, or that the client cannot see, are never waited on. If the wait times out, the
+server counts as "no push" for this session; once it does initialise, the snapshot is written,
+fallback tools and the catalogue appear through `list_changed`, and capabilities fixed at
+`initialize` take effect next session. The wait happens once per server (per configuration
+change), not per session.
+
+**Stale snapshots.** If a remembered server no longer offers push, the session may advertise push
+it cannot deliver. When the server initialises, the snapshot is corrected; `events/list` drops its
+event types and fallback tools are withdrawn through `list_changed`. A remembered `claude/channel`
+capability that disappeared only means channel messages never arrive for that session — harmless.
 
 **Changes mid-session.** Fallback tools and the event catalogue update live through
 `notifications/tools/list_changed` and `notifications/events/list_changed`. Capabilities fixed at
@@ -179,7 +224,7 @@ can deliver **on that transport** (what LocalRouter can do, not what the upstrea
 
 `events/list` returns every permitted event type. Each descriptor's `delivery` lists the modes
 **this client** can use: `poll` always; `push` when the transport can stream; `webhook` when
-webhook egress (D3) or passthrough applies. Descriptors carry the upstream's `inputSchema` and
+webhook egress (D3) is enabled. Descriptors carry the upstream's `inputSchema` and
 `payloadSchema` unchanged, and a description prefixed with the source server.
 
 **The client chooses by calling the method** — `events/stream`, `events/poll` or
@@ -272,12 +317,12 @@ MCP ingress.
 - **Ordering**: events of one subscription stay FIFO — later events of the same event type queue
   behind a held one, so a client never sees event N+1 before an approved event N. Other event
   types are not blocked.
-- **Timeout**: an unanswered held event is **denied** (fail closed) after a configurable timeout
-  (initial value to validate: 10 minutes), recorded as `timeout` in Monitor.
+- **Timeout**: an unanswered held event is **denied** (fail closed) after `ask_timeout`
+  (default 30 minutes), recorded as `timeout` in Monitor.
 - **Volume**: approvals for one client are collected into **one queue window** with a count and
-  "allow all pending of this type", rather than one popup per event. A per-client hold cap
-  (initial value: 100 events) denies further Ask events with a Monitor record once full, instead
-  of growing without bound.
+  "allow all pending of this type", rather than one popup per event. Once a client has
+  `ask_hold_cap` events waiting (default 1,000), further Ask events are denied with a Monitor
+  record instead of growing without bound.
 - **Per client, not per upstream**: two clients consuming the same upstream event are approved
   independently; the upstream subscription is shared.
 
@@ -296,78 +341,37 @@ MCP ingress.
 - Secret scanning and guardrails can be applied to event payloads in a later phase; v1 only routes
   them through Monitor's existing redaction.
 
-## Webhooks
+## Webhooks: clients only, LocalRouter sends
 
-Webhooks have two directions, and only one needs LocalRouter to receive anything.
+LocalRouter never receives webhooks (see the scope decisions at the top). It does accept webhook
+subscriptions **from clients** and delivers to them itself.
 
-### A client wants webhooks (D3): LocalRouter sends them
+The client calls `events/subscribe` on LocalRouter with its callback URL and secret. LocalRouter
+obtains the events from the upstream however the upstream offers them (push, poll or channel), runs
+them through permissions, Ask, Monitor and any edit, and then makes the signed outbound POST.
 
-The client calls `events/subscribe` on LocalRouter with its URL and secret. LocalRouter obtains
-the events from the upstream however the upstream offers them (push, poll or channel) and makes
-the signed outbound POSTs itself — sending is easy from a local process; only receiving is hard.
-
-- Standard Webhooks headers (`webhook-id`, `webhook-timestamp`, `webhook-signature: v1,…`),
-  `X-MCP-Subscription-Id`, verification challenge before first delivery, TTL lease refreshed by
-  re-subscribing, retries with backoff, `webhook-id` equal to `event_id` (what ChatGPT, Vercel and
-  TanStack expect).
-- Callback URLs: HTTPS required; no credentials or fragments; redirects disabled.
-- **The first delivery to a new callback URL always asks**, because data leaves the machine.
-- This keeps naming, per-event Ask, intercept/edit and Monitor intact, and works for upstreams
-  with no webhook support at all. Its cost is that delivery stops while LocalRouter is not running
-  (laptop asleep).
-
-### Passthrough (forward the client's subscription upstream)
-
-When the upstream natively supports webhooks, LocalRouter could forward `events/subscribe`
-upstream with the client's own URL and secret, rewriting only the event name. The upstream then
-POSTs straight to the client, which survives LocalRouter being asleep or closed.
-
-**Passthrough is incompatible with per-event Ask, intercept, edit and Monitor visibility**, because
-deliveries never pass through LocalRouter. It is therefore:
-
-- **off by default**, enabled per client as "Direct webhooks (bypasses Ask and Monitor)";
-- refused for any event type whose effective permission is Ask — those always use D3;
-- the only way to serve a **webhook-only upstream** without a tunnel.
-
-Further caveats: deliveries arrive with the upstream's unqualified event name and its own
-subscription id (fine for clients that correlate by subscription id / `webhook-id`; verify per
-client). LocalRouter still records the subscription, so switching it to Block calls
-`events/unsubscribe` upstream.
-
-### LocalRouter receiving webhooks from an upstream (U3)
-
-LocalRouter binds 127.0.0.1; SEP-3415 requires an HTTPS callback, and servers such as VocalCord
-reject private addresses (SSRF protection). Options, in order of preference:
-
-1. **Avoid it.** Nearly every upstream offering webhooks also offers poll or push (VocalCord
-   offers all three); ingress prefers push → poll → webhook. The genuinely webhook-only servers
-   are ones built for ChatGPT's webhook-only profile.
-2. **Local upstreams**: callback `http://127.0.0.1:<port>/events/webhook/<id>`, for servers that
-   accept loopback callbacks. Niche.
-3. **User-configured tunnel (phase 2)**: a **separate listener serving only
-   `/events/webhook/*`** — never the gateway — published through **Tailscale Funnel** (free,
-   stable `https://<machine>.<tailnet>.ts.net`; best fit), **Cloudflare Tunnel** (quick tunnels
-   change URL each run and force a resubscribe; named tunnels need a domain) or **ngrok** (one
-   free static domain). LocalRouter generates the `whsec_` secret itself as the subscriber,
-   verifies signature and timestamp on every POST, drops anything unsigned, answers the
-   verification challenge, refreshes leases, and resubscribes when the public URL changes.
-   Off by default.
-4. **Hosted LocalRouter relay**: a cloud endpoint receives webhooks and LocalRouter holds one
-   outbound WebSocket to it (VocalCord's sidecar shape). Best experience — no setup, stable URL,
-   works behind NAT — but it is paid infrastructure and the relay sees event contents unless
-   end-to-end encrypted. **Not planned; would need explicit approval of the infrastructure
-   cost.**
-
-A webhook-only upstream counts toward the push gate only for clients that subscribe by webhook
-with passthrough enabled, or for every client once a tunnel is configured.
+- Standard Webhooks headers (`webhook-id`, `webhook-timestamp`, `webhook-signature: v1,…`) plus
+  `X-MCP-Subscription-Id`; a verification challenge before the first delivery to a new URL; a TTL
+  lease refreshed by re-subscribing; retries with backoff (see "Limits"); `webhook-id` equal to
+  `event_id`, which is what ChatGPT, Vercel and TanStack expect. Advertised under both the
+  SEP-3415 extension key and the top-level `events` capability that OpenClaw reads.
+- Callback URLs: HTTPS required, except `http://` to a loopback address for local clients
+  (`allow_loopback_http`, default on); no credentials or fragments; redirects disabled.
+- **The first delivery to a new callback URL asks**, in addition to any per-event Ask, because
+  data leaves LocalRouter for an endpoint it has not delivered to before. "Always allow" records
+  the URL on the client.
+- Deliveries happen only while LocalRouter is running; a lease that expires while it is not running
+  must be renewed by the client, as SEP-3415 requires anyway.
+- `events/unsubscribe` and permission changes are honoured immediately: switching an event type to
+  Block ends its webhook subscriptions.
 
 ## Claude Code: STDIO bridge by default
 
 **The Claude Code template switches its default MCP setup from HTTP to the STDIO bridge.**
 Template copy and code comments must state why:
 
-> Claude Code receives pushed events (Claude Code Channels) only from a stdio MCP server, and only
-> when that server uses the pre-2026-07-28 handshake. LocalRouter over HTTP can still serve tools,
+> Claude Code receives pushed events (Claude Code Channels) only from a stdio MCP server that uses
+> the handshake from before MCP revision 2026-07-28. LocalRouter over HTTP can still serve tools,
 > but cannot wake Claude when an event arrives. The STDIO bridge runs `localrouter --mcp-bridge`
 > as Claude's subprocess and relays everything, including pushed events.
 
@@ -413,11 +417,26 @@ The rewrite makes it full duplex: keep the session id; hold a server → client 
 `/mcp/ws`); forward server notifications and requests to stdout; route the client's responses
 (sampling, elicitation) back; handle 202s; read the port from config.
 
-**Protocol negotiation**: the bridge answers Claude on the legacy handshake and advertises
-`experimental["claude/channel"]` when the gate passes. To verify against a real Claude Code: does
-it fall back to `initialize` when the bridge does not offer 2026-07-28 in `server/discover`? If not,
-the template's launch command sets `MCP_PROTOCOL_NEGOTIATION=legacy` (which applies to the whole
-Claude session — documented in the UI).
+### Protocol negotiation: the bridge does not support 2026-07-28
+
+Claude Code's v2 MCP runtime probes stdio servers for revision 2026-07-28 and uses it with servers
+that support it — and does not register a channel server that connects on it. Per the same docs,
+a server that does **not** support that revision connects on the earlier handshake and registers
+as a channel as before.
+
+So the bridge simply **does not support 2026-07-28 toward its stdio client**: it answers the probe
+as unsupported and negotiates `initialize` with the newest earlier revision (2025-11-25). This is
+independent of what the bridge speaks to the LocalRouter server behind it — the bridge owns the
+version it reports to Claude, and rewrites the `protocolVersion` in the `initialize` result if the
+gateway answered with a newer one.
+
+Claude Code's own `MCP_PROTOCOL_NEGOTIATION` environment variable (`auto` | `legacy`, v2.1.221+)
+would force the old handshake for **every** server in the Claude session. LocalRouter does not use
+or set it: the bridge declining the newer revision achieves the same result for LocalRouter alone.
+
+The probe's exact wire form is not documented (the docs describe "asks … whether they support the
+newer revision", not a method name), so P0 includes capturing it from a real Claude Code and adding
+it as a fixture.
 
 ## Gateway foundations (phase 0, from the capability audit)
 
@@ -433,62 +452,130 @@ Claude session — documented in the UI).
    from request timeouts and concurrency caps.
 4. **`subscriptions/listen`** (`routes/mcp.rs:1522`, `:1608`): forward `notifications/events/*`
    and `notifications/claude/channel`, not only the four list/resource types.
-5. **Capability snapshot** per upstream (for the gate) and static advertisement on first
-   discovery when the snapshot says push exists, with `listChanged` afterwards.
+5. **Remembered capabilities**: the per-server `capability_snapshot` in config, the first-ever
+   discovery wait, and advertisement from the snapshot (see "Remembered upstream capabilities").
 6. **Upstream channel ingress**: the stdio transport already rebroadcasts every notification
    (`register_notification_handlers_on_transports`, `gateway.rs:1840`); route
    `notifications/claude/channel` into the event store instead of forwarding it raw.
 
+## Limits
+
+Every value is configurable under `push_relay.limits` (global; Advanced section of the Push Relay
+page). Defaults are deliberately generous: they exist to bound memory and runaway loops, not to
+ration normal use.
+
+| Setting | Default | What it bounds |
+| --- | --- | --- |
+| `journal_max_events` | 10,000 per client | Occurrences held for polling / replay |
+| `journal_max_bytes` | 64 MiB per client | Same, by size (first limit wins) |
+| `journal_retention` | 24 h | Age after which occurrences are dropped (later cursors see `truncated`) |
+| `max_event_bytes` | 1 MiB | One occurrence's `data`; larger events are dropped with a Monitor error |
+| `ask_timeout` | 30 min | Held event denied (fail closed) after this |
+| `ask_hold_cap` | 1,000 per client | Held events awaiting a decision |
+| `first_discovery_wait` | 10 s | Wait for a server with no snapshot on first discovery |
+| `upstream_poll_min_interval` / `max_interval` | 1 s / 5 min | Clamp on the upstream's `nextPollMs` |
+| `upstream_reconnect_backoff` | 1 s → 60 s, jittered | Reconnecting a dropped upstream `events/stream` |
+| `upstream_heartbeat_timeout` | 90 s | Upstream stream treated as dead without a heartbeat (3× SEP's 30 s) |
+| `downstream_heartbeat` | 30 s | `notifications/events/heartbeat` to clients |
+| `max_streams_per_session` | 64 | Concurrent `events/stream` per client session |
+| `poll_max_events` | 500 (tool default 50) | Events per `events/poll` / `EventPoll` page |
+| `poll_max_wait` | 50 s | Ceiling on `EventPoll`'s `wait_seconds` (kept under common client tool timeouts) |
+| `watch_max_lifetime` | 24 h | `/events/watch` connection lifetime (re-arm after) |
+| `channel_max_content` | 16 KiB | Rendered `content` per channel message; longer is truncated with a pointer to `EventPoll` |
+| `channel_rate` | 60 / min per session | Beyond this, events are coalesced into one "N more events — use `EventPoll`" message |
+| `webhook_timeout` | 10 s | Per delivery attempt |
+| `webhook_retries` | 6 attempts: 5 s, 30 s, 2 min, 10 min, 30 min | Then the subscription is suspended until refreshed |
+| `webhook_max_subscriptions` | 100 per client | Active webhook subscriptions |
+| `webhook_lease` | default 1 h, min 60 s, max 24 h | Subscription TTL |
+
 ## Configuration and UI
 
 - `lr-config`: `PushRelayConfig { enabled (default true), default_permission (default Allow),
-  ask_timeout_secs, hold_cap, journal_limits, webhook_egress_enabled, tunnel: Option<…> }`;
-  on `Client`: `push_permissions` (the client/server/event tree, `Option` at the root meaning
-  inherit), `push_fallback_tools: Auto | Always | Never`, `push_direct_webhooks: bool`,
-  `claude_channels_launched: bool`. Serialise only when non-default; migrate nothing.
+  webhook_egress_enabled (default true), allow_loopback_http (default true), limits }`;
+  `capability_snapshot` on each MCP server entry; on `Client`: `push_permissions` (the
+  client/server/event tree, `Option` at the root meaning inherit), `push_fallback_tools: Auto |
+  Always | Never`, `push_webhook_urls` (approved callback URLs), `claude_channels_launched: bool`.
+  Serialise only when non-default; migrate nothing.
 - Thread the new per-client fields through `handle_request_with_skills` into the synthetic
   client (`gateway.rs:588`, `:659`) and its call sites (`routes/mcp.rs`, mcp-via-llm), and into
   `ClientListingSnapshot` since they change listings.
 - `InterceptCategory::PushEvent` (`firewall.rs:256`) and its case in the virtual-server match
   (`gateway_tools.rs:1048`); a branch in `apply_tool_permission_to_client` for "always" decisions.
 - UI: an **Optimize → Push Relay** sidebar entry (`src/constants/features.ts`,
-  `sidebar.tsx` `OPTIMIZE_FEATURES`) with global settings, live upstream sources and their
-  ingress modes, active subscriptions, and the pending-approval queue; a **Push** card on each
-  client (permission tree, fallback-tools setting, direct-webhooks toggle, Claude channels
-  status). Each new Tauri command updated in all four places per `AGENTS.md`
-  (Rust, `src/types/tauri-commands.ts`, `TauriMockSetup.ts`, usage).
+  `sidebar.tsx` `OPTIMIZE_FEATURES`) with global settings and limits, upstream sources with their
+  remembered capabilities and ingress modes (webhook-only ones marked unsupported), active
+  subscriptions, and the pending-approval queue; a **Push** card on each client (permission tree,
+  fallback-tools setting, approved webhook URLs, Claude channels status). Each new Tauri command
+  updated in all four places per `AGENTS.md` (Rust, `src/types/tauri-commands.ts`,
+  `TauriMockSetup.ts`, usage).
+
+## Landing page section
+
+One new section on the website home page (`website/src/pages/Home.tsx`) covering both push
+notifications and the translation layer, placed directly after **Unified MCP Gateway** and before
+**Runtime Safety**. It follows the existing feature-section layout: text column with heading,
+lead paragraph and three feature rows (icon + title + one line), beside a visual.
+
+Draft copy:
+
+- **Heading**: Push Notifications, Translated
+- **Lead**: MCP servers can push events — new messages, finished jobs, alerts. LocalRouter
+  receives every kind of push and delivers it in whatever form each app understands, so a server
+  speaking MCP Events can wake Claude Code through Channels, and an app with no push support at
+  all still gets it through polling tools.
+- **Feature rows**:
+  - *Any push in, any push out* — MCP Events (push, poll, webhook), Claude Code Channels and
+    resource updates, translated between each other automatically.
+  - *See and control every event* — Block, Ask or Allow per app, server and event type; inspect,
+    hold or edit events in Monitor before they reach the app.
+  - *Works with every app* — native push where the app supports it, LocalRouter's polling tools
+    where it doesn't.
+
+Visual: an inline SVG in the style of the existing section diagrams — upstream servers on the left
+labelled with their push type (Events stream, Events poll, Channel), the LocalRouter hub in the
+middle, apps on the right each labelled with what they receive (Claude Code → Channel, OpenClaw →
+Webhook, Codex → polling tools), plus a small approval card showing one held event with
+Allow / Edit / Deny, reusing the look of `FirewallApprovalDemo`. Client and server marks follow
+the Logos rule in `AGENTS.md`: official bundled assets or the generic icon, never invented ones.
+
+The section ships with P1 (not before), so it never describes behaviour that does not exist.
+Validation: `npm --prefix website run build:check`. A Push Relay page in the demo
+(`website/src/components/demo/`) uses the `TauriMockSetup.ts` mocks of the new commands. A docs
+entry in `website/src/pages/docs-content.ts` describes setup per client, including the Claude Code
+STDIO bridge and launch flag.
 
 ## Phases
 
 | Phase | Scope |
 | --- | --- |
-| P0 | Gateway foundations 1–6; STDIO bridge rewrite; Claude Code template default to the STDIO bridge |
-| P1 | Event store, journal and cursors; ingress U1, U2, U4; egress D1, D2, D4, D5 and `/events/watch`; gating; per-event Ask with hold/edit; Monitor `McpPushEvent`; config and UI |
-| P2 | Webhook egress D3 and passthrough; ingress U5; tunnel-backed webhook ingress U3; Channels permission relay (`claude/channel/permission`) |
+| P0 | Gateway foundations 1–6; STDIO bridge rewrite and negotiation; Claude Code template default to the STDIO bridge |
+| P1 | Event store, journal and cursors; ingress U1, U2, U4; egress D1, D2, D4, D5 and `/events/watch`; gating; per-event Ask with hold/edit; Monitor `McpPushEvent`; limits, config and UI; landing page section, docs and demo |
+| P2 | Webhook egress D3; ingress U5; Channels permission relay (`claude/channel/permission`) |
 | P3 | Resource-update hints D6 for VS Code Copilot; guardrails/secret scanning over event payloads |
 
 ## Testing
 
 Real peers already available:
 
-- **VocalCord** (HTTP; Events push, poll and webhook) as an upstream.
+- **VocalCord** (HTTP; Events push and poll) as an upstream.
 - **`netget --mcp`** (stdio; Events push/poll and Claude Channels) as an upstream.
 - **`fakechat`** from Anthropic's official channel plugins, as an upstream channel source.
 - **A real interactive Claude Code** session launched with the development-channels flag, to
-  confirm end to end that a VocalCord or NetGet event wakes Claude through the bridge.
+  capture its 2026-07-28 probe and confirm end to end that a VocalCord or NetGet event wakes Claude
+  through the bridge, with no environment variables set.
+- **OpenClaw's `mcp-events` plugin**, for webhook egress (P2).
 
-Fixtures: unknown capability fields and two conflicting providers; Events in all three modes;
-multi-result HTTP and stdio streams; every ingress × egress translation; gate on/off from the
-snapshot; Ask hold → allow / edit / deny / timeout, FIFO ordering and the hold cap; cursor reset
-after restart; deduplication across Channels and `events/*`; passthrough refused for Ask event
-types; webhook signature, challenge and retry behaviour.
+Fixtures: unknown capability fields and two conflicting providers; Events push and poll;
+multi-result HTTP and stdio streams; every ingress × egress translation; the gate from a
+remembered snapshot, the first-ever wait and its timeout, fingerprint invalidation, and
+write-only-on-change; webhook-only upstream reported as unsupported; Ask hold → allow / edit /
+deny / timeout, FIFO ordering and the hold cap; cursor reset after restart; deduplication across
+Channels and `events/*`; webhook signature, challenge, retry and new-URL approval; every limit in
+"Limits" with a test at its bound.
 
 ## Open questions
 
-1. Does Claude Code fall back to the legacy handshake on its own when the bridge does not offer
-   2026-07-28, or must the launch command set `MCP_PROTOCOL_NEGOTIATION=legacy`?
-2. Which clients correlate webhook deliveries by subscription id / `webhook-id` rather than by
-   event name (decides how usable passthrough is)?
-3. Initial values for the journal limits, Ask timeout and hold cap.
-4. SEP-3415 may change before acceptance (capability location, error codes, list-changed
+1. The exact wire form of Claude Code's 2026-07-28 probe, and that declining it yields channel
+   registration — to be captured from a real Claude Code in P0.
+2. SEP-3415 may change before acceptance (capability location, error codes, list-changed
    transport); re-pin and re-check at implementation time.
