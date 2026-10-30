@@ -1,4 +1,4 @@
-import { Shield, KeyRound, Wrench, Minimize2, Cpu, BookText, Database, Brain } from "lucide-react"
+import { Shield, KeyRound, Wrench, Minimize2, Cpu, BookText, Database, Brain, RadioTower } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 
 export interface FeatureDefinition {
@@ -20,6 +20,7 @@ export const FEATURES: Record<string, FeatureDefinition> & {
   catalogCompression: FeatureDefinition
   responseRag: FeatureDefinition
   memory: FeatureDefinition
+  pushRelay: FeatureDefinition
 } = {
   guardrails:         { icon: Shield,    color: "text-red-500",     borderColor: "border-red-500/30",     name: "GuardRails",                 shortName: "GuardRails",      viewId: "guardrails" },
   secretScanning:     { icon: KeyRound,  color: "text-orange-500",  borderColor: "border-orange-500/30",  name: "Secret Scanning",            shortName: "Secret Scanning", viewId: "secret-scanning" },
@@ -29,6 +30,7 @@ export const FEATURES: Record<string, FeatureDefinition> & {
   catalogCompression: { icon: BookText,  color: "text-teal-500",    borderColor: "border-teal-500/30",    name: "MCP Catalog Indexing",       shortName: "Catalog",         viewId: "catalog-compression" },
   responseRag:        { icon: Database,  color: "text-emerald-500", borderColor: "border-emerald-500/30", name: "Tool Responses Indexing",    shortName: "Responses",       viewId: "response-rag" },
   memory:             { icon: Brain,     color: "text-pink-500",    borderColor: "border-pink-500/30",    name: "Indexed Conversation Memory", shortName: "Memory",         viewId: "memory", experimental: true },
+  pushRelay:          { icon: RadioTower, color: "text-sky-500",    borderColor: "border-sky-500/30",     name: "Push Relay",                 shortName: "Push Relay",      viewId: "push-relay" },
 }
 
 /** Non-feature experimental flags (client modes, etc.) */
