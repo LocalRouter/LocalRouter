@@ -1,0 +1,205 @@
+# Push Relay — phase 0 handoff (gateway foundations + config)
+
+Branch `feat/push-relay`. Design: `plan/2026-10-30-PUSH_RELAY.md`. This note is for the agent
+implementing the relay core (event store, journal/cursors, ingress managers, Ask hold, Monitor,
+fallback tools, downstream `events/*` and Channels, `/events/watch`, webhook egress).
+
+Everything below exists, is tested, and changes no behaviour while no relay is registered:
+`events/*` stay -32601, nothing extra is advertised, upstream push notifications are forwarded
+raw as before, and `initialize` never waits longer than its existing 2 s.
+
+## Config (`crates/lr-config/src/push_relay.rs`, re-exported from `lr_config`)
+
+| Item | Notes |
+| --- | --- |
+| `PushRelayConfig` | `AppConfig.push_relay`; `enabled` (true), `default_permission` (`Allow`), `webhook_egress_enabled` (true), `allow_loopback_http` (true), `limits`. Omitted from YAML while default. |
+| `PushRelayLimits` | Every row of the plan's Limits table, `#[serde(default)]` per field so a partial `limits:` block keeps the other defaults. Durations are `_secs` / `_ms` integers with `Duration` accessors (`first_discovery_wait()`, `ask_timeout()`, …), plus `webhook_lease(requested)`, `clamp_upstream_poll_interval(next_poll_ms)` and `webhook_attempts()`. |
+| `PushPermission` | `Allow | Ask | Block`, snake_case. |
+| `PushPermissions` | `Client.push_permissions`: `global: Option<_>`, `servers: {server_id: _}`, `events: {"server_id__event_name": _}` (`PushPermissions::event_key`, unqualified upstream event name). `effective(app_default, server_id, event_name)` = event → server → client → app default; `effective_for_server`. |
+| `Client::push_permission(&cfg.push_relay, server, event)` | Same, but `Block` when Push Relay is disabled. Combine with `McpPermissions` yourself: push never widens MCP access. |
+| `PushFallbackTools` | `Client.push_fallback_tools`: `Auto` (default) / `Always` / `Never`. |
+| `Client.push_webhook_urls`, `Client.claude_channels_launched` | Approved callback URLs; the Claude Code launch flag. Cloning a client copies permissions and the fallback mode, not these two. |
+| `UpstreamCapabilitySnapshot` | `McpServerConfig.capability_snapshot`: `fingerprint`, `protocol_version`, raw `capabilities` (incl. `experimental`, `extensions`, unknown fields), derived `push: UpstreamPushSummary { events_modes: {event: [push/poll/webhook]}, channels, resource_subscribe }`, raw `event_catalogue` entries, `observed_at`. `same_content` ignores `observed_at`; `has_consumable_push(include_resource_updates)` applies the plan's gate (webhook-only types do not count). |
+| `fingerprint_for(&McpServerConfig)` | `sha256:` of transport + (stdio command and args | URL) + auth method and its non-secret identifiers (OAuth client id/URLs/scopes, header and env-var *names*). Never env values, header values or keychain refs. `McpServerConfig::current_capability_snapshot()` returns the snapshot only while the fingerprint matches. |
+| `McpServerConfig::same_connection` | Equality ignoring the snapshot. `SessionTransportSet::configuration_matches` uses it, so recording a snapshot never forces reconnects. |
+| `ConfigManager::update_derived` | Validated update that emits no `config-changed` and does not sync clients. |
+| `ConfigManager::record_capability_snapshots(&map)` | Writes only entries whose content changed; returns whether to `save()`. |
+
+Not exported or synced anywhere: no config export/sync path for MCP server entries exists in the
+tree today (the launcher integrations write LocalRouter's own entry into apps, not upstream
+configs), `clone_mcp_server` does not copy the snapshot, and the UI is never told about snapshot
+writes (the config file watcher is disabled in `main.rs`; `config-changed` is emitted only by
+`update`).
+
+## Upstream transport layer (`crates/lr-mcp/src/transport/`)
+
+- `Transport::open_rpc_stream(request, buffer) -> RpcStream` and `supports_rpc_streams()`;
+  implemented for stdio and HTTP (`SseTransport`), WebSocket returns an error (default).
+- `RpcStream` (`rpc_stream.rs`) is a `Stream<Item = AppResult<RpcStreamMessage>>`:
+  `Notification(_)` for every notification whose `_meta["io.modelcontextprotocol/subscriptionId"]`
+  equals the request id, then one `Result(_)`. If the connection ends first the last item is an
+  `Err` (reconnect on it). Ids are restored to the caller's (`request_id()`), including the
+  subscription id inside each notification. No total timeout; `buffer` bounds the channel and a
+  full buffer stops the transport reading (stdio: the whole pipe; HTTP: that response body).
+  **Drain promptly and do not await other requests to the same upstream from inside the
+  per-message handler** — spawn them.
+- Cancellation: dropping (or `cancel()`) before the result sends `notifications/cancelled
+  {requestId, reason}` on stdio and drops the response body on HTTP. Legacy HTTP servers that
+  acknowledge the POST and answer on the GET stream are routed through the same registry.
+- Uncorrelated notifications and server→client requests on a streamed POST body keep going to
+  the transport's generic callbacks.
+- `SessionTransportSet::open_rpc_stream(server_id, request, buffer)` adds the stateless `_meta`
+  like `send_request`. `DEFAULT_RPC_STREAM_BUFFER` = 256.
+
+## Gateway (`crates/lr-mcp/src/gateway/`)
+
+### Contract: `push_relay.rs`
+
+```rust
+#[async_trait]
+pub trait PushRelayService: Send + Sync {
+    fn advertisement(&self, ctx: &PushRelaySessionContext) -> PushAdvertisement;
+    fn instructions(&self, ctx: &PushRelaySessionContext) -> Option<String> { None }
+    fn listen_opt_ins(&self, client_id: &str, session_key: &str) -> Vec<ListenOptIn> { vec![] }
+    fn on_upstream_notification(&self, n: UpstreamPushNotification) -> bool { false }
+    async fn events_list(&self, ctx, request) -> AppResult<JsonRpcResponse>;
+    async fn events_poll(..); async fn events_stream(..);
+    async fn events_subscribe(..); async fn events_unsubscribe(..);
+}
+```
+
+- **Register**: in `AppState::with_mcp` (`crates/lr-server/src/state.rs`), after the gateway is
+  built: `mcp_gateway.set_push_relay(Arc::new(relay))`. The relay will want a gateway handle:
+  `McpGateway` is `Clone` (all `Arc`s), so construct the relay with `mcp_gateway.as_ref().clone()`.
+  `gateway.push_relay()` returns it. `update_push_relay_config(&cfg.push_relay)` is called once
+  at startup there; **call it again whenever the user changes Push Relay settings** (no Tauri
+  command exists yet).
+- `PushRelaySessionContext`: `client_id`, `session_key`, `client_name`, `is_stdio_bridge`,
+  `protocol_revision`, raw `client_capabilities` (`client_declares_events()` checks both
+  locations), `visible_servers` (permitted + enabled), `running_servers`, `notification_key`.
+- `PushAdvertisement { extensions, capabilities, experimental }` is merged into every
+  `initialize` result (all four paths: full, no servers, skills-only fallback, the 2 s
+  "still initializing" answer) and into `server/discover`. Upstream `experimental`, unknown
+  top-level fields and the `io.modelcontextprotocol/events` extension are **not** forwarded by
+  the merger — this is the only way they reach a client. Advertise `claude/channel` only when
+  `ctx.is_stdio_bridge`.
+- `instructions()` is added to the gateway instructions as a virtual section ("Events",
+  priority 25) via `collect_virtual_instructions`. If you also build the `_push_relay`
+  `VirtualMcpServer` with its own `build_instructions`, return `None` here to avoid duplicates.
+- Dispatch: `events/list|poll|stream|subscribe|unsubscribe` hit `handle_push_request` from both
+  the direct and broadcast dispatchers; the service is awaited with no session lock held. They
+  are never forwarded upstream. (Stateless clients' first `events/*` call still lazily starts
+  the session's upstreams, like any non-discovery request.)
+- `on_upstream_notification` receives `notifications/claude/channel` and every
+  `notifications/events/*` that was not correlated with an open `RpcStream`, with the server id,
+  session key and client id. Return `true` to stop the raw rebroadcast. Everything else is
+  forwarded as before.
+- Constants: `EVENTS_EXTENSION_ID`, `EVENTS_TOP_LEVEL_CAPABILITY`, `CLAUDE_CHANNEL_CAPABILITY`,
+  `CLAUDE_CHANNEL_NOTIFICATION`, `EVENTS_NOTIFICATION_PREFIX`, `EVENTS_LIST_CHANGED_NOTIFICATION`,
+  `STDIO_BRIDGE_HEADER` (`x-localrouter-bridge`), `STDIO_BRIDGE_HEADER_VALUE` (`stdio`).
+- Helpers: `derive_push_summary(&ServerCapabilities, &catalogue)`, `event_catalogue_page(&result)`,
+  `PushMethod`.
+
+### Gateway API for the relay (`gateway.rs`)
+
+| Method | Use |
+| --- | --- |
+| `upstream_request(session_key, server_id, method, params)` | Any request (`events/list`, `events/poll`, …) on that session's connection to the server; normal request timeout. Refuses servers the session cannot see. |
+| `open_upstream_stream(session_key, server_id, method, params, buffer)` | `events/stream` etc. as an `RpcStream`. |
+| `push_session_context(session_key)` | Context of a live session. |
+| `session_capability_providers(session_key)` | `CapabilityProviders`: each upstream's own declared capabilities (`servers_with_events()`, `servers_with_claude_channel()`, `servers_with_extension(id)`, `get(id)`). Also on `MergedCapabilities.providers`. |
+| `remembered_push_sources(&ids, include_resource_updates)` / `remembered_push_sources_for_session(session_key, ..)` | Enabled servers whose current snapshot has consumable push → `RememberedPushSource { server_id, server_name, snapshot }`. This is the gate input at `initialize` time. |
+| `send_session_notification(session_key, notification)` | Deliver to that session's client via the notification broadcast (legacy SSE / WebSocket connection, `subscriptions/listen`). |
+| `set_stdio_bridge_session(session_key, bool)` | Called by the route on every request; read via the context. |
+| `set_capability_snapshot_persister`, `set_capability_snapshot_debounce` | Wired in `AppState`; the debounce setter exists for tests. |
+
+Upstream connections are **per downstream session** (each session owns its
+`SessionTransportSet` and its own stdio processes), so channel messages arrive once per session
+and these APIs act on one session's connection. The plan's shared, reference-counted upstream
+subscriptions need a relay-owned connection: `McpServerManager::create_transport(server_id)`
+returns an uninitialised `Arc<dyn Transport>` (you must send `initialize` /
+`notifications/initialized` yourself, or `server/discover` for 2026-07-28 backends) on which
+`open_rpc_stream` works the same way. No helper for that exists yet.
+
+### Remembered capabilities and the first-discovery wait
+
+- After every successful upstream initialisation (initial warm-up and backend recovery) the
+  gateway snapshots the capabilities, fetches `events/list` (up to 10 pages, 5 s each) when the
+  server declares events in either location, and records it if the content changed:
+  immediately in `McpServerManager`'s config (`set_capability_snapshot`) and, batched over 5 s,
+  in the config file via `ConfigManager::record_capability_snapshots` + `save()`. An upstream
+  `notifications/events/list_changed` re-snapshots that server. Each session's warm-up reads
+  `events/list` once per events-capable server; only changes are written.
+- `McpServerManager::add_config` keeps a current in-memory snapshot when handed a config copy
+  without one, and drops it when the identity changed.
+- `initialize`: with a relay registered **and** `push_relay.enabled`, if any visible enabled
+  server has no current snapshot, the answer waits past the usual 2 s until each such server has
+  a snapshot or failed, bounded by `limits.first_discovery_wait()` from the start of the request.
+  `server/discover` does the same, starting the session's upstreams if needed. Disabled and
+  invisible servers are never waited on. Without a relay there is no wait at all (nothing would
+  read the snapshot).
+
+### Routes (`crates/lr-server/src/routes/mcp.rs`)
+
+- `X-LocalRouter-Bridge: stdio` (case-insensitive value) → `set_stdio_bridge_session` for the
+  gateway session key (`Mcp-Session-Id`-derived key, else client id) before every POST.
+- `subscriptions/listen`: opt-in keys returned by `listen_opt_ins` are accepted when sent as
+  `true`, and notifications whose method starts with that opt-in's `method_prefix` pass (tagged
+  with the subscription id). SEP-2575 has no key for events, so the relay names its own (the
+  tests use `events` → `notifications/events/` and `claudeChannel` →
+  `notifications/claude/channel`). Without a relay the filter is unchanged.
+
+## Tests
+
+- `crates/lr-config/src/push_relay.rs` (13): old configs load unchanged, defaults not serialised,
+  non-default round trip, partial limits, limit helpers, most-specific permission, disabled relay
+  blocks, fingerprint excludes secrets/includes identity, snapshot invalidation, snapshot not part
+  of connection identity, `same_content`, push gate, `record_capability_snapshots` writes only on
+  change.
+- `crates/lr-mcp/src/transport/rpc_stream.rs` (6), `stdio.rs` (3 new, `sh` fake upstream):
+  many results interleaved with a plain request, uncorrelated notifications to the generic
+  callback, cancellation sends `notifications/cancelled`, process exit ends the stream with an
+  error. `sse.rs` (3 new, axum fake upstream): multi-result POST SSE body, dropping closes the
+  body, legacy 202 + GET-stream routing.
+- `crates/lr-mcp/src/gateway/tests.rs` (3 new): unknown fields/`experimental` preserved, two
+  conflicting providers, events-only extensions dropped. `push_relay.rs` (7): summary derivation,
+  catalogue paging, advertisement merge, client events detection, debounced write-only-on-change
+  recorder, manager snapshot retention.
+- `crates/lr-server/src/routes/mcp.rs`: push opt-ins need the relay and the client's opt-in.
+- `src-tauri/tests/push_relay_gateway_tests.rs` (12, real gateway, wiremock + `sh` stdio
+  upstreams): -32601 without a relay and nothing forwarded upstream; routing to the relay with
+  the right context; advertisement only from the relay and `claude/channel` only for bridge
+  sessions (also on `server/discover`); snapshot persisted once and not on unchanged
+  re-observation; fingerprint invalidation; first-discovery wait (waits once, then not again),
+  its bound, no wait without relay/when disabled, never for disabled servers; channel
+  notifications consumed by the relay vs raw forwarding; `upstream_request` and
+  `open_upstream_stream` on a session.
+
+## Left for P1 / deviations from the plan
+
+- **Downstream streaming at the HTTP layer is not done.** `events/stream` reaches the relay
+  through `handle_request_with_skills`, but the route's SSE-async path cuts non-`initialize`
+  requests at 15 s and the stateless JSON path answers once. Give `events/stream` (and long-poll
+  `events/poll`) route handling like `subscriptions_listen_response`: a POST answered with an SSE
+  body fed from the session's notifications, ending with the relay's result.
+- The per-client push fields are not threaded through `handle_request_with_skills` /
+  `ClientListingSnapshot` (plan's P1 configuration item). The relay can read the `Client` from
+  `ConfigManager` by `ctx.client_id` meanwhile.
+- No Monitor event type, firewall `InterceptCategory::PushEvent`, Tauri commands, TS types, UI,
+  docs or website — all P1.
+- Fingerprint covers stdio command + args, not `cwd` (plan names command + args).
+- `EventDeliveryMode` also records `webhook` (so webhook-only types can be shown as unsupported);
+  an `events/list` entry without `delivery` counts as poll; unknown modes are ignored.
+- The plan lists `poll_max_events` 500 "(tool default 50)" but `EventPoll` "default 20, 1–100";
+  `PushRelayLimits` has `poll_max_events: 500` and `poll_default_events: 50` — settle the
+  `EventPoll` numbers when building the tools.
+- `webhook_retries` is stored as `webhook_retry_delays_secs: [5, 30, 120, 600, 1800]` (first try
+  + one retry per delay = 6 attempts).
+- `observed_at` is when the content last changed, not when it was last confirmed (writing on
+  every confirmation would contradict write-only-on-change).
+- HTTP stream cancellation only drops the body; it does not also POST `notifications/cancelled`.
+- WebSocket upstreams cannot open RPC streams yet.
+- `client_capabilities_raw` is captured from `initialize` (and the stateless lazy init); later
+  per-request `_meta` capabilities of stateless clients do not update it.
+- The STDIO bridge header is consumed but the bridge does not send it yet (parallel worktree
+  `localrouterai-push-bridge`).
