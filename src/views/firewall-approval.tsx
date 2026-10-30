@@ -11,7 +11,7 @@ import {
   type ApprovalAction,
   type MarketplaceListingInfo,
 } from "@/components/shared/FirewallApprovalCard"
-import type { ModelInfo, ClientInfo, ModelPermissions, SafetyVerdict, CategoryActionRequired, McpServerListing, SkillListing, SecretFindingSummary, RedactSecretPermanentlyParams } from "@/types/tauri-commands"
+import type { ModelInfo, ClientInfo, ModelPermissions, SafetyVerdict, CategoryActionRequired, McpServerListing, SkillListing, SecretFindingSummary, RedactSecretPermanentlyParams, PushEventApprovalDetails, PendingPushApproval, ListPendingPushApprovalsParams, SubmitPushApprovalParams } from "@/types/tauri-commands"
 
 interface ApprovalDetails {
   request_id: string
@@ -41,6 +41,29 @@ interface ApprovalDetails {
     scan_duration_ms: number
     request_json: string | null
     llm_source: string | null
+  }
+  is_push_event_request?: boolean
+  push_event_details?: PushEventApprovalDetails | null
+}
+
+/** Window size for a Push Relay popup: room for the payload view. */
+function pushPopupSize(details: PushEventApprovalDetails): LogicalSize {
+  if (details.kind === "webhook_url") return new LogicalSize(440, 300)
+  let lines = 1
+  try {
+    lines = (JSON.stringify(details.data, null, 2) ?? "").split("\n").length
+  } catch { /* keep one line */ }
+  const queued = details.pending_of_type > 1 || details.pending_for_client > 1 ? 20 : 0
+  return new LogicalSize(460, Math.min(600, 330 + queued + Math.min(lines, 14) * 16))
+}
+
+/** JSON text normalised for comparison; the text itself when it is not JSON. */
+function normalizeJson(text: string | null): string | null {
+  if (text === null) return null
+  try {
+    return JSON.stringify(JSON.parse(text))
+  } catch {
+    return text
   }
 }
 
@@ -109,6 +132,8 @@ export function FirewallApproval() {
   const [editedMessages, setEditedMessages] = useState<{ role: string; content: string }[]>([])
   // Marketplace listing details
   const [marketplaceListing, setMarketplaceListing] = useState<MarketplaceListingInfo | null>(null)
+  // When a held push event arrived (from the relay's queue)
+  const [pushReceivedAt, setPushReceivedAt] = useState<string | null>(null)
 
   const markInactive = () => {
     inactiveRef.current = true
@@ -189,9 +214,25 @@ export function FirewallApproval() {
           }
         }
 
+        // Push Relay: when the held event arrived
+        const push = result.is_push_event_request ? result.push_event_details : null
+        if (push && push.kind === "event") {
+          try {
+            const held = await invoke<PendingPushApproval[]>("list_pending_push_approvals", {
+              clientId: result.client_id,
+            } satisfies ListPendingPushApprovalsParams)
+            setPushReceivedAt(held.find((h) => h.request_id === push.hold_id)?.received_at ?? null)
+          } catch (err) {
+            console.error("Failed to load the held event:", err)
+          }
+        }
+
         // Resize window based on content type, then show
         const win = getCurrentWebviewWindow()
-        if (toolLower.includes("marketplace") && toolLower.includes("install")) {
+        if (push) {
+          await win.setSize(pushPopupSize(push))
+          await win.center()
+        } else if (toolLower.includes("marketplace") && toolLower.includes("install")) {
           await win.setSize(new LogicalSize(440, 380))
           await win.center()
         } else if (result.is_free_tier_fallback) {
@@ -389,9 +430,19 @@ export function FirewallApproval() {
         }
       }
 
-      // Reset tab to params and resize
-      setEditorTab("params")
-      await resizeForTab("params")
+      // Reset tab to params and resize. Push payloads that are not objects
+      // have no fields to edit, so they open as JSON.
+      let startTab: EditorTab = "params"
+      if (details.is_push_event_request) {
+        try {
+          const parsed = JSON.parse(jsonStr)
+          if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) startTab = "raw"
+        } catch {
+          startTab = "raw"
+        }
+      }
+      setEditorTab(startTab)
+      await resizeForTab(startTab)
     } catch (err) {
       console.error("Failed to enter edit mode:", err)
     }
@@ -410,7 +461,8 @@ export function FirewallApproval() {
     setEditorTab("params")
 
     const win = getCurrentWebviewWindow()
-    await win.setSize(new LogicalSize(400, 320))
+    const push = details?.is_push_event_request ? details.push_event_details : null
+    await win.setSize(push ? pushPopupSize(push) : new LogicalSize(400, 320))
     await win.center()
   }
 
@@ -582,7 +634,7 @@ export function FirewallApproval() {
         }
 
         // Only send if actually different from original
-        if (editedData !== fullArguments) {
+        if (normalizeJson(editedData) !== normalizeJson(fullArguments)) {
           params.editedArguments = editedData
         }
       }
@@ -615,6 +667,45 @@ export function FirewallApproval() {
     }
   }
 
+  /** "Allow all pending of this type": the relay decides every held event of
+   *  the type for this client, this popup's own included. */
+  const handleAllowAllPending = async () => {
+    const push = details?.push_event_details
+    if (!details || !push || inactiveRef.current || submittingRef.current) return
+    submittingRef.current = true
+    setSubmitting(true)
+    setError(null)
+    try {
+      const decided = await invoke<number>("submit_push_approval", {
+        requestId: push.hold_id,
+        action: "allow_all_pending_of_type",
+      } satisfies SubmitPushApprovalParams)
+      // A sample popup has no held event behind it; answer the popup itself.
+      if (decided === 0) {
+        await invoke("submit_firewall_approval", { requestId: details.request_id, action: "allow_once" })
+      }
+      setDecisionAccepted(true)
+    } catch (err) {
+      console.error("Failed to allow pending events:", err)
+      setError(typeof err === "string" ? err : "Failed to submit response")
+      submittingRef.current = false
+      setSubmitting(false)
+      try {
+        const pending = await invoke<ApprovalDetails | null>("get_firewall_approval_details", { requestId: details.request_id })
+        if (!pending) markInactive()
+      } catch { /* keep the original error */ }
+      return
+    }
+    try {
+      const win = getCurrentWebviewWindow()
+      await win.close()
+      await win.destroy()
+    } catch {
+      submittingRef.current = false
+      markInactive()
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-screen bg-background p-4">
@@ -642,6 +733,7 @@ export function FirewallApproval() {
     is_free_tier_fallback: details.is_free_tier_fallback,
     is_auto_router_request: details.is_auto_router_request,
     is_secret_scan_request: details.is_secret_scan_request,
+    is_push_event_request: details.is_push_event_request,
   })
   const isModelLike = requestType === "model" || requestType === "auto_router"
 
@@ -972,6 +1064,10 @@ export function FirewallApproval() {
           secretScanRequestJson={details.secret_scan_details?.request_json}
           secretScanLlmSource={details.secret_scan_details?.llm_source}
           marketplaceListing={marketplaceListing}
+          isPushEventRequest={details.is_push_event_request}
+          pushEvent={details.push_event_details}
+          pushReceivedAt={pushReceivedAt}
+          onAllowAllPending={buttonsReady && !inactive ? handleAllowAllPending : undefined}
           onAction={buttonsReady && !inactive ? handleAction : undefined}
           onDismiss={buttonsReady || inactive ? handleDismiss : undefined}
           onReveal={details.is_secret_scan_request ? handleReveal : undefined}
@@ -1009,6 +1105,13 @@ export function FirewallApproval() {
               <>
                 <span className="text-muted-foreground">Mode:</span>
                 <span className="font-medium">Auto Model Selection</span>
+              </>
+            ) : requestType === "push_event" ? (
+              <>
+                <span className="text-muted-foreground">Server:</span>
+                <span className="truncate">{details.push_event_details?.server_name ?? details.server_name}</span>
+                <span className="text-muted-foreground">Event:</span>
+                <code className="font-mono bg-muted px-1 py-0.5 rounded truncate">{details.push_event_details?.event_name ?? details.tool_name}</code>
               </>
             ) : (
               <>

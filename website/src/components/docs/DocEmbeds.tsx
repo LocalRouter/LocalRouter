@@ -13,6 +13,9 @@ const FirewallApprovalDemo = lazy(() =>
 const GuardrailApprovalDemo = lazy(() =>
   import("../GuardrailApprovalDemo").then((m) => ({ default: m.GuardrailApprovalDemo }))
 )
+const PushEventApprovalDemo = lazy(() =>
+  import("../PushEventApprovalDemo").then((m) => ({ default: m.PushEventApprovalDemo }))
+)
 const ModelRoutingDemo = lazy(() =>
   import("./ModelRoutingDemo").then((m) => ({ default: m.ModelRoutingDemo }))
 )
@@ -30,6 +33,7 @@ const MetricsDemo = lazy(() =>
 const docEmbeds: Record<string, ComponentType> = {
   "approval-flow": FirewallApprovalDemo,
   "content-safety-scanning": GuardrailApprovalDemo,
+  "push-relay-ask": PushEventApprovalDemo,
   "auto-routing": ModelRoutingDemo,
   "marketplace-overview": MarketplaceDemo,
   "gated-installation": MarketplaceInstallDemo,

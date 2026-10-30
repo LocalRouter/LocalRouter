@@ -10,6 +10,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Switch } from "@/components/ui/Toggle"
 import { listenSafe } from "@/hooks/useTauriListener"
 import { PushPermissionTree } from "@/components/permissions/PushPermissionTree"
+import { SamplePopupButton } from "@/components/shared/SamplePopupButton"
 import { CopyableCode } from "@/components/client/CopyableCode"
 import {
   CLAUDE_CHANNELS_LAUNCH_COMMAND,
@@ -156,11 +157,16 @@ export function ClientPushCard({ client, onUpdate, onViewChange }: ClientPushCar
 
         {/* Permission tree */}
         <div className="space-y-1.5">
-          <p className="text-sm font-medium">Permissions</p>
-          <p className="text-xs text-muted-foreground">
-            Allow relays each event; Ask holds each one for your approval; Block hides the event type. The most
-            specific setting wins.
-          </p>
+          <div className="flex items-start justify-between gap-4">
+            <div className="space-y-1.5">
+              <p className="text-sm font-medium">Permissions</p>
+              <p className="text-xs text-muted-foreground">
+                Allow relays each event; Ask holds each one for your approval; Block hides the event type. The most
+                specific setting wins.
+              </p>
+            </div>
+            <SamplePopupButton popupType="push_event" />
+          </div>
           {settings ? (
             <PushPermissionTree
               clientId={client.client_id}

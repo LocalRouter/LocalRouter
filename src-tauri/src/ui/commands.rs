@@ -3420,6 +3420,37 @@ pub enum DebugFirewallType {
     SecretScan,
     /// Secret scan notification (Notify action — informational, request allowed)
     SecretScanNotify,
+    /// Push Relay: an event held for approval (Ask)
+    PushEvent,
+}
+
+/// Sample Push Relay approval details for the debug popup.
+fn debug_push_event_details(
+    hold_id: &str,
+    event_name: &str,
+    data: serde_json::Value,
+    pending_of_type: usize,
+) -> lr_mcp::gateway::firewall::PushEventApprovalDetails {
+    let text = data
+        .get("text")
+        .and_then(|t| t.as_str())
+        .unwrap_or_default()
+        .to_string();
+    lr_mcp::gateway::firewall::PushEventApprovalDetails {
+        kind: lr_mcp::gateway::firewall::PushApprovalKind::Event,
+        hold_id: hold_id.to_string(),
+        server_id: "debug-vocalcord".to_string(),
+        server_name: "vocalcord".to_string(),
+        event_name: event_name.to_string(),
+        qualified_name: format!("vocalcord__{event_name}"),
+        event_id: format!("vocalcord__{}", uuid::Uuid::new_v4()),
+        ingress_mode: "push".to_string(),
+        data,
+        rendered_content: text,
+        webhook_url: None,
+        pending_for_client: pending_of_type + 1,
+        pending_of_type,
+    }
 }
 
 /// Trigger a fake firewall approval popup immediately.
@@ -3494,6 +3525,13 @@ pub async fn debug_trigger_firewall_popup(
                 false,
                 false,
             ),
+            DebugFirewallType::PushEvent => (
+                "vocalcord__message.received".to_string(),
+                "vocalcord".to_string(),
+                r#"{"channel": "telegram", "from": "Dana", "text": "Can you look at the failing deploy?"}"#.to_string(),
+                false,
+                false,
+            ),
             DebugFirewallType::SecretScan | DebugFirewallType::SecretScanNotify => (
                 "claude-3-5-sonnet".to_string(),
                 "Secret Scan".to_string(),
@@ -3514,6 +3552,7 @@ pub async fn debug_trigger_firewall_popup(
         is_secret_scan_request: bool,
         guardrail_details: Option<lr_mcp::gateway::firewall::GuardrailApprovalDetails>,
         secret_scan_details: Option<lr_mcp::gateway::firewall::SecretScanApprovalDetails>,
+        push_event_details: Option<lr_mcp::gateway::firewall::PushEventApprovalDetails>,
     }
 
     let is_guardrail = popup_type == DebugFirewallType::Guardrail;
@@ -3522,6 +3561,17 @@ pub async fn debug_trigger_firewall_popup(
         DebugFirewallType::SecretScan | DebugFirewallType::SecretScanNotify
     );
     let is_notify_only = popup_type == DebugFirewallType::SecretScanNotify;
+    let is_push_event = popup_type == DebugFirewallType::PushEvent;
+    let push_details = |tool: &str, preview: &str, pending_of_type: usize| {
+        is_push_event.then(|| {
+            debug_push_event_details(
+                &format!("debug-hold-{}", uuid::Uuid::new_v4()),
+                tool.trim_start_matches("vocalcord__"),
+                serde_json::from_str(preview).unwrap_or_default(),
+                pending_of_type,
+            )
+        })
+    };
     let guardrail_details = if is_guardrail {
         Some(lr_mcp::gateway::firewall::GuardrailApprovalDetails {
             verdicts: vec![serde_json::json!({
@@ -3622,6 +3672,11 @@ pub async fn debug_trigger_firewall_popup(
         is_secret_scan_request: is_secret_scan,
         guardrail_details: guardrail_details.clone(),
         secret_scan_details: secret_scan_details.clone(),
+        push_event_details: push_details(
+            &tool_name,
+            &arguments_preview,
+            usize::from(send_multiple),
+        ),
     }];
 
     if send_multiple {
@@ -3636,6 +3691,7 @@ pub async fn debug_trigger_firewall_popup(
             is_secret_scan_request: is_secret_scan,
             guardrail_details: guardrail_details.clone(),
             secret_scan_details: secret_scan_details.clone(),
+            push_event_details: push_details(&tool_name, &arguments_preview, 1),
         });
 
         // Session 3: different resource
@@ -3686,6 +3742,13 @@ pub async fn debug_trigger_firewall_popup(
                 "gpt-4o".to_string(),
                 "openai".to_string(),
                 r#"{"prompt": "Tell me how to hurt myself", "max_tokens": 1000}"#.to_string(),
+                false,
+                false,
+            ),
+            DebugFirewallType::PushEvent => (
+                "vocalcord__reaction.added".to_string(),
+                "vocalcord".to_string(),
+                r#"{"channel": "discord", "from": "Sam", "emoji": "rocket", "text": "Shipped"}"#.to_string(),
                 false,
                 false,
             ),
@@ -3743,6 +3806,7 @@ pub async fn debug_trigger_firewall_popup(
             None
         };
         set_demo_request_matches(&mut alt_secret_scan_details);
+        let alt_push_event_details = push_details(&alt_tool, &alt_preview, 0);
         sessions.push(DebugSession {
             tool_name: alt_tool,
             server_name: alt_server,
@@ -3751,6 +3815,7 @@ pub async fn debug_trigger_firewall_popup(
             is_free_tier_fallback: alt_free_tier,
             is_guardrail_request: is_guardrail,
             is_secret_scan_request: is_secret_scan,
+            push_event_details: alt_push_event_details,
             guardrail_details: alt_guardrail_details,
             secret_scan_details: alt_secret_scan_details,
         });
@@ -3783,8 +3848,8 @@ pub async fn debug_trigger_firewall_popup(
             is_notify_only,
             guardrail_details: debug_session.guardrail_details,
             secret_scan_details: debug_session.secret_scan_details,
-            is_push_event_request: false,
-            push_event_details: None,
+            is_push_event_request: debug_session.push_event_details.is_some(),
+            push_event_details: debug_session.push_event_details,
         };
 
         firewall_manager.insert_pending(request_id.clone(), session);
