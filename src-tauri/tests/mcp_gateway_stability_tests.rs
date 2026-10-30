@@ -96,6 +96,7 @@ fn http_server(id: &str, name: &str, url: String, enabled: bool) -> McpServerCon
         oauth_config: None,
         enabled,
         created_at: Utc::now(),
+        capability_snapshot: None,
     }
 }
 

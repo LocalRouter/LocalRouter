@@ -93,6 +93,10 @@ fn create_test_config(
         client_tools_indexing: None,
         memory_enabled: None,
         memory_folder: None,
+        push_permissions: Default::default(),
+        push_fallback_tools: Default::default(),
+        push_webhook_urls: Vec::new(),
+        claude_channels_launched: false,
     };
 
     AppConfig {
@@ -577,6 +581,10 @@ async fn test_disabled_client_returns_unauthorized() {
         client_tools_indexing: None,
         memory_enabled: None,
         memory_folder: None,
+        push_permissions: Default::default(),
+        push_fallback_tools: Default::default(),
+        push_webhook_urls: Vec::new(),
+        claude_channels_launched: false,
     };
 
     let config = AppConfig {
@@ -642,6 +650,10 @@ async fn test_client_with_missing_strategy() {
         client_tools_indexing: None,
         memory_enabled: None,
         memory_folder: None,
+        push_permissions: Default::default(),
+        push_fallback_tools: Default::default(),
+        push_webhook_urls: Vec::new(),
+        claude_channels_launched: false,
     };
 
     let config = AppConfig {
@@ -1269,6 +1281,10 @@ fn create_free_tier_config(
         client_tools_indexing: None,
         memory_enabled: None,
         memory_folder: None,
+        push_permissions: Default::default(),
+        push_fallback_tools: Default::default(),
+        push_webhook_urls: Vec::new(),
+        claude_channels_launched: false,
     };
 
     AppConfig {

@@ -561,6 +561,10 @@ pub struct AppConfig {
     /// Subscription and usage-limit tracking (Dashboard + menu bar).
     #[serde(default)]
     pub usage_tracking: UsageTrackingConfig,
+
+    /// Push Relay: relaying server push between upstream MCP servers and clients.
+    #[serde(default, skip_serializing_if = "crate::PushRelayConfig::is_default")]
+    pub push_relay: crate::PushRelayConfig,
 }
 
 /// How `/v1/systemone` handles models whose provider does not speak the
@@ -3684,6 +3688,24 @@ pub struct Client {
     /// Generated once at creation; never changes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_folder: Option<String>,
+
+    /// Push Relay permissions (client → server → event type). Empty = inherit
+    /// the global default everywhere.
+    #[serde(default, skip_serializing_if = "crate::PushPermissions::is_empty")]
+    pub push_permissions: crate::PushPermissions,
+
+    /// When LocalRouter's fallback polling tools are shown to this client.
+    #[serde(default, skip_serializing_if = "crate::PushFallbackTools::is_auto")]
+    pub push_fallback_tools: crate::PushFallbackTools,
+
+    /// Webhook callback URLs the user approved for this client.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub push_webhook_urls: Vec<String>,
+
+    /// The Claude Code setup flow recorded that Claude is launched with the
+    /// development-channels flag, so channel messages reach the agent.
+    #[serde(default, skip_serializing_if = "crate::push_relay::is_false")]
+    pub claude_channels_launched: bool,
 }
 
 impl Client {
@@ -3782,6 +3804,13 @@ pub struct McpServerConfig {
 
     /// Creation timestamp
     pub created_at: DateTime<Utc>,
+
+    /// What the server offered when it last initialised. Machine-recorded
+    /// derived state: excluded from the server's identity
+    /// ([`McpServerConfig::same_connection`]) and written without notifying
+    /// the UI of a config change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability_snapshot: Option<crate::UpstreamCapabilitySnapshot>,
 }
 
 /// MCP transport type
@@ -4906,6 +4935,7 @@ impl Default for AppConfig {
             responses: ResponsesApiConfig::default(),
             systemone: SystemOneConfig::default(),
             usage_tracking: UsageTrackingConfig::default(),
+            push_relay: crate::PushRelayConfig::default(),
         }
     }
 }
@@ -5115,7 +5145,26 @@ impl Client {
             coding_agent_type: None,
             memory_enabled: None,
             memory_folder: None,
+            push_permissions: crate::PushPermissions::default(),
+            push_fallback_tools: crate::PushFallbackTools::default(),
+            push_webhook_urls: Vec::new(),
+            claude_channels_launched: false,
         }
+    }
+
+    /// Effective push permission for one upstream event type, or `Block` when
+    /// Push Relay is switched off.
+    pub fn push_permission(
+        &self,
+        global: &crate::PushRelayConfig,
+        server_id: &str,
+        event_name: &str,
+    ) -> crate::PushPermission {
+        if !global.enabled {
+            return crate::PushPermission::Block;
+        }
+        self.push_permissions
+            .effective(global.default_permission, server_id, event_name)
     }
 
     /// Resolve whether Tool Responses Indexing is enabled for this client.
@@ -5185,7 +5234,26 @@ impl McpServerConfig {
             oauth_config: None,
             enabled: true,
             created_at: Utc::now(),
+            capability_snapshot: None,
         }
+    }
+
+    /// Whether two configurations describe the same connection: everything
+    /// except machine-recorded derived state (the capability snapshot) is
+    /// equal. Use this, not `==`, to decide whether a live connection is stale.
+    pub fn same_connection(&self, other: &Self) -> bool {
+        let strip = |config: &Self| Self {
+            capability_snapshot: None,
+            ..config.clone()
+        };
+        strip(self) == strip(other)
+    }
+
+    /// The remembered capabilities, if they still describe this configuration.
+    pub fn current_capability_snapshot(&self) -> Option<&crate::UpstreamCapabilitySnapshot> {
+        self.capability_snapshot
+            .as_ref()
+            .filter(|snapshot| snapshot.is_current_for(self))
     }
 }
 

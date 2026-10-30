@@ -840,6 +840,12 @@ pub async fn clone_client(
         secret_scanning: source_client.secret_scanning.clone(),
         memory_enabled: source_client.memory_enabled,
         memory_folder: Some(new_memory_folder),
+        push_permissions: source_client.push_permissions.clone(),
+        push_fallback_tools: source_client.push_fallback_tools,
+        // Approved webhook URLs and the channels launch flag describe the
+        // original app's setup, not the clone's.
+        push_webhook_urls: Vec::new(),
+        claude_channels_launched: false,
     };
 
     // Add to config

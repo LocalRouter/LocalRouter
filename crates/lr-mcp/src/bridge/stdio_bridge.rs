@@ -424,6 +424,10 @@ mod tests {
                 client_tools_indexing: None,
                 memory_enabled: None,
                 memory_folder: None,
+                push_permissions: Default::default(),
+                push_fallback_tools: Default::default(),
+                push_webhook_urls: Vec::new(),
+                claude_channels_launched: false,
             },
             Client {
                 id: "disabled_client".to_string(),
@@ -468,6 +472,10 @@ mod tests {
                 client_tools_indexing: None,
                 memory_enabled: None,
                 memory_folder: None,
+                push_permissions: Default::default(),
+                push_fallback_tools: Default::default(),
+                push_webhook_urls: Vec::new(),
+                claude_channels_launched: false,
             },
             Client {
                 id: "no_mcp_client".to_string(),
@@ -512,6 +520,10 @@ mod tests {
                 client_tools_indexing: None,
                 memory_enabled: None,
                 memory_folder: None,
+                push_permissions: Default::default(),
+                push_fallback_tools: Default::default(),
+                push_webhook_urls: Vec::new(),
+                claude_channels_launched: false,
             },
         ];
         config
