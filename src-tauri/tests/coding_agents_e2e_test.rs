@@ -77,6 +77,7 @@ async fn gateway_request(
             None,                                  // memory_enabled
             None,                                  // memory_folder
             lr_config::ClientMode::default(),
+            lr_config::ClientPushSettings::default(),
             request,
             None, // monitor_session_id
         )

@@ -169,6 +169,9 @@ pub struct McpGateway {
 
     /// Remembers upstream capabilities in the server configs.
     pub(crate) snapshot_recorder: Arc<SnapshotRecorder>,
+
+    /// Response streams of downstream `events/stream` requests.
+    pub(crate) push_stream_sinks: Arc<super::push_relay::PushStreamSinks>,
 }
 
 impl McpGateway {
@@ -266,6 +269,7 @@ impl McpGateway {
             )),
             stdio_bridge_sessions: Arc::new(dashmap::DashSet::new()),
             snapshot_recorder: Arc::new(SnapshotRecorder::new()),
+            push_stream_sinks: Arc::new(super::push_relay::PushStreamSinks::default()),
         }
     }
 
@@ -398,6 +402,11 @@ impl McpGateway {
     /// The registered Push Relay, if any.
     pub fn push_relay(&self) -> Option<Arc<dyn PushRelayService>> {
         self.push_relay.read().clone()
+    }
+
+    /// Per-request response streams for downstream `events/stream`.
+    pub fn push_stream_sinks(&self) -> Arc<super::push_relay::PushStreamSinks> {
+        self.push_stream_sinks.clone()
     }
 
     /// Apply changed Push Relay settings.
@@ -899,6 +908,7 @@ impl McpGateway {
             None,                            // memory_enabled
             None,                            // memory_folder
             lr_config::ClientMode::default(), // client_mode
+            lr_config::ClientPushSettings::default(),
             request,
             None, // monitor_session_id
         )
@@ -928,6 +938,7 @@ impl McpGateway {
         memory_enabled: Option<bool>,
         memory_folder: Option<String>,
         client_mode: lr_config::ClientMode,
+        push_settings: lr_config::ClientPushSettings,
         request: JsonRpcRequest,
         monitor_session_id: Option<String>,
     ) -> AppResult<JsonRpcResponse> {
@@ -1003,6 +1014,7 @@ impl McpGateway {
                 c.catalog_compression_enabled = overrides.catalog_compression_enabled;
             }
             c.memory_enabled = memory_enabled;
+            push_settings.apply_to(&mut c);
             c
         };
 
@@ -1020,11 +1032,14 @@ impl McpGateway {
             session_write.context_management_overrides = context_management_overrides.clone();
 
             // Update virtual server states
+            let session_context = push_context(&session_write);
             for vs in self.virtual_servers.read().iter() {
                 if let Some(state) = session_write.virtual_server_state.get_mut(vs.id()) {
                     vs.update_session_state(state.as_mut(), &synthetic_client);
+                    vs.update_session_context(state.as_mut(), &session_context);
                 } else {
-                    let state = vs.create_session_state(&synthetic_client);
+                    let mut state = vs.create_session_state(&synthetic_client);
+                    vs.update_session_context(state.as_mut(), &session_context);
                     session_write
                         .virtual_server_state
                         .insert(vs.id().to_string(), state);
@@ -1067,6 +1082,11 @@ impl McpGateway {
             // Forward notifications/cancelled to the correct upstream server
             if method == "notifications/cancelled" {
                 if let Some(params) = &request.params {
+                    if let (Some(request_id), Some(service)) =
+                        (params.get("requestId"), self.push_relay())
+                    {
+                        service.on_client_cancelled(session_key, request_id);
+                    }
                     if let Some(request_id) = params.get("requestId") {
                         let request_id_str = request_id
                             .as_str()

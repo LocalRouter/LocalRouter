@@ -139,6 +139,47 @@ pub struct GuardrailApprovalDetails {
     pub flagged_text: String,
 }
 
+/// What a Push Relay approval is about.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PushApprovalKind {
+    /// One held occurrence of an event type set to Ask.
+    Event,
+    /// The first delivery to a webhook callback URL the client has not
+    /// delivered to before.
+    WebhookUrl,
+}
+
+/// Push Relay approval details (sent to the popup). For [`PushApprovalKind::Event`]
+/// the popup's edit mode edits `data`; the edited value comes back as
+/// `edited_arguments`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PushEventApprovalDetails {
+    pub kind: PushApprovalKind,
+    /// Relay id of the held item (use with the relay's decide API).
+    pub hold_id: String,
+    pub server_id: String,
+    pub server_name: String,
+    /// The upstream's own event name (permission key part).
+    pub event_name: String,
+    /// Server-qualified name the client sees (`server__event`).
+    pub qualified_name: String,
+    pub event_id: String,
+    /// `push`, `poll` or `channel`.
+    pub ingress_mode: String,
+    /// The occurrence's data as received.
+    pub data: serde_json::Value,
+    /// How the event is rendered for Claude Code Channels.
+    pub rendered_content: String,
+    /// Webhook callback URL (`WebhookUrl` approvals only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webhook_url: Option<String>,
+    /// Held events of this client waiting for a decision.
+    pub pending_for_client: usize,
+    /// Of those, of this event type (including this one).
+    pub pending_of_type: usize,
+}
+
 /// Pending firewall approval session
 #[derive(Debug)]
 pub struct FirewallApprovalSession {
@@ -199,6 +240,12 @@ pub struct FirewallApprovalSession {
 
     /// Secret scan details (findings, entropy, etc.)
     pub secret_scan_details: Option<SecretScanApprovalDetails>,
+
+    /// Whether this is a Push Relay approval (held event or webhook URL)
+    pub is_push_event_request: bool,
+
+    /// Push Relay details
+    pub push_event_details: Option<PushEventApprovalDetails>,
 }
 
 impl FirewallApprovalSession {
@@ -248,6 +295,12 @@ pub struct PendingApprovalInfo {
     /// Secret scan details
     #[serde(skip_serializing_if = "Option::is_none")]
     pub secret_scan_details: Option<SecretScanApprovalDetails>,
+    /// Whether this is a Push Relay approval (held event or webhook URL)
+    #[serde(default)]
+    pub is_push_event_request: bool,
+    /// Push Relay details
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub push_event_details: Option<PushEventApprovalDetails>,
 }
 
 /// Category of requests to intercept from the monitor page
@@ -272,6 +325,8 @@ pub enum InterceptCategory {
     Sampling,
     /// MCP elicitation
     Elicitation,
+    /// Events relayed by Push Relay
+    PushEvent,
 }
 
 /// Active intercept rule for the monitor page.
@@ -384,6 +439,103 @@ impl FirewallManager {
             None,
         )
         .await
+    }
+
+    /// Ask the user about one Push Relay item: a held event (edit mode edits
+    /// its `data`) or a new webhook callback URL. Waits for the answer, or
+    /// denies after `timeout_secs`. Dropping the future withdraws the popup.
+    pub async fn request_push_event_approval(
+        &self,
+        client_id: String,
+        client_name: String,
+        details: PushEventApprovalDetails,
+        timeout_secs: u64,
+    ) -> AppResult<FirewallApprovalResponse> {
+        let request_id = Uuid::new_v4().to_string();
+        let (tx, rx) = oneshot::channel();
+        let tool_name = match details.kind {
+            PushApprovalKind::Event => details.qualified_name.clone(),
+            PushApprovalKind::WebhookUrl => details.webhook_url.clone().unwrap_or_default(),
+        };
+        let arguments_preview = truncate_arguments_preview(&details.data, 500);
+        let full_arguments =
+            (details.kind == PushApprovalKind::Event).then(|| details.data.clone());
+        let session = FirewallApprovalSession {
+            request_id: request_id.clone(),
+            client_id: client_id.clone(),
+            client_name: client_name.clone(),
+            tool_name: tool_name.clone(),
+            server_name: details.server_name.clone(),
+            arguments_preview: arguments_preview.clone(),
+            full_arguments,
+            response_sender: Some(tx),
+            created_at: Instant::now(),
+            timeout_seconds: timeout_secs,
+            is_model_request: false,
+            is_guardrail_request: false,
+            is_free_tier_fallback: false,
+            is_auto_router_request: false,
+            is_mcp_via_llm_request: false,
+            is_secret_scan_request: false,
+            is_notify_only: false,
+            guardrail_details: None,
+            secret_scan_details: None,
+            is_push_event_request: true,
+            push_event_details: Some(details.clone()),
+        };
+        self.pending.insert(request_id.clone(), session);
+        let _pending_guard = PendingRequestGuard {
+            pending: self.pending.clone(),
+            id: request_id.clone(),
+            notification_broadcast: self.notification_broadcast.clone(),
+        };
+        if let Some(broadcast) = &self.notification_broadcast {
+            let notification = JsonRpcNotification {
+                jsonrpc: "2.0".to_string(),
+                method: "firewall/approvalRequired".to_string(),
+                params: Some(json!({
+                    "request_id": request_id,
+                    "client_id": client_id,
+                    "client_name": client_name,
+                    "tool_name": tool_name,
+                    "server_name": details.server_name,
+                    "arguments_preview": arguments_preview,
+                    "timeout_seconds": timeout_secs,
+                    "is_model_request": false,
+                    "is_guardrail_request": false,
+                    "is_free_tier_fallback": false,
+                    "is_auto_router_request": false,
+                    "is_mcp_via_llm_request": false,
+                    "is_secret_scan_request": false,
+                    "is_notify_only": false,
+                    "is_push_event_request": true,
+                    "push_event_details": details,
+                })),
+            };
+            if let Err(e) = broadcast.send(("_firewall".to_string(), notification)) {
+                debug!("Failed to broadcast push event approval request: {}", e);
+            }
+        }
+        let denied = FirewallApprovalResponse {
+            action: FirewallApprovalAction::Deny,
+            edited_arguments: None,
+        };
+        match tokio::time::timeout(Duration::from_secs(timeout_secs), rx).await {
+            Ok(Ok(response)) => Ok(response),
+            Ok(Err(_)) | Err(_) => Ok(denied),
+        }
+    }
+
+    /// The firewall request id of a pending Push Relay item.
+    pub fn push_request_for_hold(&self, hold_id: &str) -> Option<String> {
+        self.pending.iter().find_map(|entry| {
+            entry
+                .value()
+                .push_event_details
+                .as_ref()
+                .filter(|d| d.hold_id == hold_id)
+                .map(|_| entry.key().clone())
+        })
     }
 
     /// Request user approval for a model access
@@ -592,6 +744,8 @@ impl FirewallManager {
             is_notify_only: true,
             guardrail_details: None,
             secret_scan_details: Some(secret_scan_details),
+            is_push_event_request: false,
+            push_event_details: None,
         };
         self.pending.insert(request_id.clone(), session);
 
@@ -684,6 +838,8 @@ impl FirewallManager {
             is_notify_only: false,
             guardrail_details,
             secret_scan_details,
+            is_push_event_request: false,
+            push_event_details: None,
         };
 
         // Store session
@@ -848,6 +1004,8 @@ impl FirewallManager {
                     is_notify_only: session.is_notify_only,
                     guardrail_details: session.guardrail_details.clone(),
                     secret_scan_details: session.secret_scan_details.clone(),
+                    is_push_event_request: session.is_push_event_request,
+                    push_event_details: session.push_event_details.clone(),
                 }
             })
             .collect()
@@ -1220,6 +1378,8 @@ mod tests {
             is_notify_only: false,
             guardrail_details: None,
             secret_scan_details: None,
+            is_push_event_request: false,
+            push_event_details: None,
         };
         assert!(session.is_expired());
     }
@@ -1246,6 +1406,8 @@ mod tests {
             is_notify_only: false,
             guardrail_details: None,
             secret_scan_details: None,
+            is_push_event_request: false,
+            push_event_details: None,
         };
         assert!(!session.is_expired());
     }

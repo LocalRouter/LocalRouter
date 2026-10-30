@@ -4839,6 +4839,8 @@ mod tests {
             is_notify_only: false,
             guardrail_details: None,
             secret_scan_details: None,
+            is_push_event_request: false,
+            push_event_details: None,
         }
     }
 

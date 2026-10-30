@@ -167,6 +167,30 @@ fn data_size(data: &MonitorEventData) -> usize {
                 + opt_str(content_preview)
                 + opt_str(error)
         }
+        MonitorEventData::McpPushEvent {
+            server_id,
+            server_name,
+            event_name,
+            event_id,
+            ingress_mode,
+            egress_modes,
+            decision,
+            original_payload,
+            delivered_payload,
+            error,
+            ..
+        } => {
+            str_size(server_id)
+                + opt_str(server_name)
+                + str_size(event_name)
+                + str_size(event_id)
+                + str_size(ingress_mode)
+                + egress_modes.iter().map(|m| str_size(m)).sum::<usize>()
+                + str_size(decision)
+                + opt_json(original_payload)
+                + opt_json(delivered_payload)
+                + opt_str(error)
+        }
         MonitorEventData::McpElicitation {
             server_id,
             server_name,

@@ -483,6 +483,63 @@ pub fn fingerprint_for(server: &McpServerConfig) -> String {
     format!("sha256:{hex}")
 }
 
+/// A client's push settings, as handed to the gateway with every request.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ClientPushSettings {
+    pub permissions: PushPermissions,
+    pub fallback_tools: PushFallbackTools,
+    pub webhook_urls: Vec<String>,
+    pub claude_channels_launched: bool,
+}
+
+impl ClientPushSettings {
+    pub fn from_client(client: &crate::Client) -> Self {
+        Self {
+            permissions: client.push_permissions.clone(),
+            fallback_tools: client.push_fallback_tools,
+            webhook_urls: client.push_webhook_urls.clone(),
+            claude_channels_launched: client.claude_channels_launched,
+        }
+    }
+
+    /// Copy these settings onto a client.
+    pub fn apply_to(&self, client: &mut crate::Client) {
+        client.push_permissions = self.permissions.clone();
+        client.push_fallback_tools = self.fallback_tools;
+        client.push_webhook_urls = self.webhook_urls.clone();
+        client.claude_channels_launched = self.claude_channels_launched;
+    }
+}
+
+impl crate::Client {
+    /// Record a per-event push permission (`None` removes the override).
+    pub fn set_push_event_permission(
+        &mut self,
+        server_id: &str,
+        event_name: &str,
+        permission: Option<PushPermission>,
+    ) {
+        let key = PushPermissions::event_key(server_id, event_name);
+        match permission {
+            Some(permission) => {
+                self.push_permissions.events.insert(key, permission);
+            }
+            None => {
+                self.push_permissions.events.remove(&key);
+            }
+        }
+    }
+
+    /// Remember an approved webhook callback URL. Returns whether it was new.
+    pub fn approve_push_webhook_url(&mut self, url: &str) -> bool {
+        if self.push_webhook_urls.iter().any(|u| u == url) {
+            return false;
+        }
+        self.push_webhook_urls.push(url.to_string());
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

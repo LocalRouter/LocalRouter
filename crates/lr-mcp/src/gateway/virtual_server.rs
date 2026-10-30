@@ -65,6 +65,17 @@ pub trait VirtualMcpServer: Send + Sync {
     /// Update existing session state when client config changes (called on each request).
     fn update_session_state(&self, state: &mut dyn VirtualSessionState, client: &lr_config::Client);
 
+    /// Refresh session facts the client config does not carry (transport,
+    /// declared capabilities, visible servers). Called after
+    /// [`Self::create_session_state`] / [`Self::update_session_state`] on
+    /// every request.
+    fn update_session_context(
+        &self,
+        _state: &mut dyn VirtualSessionState,
+        _ctx: &super::push_relay::PushRelaySessionContext,
+    ) {
+    }
+
     /// All tool names this virtual server can provide (regardless of session state).
     ///
     /// Used by the UI to enumerate tools for indexing permission controls.

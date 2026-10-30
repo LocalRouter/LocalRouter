@@ -195,6 +195,7 @@ impl<'a> GatewayClient<'a> {
                 self.memory_enabled,
                 self.memory_folder.clone(),
                 self.client_mode,
+                lr_config::ClientPushSettings::default(),
                 request,
                 self.monitor_session_id.clone(),
             )

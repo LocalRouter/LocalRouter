@@ -165,6 +165,7 @@ async fn test_skills_e2e_all_tool_commands() {
             None,                                  // memory_enabled
             None,                                  // memory_folder
             lr_config::ClientMode::default(),
+            lr_config::ClientPushSettings::default(),
             tools_list_req,
             None, // monitor_session_id
         )
@@ -223,6 +224,7 @@ async fn test_skills_e2e_all_tool_commands() {
             None,                                  // memory_enabled
             None,                                  // memory_folder
             lr_config::ClientMode::default(),
+            lr_config::ClientPushSettings::default(),
             show_req,
             None, // monitor_session_id
         )
@@ -278,6 +280,7 @@ async fn test_skills_e2e_all_tool_commands() {
             None,                                  // memory_enabled
             None,                                  // memory_folder
             lr_config::ClientMode::default(),
+            lr_config::ClientPushSettings::default(),
             tools_list_req2,
             None, // monitor_session_id
         )
@@ -367,6 +370,7 @@ async fn init_skills_session(gateway: &McpGateway, client_id: &str) {
             None,
             None, // memory_folder
             lr_config::ClientMode::default(),
+            lr_config::ClientPushSettings::default(),
             init,
             None,
         )
@@ -411,6 +415,7 @@ async fn test_no_skill_tools_when_no_skills_configured() {
             None,                                  // memory_enabled
             None,                                  // memory_folder
             lr_config::ClientMode::default(),
+            lr_config::ClientPushSettings::default(),
             req,
             None, // monitor_session_id
         )
@@ -462,6 +467,7 @@ async fn test_skill_tools_present_after_cache_hit() {
             None,                                  // memory_enabled
             None,                                  // memory_folder
             lr_config::ClientMode::default(),
+            lr_config::ClientPushSettings::default(),
             req,
             None, // monitor_session_id
         )
@@ -495,6 +501,7 @@ async fn test_skill_tools_present_after_cache_hit() {
             None,                                  // memory_enabled
             None,                                  // memory_folder
             lr_config::ClientMode::default(),
+            lr_config::ClientPushSettings::default(),
             req2,
             None, // monitor_session_id
         )

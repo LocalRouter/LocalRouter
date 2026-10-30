@@ -24,6 +24,9 @@ pub struct ClientListingSnapshot {
     pub memory_folder: Option<String>,
     pub context_management_enabled: Option<bool>,
     pub catalog_compression_enabled: Option<bool>,
+    pub push_permissions: lr_config::PushPermissions,
+    pub push_fallback_tools: lr_config::PushFallbackTools,
+    pub claude_channels_launched: bool,
 }
 
 impl ClientListingSnapshot {
@@ -38,6 +41,9 @@ impl ClientListingSnapshot {
             memory_folder: client.memory_folder.clone(),
             context_management_enabled: client.context_management_enabled,
             catalog_compression_enabled: client.catalog_compression_enabled,
+            push_permissions: client.push_permissions.clone(),
+            push_fallback_tools: client.push_fallback_tools,
+            claude_channels_launched: client.claude_channels_launched,
         }
     }
 
@@ -55,7 +61,11 @@ impl ClientListingSnapshot {
             || self.memory_enabled != old.memory_enabled
             || self.memory_folder != old.memory_folder
             || self.context_management_enabled != old.context_management_enabled
-            || self.catalog_compression_enabled != old.catalog_compression_enabled;
+            || self.catalog_compression_enabled != old.catalog_compression_enabled
+            // Push Relay's fallback tools depend on these
+            || self.push_permissions != old.push_permissions
+            || self.push_fallback_tools != old.push_fallback_tools
+            || self.claude_channels_launched != old.claude_channels_launched;
         ListChanges {
             tools: mcp_scope_changed || new_mcp.tools != old_mcp.tools || virtual_changed,
             resources: mcp_scope_changed || new_mcp.resources != old_mcp.resources,

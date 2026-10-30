@@ -194,6 +194,7 @@ async fn send(
             None,
             None,
             lr_config::ClientMode::default(),
+            lr_config::ClientPushSettings::default(),
             JsonRpcRequest::new(Some(json!(1)), method.to_string(), params),
             None,
         )

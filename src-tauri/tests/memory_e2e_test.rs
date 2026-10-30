@@ -107,6 +107,7 @@ async fn tools_list(
             memory_enabled,
             None,
             lr_config::ClientMode::default(),
+            lr_config::ClientPushSettings::default(),
             init,
             None,
         )
@@ -131,6 +132,7 @@ async fn tools_list(
             memory_enabled,
             None,
             lr_config::ClientMode::default(),
+            lr_config::ClientPushSettings::default(),
             req,
             None, // monitor_session_id
         )

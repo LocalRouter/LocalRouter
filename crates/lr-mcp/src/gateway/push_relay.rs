@@ -188,6 +188,69 @@ pub struct UpstreamPushNotification {
     pub notification: JsonRpcNotification,
 }
 
+/// Per-request channels for the notifications of a downstream
+/// `events/stream`, registered by a transport that answers the request with
+/// its own response stream (the HTTP route's SSE body). Without a sink the
+/// relay falls back to [`super::McpGateway::send_session_notification`].
+#[derive(Default)]
+pub struct PushStreamSinks {
+    sinks: dashmap::DashMap<String, tokio::sync::mpsc::Sender<JsonRpcNotification>>,
+}
+
+/// Removes its sink when dropped.
+pub struct PushStreamSinkGuard {
+    sinks: Arc<PushStreamSinks>,
+    key: String,
+}
+
+impl Drop for PushStreamSinkGuard {
+    fn drop(&mut self) {
+        self.sinks.sinks.remove(&self.key);
+    }
+}
+
+impl PushStreamSinks {
+    fn key(session_key: &str, request_id: &Value) -> String {
+        format!(
+            "{session_key}\u{1f}{}",
+            crate::transport::rpc_stream::id_key(request_id)
+        )
+    }
+
+    /// Register a sink for one request; it lives until the guard is dropped.
+    pub fn register(
+        self: &Arc<Self>,
+        session_key: &str,
+        request_id: &Value,
+        buffer: usize,
+    ) -> (
+        tokio::sync::mpsc::Receiver<JsonRpcNotification>,
+        PushStreamSinkGuard,
+    ) {
+        let (tx, rx) = tokio::sync::mpsc::channel(buffer.max(1));
+        let key = Self::key(session_key, request_id);
+        self.sinks.insert(key.clone(), tx);
+        (
+            rx,
+            PushStreamSinkGuard {
+                sinks: self.clone(),
+                key,
+            },
+        )
+    }
+
+    /// The sink registered for a request, if any.
+    pub fn sink(
+        &self,
+        session_key: &str,
+        request_id: &Value,
+    ) -> Option<tokio::sync::mpsc::Sender<JsonRpcNotification>> {
+        self.sinks
+            .get(&Self::key(session_key, request_id))
+            .map(|s| s.clone())
+    }
+}
+
 /// An upstream whose remembered capabilities include push.
 #[derive(Debug, Clone)]
 pub struct RememberedPushSource {
@@ -220,6 +283,10 @@ pub trait PushRelayService: Send + Sync {
     fn on_upstream_notification(&self, _notification: UpstreamPushNotification) -> bool {
         false
     }
+
+    /// The client sent `notifications/cancelled` for one of its requests on
+    /// this session (e.g. an open `events/stream`).
+    fn on_client_cancelled(&self, _session_key: &str, _request_id: &Value) {}
 
     async fn events_list(
         &self,

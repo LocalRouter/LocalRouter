@@ -310,6 +310,20 @@ pub(crate) fn question_and_answer(data: &MonitorEventData) -> (String, String) {
                 .or_else(|| action.clone())
                 .unwrap_or_default(),
         ),
+        MonitorEventData::McpPushEvent {
+            event_name,
+            delivered_payload,
+            original_payload,
+            decision,
+            ..
+        } => (
+            event_name.clone(),
+            delivered_payload
+                .as_ref()
+                .or(original_payload.as_ref())
+                .map(display_value)
+                .unwrap_or_else(|| decision.clone()),
+        ),
         MonitorEventData::McpSampling {
             content_preview,
             action,

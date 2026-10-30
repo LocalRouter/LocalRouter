@@ -195,8 +195,14 @@ pub async fn mcp_gateway_get_handler(
         state.mcp_gateway.has_skill_support()
     );
 
-    // Register with SSE connection manager using session_id (not client_id)
-    let mut response_rx = state.sse_connection_manager.register(&session_id);
+    // A Streamable HTTP client's GET stream (e.g. the STDIO bridge) is
+    // registered under its gateway session key, so server-initiated requests
+    // (sampling, elicitation) addressed to that session reach it. Legacy SSE
+    // clients get a fresh per-connection id.
+    let connection_key = streamable_key.clone().unwrap_or_else(|| session_id.clone());
+    let (mut response_rx, connection_sender) = state
+        .sse_connection_manager
+        .register_tracked(&connection_key);
 
     // Subscribe to notification broadcast
     let mut notification_rx = state.mcp_notification_broadcast.subscribe();
@@ -206,6 +212,8 @@ pub async fn mcp_gateway_get_handler(
 
     // Clone for cleanup
     let session_id_cleanup = session_id.clone();
+    let connection_key_cleanup = connection_key.clone();
+    let is_streamable = streamable_key.is_some();
     let sse_manager = state.sse_connection_manager.clone();
     let gateway_for_cleanup = state.mcp_gateway.clone();
 
@@ -213,9 +221,11 @@ pub async fn mcp_gateway_get_handler(
     let sse_stream = async_stream::stream! {
         // Send endpoint event first (MCP SSE transport spec)
         // Include sessionId in the endpoint URL so POST requests are routed back to this connection
-        let endpoint = format!("/?sessionId={}", session_id);
         tracing::debug!("SSE stream started: client={}, session={}", &client_id[..8.min(client_id.len())], &session_id[..8]);
-        yield Ok::<_, Infallible>(Event::default().event("endpoint").data(endpoint));
+        if !is_streamable {
+            let endpoint = format!("/?sessionId={}", session_id);
+            yield Ok::<_, Infallible>(Event::default().event("endpoint").data(endpoint));
+        }
 
         loop {
             // Use biased select to prioritize responses over notifications
@@ -364,10 +374,13 @@ pub async fn mcp_gateway_get_handler(
             }
         }
 
-        // Cleanup: terminate gateway session (closes per-session transports)
-        // and unregister from SSE manager when stream ends
-        let _ = gateway_for_cleanup.terminate_session(&session_id_cleanup).await;
-        sse_manager.unregister(&session_id_cleanup);
+        // Cleanup: a legacy SSE connection owns its gateway session, so end
+        // it (closing per-session transports). A Streamable HTTP session
+        // outlives its GET stream, which the client may reopen.
+        if !is_streamable {
+            let _ = gateway_for_cleanup.terminate_session(&session_id_cleanup).await;
+        }
+        sse_manager.unregister_if_current(&connection_key_cleanup, &connection_sender);
         tracing::debug!("SSE stream ended for session {}", session_id_cleanup);
     };
 
@@ -463,6 +476,11 @@ pub async fn mcp_gateway_handler(
     let session_id = query.0.session_id;
     // Connection key for SSE routing: session_id if available, otherwise client_id
     let connection_key = session_id.as_deref().unwrap_or(&client_id).to_string();
+    let streamable_key = headers
+        .get(lr_mcp::gateway::types::MCP_SESSION_ID_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .filter(|id| lr_mcp::gateway::types::is_valid_session_id(id))
+        .map(|id| lr_mcp::gateway::types::streamable_session_key(&client_id, id));
 
     // Detect whether this is a JSON-RPC response (from client answering a server-initiated
     // request, e.g. passthrough sampling/elicitation) or a normal JSON-RPC request.
@@ -493,9 +511,16 @@ pub async fn mcp_gateway_handler(
         // Route the response to the pending server-initiated request. Either
         // way the answer is 202 with an empty body (Streamable HTTP): the
         // response may be for a request that already timed out.
+        // A Streamable HTTP client answers on the session its GET stream is
+        // registered under. Only this branch uses that key: ordinary requests
+        // keep `connection_key`, which decides between inline and SSE answers.
+        let response_key = match (&session_id, &streamable_key) {
+            (None, Some(key)) => key.clone(),
+            _ => connection_key.clone(),
+        };
         if !state
             .sse_connection_manager
-            .resolve_server_request(&connection_key, response)
+            .resolve_server_request(&response_key, response)
         {
             tracing::warn!(
                 "No pending server request matched for response id={} on connection={}",
@@ -1071,6 +1096,26 @@ pub async fn mcp_gateway_handler(
         }
     }
 
+    // A downstream `events/stream` (Push Relay) lives until the client
+    // cancels it: answer with an SSE body carrying its notifications and,
+    // last, the relay's result. Clients with a legacy SSE connection get the
+    // same through that connection below.
+    if request.method == "events/stream"
+        && request.id.is_some()
+        && state.mcp_gateway.push_relay().is_some()
+        && !state.sse_connection_manager.has_connection(&connection_key)
+    {
+        return events_stream_response(
+            state,
+            client_id,
+            client,
+            session_id,
+            allowed_servers,
+            roots,
+            request,
+        );
+    }
+
     // Handle request via gateway
     // For SSE clients, process asynchronously and return 202 immediately.
     // This prevents the MCP SDK's request timeout from firing while the gateway
@@ -1104,7 +1149,7 @@ pub async fn mcp_gateway_handler(
             // popup, so it is not cut off here.
             let gateway_timeout = tokio::time::Duration::from_secs(match request_method.as_str() {
                 "initialize" => 45,
-                "tools/call" => 24 * 60 * 60,
+                "tools/call" | "events/stream" => 24 * 60 * 60,
                 _ => 15,
             });
             let result = tokio::time::timeout(
@@ -1129,6 +1174,7 @@ pub async fn mcp_gateway_handler(
                     client.memory_enabled,
                     client.memory_folder.clone(),
                     client.effective_client_mode(),
+                    lr_config::ClientPushSettings::from_client(&client),
                     request,
                     None, // monitor_session_id
                 ),
@@ -1236,6 +1282,7 @@ pub async fn mcp_gateway_handler(
                 client.memory_enabled,
                 client.memory_folder.clone(),
                 client.effective_client_mode(),
+                lr_config::ClientPushSettings::from_client(&client),
                 request,
                 None, // monitor_session_id
             )
@@ -1405,6 +1452,7 @@ async fn run_stateless_with_mrtr(
                     client_for_task.memory_enabled,
                     client_for_task.memory_folder.clone(),
                     client_for_task.effective_client_mode(),
+                    lr_config::ClientPushSettings::from_client(&client_for_task),
                     request,
                     None, // monitor_session_id
                 )
@@ -1710,6 +1758,107 @@ fn subscriptions_listen_response(
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
+        }
+    };
+
+    Sse::new(sse_stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
+}
+
+/// Aborts a spawned task when dropped (the response body went away).
+struct AbortOnDrop(tokio::task::AbortHandle);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Answer a downstream `events/stream` with a long-lived SSE body: every
+/// notification the Push Relay delivers for this request, then its result.
+/// Dropping the body (the client went away) ends the stream.
+#[allow(clippy::too_many_arguments)]
+fn events_stream_response(
+    state: AppState,
+    client_id: String,
+    client: lr_config::Client,
+    session_id: Option<String>,
+    allowed_servers: Vec<String>,
+    roots: Vec<Root>,
+    request: JsonRpcRequest,
+) -> Response {
+    let session_key = session_id.clone().unwrap_or_else(|| client_id.clone());
+    let request_id = request.id.clone().unwrap_or(serde_json::Value::Null);
+    let sinks = state.mcp_gateway.push_stream_sinks();
+    let (mut notifications, sink_guard) = sinks.register(
+        &session_key,
+        &request_id,
+        lr_mcp::transport::rpc_stream::DEFAULT_RPC_STREAM_BUFFER,
+    );
+    let gateway = state.mcp_gateway.clone();
+    let task = tokio::spawn(async move {
+        gateway
+            .handle_request_with_skills(
+                &client_id,
+                session_id.as_deref(),
+                allowed_servers,
+                roots,
+                client.mcp_permissions.clone(),
+                client.skills_permissions.clone(),
+                client.name.clone(),
+                client.marketplace_permission.clone(),
+                client.coding_agent_permission.clone(),
+                client.coding_agent_type,
+                Some(lr_config::ContextManagementOverrides {
+                    context_management_enabled: client.context_management_enabled,
+                    catalog_compression_enabled: client.catalog_compression_enabled,
+                }),
+                client.mcp_sampling_permission.clone(),
+                client.mcp_elicitation_permission.clone(),
+                client.memory_enabled,
+                client.memory_folder.clone(),
+                client.effective_client_mode(),
+                lr_config::ClientPushSettings::from_client(&client),
+                request,
+                None,
+            )
+            .await
+    });
+    let abort = AbortOnDrop(task.abort_handle());
+
+    let sse_stream = async_stream::stream! {
+        let _sink_guard = sink_guard;
+        let _abort = abort;
+        let mut task = task;
+        let result = loop {
+            tokio::select! {
+                Some(notification) = notifications.recv() => {
+                    if let Ok(json) = serde_json::to_string(&notification) {
+                        yield Ok::<_, Infallible>(Event::default().event("message").data(json));
+                    }
+                }
+                joined = &mut task => break joined,
+            }
+        };
+        while let Ok(notification) = notifications.try_recv() {
+            if let Ok(json) = serde_json::to_string(&notification) {
+                yield Ok::<_, Infallible>(Event::default().event("message").data(json));
+            }
+        }
+        let response = match result {
+            Ok(Ok(response)) => response,
+            Ok(Err(err)) => JsonRpcResponse::error(
+                request_id.clone(),
+                lr_mcp::protocol::JsonRpcError::internal_error(format!("Gateway error: {err}")),
+            ),
+            Err(_) => JsonRpcResponse::error(
+                request_id.clone(),
+                lr_mcp::protocol::JsonRpcError::internal_error("events/stream ended unexpectedly"),
+            ),
+        };
+        if let Ok(json) = serde_json::to_string(&response) {
+            yield Ok::<_, Infallible>(Event::default().event("message").data(json));
         }
     };
 

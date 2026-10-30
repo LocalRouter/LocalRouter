@@ -181,6 +181,42 @@ impl SseConnectionManager {
         rx
     }
 
+    /// Register a connection and keep a handle that identifies it, so a
+    /// stream that was replaced by a reconnect can leave its successor alone
+    /// (see [`Self::unregister_if_current`]).
+    pub fn register_tracked(
+        &self,
+        key: &str,
+    ) -> (
+        tokio::sync::mpsc::UnboundedReceiver<SseMessage>,
+        tokio::sync::mpsc::UnboundedSender<SseMessage>,
+    ) {
+        let rx = self.register(key);
+        let tx = self
+            .connections
+            .get(key)
+            .map(|tx| tx.clone())
+            .expect("connection registered above");
+        (rx, tx)
+    }
+
+    /// Unregister `key` only while it is still the connection `sender`
+    /// belongs to.
+    pub fn unregister_if_current(
+        &self,
+        key: &str,
+        sender: &tokio::sync::mpsc::UnboundedSender<SseMessage>,
+    ) {
+        if self
+            .connections
+            .remove_if(key, |_, current| current.same_channel(sender))
+            .is_some()
+        {
+            tracing::debug!("Unregistered SSE connection {}", key);
+            self.emit_event("sse-connection-closed", key.to_string());
+        }
+    }
+
     /// Unregister an SSE connection
     pub fn unregister(&self, client_id: &str) {
         if self.connections.remove(client_id).is_some() {

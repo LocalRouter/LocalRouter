@@ -3783,6 +3783,8 @@ pub async fn debug_trigger_firewall_popup(
             is_notify_only,
             guardrail_details: debug_session.guardrail_details,
             secret_scan_details: debug_session.secret_scan_details,
+            is_push_event_request: false,
+            push_event_details: None,
         };
 
         firewall_manager.insert_pending(request_id.clone(), session);
