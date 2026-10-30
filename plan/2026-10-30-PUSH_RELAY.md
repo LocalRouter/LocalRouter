@@ -1,6 +1,6 @@
 # Push Relay — relay and translate server push between upstream MCP servers and clients
 
-**Status: draft, awaiting approval. Do not implement until approved.**
+**Status: implemented on `feat/push-relay` (P0, P1 and webhook egress); under review.**
 
 Push Relay is a new Optimize feature. It takes every form of server-initiated push that upstream
 MCP servers offer (MCP Events push/poll/webhook, Claude Code Channels, classic resource updates),
@@ -10,7 +10,8 @@ consume — translating between forms where they differ. Clients with no native 
 LocalRouter's own polling tools as a fallback.
 
 It is enabled by default, with Block / Ask / Allow at the global, per-client, per-server and
-per-event-type levels.
+per-event-type levels. The only global settings are the on/off switch and the global default
+permission; every bound is an internal constant (see "Limits").
 
 LocalRouter is a **proxy with control over every event**, never a passthrough: every occurrence
 flows through LocalRouter, where it can be seen in Monitor, held for approval, edited or dropped.
@@ -193,7 +194,7 @@ remembering capabilities never looks like a user edit.
 
 **First-ever connection: wait.** When a server visible to the client has **no snapshot, or a
 snapshot whose fingerprint no longer matches**, `initialize` / `server/discover` waits for that
-server to initialise before answering — bounded by `first_discovery_wait` (default 10 s). Servers
+server to initialise before answering — bounded by `first_discovery_wait` (10 s, internal). Servers
 that are disabled, or that the client cannot see, are never waited on. If the wait times out, the
 server counts as "no push" for this session; once it does initialise, the snapshot is written,
 fallback tools and the catalogue appear through `list_changed`, and capabilities fixed at
@@ -223,8 +224,7 @@ can deliver **on that transport** (what LocalRouter can do, not what the upstrea
 - an `<events>` instructions section.
 
 `events/list` returns every permitted event type. Each descriptor's `delivery` lists the modes
-**this client** can use: `poll` always; `push` when the transport can stream; `webhook` when
-webhook egress (D3) is enabled. Descriptors carry the upstream's `inputSchema` and
+**this client** can use: `poll`, `push` and `webhook` (webhook subscriptions are always accepted). Descriptors carry the upstream's `inputSchema` and
 `payloadSchema` unchanged, and a description prefixed with the source server.
 
 **The client chooses by calling the method** — `events/stream`, `events/poll` or
@@ -266,17 +266,16 @@ used. They are excluded from tool-response indexing and Memory capture (`is_tool
 
 ### When the fallback tools are shown
 
-Per-client setting: **Auto** (default) / Always / Never. In Auto:
+Automatic; there is no per-client setting:
 
 1. **Gate fails** (no permitted upstream push source): no tools, no `<events>` block.
-2. **The client declared the Events extension** in its capabilities: hide the tools; it has a
+2. **The session declared MCP Events** in its client capabilities
+   (`extensions["io.modelcontextprotocol/events"]` or top-level `events`): no tools; it has a
    native mechanism.
-3. **STDIO bridge with Claude Channels: still show the tools.** A server cannot detect whether
-   Claude was launched with the channels flag; without it, channel messages are dropped silently
-   and the agent would never learn events exist. The Claude Code setup flow records "launched with
-   channels" on the client; when set, Auto hides `EventWait` (keeps `EventList` / `EventPoll` for
-   reading details).
-4. **Everyone else** (every HTTP client today): show the tools.
+3. **Everyone else, STDIO bridge sessions included**: all three tools. A server cannot detect
+   whether Claude Code was launched with the channels flag; without it, channel messages are
+   dropped silently and the agent would never learn events exist, so bridge sessions keep the
+   tools. The Claude Code card and connect flow explain the launch flag (no toggle).
 
 ## Permissions: Block / Ask / Allow, per event
 
@@ -317,12 +316,13 @@ MCP ingress.
 - **Ordering**: events of one subscription stay FIFO — later events of the same event type queue
   behind a held one, so a client never sees event N+1 before an approved event N. Other event
   types are not blocked.
-- **Timeout**: an unanswered held event is **denied** (fail closed) after `ask_timeout`
-  (default 30 minutes), recorded as `timeout` in Monitor.
-- **Volume**: approvals for one client are collected into **one queue window** with a count and
-  "allow all pending of this type", rather than one popup per event. Once a client has
-  `ask_hold_cap` events waiting (default 1,000), further Ask events are denied with a Monitor
-  record instead of growing without bound.
+- **No timeout**: a held event waits for its decision indefinitely. The approval popup for it
+  never expires; only a decision (or a permission change that makes the type Allow or Block)
+  releases it.
+- **Volume**: one approval popup is open per (client, event type) at a time, showing how many
+  more are waiting and offering "allow all pending of this type", rather than one popup per
+  event. Once a client has 1,000 events waiting (`ask_hold_cap`, internal), further Ask events
+  are denied with a `hold_cap` Monitor record instead of growing without bound.
 - **Per client, not per upstream**: two clients consuming the same upstream event are approved
   independently; the upstream subscription is shared.
 
@@ -330,9 +330,13 @@ MCP ingress.
 
 - New `MonitorEventType::McpPushEvent` in `crates/lr-monitor/src/types.rs`, one record per
   occurrence per client, carrying: source server, event name, ingress mode, egress mode(s),
-  decision (`allowed`, `asked → allowed`, `asked → edited`, `denied`, `timeout`, `blocked`),
-  timing, and a payload preview under the existing privacy and redaction settings. Ask records are
-  `EventStatus::Pending` until decided, so Monitor shows what is waiting.
+  decision (`allowed`, `asked_allowed`, `asked_edited`, `denied`, `blocked`, `hold_cap`,
+  `too_large`, and `pending` while held), timing, and a payload preview under the existing
+  privacy and redaction settings. Ask records are `EventStatus::Pending` until decided, so Monitor
+  shows what is waiting. Push events are a first-class Monitor type: in the MCP type filter, with
+  their own icon, label, colour and detail view, in the demo data, and listed in the dashboard's
+  request monitor. They are not counted as in-flight requests on the dashboard: a held one can
+  wait indefinitely.
 - **Intercept from Monitor**: a pending Ask record opens the same approval/edit view inline,
   and any `McpPushEvent` record offers "Ask for this event type from now on" — the quick way to
   start intercepting a stream that is currently Allow.
@@ -340,6 +344,34 @@ MCP ingress.
   privacy settings), so a modification is never invisible.
 - Secret scanning and guardrails can be applied to event payloads in a later phase; v1 only routes
   them through Monitor's existing redaction.
+
+### Monitor grouping
+
+A push record is per receiving client, and Monitor groups it with the requests of the **one
+client session that reads it**, using the keys that session's own MCP tool calls are recorded
+under: the client id and the session's Monitor request id (`GatewaySession::monitor_session_id`,
+the `session_id` of the record). The store already gives a record the conversation of an earlier
+record with the same client and request id, and a later conversation correlation of that request
+reaches it too, so no new linking mechanism exists.
+
+- **The reading session** is the session whose own upstream connection produced the occurrence
+  (a stdio subscription or a channel message on that session's process), or else the only session
+  holding demand for its subscription (`events/stream`, `events/poll`, Claude Channels,
+  `EventPoll` / `EventWait`). It is decided when the record is written, so a held event is
+  attributed like any other, at arrival.
+- **Standalone** when there is no single reading session: several sessions of the client read
+  the subscription, or a webhook or `/events/watch` (which no session reads) consumes it, or the
+  occurrence arrived on a relay-owned connection nobody in a session asked for. A session without
+  a Monitor request id also groups nothing, exactly like its tool calls: clients connected
+  directly to the MCP gateway record tool calls without one today, so their push records stand
+  alone; MCP via LLM sessions carry the LLM request's id, so their push records, their
+  `EventPoll` calls and the LLM calls share one group.
+- **Never by client or timing.** "The client's most recent conversation" was rejected: the
+  Monitor conversation rules (`plan/2026-10-29-MONITOR_CONVERSATION_BEHAVIOR.md`) forbid joining
+  unrelated traffic by client or timing, and a missing identity stays a separate group.
+- **Follow-ups**: the agent's `EventPoll` (or any tool call) from the reading session carries the
+  same request id, so the relationship track links it to the push record. Nothing else links
+  them.
 
 ## Webhooks: clients only, LocalRouter sends
 
@@ -355,8 +387,9 @@ them through permissions, Ask, Monitor and any edit, and then makes the signed o
   lease refreshed by re-subscribing; retries with backoff (see "Limits"); `webhook-id` equal to
   `event_id`, which is what ChatGPT, Vercel and TanStack expect. Advertised under both the
   SEP-3415 extension key and the top-level `events` capability that OpenClaw reads.
-- Callback URLs: HTTPS required, except `http://` to a loopback address for local clients
-  (`allow_loopback_http`, default on); no credentials or fragments; redirects disabled.
+- Webhook subscriptions are always accepted; there is no switch.
+- Callback URLs: HTTPS required, except `http://` to a loopback address for local clients, which
+  is always accepted; no credentials or fragments; redirects disabled.
 - **The first delivery to a new callback URL asks**, in addition to any per-event Ask, because
   data leaves LocalRouter for an endpoint it has not delivered to before. "Always allow" records
   the URL on the client.
@@ -460,25 +493,26 @@ it as a fixture.
 
 ## Limits
 
-Every value is configurable under `push_relay.limits` (global; Advanced section of the Push Relay
-page). Defaults are deliberately generous: they exist to bound memory and runaway loops, not to
-ration normal use.
+None of these is configuration. Every value is an internal constant, defined in one place
+(`PushRelayLimits::default()` in `crates/lr-mcp/src/gateway/push_relay/limits.rs`, plus
+`FIRST_DISCOVERY_WAIT` beside it). They are deliberately generous: they exist to bound memory and
+runaway loops, not to ration normal use. Tests shrink them through `PushRelay::set_limits` and
+`McpGateway::set_first_discovery_wait` to reach a bound quickly.
 
-| Setting | Default | What it bounds |
+| Limit | Value | What it bounds |
 | --- | --- | --- |
 | `journal_max_events` | 10,000 per client | Occurrences held for polling / replay |
 | `journal_max_bytes` | 64 MiB per client | Same, by size (first limit wins) |
 | `journal_retention` | 24 h | Age after which occurrences are dropped (later cursors see `truncated`) |
 | `max_event_bytes` | 1 MiB | One occurrence's `data`; larger events are dropped with a Monitor error |
-| `ask_timeout` | 30 min | Held event denied (fail closed) after this |
-| `ask_hold_cap` | 1,000 per client | Held events awaiting a decision |
+| `ask_hold_cap` | 1,000 per client | Held events awaiting a decision (they have no timeout); beyond it Ask events are denied with a Monitor record |
 | `first_discovery_wait` | 10 s | Wait for a server with no snapshot on first discovery |
 | `upstream_poll_min_interval` / `max_interval` | 1 s / 5 min | Clamp on the upstream's `nextPollMs` |
 | `upstream_reconnect_backoff` | 1 s → 60 s, jittered | Reconnecting a dropped upstream `events/stream` |
 | `upstream_heartbeat_timeout` | 90 s | Upstream stream treated as dead without a heartbeat (3× SEP's 30 s) |
 | `downstream_heartbeat` | 30 s | `notifications/events/heartbeat` to clients |
 | `max_streams_per_session` | 64 | Concurrent `events/stream` per client session |
-| `poll_max_events` | 500 (tool default 50) | Events per `events/poll` / `EventPoll` page |
+| `poll_max_events` | 500 (default page 50) | Events per `events/poll` page; `EventPoll` takes 1–100, default 20 |
 | `poll_max_wait` | 50 s | Ceiling on `EventPoll`'s `wait_seconds` (kept under common client tool timeouts) |
 | `watch_max_lifetime` | 24 h | `/events/watch` connection lifetime (re-arm after) |
 | `channel_max_content` | 16 KiB | Rendered `content` per channel message; longer is truncated with a pointer to `EventPoll` |
@@ -490,24 +524,31 @@ ration normal use.
 
 ## Configuration and UI
 
-- `lr-config`: `PushRelayConfig { enabled (default true), default_permission (default Allow),
-  webhook_egress_enabled (default true), allow_loopback_http (default true), limits }`;
-  `capability_snapshot` on each MCP server entry; on `Client`: `push_permissions` (the
-  client/server/event tree, `Option` at the root meaning inherit), `push_fallback_tools: Auto |
-  Always | Never`, `push_webhook_urls` (approved callback URLs), `claude_channels_launched: bool`.
-  Serialise only when non-default; migrate nothing.
-- Thread the new per-client fields through `handle_request_with_skills` into the synthetic
-  client (`gateway.rs:588`, `:659`) and its call sites (`routes/mcp.rs`, mcp-via-llm), and into
-  `ClientListingSnapshot` since they change listings.
-- `InterceptCategory::PushEvent` (`firewall.rs:256`) and its case in the virtual-server match
-  (`gateway_tools.rs:1048`); a branch in `apply_tool_permission_to_client` for "always" decisions.
-- UI: an **Optimize → Push Relay** sidebar entry (`src/constants/features.ts`,
-  `sidebar.tsx` `OPTIMIZE_FEATURES`) with global settings and limits, upstream sources with their
-  remembered capabilities and ingress modes (webhook-only ones marked unsupported), active
-  subscriptions, and the pending-approval queue; a **Push** card on each client (permission tree,
-  fallback-tools setting, approved webhook URLs, Claude channels status). Each new Tauri command
-  updated in all four places per `AGENTS.md` (Rust, `src/types/tauri-commands.ts`,
-  `TauriMockSetup.ts`, usage).
+- `lr-config`: `PushRelayConfig { enabled (default true), default_permission (default Allow) }`
+  — nothing else is global. `capability_snapshot` on each MCP server entry; on `Client`:
+  `push_permissions` (the client/server/event tree, `Option` at the root meaning inherit) and
+  `push_webhook_urls` (approved callback URLs). Serialise only when non-default. Unknown keys are
+  ignored, so a config carrying keys LocalRouter does not read (`push_relay.limits`,
+  `webhook_egress_enabled`, `allow_loopback_http`, `ask_timeout_secs`, `push_fallback_tools`,
+  `claude_channels_launched`) loads, and those keys are dropped on the next save.
+- Thread the per-client fields through `handle_request_with_skills` into the synthetic client
+  (`ClientPushSettings`) and into `ClientListingSnapshot`, since push permissions change listings.
+- `InterceptCategory::PushEvent` (`firewall.rs`) and its case in the virtual-server match; a branch
+  in `apply_tool_permission_to_client` for "always" decisions.
+- UI: an **Optimize → Push Relay** sidebar entry (`src/constants/features.ts`, `sidebar.tsx`
+  `OPTIMIZE_FEATURES`) and a Push Relay card on the Optimize overview (with the master switch,
+  and a pill in its MCP pipeline diagram). The Push Relay page has one **Info** tab: the master
+  switch, the default permission, a sample approval popup, each client's effective permission,
+  and the upstream sources with their remembered capabilities and ingress modes (webhook-only
+  ones marked unsupported). A **Push** card on each client: the permission tree with its sample
+  popup, a note on the automatic fallback tools, approved webhook URLs, and for Claude Code the
+  STDIO bridge notice and launch command. Held events are answered in the approval popup. Each
+  Tauri command is updated in all four places per `AGENTS.md` (Rust, `src/types/tauri-commands.ts`,
+  `TauriMockSetup.ts`, usage): `get_push_relay_config`, `update_push_relay_config` (enabled,
+  default permission), `list_push_sources`, `list_pending_push_approvals` and
+  `submit_push_approval` (the popup), `get_client_push_settings`, `set_client_push_permission`,
+  `remove_client_push_webhook_url`, `get_claude_code_mcp_setup`,
+  `switch_claude_code_to_stdio_bridge`.
 
 ## Landing page section
 
@@ -549,7 +590,7 @@ STDIO bridge and launch flag.
 | Phase | Scope |
 | --- | --- |
 | P0 | Gateway foundations 1–6; STDIO bridge rewrite and negotiation; Claude Code template default to the STDIO bridge |
-| P1 | Event store, journal and cursors; ingress U1, U2, U4; egress D1, D2, D4, D5 and `/events/watch`; gating; per-event Ask with hold/edit; Monitor `McpPushEvent`; limits, config and UI; landing page section, docs and demo |
+| P1 | Event store, journal and cursors; ingress U1, U2, U4; egress D1, D2, D4, D5 and `/events/watch`; gating; per-event Ask with hold/edit; Monitor `McpPushEvent` and its grouping; internal limits, config and UI; landing page section, docs and demo |
 | P2 | Webhook egress D3; ingress U5; Channels permission relay (`claude/channel/permission`) |
 | P3 | Resource-update hints D6 for VS Code Copilot; guardrails/secret scanning over event payloads |
 
@@ -569,9 +610,10 @@ Fixtures: unknown capability fields and two conflicting providers; Events push a
 multi-result HTTP and stdio streams; every ingress × egress translation; the gate from a
 remembered snapshot, the first-ever wait and its timeout, fingerprint invalidation, and
 write-only-on-change; webhook-only upstream reported as unsupported; Ask hold → allow / edit /
-deny / timeout, FIFO ordering and the hold cap; cursor reset after restart; deduplication across
+deny, no timeout, FIFO ordering and the hold cap; cursor reset after restart; deduplication across
 Channels and `events/*`; webhook signature, challenge, retry and new-URL approval; every limit in
-"Limits" with a test at its bound.
+"Limits" with a test at its bound; Monitor grouping with one, several and no reading session;
+an old config with the removed settings still loading.
 
 ## Open questions
 

@@ -7,6 +7,7 @@ LocalRouter is a proxy with control over every event, never a passthrough. Every
 **Key points:**
 
 - Enabled by default, with Block / Ask / Allow at the global, per-client, per-server and per-event-type levels
+- The global settings are the on/off switch and the default permission; everything else is per client, and every bound (journal size, poll page size, webhook retries) is fixed internally
 - Push is exposed to a client only when at least one upstream server it can already use offers push; Push Relay never widens a client's MCP permissions
 - Every delivery form shares the same event id, so an app that combines mechanisms can deduplicate
 - Apps with no native push mechanism get LocalRouter's polling tools instead
@@ -44,7 +45,7 @@ Event names are qualified with the server name, as tools are: `vocalcord__messag
 | Claude Code Channel | Claude Code | STDIO bridge only — see Claude Code below |
 | Fallback tools | Every other client | `EventList`, `EventPoll`, `EventWait` |
 
-The client chooses a native mode by calling it (`events/stream`, `events/poll` or `events/subscribe`). Webhook deliveries are outbound only and happen after the event has passed permissions, Ask and Monitor. Callback URLs must be HTTPS, except `http://` to a loopback address, and the first delivery to a new callback URL asks for approval.
+The client chooses a native mode by calling it (`events/stream`, `events/poll` or `events/subscribe`). Webhook subscriptions are always accepted. Webhook deliveries are outbound only and happen after the event has passed permissions, Ask and Monitor. Callback URLs must be HTTPS, except `http://` to a loopback address (`127.0.0.1`, `::1`, `localhost`), which is always accepted for local clients, and the first delivery to a new callback URL asks for approval.
 
 <!-- @entry push-relay-permissions -->
 
@@ -70,17 +71,18 @@ A held event is not in the client's journal, so no delivery form can see it unti
 - **Deny** this event — dropped for this client only, and recorded
 - **Allow or deny this event type** for the session or permanently, written back to the permission tree
 
-Events of one subscription stay in order: later events of the same type wait behind a held one. An unanswered event is denied after 30 minutes (fail closed). Approvals for one client are collected in one queue with an "allow all pending of this type" action rather than one popup per event, and two clients consuming the same upstream event are approved independently.
+Events of one subscription stay in order: later events of the same type wait behind a held one. A held event has no timeout: it waits until you decide, however long that takes. One approval popup is open per client and event type at a time, showing how many more are waiting, with an "allow all pending of this type" action; two clients consuming the same upstream event are approved independently. To bound memory, a client can have at most 1,000 held events; further Ask events are denied and recorded in Monitor.
 
 <!-- @entry push-relay-monitor -->
 
 ### Monitor: Intercept and Edit
 
-Every event is recorded in Monitor once per client, with its source server, event name, how it arrived, how it was delivered, the decision (allowed, asked then allowed, asked then edited, denied, timed out, blocked) and a payload preview under the existing privacy and redaction settings.
+Every event is recorded in Monitor once per client as an **MCP Push Event**, with its source server, event name, how it arrived, how it was delivered, the decision (allowed, asked then allowed, asked then edited, denied, blocked, or dropped for being too large or over the held-event limit) and a payload preview under the existing privacy and redaction settings. Push events are listed under the MCP type filter.
 
 - Held events appear as pending, and open the same approval and edit view inline.
 - Any event record offers "Ask for this event type from now on", the quick way to start intercepting a stream that is currently allowed.
 - Edits are never invisible: Monitor keeps both the original and the delivered payload, subject to privacy settings.
+- **Grouping.** A push event joins the request and conversation of the one client session that reads it, so it sits beside that session's tool calls and LLM calls (and the `EventPoll` call that read it). It stands alone when no single session reads it: when it is delivered by webhook or through `/events/watch`, when several sessions of the client read the same subscription, or when the session has no recorded request (as with a client connected directly to the MCP gateway, whose tool calls are likewise ungrouped). Monitor never joins events by client or timing alone.
 
 <!-- @entry push-relay-fallback-tools -->
 
@@ -94,7 +96,7 @@ Clients without a native push mechanism get three built-in tools, shown only whe
 
 Agents are told not to call `EventPoll` in a loop, to run the `EventWait` command as a background task instead, and that event content is untrusted data, never instructions. Upstream servers' own waiting tools stay available.
 
-Per client, the tools can be set to **Auto** (default), Always or Never. In Auto they are hidden for a client that declared MCP Events support, and for Claude Code launched with Channels `EventWait` is hidden while `EventList` and `EventPoll` stay for reading details.
+The tools are automatic: there is no setting. They are shown whenever push is available to the client, unless the client declared MCP Events support when it connected (`extensions["io.modelcontextprotocol/events"]` or a top-level `events` capability). Claude Code sessions through the STDIO bridge keep all three: a server cannot tell whether Claude was launched with Channels, and without the flag channel messages are dropped silently.
 
 <!-- @entry push-relay-client-setup -->
 
@@ -138,7 +140,7 @@ claude --dangerously-load-development-channels server:localrouter
 
 - The flag works in interactive sessions only; it is ignored with `-p` and by the Agent SDK.
 - An organisation's `channelsEnabled` policy can block it.
-- Without the flag, channel messages are dropped silently, which is why the fallback tools stay visible until the setup records that Claude Code is launched with Channels.
+- Without the flag, channel messages are dropped silently. LocalRouter cannot detect the flag, which is why the fallback tools stay visible for Claude Code too.
 - After adding a push-capable upstream server, restart `claude`.
 
 Existing HTTP configurations are not rewritten; the client page offers a "switch to STDIO bridge" action, and the HTTP setup remains available as a tools-only alternative.
