@@ -260,6 +260,63 @@ export function pushAdvertisement(raw: Record<string, unknown> | undefined): Pus
   }
 }
 
+/** Every push mechanism and whether this session has it. */
+export interface SessionPushMechanisms {
+  /** `capabilities.extensions["io.modelcontextprotocol/events"]` */
+  eventsExtension: boolean
+  /** `listChanged` on the Events extension */
+  eventsListChanged: boolean
+  /** Top-level `capabilities.events` (dropped by the SDK, read from the raw result) */
+  eventsTopLevel: boolean
+  /** `experimental["claude/channel"]` */
+  claudeChannel: boolean
+  /** EventList / EventPoll / EventWait present in tools/list */
+  fallbackTools: string[]
+  /** Delivery modes `events/list` offers this session, over all its event types */
+  deliveryModes: { push: boolean; poll: boolean; webhook: boolean }
+  /** Event types `events/list` returned */
+  eventTypeCount: number
+  /** Anything at all reaches this session */
+  anyOffered: boolean
+}
+
+export function sessionPushMechanisms(
+  raw: Record<string, unknown> | undefined,
+  eventTypes: { delivery: string[] }[],
+  fallbackTools: string[],
+): SessionPushMechanisms {
+  const ad = pushAdvertisement(raw)
+  const extensions = (raw?.extensions ?? {}) as Record<string, unknown>
+  const ext = extensions[EVENTS_EXTENSION_ID]
+  const eventsListChanged = !!ext && typeof ext === "object" && (ext as Record<string, unknown>).listChanged === true
+  const events = ad.eventsExtension || ad.eventsTopLevel
+  const offered = (mode: string) => events && eventTypes.some(t => t.delivery.includes(mode))
+  const deliveryModes = { push: offered("push"), poll: offered("poll"), webhook: offered("webhook") }
+  return {
+    ...ad,
+    eventsListChanged,
+    fallbackTools,
+    deliveryModes,
+    eventTypeCount: eventTypes.length,
+    anyOffered: events || ad.claudeChannel || fallbackTools.length > 0,
+  }
+}
+
+/**
+ * Why nothing is offered to this session, in one line; null when something is.
+ * `receivesPush` is the client's `receives_push` (null when unknown).
+ */
+export function sessionNoPushReason(
+  mechanisms: SessionPushMechanisms,
+  clientId: string | null,
+  receivesPush: boolean | null,
+): string | null {
+  if (mechanisms.anyOffered) return null
+  if (!clientId) return "Push permissions belong to a client — connect in Against Client mode"
+  if (receivesPush === false) return "Push is off for this client"
+  return "No push source this client may use"
+}
+
 /** The built-in test source's event type. */
 export const TEST_EVENT_QUALIFIED_NAME = "localrouter__test.event"
 export const TEST_SOURCE_SERVER_ID = "localrouter"

@@ -1,11 +1,20 @@
-import { Info, Server, Monitor, CheckCircle2, XCircle, Zap, FileText, MessageSquare, Wrench, HelpCircle, Radio, FolderTree } from "lucide-react"
+import { useEffect, useState } from "react"
+import { invoke } from "@tauri-apps/api/core"
+import { Info, Server, Monitor, CheckCircle2, XCircle, Zap, FileText, MessageSquare, Wrench, HelpCircle, Radio, FolderTree, BellRing } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
 import { Badge } from "@/components/ui/Badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import type { McpConnectionState } from "@/lib/mcp-client"
+import type { ClientPushSettings, GetClientPushSettingsParams } from "@/types/tauri-commands"
+import { sessionNoPushReason, sessionPushMechanisms } from "./push-log"
+import type { PushTester } from "./use-push-tester"
 
 interface ConnectionInfoPanelProps {
   connectionState: McpConnectionState
+  /** Event types and fallback tools this session was given */
+  pushTester: Pick<PushTester, "eventTypes" | "fallbackTools">
+  /** The client this session runs as (Against Client mode), else null */
+  clientId: string | null
 }
 
 function CapabilityItem({
@@ -43,8 +52,27 @@ function CapabilityItem({
   )
 }
 
-export function ConnectionInfoPanel({ connectionState }: ConnectionInfoPanelProps) {
+export function ConnectionInfoPanel({ connectionState, pushTester, clientId }: ConnectionInfoPanelProps) {
   const { isConnected, serverInfo, clientInfo, serverCapabilities, clientCapabilities } = connectionState
+  const push = sessionPushMechanisms(connectionState.rawServerCapabilities, pushTester.eventTypes, pushTester.fallbackTools)
+  const [receivesPush, setReceivesPush] = useState<boolean | null>(null)
+  const needsReason = isConnected && !push.anyOffered && !!clientId
+  useEffect(() => {
+    if (!needsReason || !clientId) {
+      setReceivesPush(null)
+      return
+    }
+    let cancelled = false
+    invoke<ClientPushSettings>("get_client_push_settings", { clientId } satisfies GetClientPushSettingsParams)
+      .then(s => { if (!cancelled) setReceivesPush(s.receives_push) })
+      .catch(() => { if (!cancelled) setReceivesPush(null) })
+    return () => { cancelled = true }
+  }, [needsReason, clientId])
+  const noPush = sessionNoPushReason(push, clientId, receivesPush)
+  const modeDetail = (method: string) =>
+    push.eventsExtension || push.eventsTopLevel
+      ? method
+      : "no MCP Events on this session"
 
   if (!isConnected) {
     return (
@@ -162,6 +190,41 @@ export function ConnectionInfoPanel({ connectionState }: ConnectionInfoPanelProp
                 </div>
               </div>
             )}
+          </CardContent>
+        </Card>
+
+        {/* Push */}
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <BellRing className="h-4 w-4" />
+              Push
+              <span className="text-xs text-muted-foreground font-normal">
+                (what reaches this session)
+              </span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="divide-y">
+            <CapabilityItem
+              label="MCP Events extension"
+              enabled={push.eventsExtension}
+              details={push.eventsExtension && push.eventsListChanged ? "listChanged" : undefined}
+            />
+            <CapabilityItem label="Top-level events" enabled={push.eventsTopLevel} details="capabilities.events" />
+            <CapabilityItem
+              label="Claude Code Channels"
+              enabled={push.claudeChannel}
+              details={push.claudeChannel ? undefined : "only offered to STDIO bridge sessions"}
+            />
+            <CapabilityItem
+              label="Fallback tools"
+              enabled={push.fallbackTools.length > 0}
+              details={push.fallbackTools.length > 0 ? push.fallbackTools.join(", ") : "EventList, EventPoll, EventWait"}
+            />
+            <CapabilityItem label="Push stream" enabled={push.deliveryModes.push} details={modeDetail("events/stream")} />
+            <CapabilityItem label="Poll" enabled={push.deliveryModes.poll} details={modeDetail("events/poll")} />
+            <CapabilityItem label="Webhook" enabled={push.deliveryModes.webhook} details={modeDetail("events/subscribe")} />
+            {noPush && <p className="pt-2 text-xs text-muted-foreground">{noPush}</p>}
           </CardContent>
         </Card>
 

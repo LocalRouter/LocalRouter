@@ -922,7 +922,7 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
             </TabsContent>
 
             <TabsContent value="connection" className="h-full m-0">
-              <ConnectionInfoPanel connectionState={connectionState} />
+              <ConnectionInfoPanel connectionState={connectionState} pushTester={pushTester} clientId={pushClient?.id ?? null} />
             </TabsContent>
 
             <TabsContent value="tools" className="h-full m-0">

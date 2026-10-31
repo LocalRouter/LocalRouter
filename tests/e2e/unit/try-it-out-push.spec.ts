@@ -11,6 +11,8 @@ import {
   parseEventPollResult,
   parseEventWaitCommands,
   pushAdvertisement,
+  sessionNoPushReason,
+  sessionPushMechanisms,
 } from '../../../src/views/try-it-out/mcp-tab/push-log'
 
 const at = (s: number) => new Date(Date.UTC(2026, 9, 30, 12, 0, s))
@@ -138,4 +140,25 @@ test('stream notifications reach the stream they belong to', async () => {
   } finally {
     Object.assign(Client.prototype, original)
   }
+})
+
+test('the Connection tab lists every push mechanism for this session', () => {
+  const raw = { tools: {}, events: {}, extensions: { 'io.modelcontextprotocol/events': { listChanged: true } } }
+  const m = sessionPushMechanisms(raw, [{ delivery: ['poll', 'push'] }, { delivery: ['poll'] }], ['EventList', 'EventPoll'])
+  expect(m).toMatchObject({
+    eventsExtension: true, eventsListChanged: true, eventsTopLevel: true, claudeChannel: false,
+    fallbackTools: ['EventList', 'EventPoll'], deliveryModes: { push: true, poll: true, webhook: false },
+    eventTypeCount: 2, anyOffered: true,
+  })
+  expect(sessionNoPushReason(m, 'c', true)).toBeNull()
+
+  // Event types without the capability are not modes this session can use
+  const bare = sessionPushMechanisms({ tools: {} }, [{ delivery: ['push'] }], [])
+  expect(bare.deliveryModes).toEqual({ push: false, poll: false, webhook: false })
+  expect(bare.anyOffered).toBe(false)
+  expect(sessionNoPushReason(bare, null, null)).toMatch(/Against Client/)
+  expect(sessionNoPushReason(bare, 'c', false)).toBe('Push is off for this client')
+  expect(sessionNoPushReason(bare, 'c', true)).toBe('No push source this client may use')
+  expect(sessionPushMechanisms(undefined, [], []).eventsListChanged).toBe(false)
+  expect(sessionPushMechanisms({ experimental: { 'claude/channel': {} } }, [], []).anyOffered).toBe(true)
 })
