@@ -57,6 +57,12 @@ pub const EVENTS_LIST_CHANGED_NOTIFICATION: &str = "notifications/events/list_ch
 pub const STDIO_BRIDGE_HEADER: &str = "x-localrouter-bridge";
 /// Value of [`STDIO_BRIDGE_HEADER`] identifying the STDIO bridge.
 pub const STDIO_BRIDGE_HEADER_VALUE: &str = "stdio";
+/// Header a session sends on every request to see the built-in push test
+/// source (`localrouter__test.event`). Try it out sends it; the STDIO bridge
+/// sends it when `LOCALROUTER_PUSH_TEST=1`. No other session sees the source.
+pub const PUSH_TEST_HEADER: &str = "x-localrouter-push-test";
+/// Value of [`PUSH_TEST_HEADER`] that opts a session in.
+pub const PUSH_TEST_HEADER_VALUE: &str = "1";
 
 /// How long recorded snapshots are batched before one config write.
 pub const SNAPSHOT_PERSIST_DEBOUNCE: Duration = Duration::from_secs(5);
@@ -107,6 +113,9 @@ pub struct PushRelaySessionContext {
     /// The session is served through the STDIO bridge (`X-LocalRouter-Bridge:
     /// stdio`), the only transport that can carry Claude Code Channels.
     pub is_stdio_bridge: bool,
+    /// The session opted into the built-in push test source
+    /// ([`PUSH_TEST_HEADER`]).
+    pub push_test_source: bool,
     /// Protocol revision the client speaks.
     pub protocol_revision: ProtocolRevision,
     /// The client's raw capabilities (including `extensions`), when known.
@@ -596,6 +605,7 @@ mod tests {
             session_key: "s".into(),
             client_name: String::new(),
             is_stdio_bridge: false,
+            push_test_source: false,
             protocol_revision: ProtocolRevision::default(),
             client_capabilities: None,
             visible_servers: vec![],

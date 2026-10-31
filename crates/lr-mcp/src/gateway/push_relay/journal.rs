@@ -24,6 +24,8 @@ pub enum IngressMode {
     Poll,
     /// Upstream `notifications/claude/channel`.
     Channel,
+    /// The built-in test source (`send_push_test_event`), not an upstream.
+    Test,
 }
 
 impl IngressMode {
@@ -32,6 +34,7 @@ impl IngressMode {
             Self::Push => "push",
             Self::Poll => "poll",
             Self::Channel => "channel",
+            Self::Test => "test",
         }
     }
 }

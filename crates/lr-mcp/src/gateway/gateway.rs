@@ -171,6 +171,10 @@ pub struct McpGateway {
     /// the HTTP route before each request (see [`Self::set_stdio_bridge_session`]).
     pub(crate) stdio_bridge_sessions: Arc<dashmap::DashSet<String>>,
 
+    /// Session keys that opted into the Push Relay test source, recorded by
+    /// the HTTP route before each request (see [`Self::set_push_test_session`]).
+    pub(crate) push_test_sessions: Arc<dashmap::DashSet<String>>,
+
     /// Remembers upstream capabilities in the server configs.
     pub(crate) snapshot_recorder: Arc<SnapshotRecorder>,
 
@@ -275,6 +279,7 @@ impl McpGateway {
                 super::push_relay::limits::FIRST_DISCOVERY_WAIT,
             )),
             stdio_bridge_sessions: Arc::new(dashmap::DashSet::new()),
+            push_test_sessions: Arc::new(dashmap::DashSet::new()),
             snapshot_recorder: Arc::new(SnapshotRecorder::new()),
             push_stream_sinks: Arc::new(super::push_relay::PushStreamSinks::default()),
         }
@@ -454,6 +459,17 @@ impl McpGateway {
             self.stdio_bridge_sessions.insert(session_key.to_string());
         } else {
             self.stdio_bridge_sessions.remove(session_key);
+        }
+    }
+
+    /// Record whether a session opted into the Push Relay test source. The
+    /// HTTP route calls this before every request, from the
+    /// `X-LocalRouter-Push-Test` header.
+    pub fn set_push_test_session(&self, session_key: &str, opted_in: bool) {
+        if opted_in {
+            self.push_test_sessions.insert(session_key.to_string());
+        } else {
+            self.push_test_sessions.remove(session_key);
         }
     }
 
@@ -1039,6 +1055,7 @@ impl McpGateway {
             );
             session_write.client_name = client_name;
             session_write.is_stdio_bridge = self.stdio_bridge_sessions.contains(session_key);
+            session_write.push_test_source = self.push_test_sessions.contains(session_key);
             session_write.mcp_sampling_permission = mcp_sampling_permission;
             session_write.mcp_elicitation_permission = mcp_elicitation_permission;
             session_write.client_mode = client_mode;
@@ -4057,6 +4074,7 @@ impl McpGateway {
         for (session_key, session) in to_remove {
             self.sessions.remove(&session_key);
             self.stdio_bridge_sessions.remove(&session_key);
+            self.push_test_sessions.remove(&session_key);
             close_session_transports(&session).await;
             tracing::info!("Removed expired gateway session: {}", session_key);
         }
@@ -4379,6 +4397,7 @@ impl McpGateway {
     /// Closes all per-session transports before removing.
     pub async fn terminate_session(&self, session_key: &str) -> Result<(), String> {
         self.stdio_bridge_sessions.remove(session_key);
+        self.push_test_sessions.remove(session_key);
         if let Some((_, session)) = self.sessions.remove(session_key) {
             close_session_transports(&session).await;
             tracing::info!(
@@ -4995,6 +5014,7 @@ fn push_context(state: &GatewaySession) -> PushRelaySessionContext {
         session_key: state.session_key.clone(),
         client_name: state.client_name.clone(),
         is_stdio_bridge: state.is_stdio_bridge,
+        push_test_source: state.push_test_source,
         protocol_revision: state.protocol_revision,
         client_capabilities: state.client_capabilities_raw.clone(),
         visible_servers: state.requested_servers.clone(),

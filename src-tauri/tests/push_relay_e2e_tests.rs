@@ -2,7 +2,8 @@
 //! upstreams (HTTP poll over a relay-owned connection, stdio push and
 //! Claude channel on the session's process), gating and fallback tools,
 //! per-event Ask, Monitor records, Claude Channels egress and deduplication,
-//! webhook egress and the `/events/watch` stream.
+//! webhook egress, the `/events/watch` stream, and the built-in test source
+//! that Try it out's Push panel sends through the same pipeline.
 
 use chrono::Utc;
 use futures_util::StreamExt;
@@ -10,7 +11,9 @@ use localrouter::config::{
     AppConfig, ConfigManager, McpServerConfig, McpTransportConfig, McpTransportType,
 };
 use localrouter::mcp::gateway::push_relay::journal::{IngressMode, Occurrence};
-use localrouter::mcp::gateway::push_relay::relay::PushToolsState;
+use localrouter::mcp::gateway::push_relay::relay::{
+    PushToolsState, TEST_EVENT_NAME, TEST_SOURCE_SERVER_ID,
+};
 use localrouter::mcp::gateway::push_relay::{
     webhook, PushConfigChange, PushDecision, PushDecisionAction, PushRelay, PushRelayLimits,
     CLAUDE_CHANNEL_CAPABILITY, EVENTS_EXTENSION_ID,
@@ -660,6 +663,7 @@ async fn fallback_tools_follow_the_show_rules() {
         is_stdio_bridge: bridge,
         declares_events,
         visible_servers: vec![HTTP_ID.into()],
+        push_test_source: false,
     };
     let view = h.relay.tools_view(&state(false, false));
     assert!(view.gate && view.list && view.poll && view.wait);
@@ -2263,4 +2267,369 @@ async fn netget_events_reach_a_client_through_the_real_bridge() {
         relay.notify_clients_changed();
     }
     let _ = std::fs::remove_dir_all(&home);
+}
+
+// ---------------------------------------------------------------------------
+// Built-in test source (Try it out → MCP → Push)
+// ---------------------------------------------------------------------------
+
+const TEST_EVENT: &str = "localrouter__test.event";
+
+fn event_names(list: &Value) -> Vec<String> {
+    list["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["name"].as_str().unwrap().to_string())
+        .collect()
+}
+
+fn monitor_ingress(h: &Harness, event_id: &str) -> Option<String> {
+    h.monitor.lock().iter().find_map(|e| match &e.data {
+        lr_monitor::MonitorEventData::McpPushEvent {
+            event_id: id,
+            ingress_mode,
+            ..
+        } if id == event_id => Some(ingress_mode.clone()),
+        _ => None,
+    })
+}
+
+#[tokio::test]
+async fn test_source_reaches_only_sessions_that_opted_in() {
+    // No upstream offers push at all
+    let h = harness(vec![], fast_limits());
+    h.clients
+        .write()
+        .insert("client-2".to_string(), client("client-2"));
+
+    // A plain session: the test source does not make the gate pass
+    let init = h.initialize("plain", json!({})).await.result.unwrap();
+    assert!(init["capabilities"].get("events").is_none());
+    assert!(init["capabilities"]
+        .get("extensions")
+        .and_then(|e| e.get(EVENTS_EXTENSION_ID))
+        .is_none());
+    assert!(!h
+        .tool_names("plain")
+        .await
+        .iter()
+        .any(|t| t.starts_with("Event")));
+    assert!(!init["instructions"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("<events>"));
+    // Nobody opted in: nothing to send to
+    assert!(h.relay.send_test_event(None, None, None).is_err());
+
+    // The Try it out session opts in with the header
+    h.gateway.set_push_test_session("try", true);
+    let init = h.initialize("try", json!({})).await.result.unwrap();
+    assert_eq!(
+        init["capabilities"]["extensions"][EVENTS_EXTENSION_ID],
+        json!({"listChanged": true})
+    );
+    assert_eq!(init["capabilities"]["events"], json!({}));
+    let list = h.send("try", "events/list", None).await.result.unwrap();
+    assert_eq!(event_names(&list), vec![TEST_EVENT]);
+    assert_eq!(
+        list["events"][0]["delivery"],
+        json!(["poll", "push", "webhook"])
+    );
+    assert!(h.tool_names("try").await.contains(&"EventPoll".to_string()));
+
+    // The plain session of the same client still sees nothing
+    let list = h.send("plain", "events/list", None).await.result.unwrap();
+    assert!(event_names(&list).is_empty());
+    // Neither does a client with no opted-in session, nor the upstream catalogue
+    let init = h
+        .send_as(
+            "client-2",
+            "other",
+            "initialize",
+            Some(json!({
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "clientInfo": {"name": "test", "version": "1"}
+            })),
+        )
+        .await
+        .result
+        .unwrap();
+    assert!(init["capabilities"].get("events").is_none());
+    assert!(h.relay.catalogue(&h.clients.read()[CLIENT], &[]).is_empty());
+    // It is no upstream: no remembered capabilities, no source entry
+    assert!(h.relay.upstream_sources().is_empty());
+    // The client's permission tree lists it, marked as the test source
+    let types = h.relay.client_event_types(CLIENT);
+    assert_eq!(types.len(), 1);
+    assert!(types[0].test_source);
+    assert_eq!(types[0].server_id, TEST_SOURCE_SERVER_ID);
+    assert_eq!(types[0].event_name, TEST_EVENT_NAME);
+    assert!(h.relay.client_event_types("client-2").is_empty());
+
+    // A test event goes only to the client with an opted-in session
+    let sent = h.relay.send_test_event(None, None, None).unwrap();
+    assert_eq!(sent.client_ids, vec![CLIENT.to_string()]);
+    assert_eq!(sent.name, TEST_EVENT);
+    assert!(h
+        .relay
+        .send_test_event(Some("client-2"), None, None)
+        .is_err());
+}
+
+#[tokio::test]
+async fn test_event_flows_through_allow_ask_block_monitor_poll_and_stream() {
+    let h = harness(vec![], fast_limits());
+    h.gateway.set_push_test_session("try", true);
+    h.initialize("try", json!({})).await;
+    h.gateway
+        .get_session("try")
+        .unwrap()
+        .write()
+        .await
+        .monitor_session_id = Some("req-try".into());
+    let start = h.poll("try", TEST_EVENT, None).await["cursor"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // A live events/stream on the same session
+    let sinks = h.gateway.push_stream_sinks();
+    let (mut notifications, _guard) = sinks.register("try", &json!(9), 64);
+    let gateway = h.gateway.clone();
+    let client_config = h.clients.read()[CLIENT].clone();
+    let stream = tokio::spawn(async move {
+        gateway
+            .handle_request_with_skills(
+                CLIENT,
+                Some("try"),
+                vec![],
+                vec![],
+                client_config.mcp_permissions.clone(),
+                lr_config::SkillsPermissions::default(),
+                client_config.name.clone(),
+                PermissionState::Off,
+                PermissionState::Off,
+                None,
+                None,
+                PermissionState::default(),
+                PermissionState::default(),
+                None,
+                None,
+                lr_config::ClientMode::default(),
+                lr_config::ClientPushSettings::from_client(&client_config),
+                JsonRpcRequest::new(
+                    Some(json!(9)),
+                    "events/stream".into(),
+                    Some(json!({"name": TEST_EVENT})),
+                ),
+                None,
+            )
+            .await
+    });
+    assert_eq!(
+        recv(&mut notifications).await.method,
+        "notifications/events/active"
+    );
+
+    // Allow (the default): stream, poll and Monitor all see it
+    let sent = h
+        .relay
+        .send_test_event(Some(CLIENT), Some("hello".into()), None)
+        .unwrap();
+    let event = recv(&mut notifications).await;
+    assert_eq!(event.method, "notifications/events/event");
+    let params = event.params.unwrap();
+    assert_eq!(params["eventId"], json!(sent.event_id));
+    assert_eq!(params["name"], TEST_EVENT);
+    assert_eq!(params["data"]["message"], "hello");
+    let batch = h
+        .poll_until("try", TEST_EVENT, &start, |b| {
+            !b["events"].as_array().unwrap().is_empty()
+        })
+        .await;
+    assert_eq!(batch["events"][0]["eventId"], json!(sent.event_id));
+    assert_eq!(h.monitor_decisions(TEST_EVENT), vec!["allowed"]);
+    assert_eq!(monitor_ingress(&h, &sent.event_id).as_deref(), Some("test"));
+    // Grouped with the one session that reads it
+    assert_eq!(
+        monitor_request_of(&h, &sent.event_id).as_deref(),
+        Some("req-try")
+    );
+    let next = batch["cursor"].as_str().unwrap().to_string();
+
+    // Ask: held, the real approval popup opens, Edit then allow delivers the edit
+    let mut ask = client(CLIENT);
+    ask.push_permissions.events.insert(
+        PushPermissions::event_key(TEST_SOURCE_SERVER_ID, TEST_EVENT_NAME),
+        PushPermission::Ask,
+    );
+    h.set_client(ask);
+    let held = h
+        .relay
+        .send_test_event(None, None, Some(json!({"secret": "s3cr3t"})))
+        .unwrap();
+    wait_until("held", || !h.relay.pending_events(Some(CLIENT)).is_empty()).await;
+    assert_eq!(
+        h.poll("try", TEST_EVENT, Some(&next)).await["events"],
+        json!([])
+    );
+    wait_until("popup", || {
+        h.gateway
+            .firewall_manager
+            .list_pending()
+            .iter()
+            .any(|p| p.is_push_event_request)
+    })
+    .await;
+    let popup = h
+        .gateway
+        .firewall_manager
+        .list_pending()
+        .into_iter()
+        .find(|p| p.is_push_event_request)
+        .unwrap();
+    let details = popup.push_event_details.unwrap();
+    assert_eq!(details.qualified_name, TEST_EVENT);
+    assert_eq!(details.event_id, held.event_id);
+    let hold = h.relay.pending_events(Some(CLIENT))[0].hold_id.clone();
+    h.relay
+        .decide(
+            &hold,
+            PushDecision {
+                action: PushDecisionAction::Allow,
+                edited_data: Some(json!({"secret": "[redacted]"})),
+            },
+        )
+        .unwrap();
+    let batch = h
+        .poll_until("try", TEST_EVENT, &next, |b| {
+            !b["events"].as_array().unwrap().is_empty()
+        })
+        .await;
+    assert_eq!(batch["events"][0]["data"], json!({"secret": "[redacted]"}));
+    let streamed = recv(&mut notifications).await;
+    assert_eq!(
+        streamed.params.unwrap()["data"],
+        json!({"secret": "[redacted]"})
+    );
+    wait_until("asked_edited", || {
+        h.monitor_decisions(TEST_EVENT) == vec!["allowed", "asked_edited"]
+    })
+    .await;
+    let next = batch["cursor"].as_str().unwrap().to_string();
+
+    // Block: recorded in Monitor, delivered nowhere, gone from the catalogue
+    let mut block = client(CLIENT);
+    block.push_permissions.events.insert(
+        PushPermissions::event_key(TEST_SOURCE_SERVER_ID, TEST_EVENT_NAME),
+        PushPermission::Block,
+    );
+    h.set_client(block);
+    h.relay.send_test_event(None, None, None).unwrap();
+    assert_eq!(
+        h.monitor_decisions(TEST_EVENT),
+        vec!["allowed", "asked_edited", "blocked"]
+    );
+    let response = h
+        .send(
+            "try",
+            "events/poll",
+            Some(json!({"name": TEST_EVENT, "cursor": next})),
+        )
+        .await;
+    assert!(response.result.is_none(), "a blocked type is not found");
+    let list = h.send("try", "events/list", None).await.result.unwrap();
+    assert!(event_names(&list).is_empty());
+
+    h.send(
+        "try",
+        "notifications/cancelled",
+        Some(json!({"requestId": 9})),
+    )
+    .await;
+    let response = tokio::time::timeout(Duration::from_secs(5), stream)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(response.result.unwrap()["resultType"], "complete");
+}
+
+#[tokio::test]
+async fn test_events_reach_opted_in_bridge_channels_and_the_poll_tool_only() {
+    let (upstream, _) = http_upstream().await;
+    let mut h = harness(vec![http_server(upstream.uri())], fast_limits());
+    // A real Claude Code bridge session that did not opt in
+    h.gateway.set_stdio_bridge_session("bridge", true);
+    h.initialize("bridge", json!({})).await;
+    // A bridge started with LOCALROUTER_PUSH_TEST=1
+    h.gateway.set_stdio_bridge_session("bridge-test", true);
+    h.gateway.set_push_test_session("bridge-test", true);
+    let init = h.initialize("bridge-test", json!({})).await.result.unwrap();
+    assert_eq!(
+        init["capabilities"]["experimental"][CLAUDE_CHANNEL_CAPABILITY],
+        json!({})
+    );
+    let instructions = init["instructions"].as_str().unwrap_or_default();
+    assert!(instructions.contains(TEST_EVENT), "{instructions}");
+    let first = h
+        .call_tool("bridge-test", "EventPoll", json!({"events": [TEST_EVENT]}))
+        .await;
+    let cursor = first
+        .lines()
+        .find_map(|l| l.strip_prefix("next_cursor: "))
+        .unwrap()
+        .to_string();
+    // The plain bridge's tools do not know the test source
+    let refused = h
+        .send(
+            "bridge",
+            "tools/call",
+            Some(json!({"name": "EventPoll", "arguments": {"events": [TEST_EVENT]}})),
+        )
+        .await;
+    let refused = serde_json::to_string(&refused).unwrap();
+    assert!(refused.contains("Unknown event type"), "{refused}");
+
+    let sent = h.relay.send_test_event(None, None, None).unwrap();
+    let channel = h
+        .next_notification(
+            "notifications/claude/channel",
+            &session_notification_key("bridge-test"),
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("channel copy for the opted-in bridge");
+    let params = channel.params.unwrap();
+    assert_eq!(params["meta"]["event"], TEST_EVENT);
+    assert_eq!(params["meta"]["event_id"], json!(sent.event_id));
+    let (content, meta) = h
+        .relay
+        .preview_channel_message(&json!({
+            "eventId": sent.event_id,
+            "name": TEST_EVENT,
+            "data": {"message": "Test event from LocalRouter"},
+        }))
+        .unwrap();
+    assert!(content.starts_with(&format!("[localrouter] {TEST_EVENT} ({})", sent.event_id)));
+    assert_eq!(meta, params["meta"]);
+    assert!(h
+        .next_notification(
+            "notifications/claude/channel",
+            &session_notification_key("bridge"),
+            Duration::from_millis(500),
+        )
+        .await
+        .is_none());
+
+    let text = h
+        .call_tool(
+            "bridge-test",
+            "EventPoll",
+            json!({"events": [TEST_EVENT], "cursor": cursor}),
+        )
+        .await;
+    assert!(text.contains(&sent.event_id), "{text}");
 }

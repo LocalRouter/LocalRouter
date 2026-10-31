@@ -65,6 +65,15 @@ const TOOL_POLL_MAX: usize = 100;
 /// Recent event ids a channel pump remembers to skip duplicates.
 const CHANNEL_DEDUPE_WINDOW: usize = 512;
 
+/// Server id (and slug) of the built-in push test source. It is not an MCP
+/// server: it exists only for sessions that opted into testing
+/// ([`super::PUSH_TEST_HEADER`]) and never enters a capability snapshot.
+pub const TEST_SOURCE_SERVER_ID: &str = "localrouter";
+/// Display name of the test source.
+pub const TEST_SOURCE_NAME: &str = "LocalRouter test source";
+/// The test source's only event type (qualified: `localrouter__test.event`).
+pub const TEST_EVENT_NAME: &str = "test.event";
+
 /// Looks up a client's current configuration.
 pub type ClientLookup = Arc<dyn Fn(&str) -> Option<lr_config::Client> + Send + Sync>;
 
@@ -149,6 +158,8 @@ pub struct ClientEventTypeInfo {
     pub permission: PushPermission,
     /// A session-scoped decision overrides the configured permission.
     pub session_override: Option<PushPermission>,
+    /// The built-in push test source, not an upstream server.
+    pub test_source: bool,
 }
 
 /// A client's webhook subscription as the UI shows it.
@@ -189,6 +200,18 @@ pub struct PushToolsState {
     pub is_stdio_bridge: bool,
     pub declares_events: bool,
     pub visible_servers: Vec<String>,
+    /// The session opted into the built-in push test source.
+    pub push_test_source: bool,
+}
+
+/// What [`PushRelay::send_test_event`] produced.
+#[derive(Debug, Clone, Serialize)]
+pub struct TestEventSent {
+    pub event_id: String,
+    /// `localrouter__test.event`.
+    pub name: String,
+    /// Clients the occurrence was admitted to (each under its own permission).
+    pub client_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -606,7 +629,7 @@ impl PushRelay {
         if !config.enabled
             || !client.enabled
             || client.security.privacy.restricted()
-            || !self.server_visible(client, server_id)
+            || (!self.is_test_source(server_id) && !self.server_visible(client, server_id))
         {
             return PushPermission::Block;
         }
@@ -630,12 +653,64 @@ impl PushRelay {
         }
     }
 
-    /// Every event type of `visible` servers this client may receive.
+    /// The built-in test source: [`TEST_SOURCE_SERVER_ID`], unless a real
+    /// MCP server happens to use that id.
+    fn is_test_source(&self, server_id: &str) -> bool {
+        server_id == TEST_SOURCE_SERVER_ID
+            && self.gateway.server_manager.get_config(server_id).is_none()
+    }
+
+    /// Every upstream event type of `visible` servers this client may
+    /// receive. The test source is never part of it.
     pub fn catalogue(&self, client: &lr_config::Client, visible: &[String]) -> Vec<CatalogueEntry> {
+        self.catalogue_for(client, visible, false)
+    }
+
+    /// The test source's catalogue entry for a client, unless Blocked.
+    fn test_entry(&self, client: &lr_config::Client) -> Option<CatalogueEntry> {
+        if self
+            .gateway
+            .server_manager
+            .get_config(TEST_SOURCE_SERVER_ID)
+            .is_some()
+        {
+            return None;
+        }
+        let permission = self.permission(client, TEST_SOURCE_SERVER_ID, TEST_EVENT_NAME);
+        (permission != PushPermission::Block).then(|| CatalogueEntry {
+            qualified_name: format!("{TEST_SOURCE_SERVER_ID}__{TEST_EVENT_NAME}"),
+            server_id: TEST_SOURCE_SERVER_ID.to_string(),
+            server_slug: TEST_SOURCE_SERVER_ID.to_string(),
+            server_name: TEST_SOURCE_NAME.to_string(),
+            upstream_name: TEST_EVENT_NAME.to_string(),
+            descriptor: json!({
+                "name": TEST_EVENT_NAME,
+                "description": "Test events sent from LocalRouter (Try it out → MCP → Push). Only sessions that opted into push testing see this source.",
+                "delivery": ["push", "poll"],
+                "inputSchema": {"type": "object"},
+                "payloadSchema": {"type": "object"},
+            }),
+            modes: vec![EventDeliveryMode::Push, EventDeliveryMode::Poll],
+            is_channel: false,
+            permission,
+        })
+    }
+
+    /// The catalogue, with the test source added when `include_test` (the
+    /// reading session opted into push testing).
+    fn catalogue_for(
+        &self,
+        client: &lr_config::Client,
+        visible: &[String],
+        include_test: bool,
+    ) -> Vec<CatalogueEntry> {
         if !self.config.read().enabled || client.security.privacy.restricted() {
             return Vec::new();
         }
         let mut entries = Vec::new();
+        if include_test {
+            entries.extend(self.test_entry(client));
+        }
         for source in self.gateway.remembered_push_sources(visible, false) {
             let slug = crate::gateway::types::slugify(&source.server_name);
             for descriptor in &source.snapshot.event_catalogue {
@@ -688,7 +763,7 @@ impl PushRelay {
 
     fn session_catalogue(&self, ctx: &PushRelaySessionContext) -> Vec<CatalogueEntry> {
         match self.client(&ctx.client_id) {
-            Some(client) => self.catalogue(&client, &ctx.visible_servers),
+            Some(client) => self.catalogue_for(&client, &ctx.visible_servers, ctx.push_test_source),
             None => Vec::new(),
         }
     }
@@ -873,7 +948,10 @@ impl PushRelay {
         if let Some(origin) = &occurrence.origin_session {
             sessions.insert(origin.clone());
         }
-        if occurrence.ingress != IngressMode::Channel {
+        if occurrence.ingress == IngressMode::Test {
+            // No upstream subscription: the opted-in sessions read it
+            sessions.extend(self.test_sessions(client_id));
+        } else if occurrence.ingress != IngressMode::Channel {
             let key = SubscriptionKey {
                 scope: match &occurrence.origin_session {
                     Some(session_key) => ConnectionScope::Session(session_key.clone()),
@@ -1656,10 +1734,172 @@ impl PushRelay {
                         .get(&(client.id.clone(), source.server_id.clone(), name.clone()))
                         .map(|p| *p),
                     event_name: name,
+                    test_source: false,
                 });
             }
         }
+        // The test source is listed only where it matters for this client: a
+        // permission configured for it, or a session that opted into it.
+        let configured =
+            client
+                .push_permissions
+                .events
+                .contains_key(&lr_config::PushPermissions::event_key(
+                    TEST_SOURCE_SERVER_ID,
+                    TEST_EVENT_NAME,
+                ));
+        if !self.is_test_source(TEST_SOURCE_SERVER_ID) {
+            return out;
+        }
+        if configured || !self.test_sessions(&client.id).is_empty() {
+            out.push(ClientEventTypeInfo {
+                qualified_name: format!("{TEST_SOURCE_SERVER_ID}__{TEST_EVENT_NAME}"),
+                server_id: TEST_SOURCE_SERVER_ID.to_string(),
+                event_name: TEST_EVENT_NAME.to_string(),
+                permission: self.permission(&client, TEST_SOURCE_SERVER_ID, TEST_EVENT_NAME),
+                session_override: self
+                    .overrides
+                    .get(&(
+                        client.id.clone(),
+                        TEST_SOURCE_SERVER_ID.to_string(),
+                        TEST_EVENT_NAME.to_string(),
+                    ))
+                    .map(|p| *p),
+                test_source: true,
+            });
+        }
         out
+    }
+
+    /// Live sessions of a client that opted into the push test source.
+    fn test_sessions(&self, client_id: &str) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .sessions
+            .iter()
+            .filter(|s| {
+                s.ctx.push_test_source
+                    && s.ctx.client_id == client_id
+                    && self.gateway.get_session(s.key()).is_some()
+            })
+            .map(|s| s.key().clone())
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// Send one occurrence from the built-in test source through the real
+    /// pipeline (permissions and Ask, Monitor, the journal and every delivery
+    /// mode) to each client with a session that opted into push testing, or
+    /// only to `client_id`. `data` is the event's data; without it the data
+    /// is `{message, sent_at}`.
+    pub fn send_test_event(
+        &self,
+        client_id: Option<&str>,
+        message: Option<String>,
+        data: Option<Value>,
+    ) -> Result<TestEventSent, String> {
+        if !self.config.read().enabled {
+            return Err("Push Relay is turned off".into());
+        }
+        if !self.is_test_source(TEST_SOURCE_SERVER_ID) {
+            return Err(format!(
+                "An MCP server uses the id \"{TEST_SOURCE_SERVER_ID}\"; the push test source is unavailable"
+            ));
+        }
+        let mut client_ids: Vec<String> = self
+            .sessions
+            .iter()
+            .filter(|s| s.ctx.push_test_source && client_id.is_none_or(|c| c == s.ctx.client_id))
+            .filter(|s| self.gateway.get_session(s.key()).is_some())
+            .map(|s| s.ctx.client_id.clone())
+            .collect();
+        client_ids.sort();
+        client_ids.dedup();
+        if client_ids.is_empty() {
+            return Err(
+                "No session has opted into push testing. Connect Try it out → MCP against a client, \
+                 or run the STDIO bridge with LOCALROUTER_PUSH_TEST=1."
+                    .into(),
+            );
+        }
+        let now = chrono::Utc::now();
+        let data = data.unwrap_or_else(|| {
+            json!({
+                "message": message.unwrap_or_else(|| "Test event from LocalRouter".to_string()),
+                "sent_at": now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            })
+        });
+        let occurrence = Arc::new(Occurrence {
+            event_id: format!("{TEST_SOURCE_SERVER_ID}__test-{}", uuid::Uuid::new_v4()),
+            name: format!("{TEST_SOURCE_SERVER_ID}__{TEST_EVENT_NAME}"),
+            server_id: TEST_SOURCE_SERVER_ID.to_string(),
+            server_slug: TEST_SOURCE_SERVER_ID.to_string(),
+            upstream_name: TEST_EVENT_NAME.to_string(),
+            timestamp: now,
+            data,
+            upstream_cursor: None,
+            ingress: IngressMode::Test,
+            args_key: canonical_json(&Value::Object(Map::new())),
+            origin_session: None,
+        });
+        for id in &client_ids {
+            self.admit(id, occurrence.clone());
+        }
+        Ok(TestEventSent {
+            event_id: occurrence.event_id.clone(),
+            name: occurrence.name.clone(),
+            client_ids,
+        })
+    }
+
+    /// The Claude Code channel message (`content`, `meta`) a STDIO bridge
+    /// session receives for an occurrence in SEP-3415 wire form
+    /// (`eventId`, `name`, `timestamp`, `data`), rendered exactly as the
+    /// channel pump renders it.
+    pub fn preview_channel_message(&self, event: &Value) -> Result<(String, Value), String> {
+        let name = event
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or("name is required")?
+            .to_string();
+        let (slug, upstream_name) = name
+            .split_once("__")
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .unwrap_or_else(|| (name.clone(), name.clone()));
+        let event_id = event
+            .get("eventId")
+            .and_then(Value::as_str)
+            .unwrap_or("preview")
+            .to_string();
+        let timestamp = event
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+            .map(|t| t.with_timezone(&chrono::Utc))
+            .unwrap_or_else(chrono::Utc::now);
+        let occurrence = Arc::new(Occurrence {
+            event_id: event_id.clone(),
+            name: name.clone(),
+            server_id: String::new(),
+            server_slug: slug.clone(),
+            ingress: if upstream_name == CHANNEL_EVENT_NAME {
+                IngressMode::Channel
+            } else {
+                IngressMode::Push
+            },
+            upstream_name,
+            timestamp,
+            data: event.get("data").cloned().unwrap_or(Value::Null),
+            upstream_cursor: None,
+            args_key: String::new(),
+            origin_session: None,
+        });
+        let entry = super::journal::JournalEntry::preview(occurrence);
+        let max = self.limits.read().channel_max_content_bytes.max(64);
+        Ok((
+            render::channel_content(&entry, max),
+            json!({"source": slug, "event": name, "event_id": event_id}),
+        ))
     }
 
     /// Clear a session-scoped decision (the configured permission applies again).
@@ -2448,11 +2688,19 @@ impl PushRelay {
                 )
             };
             for entry in &batch.entries {
-                let claimed = self
+                let (claimed, test_opted_in) = self
                     .sessions
                     .get(&ctx.session_key)
-                    .is_some_and(|s| s.claimed.contains(&entry.occurrence.name));
-                if claimed || recent.contains(&entry.occurrence.event_id) {
+                    .map(|s| {
+                        (
+                            s.claimed.contains(&entry.occurrence.name),
+                            s.ctx.push_test_source,
+                        )
+                    })
+                    .unwrap_or((false, false));
+                // The test source reaches only sessions that opted into it
+                let foreign_test = entry.occurrence.ingress == IngressMode::Test && !test_opted_in;
+                if claimed || foreign_test || recent.contains(&entry.occurrence.event_id) {
                     continue;
                 }
                 recent.push_back(entry.occurrence.event_id.clone());
@@ -2527,14 +2775,17 @@ impl PushRelay {
             is_stdio_bridge: ctx.is_stdio_bridge,
             declares_events: ctx.client_declares_events(),
             visible_servers: ctx.visible_servers.clone(),
+            push_test_source: ctx.push_test_source,
         })
     }
 
     /// Which fallback tools a session sees ("When the fallback tools are shown").
     pub fn tools_view(&self, state: &PushToolsState) -> ToolsView {
-        let gate = self
-            .client(&state.client_id)
-            .is_some_and(|client| !self.catalogue(&client, &state.visible_servers).is_empty());
+        let gate = self.client(&state.client_id).is_some_and(|client| {
+            !self
+                .catalogue_for(&client, &state.visible_servers, state.push_test_source)
+                .is_empty()
+        });
         if !gate {
             return ToolsView::default();
         }
@@ -2558,7 +2809,7 @@ impl PushRelay {
         }
         let client = self.client(&state.client_id)?;
         let names = self
-            .catalogue(&client, &state.visible_servers)
+            .catalogue_for(&client, &state.visible_servers, state.push_test_source)
             .into_iter()
             .map(|e| e.qualified_name)
             .collect();
@@ -2575,7 +2826,7 @@ impl PushRelay {
         let Some(client) = self.client(&state.client_id) else {
             return "No events are available.".into();
         };
-        let catalogue = self.catalogue(&client, &state.visible_servers);
+        let catalogue = self.catalogue_for(&client, &state.visible_servers, state.push_test_source);
         if catalogue.is_empty() {
             return "No events are available.".into();
         }
@@ -2625,7 +2876,7 @@ impl PushRelay {
         let client = self
             .client(&state.client_id)
             .ok_or("No events are available.")?;
-        let catalogue = self.catalogue(&client, &state.visible_servers);
+        let catalogue = self.catalogue_for(&client, &state.visible_servers, state.push_test_source);
         let requested: Option<Vec<String>> = match arguments.get("events") {
             None | Some(Value::Null) => None,
             Some(Value::String(s)) => Some(vec![s.clone()]),
@@ -2751,11 +3002,14 @@ impl PushRelay {
         client_id: &str,
         names: &[String],
         filter: &Map<String, Value>,
+        push_test_source: bool,
     ) -> String {
         use base64::Engine;
         let expires =
             chrono::Utc::now().timestamp() + self.limits.read().watch_max_lifetime_secs as i64;
-        let payload = json!({"c": client_id, "n": names, "f": filter, "e": expires}).to_string();
+        let payload =
+            json!({"c": client_id, "n": names, "f": filter, "e": expires, "t": push_test_source})
+                .to_string();
         let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload);
         let signature = self.cursor_key.sign("watch", &payload);
         format!("{payload}.{signature}")
@@ -2787,7 +3041,7 @@ impl PushRelay {
             &entries,
             &filter,
         );
-        let token = self.watch_token(&state.client_id, &names, &filter);
+        let token = self.watch_token(&state.client_id, &names, &filter, state.push_test_source);
         let url = format!(
             "{}/events/watch?token={}&cursor={}",
             base.trim_end_matches('/'),
@@ -2847,10 +3101,11 @@ impl PushRelay {
             .and_then(Value::as_object)
             .cloned()
             .unwrap_or_default();
+        let push_test_source = payload.get("t").and_then(Value::as_bool).unwrap_or(false);
         let client = self.client(&client_id).ok_or(WatchError::Forbidden)?;
         let visible = self.visible_servers(&client);
         let entries: Vec<CatalogueEntry> = self
-            .catalogue(&client, &visible)
+            .catalogue_for(&client, &visible, push_test_source)
             .into_iter()
             .filter(|e| names.contains(&e.qualified_name))
             .collect();
@@ -2990,7 +3245,8 @@ impl PushRelayService for PushRelay {
             .unwrap_or_else(|| {
                 self.client(client_id).is_some_and(|client| {
                     let visible = self.visible_servers(&client);
-                    !self.catalogue(&client, &visible).is_empty()
+                    let push_test = self.gateway.push_test_sessions.contains(session_key);
+                    !self.catalogue_for(&client, &visible, push_test).is_empty()
                 })
             });
         if !gate {

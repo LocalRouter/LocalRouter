@@ -115,6 +115,9 @@ pub struct GatewaySession {
     /// Served through the STDIO bridge (`X-LocalRouter-Bridge: stdio`).
     pub is_stdio_bridge: bool,
 
+    /// Opted into the Push Relay test source (`X-LocalRouter-Push-Test: 1`).
+    pub push_test_source: bool,
+
     /// Tool name mapping: namespaced_name -> (server_id, original_name)
     pub tool_mapping: HashMap<String, (String, String)>,
 
@@ -300,6 +303,7 @@ impl GatewaySession {
             client_capabilities: None,
             client_capabilities_raw: None,
             is_stdio_bridge: false,
+            push_test_source: false,
             tool_mapping: HashMap::new(),
             resource_mapping: HashMap::new(),
             resource_uri_mapping: HashMap::new(),

@@ -217,6 +217,7 @@ impl VirtualMcpServer for PushRelayTools {
         if let Some(s) = state.as_any_mut().downcast_mut::<ToolsSessionState>() {
             s.0.session_key = Some(ctx.session_key.clone());
             s.0.is_stdio_bridge = ctx.is_stdio_bridge;
+            s.0.push_test_source = ctx.push_test_source;
             s.0.declares_events = ctx.client_declares_events();
             s.0.visible_servers = ctx.visible_servers.clone();
         }

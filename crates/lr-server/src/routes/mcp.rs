@@ -674,6 +674,15 @@ pub async fn mcp_gateway_handler(
     state
         .mcp_gateway
         .set_stdio_bridge_session(session_id.as_deref().unwrap_or(&client_id), is_stdio_bridge);
+    // A session opts into the Push Relay's built-in test source the same way
+    // (Try it out sends it); no other session sees that source.
+    let push_test = headers
+        .get(lr_mcp::gateway::push_relay::PUSH_TEST_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.trim() == lr_mcp::gateway::push_relay::PUSH_TEST_HEADER_VALUE);
+    state
+        .mcp_gateway
+        .set_push_test_session(session_id.as_deref().unwrap_or(&client_id), push_test);
 
     // Check for headers used by Try it out UI
     // Only applies to internal-test client for security - external clients use their config

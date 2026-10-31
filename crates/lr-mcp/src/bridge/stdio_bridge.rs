@@ -50,6 +50,12 @@ pub const BRIDGE_HEADER: &str = "x-localrouter-bridge";
 pub const BRIDGE_HEADER_VALUE: &str = "stdio";
 /// Environment variable overriding the gateway URL.
 pub const URL_ENV: &str = "LOCALROUTER_URL";
+/// Environment variable that, set to `1`, opts the bridge's session into the
+/// Push Relay's built-in test source (`localrouter__test.event`), so a test
+/// event can be sent to a real Claude Code through Channels.
+pub const PUSH_TEST_ENV: &str = "LOCALROUTER_PUSH_TEST";
+/// Header carrying the push-test opt-in (see `gateway::push_relay::PUSH_TEST_HEADER`).
+const PUSH_TEST_HEADER: &str = "x-localrouter-push-test";
 
 /// Notifications and client responses are acknowledged with 202 at once; a
 /// gateway that takes longer than this is not going to answer.
@@ -183,6 +189,7 @@ impl StdioBridge {
             session: parking_lot::RwLock::new(SessionState::default()),
             pending_init: parking_lot::Mutex::new(None),
             shutdown: shutdown.clone(),
+            push_test: std::env::var(PUSH_TEST_ENV).is_ok_and(|v| v.trim() == "1"),
         });
 
         let mut requests: JoinSet<()> = JoinSet::new();
@@ -354,6 +361,8 @@ struct Ctx {
     /// `initialize` awaiting its result: (request id, negotiated version).
     pending_init: parking_lot::Mutex<Option<(Value, String)>>,
     shutdown: CancellationToken,
+    /// Send the push-test opt-in header ([`PUSH_TEST_ENV`]).
+    push_test: bool,
 }
 
 impl Ctx {
@@ -362,6 +371,9 @@ impl Ctx {
         let mut builder = builder
             .bearer_auth(&self.secret)
             .header(BRIDGE_HEADER, BRIDGE_HEADER_VALUE);
+        if self.push_test {
+            builder = builder.header(PUSH_TEST_HEADER, "1");
+        }
         if let Some(id) = &session.session_id {
             builder = builder.header(MCP_SESSION_ID_HEADER, id);
         }
