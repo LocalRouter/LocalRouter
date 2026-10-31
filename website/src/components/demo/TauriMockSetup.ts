@@ -4082,7 +4082,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'get_client_push_settings': (args): ClientPushSettings => {
     const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
     const id = client?.id ?? args?.clientId
-    const perms = client?.mcp_permissions
     return mockClientPushSettings(id, (serverId) => mockMcpAccess(client, serverId))
   },
   'set_client_push_permission': (args) => {
