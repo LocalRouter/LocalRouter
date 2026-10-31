@@ -863,9 +863,6 @@ export function McpServersPanel({
                       </CardContent>
                     </Card>
 
-                    {/* Push: what the server advertised and what LocalRouter does with it */}
-                    <McpServerPushCard serverId={selectedServer.id} onViewChange={onViewChange} />
-
                     {/* Connection Info */}
                     <Card>
                       <CardHeader className="pb-3">
@@ -955,6 +952,8 @@ export function McpServersPanel({
                       </CardContent>
                     </Card>
 
+                    {/* Push: what the server advertised and what LocalRouter does with it */}
+                    <McpServerPushCard serverId={selectedServer.id} onViewChange={onViewChange} />
                   </div>
                 </TabsContent>
 
