@@ -1,79 +1,95 @@
-import { Badge } from "@/components/ui/Badge"
 import { cn } from "@/lib/utils"
-import type { EventDeliveryMode, PushSourceInfo } from "@/types/tauri-commands"
-import { formatRelativeTime } from "./format"
-import { noPushReason } from "./push-relay-utils"
+import type { McpServerPushStatus, PushPermission, PushSourceInfo } from "@/types/tauri-commands"
+import {
+  capabilitiesFooter,
+  eventIssue,
+  eventModesLabel,
+  extrasLine,
+  offersLine,
+  pushLiveLine,
+  type PushLiveTone,
+} from "./push-relay-utils"
 
-const MODE_LABELS: Record<EventDeliveryMode, string> = {
-  push: "push",
-  poll: "poll",
-  webhook: "webhook",
+const TONE_DOT: Record<PushLiveTone, string> = {
+  listening: "bg-emerald-500",
+  idle: "bg-muted-foreground/40",
+  warning: "bg-amber-500",
+  error: "bg-red-500",
 }
 
-interface PushSourceRowProps {
+const TONE_TEXT: Record<PushLiveTone, string> = {
+  listening: "text-foreground",
+  idle: "text-muted-foreground",
+  warning: "text-amber-600 dark:text-amber-400",
+  error: "text-red-600 dark:text-red-400",
+}
+
+interface PushSourceDetailsProps {
   source: PushSourceInfo
+  /** Live status from the running relay; null while it loads */
+  status: McpServerPushStatus | null
+  defaultPermission: PushPermission
+  /** Include the "Capabilities checked … · MCP …" footer */
+  showFooter?: boolean
+}
+
+/**
+ * What one MCP server offers for push (one line per event type, how it can be
+ * received, never `webhook` for a type LocalRouter can consume) and what
+ * LocalRouter is doing with it right now, from the running relay.
+ */
+export function PushSourceDetails({ source, status, defaultPermission, showFooter = true }: PushSourceDetailsProps) {
+  const offers = offersLine(source)
+  const extras = source.snapshot_status === "current" ? extrasLine(source) : null
+  const live = pushLiveLine(source, status, defaultPermission)
+  const footer = showFooter ? capabilitiesFooter(source) : null
+  return (
+    <div className="space-y-2">
+      {offers && <p className="text-sm text-muted-foreground">{offers}</p>}
+      {source.snapshot_status === "current" && source.events.length > 0 && (
+        <ul className="space-y-1">
+          {source.events.map((event) => {
+            const issue = eventIssue(status, event.name)
+            return (
+              <li key={event.name} className={cn("min-w-0", !event.supported && "opacity-70")}>
+                <div className="text-sm">
+                  <code className="text-xs">{event.name}</code>
+                  <span className="text-muted-foreground"> — {eventModesLabel(event)}</span>
+                </div>
+                {event.description && (
+                  <p className="text-xs text-muted-foreground truncate" title={event.description}>
+                    {event.description}
+                  </p>
+                )}
+                {issue && <p className="text-xs text-amber-600 dark:text-amber-400 truncate" title={issue}>{issue}</p>}
+              </li>
+            )
+          })}
+        </ul>
+      )}
+      {extras && <p className="text-sm text-muted-foreground">{extras}</p>}
+      {live && (
+        <div className={cn("flex items-start gap-2 text-sm", TONE_TEXT[live.tone])}>
+          <span className={cn("mt-1.5 h-2 w-2 shrink-0 rounded-full", TONE_DOT[live.tone])} aria-hidden />
+          <span className="min-w-0 break-words">{live.text}</span>
+        </div>
+      )}
+      {footer && <p className="text-xs text-muted-foreground">{footer}</p>}
+    </div>
+  )
+}
+
+interface PushSourceRowProps extends PushSourceDetailsProps {
   /** Show the server name (off where the page already names the server) */
   showName?: boolean
 }
 
-/**
- * One MCP server's remembered push capabilities: what it advertises (MCP Events,
- * Claude Channels, resource updates), why it contributes no push when it doesn't,
- * the negotiated protocol version, when it was seen, and each event type with
- * its delivery modes (webhook-only types marked not supported).
- */
-export function PushSourceRow({ source, showName = true }: PushSourceRowProps) {
-  const reason = noPushReason(source)
+/** One MCP server in the Push Relay page's Upstream sources list. */
+export function PushSourceRow({ showName = true, ...props }: PushSourceRowProps) {
   return (
-    <div className="rounded-md border">
-      <div className="flex items-center gap-2 p-3">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            {showName && <span className="text-sm font-medium">{source.server_name}</span>}
-            {source.channels && <Badge variant="info" className="text-[10px] px-1.5 py-0">Claude Channels</Badge>}
-            {source.events.some((e) => e.supported) && (
-              <Badge variant="info" className="text-[10px] px-1.5 py-0">MCP Events</Badge>
-            )}
-            {source.resource_subscribe && (
-              <Badge variant="outline" className="text-[10px] px-1.5 py-0">Resource updates</Badge>
-            )}
-            {reason && <Badge variant="warning" className="text-[10px] px-1.5 py-0">{reason}</Badge>}
-          </div>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            {source.events.length > 0 &&
-              `${source.events.length} event type${source.events.length === 1 ? "" : "s"} · `}
-            {source.protocol_version ? `MCP ${source.protocol_version}` : "Capabilities unknown"}
-            {source.observed_at && ` · seen ${formatRelativeTime(source.observed_at)}`}
-          </p>
-        </div>
-      </div>
-      {source.events.length > 0 && (
-        <div className="border-t divide-y divide-border/50">
-          {source.events.map((event) => (
-            <div key={event.name} className={cn("flex items-center justify-between gap-2 px-3 py-1.5 pl-6", !event.supported && "opacity-70")}>
-              <div className="min-w-0">
-                <code className="text-xs">{event.name}</code>
-                {event.description && <p className="text-xs text-muted-foreground truncate">{event.description}</p>}
-              </div>
-              <div className="flex items-center gap-1 shrink-0">
-                {event.modes.map((m) => (
-                  <Badge
-                    key={m}
-                    variant="outline"
-                    className={cn("text-[10px] px-1.5 py-0", m === "webhook" && "line-through text-muted-foreground")}
-                    title={m === "webhook" ? "LocalRouter does not receive upstream webhooks" : undefined}
-                  >
-                    {MODE_LABELS[m]}
-                  </Badge>
-                ))}
-                {!event.supported && (
-                  <Badge variant="warning" className="text-[10px] px-1.5 py-0">Not supported</Badge>
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
+    <div className="rounded-md border p-3 space-y-2">
+      {showName && <div className="text-sm font-medium">{props.source.server_name}</div>}
+      <PushSourceDetails {...props} />
     </div>
   )
 }

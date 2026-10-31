@@ -346,13 +346,38 @@ otherwise; a stale webhook-only snapshot is corrected on the next initialise.
 
 # MCP server Info → Push
 
-`src/views/resources/mcp-server-push-card.tsx`, below the status card in
-`mcp-servers-panel.tsx`. Data: `list_push_sources` (filtered by server id; `PushSourceInfo` now
-carries `receiving_clients`) and `get_push_relay_config`. Rendering: `PushSourceRow`
-(`src/views/push-relay/PushSourceRow.tsx`, shared with `UpstreamSourcesList`); wording:
-`serverPushSummary` / `snapshotStatusLabel` in `push-relay-utils.ts` (unit-tested in
-`tests/e2e/unit/push-relay.spec.ts`). The demo has VocalCord, NetGet and a webhook-only billing
-server as MCP servers.
+`src/views/resources/mcp-server-push-card.tsx`, last on the Info tab in `mcp-servers-panel.tsx`.
+Data: `list_push_sources` (filtered by server id), `get_push_relay_config`, and the live
+`get_mcp_server_push_status({ serverId })` (`McpServerPushStatus`, from
+`relay.server_push_status(server_id)`), re-read every 5 s while the page is visible
+(`src/views/push-relay/use-push-status.ts`).
+
+The live status is what the relay is doing, not what permissions allow: per event type
+`state` (`listening` / `connecting` / `reconnecting` with `last_error` / `idle`) and
+`ingress_mode` (`push` / `poll` / `channel`) from the open upstream subscriptions (channel:
+`listening` while a session whose client push can reach runs the server, or a shared connection
+is up); `events_received` / `last_event_at` per (server, upstream event) since start, counted
+once per upstream delivery in `ingest`, `ingest_shared_channel` and `on_upstream_notification`
+(they outlive subscriptions); and `consuming_clients` / `consuming_sessions` from live holders
+and channel sessions. Test: `server_push_status_reports_live_listening_counts_and_consumers`
+plus the channel assertions in `upstream_channel_reaches_poll_and_bridge_channel`.
+
+Rendering: `PushSourceDetails` (`src/views/push-relay/PushSourceRow.tsx`, shared with the Push
+Relay page's `UpstreamSourcesList`, which polls the same status for servers with push). One line
+per event type (`message.received — push, poll`; `webhook` is never listed for a usable type,
+webhook-only types read "webhook only — not supported"), the description truncated with the
+full text on hover, Claude Code channels / resource updates as one line, then the live line —
+green only while listening — and the muted "Capabilities checked … · MCP …" footer. Wording:
+`pushLiveLine`, `offersLine`, `eventModesLabel`, `extrasLine`, `capabilitiesFooter`,
+`eventIssue` in `push-relay-utils.ts` (unit-tested in `tests/e2e/unit/push-relay.spec.ts`).
+The demo has VocalCord (listening via push stream, events received), Home Assistant (polling,
+no events yet), NetGet (reconnecting with an error), Build Alerts (not listening), a webhook-only
+billing server, Slack (not known yet) and servers without push.
+
+Try it out → MCP → Connection lists every push mechanism for the session (Events extension and
+`listChanged`, top-level `events`, Claude Code Channels, fallback tools, push stream / poll /
+webhook from `events/list`) from the raw initialize capabilities and the push tester's state:
+`sessionPushMechanisms` / `sessionNoPushReason` in `push-log.ts`.
 
 # Testing pushes — the Try it out Push panel and the test source
 

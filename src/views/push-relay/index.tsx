@@ -222,8 +222,8 @@ export function PushRelayView({ activeSubTab, onTabChange }: PushRelayViewProps)
                       )}
                     </CardTitle>
                     <CardDescription>
-                      What each MCP server offered the last time it connected. Event types offering only
-                      webhooks are not supported.
+                      What each MCP server offers for push, and whether LocalRouter is listening to it
+                      right now.
                     </CardDescription>
                   </div>
                   <Button variant="ghost" size="icon" onClick={refreshSources} disabled={refreshing} title="Refresh">
@@ -232,7 +232,7 @@ export function PushRelayView({ activeSubTab, onTabChange }: PushRelayViewProps)
                 </div>
               </CardHeader>
               <CardContent>
-                <UpstreamSourcesList sources={sources} />
+                <UpstreamSourcesList sources={sources} defaultPermission={config?.default_permission ?? "allow"} />
               </CardContent>
             </Card>
           </div>
