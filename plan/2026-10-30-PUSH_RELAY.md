@@ -9,10 +9,12 @@ modify each event in Monitor, and delivers it to every client in whatever form t
 consume — translating between forms where they differ. Clients with no native push mechanism get
 LocalRouter's own polling tools as a fallback.
 
-It is enabled by default, with Block / Ask / Allow at the global, per-client, per-server and
-per-event-type levels. The global settings are the on/off switch, the global default
-permission, the Claude Channels rate and the per-client event history; every other bound is an
-internal constant (see "Limits").
+Permissions are Allow / Ask / Off — the vocabulary of LocalRouter's MCP permissions — at the
+global, per-client, per-server and per-event-type levels; the global default is Allow. The global
+settings are the default permission (the only global control: there is no separate on/off
+switch), the Claude Channels rate and the per-client event history; every other bound is an
+internal constant (see "Limits"). A global default of Off with no override that turns anything
+on means Push Relay does nothing (see "Push effectively off").
 
 LocalRouter is a **proxy with control over every event**, never a passthrough: every occurrence
 flows through LocalRouter, where it can be seen in Monitor, held for approval, edited or dropped.
@@ -154,7 +156,7 @@ point the agent at `EventPoll` to read the authoritative journal.
 ## Gating: push is exposed only when an upstream has push
 
 For each client session, push is exposed only if **at least one upstream server** is visible to
-that client under its existing MCP permissions, is not Blocked for push, and offers at least one
+that client under its existing MCP permissions, is not Off for push, and offers at least one
 of:
 
 - Events push or poll on at least one event type (webhook-only event types do not count);
@@ -196,7 +198,8 @@ remembering capabilities never looks like a user edit.
 **First-ever connection: wait.** When a server visible to the client has **no snapshot, or a
 snapshot whose fingerprint no longer matches**, `initialize` / `server/discover` waits for that
 server to initialise before answering — bounded by `first_discovery_wait` (10 s, internal). Servers
-that are disabled, or that the client cannot see, are never waited on. If the wait times out, the
+that are disabled, or that the client cannot see, are never waited on, and a client push cannot
+reach (see "Push effectively off") never waits. If the wait times out, the
 server counts as "no push" for this session; once it does initialise, the snapshot is written,
 fallback tools and the catalogue appear through `list_changed`, and capabilities fixed at
 `initialize` take effect next session. The wait happens once per server (per configuration
@@ -278,18 +281,21 @@ Automatic; there is no per-client setting:
    dropped silently and the agent would never learn events exist, so bridge sessions keep the
    tools. The Claude Code card and connect flow explain the launch flag (no toggle).
 
-## Permissions: Block / Ask / Allow, per event
+## Permissions: Allow / Ask / Off, per event
 
 Levels, most specific wins:
 
-1. Global default — **Allow** (feature on by default).
-2. Per client — Inherit / Allow / Ask / Block.
-3. Per client, per upstream server — Inherit / Allow / Ask / Block.
-4. Per client, per server, per event type — Inherit / Allow / Ask / Block.
+1. Global default — Allow / Ask / Off, default **Allow**. This is the only global control.
+2. Per client — Inherit / Allow / Ask / Off.
+3. Per client, per upstream server — Inherit / Allow / Ask / Off.
+4. Per client, per server, per event type — Inherit / Allow / Ask / Off.
 
 This follows guardrails' global-with-per-client-`Option` shape (`category_actions`) for levels 1–2
 and `McpPermissions`' tool → server → client hierarchy for levels 2–4, rendered with
-`McpPermissionTree` / `PermissionStateButton` (with Block in place of Off).
+`McpPermissionTree` / `PermissionStateButton`: the push selectors use `PermissionStateButton`'s
+labels and colours (`permissionStateConfig`), with an Inherit segment below the root (an
+inherited value is shown dimmed, as in the MCP tree) and "Default (…)" at the client root. The
+config writes `off` and reads `block` as Off.
 
 Push Relay never widens access: a client sees events only from servers its existing MCP
 permissions already allow. The `local_only` and `no_retention` privacy profiles keep rejecting
@@ -298,7 +304,7 @@ MCP ingress.
 ### Meaning
 
 - **Allow** — the occurrence is relayed, and recorded in Monitor.
-- **Block** — the event type is absent from `events/list`, Channels and the tools; upstream is not
+- **Off** — the event type is absent from `events/list`, Channels and the tools; upstream is not
   subscribed for it on this client's behalf.
 - **Ask — per individual event.** Every occurrence of an Ask event type is **held** before it
   reaches the client's journal and shown for approval. The approval view offers:
@@ -310,6 +316,34 @@ MCP ingress.
   - **Allow / Deny this event type** for the session or permanently — writes back to the
     permission tree, as `apply_tool_permission_to_client` does for tools.
 
+### Push effectively off
+
+A client is **reachable** when it is enabled, has no restricted privacy profile, and the global
+default or one of its overrides (configured, or a "for this session" decision) is not Off
+(`Client::may_receive_push`, `PushRelay::push_possible`). For a client that is not reachable
+LocalRouter does no push work at all:
+
+- nothing is advertised: no events capability, no `claude/channel`, no fallback tools, no
+  `<events>` block (its catalogue is empty);
+- no upstream subscription is held for it: `reconcile` drops the demand of unreachable clients,
+  so turning push off closes subscriptions that were open;
+- its `initialize` / `server/discover` never waits for first discovery
+  (`PushRelayService::push_possible_for`, asked by the gateway before waiting);
+- an upstream channel notification on its session is forwarded as the upstream sent it, as
+  before Push Relay existed.
+
+Capability snapshots are still recorded passively after a normal upstream initialise, which adds
+no waiting. The answer is recomputed on every settings change
+(`AppState::sync_push_relay_settings` → `PushRelay::update_config` / `notify_clients_changed`).
+With the global default Off, one event type set to Allow for one client gives that client that
+event type alone; every other client stays unreachable.
+
+Old configs: `default_permission: block` and `block` anywhere in a client's tree load as Off; a
+`push_relay.enabled: false` key loads as `default_permission: off` (nothing was relayed, whatever
+default was written beside it), `enabled: true` is ignored, and the key is not written back
+(`PushRelayConfigFile`, read through `#[serde(from)]`). Monitor records stored with the decision
+`blocked` display as Off.
+
 ### Holding semantics (Ask)
 
 - A held event is not in the client's journal, so no cursor can advance past it: `EventPoll`,
@@ -318,7 +352,7 @@ MCP ingress.
   behind a held one, so a client never sees event N+1 before an approved event N. Other event
   types are not blocked.
 - **No timeout**: a held event waits for its decision indefinitely. The approval popup for it
-  never expires; only a decision (or a permission change that makes the type Allow or Block)
+  never expires; only a decision (or a permission change that makes the type Allow or Off)
   releases it.
 - **Volume**: one approval popup is open per (client, event type) at a time, showing how many
   more are waiting and offering "allow all pending of this type", rather than one popup per
@@ -331,7 +365,7 @@ MCP ingress.
 
 - New `MonitorEventType::McpPushEvent` in `crates/lr-monitor/src/types.rs`, one record per
   occurrence per client, carrying: source server, event name, ingress mode, egress mode(s),
-  decision (`allowed`, `asked_allowed`, `asked_edited`, `denied`, `blocked`, `hold_cap`,
+  decision (`allowed`, `asked_allowed`, `asked_edited`, `denied`, `off`, `hold_cap`,
   `too_large`, and `pending` while held), timing, and a payload preview under the existing
   privacy and redaction settings. Ask records are `EventStatus::Pending` until decided, so Monitor
   shows what is waiting. Push events are a first-class Monitor type: in the MCP type filter, with
@@ -397,7 +431,7 @@ them through permissions, Ask, Monitor and any edit, and then makes the signed o
 - Deliveries happen only while LocalRouter is running; a lease that expires while it is not running
   must be renewed by the client, as SEP-3415 requires anyway.
 - `events/unsubscribe` and permission changes are honoured immediately: switching an event type to
-  Block ends its webhook subscriptions.
+  Off ends its webhook subscriptions.
 
 ## Claude Code: STDIO bridge by default
 
@@ -491,6 +525,17 @@ it as a fixture.
 6. **Upstream channel ingress**: the stdio transport already rebroadcasts every notification
    (`register_notification_handlers_on_transports`, `gateway.rs:1840`); route
    `notifications/claude/channel` into the event store instead of forwarding it raw.
+7. **Declaring Events upstream**: LocalRouter declares
+   `extensions["io.modelcontextprotocol/events"]` whenever it talks to an upstream as a client,
+   whatever the downstream client declared (the relay translates for everyone): in the
+   capabilities of every upstream `initialize` (merged into the downstream's forwarded
+   capabilities, which also reach stateless backends' `_meta`; reconnection; the preview
+   handshakes; relay-owned connections), and in
+   `params._meta["io.modelcontextprotocol/clientCapabilities"]` on every upstream `events/*`
+   request, merged with any `_meta` present (`protocol::declare_events_extension`,
+   `declare_events_on_request`). Events-aware servers choose their profile from it: VocalCord
+   offers push and poll only to a request carrying it and answers a webhook-only profile
+   otherwise. A snapshot remembered as webhook-only is corrected on the next initialise.
 
 ## Limits
 
@@ -537,30 +582,42 @@ to reach a bound quickly.
 
 ## Configuration and UI
 
-- `lr-config`: `PushRelayConfig { enabled (default true), default_permission (default Allow),
+- `lr-config`: `PushRelayConfig { default_permission (default Allow),
   channel_messages_per_minute (default 10), history_retention_hours (default 24),
   history_max_events (default 10,000) }` — nothing else is global (bounds in "Limits"). `capability_snapshot` on each MCP server entry; on `Client`:
   `push_permissions` (the client/server/event tree, `Option` at the root meaning inherit) and
   `push_webhook_urls` (approved callback URLs). Serialise only when non-default. Unknown keys are
   ignored, so a config carrying keys LocalRouter does not read (`push_relay.limits`,
   `webhook_egress_enabled`, `allow_loopback_http`, `ask_timeout_secs`, `push_fallback_tools`,
-  `claude_channels_launched`) loads, and those keys are dropped on the next save.
+  `claude_channels_launched`) loads, and those keys are dropped on the next save. An `enabled`
+  key is read as described under "Push effectively off".
 - Thread the per-client fields through `handle_request_with_skills` into the synthetic client
   (`ClientPushSettings`) and into `ClientListingSnapshot`, since push permissions change listings.
 - `InterceptCategory::PushEvent` (`firewall.rs`) and its case in the virtual-server match; a branch
   in `apply_tool_permission_to_client` for "always" decisions.
 - UI: an **Optimize → Push Relay** sidebar entry (`src/constants/features.ts`, `sidebar.tsx`
-  `OPTIMIZE_FEATURES`) and a Push Relay card on the Optimize overview (with the master switch,
-  and a pill in its MCP pipeline diagram). The Push Relay page has one **Info** tab: the master
-  switch, the default permission, a sample approval popup, each client's effective permission,
+  `OPTIMIZE_FEATURES`) and a Push Relay card on the Optimize overview (with the global default as
+  an Allow / Ask / Off control, and a pill in its MCP pipeline diagram). The Push Relay page has
+  one **Info** tab: the default permission (Allow / Ask / Off), a sample approval popup, each
+  client's effective permission (noting when an override turns events on under a default of Off),
   a **Settings** card with the channel rate and the two event-history bounds (unit, default and
   bounds shown beside each), and the upstream sources with their remembered capabilities and ingress modes (webhook-only
   ones marked unsupported). A **Push** card on each client: the permission tree with its sample
-  popup, a note on the automatic fallback tools, approved webhook URLs, and for Claude Code the
-  STDIO bridge notice and launch command. Held events are answered in the approval popup. Each
+  popup (saying so when push is off for that client, `ClientPushSettings.receives_push`), a note on
+  the automatic fallback tools, approved webhook URLs, and for Claude Code the STDIO bridge notice
+  and launch command. A **Push** card on each MCP server's Info tab, below its status
+  (`src/views/resources/mcp-server-push-card.tsx`): from the remembered snapshot, whether and how
+  the server advertises push (MCP Events per event type with its delivery modes, webhook-only
+  types marked not supported; Claude Channels; resource subscriptions), the negotiated protocol
+  version, the snapshot's status (current, stale or not known yet) and when it was seen, and one
+  line on what LocalRouter does with it — relayed to N clients (`PushSourceInfo.receiving_clients`),
+  push off under a default of Off with no override, only webhooks, nothing advertised, or not known
+  until the server first connects — with a link to the Push Relay page. It reuses `list_push_sources`
+  and the same `PushSourceRow` as the Upstream sources list. Held events are answered in the
+  approval popup. Each
   Tauri command is updated in all four places per `AGENTS.md` (Rust, `src/types/tauri-commands.ts`,
-  `TauriMockSetup.ts`, usage): `get_push_relay_config`, `update_push_relay_config` (enabled,
-  default permission, channel rate, history hours and events — validated against their bounds), `list_push_sources`, `list_pending_push_approvals` and
+  `TauriMockSetup.ts`, usage): `get_push_relay_config`, `update_push_relay_config` (default
+  permission, channel rate, history hours and events — validated against their bounds), `list_push_sources`, `list_pending_push_approvals` and
   `submit_push_approval` (the popup), `get_client_push_settings`, `set_client_push_permission`,
   `remove_client_push_webhook_url`, `get_claude_code_mcp_setup`,
   `switch_claude_code_to_stdio_bridge`, and for testing `send_push_test_event` and
@@ -590,7 +647,7 @@ built-in **test source** so that needs no upstream server offering push.
   ingress `test`. `send_push_test_event({clientId?, message?, data?})` builds one occurrence and
   calls `PushRelay::admit` for each client with an opted-in live session (or only `clientId`), so
   it takes the real path: the client's permission (Allow / Ask with the approval popup and edit /
-  Block; permission key `localrouter__test.event`), Monitor (`McpPushEvent`, ingress `test`,
+  Off; permission key `localrouter__test.event`), Monitor (`McpPushEvent`, ingress `test`,
   grouped with the one opted-in session), the journal, and from there every delivery form.
 - **Scope: a session opts in; nothing else sees the source.** A session opts in by sending
   `X-LocalRouter-Push-Test: 1` on its requests, recorded per session like the STDIO bridge header
@@ -628,7 +685,7 @@ Draft copy:
 - **Feature rows**:
   - *Any push in, any push out* — MCP Events (push, poll, webhook), Claude Code Channels and
     resource updates, translated between each other automatically.
-  - *See and control every event* — Block, Ask or Allow per app, server and event type; inspect,
+  - *See and control every event* — Allow, Ask or Off per app, server and event type; inspect,
     hold or edit events in Monitor before they reach the app.
   - *Works with every app* — native push where the app supports it, LocalRouter's polling tools
     where it doesn't.
@@ -674,7 +731,10 @@ write-only-on-change; webhook-only upstream reported as unsupported; Ask hold �
 deny, no timeout, FIFO ordering and the hold cap; cursor reset after restart; deduplication across
 Channels and `events/*`; webhook signature, challenge, retry and new-URL approval; every limit in
 "Limits" with a test at its bound; Monitor grouping with one, several and no reading session;
-an old config with the removed settings still loading.
+an old config with the removed settings still loading, `block` read as Off and `enabled: false`
+read as a default of Off; global Off with no override (no capability, tools, upstream subscription
+or first-discovery wait) and with one client's event type allowed (only that client gets it); an
+upstream that, like VocalCord, offers push and poll only to a client declaring MCP Events.
 
 ## Open questions
 

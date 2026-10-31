@@ -12,10 +12,10 @@ raw as before, and `initialize` never waits longer than its existing 2 s.
 
 | Item | Notes |
 | --- | --- |
-| `PushRelayConfig` | `AppConfig.push_relay`; `enabled` (true), `default_permission` (`Allow`), `channel_messages_per_minute` (10, 1–600), `history_retention_hours` (24, 1–720) and `history_max_events` (10,000, 100–1,000,000) — the only global settings. `PushRelayConfig::validate` checks the bounds. Omitted from YAML while default; each absent field takes its default. Unknown keys (`limits`, `webhook_egress_enabled`, `allow_loopback_http`, `ask_timeout_secs`) are ignored on load. |
-| `PushPermission` | `Allow | Ask | Block`, snake_case. |
+| `PushRelayConfig` | `AppConfig.push_relay`; `default_permission` (`Allow`; the only global control), `channel_messages_per_minute` (10, 1–600), `history_retention_hours` (24, 1–720) and `history_max_events` (10,000, 100–1,000,000) — the only global settings. `PushRelayConfig::validate` checks the bounds. Omitted from YAML while default; each absent field takes its default. Read through `PushRelayConfigFile` (`#[serde(from)]`): `enabled: false` loads as `default_permission: off`, `enabled: true` is ignored, the key is never written. Unknown keys (`limits`, `webhook_egress_enabled`, `allow_loopback_http`, `ask_timeout_secs`) are ignored on load. |
+| `PushPermission` | `Allow | Ask | Off`, snake_case; `block` is read as `off`. |
 | `PushPermissions` | `Client.push_permissions`: `global: Option<_>`, `servers: {server_id: _}`, `events: {"server_id__event_name": _}` (`PushPermissions::event_key`, unqualified upstream event name). `effective(app_default, server_id, event_name)` = event → server → client → app default; `effective_for_server`. |
-| `Client::push_permission(&cfg.push_relay, server, event)` | Same, but `Block` when Push Relay is disabled. Combine with `McpPermissions` yourself: push never widens MCP access. |
+| `Client::push_permission(&cfg.push_relay, server, event)` | Same, against the global default. Combine with `McpPermissions` yourself: push never widens MCP access. `Client::may_receive_push(&cfg.push_relay)`: the default or an override (`PushPermissions::enables_anything`) is not Off. |
 | `Client.push_webhook_urls` | Approved callback URLs. Cloning a client copies its permissions, not these. |
 | `UpstreamCapabilitySnapshot` | `McpServerConfig.capability_snapshot`: `fingerprint`, `protocol_version`, raw `capabilities` (incl. `experimental`, `extensions`, unknown fields), derived `push: UpstreamPushSummary { events_modes: {event: [push/poll/webhook]}, channels, resource_subscribe }`, raw `event_catalogue` entries, `observed_at`. `same_content` ignores `observed_at`; `has_consumable_push(include_resource_updates)` applies the plan's gate (webhook-only types do not count). |
 | `fingerprint_for(&McpServerConfig)` | `sha256:` of transport + (stdio command and args | URL) + auth method and its non-secret identifiers (OAuth client id/URLs/scopes, header and env-var *names*). Never env values, header values or keychain refs. `McpServerConfig::current_capability_snapshot()` returns the snapshot only while the fingerprint matches. |
@@ -130,7 +130,8 @@ returns an uninitialised `Arc<dyn Transport>` (you must send `initialize` /
   `events/list` once per events-capable server; only changes are written.
 - `McpServerManager::add_config` keeps a current in-memory snapshot when handed a config copy
   without one, and drops it when the identity changed.
-- `initialize`: with a relay registered **and** `push_relay.enabled`, if any visible enabled
+- `initialize`: with a relay registered **and** push able to reach the client
+  (`PushRelayService::push_possible_for(client_id)`), if any visible enabled
   server has no current snapshot, the answer waits past the usual 2 s until each such server has
   a snapshot or failed, bounded by the internal `FIRST_DISCOVERY_WAIT` (10 s,
   `push_relay/limits.rs`) from the start of the request; `McpGateway::set_first_discovery_wait`
@@ -154,8 +155,8 @@ returns an uninitialised `Arc<dyn Transport>` (you must send `initialize` /
 - `crates/lr-config/src/push_relay.rs`: old configs load unchanged, a config carrying keys that
   are not read (`limits`, `webhook_egress_enabled`, `allow_loopback_http`, `ask_timeout_secs`,
   `push_fallback_tools`, `claude_channels_launched`) loads and drops them on save, defaults not
-  serialised, non-default round trip, most-specific permission, disabled relay
-  blocks, fingerprint excludes secrets/includes identity, snapshot invalidation, snapshot not part
+  serialised, non-default round trip, most-specific permission, global Off unless an override
+  enables something, `block` read as Off, `enabled: false` read as a default of Off, fingerprint excludes secrets/includes identity, snapshot invalidation, snapshot not part
   of connection identity, `same_content`, push gate, `record_capability_snapshots` writes only on
   change.
 - `crates/lr-mcp/src/transport/rpc_stream.rs` (6), `stdio.rs` (3 new, `sh` fake upstream):
@@ -173,7 +174,8 @@ returns an uninitialised `Arc<dyn Transport>` (you must send `initialize` /
   the right context; advertisement only from the relay and `claude/channel` only for bridge
   sessions (also on `server/discover`); snapshot persisted once and not on unchanged
   re-observation; fingerprint invalidation; first-discovery wait (waits once, then not again),
-  its bound, no wait without relay/when disabled, never for disabled servers; channel
+  its bound, no wait without a relay or when push cannot reach the client, never for disabled
+  servers; channel
   notifications consumed by the relay vs raw forwarding; `upstream_request` and
   `open_upstream_stream` on a session.
 
@@ -240,15 +242,15 @@ always `Some` after `with_mcp`). All types are `Serialize`.
 
 | Need | API |
 | --- | --- |
-| Global settings | `config.push_relay` (`PushRelayConfig`: `enabled`, `default_permission`, `channel_messages_per_minute`, `history_retention_hours`, `history_max_events`). `update_push_relay_config` validates through `apply_push_relay_update` (an out-of-bounds value changes nothing), then saves with `config_manager.update` + `save()`; a `config-changed` listener in `main.rs` then calls `AppState::sync_push_relay_settings`, so a command only has to save. The Info tab's Settings card (`src/views/push-relay/RelaySettingsCard.tsx`) edits the three numeric settings. |
-| Per-client fields | `Client.push_permissions` (`PushPermissions { global, servers, events }`) and `push_webhook_urls`. The fallback tools have no setting: they are shown unless the session declared MCP Events. Saving the client fires `clients-changed`, which calls `relay.notify_clients_changed()` (list_changed to sessions, held events re-evaluated, blocked streams end). Helpers: `Client::set_push_event_permission(server_id, event, Option<PushPermission>)`, `Client::approve_push_webhook_url(url)`. |
+| Global settings | `config.push_relay` (`PushRelayConfig`: `default_permission`, `channel_messages_per_minute`, `history_retention_hours`, `history_max_events`). `update_push_relay_config` validates through `apply_push_relay_update` (an out-of-bounds value changes nothing), then saves with `config_manager.update` + `save()`; a `config-changed` listener in `main.rs` then calls `AppState::sync_push_relay_settings`, so a command only has to save. The Info tab's Settings card (`src/views/push-relay/RelaySettingsCard.tsx`) edits the three numeric settings. |
+| Per-client fields | `Client.push_permissions` (`PushPermissions { global, servers, events }`) and `push_webhook_urls`. The fallback tools have no setting: they are shown unless the session declared MCP Events. Saving the client fires `clients-changed`, which calls `relay.notify_clients_changed()` (list_changed to sessions, held events re-evaluated, streams of types now Off end, subscriptions no reachable client needs close). Helpers: `Client::set_push_event_permission(server_id, event, Option<PushPermission>)`, `Client::approve_push_webhook_url(url)`. |
 | Permission tree data | `relay.client_event_types(client_id) -> Vec<ClientEventTypeInfo { qualified_name, server_id, event_name, permission (effective), session_override }>` — only servers the client may see under MCP permissions. Session overrides come from "for this session" decisions; clear one with `relay.clear_session_override(client_id, server_id, event_name)`. |
 | Upstream sources | `relay.upstream_sources() -> Vec<UpstreamSourceInfo { server_id, server_name, enabled, transport (stdio/http/websocket), connection (shared/per_session), snapshot_current, protocol_version, observed_at, channels, resource_subscribe, event_types: [UpstreamEventTypeInfo { name, description, modes, ingress (push/poll/channel/null), supported, unsupported_reason ("webhook-only — not supported") }] }>`. Built from the remembered capability snapshots. |
 | Active subscriptions | `relay.active_subscriptions() -> Vec<SubscriptionInfo { server_id, event, arguments, scope ({kind: shared} or {kind: session, session_key}), status { ingress_mode, connected, events_received, last_event_at, last_error, reconnects } }>`. |
 | Webhook subscriptions | `relay.webhook_subscriptions(Option<client_id>) -> Vec<WebhookSubscriptionInfo { id, client_id, event, url, state (awaiting_approval/active/suspended/denied), expires_at, delivered, last_error }>`. |
 | Pending held events | `relay.pending_events(Option<client_id>) -> Vec<HeldPushEventInfo { hold_id, client_id, client_name, server_id, server_name, event_name, qualified_name, event_id, ingress_mode, data, held_at, held_secs, position, firewall_request_id, decided }>` (oldest first; `position` 0 = being asked now). A held event has no timeout: it waits until decided; at most `ask_hold_cap` (1,000) per client are held. |
 | Decide | `relay.decide(hold_id, PushDecision { action, edited_data })` with `action` = `allow` / `deny` / `allow_session` / `deny_session` / `allow_always` / `deny_always` (`PushDecisionAction`, snake_case). `edited_data` replaces the event's `data` (edit-then-allow). Works for a queued (not yet asked) event too: it is applied in order. Webhook URL approvals use `hold_id = "webhook:<subscription id>"`. `relay.decide_all(client_id, qualified_name, decision)` = "allow/deny all pending of this type". Permanent decisions are written to the client's config by the relay. |
-| Monitor | `MonitorEventType::McpPushEvent` (`mcp_push_event`, category `mcp`), data `McpPushEvent { server_id, server_name, event_name, event_id, ingress_mode, egress_modes[], decision, original_payload?, delivered_payload?, held_ms?, error? }`. `decision`: `pending` (status Pending while held), `allowed`, `asked_allowed`, `asked_edited`, `denied`, `blocked`, `hold_cap`, `too_large`. Payloads are omitted for clients whose privacy redacts payloads. The record's `session_id` is the reading session's Monitor request id when exactly one session reads the event (see "Monitor grouping" in the plan), else none. |
+| Monitor | `MonitorEventType::McpPushEvent` (`mcp_push_event`, category `mcp`), data `McpPushEvent { server_id, server_name, event_name, event_id, ingress_mode, egress_modes[], decision, original_payload?, delivered_payload?, held_ms?, error? }`. `decision`: `pending` (status Pending while held), `allowed`, `asked_allowed`, `asked_edited`, `denied`, `off`, `hold_cap`, `too_large` (the UI shows records stored as `blocked` as `off`). Payloads are omitted for clients whose privacy redacts payloads. The record's `session_id` is the reading session's Monitor request id when exactly one session reads the event (see "Monitor grouping" in the plan), else none. |
 
 ### Approval popup
 
@@ -270,8 +272,11 @@ UI.
 ## What clients see (implemented)
 
 - Gate: push is advertised only when a visible, enabled server's current snapshot has push/poll
-  event types or channels that are not Blocked for the client, the relay is enabled, and the
-  client has no restricted privacy profile. Then: `extensions["io.modelcontextprotocol/events"]
+  event types or channels that are not Off for the client, and push can reach the client
+  (`PushRelay::push_possible`: enabled, no restricted privacy profile, and the global default or
+  an override — configured or a session decision — not Off). An unreachable client gets nothing
+  and causes no work: no subscription is held for it (`reconcile` drops its demand), no
+  first-discovery wait, and its upstream channel notifications are forwarded raw. Then: `extensions["io.modelcontextprotocol/events"]
   = {listChanged:true}`, top-level `events: {}`, `experimental["claude/channel"]` for STDIO
   bridge sessions, the `_push_relay` tools per the show rules, and the `<events>` block.
 - `events/list` (`delivery`: poll, push, webhook), `events/poll`, `events/stream`
@@ -325,6 +330,30 @@ UI.
 - Not covered by an automated route-level test: the HTTP SSE answer to `events/stream` and the
   bridge GET-stream registration (exercised by the real bridge run above).
 
+# Declaring MCP Events to upstreams
+
+`protocol::declare_events_extension(&mut caps)` and `protocol::declare_events_on_request(&mut
+request)` (re-exported constant `EVENTS_EXTENSION_ID`). LocalRouter declares
+`extensions["io.modelcontextprotocol/events"]` in every upstream `initialize`
+(`initialize_backends` merges it into the downstream's forwarded capabilities, so stateless
+backends get it in `_meta` too; reconnection; the two preview handshakes;
+`connect_relay_upstream`), and `SessionTransportSet::prepare_request_for` and `RelayConnection`
+add it to `params._meta["io.modelcontextprotocol/clientCapabilities"]` on every `events/*`
+request on any revision. Regression: `upstreams_are_told_localrouter_supports_events`
+(`push_relay_gateway_tests.rs`), a wiremock upstream that answers `events/list` with
+push/poll/webhook only when the request declares Events (VocalCord's behaviour) and webhook-only
+otherwise; a stale webhook-only snapshot is corrected on the next initialise.
+
+# MCP server Info → Push
+
+`src/views/resources/mcp-server-push-card.tsx`, below the status card in
+`mcp-servers-panel.tsx`. Data: `list_push_sources` (filtered by server id; `PushSourceInfo` now
+carries `receiving_clients`) and `get_push_relay_config`. Rendering: `PushSourceRow`
+(`src/views/push-relay/PushSourceRow.tsx`, shared with `UpstreamSourcesList`); wording:
+`serverPushSummary` / `snapshotStatusLabel` in `push-relay-utils.ts` (unit-tested in
+`tests/e2e/unit/push-relay.spec.ts`). The demo has VocalCord, NetGet and a webhook-only billing
+server as MCP servers.
+
 # Testing pushes — the Try it out Push panel and the test source
 
 Design and scope: "Testing pushes" in `plan/2026-10-30-PUSH_RELAY.md`. What exists:
@@ -335,7 +364,7 @@ Design and scope: "Testing pushes" in `plan/2026-10-30-PUSH_RELAY.md`. What exis
 | Test source | `relay.rs`: `TEST_SOURCE_SERVER_ID` (`localrouter`), `TEST_EVENT_NAME` (`test.event`), `IngressMode::Test`; `catalogue_for(client, visible, include_test)` (the public `catalogue` excludes it); `send_test_event(client_id, message, data) -> TestEventSent { event_id, name, client_ids }` (errors when no live session opted in); `preview_channel_message(&wire) -> (content, meta)`. `client_event_types` lists it (`test_source: true`) when a permission is configured or a session opted in. |
 | Tauri commands | `send_push_test_event`, `preview_push_channel_message` (`commands_push_relay.rs`, TS types `PushTestEventResult`, `PushChannelPreview`, `SendPushTestEventParams`, `PreviewPushChannelMessageParams`, demo mocks). |
 | Panel | `src/views/try-it-out/mcp-tab/push-panel.tsx`, `use-push-tester.ts`, `push-log.ts`; `mcp-client.ts` (`pushTest` config, `listEvents`, `pollEvents`, `streamEvents`, `rawServerCapabilities`, `onEventsListChanged`). |
-| Tests | `push_relay_e2e_tests.rs`: `test_source_reaches_only_sessions_that_opted_in`, `test_event_flows_through_allow_ask_block_monitor_poll_and_stream`, `test_events_reach_opted_in_bridge_channels_and_the_poll_tool_only`; `tests/e2e/unit/try-it-out-push.spec.ts` (dedupe, notices, tool-text parsers, notification routing). |
+| Tests | `push_relay_e2e_tests.rs`: `test_source_reaches_only_sessions_that_opted_in`, `test_event_flows_through_allow_ask_off_monitor_poll_and_stream`, `test_events_reach_opted_in_bridge_channels_and_the_poll_tool_only`; `tests/e2e/unit/try-it-out-push.spec.ts` (dedupe, notices, tool-text parsers, notification routing). |
 
 Try it out sessions against a client always opt in, so they see the test source (and with it
 the events capability, the fallback tools and the `<events>` block) even when no upstream offers
