@@ -194,7 +194,7 @@ const sections: DocSection[] = [
         { id: 'push-relay-ingress', title: 'From Upstream Servers' },
         { id: 'push-relay-egress', title: 'To Apps' },
       ]},
-      { id: 'push-relay-permissions', title: 'Block / Ask / Allow', children: [
+      { id: 'push-relay-permissions', title: 'Allow / Ask / Off', children: [
         { id: 'push-relay-ask', title: 'Ask: Held Events' },
         { id: 'push-relay-monitor', title: 'Monitor: Intercept and Edit' },
       ]},

@@ -6,8 +6,9 @@ LocalRouter is a proxy with control over every event, never a passthrough. Every
 
 **Key points:**
 
-- Enabled by default, with Block / Ask / Allow at the global, per-client, per-server and per-event-type levels
-- The global settings are the on/off switch, the default permission, the Claude Code Channels message rate and how much event history each client keeps; everything else is per client, and every other bound (journal byte size, poll page size, webhook retries) is fixed internally
+- Allow / Ask / Off at the global, per-client, per-server and per-event-type levels, with the global default at **Allow**
+- The global settings are the default permission, the Claude Code Channels message rate and how much event history each client keeps; everything else is per client, and every other bound (journal byte size, poll page size, webhook retries) is fixed internally
+- Setting the global default to **Off** turns Push Relay off for every client without its own setting: nothing is advertised to them, no upstream subscription is opened on their behalf, and connecting never waits for an upstream server's capabilities
 - Push is exposed to a client only when at least one upstream server it can already use offers push; Push Relay never widens a client's MCP permissions
 - Every delivery form shares the same event id, so an app that combines mechanisms can deduplicate
 - Apps with no native push mechanism get LocalRouter's polling tools instead
@@ -59,16 +60,18 @@ Channel delivery itself has no switch: it is always on for a client that accepts
 
 <!-- @entry push-relay-permissions -->
 
-Each event type resolves to one of three actions, the most specific level winning:
+Each event type resolves to one of three actions, the most specific level winning, using the same Allow / Ask / Off vocabulary as MCP permissions:
 
-1. Global default — **Allow**
-2. Per client
-3. Per client, per upstream server
-4. Per client, per server, per event type
+1. Global default — **Allow**, **Ask** or **Off** (default **Allow**)
+2. Per client — Inherit, Allow, Ask or Off
+3. Per client, per upstream server — Inherit, Allow, Ask or Off
+4. Per client, per server, per event type — Inherit, Allow, Ask or Off
 
 - **Allow** — the event is delivered and recorded in Monitor.
-- **Block** — the event type disappears for that client: it is absent from `events/list`, Channels and the fallback tools, and the upstream is not subscribed on that client's behalf.
 - **Ask** — every individual event of that type is held for approval.
+- **Off** — the event type disappears for that client: it is absent from `events/list`, Channels and the fallback tools, and the upstream is not subscribed on that client's behalf.
+
+The global default is the only global control. With it at **Off**, a client receives push only from what its own settings turn on: one event type set to Allow for one client gives that client that event type and nothing else, while every other client sees no push at all. A client nothing reaches is told nothing about push — no capability, tools or instructions — and LocalRouter does no push work for it.
 
 <!-- @entry push-relay-ask -->
 
@@ -87,7 +90,7 @@ Events of one subscription stay in order: later events of the same type wait beh
 
 ### Monitor: Intercept and Edit
 
-Every event is recorded in Monitor once per client as an **MCP Push Event**, with its source server, event name, how it arrived, how it was delivered, the decision (allowed, asked then allowed, asked then edited, denied, blocked, or dropped for being too large or over the held-event limit) and a payload preview under the existing privacy and redaction settings. Push events are listed under the MCP type filter.
+Every event is recorded in Monitor once per client as an **MCP Push Event**, with its source server, event name, how it arrived, how it was delivered, the decision (allowed, asked then allowed, asked then edited, denied, off by permission, or dropped for being too large or over the held-event limit) and a payload preview under the existing privacy and redaction settings. Push events are listed under the MCP type filter.
 
 - Held events appear as pending, and open the same approval and edit view inline.
 - Any event record offers "Ask for this event type from now on", the quick way to start intercepting a stream that is currently allowed.
@@ -177,4 +180,4 @@ Try it out → MCP has a **Push** panel for testing pushes end to end without an
 - **Received** logs every occurrence once, by event id, with the modes it arrived through, its cursor and its data; dropped history (`truncated`) is marked.
 - **Claude Code channel preview** shows the `notifications/claude/channel` content and meta a STDIO bridge session would receive for an event, rendered by LocalRouter itself.
 
-**Test event source.** **Send test event** sends `localrouter__test.event` from LocalRouter's built-in test source with a message or JSON data of your choice. It goes through the real pipeline: the client's permission for it (set Allow, Ask or Block right in the panel — Ask opens the normal approval popup, where it can be edited), a Monitor record, the client's event history, and every delivery form. Only sessions that opted into push testing ever see the test source — Try it out's connection opts in, and so does a STDIO bridge started with `LOCALROUTER_PUSH_TEST=1` in its environment, for testing Channels with a real Claude Code. For every other session it does not exist: it never makes push available to a client, and never appears in an app's capabilities, instructions, tools or `events/list`. In a client's push permissions it is listed as **LocalRouter test source** once a permission is set for it.
+**Test event source.** **Send test event** sends `localrouter__test.event` from LocalRouter's built-in test source with a message or JSON data of your choice. It goes through the real pipeline: the client's permission for it (set Allow, Ask or Off right in the panel — Ask opens the normal approval popup, where it can be edited), a Monitor record, the client's event history, and every delivery form. Only sessions that opted into push testing ever see the test source — Try it out's connection opts in, and so does a STDIO bridge started with `LOCALROUTER_PUSH_TEST=1` in its environment, for testing Channels with a real Claude Code. For every other session it does not exist: it never makes push available to a client, and never appears in an app's capabilities, instructions, tools or `events/list`. In a client's push permissions it is listed as **LocalRouter test source** once a permission is set for it.

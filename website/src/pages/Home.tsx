@@ -1370,7 +1370,7 @@ export default function Home() {
                   <Eye className="h-5 w-5 shrink-0 text-sky-500 mt-0.5" />
                   <div>
                     <span className="font-medium">See and control every event</span>
-                    <p className="text-sm text-muted-foreground">Block, Ask or Allow per app, server and event type; inspect, hold or edit events in Monitor before they reach the app</p>
+                    <p className="text-sm text-muted-foreground">Allow, Ask or Off per app, server and event type; inspect, hold or edit events in Monitor before they reach the app</p>
                   </div>
                 </li>
                 <li className="flex gap-3">
