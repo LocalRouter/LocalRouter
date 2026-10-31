@@ -1,4 +1,4 @@
-//! Push Relay configuration: the global switch and default permission, per-client push
+//! Push Relay configuration: the global default permission, per-client push
 //! permissions, and the upstream capabilities remembered on each MCP server.
 //!
 //! See `plan/2026-10-30-PUSH_RELAY.md`.
@@ -9,15 +9,12 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::{McpAuthConfig, McpServerConfig, McpTransportConfig};
 
-fn default_true() -> bool {
-    true
-}
-
 pub(crate) fn is_false(value: &bool) -> bool {
     !*value
 }
 
-/// Block / Ask / Allow for pushed events.
+/// Allow / Ask / Off for pushed events, the same vocabulary as MCP
+/// permissions (`PermissionState`).
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum PushPermission {
@@ -26,8 +23,10 @@ pub enum PushPermission {
     Allow,
     /// Each occurrence is held until the user approves, edits or denies it.
     Ask,
-    /// Never relayed; the event type is hidden from the client.
-    Block,
+    /// Never relayed; the event type is hidden from the client. `block` is
+    /// read as `off`.
+    #[serde(alias = "block")]
+    Off,
 }
 
 /// Default of [`PushRelayConfig::channel_messages_per_minute`].
@@ -69,52 +68,75 @@ fn is_default_history_max_events(value: &u32) -> bool {
 
 /// Global Push Relay settings (`push_relay` in the config).
 ///
-/// The master switch, the global default permission, the Claude Channels
-/// rate and how much event history each client keeps. Every other bound
-/// (journal byte size, poll page size, webhook retries, ...) is an internal
-/// constant of the relay. Unknown keys are ignored, so a config written with
-/// the older `limits`, `webhook_egress_enabled`, `allow_loopback_http` or
-/// `ask_timeout_secs` keys still loads, and each setting absent from a
-/// config takes its default.
+/// The global default permission, the Claude Channels rate and how much
+/// event history each client keeps. Every other bound (journal byte size,
+/// poll page size, webhook retries, ...) is an internal constant of the
+/// relay. Unknown keys are ignored, so a config carrying keys LocalRouter
+/// does not read (`limits`, `webhook_egress_enabled`, `allow_loopback_http`,
+/// `ask_timeout_secs`) still loads, and each setting absent from a config
+/// takes its default. An `enabled: false` key is read as
+/// `default_permission: off` (see [`PushRelayConfigFile`]).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(from = "PushRelayConfigFile")]
 pub struct PushRelayConfig {
-    /// Master switch. When off, no push is advertised or relayed to anyone.
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-
     /// Permission applied when neither the client nor its server/event
-    /// overrides say otherwise.
-    #[serde(default)]
+    /// overrides say otherwise. `Off` here with no override enabling
+    /// anything turns Push Relay off entirely: nothing is advertised,
+    /// subscribed or waited for.
     pub default_permission: PushPermission,
 
     /// Claude Channels messages sent per client session per minute. Events
     /// beyond it are coalesced into one message pointing at `EventPoll`.
-    #[serde(
-        default = "default_channel_messages_per_minute",
-        skip_serializing_if = "is_default_channel_messages_per_minute"
-    )]
+    #[serde(skip_serializing_if = "is_default_channel_messages_per_minute")]
     pub channel_messages_per_minute: u32,
 
     /// Age after which an event leaves a client's journal (the history
     /// available to polling and reconnecting clients).
-    #[serde(
-        default = "default_history_retention_hours",
-        skip_serializing_if = "is_default_history_retention_hours"
-    )]
+    #[serde(skip_serializing_if = "is_default_history_retention_hours")]
     pub history_retention_hours: u32,
 
     /// Events kept per client's journal; the oldest go first.
-    #[serde(
-        default = "default_history_max_events",
-        skip_serializing_if = "is_default_history_max_events"
-    )]
+    #[serde(skip_serializing_if = "is_default_history_max_events")]
     pub history_max_events: u32,
+}
+
+/// `push_relay` as read from a config file. Besides the current fields it
+/// accepts the `enabled` switch older configs carry: `enabled: false` loads
+/// as `default_permission: off` (whatever default permission was written
+/// beside it, since nothing was relayed), and `enabled: true` is ignored.
+/// The key is not written back.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PushRelayConfigFile {
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    default_permission: PushPermission,
+    #[serde(default = "default_channel_messages_per_minute")]
+    channel_messages_per_minute: u32,
+    #[serde(default = "default_history_retention_hours")]
+    history_retention_hours: u32,
+    #[serde(default = "default_history_max_events")]
+    history_max_events: u32,
+}
+
+impl From<PushRelayConfigFile> for PushRelayConfig {
+    fn from(file: PushRelayConfigFile) -> Self {
+        Self {
+            default_permission: if file.enabled == Some(false) {
+                PushPermission::Off
+            } else {
+                file.default_permission
+            },
+            channel_messages_per_minute: file.channel_messages_per_minute,
+            history_retention_hours: file.history_retention_hours,
+            history_max_events: file.history_max_events,
+        }
+    }
 }
 
 impl Default for PushRelayConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
             default_permission: PushPermission::Allow,
             channel_messages_per_minute: DEFAULT_CHANNEL_MESSAGES_PER_MINUTE,
             history_retention_hours: DEFAULT_HISTORY_RETENTION_HOURS,
@@ -183,6 +205,17 @@ pub struct PushPermissions {
 impl PushPermissions {
     pub fn is_empty(&self) -> bool {
         self.global.is_none() && self.servers.is_empty() && self.events.is_empty()
+    }
+
+    /// Whether any explicit entry, at any level, is something other than
+    /// `Off` — i.e. whether this tree can let an event through when the
+    /// global default is `Off`.
+    pub fn enables_anything(&self) -> bool {
+        self.global
+            .iter()
+            .chain(self.servers.values())
+            .chain(self.events.values())
+            .any(|p| *p != PushPermission::Off)
     }
 
     /// Key of an event type in [`Self::events`]: the server id and the
@@ -496,7 +529,6 @@ mcp_servers:
 "#;
         let config: AppConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.push_relay, PushRelayConfig::default());
-        assert!(config.push_relay.enabled);
         assert_eq!(config.push_relay.default_permission, PushPermission::Allow);
         let client = &config.clients[0];
         assert!(client.push_permissions.is_empty());
@@ -526,10 +558,9 @@ mcp_servers:
     fn non_default_settings_round_trip() {
         let mut config = AppConfig::default();
         config.push_relay.default_permission = PushPermission::Ask;
-        config.push_relay.enabled = false;
 
         let mut client = Client::new_with_strategy("c".into(), "s".into());
-        client.push_permissions.global = Some(PushPermission::Block);
+        client.push_permissions.global = Some(PushPermission::Off);
         client
             .push_permissions
             .servers
@@ -547,7 +578,9 @@ mcp_servers:
 
         let yaml = serde_yaml::to_string(&config).unwrap();
         assert!(yaml.contains("default_permission: ask"));
-        assert!(yaml.contains("enabled: false"));
+        assert!(yaml.contains("global: off"), "{yaml}");
+        let push_yaml = serde_yaml::to_string(&config.push_relay).unwrap();
+        assert!(!push_yaml.contains("enabled"), "{push_yaml}");
         let parsed: AppConfig = serde_yaml::from_str(&yaml).unwrap();
         assert_eq!(parsed.push_relay, config.push_relay);
         assert_eq!(parsed.clients[0], config.clients[0]);
@@ -579,8 +612,8 @@ clients:
     push_webhook_urls: ["http://127.0.0.1:9000/hook"]
 "#;
         let config: AppConfig = serde_yaml::from_str(yaml).unwrap();
-        assert!(!config.push_relay.enabled);
-        assert_eq!(config.push_relay.default_permission, PushPermission::Ask);
+        // `enabled: false` turned everything off, whatever the default said
+        assert_eq!(config.push_relay.default_permission, PushPermission::Off);
         assert_eq!(config.push_relay.channel_messages_per_minute, 10);
         assert_eq!(config.push_relay.history_retention_hours, 24);
         assert_eq!(config.push_relay.history_max_events, 10_000);
@@ -590,6 +623,8 @@ clients:
         );
         // Saving drops the removed keys
         let saved = serde_yaml::to_string(&config).unwrap();
+        let push_saved = serde_yaml::to_string(&config.push_relay).unwrap();
+        assert!(!push_saved.contains("enabled"), "{push_saved}");
         for key in [
             "limits",
             "webhook_egress_enabled",
@@ -612,12 +647,12 @@ clients:
             PushPermission::Ask
         );
 
-        perms.global = Some(PushPermission::Block);
-        assert_eq!(perms.effective(default, "m1", "e"), PushPermission::Block);
+        perms.global = Some(PushPermission::Off);
+        assert_eq!(perms.effective(default, "m1", "e"), PushPermission::Off);
 
         perms.servers.insert("m1".into(), PushPermission::Ask);
         assert_eq!(perms.effective(default, "m1", "e"), PushPermission::Ask);
-        assert_eq!(perms.effective(default, "m2", "e"), PushPermission::Block);
+        assert_eq!(perms.effective(default, "m2", "e"), PushPermission::Off);
         assert_eq!(
             perms.effective_for_server(default, "m1"),
             PushPermission::Ask
@@ -631,19 +666,95 @@ clients:
     }
 
     #[test]
-    fn disabled_relay_blocks_everything() {
+    fn global_off_applies_unless_an_override_enables_something() {
         let mut client = Client::new_with_strategy("c".into(), "s".into());
-        client.push_permissions.global = Some(PushPermission::Allow);
         let mut global = PushRelayConfig::default();
         assert_eq!(
             client.push_permission(&global, "m", "e"),
             PushPermission::Allow
         );
-        global.enabled = false;
+        assert!(client.may_receive_push(&global));
+
+        global.default_permission = PushPermission::Off;
         assert_eq!(
             client.push_permission(&global, "m", "e"),
-            PushPermission::Block
+            PushPermission::Off
         );
+        assert!(!client.may_receive_push(&global));
+
+        // Overrides that are themselves Off enable nothing
+        client.push_permissions.global = Some(PushPermission::Off);
+        client
+            .push_permissions
+            .servers
+            .insert("m".into(), PushPermission::Off);
+        assert!(!client.may_receive_push(&global));
+
+        // One event type allowed: that type, and only it, gets through
+        client.set_push_event_permission("m", "e", Some(PushPermission::Allow));
+        assert!(client.may_receive_push(&global));
+        assert_eq!(
+            client.push_permission(&global, "m", "e"),
+            PushPermission::Allow
+        );
+        assert_eq!(
+            client.push_permission(&global, "m", "other"),
+            PushPermission::Off
+        );
+    }
+
+    #[test]
+    fn block_is_read_as_off_and_off_is_written() {
+        let yaml = r#"
+version: 1
+push_relay:
+  default_permission: block
+clients:
+  - id: c1
+    name: Client
+    created_at: "2026-01-01T00:00:00Z"
+    strategy_id: s1
+    push_permissions:
+      global: block
+      servers: { m1: block }
+      events: { m1__e: block }
+"#;
+        let config: AppConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.push_relay.default_permission, PushPermission::Off);
+        let perms = &config.clients[0].push_permissions;
+        assert_eq!(perms.global, Some(PushPermission::Off));
+        assert_eq!(perms.servers["m1"], PushPermission::Off);
+        assert_eq!(perms.events["m1__e"], PushPermission::Off);
+        let saved = serde_yaml::to_string(&config).unwrap();
+        assert!(!saved.contains("block"), "{saved}");
+        assert!(saved.contains("default_permission: off"), "{saved}");
+        let reread: AppConfig = serde_yaml::from_str(&saved).unwrap();
+        assert_eq!(reread.push_relay, config.push_relay);
+        assert_eq!(reread.clients[0], config.clients[0]);
+    }
+
+    #[test]
+    fn old_enabled_switch_migrates_only_when_false() {
+        let read = |yaml: &str| serde_yaml::from_str::<PushRelayConfig>(yaml).unwrap();
+        // Explicitly off: everything was off, so the default becomes Off
+        assert_eq!(
+            read("enabled: false\n").default_permission,
+            PushPermission::Off
+        );
+        assert_eq!(
+            read("enabled: false\ndefault_permission: allow\n").default_permission,
+            PushPermission::Off
+        );
+        // On, or absent: ignored
+        assert_eq!(read("enabled: true\n"), PushRelayConfig::default());
+        assert_eq!(
+            read("enabled: true\ndefault_permission: ask\n").default_permission,
+            PushPermission::Ask
+        );
+        // The key is not written back
+        let saved = serde_yaml::to_string(&read("enabled: false\n")).unwrap();
+        assert!(!saved.contains("enabled"), "{saved}");
+        assert!(saved.contains("default_permission: off"), "{saved}");
     }
 
     #[test]

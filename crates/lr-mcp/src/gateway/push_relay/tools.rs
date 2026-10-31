@@ -124,8 +124,10 @@ impl VirtualMcpServer for PushRelayTools {
         )
     }
 
-    fn is_enabled(&self, _client: &lr_config::Client) -> bool {
-        self.relay.upgrade().is_some_and(|r| r.config().enabled)
+    fn is_enabled(&self, client: &lr_config::Client) -> bool {
+        self.relay
+            .upgrade()
+            .is_some_and(|r| r.push_possible(client))
     }
 
     fn list_tools(&self, state: &dyn VirtualSessionState) -> Vec<McpTool> {

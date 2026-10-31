@@ -219,6 +219,8 @@ async fn initialize(gateway: &McpGateway, session: &str) -> JsonRpcResponse {
 #[derive(Default)]
 struct FakeRelay {
     consume_upstream: bool,
+    /// Push can reach no client (`push_possible_for` answers false).
+    push_off: bool,
     calls: parking_lot::Mutex<Vec<(String, PushRelaySessionContext)>>,
     upstream: parking_lot::Mutex<Vec<UpstreamPushNotification>>,
 }
@@ -240,6 +242,10 @@ impl FakeRelay {
 
 #[async_trait]
 impl PushRelayService for FakeRelay {
+    fn push_possible_for(&self, _client_id: &str) -> bool {
+        !self.push_off
+    }
+
     fn advertisement(&self, ctx: &PushRelaySessionContext) -> PushAdvertisement {
         let mut ad = PushAdvertisement::default();
         ad.extensions
@@ -601,16 +607,15 @@ async fn first_discovery_wait_is_bounded() {
 }
 
 #[tokio::test]
-async fn no_wait_without_a_relay_or_when_disabled() {
+async fn no_wait_without_a_relay_or_when_push_cannot_reach_the_client() {
     for register in [false, true] {
         let upstream = push_upstream(Duration::from_millis(3500)).await;
         let gateway = gateway_with(vec![http_server(SERVER_ID, upstream.uri())], None);
         if register {
-            gateway.set_push_relay(Arc::new(FakeRelay::default()));
-            gateway.update_push_relay_config(&lr_config::PushRelayConfig {
-                enabled: false,
+            gateway.set_push_relay(Arc::new(FakeRelay {
+                push_off: true,
                 ..Default::default()
-            });
+            }));
         }
         let started = Instant::now();
         let response = initialize(&gateway, "s1").await.result.unwrap();
@@ -636,6 +641,8 @@ async fn disabled_servers_are_never_waited_on() {
 /// one tagged event and the final result.
 const STDIO_UPSTREAM: &str = r#"while IFS= read -r line; do
   id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  sid=$(printf '%s' "$line" | sed -n 's/.*"id":\("[^"]*"\).*/\1/p')
+  [ -z "$id" ] && id="$sid"
   case "$line" in
     *'"method":"server/discover"'*) printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32601,"message":"no"}}\n' "$id" ;;
     *'"method":"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{},"events":{},"experimental":{"claude/channel":{}}},"serverInfo":{"name":"stdio","version":"1"}}}\n' "$id" ;;
@@ -725,11 +732,21 @@ async fn unconsumed_channel_messages_keep_the_raw_forwarding() {
 async fn relay_can_stream_and_query_an_upstream_on_a_session() {
     let gateway = gateway_with(vec![stdio_server()], None);
     initialize(&gateway, "s1").await;
-
-    let list = gateway
-        .upstream_request("s1", SERVER_ID, "events/list", Some(json!({})))
-        .await
-        .unwrap();
+    // `initialize` answers by its 2 s bound even if the upstream is still
+    // starting; wait for the session's connection to come up.
+    let started = Instant::now();
+    let list = loop {
+        match gateway
+            .upstream_request("s1", SERVER_ID, "events/list", Some(json!({})))
+            .await
+        {
+            Ok(list) => break list,
+            Err(_) if started.elapsed() < Duration::from_secs(10) => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(e) => panic!("{e}"),
+        }
+    };
     assert_eq!(list.result.unwrap()["events"][0]["name"], "tick");
 
     let mut stream = gateway

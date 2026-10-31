@@ -300,6 +300,14 @@ pub trait PushRelayService: Send + Sync {
         None
     }
 
+    /// Whether any push could reach this client under its permissions. When
+    /// false the gateway does no push work for its sessions: no
+    /// first-discovery wait before answering `initialize` /
+    /// `server/discover`.
+    fn push_possible_for(&self, _client_id: &str) -> bool {
+        true
+    }
+
     /// Extra `subscriptions/listen` opt-ins this client may use.
     fn listen_opt_ins(&self, _client_id: &str, _session_key: &str) -> Vec<ListenOptIn> {
         Vec::new()

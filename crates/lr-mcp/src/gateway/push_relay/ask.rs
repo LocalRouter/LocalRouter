@@ -26,11 +26,11 @@ pub enum PushDecisionAction {
     Deny,
     /// Allow this event type for the rest of this LocalRouter run.
     AllowSession,
-    /// Block this event type for the rest of this LocalRouter run.
+    /// Turn this event type off for the rest of this LocalRouter run.
     DenySession,
     /// Allow this event type permanently (written to the client's config).
     AllowAlways,
-    /// Block this event type permanently (written to the client's config).
+    /// Turn this event type off permanently (written to the client's config).
     DenyAlways,
 }
 
@@ -52,7 +52,7 @@ impl PushDecisionAction {
     pub fn permission(&self) -> Option<lr_config::PushPermission> {
         match self {
             Self::AllowSession | Self::AllowAlways => Some(lr_config::PushPermission::Allow),
-            Self::DenySession | Self::DenyAlways => Some(lr_config::PushPermission::Block),
+            Self::DenySession | Self::DenyAlways => Some(lr_config::PushPermission::Off),
             Self::Allow | Self::Deny => None,
         }
     }

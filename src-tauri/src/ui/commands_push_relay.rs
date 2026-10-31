@@ -1,4 +1,4 @@
-//! Push Relay Tauri commands: the global switch and default permission, per-client push
+//! Push Relay Tauri commands: the global default permission, per-client push
 //! settings, the upstream push sources LocalRouter remembers, and the Claude
 //! Code STDIO bridge setup.
 //!
@@ -31,12 +31,12 @@ fn emit_clients_changed(app: &tauri::AppHandle) {
 // Global settings
 // ============================================================================
 
-/// Global Push Relay settings: the master switch, the default permission,
-/// the Claude Channels rate and how much event history each client keeps.
-/// Every other limit is internal to the relay and not configurable.
+/// Global Push Relay settings: the default permission (Allow / Ask / Off;
+/// the only global control), the Claude Channels rate and how much event
+/// history each client keeps. Every other limit is internal to the relay and
+/// not configurable.
 #[derive(Debug, Clone, Serialize)]
 pub struct PushRelayConfigView {
-    pub enabled: bool,
     pub default_permission: PushPermission,
     /// Claude Channels messages per client session per minute.
     pub channel_messages_per_minute: u32,
@@ -49,7 +49,6 @@ pub struct PushRelayConfigView {
 impl From<&PushRelayConfig> for PushRelayConfigView {
     fn from(c: &PushRelayConfig) -> Self {
         Self {
-            enabled: c.enabled,
             default_permission: c.default_permission,
             channel_messages_per_minute: c.channel_messages_per_minute,
             history_retention_hours: c.history_retention_hours,
@@ -61,7 +60,6 @@ impl From<&PushRelayConfig> for PushRelayConfigView {
 /// A partial update of the global settings; `None` leaves a field as it is.
 #[derive(Debug, Clone, Default)]
 pub struct PushRelayConfigUpdate {
-    pub enabled: Option<bool>,
     pub default_permission: Option<PushPermission>,
     pub channel_messages_per_minute: Option<u32>,
     pub history_retention_hours: Option<u32>,
@@ -75,9 +73,6 @@ pub fn apply_push_relay_update(
     update: &PushRelayConfigUpdate,
 ) -> Result<(), String> {
     let mut next = push.clone();
-    if let Some(v) = update.enabled {
-        next.enabled = v;
-    }
     if let Some(v) = update.default_permission {
         next.default_permission = v;
     }
@@ -107,7 +102,6 @@ pub async fn get_push_relay_config(
 /// out of its bounds is refused and nothing is changed.
 #[tauri::command]
 pub async fn update_push_relay_config(
-    enabled: Option<bool>,
     default_permission: Option<PushPermission>,
     channel_messages_per_minute: Option<u32>,
     history_retention_hours: Option<u32>,
@@ -115,7 +109,6 @@ pub async fn update_push_relay_config(
     config_manager: State<'_, ConfigManager>,
 ) -> Result<PushRelayConfigView, String> {
     let update = PushRelayConfigUpdate {
-        enabled,
         default_permission,
         channel_messages_per_minute,
         history_retention_hours,
@@ -173,6 +166,11 @@ pub struct PushSourceInfo {
     /// LocalRouter can consume push from this server (events with push/poll,
     /// or Channels).
     pub has_consumable_push: bool,
+    /// Enabled clients that may receive at least one of this server's push
+    /// sources: MCP access to the server and a permission other than Off
+    /// for one of its supported event types or its channel messages. Zero
+    /// when the global default is Off and no override enables any of them.
+    pub receiving_clients: usize,
 }
 
 fn event_descriptions(catalogue: &[serde_json::Value]) -> BTreeMap<String, String> {
@@ -234,7 +232,40 @@ pub fn push_source_info(server: &lr_config::McpServerConfig) -> PushSourceInfo {
         resource_subscribe,
         events,
         has_consumable_push: has_push && current,
+        receiving_clients: 0,
     }
+}
+
+/// Count the clients that may receive any of `source`'s push sources (see
+/// [`PushSourceInfo::receiving_clients`]).
+pub fn receiving_clients(config: &lr_config::AppConfig, source: &PushSourceInfo) -> usize {
+    let mut names: Vec<&str> = source
+        .events
+        .iter()
+        .filter(|e| e.supported)
+        .map(|e| e.name.as_str())
+        .collect();
+    if source.channels {
+        names.push(lr_mcp::gateway::push_relay::relay::CHANNEL_EVENT_NAME);
+    }
+    if names.is_empty() || !source.enabled {
+        return 0;
+    }
+    config
+        .clients
+        .iter()
+        .filter(|c| {
+            c.enabled
+                && !c.security.privacy.restricted()
+                && c.mcp_permissions
+                    .resolve_server(&source.server_id)
+                    .is_enabled()
+                && names.iter().any(|name| {
+                    c.push_permission(&config.push_relay, &source.server_id, name)
+                        != PushPermission::Off
+                })
+        })
+        .count()
 }
 
 /// Every configured MCP server with its remembered push capabilities. The
@@ -254,7 +285,9 @@ fn collect_push_sources(
                     server.capability_snapshot = live.capability_snapshot;
                 }
             }
-            push_source_info(&server)
+            let mut info = push_source_info(&server);
+            info.receiving_clients = receiving_clients(config, &info);
+            info
         })
         .collect()
 }
@@ -293,8 +326,9 @@ pub struct ClientPushSettings {
     pub global_default: PushPermission,
     /// The client-level effective permission (client override or default).
     pub effective_client: PushPermission,
-    /// Global master switch; when off everything is blocked.
-    pub relay_enabled: bool,
+    /// Any push can reach this client: the global default is not Off, or
+    /// one of its overrides enables something.
+    pub receives_push: bool,
     pub servers: Vec<ClientPushServerAccess>,
 }
 
@@ -309,7 +343,7 @@ fn client_push_settings(
         webhook_urls: client.push_webhook_urls.clone(),
         global_default: default,
         effective_client: client.push_permissions.global.unwrap_or(default),
-        relay_enabled: config.push_relay.enabled,
+        receives_push: client.may_receive_push(&config.push_relay),
         servers: config
             .mcp_servers
             .iter()
@@ -637,7 +671,7 @@ pub struct PushTestEventResult {
     /// `localrouter__test.event`.
     pub name: String,
     /// Clients the event was admitted to, each under its own permission
-    /// (Allow delivers, Ask holds it for approval, Block drops it).
+    /// (Allow delivers, Ask holds it for approval, Off drops it).
     pub client_ids: Vec<String>,
 }
 
@@ -762,7 +796,6 @@ mod tests {
         assert_eq!(
             json,
             serde_json::json!({
-                "enabled": true,
                 "default_permission": "allow",
                 "channel_messages_per_minute": 10,
                 "history_retention_hours": 24,
@@ -787,7 +820,11 @@ mod tests {
         assert_eq!(push.channel_messages_per_minute, 600);
         assert_eq!(push.history_retention_hours, 1);
         assert_eq!(push.history_max_events, 1_000_000);
-        assert!(push.enabled, "untouched fields stay");
+        assert_eq!(
+            push.default_permission,
+            PushPermission::Allow,
+            "untouched fields stay"
+        );
     }
 
     #[test]
@@ -815,7 +852,7 @@ mod tests {
             },
             PushRelayConfigUpdate {
                 // A valid field beside an invalid one is not applied either
-                enabled: Some(false),
+                default_permission: Some(PushPermission::Off),
                 history_max_events: Some(1_000_001),
                 ..Default::default()
             },
@@ -835,7 +872,7 @@ mod tests {
             "server",
             Some("vc"),
             None,
-            Some(PushPermission::Block),
+            Some(PushPermission::Off),
         )
         .unwrap();
         apply_push_permission(
@@ -847,14 +884,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(p.global, Some(PushPermission::Ask));
-        assert_eq!(p.servers["vc"], PushPermission::Block);
+        assert_eq!(p.servers["vc"], PushPermission::Off);
         assert_eq!(
             p.effective(PushPermission::Allow, "vc", "message.received"),
             PushPermission::Allow
         );
         assert_eq!(
             p.effective(PushPermission::Allow, "vc", "other"),
-            PushPermission::Block
+            PushPermission::Off
         );
 
         apply_push_permission(&mut p, "event", Some("vc"), Some("message.received"), None).unwrap();
@@ -987,6 +1024,52 @@ mod tests {
                 .is_enabled()
         );
         assert_eq!(access.effective, PushPermission::Ask);
+    }
+
+    #[test]
+    fn receiving_clients_follow_the_default_and_overrides() {
+        let mut config = lr_config::AppConfig::default();
+        let server = server_with_snapshot(
+            vec![
+                ("message.received", vec![EventDeliveryMode::Push]),
+                ("invoice.paid", vec![EventDeliveryMode::Webhook]),
+            ],
+            false,
+        );
+        let server_id = server.id.clone();
+        config.mcp_servers.push(server);
+        let mut a = lr_config::Client::new_with_strategy("A".to_string(), "s1".to_string());
+        a.mcp_permissions.global = lr_config::PermissionState::Allow;
+        let mut b = a.clone();
+        b.id = "b".to_string();
+        config.clients = vec![a, b];
+        let count = |config: &lr_config::AppConfig| {
+            let info = push_source_info(&config.mcp_servers[0]);
+            receiving_clients(config, &info)
+        };
+        assert_eq!(count(&config), 2);
+        assert!(client_push_settings(&config, &config.clients[0]).receives_push);
+
+        config.push_relay.default_permission = PushPermission::Off;
+        assert_eq!(count(&config), 0);
+        assert!(!client_push_settings(&config, &config.clients[0]).receives_push);
+
+        // An override on the webhook-only type enables nothing deliverable
+        config.clients[0].set_push_event_permission(
+            &server_id,
+            "invoice.paid",
+            Some(PushPermission::Allow),
+        );
+        assert_eq!(count(&config), 0);
+
+        config.clients[0].set_push_event_permission(
+            &server_id,
+            "message.received",
+            Some(PushPermission::Ask),
+        );
+        assert_eq!(count(&config), 1);
+        assert!(client_push_settings(&config, &config.clients[0]).receives_push);
+        assert!(!client_push_settings(&config, &config.clients[1]).receives_push);
     }
 
     fn held(

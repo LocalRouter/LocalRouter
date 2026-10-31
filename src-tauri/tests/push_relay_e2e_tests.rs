@@ -616,18 +616,18 @@ async fn gate_advertises_push_only_with_a_permitted_source() {
         .unwrap()
         .starts_with("[Http Push]"));
 
-    // Everything blocked: nothing advertised, no tools, no instructions
-    let mut blocked = client(CLIENT);
-    blocked.push_permissions.global = Some(PushPermission::Block);
-    h.set_client(blocked);
-    let init = h.initialize("blocked", json!({})).await.result.unwrap();
+    // Everything Off: nothing advertised, no tools, no instructions
+    let mut off = client(CLIENT);
+    off.push_permissions.global = Some(PushPermission::Off);
+    h.set_client(off);
+    let init = h.initialize("off", json!({})).await.result.unwrap();
     assert!(init["capabilities"].get("events").is_none());
     assert!(init["capabilities"]
         .get("extensions")
         .and_then(|e| e.get(EVENTS_EXTENSION_ID))
         .is_none());
     assert!(!h
-        .tool_names("blocked")
+        .tool_names("off")
         .await
         .iter()
         .any(|t| t.starts_with("Event")));
@@ -651,6 +651,194 @@ async fn gate_advertises_push_only_with_a_permitted_source() {
         .relay
         .catalogue(&h.clients.read()[CLIENT], &[HTTP_ID.to_string()])
         .is_empty());
+}
+
+fn off_config() -> PushRelayConfig {
+    PushRelayConfig {
+        default_permission: PushPermission::Off,
+        ..PushRelayConfig::default()
+    }
+}
+
+/// Asserts that a session was told nothing about push.
+async fn assert_no_push(h: &Harness, client_id: &str, session: &str) {
+    let init = h
+        .send_as(
+            client_id,
+            session,
+            "initialize",
+            Some(json!({"protocolVersion": "2025-11-25", "capabilities": {},
+                "clientInfo": {"name": "t", "version": "1"}})),
+        )
+        .await
+        .result
+        .unwrap();
+    let caps = &init["capabilities"];
+    assert!(caps.get("events").is_none(), "{caps}");
+    assert!(
+        caps.get("extensions")
+            .and_then(|e| e.get(EVENTS_EXTENSION_ID))
+            .is_none(),
+        "{caps}"
+    );
+    assert!(
+        caps.get("experimental")
+            .and_then(|e| e.get(CLAUDE_CHANNEL_CAPABILITY))
+            .is_none(),
+        "{caps}"
+    );
+    assert!(!init["instructions"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("<events>"));
+    let tools = h
+        .send_as(client_id, session, "tools/list", None)
+        .await
+        .result
+        .unwrap();
+    assert!(
+        !tools["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["name"].as_str().unwrap_or_default().starts_with("Event")),
+        "{tools}"
+    );
+}
+
+#[tokio::test]
+async fn global_off_with_no_overrides_does_no_push_work() {
+    let (upstream, calls) = http_upstream().await;
+    let h = harness(vec![http_server(upstream.uri())], fast_limits());
+    h.relay.update_config(&off_config());
+    assert!(!h.relay.push_possible(&h.clients.read()[CLIENT]));
+
+    assert_no_push(&h, CLIENT, "plain").await;
+    h.gateway.set_stdio_bridge_session("bridge", true);
+    assert_no_push(&h, CLIENT, "bridge").await;
+
+    // Nothing to list or subscribe to
+    let list = h.send("plain", "events/list", None).await.result.unwrap();
+    assert_eq!(list["events"], json!([]));
+    let poll = h
+        .send(
+            "plain",
+            "events/poll",
+            Some(json!({"name": "http-push__msg"})),
+        )
+        .await;
+    assert!(poll.result.is_none(), "an Off type is not found");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(h.relay.active_subscriptions().is_empty());
+    assert_eq!(calls.load(Ordering::SeqCst), 0, "upstream never polled");
+}
+
+#[tokio::test]
+async fn turning_push_off_closes_upstream_subscriptions() {
+    let (upstream, calls) = http_upstream().await;
+    let h = harness(vec![http_server(upstream.uri())], fast_limits());
+    h.poll("s1", "http-push__msg", None).await;
+    wait_until("upstream polled", || calls.load(Ordering::SeqCst) >= 1).await;
+    assert!(!h.relay.active_subscriptions().is_empty());
+
+    h.relay.update_config(&off_config());
+    wait_until("subscription closed", || {
+        h.relay.active_subscriptions().is_empty()
+    })
+    .await;
+    let after = calls.load(Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        calls.load(Ordering::SeqCst) <= after + 1,
+        "upstream polling stopped"
+    );
+}
+
+/// An HTTP upstream with events whose `initialize` answers after `delay`.
+async fn slow_upstream(delay: Duration) -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(http_method("POST"))
+        .and(JsonRpcMethod("initialize"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"jsonrpc": "2.0", "id": 1, "result": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {"tools": {}, "events": {}},
+                    "serverInfo": {"name": "slow", "version": "1"}}}))
+                .set_delay(delay),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(http_method("POST"))
+        .and(JsonRpcMethod("events/list"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"jsonrpc": "2.0", "id": 1,
+            "result": {"events": [{"name": "msg", "delivery": ["poll"]}]}})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(http_method("POST"))
+        .and(JsonRpcMethod("tools/list"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"jsonrpc": "2.0", "id": 1, "result": {"tools": []}})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(http_method("POST"))
+        .respond_with(ResponseTemplate::new(202))
+        .mount(&server)
+        .await;
+    server
+}
+
+#[tokio::test]
+async fn first_discovery_wait_happens_only_when_push_can_reach_the_client() {
+    for off in [false, true] {
+        let upstream = slow_upstream(Duration::from_millis(4_000)).await;
+        let mut server = http_server(upstream.uri());
+        server.capability_snapshot = None;
+        let h = harness(vec![server], fast_limits());
+        h.gateway.set_first_discovery_wait(Duration::from_secs(10));
+        if off {
+            h.relay.update_config(&off_config());
+        }
+        let started = Instant::now();
+        h.initialize("s1", json!({})).await;
+        let elapsed = started.elapsed();
+        if off {
+            assert!(
+                elapsed < Duration::from_millis(3_000),
+                "waited: {elapsed:?}"
+            );
+        } else {
+            assert!(
+                elapsed >= Duration::from_millis(3_500),
+                "control did not wait: {elapsed:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn global_off_with_one_event_allowed_reaches_only_that_client() {
+    let (upstream, _) = http_upstream().await;
+    let h = harness(vec![http_server(upstream.uri())], fast_limits());
+    h.relay.update_config(&off_config());
+    h.clients
+        .write()
+        .insert("client-2".into(), client("client-2"));
+    let mut allowed = client(CLIENT);
+    allowed.set_push_event_permission(HTTP_ID, "msg", Some(PushPermission::Allow));
+    h.set_client(allowed);
+
+    let init = h.initialize("a", json!({})).await.result.unwrap();
+    assert_eq!(init["capabilities"]["events"], json!({}));
+    let list = h.send("a", "events/list", None).await.result.unwrap();
+    assert_eq!(event_names(&list), vec!["http-push__msg"]);
+    assert!(h.tool_names("a").await.contains(&"EventPoll".to_string()));
+
+    assert_no_push(&h, "client-2", "b").await;
 }
 
 #[tokio::test]
@@ -1267,7 +1455,7 @@ async fn ask_holds_until_allowed_with_an_edit() {
 }
 
 #[tokio::test]
-async fn held_queue_changes_are_announced_and_a_new_block_releases_them() {
+async fn held_queue_changes_are_announced_and_turning_off_releases_them() {
     let (upstream, _) = http_upstream().await;
     let h = harness(vec![http_server(upstream.uri())], fast_limits());
     let changes = Arc::new(AtomicUsize::new(0));
@@ -1286,13 +1474,13 @@ async fn held_queue_changes_are_announced_and_a_new_block_releases_them() {
     let after_hold = changes.load(Ordering::SeqCst);
     assert!(after_hold >= 1, "holding an event is announced");
 
-    // The user blocks the type: the held event is denied without an answer
-    let mut blocked = ask_client("msg");
-    blocked.push_permissions.events.insert(
+    // The user turns the type off: the held event is denied without an answer
+    let mut off = ask_client("msg");
+    off.push_permissions.events.insert(
         PushPermissions::event_key(HTTP_ID, "msg"),
-        PushPermission::Block,
+        PushPermission::Off,
     );
-    h.set_client(blocked);
+    h.set_client(off);
     wait_until("released", || {
         h.relay.pending_events(Some(CLIENT)).is_empty()
     })
@@ -1611,7 +1799,7 @@ async fn permanent_decisions_persist_and_apply_to_later_events() {
 }
 
 #[tokio::test]
-async fn blocked_and_oversized_events_are_not_delivered() {
+async fn off_and_oversized_events_are_not_delivered() {
     let (upstream, _) = http_upstream().await;
     let mut limits = fast_limits();
     limits.max_event_bytes = 64;
@@ -1642,20 +1830,20 @@ async fn blocked_and_oversized_events_are_not_delivered() {
         vec!["too_large", "allowed"]
     );
 
-    let mut blocked = client(CLIENT);
-    blocked.push_permissions.events.insert(
+    let mut off = client(CLIENT);
+    off.push_permissions.events.insert(
         PushPermissions::event_key(HTTP_ID, "msg"),
-        PushPermission::Block,
+        PushPermission::Off,
     );
-    h.set_client(blocked);
+    h.set_client(off);
     h.relay.admit(
         CLIENT,
         occurrence(HTTP_ID, "http-push", "msg", "b1", json!({})),
     );
     assert!(h
         .monitor_decisions("http-push__msg")
-        .contains(&"blocked".to_string()));
-    // A blocked type is no longer listed and cannot be polled
+        .contains(&"off".to_string()));
+    // An Off type is no longer listed and cannot be polled
     let poll = h
         .send("s1", "events/poll", Some(json!({"name": "http-push__msg"})))
         .await;
@@ -2379,7 +2567,7 @@ async fn test_source_reaches_only_sessions_that_opted_in() {
 }
 
 #[tokio::test]
-async fn test_event_flows_through_allow_ask_block_monitor_poll_and_stream() {
+async fn test_event_flows_through_allow_ask_off_monitor_poll_and_stream() {
     let h = harness(vec![], fast_limits());
     h.gateway.set_push_test_session("try", true);
     h.initialize("try", json!({})).await;
@@ -2520,17 +2708,17 @@ async fn test_event_flows_through_allow_ask_block_monitor_poll_and_stream() {
     .await;
     let next = batch["cursor"].as_str().unwrap().to_string();
 
-    // Block: recorded in Monitor, delivered nowhere, gone from the catalogue
+    // Off: recorded in Monitor, delivered nowhere, gone from the catalogue
     let mut block = client(CLIENT);
     block.push_permissions.events.insert(
         PushPermissions::event_key(TEST_SOURCE_SERVER_ID, TEST_EVENT_NAME),
-        PushPermission::Block,
+        PushPermission::Off,
     );
     h.set_client(block);
     h.relay.send_test_event(None, None, None).unwrap();
     assert_eq!(
         h.monitor_decisions(TEST_EVENT),
-        vec!["allowed", "asked_edited", "blocked"]
+        vec!["allowed", "asked_edited", "off"]
     );
     let response = h
         .send(
@@ -2539,7 +2727,7 @@ async fn test_event_flows_through_allow_ask_block_monitor_poll_and_stream() {
             Some(json!({"name": TEST_EVENT, "cursor": next})),
         )
         .await;
-    assert!(response.result.is_none(), "a blocked type is not found");
+    assert!(response.result.is_none(), "an Off type is not found");
     let list = h.send("try", "events/list", None).await.result.unwrap();
     assert!(event_names(&list).is_empty());
 

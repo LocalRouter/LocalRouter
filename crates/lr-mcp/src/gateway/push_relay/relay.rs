@@ -237,6 +237,7 @@ impl HolderKind {
 }
 
 /// One consumer's demand for upstream subscriptions.
+#[derive(Clone)]
 struct Holder {
     client_id: String,
     /// The downstream session that reads for this consumer; `None` for
@@ -530,7 +531,8 @@ impl PushRelay {
     }
 
     /// Re-evaluate permissions after client settings changed: list changes
-    /// are announced, channel demand recomputed, blocked streams end.
+    /// are announced, channel demand recomputed, streams of types now Off end,
+    /// and upstream subscriptions nobody may receive any more close.
     pub fn notify_clients_changed(&self) {
         self.refresh();
     }
@@ -558,7 +560,7 @@ impl PushRelay {
                 &event.occurrence.upstream_name,
             ) {
                 PushPermission::Allow => PushDecisionAction::Allow,
-                PushPermission::Block => PushDecisionAction::Deny,
+                PushPermission::Off => PushDecisionAction::Deny,
                 PushPermission::Ask => continue,
             };
             let _ = self.decide(&event.hold_id, PushDecision::new(action));
@@ -616,9 +618,24 @@ impl PushRelay {
             .allowed_server_ids(&self.gateway.server_manager.list_configs())
     }
 
+    /// Whether any push could reach this client: it is enabled, has no
+    /// restricted privacy profile, and the global default or one of its
+    /// overrides (configured or decided for the session) is not `Off`. When
+    /// false nothing is advertised to it, nothing is subscribed upstream on
+    /// its behalf and its sessions never wait for first discovery.
+    pub fn push_possible(&self, client: &lr_config::Client) -> bool {
+        client.enabled
+            && !client.security.privacy.restricted()
+            && (client.may_receive_push(&self.config.read())
+                || self
+                    .overrides
+                    .iter()
+                    .any(|o| o.key().0 == client.id && *o.value() != PushPermission::Off))
+    }
+
     /// Effective permission of one upstream event type for one client. Never
-    /// wider than the client's MCP access; restricted privacy profiles and a
-    /// disabled relay block everything.
+    /// wider than the client's MCP access; restricted privacy profiles turn
+    /// everything off.
     pub fn permission(
         &self,
         client: &lr_config::Client,
@@ -626,12 +643,11 @@ impl PushRelay {
         event_name: &str,
     ) -> PushPermission {
         let config = self.config.read();
-        if !config.enabled
-            || !client.enabled
+        if !client.enabled
             || client.security.privacy.restricted()
             || (!self.is_test_source(server_id) && !self.server_visible(client, server_id))
         {
-            return PushPermission::Block;
+            return PushPermission::Off;
         }
         if let Some(permission) = self.overrides.get(&(
             client.id.clone(),
@@ -666,7 +682,7 @@ impl PushRelay {
         self.catalogue_for(client, visible, false)
     }
 
-    /// The test source's catalogue entry for a client, unless Blocked.
+    /// The test source's catalogue entry for a client, unless Off.
     fn test_entry(&self, client: &lr_config::Client) -> Option<CatalogueEntry> {
         if self
             .gateway
@@ -677,7 +693,7 @@ impl PushRelay {
             return None;
         }
         let permission = self.permission(client, TEST_SOURCE_SERVER_ID, TEST_EVENT_NAME);
-        (permission != PushPermission::Block).then(|| CatalogueEntry {
+        (permission != PushPermission::Off).then(|| CatalogueEntry {
             qualified_name: format!("{TEST_SOURCE_SERVER_ID}__{TEST_EVENT_NAME}"),
             server_id: TEST_SOURCE_SERVER_ID.to_string(),
             server_slug: TEST_SOURCE_SERVER_ID.to_string(),
@@ -704,7 +720,7 @@ impl PushRelay {
         visible: &[String],
         include_test: bool,
     ) -> Vec<CatalogueEntry> {
-        if !self.config.read().enabled || client.security.privacy.restricted() {
+        if !self.push_possible(client) {
             return Vec::new();
         }
         let mut entries = Vec::new();
@@ -725,7 +741,7 @@ impl PushRelay {
                     continue;
                 }
                 let permission = self.permission(client, &source.server_id, name);
-                if permission == PushPermission::Block {
+                if permission == PushPermission::Off {
                     continue;
                 }
                 entries.push(CatalogueEntry {
@@ -742,7 +758,7 @@ impl PushRelay {
             }
             if source.snapshot.push.channels {
                 let permission = self.permission(client, &source.server_id, CHANNEL_EVENT_NAME);
-                if permission != PushPermission::Block {
+                if permission != PushPermission::Off {
                     entries.push(CatalogueEntry {
                         qualified_name: format!("{slug}__{CHANNEL_EVENT_NAME}"),
                         server_id: source.server_id.clone(),
@@ -911,15 +927,26 @@ impl PushRelay {
         if tokio::runtime::Handle::try_current().is_err() {
             return;
         }
-        let desired: HashMap<SubscriptionKey, SubscriptionSpec> = {
+        let live: Vec<Holder> = {
             let now = Instant::now();
-            let holders = self.holders.lock();
-            holders
+            self.holders
+                .lock()
                 .values()
                 .filter(|h| h.expires.is_none_or(|e| e > now))
-                .flat_map(|h| h.keys.iter().map(|(k, s)| (k.clone(), s.clone())))
+                .cloned()
                 .collect()
         };
+        // Only clients push can still reach hold subscriptions open
+        let mut possible: HashMap<String, bool> = HashMap::new();
+        let desired: HashMap<SubscriptionKey, SubscriptionSpec> = live
+            .into_iter()
+            .filter(|h| {
+                *possible
+                    .entry(h.client_id.clone())
+                    .or_insert_with(|| self.push_possible_for(&h.client_id))
+            })
+            .flat_map(|h| h.keys.into_iter())
+            .collect();
         self.hub.sync(desired);
     }
 
@@ -1211,11 +1238,11 @@ impl PushRelay {
             return;
         }
         match self.permission(&client, &occurrence.server_id, &occurrence.upstream_name) {
-            PushPermission::Block => {
+            PushPermission::Off => {
                 self.monitor(
                     &client,
                     &occurrence,
-                    "blocked",
+                    "off",
                     None,
                     lr_monitor::EventStatus::Complete,
                     None,
@@ -1701,7 +1728,7 @@ impl PushRelay {
     }
 
     /// A client's event types with their effective permissions, for the
-    /// permission tree (Blocked types included).
+    /// permission tree (Off types included).
     pub fn client_event_types(&self, client_id: &str) -> Vec<ClientEventTypeInfo> {
         let Some(client) = self.client(client_id) else {
             return Vec::new();
@@ -1798,9 +1825,6 @@ impl PushRelay {
         message: Option<String>,
         data: Option<Value>,
     ) -> Result<TestEventSent, String> {
-        if !self.config.read().enabled {
-            return Err("Push Relay is turned off".into());
-        }
         if !self.is_test_source(TEST_SOURCE_SERVER_ID) {
             return Err(format!(
                 "An MCP server uses the id \"{TEST_SOURCE_SERVER_ID}\"; the push test source is unavailable"
@@ -2206,10 +2230,10 @@ impl PushRelay {
                                 &sink,
                                 id,
                                 "notifications/events/terminated",
-                                json!({"reason": "blocked"}),
+                                json!({"reason": "off"}),
                             )
                             .await;
-                        ended = "blocked";
+                        ended = "off";
                         break;
                     }
                     if !self
@@ -3264,8 +3288,15 @@ impl PushRelayService for PushRelay {
         ]
     }
 
+    fn push_possible_for(&self, client_id: &str) -> bool {
+        self.client(client_id)
+            .is_some_and(|client| self.push_possible(&client))
+    }
+
     fn on_upstream_notification(&self, n: UpstreamPushNotification) -> bool {
-        if !self.config.read().enabled {
+        // A client push cannot reach gets what it got before the relay
+        // existed: the notification as the upstream sent it.
+        if !self.push_possible_for(&n.client_id) {
             return false;
         }
         if n.notification.method == CLAUDE_CHANNEL_NOTIFICATION {

@@ -5141,19 +5141,24 @@ impl Client {
         }
     }
 
-    /// Effective push permission for one upstream event type, or `Block` when
-    /// Push Relay is switched off.
+    /// Effective push permission for one upstream event type: the most
+    /// specific of this client's overrides, else the global default.
     pub fn push_permission(
         &self,
         global: &crate::PushRelayConfig,
         server_id: &str,
         event_name: &str,
     ) -> crate::PushPermission {
-        if !global.enabled {
-            return crate::PushPermission::Block;
-        }
         self.push_permissions
             .effective(global.default_permission, server_id, event_name)
+    }
+
+    /// Whether any push source could reach this client: the global default
+    /// is not `Off`, or one of its overrides enables something. When false
+    /// the relay advertises nothing to it and does no work on its behalf.
+    pub fn may_receive_push(&self, global: &crate::PushRelayConfig) -> bool {
+        global.default_permission != crate::PushPermission::Off
+            || self.push_permissions.enables_anything()
     }
 
     /// Resolve whether Tool Responses Indexing is enabled for this client.

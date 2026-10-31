@@ -1844,20 +1844,17 @@ pub async fn get_feature_clients_status(
                     )
                 }
                 "push_relay" => {
-                    let effective = if config.push_relay.enabled {
-                        c.push_permissions
-                            .global
-                            .unwrap_or(config.push_relay.default_permission)
-                    } else {
-                        lr_config::PushPermission::Block
-                    };
+                    let effective = c
+                        .push_permissions
+                        .global
+                        .unwrap_or(config.push_relay.default_permission);
                     let value = match effective {
                         lr_config::PushPermission::Allow => "allow",
                         lr_config::PushPermission::Ask => "ask",
-                        lr_config::PushPermission::Block => "block",
+                        lr_config::PushPermission::Off => "off",
                     };
                     (
-                        effective != lr_config::PushPermission::Block,
+                        c.may_receive_push(&config.push_relay),
                         if c.push_permissions.is_empty() {
                             "global"
                         } else {

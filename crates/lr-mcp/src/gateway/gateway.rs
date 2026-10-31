@@ -737,9 +737,13 @@ impl McpGateway {
 
     /// Visible, enabled servers with no remembered capabilities (or ones that
     /// no longer match their configuration). Empty unless a Push Relay is
-    /// registered and enabled: only it reads the snapshots.
-    fn servers_awaiting_first_discovery(&self, servers: &[String]) -> Vec<String> {
-        if self.push_relay().is_none() || !self.push_relay_config.read().enabled {
+    /// registered and push could reach `client_id` (only the relay reads the
+    /// snapshots, and only for clients it may deliver to).
+    fn servers_awaiting_first_discovery(&self, client_id: &str, servers: &[String]) -> Vec<String> {
+        if !self
+            .push_relay()
+            .is_some_and(|relay| relay.push_possible_for(client_id))
+        {
             return Vec::new();
         }
         servers
@@ -1426,8 +1430,8 @@ impl McpGateway {
         // for, bounded, so its capabilities can be remembered before this
         // client is told what it may use.
         let awaiting_discovery = {
-            let requested = session.read().await.requested_servers.clone();
-            self.servers_awaiting_first_discovery(&requested)
+            let state = session.read().await;
+            self.servers_awaiting_first_discovery(&state.client_id, &state.requested_servers)
         };
         if !awaiting_discovery.is_empty() {
             let deadline = tokio::time::Instant::now() + *self.first_discovery_wait.read();
@@ -2841,8 +2845,8 @@ impl McpGateway {
         let request_id = request.id.clone().unwrap_or(Value::Null);
         let started = tokio::time::Instant::now();
         let awaiting_discovery = {
-            let requested = session.read().await.requested_servers.clone();
-            self.servers_awaiting_first_discovery(&requested)
+            let state = session.read().await;
+            self.servers_awaiting_first_discovery(&state.client_id, &state.requested_servers)
         };
         let gateway = self.clone();
         let background_session = session.clone();
