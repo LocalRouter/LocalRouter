@@ -444,4 +444,6 @@ impl ConfigManager {
 }
 
 mod session_routing;
+mod ui_state;
 pub use session_routing::SessionRoutingConfig;
+pub use ui_state::*;

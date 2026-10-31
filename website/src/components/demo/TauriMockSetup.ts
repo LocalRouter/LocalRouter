@@ -29,7 +29,7 @@ import { mockData } from './mockData'
 import { mockNativeOperations, mockUpstreamTools, mockClientPrivacy, mockClientSecurity, mockClientSecrets } from './mockClientPolicies'
 import { routingPolicyIssue } from '@app/components/strategy/routing-policy-status'
 import { matchesFilter } from '@app/views/monitor/monitor-events'
-import type { MonitorEventFilter, MonitorEventSummary } from '@app/types/tauri-commands'
+import type { MonitorEventFilter, MonitorEventSummary, SetUiStateParams, UiStateMap } from '@app/types/tauri-commands'
 // Types for mock return values - see src/types/tauri-commands.ts for full type definitions
 import type { RoutingPolicyPreview, GraphData, TrafficTimeline, ProviderFeatureSupport, FeatureEndpointMatrix, InstallSourceInfo, RequestDedupeConfig } from '@app/types/tauri-commands'
 import type {
@@ -441,6 +441,7 @@ const engineCatalogFor = (instanceName: string): EmbeddedCatalogModel[] => {
 }
 
 const warnedCommands = new Set<string>()
+const mockUiState = new Map<string, unknown>()
 
 // Helper to generate a random ID
 const generateId = () => Math.random().toString(36).substring(2, 15)
@@ -5558,6 +5559,17 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'set_monitor_max_bytes': () => null,
   'set_monitor_intercept_rule': () => null,
   'get_monitor_intercept_rule': () => null,
+
+  // ============================================================================
+  // Durable UI state (in memory; the page mirrors it to localStorage)
+  // ============================================================================
+  'get_ui_state': (): UiStateMap => Object.fromEntries(mockUiState),
+  'set_ui_state': (args): null => {
+    const { key, value } = args as unknown as SetUiStateParams
+    if (value === null) mockUiState.delete(key)
+    else mockUiState.set(key, value)
+    return null
+  },
 
   // ============================================================================
   // App Info & System
