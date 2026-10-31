@@ -25,8 +25,8 @@ import type { ShowApprovalPopupResult, NativeOperation, GetClientNativeOperation
 import { toast } from 'sonner'
 import { mockReplay } from './mockReplay'
 import { mockData } from './mockData'
-import { clientPush, mockClaudeCodeTransport, mockClientPushSettings, mockPendingPushApprovals, mockPushRelayConfig, mockPushSourcesFor, mockReceivesPush } from './mockPushRelay'
-import type { ClaudeCodeMcpSetup, ClientPushSettings, PendingPushApproval, PushChannelPreview, PushRelayConfig, PushSourceInfo, PushTestEventResult } from '@app/types/tauri-commands'
+import { clientPush, mockClaudeCodeTransport, mockClientPushSettings, mockPendingPushApprovals, mockPushRelayConfig, mockPushSourcesFor, mockPushStatusFor, mockReceivesPush } from './mockPushRelay'
+import type { ClaudeCodeMcpSetup, ClientPushSettings, McpServerPushStatus, PendingPushApproval, PushChannelPreview, PushRelayConfig, PushSourceInfo, PushTestEventResult } from '@app/types/tauri-commands'
 
 import { mockNativeOperations, mockUpstreamTools, mockClientPrivacy, mockClientSecurity, mockClientSecrets } from './mockClientPolicies'
 import { routingPolicyIssue } from '@app/components/strategy/routing-policy-status'
@@ -4025,6 +4025,12 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     return { ...mockPushRelayConfig }
   },
   'list_push_sources': (): PushSourceInfo[] => mockPushSourcesFor(mockData.clients.map(c => ({ id: c.id, mcpAccess: (serverId: string) => mockMcpAccess(c, serverId) }))),
+  'get_mcp_server_push_status': (args): McpServerPushStatus => {
+    const serverId = String(args?.serverId ?? '')
+    const source = mockPushSourcesFor(mockData.clients.map(c => ({ id: c.id, mcpAccess: (id: string) => mockMcpAccess(c, id) })))
+      .find(s => s.server_id === serverId)
+    return mockPushStatusFor(serverId, source?.receiving_clients ?? 0)
+  },
   'list_pending_push_approvals': (args): PendingPushApproval[] =>
     mockPendingPushApprovals.filter(a => !args?.clientId || a.client_id === args.clientId),
   'submit_push_approval': (args): number => {

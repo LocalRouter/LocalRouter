@@ -149,6 +149,55 @@ pub struct UpstreamEventTypeInfo {
     pub unsupported_reason: Option<String>,
 }
 
+/// Live ingress of one upstream event type, for the UI.
+#[derive(Debug, Clone, Serialize)]
+pub struct EventIngressStatus {
+    /// The upstream's own event name (`channel.message` for Claude Code
+    /// channel messages).
+    pub event: String,
+    /// `push`, `poll` or `channel` while LocalRouter listens.
+    pub ingress_mode: Option<String>,
+    /// `listening` (stream open, polling, or channel sessions live),
+    /// `connecting` (subscribed, no answer yet), `reconnecting` (the last
+    /// attempt failed; `last_error` says why) or `idle` (nothing consumes
+    /// it, so LocalRouter is not listening).
+    pub state: String,
+    pub last_error: Option<String>,
+    /// Open upstream subscriptions for it (one per connection and
+    /// arguments).
+    pub subscriptions: usize,
+    /// Events received from the upstream since LocalRouter started.
+    pub events_received: u64,
+    pub last_event_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// What LocalRouter is doing with one server's push right now, for the UI.
+#[derive(Debug, Clone, Serialize)]
+pub struct ServerPushStatus {
+    pub server_id: String,
+    /// At least one event type is `listening`.
+    pub listening: bool,
+    /// Event types with an open subscription, live channel sessions, or
+    /// events received since start. A type missing here is idle with no
+    /// events.
+    pub event_types: Vec<EventIngressStatus>,
+    /// Events received from this server since LocalRouter started.
+    pub events_received: u64,
+    pub last_event_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Clients consuming this server's events right now (an open stream,
+    /// a recent poll, a webhook, a watch, or a channel session).
+    pub consuming_clients: usize,
+    /// Downstream sessions among those consumers.
+    pub consuming_sessions: usize,
+}
+
+/// Events received from one upstream event type since start.
+#[derive(Debug, Clone, Copy, Default)]
+struct ReceivedCount {
+    count: u64,
+    last: Option<chrono::DateTime<chrono::Utc>>,
+}
+
 /// One event type of one client, with its effective permission.
 #[derive(Debug, Clone, Serialize)]
 pub struct ClientEventTypeInfo {
@@ -397,6 +446,8 @@ pub struct PushRelay {
     sessions: DashMap<String, SessionInfo>,
     holders: Mutex<HashMap<String, Holder>>,
     hub: UpstreamHub,
+    /// Events received per (server id, upstream event name) since start.
+    received: Mutex<HashMap<(String, String), ReceivedCount>>,
     ask: Mutex<AskState>,
     ask_wakers: DashMap<(String, String), Arc<Notify>>,
     overrides: DashMap<(String, String, String), PushPermission>,
@@ -442,6 +493,7 @@ impl PushRelay {
                 sessions: DashMap::new(),
                 holders: Mutex::new(HashMap::new()),
                 hub,
+                received: Mutex::new(HashMap::new()),
                 ask: Mutex::new(AskState {
                     queues: AskQueues::default(),
                     workers: HashSet::new(),
@@ -1024,6 +1076,142 @@ impl PushRelay {
         self.hub.subscriptions()
     }
 
+    /// What LocalRouter is doing with `server_id`'s push right now: which
+    /// event types it listens to and how, what it received since start, and
+    /// how many clients consume them.
+    pub fn server_push_status(&self, server_id: &str) -> ServerPushStatus {
+        let mut types: std::collections::BTreeMap<String, EventIngressStatus> =
+            std::collections::BTreeMap::new();
+        let blank = |event: &str| EventIngressStatus {
+            event: event.to_string(),
+            ingress_mode: None,
+            state: "idle".to_string(),
+            last_error: None,
+            subscriptions: 0,
+            events_received: 0,
+            last_event_at: None,
+        };
+        let subscriptions: Vec<SubscriptionInfo> = self
+            .hub
+            .subscriptions()
+            .into_iter()
+            .filter(|s| s.server_id == server_id)
+            .collect();
+        let shared_connected = subscriptions
+            .iter()
+            .any(|s| s.scope == ConnectionScope::Shared && s.status.connected);
+        for sub in &subscriptions {
+            let entry = types
+                .entry(sub.event.clone())
+                .or_insert_with(|| blank(&sub.event));
+            entry.subscriptions += 1;
+            let rank = |state: &str| match state {
+                "listening" => 3,
+                "connecting" => 2,
+                "reconnecting" => 1,
+                _ => 0,
+            };
+            let state = if sub.status.connected {
+                "listening"
+            } else if sub.status.last_error.is_some() {
+                "reconnecting"
+            } else {
+                "connecting"
+            };
+            if rank(state) > rank(&entry.state) {
+                entry.state = state.to_string();
+                entry.ingress_mode = sub.status.ingress_mode.clone();
+            }
+            if entry.state != "listening" && sub.status.last_error.is_some() {
+                entry.last_error = sub.status.last_error.clone();
+            }
+        }
+        for entry in types.values_mut() {
+            if entry.state == "listening" {
+                entry.last_error = None;
+            }
+        }
+
+        // Claude Code channel messages arrive on any live session's own
+        // connection to the server (and on the relay-owned one) once push
+        // can reach that session's client.
+        let offers_channels = self
+            .gateway
+            .server_manager
+            .get_config(server_id)
+            .and_then(|c| c.capability_snapshot)
+            .is_some_and(|s| s.push.channels);
+        let channel_sessions: Vec<(String, String)> = if offers_channels {
+            let candidates: Vec<(String, String)> = self
+                .sessions
+                .iter()
+                .filter(|s| s.ctx.running_servers.iter().any(|id| id == server_id))
+                .map(|s| (s.key().clone(), s.ctx.client_id.clone()))
+                .collect();
+            candidates
+                .into_iter()
+                .filter(|(_, client_id)| self.push_possible_for(client_id))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if offers_channels && (!channel_sessions.is_empty() || shared_connected) {
+            let entry = types
+                .entry(CHANNEL_EVENT_NAME.to_string())
+                .or_insert_with(|| blank(CHANNEL_EVENT_NAME));
+            entry.state = "listening".to_string();
+            entry.ingress_mode = Some("channel".to_string());
+        }
+
+        let mut events_received = 0;
+        let mut last_event_at: Option<chrono::DateTime<chrono::Utc>> = None;
+        for ((server, event), count) in self.received.lock().iter() {
+            if server != server_id {
+                continue;
+            }
+            let entry = types.entry(event.clone()).or_insert_with(|| blank(event));
+            entry.events_received = count.count;
+            entry.last_event_at = count.last;
+            events_received += count.count;
+            last_event_at = last_event_at.max(count.last);
+        }
+
+        let now = Instant::now();
+        let mut clients: HashSet<String> = HashSet::new();
+        let mut sessions: HashSet<String> = HashSet::new();
+        let consumers: Vec<(String, Option<String>)> = self
+            .holders
+            .lock()
+            .values()
+            .filter(|h| {
+                h.expires.is_none_or(|e| e > now) && h.keys.keys().any(|k| k.server_id == server_id)
+            })
+            .map(|h| (h.client_id.clone(), h.session_key.clone()))
+            .collect();
+        for (client_id, session_key) in consumers {
+            // Demand of a client push cannot reach opens nothing upstream
+            if self.push_possible_for(&client_id) {
+                clients.insert(client_id);
+                sessions.extend(session_key);
+            }
+        }
+        for (session_key, client_id) in channel_sessions {
+            clients.insert(client_id);
+            sessions.insert(session_key);
+        }
+
+        let event_types: Vec<EventIngressStatus> = types.into_values().collect();
+        ServerPushStatus {
+            server_id: server_id.to_string(),
+            listening: event_types.iter().any(|t| t.state == "listening"),
+            event_types,
+            events_received,
+            last_event_at,
+            consuming_clients: clients.len(),
+            consuming_sessions: sessions.len(),
+        }
+    }
+
     fn sweep(&self) {
         let now = Instant::now();
         self.holders
@@ -1161,7 +1349,19 @@ impl PushRelay {
         }))
     }
 
+    /// Count one event received from an upstream (once per upstream
+    /// delivery, however many clients it is admitted to).
+    fn record_received(&self, server_id: &str, upstream_name: &str) {
+        let mut received = self.received.lock();
+        let entry = received
+            .entry((server_id.to_string(), upstream_name.to_string()))
+            .or_default();
+        entry.count += 1;
+        entry.last = Some(chrono::Utc::now());
+    }
+
     fn ingest(&self, key: &SubscriptionKey, event: Value, mode: IngressMode) {
+        self.record_received(&key.server_id, &key.event);
         let Some(occurrence) = self.occurrence(
             &key.server_id,
             &key.event,
@@ -1204,6 +1404,7 @@ impl PushRelay {
     /// A channel notification on a relay-owned connection: every client
     /// consuming anything from that server receives it.
     fn ingest_shared_channel(&self, server_id: &str, notification: JsonRpcNotification) {
+        self.record_received(server_id, CHANNEL_EVENT_NAME);
         let Some(occurrence) = self.channel_occurrence(server_id, &notification, None) else {
             return;
         };
@@ -3300,6 +3501,7 @@ impl PushRelayService for PushRelay {
             return false;
         }
         if n.notification.method == CLAUDE_CHANNEL_NOTIFICATION {
+            self.record_received(&n.server_id, CHANNEL_EVENT_NAME);
             if let Some(occurrence) =
                 self.channel_occurrence(&n.server_id, &n.notification, Some(n.session_key.clone()))
             {

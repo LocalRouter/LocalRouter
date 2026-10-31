@@ -4,11 +4,17 @@
  *
  * Sources: VocalCord (MCP Events, push + poll, one webhook-only type),
  * NetGet (Claude Channels and events), a billing server that offers only
- * webhooks (shown as not supported), and the existing demo servers, which
- * offer no push.
+ * webhooks (shown as not supported), Home Assistant (poll only), Build Alerts
+ * (push), and the existing demo servers, which offer no push or are not known yet.
+ *
+ * Live status (`get_mcp_server_push_status`, `mockPushStatusFor`): VocalCord is
+ * listening via push stream with events received, Home Assistant is polling with
+ * no events yet, NetGet's stream is reconnecting after an error, and Build Alerts
+ * is not listened to (no client is consuming it).
  */
 import type {
   ClientPushSettings,
+  McpServerPushStatus,
   PendingPushApproval,
   PushPermissions,
   PushRelayConfig,
@@ -73,6 +79,37 @@ export const mockPushSources: PushSourceInfo[] = [
     events: [
       { name: 'invoice.paid', description: 'An invoice was paid', modes: ['webhook'], supported: false },
       { name: 'subscription.cancelled', description: 'A subscription was cancelled', modes: ['webhook'], supported: false },
+    ],
+  },
+  {
+    server_id: 'mcp-home',
+    server_name: 'Home Assistant',
+    enabled: true,
+    snapshot_status: 'current',
+    protocol_version: '2025-11-25',
+    observed_at: minutesAgo(8),
+    channels: false,
+    resource_subscribe: false,
+    has_consumable_push: true,
+    receiving_clients: 0,
+    events: [
+      { name: 'state.changed', description: 'A device or entity changed state', modes: ['poll'], supported: true },
+    ],
+  },
+  {
+    server_id: 'mcp-builds',
+    server_name: 'Build Alerts',
+    enabled: true,
+    snapshot_status: 'current',
+    protocol_version: '2025-11-25',
+    observed_at: minutesAgo(130),
+    channels: false,
+    resource_subscribe: false,
+    has_consumable_push: true,
+    receiving_clients: 0,
+    events: [
+      { name: 'build.failed', description: 'A pipeline run failed', modes: ['push', 'poll'], supported: true },
+      { name: 'build.finished', description: 'A pipeline run finished successfully', modes: ['push', 'poll', 'webhook'], supported: true },
     ],
   },
   { server_id: 'mcp-github', server_name: 'GitHub', enabled: true, snapshot_status: 'current', protocol_version: '2025-06-18', observed_at: minutesAgo(600), channels: false, resource_subscribe: false, has_consumable_push: false, receiving_clients: 0, events: [] },
@@ -195,3 +232,50 @@ export const mockPendingPushApprovals: PendingPushApproval[] = [
     position: 0, pending_of_type: 0, decided: false, firewall_request_id: null,
   },
 ]
+
+const secondsAgo = (s: number) => new Date(Date.now() - s * 1000).toISOString()
+
+/**
+ * Live push status of one demo server. A server no client may receive from (for
+ * instance with the default permission switched to Off) is not listened to.
+ */
+export function mockPushStatusFor(serverId: string, receivingClients: number): McpServerPushStatus {
+  const base: McpServerPushStatus = {
+    server_id: serverId, relay_running: true, listening: false, event_types: [],
+    events_received: 0, last_event_at: null, consuming_clients: 0, consuming_sessions: 0,
+  }
+  const live = receivingClients > 0
+  switch (serverId) {
+    case 'mcp-vocalcord': {
+      const last = secondsAgo(130)
+      return live
+        ? {
+            ...base, listening: true, events_received: 3, last_event_at: last, consuming_clients: 2, consuming_sessions: 2,
+            event_types: [
+              { event: 'message.received', ingress_mode: 'push', state: 'listening', last_error: null, subscriptions: 1, events_received: 3, last_event_at: last },
+              { event: 'message.edited', ingress_mode: 'push', state: 'listening', last_error: null, subscriptions: 1, events_received: 0, last_event_at: null },
+            ],
+          }
+        : {
+            ...base, events_received: 3, last_event_at: last,
+            event_types: [{ event: 'message.received', ingress_mode: null, state: 'idle', last_error: null, subscriptions: 0, events_received: 3, last_event_at: last }],
+          }
+    }
+    case 'mcp-home':
+      return live
+        ? {
+            ...base, listening: true, consuming_clients: 1, consuming_sessions: 1,
+            event_types: [{ event: 'state.changed', ingress_mode: 'poll', state: 'listening', last_error: null, subscriptions: 1, events_received: 0, last_event_at: null }],
+          }
+        : base
+    case 'mcp-netget':
+      return live
+        ? {
+            ...base, consuming_clients: 1, consuming_sessions: 1,
+            event_types: [{ event: 'intercept.parked', ingress_mode: 'push', state: 'reconnecting', last_error: 'upstream stream ended', subscriptions: 1, events_received: 0, last_event_at: null }],
+          }
+        : base
+    default:
+      return base
+  }
+}

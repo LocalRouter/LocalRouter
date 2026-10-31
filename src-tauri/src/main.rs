@@ -2997,6 +2997,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands_push_relay::get_push_relay_config,
             ui::commands_push_relay::update_push_relay_config,
             ui::commands_push_relay::list_push_sources,
+            ui::commands_push_relay::get_mcp_server_push_status,
             ui::commands_push_relay::list_pending_push_approvals,
             ui::commands_push_relay::submit_push_approval,
             ui::commands_push_relay::send_push_test_event,

@@ -937,6 +937,32 @@ export const mockData = {
       description: "Invoices and subscriptions; offers events by webhook only",
       tools_count: 4,
     },
+    {
+      id: "mcp-home",
+      name: "Home Assistant",
+      enabled: true,
+      transport: "Sse",
+      transport_config: {
+        url: "http://homeassistant.local:8123/mcp",
+        headers: {},
+      },
+      auth_config: { type: "bearer_token" },
+      description: "Smart home devices and automations; offers state changes by polling",
+      tools_count: 9,
+    },
+    {
+      id: "mcp-builds",
+      name: "Build Alerts",
+      enabled: true,
+      transport: "Sse",
+      transport_config: {
+        url: "https://ci.example.com/mcp",
+        headers: {},
+      },
+      auth_config: null,
+      description: "CI pipeline status; pushes failed and finished builds",
+      tools_count: 3,
+    },
   ] as McpServer[],
 
   strategies: [
@@ -1182,6 +1208,8 @@ export const mockData = {
       "mcp-vocalcord": { status: "healthy" as const, name: "VocalCord", latency_ms: 96, last_check: new Date().toISOString() },
       "mcp-netget": { status: "healthy" as const, name: "NetGet", latency_ms: 31, last_check: new Date().toISOString() },
       "mcp-billing": { status: "healthy" as const, name: "Billing Webhooks", latency_ms: 142, last_check: new Date().toISOString() },
+      "mcp-home": { status: "healthy" as const, name: "Home Assistant", latency_ms: 18, last_check: new Date().toISOString() },
+      "mcp-builds": { status: "healthy" as const, name: "Build Alerts", latency_ms: 87, last_check: new Date().toISOString() },
     },
   },
 

@@ -1667,6 +1667,51 @@ export interface PushSourceInfo {
   receiving_clients: number
 }
 
+/** Live ingress state of one upstream event type */
+export type PushIngressState = 'listening' | 'connecting' | 'reconnecting' | 'idle'
+
+/**
+ * Live ingress of one upstream event type.
+ * Rust: src-tauri/src/ui/commands_push_relay.rs - PushEventIngressStatus struct
+ */
+export interface PushEventIngressStatus {
+  /** The upstream's own event name (`channel.message` for Claude Code channel messages) */
+  event: string
+  /** push, poll or channel while LocalRouter listens */
+  ingress_mode: 'push' | 'poll' | 'channel' | null
+  state: PushIngressState
+  /** Why the last attempt failed (while reconnecting) */
+  last_error: string | null
+  /** Open upstream subscriptions (one per connection and arguments) */
+  subscriptions: number
+  /** Events received since LocalRouter started */
+  events_received: number
+  /** RFC 3339 */
+  last_event_at: string | null
+}
+
+/**
+ * What LocalRouter is doing with one MCP server's push right now, from the running relay.
+ * Rust: src-tauri/src/ui/commands_push_relay.rs - McpServerPushStatus struct
+ */
+export interface McpServerPushStatus {
+  server_id: string
+  /** The Push Relay runs in this process */
+  relay_running: boolean
+  /** At least one event type is being listened to */
+  listening: boolean
+  /** Event types with live ingress or events received since start; a missing type is idle */
+  event_types: PushEventIngressStatus[]
+  /** Events received from the server since LocalRouter started */
+  events_received: number
+  /** RFC 3339 */
+  last_event_at: string | null
+  /** Clients consuming the server's events right now (stream, recent poll, webhook, watch, channel) */
+  consuming_clients: number
+  /** Downstream sessions among them */
+  consuming_sessions: number
+}
+
 /**
  * A server in a client's push tree, with the client's MCP access to it.
  * Rust: src-tauri/src/ui/commands_push_relay.rs - ClientPushServerAccess struct
@@ -5595,6 +5640,8 @@ export interface UpdatePushRelayConfigParams {
 }
 /** Params for list_push_sources */
 export type ListPushSourcesParams = Record<string, never>
+/** Params for get_mcp_server_push_status */
+export interface GetMcpServerPushStatusParams { serverId: string }
 /** Params for list_pending_push_approvals (all clients when clientId is omitted) */
 export interface ListPendingPushApprovalsParams { clientId?: string | null }
 /** Params for submit_push_approval (returns how many held events were decided) */

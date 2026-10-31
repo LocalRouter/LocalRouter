@@ -302,6 +302,103 @@ pub async fn list_push_sources(
 }
 
 // ============================================================================
+// Live status
+// ============================================================================
+
+/// Live ingress of one upstream event type (see
+/// `lr_mcp::gateway::push_relay::EventIngressStatus`).
+#[derive(Debug, Clone, Serialize)]
+pub struct PushEventIngressStatus {
+    pub event: String,
+    /// `push`, `poll` or `channel` while LocalRouter listens.
+    pub ingress_mode: Option<String>,
+    /// `listening`, `connecting`, `reconnecting` or `idle`.
+    pub state: String,
+    pub last_error: Option<String>,
+    pub subscriptions: usize,
+    pub events_received: u64,
+    /// RFC 3339.
+    pub last_event_at: Option<String>,
+}
+
+/// What LocalRouter is doing with one MCP server's push right now.
+#[derive(Debug, Clone, Serialize)]
+pub struct McpServerPushStatus {
+    pub server_id: String,
+    /// The Push Relay is running in this process.
+    pub relay_running: bool,
+    /// At least one event type is being listened to.
+    pub listening: bool,
+    /// Event types with live ingress or events received since start.
+    pub event_types: Vec<PushEventIngressStatus>,
+    /// Events received from the server since LocalRouter started.
+    pub events_received: u64,
+    /// RFC 3339.
+    pub last_event_at: Option<String>,
+    /// Clients consuming the server's events right now.
+    pub consuming_clients: usize,
+    /// Downstream sessions among them.
+    pub consuming_sessions: usize,
+}
+
+impl McpServerPushStatus {
+    /// The status when no relay runs: nothing is listened to.
+    pub fn not_running(server_id: &str) -> Self {
+        Self {
+            server_id: server_id.to_string(),
+            relay_running: false,
+            listening: false,
+            event_types: Vec::new(),
+            events_received: 0,
+            last_event_at: None,
+            consuming_clients: 0,
+            consuming_sessions: 0,
+        }
+    }
+}
+
+impl From<lr_mcp::gateway::push_relay::ServerPushStatus> for McpServerPushStatus {
+    fn from(status: lr_mcp::gateway::push_relay::ServerPushStatus) -> Self {
+        Self {
+            server_id: status.server_id,
+            relay_running: true,
+            listening: status.listening,
+            event_types: status
+                .event_types
+                .into_iter()
+                .map(|t| PushEventIngressStatus {
+                    event: t.event,
+                    ingress_mode: t.ingress_mode,
+                    state: t.state,
+                    last_error: t.last_error,
+                    subscriptions: t.subscriptions,
+                    events_received: t.events_received,
+                    last_event_at: t.last_event_at.map(|t| t.to_rfc3339()),
+                })
+                .collect(),
+            events_received: status.events_received,
+            last_event_at: status.last_event_at.map(|t| t.to_rfc3339()),
+            consuming_clients: status.consuming_clients,
+            consuming_sessions: status.consuming_sessions,
+        }
+    }
+}
+
+/// Live push status of one MCP server, read from the running relay: which
+/// event types LocalRouter is listening to and how, events received since it
+/// started, and the clients consuming them now.
+#[tauri::command]
+pub async fn get_mcp_server_push_status(
+    server_id: String,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<McpServerPushStatus, String> {
+    Ok(match state.push_relay.as_ref() {
+        Some(relay) => relay.server_push_status(&server_id).into(),
+        None => McpServerPushStatus::not_running(&server_id),
+    })
+}
+
+// ============================================================================
 // Per-client settings
 // ============================================================================
 

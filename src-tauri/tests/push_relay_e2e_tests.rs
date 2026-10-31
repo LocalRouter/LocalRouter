@@ -969,6 +969,76 @@ async fn upstream_poll_reaches_events_poll_and_the_poll_tool() {
         .any(|s| s.server_id == HTTP_ID && s.event == "msg"));
 }
 
+#[tokio::test]
+async fn server_push_status_reports_live_listening_counts_and_consumers() {
+    let (upstream, calls, release) = http_upstream_with(false).await;
+    let h = harness(vec![http_server(upstream.uri())], fast_limits());
+
+    // Nothing consumes the server yet: not listening, nothing received
+    let idle = h.relay.server_push_status(HTTP_ID);
+    assert!(!idle.listening);
+    assert!(idle.event_types.is_empty());
+    assert_eq!(idle.events_received, 0);
+    assert!(idle.last_event_at.is_none());
+    assert_eq!(idle.consuming_clients, 0);
+
+    // A poll opens the upstream subscription: listening via poll, no events
+    let first = h.poll("s1", "http-push__msg", None).await;
+    wait_until("upstream polled", || calls.load(Ordering::SeqCst) >= 1).await;
+    wait_until("listening", || {
+        h.relay.server_push_status(HTTP_ID).listening
+    })
+    .await;
+    let listening = h.relay.server_push_status(HTTP_ID);
+    let msg = listening
+        .event_types
+        .iter()
+        .find(|t| t.event == "msg")
+        .expect("msg is listened to");
+    assert_eq!(msg.state, "listening");
+    assert_eq!(msg.ingress_mode.as_deref(), Some("poll"));
+    assert_eq!(msg.subscriptions, 1);
+    assert_eq!(msg.events_received, 0);
+    assert_eq!(listening.events_received, 0);
+    assert_eq!(listening.consuming_clients, 1);
+    assert_eq!(listening.consuming_sessions, 1);
+
+    // The upstream emits one event: counted once, with its time
+    let before = Utc::now();
+    release.store(true, Ordering::SeqCst);
+    let cursor = first["cursor"].as_str().unwrap().to_string();
+    h.poll_until("s1", "http-push__msg", &cursor, |b| {
+        !b["events"].as_array().unwrap().is_empty()
+    })
+    .await;
+    let received = h.relay.server_push_status(HTTP_ID);
+    assert_eq!(received.events_received, 1);
+    assert!(received.last_event_at.unwrap() >= before - chrono::Duration::seconds(1));
+    let msg = received
+        .event_types
+        .iter()
+        .find(|t| t.event == "msg")
+        .unwrap();
+    assert_eq!(msg.events_received, 1);
+    assert_eq!(msg.last_event_at, received.last_event_at);
+
+    // Push turned off: the subscription closes, the count since start stays
+    h.relay.update_config(&off_config());
+    wait_until("not listening", || {
+        !h.relay.server_push_status(HTTP_ID).listening
+    })
+    .await;
+    let off = h.relay.server_push_status(HTTP_ID);
+    assert_eq!(off.consuming_clients, 0);
+    assert_eq!(off.events_received, 1);
+    let msg = off.event_types.iter().find(|t| t.event == "msg").unwrap();
+    assert_eq!(msg.state, "idle");
+    assert_eq!(msg.subscriptions, 0);
+
+    // Other servers are unaffected
+    assert_eq!(h.relay.server_push_status("other").events_received, 0);
+}
+
 async fn recv(rx: &mut tokio::sync::mpsc::Receiver<JsonRpcNotification>) -> JsonRpcNotification {
     tokio::time::timeout(Duration::from_secs(10), rx.recv())
         .await
@@ -1145,6 +1215,20 @@ async fn upstream_channel_reaches_poll_and_bridge_channel() {
     assert!(h
         .monitor_decisions("stdio-push__channel.message")
         .contains(&"allowed".to_string()));
+
+    // The status counts the channel message and shows the live session
+    let status = h.relay.server_push_status(STDIO_ID);
+    let channel = status
+        .event_types
+        .iter()
+        .find(|t| t.event == "channel.message")
+        .expect("channel ingress reported");
+    assert!(channel.events_received >= 1);
+    assert!(channel.last_event_at.is_some());
+    assert_eq!(channel.state, "listening");
+    assert_eq!(channel.ingress_mode.as_deref(), Some("channel"));
+    assert!(status.listening);
+    assert!(status.consuming_clients >= 1);
 }
 
 #[tokio::test]
