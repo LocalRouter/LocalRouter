@@ -1709,8 +1709,35 @@ export type PushEventDecision =
   | 'hold_cap'
   | 'too_large'
 
-/** How an occurrence reached LocalRouter (Rust: journal.rs - IngressMode). */
-export type PushIngressMode = 'push' | 'poll' | 'channel'
+/**
+ * How an occurrence reached LocalRouter (Rust: journal.rs - IngressMode).
+ * `test` is the built-in test source (send_push_test_event), not an upstream.
+ */
+export type PushIngressMode = 'push' | 'poll' | 'channel' | 'test'
+
+/**
+ * What send_push_test_event sent.
+ * Rust: src-tauri/src/ui/commands_push_relay.rs - PushTestEventResult struct
+ */
+export interface PushTestEventResult {
+  /** Namespaced event id, `localrouter__test-…` */
+  event_id: string
+  /** `localrouter__test.event` */
+  name: string
+  /** Clients it was admitted to, each under its own permission (Allow / Ask / Block) */
+  client_ids: string[]
+}
+
+/**
+ * A Claude Code channel message (`notifications/claude/channel`) as a STDIO
+ * bridge session receives it, rendered by the relay.
+ * Rust: src-tauri/src/ui/commands_push_relay.rs - PushChannelPreview struct
+ */
+export interface PushChannelPreview {
+  content: string
+  /** `source`, `event`, `event_id` */
+  meta: Record<string, string>
+}
 
 /**
  * How an occurrence is delivered to a client (Monitor `egress_modes`).
@@ -5569,6 +5596,16 @@ export interface SetClientPushPermissionParams {
 }
 /** Params for remove_client_push_webhook_url */
 export interface RemoveClientPushWebhookUrlParams { clientId: string; url: string }
+/**
+ * Params for send_push_test_event. Reaches only sessions that opted into push
+ * testing (Try it out's MCP connection; a STDIO bridge with LOCALROUTER_PUSH_TEST=1),
+ * of clientId when given. `data` replaces the default `{message, sent_at}`.
+ */
+export interface SendPushTestEventParams { clientId?: string | null; message?: string | null; data?: unknown | null }
+/** Params for preview_push_channel_message: an occurrence in SEP-3415 wire form */
+export interface PreviewPushChannelMessageParams {
+  event: { eventId?: string; name: string; timestamp?: string; data?: unknown }
+}
 /** Params for get_claude_code_mcp_setup */
 export interface GetClaudeCodeMcpSetupParams { clientId: string }
 /** Params for switch_claude_code_to_stdio_bridge */

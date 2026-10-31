@@ -17,6 +17,7 @@ export const PUSH_INGRESS_LABELS: Record<string, string> = {
   push: 'MCP Events stream',
   poll: 'MCP Events poll',
   channel: 'Claude channel',
+  test: 'LocalRouter test source',
 }
 
 /** How the client receives events (`egress_modes`). */

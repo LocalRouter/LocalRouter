@@ -2996,6 +2996,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands_push_relay::list_push_sources,
             ui::commands_push_relay::list_pending_push_approvals,
             ui::commands_push_relay::submit_push_approval,
+            ui::commands_push_relay::send_push_test_event,
+            ui::commands_push_relay::preview_push_channel_message,
             ui::commands_push_relay::get_client_push_settings,
             ui::commands_push_relay::set_client_push_permission,
             ui::commands_push_relay::remove_client_push_webhook_url,

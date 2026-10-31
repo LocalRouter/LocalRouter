@@ -626,6 +626,75 @@ pub async fn submit_push_approval(
 }
 
 // ============================================================================
+// Testing pushes (Try it out → MCP → Push)
+// ============================================================================
+
+/// What `send_push_test_event` sent.
+#[derive(Debug, Clone, Serialize)]
+pub struct PushTestEventResult {
+    /// Namespaced event id, `localrouter__test-…`.
+    pub event_id: String,
+    /// `localrouter__test.event`.
+    pub name: String,
+    /// Clients the event was admitted to, each under its own permission
+    /// (Allow delivers, Ask holds it for approval, Block drops it).
+    pub client_ids: Vec<String>,
+}
+
+/// Send one event from the built-in test source (`localrouter__test.event`)
+/// through the real Push Relay pipeline: permissions and Ask, Monitor, the
+/// journal and every delivery mode. It reaches only sessions that opted into
+/// push testing (Try it out's MCP connection, or a STDIO bridge started with
+/// `LOCALROUTER_PUSH_TEST=1`), of `client_id` when given. `data` replaces the
+/// default data `{message, sent_at}`.
+#[tauri::command]
+pub async fn send_push_test_event(
+    client_id: Option<String>,
+    message: Option<String>,
+    data: Option<serde_json::Value>,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<PushTestEventResult, String> {
+    let relay = relay(&state)?;
+    let message = message.filter(|m| !m.trim().is_empty());
+    let sent = relay.send_test_event(client_id.as_deref(), message, data)?;
+    Ok(PushTestEventResult {
+        event_id: sent.event_id,
+        name: sent.name,
+        client_ids: sent.client_ids,
+    })
+}
+
+/// A Claude Code channel message as a STDIO bridge session receives it.
+#[derive(Debug, Clone, Serialize)]
+pub struct PushChannelPreview {
+    /// `notifications/claude/channel` `content`.
+    pub content: String,
+    /// `notifications/claude/channel` `meta` (`source`, `event`, `event_id`).
+    pub meta: BTreeMap<String, String>,
+}
+
+/// Render the channel message the relay would send a STDIO bridge session for
+/// an occurrence in SEP-3415 wire form (`eventId`, `name`, `timestamp`,
+/// `data`), using the relay's own renderer and limits.
+#[tauri::command]
+pub async fn preview_push_channel_message(
+    event: serde_json::Value,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<PushChannelPreview, String> {
+    let relay = relay(&state)?;
+    let (content, meta) = relay.preview_channel_message(&event)?;
+    let meta = meta
+        .as_object()
+        .map(|m| {
+            m.iter()
+                .map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(PushChannelPreview { content, meta })
+}
+
+// ============================================================================
 // Claude Code STDIO bridge
 // ============================================================================
 

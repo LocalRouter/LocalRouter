@@ -26,7 +26,7 @@ import { toast } from 'sonner'
 import { mockReplay } from './mockReplay'
 import { mockData } from './mockData'
 import { clientPush, mockClaudeCodeTransport, mockClientPushSettings, mockPendingPushApprovals, mockPushRelayConfig, mockPushSources } from './mockPushRelay'
-import type { ClaudeCodeMcpSetup, ClientPushSettings, PendingPushApproval, PushRelayConfig, PushSourceInfo } from '@app/types/tauri-commands'
+import type { ClaudeCodeMcpSetup, ClientPushSettings, PendingPushApproval, PushChannelPreview, PushRelayConfig, PushSourceInfo, PushTestEventResult } from '@app/types/tauri-commands'
 
 import { mockNativeOperations, mockUpstreamTools, mockClientPrivacy, mockClientSecurity, mockClientSecrets } from './mockClientPolicies'
 import { routingPolicyIssue } from '@app/components/strategy/routing-policy-status'
@@ -4036,6 +4036,41 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     }
     setTimeout(() => emit('push-approvals-changed', {}), 10)
     return decided.length
+  },
+  'send_push_test_event': (args): PushTestEventResult => {
+    const now = new Date().toISOString()
+    const event_id = `localrouter__test-${generateId()}`
+    const name = 'localrouter__test.event'
+    const data = args?.data ?? { message: args?.message || 'Test event from LocalRouter', sent_at: now }
+    // Like the relay: each target client's permission decides (Allow / Ask / Block)
+    const client = mockData.clients.find(c => c.id === args?.clientId || c.client_id === args?.clientId) ?? mockData.clients[0]
+    const p = clientPush(client.id).permissions
+    const permission = p.events?.['localrouter__test.event'] ?? p.servers?.['localrouter'] ?? p.global ?? mockPushRelayConfig.default_permission
+    if (permission === 'allow') {
+      window.dispatchEvent(new CustomEvent('localrouter-demo-push', { detail: { eventId: event_id, name, timestamp: now, data } }))
+    } else if (permission === 'ask') {
+      mockPendingPushApprovals.push({
+        request_id: `hold-${generateId()}`, client_id: client.id, client_name: client.name,
+        server_id: 'localrouter', server_name: 'localrouter', event_name: 'test.event',
+        qualified_name: name, event_id, ingress: 'test', received_at: now, data,
+        position: mockPendingPushApprovals.filter(a => a.client_id === client.id && a.qualified_name === name).length,
+        pending_of_type: 0, decided: false, firewall_request_id: null,
+      })
+      setTimeout(() => emit('push-approvals-changed', {}), 10)
+    }
+    return { event_id, name, client_ids: [client.id] }
+  },
+  'preview_push_channel_message': (args): PushChannelPreview => {
+    // Mirrors the relay's render::channel_content
+    const event = args?.event ?? {}
+    const name: string = event.name ?? ''
+    const slug = name.includes('__') ? name.split('__')[0] : name
+    const eventId: string = event.eventId ?? 'preview'
+    const data = event.data
+    const body = name.endsWith('__channel.message') && typeof data?.content === 'string'
+      ? data.content
+      : typeof data === 'string' ? data : JSON.stringify(data ?? null)
+    return { content: `[${slug}] ${name} (${eventId})\n${body}`, meta: { source: slug, event: name, event_id: eventId } }
   },
   'get_client_push_settings': (args): ClientPushSettings => {
     const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
