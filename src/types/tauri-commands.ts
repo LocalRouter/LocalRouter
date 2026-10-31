@@ -28,6 +28,12 @@ export type DiscoveredResourceIcon = string | null
 /** Rust: src-tauri/src/ui/commands.rs - show_approval_popup returns (). */
 export type ShowApprovalPopupResult = null
 
+/**
+ * Rust: src-tauri/src/ui/commands_ui_state.rs - get_ui_state returns
+ * BTreeMap<String, serde_json::Value> (durable UI state, `ui_state.json`).
+ */
+export type UiStateMap = Record<string, unknown>
+
 // =============================================================================
 // Permission & Access Control Types
 // Rust: crates/lr-config/src/types.rs
@@ -5610,3 +5616,11 @@ export interface PreviewPushChannelMessageParams {
 export interface GetClaudeCodeMcpSetupParams { clientId: string }
 /** Params for switch_claude_code_to_stdio_bridge */
 export interface SwitchClaudeCodeToStdioBridgeParams { clientId: string }
+
+/** Params for get_ui_state */
+export type GetUiStateParams = Record<string, never>
+/**
+ * Params for set_ui_state. Key ≤ 200 characters, value ≤ 16 KB of JSON, at
+ * most 500 keys; `null` removes the key.
+ */
+export interface SetUiStateParams { key: string; value: unknown }

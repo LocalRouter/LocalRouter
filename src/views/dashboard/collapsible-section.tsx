@@ -1,16 +1,13 @@
-import { useState, type ReactNode } from 'react'
+import { useCallback, type ReactNode } from 'react'
 import { ChevronDown, ChevronRight, type LucideIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { usePersistentUiState } from '@/hooks/usePersistentUiState'
+import { decodeCollapsed } from './section-state'
 
-/** Open/closed state of a dashboard section, remembered across reloads. */
+/** Open/closed state of a dashboard section, remembered across restarts. */
 export function useCollapsed(storageKey: string) {
-  const [collapsed, setCollapsed] = useState(() => localStorage.getItem(storageKey) === '1')
-  const toggle = () => {
-    setCollapsed((c) => {
-      localStorage.setItem(storageKey, c ? '0' : '1')
-      return !c
-    })
-  }
+  const [collapsed, setCollapsed] = usePersistentUiState(storageKey, false, decodeCollapsed)
+  const toggle = useCallback(() => setCollapsed((c) => !c), [setCollapsed])
   return [collapsed, toggle] as const
 }
 

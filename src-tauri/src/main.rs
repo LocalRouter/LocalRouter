@@ -771,6 +771,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
 
             // Store managers
             app.manage(Arc::new(lr_replay::ReplayManager::new(config_manager.config_path().parent().ok_or("Config directory is unavailable")?.join("replay"))));
+            app.manage(Arc::new(lr_config::UiStateStore::open_in(config_manager.config_path().parent().ok_or("Config directory is unavailable")?)));
             app.manage(config_manager.clone());
             app.manage(client_manager.clone());
             app.manage(token_store.clone());
@@ -2581,6 +2582,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            ui::commands_ui_state::get_ui_state,
+            ui::commands_ui_state::set_ui_state,
             ui::commands_icons::discover_resource_icon,
             ui::commands_replay::replay_current_policy,
             ui::commands_replay::get_response_cache_stats,

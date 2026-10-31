@@ -14,6 +14,7 @@ import { EventDetail } from '@/views/monitor/event-detail'
 import { EventFilters } from '@/views/monitor/event-filters'
 import { TryItOutPanel } from '@/views/monitor/try-it-out-panel'
 import type { ReplayInput, ReplayDataset, ReplayImportParams, ReplayEndpoint, MonitorEventFilter, InterceptRule } from '@/types/tauri-commands'
+import { readUiState, writeUiState } from '@/hooks/usePersistentUiState'
 import { DetailDockControls, DockDropPreview, useDetailDock } from './detail-dock'
 
 // Persists the deliberate filter dimensions across app restarts. We do NOT
@@ -31,19 +32,15 @@ const EMPTY_FILTER: MonitorEventFilter = {
 }
 
 function loadPersistedFilter(): MonitorEventFilter {
-  try {
-    const raw = localStorage.getItem(FILTER_STORAGE_KEY)
-    if (!raw) return EMPTY_FILTER
-    const saved = JSON.parse(raw) as Partial<MonitorEventFilter>
-    return {
-      ...EMPTY_FILTER,
-      event_types: saved.event_types ?? null,
-      status: saved.status ?? null,
-      search: saved.search ?? null,
-    }
-  } catch (error) {
-    console.error('Failed to load persisted monitor filter:', error)
-    return EMPTY_FILTER
+  const saved = readUiState<Partial<MonitorEventFilter> | null>(FILTER_STORAGE_KEY, null, (value) =>
+    value && typeof value === 'object' && !Array.isArray(value) ? (value as Partial<MonitorEventFilter>) : undefined,
+  )
+  if (!saved) return EMPTY_FILTER
+  return {
+    ...EMPTY_FILTER,
+    event_types: Array.isArray(saved.event_types) ? saved.event_types : null,
+    status: typeof saved.status === 'string' ? saved.status : null,
+    search: typeof saved.search === 'string' ? saved.search : null,
   }
 }
 
@@ -65,18 +62,11 @@ export const RequestMonitor = memo(function RequestMonitor({ className }: Reques
   // Persist the deliberate filter dimensions whenever they change so the
   // dashboard restores the user's last filter on the next launch.
   useEffect(() => {
-    try {
-      localStorage.setItem(
-        FILTER_STORAGE_KEY,
-        JSON.stringify({
-          event_types: filter.event_types,
-          status: filter.status,
-          search: filter.search,
-        }),
-      )
-    } catch (error) {
-      console.error('Failed to persist monitor filter:', error)
-    }
+    writeUiState(FILTER_STORAGE_KEY, {
+      event_types: filter.event_types,
+      status: filter.status,
+      search: filter.search,
+    })
   }, [filter.event_types, filter.status, filter.search])
 
   // Sync intercept rule to backend
