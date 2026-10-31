@@ -204,6 +204,7 @@ const sections: DocSection[] = [
         { id: 'push-relay-openclaw', title: 'OpenClaw (Webhook)' },
         { id: 'push-relay-other-clients', title: 'Codex, Cursor and Others' },
       ]},
+      { id: 'push-relay-testing', title: 'Testing Pushes' },
     ],
   },
   {

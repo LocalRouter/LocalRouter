@@ -324,3 +324,20 @@ UI.
   upstream test instead.
 - Not covered by an automated route-level test: the HTTP SSE answer to `events/stream` and the
   bridge GET-stream registration (exercised by the real bridge run above).
+
+# Testing pushes — the Try it out Push panel and the test source
+
+Design and scope: "Testing pushes" in `plan/2026-10-30-PUSH_RELAY.md`. What exists:
+
+| Piece | Where |
+| --- | --- |
+| Opt-in header | `PUSH_TEST_HEADER` (`x-localrouter-push-test`) = `1`; route → `McpGateway::set_push_test_session`; `GatewaySession::push_test_source`; `PushRelaySessionContext::push_test_source`; `PushToolsState::push_test_source`. The STDIO bridge sends it when `LOCALROUTER_PUSH_TEST=1` (`stdio_bridge::PUSH_TEST_ENV`). |
+| Test source | `relay.rs`: `TEST_SOURCE_SERVER_ID` (`localrouter`), `TEST_EVENT_NAME` (`test.event`), `IngressMode::Test`; `catalogue_for(client, visible, include_test)` (the public `catalogue` excludes it); `send_test_event(client_id, message, data) -> TestEventSent { event_id, name, client_ids }` (errors when no live session opted in); `preview_channel_message(&wire) -> (content, meta)`. `client_event_types` lists it (`test_source: true`) when a permission is configured or a session opted in. |
+| Tauri commands | `send_push_test_event`, `preview_push_channel_message` (`commands_push_relay.rs`, TS types `PushTestEventResult`, `PushChannelPreview`, `SendPushTestEventParams`, `PreviewPushChannelMessageParams`, demo mocks). |
+| Panel | `src/views/try-it-out/mcp-tab/push-panel.tsx`, `use-push-tester.ts`, `push-log.ts`; `mcp-client.ts` (`pushTest` config, `listEvents`, `pollEvents`, `streamEvents`, `rawServerCapabilities`, `onEventsListChanged`). |
+| Tests | `push_relay_e2e_tests.rs`: `test_source_reaches_only_sessions_that_opted_in`, `test_event_flows_through_allow_ask_block_monitor_poll_and_stream`, `test_events_reach_opted_in_bridge_channels_and_the_poll_tool_only`; `tests/e2e/unit/try-it-out-push.spec.ts` (dedupe, notices, tool-text parsers, notification routing). |
+
+Try it out sessions against a client always opt in, so they see the test source (and with it
+the events capability, the fallback tools and the `<events>` block) even when no upstream offers
+push. Try it out's "All" and "Direct" modes use the internal test client, which has no push
+permissions; the panel asks for Against Client mode there.

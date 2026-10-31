@@ -563,7 +563,53 @@ to reach a bound quickly.
   default permission, channel rate, history hours and events — validated against their bounds), `list_push_sources`, `list_pending_push_approvals` and
   `submit_push_approval` (the popup), `get_client_push_settings`, `set_client_push_permission`,
   `remove_client_push_webhook_url`, `get_claude_code_mcp_setup`,
-  `switch_claude_code_to_stdio_bridge`.
+  `switch_claude_code_to_stdio_bridge`, and for testing `send_push_test_event` and
+  `preview_push_channel_message` (see "Testing pushes").
+
+## Testing pushes (Try it out → MCP → Push)
+
+Try it out's MCP tab has a **Push** subtab for testing pushes end to end, and LocalRouter has a
+built-in **test source** so that needs no upstream server offering push.
+
+- **The panel** (`src/views/try-it-out/mcp-tab/push-panel.tsx`, state in `use-push-tester.ts`,
+  pure log and parsers in `push-log.ts`) shows what the gateway advertised to the session (the
+  raw `initialize` capabilities: events extension, top-level `events`, `claude/channel` — never
+  offered to this HTTP session — and which fallback tools exist), the `events/list` catalogue,
+  and receives the selected type by **Push** (`events/stream` over the session's legacy SSE
+  connection; Stop aborts the request, which sends `notifications/cancelled`), **Poll**
+  (`events/poll` with a cursor; manual or auto at `nextPollMs`) or **Fallback tools** (`EventPoll`
+  with `wait_seconds`; `EventWait` commands with copy buttons). One log holds every occurrence
+  once by event id with the modes it arrived through, cursors, data and `truncated` gaps. The
+  **channel preview** renders the `notifications/claude/channel` content and meta through the
+  relay's own renderer (`preview_push_channel_message` → `PushRelay::preview_channel_message`).
+  `src/lib/mcp-client.ts` sends `events/*` as custom requests, routes stream notifications by
+  subscription id through the SDK's fallback notification handler, and records the raw
+  capabilities (the SDK's typed form drops top-level `events`). Streams and auto-poll live in
+  the MCP tab, so they survive subtab switches.
+- **The test source** is server `localrouter`, event `test.event` (`localrouter__test.event`),
+  ingress `test`. `send_push_test_event({clientId?, message?, data?})` builds one occurrence and
+  calls `PushRelay::admit` for each client with an opted-in live session (or only `clientId`), so
+  it takes the real path: the client's permission (Allow / Ask with the approval popup and edit /
+  Block; permission key `localrouter__test.event`), Monitor (`McpPushEvent`, ingress `test`,
+  grouped with the one opted-in session), the journal, and from there every delivery form.
+- **Scope: a session opts in; nothing else sees the source.** A session opts in by sending
+  `X-LocalRouter-Push-Test: 1` on its requests, recorded per session like the STDIO bridge header
+  (`McpGateway::set_push_test_session` → `PushRelaySessionContext::push_test_source`). Try it out
+  sends it in Against Client mode; the STDIO bridge sends it when `LOCALROUTER_PUSH_TEST=1`, which
+  is how Channels are tested with a real Claude Code. The relay adds the test entry only to an
+  opted-in session's catalogue (`catalogue_for(.., include_test)`; `catalogue()` never includes
+  it), and the channel pump skips test occurrences for sessions that did not opt in, so the
+  source cannot make another session's gate pass or reach its capabilities, instructions, tools,
+  `events/list` or channels, even though occurrences land in the client's shared journal. Watch
+  tokens minted by an opted-in session carry the flag. A header was chosen over "present once a
+  test event was sent for that client" because that would change a real client's catalogue and
+  tools behind its back, and over a Try it out-only flag because the bridge needs the same
+  opt-in. The source is not an MCP server: it never enters a capability snapshot or Upstream
+  sources, and a real server configured with the id `localrouter` disables it. The client's push
+  permission tree lists it as "LocalRouter test source" once a permission is set for it.
+- **Demo.** The website resolves the app's `@/lib/mcp-client` to `website/src/stubs/mcp-client.ts`,
+  a stand-in gateway with sample tools and events; the `send_push_test_event` mock dispatches the
+  occurrence to it (Allow) or adds a held approval (Ask).
 
 ## Landing page section
 

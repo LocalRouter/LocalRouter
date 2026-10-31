@@ -166,3 +166,15 @@ OpenClaw's `mcp-events` plugin subscribes by webhook. It calls `events/subscribe
 ### Codex, Cursor and Others
 
 No other shipping client implements MCP Events today, so they use the fallback tools. Agents that can watch a background command (Codex, Cursor, Cline, Claude Code's `Monitor`) run `EventWait`'s multi-shot command; agents that can only block on a command (OpenCode, Goose, Copilot, Gemini CLI) use the one-shot form. When a client gains native MCP Events support, it can call `events/stream` or `events/poll` directly and the tools step aside.
+
+<!-- @entry push-relay-testing -->
+
+Try it out → MCP has a **Push** panel for testing pushes end to end without any upstream server that offers push. Connect against a client (on the client's own Try It Out tab, or in Against Client mode) and open **Push**:
+
+- **Advertised to this session** shows what the gateway offered this session: the MCP Events extension, the top-level `events` capability, and whether the fallback tools are present. Claude Code Channels (`claude/channel`) is shown as not offered: it is offered only to STDIO bridge sessions, never to this HTTP session.
+- **Event types** is the session's `events/list`: each server-qualified name with its description and delivery modes.
+- **Receive** starts delivery of the selected event type in one of three modes: **Push** holds an `events/stream` open and shows its active, heartbeat and event notifications live (Stop cancels the request with `notifications/cancelled`); **Poll** calls `events/poll` with a cursor, by hand or automatically at the server's `nextPollMs`; **Fallback tools** calls `EventPoll` (with an optional `wait_seconds`) or `EventWait`, whose watcher commands can be copied.
+- **Received** logs every occurrence once, by event id, with the modes it arrived through, its cursor and its data; dropped history (`truncated`) is marked.
+- **Claude Code channel preview** shows the `notifications/claude/channel` content and meta a STDIO bridge session would receive for an event, rendered by LocalRouter itself.
+
+**Test event source.** **Send test event** sends `localrouter__test.event` from LocalRouter's built-in test source with a message or JSON data of your choice. It goes through the real pipeline: the client's permission for it (set Allow, Ask or Block right in the panel — Ask opens the normal approval popup, where it can be edited), a Monitor record, the client's event history, and every delivery form. Only sessions that opted into push testing ever see the test source — Try it out's connection opts in, and so does a STDIO bridge started with `LOCALROUTER_PUSH_TEST=1` in its environment, for testing Channels with a real Claude Code. For every other session it does not exist: it never makes push available to a client, and never appears in an app's capabilities, instructions, tools or `events/list`. In a client's push permissions it is listed as **LocalRouter test source** once a permission is set for it.
