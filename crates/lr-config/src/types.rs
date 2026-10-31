@@ -561,6 +561,10 @@ pub struct AppConfig {
     /// Subscription and usage-limit tracking (Dashboard + menu bar).
     #[serde(default)]
     pub usage_tracking: UsageTrackingConfig,
+
+    /// Push Relay: relaying server push between upstream MCP servers and clients.
+    #[serde(default, skip_serializing_if = "crate::PushRelayConfig::is_default")]
+    pub push_relay: crate::PushRelayConfig,
 }
 
 /// How `/v1/systemone` handles models whose provider does not speak the
@@ -3684,6 +3688,15 @@ pub struct Client {
     /// Generated once at creation; never changes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_folder: Option<String>,
+
+    /// Push Relay permissions (client → server → event type). Empty = inherit
+    /// the global default everywhere.
+    #[serde(default, skip_serializing_if = "crate::PushPermissions::is_empty")]
+    pub push_permissions: crate::PushPermissions,
+
+    /// Webhook callback URLs the user approved for this client.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub push_webhook_urls: Vec<String>,
 }
 
 impl Client {
@@ -3782,6 +3795,13 @@ pub struct McpServerConfig {
 
     /// Creation timestamp
     pub created_at: DateTime<Utc>,
+
+    /// What the server offered when it last initialised. Machine-recorded
+    /// derived state: excluded from the server's identity
+    /// ([`McpServerConfig::same_connection`]) and written without notifying
+    /// the UI of a config change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability_snapshot: Option<crate::UpstreamCapabilitySnapshot>,
 }
 
 /// MCP transport type
@@ -4906,6 +4926,7 @@ impl Default for AppConfig {
             responses: ResponsesApiConfig::default(),
             systemone: SystemOneConfig::default(),
             usage_tracking: UsageTrackingConfig::default(),
+            push_relay: crate::PushRelayConfig::default(),
         }
     }
 }
@@ -5115,7 +5136,29 @@ impl Client {
             coding_agent_type: None,
             memory_enabled: None,
             memory_folder: None,
+            push_permissions: crate::PushPermissions::default(),
+            push_webhook_urls: Vec::new(),
         }
+    }
+
+    /// Effective push permission for one upstream event type: the most
+    /// specific of this client's overrides, else the global default.
+    pub fn push_permission(
+        &self,
+        global: &crate::PushRelayConfig,
+        server_id: &str,
+        event_name: &str,
+    ) -> crate::PushPermission {
+        self.push_permissions
+            .effective(global.default_permission, server_id, event_name)
+    }
+
+    /// Whether any push source could reach this client: the global default
+    /// is not `Off`, or one of its overrides enables something. When false
+    /// the relay advertises nothing to it and does no work on its behalf.
+    pub fn may_receive_push(&self, global: &crate::PushRelayConfig) -> bool {
+        global.default_permission != crate::PushPermission::Off
+            || self.push_permissions.enables_anything()
     }
 
     /// Resolve whether Tool Responses Indexing is enabled for this client.
@@ -5185,7 +5228,26 @@ impl McpServerConfig {
             oauth_config: None,
             enabled: true,
             created_at: Utc::now(),
+            capability_snapshot: None,
         }
+    }
+
+    /// Whether two configurations describe the same connection: everything
+    /// except machine-recorded derived state (the capability snapshot) is
+    /// equal. Use this, not `==`, to decide whether a live connection is stale.
+    pub fn same_connection(&self, other: &Self) -> bool {
+        let strip = |config: &Self| Self {
+            capability_snapshot: None,
+            ..config.clone()
+        };
+        strip(self) == strip(other)
+    }
+
+    /// The remembered capabilities, if they still describe this configuration.
+    pub fn current_capability_snapshot(&self) -> Option<&crate::UpstreamCapabilitySnapshot> {
+        self.capability_snapshot
+            .as_ref()
+            .filter(|snapshot| snapshot.is_current_for(self))
     }
 }
 

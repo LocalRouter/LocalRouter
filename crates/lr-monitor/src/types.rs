@@ -128,6 +128,8 @@ pub enum MonitorEventType {
     McpPromptGet,
     McpElicitation,
     McpSampling,
+    /// One pushed event relayed to one client (Push Relay)
+    McpPushEvent,
 
     // Security (combined: request + response)
     GuardrailScan,
@@ -169,6 +171,7 @@ impl MonitorEventType {
             Self::McpPromptGet => "MCP Prompt Get",
             Self::McpElicitation => "MCP Elicitation",
             Self::McpSampling => "MCP Sampling",
+            Self::McpPushEvent => "MCP Push Event",
             Self::GuardrailScan => "Guardrail Scan",
             Self::GuardrailResponseScan => "Guardrail Response Scan",
             Self::SecretScan => "Secret Scan",
@@ -200,7 +203,8 @@ impl MonitorEventType {
             | Self::McpResourceRead
             | Self::McpPromptGet
             | Self::McpElicitation
-            | Self::McpSampling => "mcp",
+            | Self::McpSampling
+            | Self::McpPushEvent => "mcp",
             Self::GuardrailScan | Self::GuardrailResponseScan | Self::SecretScan => "security",
             Self::RouteLlmClassify | Self::RoutingDecision => "routing",
             Self::AuthError | Self::AccessDenied | Self::OAuthEvent => "auth",
@@ -417,6 +421,36 @@ pub enum MonitorEventData {
         content: Option<serde_json::Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
         latency_ms: Option<u64>,
+    },
+    /// One occurrence relayed (or held, or dropped) for one client.
+    McpPushEvent {
+        server_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        server_name: Option<String>,
+        /// Server-qualified event name (`server__event`)
+        event_name: String,
+        /// Namespaced event id, the same in every delivery mode
+        event_id: String,
+        /// `push`, `poll` or `channel`
+        ingress_mode: String,
+        /// Delivery modes active for this client when it was delivered
+        /// (`stream`, `poll`, `channel`, `webhook`, `tools`)
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        egress_modes: Vec<String>,
+        /// `pending` (held for Ask), `allowed`, `asked_allowed`,
+        /// `asked_edited`, `denied`, `blocked`, `hold_cap`, `too_large`
+        decision: String,
+        /// Data as received from the upstream
+        #[serde(skip_serializing_if = "Option::is_none")]
+        original_payload: Option<serde_json::Value>,
+        /// Data as delivered (differs from the original when edited)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        delivered_payload: Option<serde_json::Value>,
+        /// Time held for approval
+        #[serde(skip_serializing_if = "Option::is_none")]
+        held_ms: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
     },
     McpSampling {
         // Request

@@ -32,6 +32,7 @@ import {
   Zap,
   ScanSearch,
   Brain,
+  BellRing,
 } from 'lucide-react'
 
 // --- Section data ---
@@ -181,6 +182,29 @@ const sections: DocSection[] = [
         { id: 'oauth-auto-discovery', title: 'Auto-Discovery' },
         { id: 'oauth-token-refresh', title: 'Token Refresh' },
       ]},
+    ],
+  },
+  {
+    id: 'push-relay',
+    title: 'Push Relay',
+    icon: <BellRing className="h-4 w-4" />,
+    subsections: [
+      { id: 'push-relay-overview', title: 'Overview' },
+      { id: 'push-relay-push-types', title: 'Push Types In and Out', children: [
+        { id: 'push-relay-ingress', title: 'From Upstream Servers' },
+        { id: 'push-relay-egress', title: 'To Apps' },
+      ]},
+      { id: 'push-relay-permissions', title: 'Allow / Ask / Off', children: [
+        { id: 'push-relay-ask', title: 'Ask: Held Events' },
+        { id: 'push-relay-monitor', title: 'Monitor: Intercept and Edit' },
+      ]},
+      { id: 'push-relay-fallback-tools', title: 'Fallback Tools' },
+      { id: 'push-relay-client-setup', title: 'Per-Client Setup', children: [
+        { id: 'push-relay-claude-code', title: 'Claude Code (STDIO Bridge + Channels)' },
+        { id: 'push-relay-openclaw', title: 'OpenClaw (Webhook)' },
+        { id: 'push-relay-other-clients', title: 'Codex, Cursor and Others' },
+      ]},
+      { id: 'push-relay-testing', title: 'Testing Pushes' },
     ],
   },
   {

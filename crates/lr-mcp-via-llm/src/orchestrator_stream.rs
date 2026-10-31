@@ -1258,6 +1258,7 @@ async fn execute_resource_read_background(
                 permissions.memory_enabled,
                 permissions.memory_folder.clone(),
                 permissions.client_mode,
+                lr_config::ClientPushSettings::default(),
                 request,
                 None,
             )
@@ -1319,6 +1320,7 @@ async fn execute_resource_read_background(
             permissions.memory_enabled,
             permissions.memory_folder.clone(),
             permissions.client_mode,
+            lr_config::ClientPushSettings::default(),
             list_request,
             None,
         ),
@@ -1579,6 +1581,7 @@ async fn execute_prompt_get_background(
             permissions.memory_enabled,
             permissions.memory_folder.clone(),
             permissions.client_mode,
+            lr_config::ClientPushSettings::default(),
             request,
             None, // monitor_session_id
         ),

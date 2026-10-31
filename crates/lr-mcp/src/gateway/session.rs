@@ -24,6 +24,7 @@ pub struct ClientListingSnapshot {
     pub memory_folder: Option<String>,
     pub context_management_enabled: Option<bool>,
     pub catalog_compression_enabled: Option<bool>,
+    pub push_permissions: lr_config::PushPermissions,
 }
 
 impl ClientListingSnapshot {
@@ -38,6 +39,7 @@ impl ClientListingSnapshot {
             memory_folder: client.memory_folder.clone(),
             context_management_enabled: client.context_management_enabled,
             catalog_compression_enabled: client.catalog_compression_enabled,
+            push_permissions: client.push_permissions.clone(),
         }
     }
 
@@ -55,7 +57,9 @@ impl ClientListingSnapshot {
             || self.memory_enabled != old.memory_enabled
             || self.memory_folder != old.memory_folder
             || self.context_management_enabled != old.context_management_enabled
-            || self.catalog_compression_enabled != old.catalog_compression_enabled;
+            || self.catalog_compression_enabled != old.catalog_compression_enabled
+            // Push Relay's fallback tools depend on the push permissions
+            || self.push_permissions != old.push_permissions;
         ListChanges {
             tools: mcp_scope_changed || new_mcp.tools != old_mcp.tools || virtual_changed,
             resources: mcp_scope_changed || new_mcp.resources != old_mcp.resources,
@@ -103,6 +107,16 @@ pub struct GatewaySession {
 
     /// Client capabilities (from initialize request params)
     pub client_capabilities: Option<ClientCapabilities>,
+
+    /// The client's capabilities exactly as sent, including fields the typed
+    /// form drops (`extensions`, top-level `events`).
+    pub client_capabilities_raw: Option<serde_json::Value>,
+
+    /// Served through the STDIO bridge (`X-LocalRouter-Bridge: stdio`).
+    pub is_stdio_bridge: bool,
+
+    /// Opted into the Push Relay test source (`X-LocalRouter-Push-Test: 1`).
+    pub push_test_source: bool,
 
     /// Tool name mapping: namespaced_name -> (server_id, original_name)
     pub tool_mapping: HashMap<String, (String, String)>,
@@ -287,6 +301,9 @@ impl GatewaySession {
             server_init_status,
             merged_capabilities: None,
             client_capabilities: None,
+            client_capabilities_raw: None,
+            is_stdio_bridge: false,
+            push_test_source: false,
             tool_mapping: HashMap::new(),
             resource_mapping: HashMap::new(),
             resource_uri_mapping: HashMap::new(),

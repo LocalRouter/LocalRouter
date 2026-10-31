@@ -25,6 +25,7 @@ tauri = { workspace = true }
 shell-words = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
+sha2 = { workspace = true }
 
 tempfile = "3.8"
 

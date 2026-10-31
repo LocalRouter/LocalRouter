@@ -47,3 +47,15 @@ test('fallback headers are honest and redacted events cannot regain links', () =
   expect(groups[0].title).toContain('Request')
   expect(groups[0].description).toContain('No conversation identity')
 })
+
+test('push events join the request of the session that read them and otherwise stand alone', () => {
+  const events = [
+    event('poll', { session_id: 'r', event_type: 'mcp_tool_call' }),
+    event('push', { session_id: 'r', event_type: 'mcp_push_event' }),
+    event('llm', { session_id: 'r', conversation }),
+    event('webhook', { event_type: 'mcp_push_event' }),
+  ]
+  const groups = eventRelationships(events)
+  expect(groups.find(g => g.members.has('push'))!.members).toEqual(new Set(['poll', 'push', 'llm']))
+  expect(groups.find(g => g.members.has('webhook'))!.members.size).toBe(1)
+})

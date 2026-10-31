@@ -22,6 +22,8 @@ mod routing_profiles;
 pub use routing_profiles::*;
 mod named_routes;
 pub use named_routes::*;
+mod push_relay;
+pub use push_relay::*;
 mod client_security;
 pub use client_security::*;
 mod response_cache;
@@ -256,6 +258,55 @@ impl ConfigManager {
         Ok(())
     }
 
+    /// Update machine-recorded derived state, such as remembered upstream
+    /// capabilities.
+    ///
+    /// Validated like [`Self::update`], but emits no `config-changed` event
+    /// and does not sync clients: nothing the user configured changed, so the
+    /// UI must not reload as if it had. To persist, call `save()` afterwards.
+    pub fn update_derived<F>(&self, f: F) -> AppResult<()>
+    where
+        F: FnOnce(&mut AppConfig),
+    {
+        let mut config = self.config.write();
+        let mut new_config = config.clone();
+        f(&mut new_config);
+        validation::validate_config(&new_config)?;
+        *config = new_config;
+        Ok(())
+    }
+
+    /// Record upstream capability snapshots on their MCP server entries.
+    ///
+    /// Only entries whose content actually changed are written (the
+    /// observation time alone is not a change), and servers that no longer
+    /// exist are ignored. Returns whether anything changed, i.e. whether the
+    /// caller needs to `save()`.
+    pub fn record_capability_snapshots(
+        &self,
+        snapshots: &std::collections::HashMap<String, UpstreamCapabilitySnapshot>,
+    ) -> AppResult<bool> {
+        let changed = |server: &McpServerConfig| {
+            snapshots.get(&server.id).is_some_and(|snapshot| {
+                !server
+                    .capability_snapshot
+                    .as_ref()
+                    .is_some_and(|existing| existing.same_content(snapshot))
+            })
+        };
+        if !self.config.read().mcp_servers.iter().any(changed) {
+            return Ok(false);
+        }
+        self.update_derived(|cfg| {
+            for server in &mut cfg.mcp_servers {
+                if changed(server) {
+                    server.capability_snapshot = snapshots.get(&server.id).cloned();
+                }
+            }
+        })?;
+        Ok(true)
+    }
+
     /// Save configuration to disk
     ///
     /// Writes the current in-memory configuration to the config file.
@@ -368,6 +419,8 @@ impl ConfigManager {
             mcp_elicitation_permission: PermissionState::Ask,
             memory_enabled: None,
             memory_folder: Some(memory_folder),
+            push_permissions: PushPermissions::default(),
+            push_webhook_urls: Vec::new(),
         };
 
         self.update(|cfg| {
@@ -444,4 +497,6 @@ impl ConfigManager {
 }
 
 mod session_routing;
+mod ui_state;
 pub use session_routing::SessionRoutingConfig;
+pub use ui_state::*;

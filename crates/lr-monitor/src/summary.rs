@@ -122,6 +122,12 @@ pub fn generate_summary(event: &MonitorEvent) -> String {
             }
         },
 
+        MonitorEventData::McpPushEvent {
+            event_name,
+            decision,
+            ..
+        } => format!("push {} ({})", event_name, decision),
+
         // MCP Elicitation
         MonitorEventData::McpElicitation {
             message, action, ..

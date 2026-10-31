@@ -677,6 +677,64 @@ mod tests {
         assert_eq!(store.pending_requests(), 1);
         assert!(!store.get(&old).unwrap().payload_redacted);
     }
+    fn push_push_event(store: &MonitorEventStore, session_id: Option<String>) -> String {
+        store.push(
+            MonitorEventType::McpPushEvent,
+            Some("client-1".to_string()),
+            Some("Test Client".to_string()),
+            session_id,
+            MonitorEventData::McpPushEvent {
+                server_id: "vc".into(),
+                server_name: Some("vocalcord".into()),
+                event_name: "vocalcord__message.received".into(),
+                event_id: format!("vocalcord__{}", Uuid::new_v4()),
+                ingress_mode: "push".into(),
+                egress_modes: vec!["tools".into()],
+                decision: "allowed".into(),
+                original_payload: Some(serde_json::json!({"text": "hi"})),
+                delivered_payload: Some(serde_json::json!({"text": "hi"})),
+                held_ms: None,
+                error: None,
+            },
+            EventStatus::Complete,
+            None,
+        )
+    }
+
+    #[test]
+    fn push_events_group_with_the_reading_sessions_request() {
+        let store = make_store(20);
+        let body = serde_json::json!({"messages":[{"role":"user","content":"Watch my inbox"}]});
+        let llm = push_llm_call(&store, "test");
+        store.track_conversation(&llm, &body);
+        let conversation = store.get(&llm).unwrap().conversation.unwrap();
+        let request = store.get(&llm).unwrap().session_id;
+
+        // Delivered to the session recorded under that request id: same group
+        let delivered = push_push_event(&store, request.clone());
+        assert_eq!(
+            store.get(&delivered).unwrap().conversation.unwrap().id,
+            conversation.id
+        );
+        // No reading session (webhook, /events/watch, several sessions):
+        // standalone, even though the client has a conversation
+        let standalone = push_push_event(&store, None);
+        assert!(store.get(&standalone).unwrap().conversation.is_none());
+
+        // Recorded before the request was correlated: the correlation reaches it
+        let early_request = Some(format!("sess-{}", Uuid::new_v4()));
+        let early = push_push_event(&store, early_request.clone());
+        assert!(store.get(&early).unwrap().conversation.is_none());
+        let later = push_llm_call(&store, "test");
+        store.update(&later, |e| e.session_id.clone_from(&early_request));
+        store.track_conversation(&later, &body);
+        let later_conversation = store.get(&later).unwrap().conversation.unwrap();
+        assert_eq!(
+            store.get(&early).unwrap().conversation.unwrap().id,
+            later_conversation.id
+        );
+    }
+
     #[test]
     fn conversation_capture_is_scoped_bounded_and_propagates_to_request_events() {
         let store = make_store(20);

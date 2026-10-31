@@ -14,6 +14,7 @@ pub mod commands_mcp_metrics;
 pub mod commands_metrics;
 pub mod commands_monitor;
 pub mod commands_providers;
+pub mod commands_push_relay;
 pub mod commands_reverse_proxy;
 pub mod commands_usage;
 mod input_validation;
@@ -43,3 +44,5 @@ pub mod commands_replay;
 pub mod commands_routing_profiles;
 
 pub mod commands_icons;
+
+pub mod commands_ui_state;

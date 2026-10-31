@@ -1,265 +1,713 @@
-//! STDIO ↔ HTTP Bridge for MCP
+//! STDIO ↔ HTTP bridge for MCP (`localrouter --mcp-bridge`).
 //!
-//! This module implements a lightweight proxy that reads JSON-RPC requests from stdin,
-//! forwards them to the LocalRouter HTTP server, and writes responses back to stdout.
+//! A full-duplex relay between an MCP client speaking newline-delimited
+//! JSON-RPC on stdin/stdout and LocalRouter's Streamable HTTP gateway:
 //!
-//! This allows external MCP clients (Claude Desktop, Cursor, VS Code) to connect to
-//! LocalRouter's unified MCP gateway via standard input/output.
+//! - **client → server**: every stdin line is POSTed to the gateway. Requests
+//!   run concurrently (a long `tools/call` or `events/stream` never blocks the
+//!   next line); notifications and client responses (answers to server
+//!   requests such as sampling or elicitation) are POSTed in order and write
+//!   nothing to stdout.
+//! - **POST responses** may be a JSON body or an SSE stream. Every JSON-RPC
+//!   message in an SSE body is written to stdout, in order, until the stream
+//!   ends; there is no total timeout, so a long-lived `events/stream` keeps
+//!   delivering notifications before its final result.
+//! - **server → client**: after `initialize`, the bridge captures the
+//!   `Mcp-Session-Id`, sends it on every request, and holds the session's GET
+//!   SSE stream (reconnecting with backoff). Every notification and
+//!   server-initiated request on it is written to stdout verbatim, including
+//!   methods the bridge does not know (`notifications/claude/channel`,
+//!   `notifications/events/*`).
+//! - **stdout** has exactly one writer task, so lines never interleave.
+//! - **stdin EOF** stops the stream and in-flight requests and DELETEs the
+//!   session.
+//!
+//! Every HTTP request carries `Authorization: Bearer <secret>` and
+//! `X-LocalRouter-Bridge: stdio`, which tells the gateway the session is a
+//! stdio bridge session. Toward its stdio client the bridge negotiates at most
+//! MCP 2025-11-25; see [`super::negotiation`] for why and how.
 
-use crate::protocol::{JsonRpcError, JsonRpcRequest, JsonRpcResponse};
+use super::negotiation;
+use super::sse::SseDecoder;
+use crate::gateway::types::MCP_SESSION_ID_HEADER;
+use futures_util::StreamExt;
 use lr_api_keys::keychain_trait::{CachedKeychain, KeychainStorage};
-use lr_config::{AppConfig, Client, ConfigManager};
+use lr_config::{AppConfig, Client, ConfigManager, ServerConfig};
 use lr_types::{AppError, AppResult};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::path::PathBuf;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::sync::mpsc;
+use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
 
-/// STDIO ↔ HTTP Bridge
-///
-/// Lightweight proxy that forwards JSON-RPC requests from stdin to the LocalRouter HTTP server.
+/// Header identifying bridge traffic to the gateway.
+pub const BRIDGE_HEADER: &str = "x-localrouter-bridge";
+/// Value of [`BRIDGE_HEADER`] for the stdio bridge.
+pub const BRIDGE_HEADER_VALUE: &str = "stdio";
+/// Environment variable overriding the gateway URL.
+pub const URL_ENV: &str = "LOCALROUTER_URL";
+/// Environment variable that, set to `1`, opts the bridge's session into the
+/// Push Relay's built-in test source (`localrouter__test.event`), so a test
+/// event can be sent to a real Claude Code through Channels.
+pub const PUSH_TEST_ENV: &str = "LOCALROUTER_PUSH_TEST";
+/// Header carrying the push-test opt-in (see `gateway::push_relay::PUSH_TEST_HEADER`).
+const PUSH_TEST_HEADER: &str = "x-localrouter-push-test";
+
+/// Notifications and client responses are acknowledged with 202 at once; a
+/// gateway that takes longer than this is not going to answer.
+const QUIET_POST_TIMEOUT: Duration = Duration::from_secs(30);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const DELETE_TIMEOUT: Duration = Duration::from_secs(3);
+/// Time allowed to flush lines already queued for stdout at shutdown.
+const DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
+const STREAM_BACKOFF_MIN: Duration = Duration::from_millis(250);
+const STREAM_BACKOFF_MAX: Duration = Duration::from_secs(30);
+/// A stream that stayed up this long resets the reconnect backoff.
+const STREAM_HEALTHY_AFTER: Duration = Duration::from_secs(10);
+/// Lines queued for stdout before producers wait on the writer.
+const STDOUT_QUEUE: usize = 1024;
+
+/// STDIO ↔ HTTP bridge to the LocalRouter MCP gateway.
 pub struct StdioBridge {
-    /// Client ID for authentication
     client_id: String,
-
-    /// Client secret for Authorization header
     client_secret: String,
-
-    /// LocalRouter HTTP endpoint
     server_url: String,
-
-    /// HTTP client
     http_client: reqwest::Client,
-
-    /// STDIO handles
-    stdin: BufReader<tokio::io::Stdin>,
-    stdout: tokio::io::Stdout,
+    stream_backoff_min: Duration,
 }
 
 impl StdioBridge {
-    /// Create a new STDIO bridge
+    /// Create a bridge from the LocalRouter config.
     ///
-    /// # Arguments
-    /// * `client_id` - Optional client ID (auto-detects if None)
-    /// * `config_path` - Optional config path (uses default if None)
-    ///
-    /// # Returns
-    /// A new StdioBridge instance ready to process requests
-    ///
-    /// # Errors
-    /// Returns error if:
-    /// - Config file not found
-    /// - Client not found or disabled
-    /// - Client secret not found
-    /// - Client has no MCP servers allowed
-    pub async fn new(client_id: Option<String>, config_path: Option<PathBuf>) -> AppResult<Self> {
-        // Load config
+    /// * `client_id` - client to authenticate as (auto-detected if `None`)
+    /// * `config_path` - config file (default location if `None`)
+    /// * `url` - gateway URL override (`--url`); falls back to
+    ///   `LOCALROUTER_URL`, then to the server host/port in the config
+    pub async fn new(
+        client_id: Option<String>,
+        config_path: Option<PathBuf>,
+        url: Option<String>,
+    ) -> AppResult<Self> {
         let config_manager = if let Some(path) = config_path {
             ConfigManager::load_from_path(path).await?
         } else {
             ConfigManager::load().await?
         };
-
         let config = config_manager.get();
 
-        // Resolve client and secret
         let (client_id, client_secret) = resolve_client_secret(client_id, &config).await?;
 
-        // Validate client has MCP servers configured using mcp_permissions
-        let client = find_client_by_id(&client_id, &config)?;
-        if !client.mcp_permissions.has_any_access() {
-            return Err(AppError::Config(format!(
-                "Client '{}' has no MCP servers configured. Set 'mcp_permissions' in config.yaml",
-                client_id
-            )));
+        // An env-supplied secret may name a client absent from this config
+        // (e.g. `--url` pointing at another instance); only validate known ones.
+        if let Ok(client) = find_client_by_id(&client_id, &config) {
+            if !client.mcp_permissions.has_any_access() {
+                return Err(AppError::Config(format!(
+                    "Client '{}' has no MCP servers configured. Set 'mcp_permissions' in config.yaml",
+                    client_id
+                )));
+            }
+            info!(
+                "Bridge initialized for client '{}' with {} MCP servers (global: {:?})",
+                client_id,
+                client
+                    .mcp_permissions
+                    .allowed_server_ids(&config.mcp_servers)
+                    .len(),
+                client.mcp_permissions.global
+            );
         }
 
-        // Get server count for logging
-        let server_count = client
-            .mcp_permissions
-            .allowed_server_ids(&config.mcp_servers)
-            .len();
+        let server_url = resolve_server_url(url, std::env::var(URL_ENV).ok(), &config.server);
+        Self::with_endpoint(client_id, client_secret, server_url)
+    }
 
-        info!(
-            "Bridge initialized for client '{}' with {} MCP servers (global: {:?})",
-            client_id, server_count, client.mcp_permissions.global
-        );
-
+    /// Create a bridge for an explicit gateway URL and credentials.
+    pub fn with_endpoint(
+        client_id: String,
+        client_secret: String,
+        server_url: String,
+    ) -> AppResult<Self> {
+        let mut builder = reqwest::Client::builder().connect_timeout(CONNECT_TIMEOUT);
+        // A system proxy must never see loopback traffic (and probing for one
+        // is slow on macOS).
+        if is_loopback_url(&server_url) {
+            builder = builder.no_proxy();
+        }
+        let http_client = builder
+            .build()
+            .map_err(|e| AppError::Mcp(format!("Failed to build HTTP client: {e}")))?;
         Ok(Self {
             client_id,
             client_secret,
-            server_url: "http://localhost:3625/mcp".to_string(),
-            http_client: reqwest::Client::new(),
-            stdin: BufReader::new(tokio::io::stdin()),
-            stdout: tokio::io::stdout(),
+            server_url,
+            http_client,
+            stream_backoff_min: STREAM_BACKOFF_MIN,
         })
     }
 
-    /// Run the bridge main loop
-    ///
-    /// Reads JSON-RPC requests from stdin line-by-line, forwards to HTTP server,
-    /// and writes responses back to stdout.
-    ///
-    /// Logs to stderr only. All stdout output is JSON-RPC responses.
-    ///
-    /// # Errors
-    /// Returns error if:
-    /// - HTTP server is not available
-    /// - Authentication fails
-    /// - Other connection errors
-    pub async fn run(mut self) -> AppResult<()> {
-        info!("Bridge started, reading from stdin...");
+    /// The gateway URL this bridge talks to.
+    pub fn server_url(&self) -> &str {
+        &self.server_url
+    }
 
+    #[cfg(test)]
+    fn with_stream_backoff(mut self, min: Duration) -> Self {
+        self.stream_backoff_min = min;
+        self
+    }
+
+    /// Run on the process's stdin/stdout until stdin closes.
+    pub async fn run(self) -> AppResult<()> {
+        self.run_with_io(tokio::io::stdin(), tokio::io::stdout())
+            .await
+    }
+
+    /// Run on arbitrary byte streams until `input` reaches EOF (or `output`
+    /// closes). Logs go to tracing (stderr); `output` carries only JSON-RPC.
+    pub async fn run_with_io<R, W>(self, input: R, output: W) -> AppResult<()>
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+        W: AsyncWrite + Unpin + Send + 'static,
+    {
+        info!(
+            "Bridge started for client '{}' -> {}",
+            self.client_id, self.server_url
+        );
+        let shutdown = CancellationToken::new();
+        let (out_tx, out_rx) = mpsc::channel::<String>(STDOUT_QUEUE);
+        let writer = tokio::spawn(write_stdout(output, out_rx, shutdown.clone()));
+
+        let ctx = Arc::new(Ctx {
+            http: self.http_client,
+            url: self.server_url,
+            secret: self.client_secret,
+            out: out_tx,
+            session: parking_lot::RwLock::new(SessionState::default()),
+            pending_init: parking_lot::Mutex::new(None),
+            shutdown: shutdown.clone(),
+            push_test: std::env::var(PUSH_TEST_ENV).is_ok_and(|v| v.trim() == "1"),
+        });
+
+        let mut requests: JoinSet<()> = JoinSet::new();
+        let mut stream_task: Option<tokio::task::JoinHandle<()>> = None;
+        let mut reader = BufReader::new(input);
         let mut line = String::new();
 
-        loop {
+        let result = loop {
+            while requests.try_join_next().is_some() {}
             line.clear();
-
-            // Read a line from stdin
-            match self.stdin.read_line(&mut line).await {
+            let read = tokio::select! {
+                _ = shutdown.cancelled() => break Ok(()),
+                read = reader.read_line(&mut line) => read,
+            };
+            match read {
                 Ok(0) => {
-                    // EOF reached
-                    debug!("EOF reached on stdin, exiting");
-                    break;
+                    debug!("EOF on stdin, shutting down");
+                    break Ok(());
                 }
-                Ok(n) => {
-                    trace!("Read {} bytes from stdin", n);
+                Ok(_) => {}
+                Err(e) => {
+                    error!("Failed to read from stdin: {e}");
+                    break Err(e.into());
+                }
+            }
+            let text = line.trim();
+            if text.is_empty() {
+                continue;
+            }
+            trace!("stdin: {text}");
+            let message: Value = match serde_json::from_str(text) {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!("Unparseable stdin line: {e}");
+                    ctx.emit_error(Value::Null, -32700, format!("Parse error: {e}"))
+                        .await;
+                    continue;
+                }
+            };
 
-                    // Parse JSON-RPC request
-                    match serde_json::from_str::<JsonRpcRequest>(&line) {
-                        Ok(request) => {
-                            debug!("Received request: method={}", request.method);
-
-                            // Handle the request
-                            let response = match self.handle_request(request).await {
-                                Ok(resp) => resp,
-                                Err(e) => {
-                                    error!("Request handling failed: {}", e);
-                                    // Return JSON-RPC error response
-                                    JsonRpcResponse {
-                                        jsonrpc: "2.0".to_string(),
-                                        id: Value::Null,
-                                        result: None,
-                                        error: Some(JsonRpcError {
-                                            code: -32603,
-                                            message: format!("Internal error: {}", e),
-                                            data: None,
-                                        }),
-                                    }
-                                }
-                            };
-
-                            // Write response to stdout
-                            let response_json = serde_json::to_string(&response)?;
-                            self.stdout.write_all(response_json.as_bytes()).await?;
-                            self.stdout.write_all(b"\n").await?;
-                            self.stdout.flush().await?;
-
-                            trace!("Response written to stdout");
+            match classify(&message) {
+                Kind::Request { id, method } => {
+                    let initialized = ctx.session.read().initialized;
+                    if let Some(reply) = negotiation::intercept(&message, &id, &method, initialized)
+                    {
+                        debug!("Declined {method} locally (bridge negotiates <= 2025-11-25)");
+                        ctx.emit(reply).await;
+                        continue;
+                    }
+                    if method == "initialize" {
+                        let (forward, negotiated) = negotiation::prepare_initialize(message);
+                        *ctx.pending_init.lock() = Some((id.clone(), negotiated.clone()));
+                        {
+                            // A re-initialize starts a new gateway session.
+                            let mut s = ctx.session.write();
+                            s.session_id = None;
+                            s.protocol_version = None;
                         }
-                        Err(e) => {
-                            warn!("Failed to parse JSON-RPC request: {}", e);
-                            // Return JSON-RPC parse error
-                            let error_response = JsonRpcResponse {
-                                jsonrpc: "2.0".to_string(),
-                                id: Value::Null,
-                                result: None,
-                                error: Some(JsonRpcError {
-                                    code: -32700,
-                                    message: format!("Parse error: {}", e),
-                                    data: None,
-                                }),
-                            };
-
-                            let response_json = serde_json::to_string(&error_response)?;
-                            self.stdout.write_all(response_json.as_bytes()).await?;
-                            self.stdout.write_all(b"\n").await?;
-                            self.stdout.flush().await?;
+                        if let Some(task) = stream_task.take() {
+                            task.abort();
                         }
+                        // Inline: later lines need the session id.
+                        ctx.clone().forward_request(id, forward).await;
+                        {
+                            let mut s = ctx.session.write();
+                            s.protocol_version = Some(negotiated);
+                            s.initialized = true;
+                        }
+                        stream_task = Some(tokio::spawn(
+                            ctx.clone().run_server_stream(self.stream_backoff_min),
+                        ));
+                    } else {
+                        requests.spawn(ctx.clone().forward_request(id, message));
                     }
                 }
-                Err(e) => {
-                    error!("Failed to read from stdin: {}", e);
-                    return Err(e.into());
+                Kind::Notification | Kind::Response => {
+                    ctx.post_quiet(&message).await;
+                }
+                Kind::Invalid { id } => {
+                    ctx.emit_error(id, -32600, "Invalid Request".to_string())
+                        .await;
+                }
+            }
+        };
+
+        // Shutdown: stop producers, end the gateway session, drain stdout.
+        shutdown.cancel();
+        requests.shutdown().await;
+        if let Some(task) = stream_task.take() {
+            task.abort();
+            let _ = task.await;
+        }
+        ctx.delete_session().await;
+        drop(ctx);
+        if tokio::time::timeout(DRAIN_TIMEOUT, writer).await.is_err() {
+            warn!("Timed out flushing stdout at shutdown");
+        }
+        info!("Bridge stopped");
+        result
+    }
+}
+
+/// The single stdout writer: one JSON-RPC message per line, flushed each time.
+async fn write_stdout<W: AsyncWrite + Unpin>(
+    mut output: W,
+    mut rx: mpsc::Receiver<String>,
+    shutdown: CancellationToken,
+) {
+    while let Some(line) = rx.recv().await {
+        let written = async {
+            output.write_all(line.as_bytes()).await?;
+            output.write_all(b"\n").await?;
+            output.flush().await
+        }
+        .await;
+        if let Err(e) = written {
+            warn!("stdout closed ({e}); shutting down");
+            shutdown.cancel();
+            return;
+        }
+    }
+    let _ = output.shutdown().await;
+}
+
+enum Kind {
+    Request { id: Value, method: String },
+    Notification,
+    Response,
+    Invalid { id: Value },
+}
+
+fn classify(message: &Value) -> Kind {
+    let id = message.get("id").cloned().unwrap_or(Value::Null);
+    if !message.is_object() {
+        return Kind::Invalid { id: Value::Null };
+    }
+    match message.get("method") {
+        Some(Value::String(method)) => {
+            if id.is_null() {
+                Kind::Notification
+            } else {
+                Kind::Request {
+                    id,
+                    method: method.clone(),
                 }
             }
         }
+        Some(_) => Kind::Invalid { id },
+        None if message.get("result").is_some() || message.get("error").is_some() => Kind::Response,
+        None => Kind::Invalid { id },
+    }
+}
 
-        Ok(())
+#[derive(Default)]
+struct SessionState {
+    session_id: Option<String>,
+    /// Version negotiated with the stdio client (sent as MCP-Protocol-Version).
+    protocol_version: Option<String>,
+    initialized: bool,
+}
+
+/// State shared by the reader, request tasks and the server stream.
+struct Ctx {
+    http: reqwest::Client,
+    url: String,
+    secret: String,
+    out: mpsc::Sender<String>,
+    session: parking_lot::RwLock<SessionState>,
+    /// `initialize` awaiting its result: (request id, negotiated version).
+    pending_init: parking_lot::Mutex<Option<(Value, String)>>,
+    shutdown: CancellationToken,
+    /// Send the push-test opt-in header ([`PUSH_TEST_ENV`]).
+    push_test: bool,
+}
+
+impl Ctx {
+    fn with_headers(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        let session = self.session.read();
+        let mut builder = builder
+            .bearer_auth(&self.secret)
+            .header(BRIDGE_HEADER, BRIDGE_HEADER_VALUE);
+        if self.push_test {
+            builder = builder.header(PUSH_TEST_HEADER, "1");
+        }
+        if let Some(id) = &session.session_id {
+            builder = builder.header(MCP_SESSION_ID_HEADER, id);
+        }
+        if let Some(version) = &session.protocol_version {
+            builder = builder.header("mcp-protocol-version", version);
+        }
+        builder
     }
 
-    /// Handle a single JSON-RPC request
-    ///
-    /// Forwards the request to the LocalRouter HTTP server and returns the response.
-    ///
-    /// # Arguments
-    /// * `request` - JSON-RPC request to forward
-    ///
-    /// # Returns
-    /// JSON-RPC response from the server
-    ///
-    /// # Errors
-    /// Returns error if:
-    /// - HTTP request fails (connection refused, timeout, etc.)
-    /// - Server returns non-2xx status code
-    /// - Response parsing fails
-    async fn handle_request(&mut self, request: JsonRpcRequest) -> AppResult<JsonRpcResponse> {
-        trace!("Forwarding request to {}", self.server_url);
+    fn post(&self, body: &Value) -> reqwest::RequestBuilder {
+        self.with_headers(self.http.post(&self.url))
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .header(
+                reqwest::header::ACCEPT,
+                "application/json, text/event-stream",
+            )
+            .json(body)
+    }
 
-        // Serialize JSON-RPC request
-        let body = serde_json::to_string(&request)?;
-
-        // POST to LocalRouter HTTP server
-        let response = self
-            .http_client
-            .post(&self.server_url)
-            .header("Authorization", format!("Bearer {}", self.client_secret))
-            .header("Content-Type", "application/json")
-            .body(body)
-            .send()
-            .await
-            .map_err(|e| {
-                if e.is_connect() {
-                    AppError::Mcp(
-                        "Could not connect to LocalRouter at localhost:3625. Is the app running?"
-                            .to_string(),
-                    )
-                } else if e.is_timeout() {
-                    AppError::Mcp("Request timed out".to_string())
-                } else {
-                    AppError::Mcp(format!("HTTP request failed: {}", e))
+    /// Queue one message for stdout, applying the `initialize` rewrite.
+    async fn emit(&self, mut message: Value) {
+        {
+            let mut pending = self.pending_init.lock();
+            let matches = pending
+                .as_ref()
+                .is_some_and(|(id, _)| message.get("id") == Some(id))
+                && message.get("method").is_none();
+            if matches {
+                let (_, negotiated) = pending.take().unwrap_or_default();
+                negotiation::rewrite_initialize_result(&mut message, &negotiated);
+            }
+        }
+        match serde_json::to_string(&message) {
+            Ok(line) => {
+                if self.out.send(line).await.is_err() {
+                    debug!("stdout writer gone; dropping message");
                 }
-            })?;
+            }
+            Err(e) => error!("Failed to serialize message for stdout: {e}"),
+        }
+    }
 
-        // Check status code
-        let status = response.status();
-        if !status.is_success() {
-            let text = response.text().await.unwrap_or_default();
+    async fn emit_error(&self, id: Value, code: i32, message: String) {
+        self.emit(json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": { "code": code, "message": message }
+        }))
+        .await;
+    }
 
-            return Err(match status.as_u16() {
-                401 => AppError::Mcp(
-                    "Invalid client credentials. Check LOCALROUTER_CLIENT_SECRET or run GUI once to store credentials.".to_string()
-                ),
-                403 => AppError::Mcp(format!(
-                    "Client '{}' is not allowed to access MCP servers. Check 'mcp_permissions' in config.yaml",
-                    self.client_id
-                )),
-                404 => AppError::Mcp(
-                    "MCP endpoint not found. Is LocalRouter running the latest version?".to_string()
-                ),
-                _ => AppError::Mcp(format!("HTTP {} error: {}", status, text)),
-            });
+    /// Emit a JSON-RPC message (or each message of a batch array).
+    async fn emit_body(&self, value: Value) {
+        match value {
+            Value::Array(items) => {
+                for item in items {
+                    self.emit(item).await;
+                }
+            }
+            other => self.emit(other).await,
+        }
+    }
+
+    fn connect_error(&self, e: &reqwest::Error) -> String {
+        if e.is_connect() {
+            format!(
+                "Could not connect to LocalRouter at {}. Is the app running?",
+                self.url
+            )
+        } else {
+            format!("HTTP request to LocalRouter failed: {e}")
+        }
+    }
+
+    /// POST a client request and relay its answer to stdout.
+    async fn forward_request(self: Arc<Self>, id: Value, body: Value) {
+        let response = match self.post(&body).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("Request {id} failed: {e}");
+                let message = self.connect_error(&e);
+                self.emit_error(id, -32603, message).await;
+                return;
+            }
+        };
+
+        if let Some(session_id) = response
+            .headers()
+            .get(MCP_SESSION_ID_HEADER)
+            .and_then(|v| v.to_str().ok())
+        {
+            let mut s = self.session.write();
+            if s.session_id.as_deref() != Some(session_id) {
+                debug!("Gateway session: {session_id}");
+                s.session_id = Some(session_id.to_string());
+            }
         }
 
-        // Parse JSON-RPC response
-        let json_rpc_response: JsonRpcResponse = response
-            .json()
-            .await
-            .map_err(|e| AppError::Mcp(format!("Failed to parse server response: {}", e)))?;
+        let status = response.status();
+        if status == reqwest::StatusCode::ACCEPTED || status == reqwest::StatusCode::NO_CONTENT {
+            // The answer comes on the server stream.
+            debug!("Request {id} accepted; response will arrive on the stream");
+            return;
+        }
 
-        trace!("Received response from server");
-        Ok(json_rpc_response)
+        let is_sse = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.starts_with("text/event-stream"));
+
+        if status.is_success() && is_sse {
+            let answered = self.relay_sse(response, Some(&id)).await;
+            if !answered && !self.shutdown.is_cancelled() {
+                self.emit_error(
+                    id,
+                    -32603,
+                    "LocalRouter closed the response stream before answering".into(),
+                )
+                .await;
+            }
+            return;
+        }
+
+        let bytes = match response.bytes().await {
+            Ok(b) => b,
+            Err(e) => {
+                let message = self.connect_error(&e);
+                self.emit_error(id, -32603, message).await;
+                return;
+            }
+        };
+
+        if status.is_success() {
+            if bytes.iter().all(u8::is_ascii_whitespace) {
+                return;
+            }
+            match serde_json::from_slice::<Value>(&bytes) {
+                Ok(value) => self.emit_body(value).await,
+                Err(e) => {
+                    self.emit_error(
+                        id,
+                        -32603,
+                        format!("Invalid response from LocalRouter: {e}"),
+                    )
+                    .await
+                }
+            }
+            return;
+        }
+
+        // Non-2xx: forward a JSON-RPC error body as is, else explain the status.
+        if let Ok(mut value) = serde_json::from_slice::<Value>(&bytes) {
+            if value.get("jsonrpc").is_some()
+                && (value.get("error").is_some() || value.get("result").is_some())
+            {
+                if value.get("id").is_none_or(Value::is_null) {
+                    value["id"] = id;
+                }
+                self.emit(value).await;
+                return;
+            }
+        }
+        let detail = String::from_utf8_lossy(&bytes);
+        let message = match status.as_u16() {
+            401 => "Invalid client credentials. Check LOCALROUTER_CLIENT_SECRET or run the LocalRouter app once to store credentials.".to_string(),
+            403 => "This client is not allowed to access MCP servers. Check its MCP permissions in LocalRouter.".to_string(),
+            404 if self.session.read().session_id.is_some() => {
+                "LocalRouter no longer knows this MCP session (was the app restarted?). Restart the MCP client to reconnect.".to_string()
+            }
+            404 => format!("MCP endpoint not found at {}. Check --url / LOCALROUTER_URL.", self.url),
+            _ => format!("LocalRouter returned HTTP {status}: {}", detail.trim()),
+        };
+        self.emit_error(id, -32603, message).await;
     }
+
+    /// Relay every JSON-RPC message of an SSE body to stdout until it ends.
+    /// Returns whether a response for `answer_id` was seen.
+    async fn relay_sse(&self, response: reqwest::Response, answer_id: Option<&Value>) -> bool {
+        let mut decoder = SseDecoder::new();
+        let mut body = response.bytes_stream();
+        let mut answered = false;
+        loop {
+            let chunk = tokio::select! {
+                _ = self.shutdown.cancelled() => return answered,
+                chunk = body.next() => chunk,
+            };
+            let chunk = match chunk {
+                Some(Ok(c)) => c,
+                Some(Err(e)) => {
+                    debug!("SSE body ended with error: {e}");
+                    return answered;
+                }
+                None => return answered,
+            };
+            let events = match decoder.feed(&chunk) {
+                Ok(events) => events,
+                Err(e) => {
+                    warn!("Dropping SSE stream: {e}");
+                    return answered;
+                }
+            };
+            for event in events {
+                // `endpoint` belongs to the legacy HTTP+SSE transport.
+                if !matches!(event.event.as_deref(), None | Some("message")) {
+                    continue;
+                }
+                match serde_json::from_str::<Value>(&event.data) {
+                    Ok(message) => {
+                        if let Some(answer_id) = answer_id {
+                            if message.get("method").is_none()
+                                && message.get("id") == Some(answer_id)
+                            {
+                                answered = true;
+                            }
+                        }
+                        self.emit_body(message).await;
+                    }
+                    Err(e) => debug!("Skipping non-JSON SSE event: {e}"),
+                }
+            }
+        }
+    }
+
+    /// POST a notification or client response; nothing is written to stdout.
+    async fn post_quiet(&self, body: &Value) {
+        let what = body
+            .get("method")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("response {}", body.get("id").unwrap_or(&Value::Null)));
+        match tokio::time::timeout(QUIET_POST_TIMEOUT, self.post(body).send()).await {
+            Ok(Ok(r)) if r.status().is_success() => trace!("{what}: HTTP {}", r.status()),
+            Ok(Ok(r)) => warn!("{what}: LocalRouter answered HTTP {}", r.status()),
+            Ok(Err(e)) => warn!("{what}: {}", self.connect_error(&e)),
+            Err(_) => warn!("{what}: no answer from LocalRouter within {QUIET_POST_TIMEOUT:?}"),
+        }
+    }
+
+    /// Hold the session's GET SSE stream, reconnecting with backoff, and relay
+    /// every server notification and request to stdout.
+    async fn run_server_stream(self: Arc<Self>, backoff_min: Duration) {
+        let mut backoff = backoff_min;
+        loop {
+            if self.shutdown.is_cancelled() {
+                return;
+            }
+            let request = self
+                .with_headers(self.http.get(&self.url))
+                .header(reqwest::header::ACCEPT, "text/event-stream");
+            let sent = tokio::select! {
+                _ = self.shutdown.cancelled() => return,
+                sent = request.send() => sent,
+            };
+            match sent {
+                Ok(response)
+                    if response.status().is_success()
+                        && response
+                            .headers()
+                            .get(reqwest::header::CONTENT_TYPE)
+                            .and_then(|v| v.to_str().ok())
+                            .is_some_and(|v| v.starts_with("text/event-stream")) =>
+                {
+                    debug!("Server stream connected");
+                    let started = tokio::time::Instant::now();
+                    self.relay_sse(response, None).await;
+                    if started.elapsed() >= STREAM_HEALTHY_AFTER {
+                        backoff = backoff_min;
+                    }
+                    debug!("Server stream ended; reconnecting");
+                }
+                Ok(response) if response.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED => {
+                    warn!("LocalRouter offers no server stream (HTTP 405); server notifications will not reach this client");
+                    return;
+                }
+                Ok(response) => warn!("Server stream refused: HTTP {}", response.status()),
+                Err(e) => debug!("Server stream: {}", self.connect_error(&e)),
+            }
+            tokio::select! {
+                _ = self.shutdown.cancelled() => return,
+                _ = tokio::time::sleep(backoff) => {}
+            }
+            backoff = (backoff * 2).min(STREAM_BACKOFF_MAX);
+        }
+    }
+
+    /// End the gateway session (Streamable HTTP `DELETE`).
+    async fn delete_session(&self) {
+        if self.session.read().session_id.is_none() {
+            return;
+        }
+        let request = self.with_headers(self.http.delete(&self.url));
+        match tokio::time::timeout(DELETE_TIMEOUT, request.send()).await {
+            Ok(Ok(r)) => debug!("Session DELETE: HTTP {}", r.status()),
+            Ok(Err(e)) => debug!("Session DELETE failed: {e}"),
+            Err(_) => debug!("Session DELETE timed out"),
+        }
+    }
+}
+
+/// Gateway URL: `--url`, then `LOCALROUTER_URL`, then the configured server
+/// address (the same host/port the app listens on; debug builds default to
+/// 33625, release to 3625).
+pub fn resolve_server_url(
+    cli: Option<String>,
+    env: Option<String>,
+    server: &ServerConfig,
+) -> String {
+    if let Some(url) = cli.or(env).map(|u| u.trim().to_string()) {
+        if !url.is_empty() {
+            return url;
+        }
+    }
+    let host = match server.host.trim() {
+        "" | "0.0.0.0" => "127.0.0.1".to_string(),
+        "::" | "[::]" => "[::1]".to_string(),
+        h if h.contains(':') && !h.starts_with('[') => format!("[{h}]"),
+        h => h.to_string(),
+    };
+    format!("http://{host}:{}/mcp", server.port)
+}
+
+fn is_loopback_url(url: &str) -> bool {
+    let Some(host) = reqwest::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_string))
+    else {
+        return false;
+    };
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    bare.eq_ignore_ascii_case("localhost")
+        || bare
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
 }
 
 /// Resolve client ID and secret
@@ -363,6 +811,9 @@ fn find_first_enabled_client(config: &AppConfig) -> AppResult<&Client> {
 }
 
 #[cfg(test)]
+mod duplex_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use chrono::Utc;
@@ -424,6 +875,8 @@ mod tests {
                 client_tools_indexing: None,
                 memory_enabled: None,
                 memory_folder: None,
+                push_permissions: Default::default(),
+                push_webhook_urls: Vec::new(),
             },
             Client {
                 id: "disabled_client".to_string(),
@@ -468,6 +921,8 @@ mod tests {
                 client_tools_indexing: None,
                 memory_enabled: None,
                 memory_folder: None,
+                push_permissions: Default::default(),
+                push_webhook_urls: Vec::new(),
             },
             Client {
                 id: "no_mcp_client".to_string(),
@@ -512,6 +967,8 @@ mod tests {
                 client_tools_indexing: None,
                 memory_enabled: None,
                 memory_folder: None,
+                push_permissions: Default::default(),
+                push_webhook_urls: Vec::new(),
             },
         ];
         config

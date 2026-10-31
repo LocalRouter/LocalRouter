@@ -647,6 +647,7 @@ mod tests {
             oauth_config: None,
             enabled: true,
             created_at: chrono::Utc::now(),
+            capability_snapshot: None,
         };
         let config = AppConfig {
             mcp_servers: vec![

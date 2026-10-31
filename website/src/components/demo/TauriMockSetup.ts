@@ -25,11 +25,13 @@ import type { ShowApprovalPopupResult, NativeOperation, GetClientNativeOperation
 import { toast } from 'sonner'
 import { mockReplay } from './mockReplay'
 import { mockData } from './mockData'
+import { clientPush, mockClaudeCodeTransport, mockClientPushSettings, mockPendingPushApprovals, mockPushRelayConfig, mockPushSourcesFor, mockPushStatusFor, mockReceivesPush } from './mockPushRelay'
+import type { ClaudeCodeMcpSetup, ClientPushSettings, McpServerPushStatus, PendingPushApproval, PushChannelPreview, PushRelayConfig, PushSourceInfo, PushTestEventResult } from '@app/types/tauri-commands'
 
 import { mockNativeOperations, mockUpstreamTools, mockClientPrivacy, mockClientSecurity, mockClientSecrets } from './mockClientPolicies'
 import { routingPolicyIssue } from '@app/components/strategy/routing-policy-status'
 import { matchesFilter } from '@app/views/monitor/monitor-events'
-import type { MonitorEventFilter, MonitorEventSummary } from '@app/types/tauri-commands'
+import type { MonitorEventFilter, MonitorEventSummary, SetUiStateParams, UiStateMap } from '@app/types/tauri-commands'
 // Types for mock return values - see src/types/tauri-commands.ts for full type definitions
 import type { RoutingPolicyPreview, GraphData, TrafficTimeline, ProviderFeatureSupport, FeatureEndpointMatrix, InstallSourceInfo, RequestDedupeConfig } from '@app/types/tauri-commands'
 import type {
@@ -441,6 +443,7 @@ const engineCatalogFor = (instanceName: string): EmbeddedCatalogModel[] => {
 }
 
 const warnedCommands = new Set<string>()
+const mockUiState = new Map<string, unknown>()
 
 // Helper to generate a random ID
 const generateId = () => Math.random().toString(36).substring(2, 15)
@@ -1405,6 +1408,13 @@ function mockMcpAuth(config: any, serverId: string, existing?: any): any {
   return config
 }
 
+/** Whether a demo client's MCP permissions allow a server (Allow or Ask). */
+function mockMcpAccess(client: { mcp_permissions?: { global?: string; servers?: Record<string, string> } } | undefined, serverId: string): boolean {
+  const perms = client?.mcp_permissions
+  const state = perms?.servers?.[serverId] ?? perms?.global ?? 'off'
+  return state !== 'off'
+}
+
 const mockHandlers: Record<string, (args?: any) => unknown> = {
   ...mockReplay,
   // ============================================================================
@@ -1461,6 +1471,19 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
         ...(active ? { effective_value: routingPolicyIssue(policy) ?? 'routing' } : {}),
       }
     }
+    if (args?.feature === 'push_relay') {
+      const id = (c as unknown as { id: string }).id
+      const p = clientPush(id).permissions
+      const value = p.global ?? mockPushRelayConfig.default_permission
+      const overridden = p.global != null || Object.keys(p.servers ?? {}).length > 0 || Object.keys(p.events ?? {}).length > 0
+      return {
+        client_id: c.client_id,
+        client_name: c.name,
+        active: mockReceivesPush(p),
+        source: overridden ? 'override' as const : 'global' as const,
+        effective_value: value,
+      }
+    }
     return {
       client_id: c.client_id,
       client_name: c.name,
@@ -1495,6 +1518,8 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       sync_config: false,
       guardrails_active: false,
       json_repair_active: true,
+      push_permissions: {},
+      push_webhook_urls: [],
     }
     mockData.clients.push(newClient)
     toast.success(`Client "${args?.name}" created (demo)`)
@@ -1843,7 +1868,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       message: 'Run the command below in your terminal:',
       modified_files: [],
       backup_files: [],
-      terminal_command: 'ANTHROPIC_BASE_URL=http://127.0.0.1:3625 ANTHROPIC_API_KEY=lr_demo_secret claude --mcp-config \'{"mcpServers":{"localrouter":{"type":"http","url":"http://127.0.0.1:3625","headers":{"Authorization":"Bearer lr_demo_secret"}}}}\'',
+      terminal_command: 'ANTHROPIC_BASE_URL=http://127.0.0.1:3625 ANTHROPIC_API_KEY=lr_demo_secret claude --mcp-config \'{"mcpServers":{"localrouter":{"type":"stdio","command":"/Applications/LocalRouter.app/Contents/MacOS/LocalRouter","args":["--mcp-bridge","--client-id","claude-code"],"env":{"LOCALROUTER_CLIENT_SECRET":"lr_demo_secret"}}}}\' --dangerously-load-development-channels server:localrouter',
     }
   },
   'configure_app_permanent': (args): LaunchResult => {
@@ -3987,6 +4012,131 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       { name: `${skill?.name || 'skill'}_execute`, description: 'Execute the skill' },
     ]
   },
+  // ============================================================================
+  // Push Relay
+  // ============================================================================
+  'get_push_relay_config': (): PushRelayConfig => ({ ...mockPushRelayConfig }),
+  'update_push_relay_config': (args): PushRelayConfig => {
+    if (args?.defaultPermission !== undefined) mockPushRelayConfig.default_permission = args.defaultPermission
+    if (args?.channelMessagesPerMinute !== undefined) mockPushRelayConfig.channel_messages_per_minute = args.channelMessagesPerMinute
+    if (args?.historyRetentionHours !== undefined) mockPushRelayConfig.history_retention_hours = args.historyRetentionHours
+    if (args?.historyMaxEvents !== undefined) mockPushRelayConfig.history_max_events = args.historyMaxEvents
+    setTimeout(() => emit('clients-changed', {}), 10)
+    return { ...mockPushRelayConfig }
+  },
+  'list_push_sources': (): PushSourceInfo[] => mockPushSourcesFor(mockData.clients.map(c => ({ id: c.id, mcpAccess: (serverId: string) => mockMcpAccess(c, serverId) }))),
+  'get_mcp_server_push_status': (args): McpServerPushStatus => {
+    const serverId = String(args?.serverId ?? '')
+    const source = mockPushSourcesFor(mockData.clients.map(c => ({ id: c.id, mcpAccess: (id: string) => mockMcpAccess(c, id) })))
+      .find(s => s.server_id === serverId)
+    return mockPushStatusFor(serverId, source?.receiving_clients ?? 0)
+  },
+  'list_pending_push_approvals': (args): PendingPushApproval[] =>
+    mockPendingPushApprovals.filter(a => !args?.clientId || a.client_id === args.clientId),
+  'submit_push_approval': (args): number => {
+    const target = mockPendingPushApprovals.find(a => a.request_id === args?.requestId)
+    if (!target) throw `No held event ${args?.requestId}`
+    if (args?.action === 'allow_edited' && args?.editedData == null) throw 'allow_edited needs editedData'
+    // Type-wide answers release every held event of the type, like the relay does.
+    const typeWide = args?.action !== 'allow' && args?.action !== 'allow_edited' && args?.action !== 'deny'
+    const decided = mockPendingPushApprovals.filter(a =>
+      typeWide ? a.client_id === target.client_id && a.qualified_name === target.qualified_name : a === target)
+    for (const a of decided) mockPendingPushApprovals.splice(mockPendingPushApprovals.indexOf(a), 1)
+    for (const a of mockPendingPushApprovals) {
+      const sameType = mockPendingPushApprovals.filter(o => o.client_id === a.client_id && o.qualified_name === a.qualified_name)
+      a.position = sameType.indexOf(a)
+      a.pending_of_type = sameType.length - 1
+    }
+    setTimeout(() => emit('push-approvals-changed', {}), 10)
+    return decided.length
+  },
+  'send_push_test_event': (args): PushTestEventResult => {
+    const now = new Date().toISOString()
+    const event_id = `localrouter__test-${generateId()}`
+    const name = 'localrouter__test.event'
+    const data = args?.data ?? { message: args?.message || 'Test event from LocalRouter', sent_at: now }
+    // Like the relay: each target client's permission decides (Allow / Ask / Off)
+    const client = mockData.clients.find(c => c.id === args?.clientId || c.client_id === args?.clientId) ?? mockData.clients[0]
+    const p = clientPush(client.id).permissions
+    const permission = p.events?.['localrouter__test.event'] ?? p.servers?.['localrouter'] ?? p.global ?? mockPushRelayConfig.default_permission
+    if (permission === 'allow') {
+      window.dispatchEvent(new CustomEvent('localrouter-demo-push', { detail: { eventId: event_id, name, timestamp: now, data } }))
+    } else if (permission === 'ask') {
+      mockPendingPushApprovals.push({
+        request_id: `hold-${generateId()}`, client_id: client.id, client_name: client.name,
+        server_id: 'localrouter', server_name: 'localrouter', event_name: 'test.event',
+        qualified_name: name, event_id, ingress: 'test', received_at: now, data,
+        position: mockPendingPushApprovals.filter(a => a.client_id === client.id && a.qualified_name === name).length,
+        pending_of_type: 0, decided: false, firewall_request_id: null,
+      })
+      setTimeout(() => emit('push-approvals-changed', {}), 10)
+    }
+    return { event_id, name, client_ids: [client.id] }
+  },
+  'preview_push_channel_message': (args): PushChannelPreview => {
+    // Mirrors the relay's render::channel_content
+    const event = args?.event ?? {}
+    const name: string = event.name ?? ''
+    const slug = name.includes('__') ? name.split('__')[0] : name
+    const eventId: string = event.eventId ?? 'preview'
+    const data = event.data
+    const body = name.endsWith('__channel.message') && typeof data?.content === 'string'
+      ? data.content
+      : typeof data === 'string' ? data : JSON.stringify(data ?? null)
+    return { content: `[${slug}] ${name} (${eventId})\n${body}`, meta: { source: slug, event: name, event_id: eventId } }
+  },
+  'get_client_push_settings': (args): ClientPushSettings => {
+    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
+    const id = client?.id ?? args?.clientId
+    return mockClientPushSettings(id, (serverId) => mockMcpAccess(client, serverId))
+  },
+  'set_client_push_permission': (args) => {
+    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
+    const p = clientPush(client?.id ?? args?.clientId).permissions
+    const state = args?.state ?? null
+    if (args?.level === 'global') {
+      p.global = state
+    } else if (args?.level === 'server') {
+      p.servers = { ...(p.servers ?? {}) }
+      if (state) p.servers[args.serverId] = state
+      else delete p.servers[args.serverId]
+    } else if (args?.level === 'event') {
+      const key = `${args.serverId}__${args.eventName}`
+      p.events = { ...(p.events ?? {}) }
+      if (state) p.events[key] = state
+      else delete p.events[key]
+    }
+    setTimeout(() => emit('clients-changed', {}), 10)
+    return null
+  },
+  'remove_client_push_webhook_url': (args) => {
+    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
+    const p = clientPush(client?.id ?? args?.clientId)
+    p.webhook_urls = p.webhook_urls.filter(u => u !== args?.url)
+    setTimeout(() => emit('clients-changed', {}), 10)
+    return null
+  },
+  'get_claude_code_mcp_setup': (args): ClaudeCodeMcpSetup => {
+    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
+    const id = client?.id ?? args?.clientId
+    return {
+      transport: mockClaudeCodeTransport[id] ?? 'stdio_bridge',
+      config_path: `${mockData.homeDir}/.claude.json`,
+      launch_command: 'claude --dangerously-load-development-channels server:localrouter',
+      binary_path: '/Applications/LocalRouter.app/Contents/MacOS/LocalRouter',
+    }
+  },
+  'switch_claude_code_to_stdio_bridge': (args): LaunchResult => {
+    const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
+    mockClaudeCodeTransport[client?.id ?? args?.clientId] = 'stdio_bridge'
+    return {
+      success: true,
+      message: `Switched LocalRouter in ${mockData.homeDir}/.claude.json to the STDIO bridge. Restart Claude Code with the command below to receive pushed events.`,
+      modified_files: [`${mockData.homeDir}/.claude.json`],
+      backup_files: [`${mockData.homeDir}/.claude.json.bak`],
+      terminal_command: 'claude --dangerously-load-development-channels server:localrouter',
+    }
+  },
   'get_context_management_config': () => ({
     catalog_compression: true,
     catalog_threshold_bytes: 50000,
@@ -5558,6 +5708,17 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'set_monitor_max_bytes': () => null,
   'set_monitor_intercept_rule': () => null,
   'get_monitor_intercept_rule': () => null,
+
+  // ============================================================================
+  // Durable UI state (in memory; the page mirrors it to localStorage)
+  // ============================================================================
+  'get_ui_state': (): UiStateMap => Object.fromEntries(mockUiState),
+  'set_ui_state': (args): null => {
+    const { key, value } = args as unknown as SetUiStateParams
+    if (value === null) mockUiState.delete(key)
+    else mockUiState.set(key, value)
+    return null
+  },
 
   // ============================================================================
   // App Info & System

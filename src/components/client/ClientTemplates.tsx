@@ -117,6 +117,13 @@ export interface ClientTemplate {
   /** Ports involved in the wrap: what apps use, and where the provider moves. */
   reverseProxy?: { listenPort: number; upstreamPort: number }
   binaryNames?: string[]
+  /**
+   * MCP goes through the STDIO bridge by default so pushed events arrive as
+   * Claude Code Channels. Claude Code accepts Channels only from a stdio
+   * server using the pre-2026-07-28 handshake; over HTTP LocalRouter serves
+   * tools but cannot wake Claude. HTTP stays available as tools only.
+   */
+  pushChannels?: boolean
 }
 
 export const CLIENT_TEMPLATES: ClientTemplate[] = [
@@ -138,6 +145,7 @@ export const CLIENT_TEMPLATES: ClientTemplate[] = [
     supportsLlm: true,
     supportsProxy: true,
     binaryNames: ['claude'],
+    pushChannels: true,
   },
   {
     id: 'codex',

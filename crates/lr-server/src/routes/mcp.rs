@@ -195,8 +195,14 @@ pub async fn mcp_gateway_get_handler(
         state.mcp_gateway.has_skill_support()
     );
 
-    // Register with SSE connection manager using session_id (not client_id)
-    let mut response_rx = state.sse_connection_manager.register(&session_id);
+    // A Streamable HTTP client's GET stream (e.g. the STDIO bridge) is
+    // registered under its gateway session key, so server-initiated requests
+    // (sampling, elicitation) addressed to that session reach it. Legacy SSE
+    // clients get a fresh per-connection id.
+    let connection_key = streamable_key.clone().unwrap_or_else(|| session_id.clone());
+    let (mut response_rx, connection_sender) = state
+        .sse_connection_manager
+        .register_tracked(&connection_key);
 
     // Subscribe to notification broadcast
     let mut notification_rx = state.mcp_notification_broadcast.subscribe();
@@ -206,6 +212,8 @@ pub async fn mcp_gateway_get_handler(
 
     // Clone for cleanup
     let session_id_cleanup = session_id.clone();
+    let connection_key_cleanup = connection_key.clone();
+    let is_streamable = streamable_key.is_some();
     let sse_manager = state.sse_connection_manager.clone();
     let gateway_for_cleanup = state.mcp_gateway.clone();
 
@@ -213,8 +221,8 @@ pub async fn mcp_gateway_get_handler(
     let sse_stream = async_stream::stream! {
         // Send endpoint event first (MCP SSE transport spec)
         // Include sessionId in the endpoint URL so POST requests are routed back to this connection
-        let endpoint = format!("/?sessionId={}", session_id);
         tracing::debug!("SSE stream started: client={}, session={}", &client_id[..8.min(client_id.len())], &session_id[..8]);
+        let endpoint = format!("/?sessionId={}", session_id);
         yield Ok::<_, Infallible>(Event::default().event("endpoint").data(endpoint));
 
         loop {
@@ -364,10 +372,13 @@ pub async fn mcp_gateway_get_handler(
             }
         }
 
-        // Cleanup: terminate gateway session (closes per-session transports)
-        // and unregister from SSE manager when stream ends
-        let _ = gateway_for_cleanup.terminate_session(&session_id_cleanup).await;
-        sse_manager.unregister(&session_id_cleanup);
+        // Cleanup: a legacy SSE connection owns its gateway session, so end
+        // it (closing per-session transports). A Streamable HTTP session
+        // outlives its GET stream, which the client may reopen.
+        if !is_streamable {
+            let _ = gateway_for_cleanup.terminate_session(&session_id_cleanup).await;
+        }
+        sse_manager.unregister_if_current(&connection_key_cleanup, &connection_sender);
         tracing::debug!("SSE stream ended for session {}", session_id_cleanup);
     };
 
@@ -463,6 +474,11 @@ pub async fn mcp_gateway_handler(
     let session_id = query.0.session_id;
     // Connection key for SSE routing: session_id if available, otherwise client_id
     let connection_key = session_id.as_deref().unwrap_or(&client_id).to_string();
+    let streamable_key = headers
+        .get(lr_mcp::gateway::types::MCP_SESSION_ID_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .filter(|id| lr_mcp::gateway::types::is_valid_session_id(id))
+        .map(|id| lr_mcp::gateway::types::streamable_session_key(&client_id, id));
 
     // Detect whether this is a JSON-RPC response (from client answering a server-initiated
     // request, e.g. passthrough sampling/elicitation) or a normal JSON-RPC request.
@@ -493,9 +509,16 @@ pub async fn mcp_gateway_handler(
         // Route the response to the pending server-initiated request. Either
         // way the answer is 202 with an empty body (Streamable HTTP): the
         // response may be for a request that already timed out.
+        // A Streamable HTTP client answers on the session its GET stream is
+        // registered under. Only this branch uses that key: ordinary requests
+        // keep `connection_key`, which decides between inline and SSE answers.
+        let response_key = match (&session_id, &streamable_key) {
+            (None, Some(key)) => key.clone(),
+            _ => connection_key.clone(),
+        };
         if !state
             .sse_connection_manager
-            .resolve_server_request(&connection_key, response)
+            .resolve_server_request(&response_key, response)
         {
             tracing::warn!(
                 "No pending server request matched for response id={} on connection={}",
@@ -638,6 +661,28 @@ pub async fn mcp_gateway_handler(
 
     // Record client activity for connection graph
     state.record_client_activity(&client_id);
+
+    // The STDIO bridge identifies itself on every request; the Push Relay
+    // offers Claude Code Channels only to its sessions.
+    let is_stdio_bridge = headers
+        .get(lr_mcp::gateway::push_relay::STDIO_BRIDGE_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| {
+            v.trim()
+                .eq_ignore_ascii_case(lr_mcp::gateway::push_relay::STDIO_BRIDGE_HEADER_VALUE)
+        });
+    state
+        .mcp_gateway
+        .set_stdio_bridge_session(session_id.as_deref().unwrap_or(&client_id), is_stdio_bridge);
+    // A session opts into the Push Relay's built-in test source the same way
+    // (Try it out sends it); no other session sees that source.
+    let push_test = headers
+        .get(lr_mcp::gateway::push_relay::PUSH_TEST_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.trim() == lr_mcp::gateway::push_relay::PUSH_TEST_HEADER_VALUE);
+    state
+        .mcp_gateway
+        .set_push_test_session(session_id.as_deref().unwrap_or(&client_id), push_test);
 
     // Check for headers used by Try it out UI
     // Only applies to internal-test client for security - external clients use their config
@@ -1058,6 +1103,26 @@ pub async fn mcp_gateway_handler(
         }
     }
 
+    // A downstream `events/stream` (Push Relay) lives until the client
+    // cancels it: answer with an SSE body carrying its notifications and,
+    // last, the relay's result. Clients with a legacy SSE connection get the
+    // same through that connection below.
+    if request.method == "events/stream"
+        && request.id.is_some()
+        && state.mcp_gateway.push_relay().is_some()
+        && !state.sse_connection_manager.has_connection(&connection_key)
+    {
+        return events_stream_response(
+            state,
+            client_id,
+            client,
+            session_id,
+            allowed_servers,
+            roots,
+            request,
+        );
+    }
+
     // Handle request via gateway
     // For SSE clients, process asynchronously and return 202 immediately.
     // This prevents the MCP SDK's request timeout from firing while the gateway
@@ -1091,7 +1156,7 @@ pub async fn mcp_gateway_handler(
             // popup, so it is not cut off here.
             let gateway_timeout = tokio::time::Duration::from_secs(match request_method.as_str() {
                 "initialize" => 45,
-                "tools/call" => 24 * 60 * 60,
+                "tools/call" | "events/stream" => 24 * 60 * 60,
                 _ => 15,
             });
             let result = tokio::time::timeout(
@@ -1116,6 +1181,7 @@ pub async fn mcp_gateway_handler(
                     client.memory_enabled,
                     client.memory_folder.clone(),
                     client.effective_client_mode(),
+                    lr_config::ClientPushSettings::from_client(&client),
                     request,
                     None, // monitor_session_id
                 ),
@@ -1223,6 +1289,7 @@ pub async fn mcp_gateway_handler(
                 client.memory_enabled,
                 client.memory_folder.clone(),
                 client.effective_client_mode(),
+                lr_config::ClientPushSettings::from_client(&client),
                 request,
                 None, // monitor_session_id
             )
@@ -1392,6 +1459,7 @@ async fn run_stateless_with_mrtr(
                     client_for_task.memory_enabled,
                     client_for_task.memory_folder.clone(),
                     client_for_task.effective_client_mode(),
+                    lr_config::ClientPushSettings::from_client(&client_for_task),
                     request,
                     None, // monitor_session_id
                 )
@@ -1537,15 +1605,45 @@ const ALL_SUBSCRIPTION_TYPES: &[&str] = &[
     "resourceSubscriptions",
 ];
 
+/// The opt-ins of a `subscriptions/listen` request this gateway honours: the
+/// SEP-2575 types, plus any the Push Relay offers this client (e.g. events),
+/// each requested with `true`.
+fn accepted_opt_ins(
+    requested: serde_json::Map<String, serde_json::Value>,
+    push_opt_ins: &[lr_mcp::gateway::ListenOptIn],
+) -> serde_json::Map<String, serde_json::Value> {
+    requested
+        .into_iter()
+        .filter(|(key, value)| {
+            if ALL_SUBSCRIPTION_TYPES.contains(&key.as_str()) {
+                if key == "resourceSubscriptions" {
+                    value.is_array()
+                } else {
+                    value == &serde_json::Value::Bool(true)
+                }
+            } else {
+                push_opt_ins.iter().any(|o| &o.opt_in == key)
+                    && value == &serde_json::Value::Bool(true)
+            }
+        })
+        .collect()
+}
+
 /// Transform a backend notification for delivery on a `subscriptions/listen`
 /// stream: filter by opted-in type and subscribed resource URI, and tag with the
 /// subscription id. Returns `None` when the notification isn't subscribed.
 fn build_subscription_notification(
     notification: &lr_mcp::protocol::JsonRpcNotification,
     notifications: &serde_json::Map<String, serde_json::Value>,
+    push_opt_ins: &[lr_mcp::gateway::ListenOptIn],
     subscription_id: &serde_json::Value,
 ) -> Option<lr_mcp::protocol::JsonRpcNotification> {
-    let sub_type = subscription_type_for_method(&notification.method)?;
+    let sub_type = subscription_type_for_method(&notification.method).or_else(|| {
+        push_opt_ins
+            .iter()
+            .find(|o| o.matches(&notification.method))
+            .map(|o| o.opt_in.as_str())
+    })?;
     if sub_type != "resourceSubscriptions"
         && notifications.get(sub_type).and_then(|v| v.as_bool()) != Some(true)
     {
@@ -1598,24 +1696,21 @@ fn subscriptions_listen_response(
     allowed_servers: Vec<String>,
     request: JsonRpcRequest,
 ) -> Response {
-    let notifications = request
+    let requested = request
         .params
         .as_ref()
         .and_then(|p| p.get("notifications"))
         .and_then(|value| value.as_object())
         .cloned()
         .unwrap_or_default();
-    let notifications: serde_json::Map<String, serde_json::Value> = notifications
-        .into_iter()
-        .filter(|(key, value)| {
-            ALL_SUBSCRIPTION_TYPES.contains(&key.as_str())
-                && if key == "resourceSubscriptions" {
-                    value.is_array()
-                } else {
-                    value == &serde_json::Value::Bool(true)
-                }
-        })
-        .collect();
+    // Push notifications pass only when the Push Relay offers them to this
+    // client and the client opted in.
+    let push_opt_ins = state
+        .mcp_gateway
+        .push_relay()
+        .map(|relay| relay.listen_opt_ins(client_id, session_key))
+        .unwrap_or_default();
+    let notifications = accepted_opt_ins(requested, &push_opt_ins);
     let subscription_id = request.id.clone().unwrap_or(serde_json::Value::Null);
     let mut notification_rx = state.mcp_notification_broadcast.subscribe();
     let client_id = client_id.to_string();
@@ -1653,6 +1748,7 @@ fn subscriptions_listen_response(
                     if let Some(tagged) = build_subscription_notification(
                         &notification,
                         &notifications,
+                        &push_opt_ins,
                         &subscription_id,
                     ) {
                         if let Ok(json) = serde_json::to_string(&tagged) {
@@ -1669,6 +1765,107 @@ fn subscriptions_listen_response(
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
+        }
+    };
+
+    Sse::new(sse_stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
+}
+
+/// Aborts a spawned task when dropped (the response body went away).
+struct AbortOnDrop(tokio::task::AbortHandle);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Answer a downstream `events/stream` with a long-lived SSE body: every
+/// notification the Push Relay delivers for this request, then its result.
+/// Dropping the body (the client went away) ends the stream.
+#[allow(clippy::too_many_arguments)]
+fn events_stream_response(
+    state: AppState,
+    client_id: String,
+    client: lr_config::Client,
+    session_id: Option<String>,
+    allowed_servers: Vec<String>,
+    roots: Vec<Root>,
+    request: JsonRpcRequest,
+) -> Response {
+    let session_key = session_id.clone().unwrap_or_else(|| client_id.clone());
+    let request_id = request.id.clone().unwrap_or(serde_json::Value::Null);
+    let sinks = state.mcp_gateway.push_stream_sinks();
+    let (mut notifications, sink_guard) = sinks.register(
+        &session_key,
+        &request_id,
+        lr_mcp::transport::rpc_stream::DEFAULT_RPC_STREAM_BUFFER,
+    );
+    let gateway = state.mcp_gateway.clone();
+    let task = tokio::spawn(async move {
+        gateway
+            .handle_request_with_skills(
+                &client_id,
+                session_id.as_deref(),
+                allowed_servers,
+                roots,
+                client.mcp_permissions.clone(),
+                client.skills_permissions.clone(),
+                client.name.clone(),
+                client.marketplace_permission.clone(),
+                client.coding_agent_permission.clone(),
+                client.coding_agent_type,
+                Some(lr_config::ContextManagementOverrides {
+                    context_management_enabled: client.context_management_enabled,
+                    catalog_compression_enabled: client.catalog_compression_enabled,
+                }),
+                client.mcp_sampling_permission.clone(),
+                client.mcp_elicitation_permission.clone(),
+                client.memory_enabled,
+                client.memory_folder.clone(),
+                client.effective_client_mode(),
+                lr_config::ClientPushSettings::from_client(&client),
+                request,
+                None,
+            )
+            .await
+    });
+    let abort = AbortOnDrop(task.abort_handle());
+
+    let sse_stream = async_stream::stream! {
+        let _sink_guard = sink_guard;
+        let _abort = abort;
+        let mut task = task;
+        let result = loop {
+            tokio::select! {
+                Some(notification) = notifications.recv() => {
+                    if let Ok(json) = serde_json::to_string(&notification) {
+                        yield Ok::<_, Infallible>(Event::default().event("message").data(json));
+                    }
+                }
+                joined = &mut task => break joined,
+            }
+        };
+        while let Ok(notification) = notifications.try_recv() {
+            if let Ok(json) = serde_json::to_string(&notification) {
+                yield Ok::<_, Infallible>(Event::default().event("message").data(json));
+            }
+        }
+        let response = match result {
+            Ok(Ok(response)) => response,
+            Ok(Err(err)) => JsonRpcResponse::error(
+                request_id.clone(),
+                lr_mcp::protocol::JsonRpcError::internal_error(format!("Gateway error: {err}")),
+            ),
+            Err(_) => JsonRpcResponse::error(
+                request_id.clone(),
+                lr_mcp::protocol::JsonRpcError::internal_error("events/stream ended unexpectedly"),
+            ),
+        };
+        if let Ok(json) = serde_json::to_string(&response) {
+            yield Ok::<_, Infallible>(Event::default().event("message").data(json));
         }
     };
 
@@ -1879,8 +2076,9 @@ mod tests {
     #[test]
     fn test_subscription_notification_tagged_and_delivered() {
         let n = notification("notifications/tools/list_changed", serde_json::json!({}));
-        let tagged = build_subscription_notification(&n, &all_types(), &serde_json::json!(123))
-            .expect("subscribed type is delivered");
+        let tagged =
+            build_subscription_notification(&n, &all_types(), &[], &serde_json::json!(123))
+                .expect("subscribed type is delivered");
 
         assert_eq!(tagged.method, "notifications/tools/list_changed");
         let meta = &tagged.params.unwrap()["_meta"];
@@ -1895,10 +2093,13 @@ mod tests {
             .unwrap()
             .clone();
 
-        assert!(
-            build_subscription_notification(&n, &only_resources, &serde_json::json!("sub"))
-                .is_none()
-        );
+        assert!(build_subscription_notification(
+            &n,
+            &only_resources,
+            &[],
+            &serde_json::json!("sub")
+        )
+        .is_none());
     }
 
     #[test]
@@ -1907,10 +2108,13 @@ mod tests {
         // stream, never the subscriptions/listen stream.
         for method in ["notifications/progress", "notifications/message"] {
             let n = notification(method, serde_json::json!({}));
-            assert!(
-                build_subscription_notification(&n, &all_types(), &serde_json::json!("sub"))
-                    .is_none()
-            );
+            assert!(build_subscription_notification(
+                &n,
+                &all_types(),
+                &[],
+                &serde_json::json!("sub")
+            )
+            .is_none());
         }
     }
 
@@ -1920,11 +2124,14 @@ mod tests {
             "notifications/resources/updated",
             serde_json::json!({"uri":"file:///other.txt"}),
         );
-        assert!(build_subscription_notification(&n, &all_types(), &serde_json::json!(1)).is_none());
+        assert!(
+            build_subscription_notification(&n, &all_types(), &[], &serde_json::json!(1)).is_none()
+        );
         let n = notification("notifications/tools/list_changed", serde_json::json!({}));
         assert!(build_subscription_notification(
             &n,
             &serde_json::Map::new(),
+            &[],
             &serde_json::json!(1)
         )
         .is_none());
@@ -1932,7 +2139,70 @@ mod tests {
             .as_object()
             .unwrap()
             .clone();
-        assert!(build_subscription_notification(&n, &disabled, &serde_json::json!(1)).is_none());
+        assert!(
+            build_subscription_notification(&n, &disabled, &[], &serde_json::json!(1)).is_none()
+        );
+    }
+
+    fn push_opt_ins() -> Vec<lr_mcp::gateway::ListenOptIn> {
+        vec![
+            lr_mcp::gateway::ListenOptIn {
+                opt_in: "events".into(),
+                method_prefix: "notifications/events/".into(),
+            },
+            lr_mcp::gateway::ListenOptIn {
+                opt_in: "claudeChannel".into(),
+                method_prefix: "notifications/claude/channel".into(),
+            },
+        ]
+    }
+
+    #[test]
+    fn push_notifications_need_the_relay_and_an_opt_in() {
+        let requested = serde_json::json!({
+            "toolsListChanged": true, "events": true, "claudeChannel": false, "bogus": true
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let event = notification("notifications/events/event", serde_json::json!({}));
+        let channel = notification(
+            "notifications/claude/channel",
+            serde_json::json!({"content": "hi"}),
+        );
+
+        // Without the relay, push opt-ins are dropped and nothing passes
+        let without_relay = accepted_opt_ins(requested.clone(), &[]);
+        assert!(without_relay.contains_key("toolsListChanged"));
+        assert!(!without_relay.contains_key("events"));
+        assert!(build_subscription_notification(
+            &event,
+            &without_relay,
+            &[],
+            &serde_json::json!(1)
+        )
+        .is_none());
+
+        // With it, only what the client opted into passes
+        let opt_ins = push_opt_ins();
+        let accepted = accepted_opt_ins(requested, &opt_ins);
+        assert!(accepted.contains_key("events"));
+        assert!(!accepted.contains_key("claudeChannel"));
+        assert!(!accepted.contains_key("bogus"));
+        let tagged =
+            build_subscription_notification(&event, &accepted, &opt_ins, &serde_json::json!(9))
+                .expect("opted-in events pass");
+        assert_eq!(
+            tagged.params.unwrap()["_meta"]["io.modelcontextprotocol/subscriptionId"],
+            9
+        );
+        assert!(build_subscription_notification(
+            &channel,
+            &accepted,
+            &opt_ins,
+            &serde_json::json!(9)
+        )
+        .is_none());
     }
 
     #[test]
@@ -1942,7 +2212,8 @@ mod tests {
             serde_json::json!({ "uri": "file:///a.txt" }),
         );
         let tagged =
-            build_subscription_notification(&n, &all_types(), &serde_json::json!("sub")).unwrap();
+            build_subscription_notification(&n, &all_types(), &[], &serde_json::json!("sub"))
+                .unwrap();
         let params = tagged.params.unwrap();
         // Delivered under the URI resources/list exposed and the client subscribed to
         assert_eq!(params["uri"], "file:///a.txt");

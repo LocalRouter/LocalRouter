@@ -14,6 +14,7 @@ mod gateway_prompts;
 mod gateway_resources;
 mod gateway_tools;
 mod merger;
+pub mod push_relay;
 pub mod router;
 pub mod sampling;
 pub mod sampling_approval;
@@ -38,4 +39,8 @@ pub use merger::{
     compute_item_definition_sizes, format_prompt_as_markdown, format_resource_as_markdown,
     format_tool_as_markdown, InstructionsContext,
 };
-pub use types::GatewayConfig;
+pub use push_relay::{
+    CapabilitySnapshotPersister, ListenOptIn, PushAdvertisement, PushMethod, PushRelayService,
+    PushRelaySessionContext, RememberedPushSource, UpstreamPushNotification,
+};
+pub use types::{CapabilityProviders, GatewayConfig};

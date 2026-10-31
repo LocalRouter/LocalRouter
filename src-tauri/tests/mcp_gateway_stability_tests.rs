@@ -96,6 +96,7 @@ fn http_server(id: &str, name: &str, url: String, enabled: bool) -> McpServerCon
         oauth_config: None,
         enabled,
         created_at: Utc::now(),
+        capability_snapshot: None,
     }
 }
 
@@ -220,6 +221,7 @@ async fn send_result(
             None,
             None,
             lr_config::ClientMode::default(),
+            lr_config::ClientPushSettings::default(),
             JsonRpcRequest::new(Some(json!(1)), method.to_string(), params),
             None,
         )
@@ -1154,6 +1156,7 @@ async fn skill_read_as(gateway: &McpGateway, session: &str, mode: lr_config::Cli
             None,
             None,
             mode,
+            lr_config::ClientPushSettings::default(),
             JsonRpcRequest::new(
                 Some(json!(1)),
                 "tools/call".to_string(),
@@ -1264,6 +1267,7 @@ async fn skill_read_does_not_initialize_unavailable_remote_backends() {
             None,
             None,
             lr_config::ClientMode::default(),
+            lr_config::ClientPushSettings::default(),
             JsonRpcRequest::with_id(
                 1,
                 "tools/call".into(),
@@ -1359,6 +1363,7 @@ async fn send_with_skills(
             None,
             None,
             lr_config::ClientMode::default(),
+            lr_config::ClientPushSettings::default(),
             JsonRpcRequest::new(Some(json!(1)), method.to_string(), params),
             None,
         )

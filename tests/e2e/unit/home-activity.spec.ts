@@ -83,6 +83,8 @@ test('in-flight request classification excludes internal steps and duplicate hop
   ]
   expect(items.filter(isRequest).map((item) => item.id)).toEqual(['a', 'mcp'])
   expect(isRequest(event({ event_type: 'mcp_sampling' }))).toBe(true)
+  // A held push event can wait indefinitely; it is listed, not counted in flight
+  expect(isRequest(event({ event_type: 'mcp_push_event', status: 'pending' }))).toBe(false)
 })
 
 test('x-axis ticks land on round local times at any bucket alignment', () => {

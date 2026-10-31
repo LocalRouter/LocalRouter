@@ -2,7 +2,9 @@ import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPoi
 import { GripVertical, PanelBottom, PanelRight, X } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { cn } from '@/lib/utils'
+import { readUiState, usePersistentUiState, writeUiState } from '@/hooks/usePersistentUiState'
 import { dockTarget, type DetailDock } from './dock'
+import { decodeDetailSize, decodeDock } from './section-state'
 
 export type { DetailDock }
 
@@ -11,21 +13,8 @@ const DOCK_KEY = 'monitor.detailDock'
 const SIZE_KEY = 'monitor.detailSize'
 const DEFAULT_SIZE = 60
 
-function loadDock(): DetailDock {
-  try {
-    return localStorage.getItem(DOCK_KEY) === 'right' ? 'right' : 'bottom'
-  } catch {
-    return 'bottom'
-  }
-}
-
 function loadSize(dock: DetailDock): number {
-  try {
-    const value = Number(localStorage.getItem(`${SIZE_KEY}.${dock}`))
-    return Number.isFinite(value) && value >= 20 && value <= 85 ? value : DEFAULT_SIZE
-  } catch {
-    return DEFAULT_SIZE
-  }
+  return readUiState(`${SIZE_KEY}.${dock}`, DEFAULT_SIZE, decodeDetailSize)
 }
 
 /**
@@ -34,27 +23,16 @@ function loadSize(dock: DetailDock): number {
  * the detail there on release.
  */
 export function useDetailDock(bodyRef: RefObject<HTMLElement | null>) {
-  const [dock, setDockState] = useState<DetailDock>(loadDock)
+  const [dock, setDockState] = usePersistentUiState<DetailDock>(DOCK_KEY, 'bottom', decodeDock)
   const [drag, setDrag] = useState<{ target: DetailDock } | null>(null)
   const cleanupRef = useRef<(() => void) | null>(null)
 
-  const setDock = useCallback((next: DetailDock) => {
-    setDockState(next)
-    try {
-      localStorage.setItem(DOCK_KEY, next)
-    } catch {
-      // Storage is optional.
-    }
-  }, [])
+  const setDock = useCallback((next: DetailDock) => setDockState(next), [setDockState])
 
   const saveLayout = useCallback((layout: { [id: string]: number }) => {
     const size = layout.detail
     if (size == null) return
-    try {
-      localStorage.setItem(`${SIZE_KEY}.${dock}`, String(Math.round(size)))
-    } catch {
-      // Storage is optional.
-    }
+    writeUiState(`${SIZE_KEY}.${dock}`, Math.round(size))
   }, [dock])
 
   const startDrag = useCallback((event: ReactPointerEvent) => {

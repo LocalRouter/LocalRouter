@@ -89,6 +89,7 @@ use utoipa::OpenApi;
         crate::routes::mcp::mcp_gateway_handler,
         crate::routes::mcp::mcp_gateway_delete_handler,
         crate::routes::mcp::elicitation_response_handler,
+        crate::routes::events_watch::events_watch_handler,
 
         // OAuth endpoints
         crate::routes::oauth::token_endpoint,

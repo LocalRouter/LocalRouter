@@ -14,7 +14,8 @@ interface PermissionStateButtonProps {
   allowedStates?: PermissionState[]
 }
 
-const stateConfig: Record<PermissionState, { label: string; activeClass: string; rollupClass: string }> = {
+/** Labels and colours of each state, shared with the Push Relay selectors. */
+export const permissionStateConfig: Record<PermissionState, { label: string; activeClass: string; rollupClass: string }> = {
   allow: {
     label: "Allow",
     activeClass: "bg-emerald-500 text-white",
@@ -50,7 +51,7 @@ export function PermissionStateButton({
       )}
     >
       {states.map((state) => {
-        const config = stateConfig[state]
+        const config = permissionStateConfig[state]
         const isActive = value === state
         const isChildRollup = childRollupStates?.has(state) && !isActive
 

@@ -181,6 +181,42 @@ impl SseConnectionManager {
         rx
     }
 
+    /// Register a connection and keep a handle that identifies it, so a
+    /// stream that was replaced by a reconnect can leave its successor alone
+    /// (see [`Self::unregister_if_current`]).
+    pub fn register_tracked(
+        &self,
+        key: &str,
+    ) -> (
+        tokio::sync::mpsc::UnboundedReceiver<SseMessage>,
+        tokio::sync::mpsc::UnboundedSender<SseMessage>,
+    ) {
+        let rx = self.register(key);
+        let tx = self
+            .connections
+            .get(key)
+            .map(|tx| tx.clone())
+            .expect("connection registered above");
+        (rx, tx)
+    }
+
+    /// Unregister `key` only while it is still the connection `sender`
+    /// belongs to.
+    pub fn unregister_if_current(
+        &self,
+        key: &str,
+        sender: &tokio::sync::mpsc::UnboundedSender<SseMessage>,
+    ) {
+        if self
+            .connections
+            .remove_if(key, |_, current| current.same_channel(sender))
+            .is_some()
+        {
+            tracing::debug!("Unregistered SSE connection {}", key);
+            self.emit_event("sse-connection-closed", key.to_string());
+        }
+    }
+
     /// Unregister an SSE connection
     pub fn unregister(&self, client_id: &str) {
         if self.connections.remove(client_id).is_some() {
@@ -883,6 +919,9 @@ pub struct AppState {
 
     /// In-memory monitor event store for real-time traffic inspection
     pub monitor_store: Arc<lr_monitor::MonitorEventStore>,
+
+    /// Push Relay (set up by [`Self::with_mcp`]).
+    pub push_relay: Option<Arc<lr_mcp::gateway::push_relay::PushRelay>>,
 }
 
 impl AppState {
@@ -1000,6 +1039,7 @@ impl AppState {
                 lr_mcp::gateway::sampling_approval::SamplingPassthroughManager::new(120),
             ),
             monitor_store: Arc::new(lr_monitor::MonitorEventStore::new(1000)),
+            push_relay: None,
         };
 
         let capture_config = result.config_manager.clone();
@@ -1064,6 +1104,52 @@ impl AppState {
 
         // Share the same approval manager between gateway and server
         mcp_gateway.set_sampling_approval_manager(self.sampling_approval_manager.clone());
+
+        // Push Relay settings, and remembered upstream capabilities written
+        // back to the config as derived state (no config-changed event)
+        mcp_gateway.update_push_relay_config(&self.config_manager.get().push_relay);
+        let snapshot_config = self.config_manager.clone();
+        mcp_gateway.set_capability_snapshot_persister(Arc::new(move |snapshots| {
+            let config_manager = snapshot_config.clone();
+            Box::pin(async move {
+                match config_manager.record_capability_snapshots(&snapshots) {
+                    Ok(true) => {
+                        if let Err(e) = config_manager.save().await {
+                            tracing::warn!("Failed to save remembered MCP capabilities: {}", e);
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(e) => {
+                        tracing::warn!("Failed to record remembered MCP capabilities: {}", e)
+                    }
+                }
+            })
+        }));
+
+        // Push Relay: relays upstream push to clients. It reads clients from
+        // the client manager and writes permanent decisions to the config.
+        let client_manager = self.client_manager.clone();
+        let push_relay = lr_mcp::gateway::push_relay::PushRelay::new(
+            mcp_gateway.as_ref().clone(),
+            self.config_manager.get().push_relay,
+            Arc::new(move |client_id| client_manager.get_client(client_id)),
+        );
+        let persist_config = self.config_manager.clone();
+        push_relay.set_persister(Arc::new(move |client_id, change| {
+            let config_manager = persist_config.clone();
+            Box::pin(async move {
+                config_manager
+                    .update(|cfg| {
+                        if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
+                            apply_push_config_change(client, &change);
+                        }
+                    })
+                    .map_err(|e| e.to_string())?;
+                config_manager.save().await.map_err(|e| e.to_string())
+            })
+        }));
+        mcp_gateway.set_push_relay(push_relay.clone());
+        mcp_gateway.register_virtual_server(push_relay.tools_server());
 
         // Wire passthrough: forward server→client requests via SSE connection manager
         let sse_mgr = self.sse_connection_manager.clone();
@@ -1144,7 +1230,29 @@ impl AppState {
         Self {
             mcp_server_manager,
             mcp_gateway,
+            push_relay: Some(push_relay),
             ..self
+        }
+    }
+
+    /// The one path by which saved settings reach the Push Relay. Call after
+    /// any configuration write: global `push_relay` settings, a client's push
+    /// permissions or fallback mode, and MCP permission changes (which can
+    /// newly hide a server, so its events must stop). Changed global settings
+    /// are applied; either way held events are re-evaluated against the new
+    /// permissions, list changes are announced and streams that became
+    /// blocked end. Idempotent.
+    pub fn sync_push_relay_settings(&self) {
+        let config = self.config_manager.get().push_relay;
+        match &self.push_relay {
+            Some(relay) => {
+                if relay.config() != config {
+                    relay.update_config(&config);
+                } else {
+                    relay.notify_clients_changed();
+                }
+            }
+            None => self.mcp_gateway.update_push_relay_config(&config),
         }
     }
 
@@ -1478,6 +1586,24 @@ impl ModelSelection {
                 // For now, allow all models (will be handled by router logic)
                 true
             }
+        }
+    }
+}
+
+/// Write a Push Relay decision into a client's configuration.
+pub fn apply_push_config_change(
+    client: &mut lr_config::Client,
+    change: &lr_mcp::gateway::push_relay::PushConfigChange,
+) {
+    use lr_mcp::gateway::push_relay::PushConfigChange;
+    match change {
+        PushConfigChange::EventPermission {
+            server_id,
+            event_name,
+            permission,
+        } => client.set_push_event_permission(server_id, event_name, Some(*permission)),
+        PushConfigChange::WebhookUrl { url } => {
+            client.approve_push_webhook_url(url);
         }
     }
 }

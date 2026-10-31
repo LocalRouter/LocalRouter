@@ -5,8 +5,9 @@ import { Zap, ArrowRight, CheckCircle2, XCircle, Download } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Switch } from "@/components/ui/Toggle"
-import type { JsonRepairConfig, PromptCompressionConfig, CompressionStatus } from "@/types/tauri-commands"
+import type { JsonRepairConfig, PromptCompressionConfig, CompressionStatus, PushPermission, PushRelayConfig, UpdatePushRelayConfigParams } from "@/types/tauri-commands"
 import { InfoTooltip } from "@/components/ui/info-tooltip"
+import { PermissionStateButton } from "@/components/permissions/PermissionStateButton"
 import { OptimizeDiagram } from "./OptimizeDiagram"
 import { FEATURES } from "@/constants/features"
 
@@ -22,6 +23,8 @@ export function OptimizeOverviewView({ onTabChange }: OptimizeOverviewProps) {
   const [compressionStatus, setCompressionStatus] = useState<CompressionStatus | null>(null)
   const [savingJsonRepair, setSavingJsonRepair] = useState(false)
   const [savingCompression, setSavingCompression] = useState(false)
+  const [pushRelayConfig, setPushRelayConfig] = useState<PushRelayConfig | null>(null)
+  const [savingPushRelay, setSavingPushRelay] = useState(false)
 
   const loadJsonRepairConfig = useCallback(async () => {
     try {
@@ -41,6 +44,14 @@ export function OptimizeOverviewView({ onTabChange }: OptimizeOverviewProps) {
     }
   }, [])
 
+  const loadPushRelayConfig = useCallback(async () => {
+    try {
+      setPushRelayConfig(await invoke<PushRelayConfig>("get_push_relay_config"))
+    } catch (err) {
+      console.error("Failed to load Push Relay config:", err)
+    }
+  }, [])
+
   const loadCompressionStatus = useCallback(async () => {
     try {
       const data = await invoke<CompressionStatus>("get_compression_status")
@@ -54,16 +65,18 @@ export function OptimizeOverviewView({ onTabChange }: OptimizeOverviewProps) {
     loadJsonRepairConfig()
     loadCompressionConfig()
     loadCompressionStatus()
+    loadPushRelayConfig()
 
     const l = listenSafe('config-changed', () => {
       loadJsonRepairConfig()
       loadCompressionConfig()
+      loadPushRelayConfig()
     })
 
     return () => {
       l.cleanup()
     }
-  }, [loadJsonRepairConfig, loadCompressionConfig, loadCompressionStatus])
+  }, [loadJsonRepairConfig, loadCompressionConfig, loadCompressionStatus, loadPushRelayConfig])
 
   const updateJsonRepairEnabled = async (enabled: boolean) => {
     if (!jsonRepairConfig) return
@@ -92,6 +105,21 @@ export function OptimizeOverviewView({ onTabChange }: OptimizeOverviewProps) {
     }
   }
 
+  const updatePushRelayDefault = async (defaultPermission: PushPermission) => {
+    setSavingPushRelay(true)
+    try {
+      setPushRelayConfig(
+        await invoke<PushRelayConfig>("update_push_relay_config", {
+          defaultPermission,
+        } satisfies UpdatePushRelayConfigParams),
+      )
+    } catch (err) {
+      console.error("Failed to update Push Relay config:", err)
+    } finally {
+      setSavingPushRelay(false)
+    }
+  }
+
   const navigateTo = (view: string, subTab?: string) => {
     onTabChange?.(view, subTab ?? null)
   }
@@ -106,7 +134,7 @@ export function OptimizeOverviewView({ onTabChange }: OptimizeOverviewProps) {
           </h1>
         </div>
         <p className="text-sm text-muted-foreground">
-          Optimize LLM and MCP requests with safety scanning, JSON repair, prompt compression, intelligent routing, and context management
+          Optimize LLM and MCP requests with safety scanning, JSON repair, prompt compression, intelligent routing, context management, and push relay
         </p>
       </div>
 
@@ -276,6 +304,38 @@ export function OptimizeOverviewView({ onTabChange }: OptimizeOverviewProps) {
           </CardHeader>
           <CardContent className="pt-0">
             <Button variant="ghost" size="sm" className="gap-1.5 -ml-2" onClick={() => navigateTo("response-rag")}>
+              Configure
+              <ArrowRight className="h-3 w-3" />
+            </Button>
+          </CardContent>
+        </Card>
+
+        {/* Push Relay Section */}
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <FEATURES.pushRelay.icon className={`h-4 w-4 ${FEATURES.pushRelay.color}`} />
+                <CardTitle className="text-base">{FEATURES.pushRelay.name}</CardTitle>
+              </div>
+              {pushRelayConfig && (
+                <InfoTooltip content="Default permission for every client, server and event type without its own setting. Off with no setting that turns something on means no push is advertised or relayed.">
+                  <PermissionStateButton
+                    value={pushRelayConfig.default_permission}
+                    onChange={updatePushRelayDefault}
+                    disabled={savingPushRelay}
+                    size="sm"
+                  />
+                </InfoTooltip>
+              )}
+            </div>
+            <CardDescription>
+              Relay events that upstream MCP servers push (MCP Events, Claude Channels) to every client in a
+              form it can consume, with Allow / Ask / Off per client, server and event type.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="pt-0">
+            <Button variant="ghost" size="sm" className="gap-1.5 -ml-2" onClick={() => navigateTo("push-relay")}>
               Configure
               <ArrowRight className="h-3 w-3" />
             </Button>

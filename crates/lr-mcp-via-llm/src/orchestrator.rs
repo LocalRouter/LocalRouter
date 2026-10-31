@@ -1234,6 +1234,7 @@ pub async fn execute_mcp_tool_background(
             permissions.memory_enabled,
             permissions.memory_folder.clone(),
             permissions.client_mode,
+            lr_config::ClientPushSettings::default(),
             request,
             None, // monitor_session_id
         ),

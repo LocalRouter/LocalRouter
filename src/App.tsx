@@ -1,5 +1,6 @@
 import { useState, useEffect, lazy, Suspense } from 'react'
 import { listenSafe } from '@/hooks/useTauriListener'
+import { uiState } from '@/hooks/usePersistentUiState'
 import { invoke } from '@tauri-apps/api/core'
 import { check } from '@tauri-apps/plugin-updater'
 import { relaunch } from '@tauri-apps/plugin-process'
@@ -10,6 +11,7 @@ import { ClientsView } from './views/clients'
 import { ResourcesView } from './views/resources'
 import { McpServersView } from './views/mcp-servers'
 import { SkillsView } from './views/skills'
+import { PushRelayView } from './views/push-relay'
 import { SettingsView } from './views/settings'
 import { GuardrailsView } from './views/guardrails'
 import { DecisionRoutingView } from './views/decision-routing'
@@ -58,6 +60,9 @@ function App() {
   // Check if setup wizard should be shown (first-run detection)
   useEffect(() => {
     const checkSetupWizard = async () => {
+      // Load the remembered UI state (folded sections, dock side) alongside,
+      // so views render in their saved state with no flicker. Never rejects.
+      const uiStateLoaded = uiState.init()
       try {
         const shown = await invoke<boolean>('get_setup_wizard_shown')
         if (!shown) {
@@ -66,6 +71,7 @@ function App() {
       } catch (error) {
         console.error('Failed to check setup wizard status:', error)
       } finally {
+        await uiStateLoaded
         setAppReady(true)
       }
     }
@@ -287,6 +293,13 @@ function App() {
       case 'response-rag':
         return (
           <ResponseRagView
+            activeSubTab={activeSubTab}
+            onTabChange={handleChildViewChange}
+          />
+        )
+      case 'push-relay':
+        return (
+          <PushRelayView
             activeSubTab={activeSubTab}
             onTabChange={handleChildViewChange}
           />

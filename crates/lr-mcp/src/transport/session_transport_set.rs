@@ -120,7 +120,10 @@ impl SessionTransportSet {
 
     /// Inject the reserved 2026-07-28 `_meta` keys into a request bound for a
     /// stateless backend. Existing `_meta` values are preserved.
+    /// Upstream `events/*` requests also carry LocalRouter's MCP Events
+    /// declaration in `_meta`, on every revision.
     fn prepare_request_for(&self, server_id: &str, mut request: JsonRpcRequest) -> JsonRpcRequest {
+        crate::protocol::declare_events_on_request(&mut request);
         if !self.revision(server_id).is_stateless() {
             return request;
         }
@@ -179,7 +182,7 @@ impl SessionTransportSet {
     ) -> bool {
         self.configurations
             .get(server_id)
-            .is_none_or(|saved| saved.value() == config)
+            .is_none_or(|saved| saved.value().same_connection(config))
     }
 
     pub async fn needs_reconnect(&self, server_id: &str) -> bool {
@@ -339,6 +342,24 @@ impl SessionTransportSet {
                 }
             }
         })))
+    }
+
+    /// Open a long-lived request (e.g. `events/stream`) on a server's
+    /// transport. See [`Transport::open_rpc_stream`]: the stream is exempt
+    /// from request timeouts, and dropping it cancels the request.
+    pub async fn open_rpc_stream(
+        &self,
+        server_id: &str,
+        request: JsonRpcRequest,
+        buffer: usize,
+    ) -> AppResult<super::RpcStream> {
+        let transport = self
+            .transports
+            .get(server_id)
+            .map(|e| e.value().clone())
+            .ok_or_else(|| AppError::Mcp(format!("Server not running: {}", server_id)))?;
+        let request = self.prepare_request_for(server_id, request);
+        transport.open_rpc_stream(request, buffer).await
     }
 
     /// Close and remove a single server's transport.

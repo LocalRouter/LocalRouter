@@ -436,6 +436,10 @@ pub struct ClientInfo {
     pub guardrails_active: bool,
     /// Whether JSON repair is active (resolved from per-client override or global)
     pub json_repair_active: bool,
+    /// Push Relay permission tree (client → server → event type; absent = inherit)
+    pub push_permissions: lr_config::PushPermissions,
+    /// Webhook callback URLs the user approved for this client
+    pub push_webhook_urls: Vec<String>,
 }
 
 /// List all clients
@@ -482,6 +486,8 @@ pub async fn list_clients(
                 reverse_proxy: c.reverse_proxy.clone(),
                 guardrails_active: guardrails_active_for(&c, &config),
                 json_repair_active: c.json_repair.enabled.unwrap_or(config.json_repair.enabled),
+                push_permissions: c.push_permissions.clone(),
+                push_webhook_urls: c.push_webhook_urls.clone(),
             }
         })
         .collect())
@@ -652,6 +658,8 @@ pub async fn create_client(
                 .enabled
                 .unwrap_or(cfg.json_repair.enabled)
         },
+        push_permissions: client.push_permissions.clone(),
+        push_webhook_urls: client.push_webhook_urls.clone(),
     };
 
     Ok((secret, client_info))
@@ -840,6 +848,10 @@ pub async fn clone_client(
         secret_scanning: source_client.secret_scanning.clone(),
         memory_enabled: source_client.memory_enabled,
         memory_folder: Some(new_memory_folder),
+        push_permissions: source_client.push_permissions.clone(),
+        // Approved webhook URLs describe the original app's setup, not the
+        // clone's.
+        push_webhook_urls: Vec::new(),
     };
 
     // Add to config
@@ -913,6 +925,8 @@ pub async fn clone_client(
                 .enabled
                 .unwrap_or(cfg.json_repair.enabled)
         },
+        push_permissions: new_client.push_permissions.clone(),
+        push_webhook_urls: new_client.push_webhook_urls.clone(),
     };
 
     Ok((secret, client_info))
@@ -1829,6 +1843,26 @@ pub async fn get_feature_clients_status(
                         decision_routing_status(policy).map(str::to_string),
                     )
                 }
+                "push_relay" => {
+                    let effective = c
+                        .push_permissions
+                        .global
+                        .unwrap_or(config.push_relay.default_permission);
+                    let value = match effective {
+                        lr_config::PushPermission::Allow => "allow",
+                        lr_config::PushPermission::Ask => "ask",
+                        lr_config::PushPermission::Off => "off",
+                    };
+                    (
+                        c.may_receive_push(&config.push_relay),
+                        if c.push_permissions.is_empty() {
+                            "global"
+                        } else {
+                            "override"
+                        },
+                        Some(value.to_string()),
+                    )
+                }
                 _ => (false, "global", None),
             };
 
@@ -1954,7 +1988,15 @@ pub async fn submit_firewall_approval(
     // (config_manager.update() synchronously calls sync_clients()).
     // Wrapped in an async block so that errors don't prevent submit_response (Phase 2)
     // from being called — the current request must always get a response.
+    // Push Relay applies its own decisions (session overrides, permanent
+    // permissions and approved webhook URLs) when the response reaches it.
+    let is_push_relay_request = pending_info
+        .as_ref()
+        .is_some_and(|info| info.is_push_event_request);
     let phase1_err = async {
+    if is_push_relay_request {
+        return Ok::<(), String>(());
+    }
     match action {
         FirewallApprovalAction::AllowPermanent => {
             if let Some(ref info) = pending_info {
@@ -2386,7 +2428,8 @@ pub(crate) fn reevaluate_pending_approvals(
         // not derived from client permissions — no config change can resolve
         // them, and the fallback MCP-tool context below would misread their
         // "Secret Scan" server name as a real MCP server.
-        if info.is_secret_scan_request || info.is_notify_only {
+        // Push Relay re-evaluates its own held events against push permissions
+        if info.is_secret_scan_request || info.is_notify_only || info.is_push_event_request {
             continue;
         }
 
@@ -4833,6 +4876,8 @@ mod tests {
             is_notify_only: false,
             guardrail_details: None,
             secret_scan_details: None,
+            is_push_event_request: false,
+            push_event_details: None,
         }
     }
 

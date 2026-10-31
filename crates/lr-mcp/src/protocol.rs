@@ -244,6 +244,68 @@ pub mod meta_keys {
     pub const SUBSCRIPTION_ID: &str = "io.modelcontextprotocol/subscriptionId";
 }
 
+/// The MCP Events extension (SEP-3415), as declared in client and server
+/// capabilities.
+pub const EVENTS_EXTENSION_ID: &str = "io.modelcontextprotocol/events";
+
+/// Declare MCP Events support in a set of client capabilities, keeping
+/// everything already declared (other extensions included).
+///
+/// LocalRouter declares it to every upstream it talks to as a client,
+/// whatever its own downstream client declared: the Push Relay consumes and
+/// translates events for every client. Events-aware servers decide the
+/// delivery modes they offer from this declaration — VocalCord answers a
+/// webhook-only profile to a client that does not declare it.
+pub fn declare_events_extension(capabilities: &mut Value) {
+    if !capabilities.is_object() {
+        *capabilities = serde_json::json!({});
+    }
+    let Some(caps) = capabilities.as_object_mut() else {
+        return;
+    };
+    let extensions = caps
+        .entry("extensions".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !extensions.is_object() {
+        *extensions = serde_json::json!({});
+    }
+    if let Some(extensions) = extensions.as_object_mut() {
+        extensions
+            .entry(EVENTS_EXTENSION_ID.to_string())
+            .or_insert_with(|| serde_json::json!({}));
+    }
+}
+
+/// On an upstream `events/*` request, carry the Events declaration in
+/// `params._meta["io.modelcontextprotocol/clientCapabilities"]`, merged with
+/// any `_meta` and capabilities already present. Servers such as VocalCord
+/// choose the profile per request from it, whatever was said at
+/// `initialize`. Other methods are left unchanged.
+pub fn declare_events_on_request(request: &mut JsonRpcRequest) {
+    if !request.method.starts_with("events/") {
+        return;
+    }
+    let params = request.params.get_or_insert_with(|| serde_json::json!({}));
+    if !params.is_object() {
+        return;
+    }
+    let Some(params) = params.as_object_mut() else {
+        return;
+    };
+    let meta = params
+        .entry("_meta".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !meta.is_object() {
+        *meta = serde_json::json!({});
+    }
+    if let Some(meta) = meta.as_object_mut() {
+        let capabilities = meta
+            .entry(meta_keys::CLIENT_CAPABILITIES.to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        declare_events_extension(capabilities);
+    }
+}
+
 /// `resultType` values required on all 2026-07-28 results.
 pub const RESULT_TYPE_COMPLETE: &str = "complete";
 pub const RESULT_TYPE_INPUT_REQUIRED: &str = "input_required";
@@ -812,6 +874,62 @@ pub struct SamplingResponse {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn events_extension_is_merged_into_client_capabilities() {
+        let mut caps = json!({"sampling": {}, "extensions": {"other/ext": {"x": 1}}});
+        declare_events_extension(&mut caps);
+        assert_eq!(caps["sampling"], json!({}));
+        assert_eq!(caps["extensions"]["other/ext"], json!({"x": 1}));
+        assert_eq!(caps["extensions"][EVENTS_EXTENSION_ID], json!({}));
+
+        // An existing declaration is kept as is
+        let mut caps = json!({"extensions": {EVENTS_EXTENSION_ID: {"listChanged": true}}});
+        declare_events_extension(&mut caps);
+        assert_eq!(
+            caps["extensions"][EVENTS_EXTENSION_ID],
+            json!({"listChanged": true})
+        );
+
+        let mut caps = Value::Null;
+        declare_events_extension(&mut caps);
+        assert_eq!(caps, json!({"extensions": {EVENTS_EXTENSION_ID: {}}}));
+    }
+
+    #[test]
+    fn events_requests_declare_events_in_meta() {
+        let mut request = JsonRpcRequest::new(
+            Some(json!(1)),
+            "events/poll".into(),
+            Some(json!({
+                "name": "m",
+                "_meta": {
+                    "progressToken": 3,
+                    meta_keys::CLIENT_CAPABILITIES: {"elicitation": {}}
+                }
+            })),
+        );
+        declare_events_on_request(&mut request);
+        let params = request.params.unwrap();
+        assert_eq!(params["name"], "m");
+        assert_eq!(params["_meta"]["progressToken"], 3);
+        let caps = &params["_meta"][meta_keys::CLIENT_CAPABILITIES];
+        assert_eq!(caps["elicitation"], json!({}));
+        assert_eq!(caps["extensions"][EVENTS_EXTENSION_ID], json!({}));
+
+        let mut bare = JsonRpcRequest::new(Some(json!(2)), "events/list".into(), None);
+        declare_events_on_request(&mut bare);
+        assert_eq!(
+            bare.params.unwrap()["_meta"][meta_keys::CLIENT_CAPABILITIES]["extensions"]
+                [EVENTS_EXTENSION_ID],
+            json!({})
+        );
+
+        // Other methods are untouched
+        let mut other = JsonRpcRequest::new(Some(json!(3)), "tools/list".into(), None);
+        declare_events_on_request(&mut other);
+        assert!(other.params.is_none());
+    }
 
     #[test]
     fn test_request_serialization() {

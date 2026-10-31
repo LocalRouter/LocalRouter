@@ -9,7 +9,10 @@ import {
   CreateMessageRequestSchema,
   ElicitRequestSchema,
   ListRootsRequestSchema,
+  ResultSchema,
 } from "@modelcontextprotocol/sdk/types.js"
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js"
+import type { JSONRPCMessage, Notification } from "@modelcontextprotocol/sdk/types.js"
 import type {
   Tool,
   Resource,
@@ -48,6 +51,53 @@ export interface McpClientConfig {
   mcpAccess?: string // MCP server access: "all", "none", or a specific server ID
   skillsAccess?: "all" | string // Skills access: "all" or specific skill name
   codingAgentAccess?: string // Coding agent type (e.g., "claude_code") for direct mode
+  /** Opt this session into the Push Relay's built-in test source
+   *  (`localrouter__test.event`, sent from the Push panel). */
+  pushTest?: boolean
+}
+
+/** Header that opts a session into the Push Relay test source. */
+export const PUSH_TEST_HEADER = "X-LocalRouter-Push-Test"
+
+/** SEP-3415 subscription id key carried in `_meta` of stream notifications. */
+export const SUBSCRIPTION_ID_META_KEY = "io.modelcontextprotocol/subscriptionId"
+
+/** A push notification (`notifications/events/*`) as received. */
+export interface PushNotification {
+  method: string
+  params: Record<string, unknown>
+}
+
+/** A downstream `events/stream` held open by this client. */
+export interface EventStreamHandle {
+  /** JSON-RPC id of the request; it is the stream's subscription id. */
+  requestId: number
+  /** Resolves with the final result when the server ends the stream;
+   *  rejects when cancelled or on error. */
+  done: Promise<Record<string, unknown>>
+  /** Cancel: sends `notifications/cancelled` for the request. */
+  cancel: (reason?: string) => void
+}
+
+/** `events/stream` has no total deadline; this only bounds the SDK timer. */
+const EVENT_STREAM_TIMEOUT_MS = 24 * 60 * 60 * 1000
+
+/** Wrap a transport so every incoming message is seen first by `tap`. */
+function tapTransport(inner: Transport, tap: (message: JSONRPCMessage) => void): Transport {
+  const outer: Transport = {
+    start: () => inner.start(),
+    send: (message, options) => inner.send(message, options),
+    close: () => inner.close(),
+    get sessionId() { return inner.sessionId },
+    setProtocolVersion: version => inner.setProtocolVersion?.(version),
+  }
+  inner.onmessage = (message, extra) => {
+    tap(message)
+    outer.onmessage?.(message, extra)
+  }
+  inner.onclose = () => outer.onclose?.()
+  inner.onerror = error => outer.onerror?.(error)
+  return outer
 }
 
 // Detailed capability info for display
@@ -82,6 +132,9 @@ export interface McpConnectionState {
     version: string
   }
   serverCapabilities?: ServerCapabilitiesInfo
+  /** The `initialize` result's capabilities exactly as sent, including fields
+   *  the SDK's typed form drops (top-level `events`). */
+  rawServerCapabilities?: Record<string, unknown>
   clientCapabilities?: ClientCapabilitiesInfo
   // Legacy simplified capabilities for backward compatibility
   capabilities?: {
@@ -119,6 +172,8 @@ export interface McpClientCallbacks {
   onToolsListChanged?: () => void
   onResourcesListChanged?: () => void
   onPromptsListChanged?: () => void
+  /** `notifications/events/list_changed`. */
+  onEventsListChanged?: () => void
 }
 
 export class McpClientWrapper {
@@ -133,6 +188,7 @@ export class McpClientWrapper {
   private resourceSubscriptions = new Map<string, ResourceUpdateCallback>()
   private connectionGeneration = 0
   private callbacks: McpClientCallbacks
+  private streamListeners = new Map<string, (notification: PushNotification) => void>()
 
   constructor(config: McpClientConfig, callbacks: McpClientCallbacks = {}) {
     this.config = config
@@ -190,6 +246,9 @@ export class McpClientWrapper {
         if (this.config.codingAgentAccess) {
           headers["X-Coding-Agent-Access"] = this.config.codingAgentAccess
         }
+        if (this.config.pushTest) {
+          headers[PUSH_TEST_HEADER] = "1"
+        }
         transport = new SSEClientTransport(new URL(endpoint), {
           requestInit: {
             headers,
@@ -246,10 +305,24 @@ export class McpClientWrapper {
       // This client exposes no local filesystem roots.
       client.setRequestHandler(ListRootsRequestSchema, async () => ({ roots: [] }))
 
+      // Push notifications have no SDK schema: route them by subscription id
+      client.fallbackNotificationHandler = async (notification: Notification) => {
+        if (generation !== this.connectionGeneration) return
+        this.handlePushNotification(notification)
+      }
+
       // Capture the connection before awaiting so disconnect can cancel startup.
       this.client = client
       this.transport = transport
-      await client.connect(transport)
+      let rawServerCapabilities: Record<string, unknown> | undefined
+      const tapped = tapTransport(transport, message => {
+        if (rawServerCapabilities || !("result" in message)) return
+        const result = message.result as Record<string, unknown> | undefined
+        if (result && typeof result.protocolVersion === "string" && result.capabilities && typeof result.capabilities === "object") {
+          rawServerCapabilities = result.capabilities as Record<string, unknown>
+        }
+      })
+      await client.connect(tapped)
       if (generation !== this.connectionGeneration) {
         await client.close().catch(() => {})
         await transport.close().catch(() => {})
@@ -261,6 +334,7 @@ export class McpClientWrapper {
         this.client = null
         this.transport = null
         this.resourceSubscriptions.clear()
+        this.streamListeners.clear()
         this.resetConnectionState()
       }
 
@@ -349,6 +423,7 @@ export class McpClientWrapper {
           version: "1.0.0",
         },
         serverCapabilities: serverCapsInfo,
+        rawServerCapabilities,
         clientCapabilities: clientCapsInfo,
         // Legacy simplified capabilities
         capabilities: {
@@ -382,6 +457,7 @@ export class McpClientWrapper {
       serverInfo: undefined,
       clientInfo: undefined,
       serverCapabilities: undefined,
+      rawServerCapabilities: undefined,
       clientCapabilities: undefined,
       capabilities: undefined,
     })
@@ -394,6 +470,7 @@ export class McpClientWrapper {
     this.client = null
     this.transport = null
     this.resourceSubscriptions.clear()
+    this.streamListeners.clear()
     this.resetConnectionState()
     await client?.close().catch(() => {})
     await transport?.close().catch(() => {})
@@ -415,6 +492,77 @@ export class McpClientWrapper {
       }
     } while (cursor !== undefined)
     return items
+  }
+
+  /** Route one `notifications/events/*` to the stream it belongs to. */
+  handlePushNotification(notification: Notification): void {
+    if (notification.method === "notifications/events/list_changed") {
+      this.callbacks.onEventsListChanged?.()
+      return
+    }
+    if (!notification.method.startsWith("notifications/events/")) return
+    const params = (notification.params ?? {}) as Record<string, unknown>
+    const meta = params._meta as Record<string, unknown> | undefined
+    const subscription = meta?.[SUBSCRIPTION_ID_META_KEY]
+    if (subscription === undefined || subscription === null) return
+    this.streamListeners.get(String(subscription))?.({ method: notification.method, params })
+  }
+
+  /** Send a request the SDK has no schema for (`events/*`); the result is
+   *  returned as sent. */
+  async request(
+    method: string,
+    params: Record<string, unknown> = {},
+    options: { signal?: AbortSignal; timeout?: number } = {},
+  ): Promise<Record<string, unknown>> {
+    if (!this.client || !this.state.isConnected) {
+      throw new Error("Not connected")
+    }
+    return await this.client.request({ method, params }, ResultSchema, options) as Record<string, unknown>
+  }
+
+  /** `events/list`. */
+  async listEvents(): Promise<Record<string, unknown>> {
+    return this.request("events/list")
+  }
+
+  /** `events/poll`; a null cursor bootstraps at "now". */
+  async pollEvents(name: string, cursor: string | null, maxEvents?: number): Promise<Record<string, unknown>> {
+    const params: Record<string, unknown> = { name, cursor }
+    if (maxEvents !== undefined) params.maxEvents = maxEvents
+    return this.request("events/poll", params)
+  }
+
+  /** Open a long-lived `events/stream`. Its notifications (active, event,
+   *  heartbeat, error, terminated) arrive on the session's SSE connection and
+   *  are handed to `onNotification`; `cancel` sends `notifications/cancelled`. */
+  streamEvents(
+    name: string,
+    cursor: string | null,
+    onNotification: (notification: PushNotification) => void,
+  ): EventStreamHandle {
+    if (!this.client || !this.state.isConnected) {
+      throw new Error("Not connected")
+    }
+    const client = this.client
+    // The SDK numbers requests from this counter; the id it is about to use
+    // is the stream's subscription id, needed before the first notification.
+    const requestId = (client as unknown as { _requestMessageId: number })._requestMessageId
+    const key = String(requestId)
+    const controller = new AbortController()
+    this.streamListeners.set(key, onNotification)
+    const done = (client.request(
+      { method: "events/stream", params: { name, cursor } },
+      ResultSchema,
+      { signal: controller.signal, timeout: EVENT_STREAM_TIMEOUT_MS },
+    ) as Promise<Record<string, unknown>>).finally(() => {
+      if (this.streamListeners.get(key) === onNotification) this.streamListeners.delete(key)
+    })
+    return {
+      requestId,
+      done,
+      cancel: (reason = "Stopped from Try it out") => controller.abort(reason),
+    }
   }
 
   // Tools

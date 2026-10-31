@@ -174,6 +174,9 @@ pub async fn serve_state(
     // Port zero asks the OS for an ephemeral port. Publish the actual bound
     // port so callers can connect to it and health status stays accurate.
     let port = listener.local_addr()?.port();
+    if let Some(relay) = &state.push_relay {
+        relay.set_local_base_url(format!("http://127.0.0.1:{port}"));
+    }
 
     info!("Web server listening on http://{}:{}", config.host, port);
     info!("OpenAI-compatible endpoints available at:");
@@ -462,6 +465,15 @@ fn build_app(state: AppState, enable_cors: bool, shutdown: CancellationToken) ->
 
     // Merge OAuth routes (no auth required - these ARE the auth endpoints)
     router = router.merge(oauth_routes);
+
+    // Push Relay's event watch authenticates with the watch token minted
+    // for the client by its `EventWait` tool. Merged before the MCP routes,
+    // whose authenticated fallback answers unknown paths.
+    router = router.merge(
+        Router::new()
+            .route("/events/watch", get(routes::events_watch_handler))
+            .with_state(state.clone()),
+    );
 
     // Merge MCP routes (these use OAuth auth, not API key auth)
     router = router.merge(mcp_routes);

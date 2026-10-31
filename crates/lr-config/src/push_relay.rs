@@ -1,0 +1,974 @@
+//! Push Relay configuration: the global default permission, per-client push
+//! permissions, and the upstream capabilities remembered on each MCP server.
+//!
+//! See `plan/2026-10-30-PUSH_RELAY.md`.
+
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashMap};
+
+use crate::{McpAuthConfig, McpServerConfig, McpTransportConfig};
+
+pub(crate) fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+/// Allow / Ask / Off for pushed events, the same vocabulary as MCP
+/// permissions (`PermissionState`).
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum PushPermission {
+    /// Relayed to the client and recorded in Monitor.
+    #[default]
+    Allow,
+    /// Each occurrence is held until the user approves, edits or denies it.
+    Ask,
+    /// Never relayed; the event type is hidden from the client. `block` is
+    /// read as `off`.
+    #[serde(alias = "block")]
+    Off,
+}
+
+/// Default of [`PushRelayConfig::channel_messages_per_minute`].
+pub const DEFAULT_CHANNEL_MESSAGES_PER_MINUTE: u32 = 10;
+/// Bounds of [`PushRelayConfig::channel_messages_per_minute`].
+pub const CHANNEL_MESSAGES_PER_MINUTE_RANGE: std::ops::RangeInclusive<u32> = 1..=600;
+/// Default of [`PushRelayConfig::history_retention_hours`].
+pub const DEFAULT_HISTORY_RETENTION_HOURS: u32 = 24;
+/// Bounds of [`PushRelayConfig::history_retention_hours`].
+pub const HISTORY_RETENTION_HOURS_RANGE: std::ops::RangeInclusive<u32> = 1..=720;
+/// Default of [`PushRelayConfig::history_max_events`].
+pub const DEFAULT_HISTORY_MAX_EVENTS: u32 = 10_000;
+/// Bounds of [`PushRelayConfig::history_max_events`].
+pub const HISTORY_MAX_EVENTS_RANGE: std::ops::RangeInclusive<u32> = 100..=1_000_000;
+
+fn default_channel_messages_per_minute() -> u32 {
+    DEFAULT_CHANNEL_MESSAGES_PER_MINUTE
+}
+
+fn is_default_channel_messages_per_minute(value: &u32) -> bool {
+    *value == DEFAULT_CHANNEL_MESSAGES_PER_MINUTE
+}
+
+fn default_history_retention_hours() -> u32 {
+    DEFAULT_HISTORY_RETENTION_HOURS
+}
+
+fn is_default_history_retention_hours(value: &u32) -> bool {
+    *value == DEFAULT_HISTORY_RETENTION_HOURS
+}
+
+fn default_history_max_events() -> u32 {
+    DEFAULT_HISTORY_MAX_EVENTS
+}
+
+fn is_default_history_max_events(value: &u32) -> bool {
+    *value == DEFAULT_HISTORY_MAX_EVENTS
+}
+
+/// Global Push Relay settings (`push_relay` in the config).
+///
+/// The global default permission, the Claude Channels rate and how much
+/// event history each client keeps. Every other bound (journal byte size,
+/// poll page size, webhook retries, ...) is an internal constant of the
+/// relay. Unknown keys are ignored, so a config carrying keys LocalRouter
+/// does not read (`limits`, `webhook_egress_enabled`, `allow_loopback_http`,
+/// `ask_timeout_secs`) still loads, and each setting absent from a config
+/// takes its default. An `enabled: false` key is read as
+/// `default_permission: off` (see [`PushRelayConfigFile`]).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(from = "PushRelayConfigFile")]
+pub struct PushRelayConfig {
+    /// Permission applied when neither the client nor its server/event
+    /// overrides say otherwise. `Off` here with no override enabling
+    /// anything turns Push Relay off entirely: nothing is advertised,
+    /// subscribed or waited for.
+    pub default_permission: PushPermission,
+
+    /// Claude Channels messages sent per client session per minute. Events
+    /// beyond it are coalesced into one message pointing at `EventPoll`.
+    #[serde(skip_serializing_if = "is_default_channel_messages_per_minute")]
+    pub channel_messages_per_minute: u32,
+
+    /// Age after which an event leaves a client's journal (the history
+    /// available to polling and reconnecting clients).
+    #[serde(skip_serializing_if = "is_default_history_retention_hours")]
+    pub history_retention_hours: u32,
+
+    /// Events kept per client's journal; the oldest go first.
+    #[serde(skip_serializing_if = "is_default_history_max_events")]
+    pub history_max_events: u32,
+}
+
+/// `push_relay` as read from a config file. Besides the current fields it
+/// accepts the `enabled` switch older configs carry: `enabled: false` loads
+/// as `default_permission: off` (whatever default permission was written
+/// beside it, since nothing was relayed), and `enabled: true` is ignored.
+/// The key is not written back.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PushRelayConfigFile {
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    default_permission: PushPermission,
+    #[serde(default = "default_channel_messages_per_minute")]
+    channel_messages_per_minute: u32,
+    #[serde(default = "default_history_retention_hours")]
+    history_retention_hours: u32,
+    #[serde(default = "default_history_max_events")]
+    history_max_events: u32,
+}
+
+impl From<PushRelayConfigFile> for PushRelayConfig {
+    fn from(file: PushRelayConfigFile) -> Self {
+        Self {
+            default_permission: if file.enabled == Some(false) {
+                PushPermission::Off
+            } else {
+                file.default_permission
+            },
+            channel_messages_per_minute: file.channel_messages_per_minute,
+            history_retention_hours: file.history_retention_hours,
+            history_max_events: file.history_max_events,
+        }
+    }
+}
+
+impl Default for PushRelayConfig {
+    fn default() -> Self {
+        Self {
+            default_permission: PushPermission::Allow,
+            channel_messages_per_minute: DEFAULT_CHANNEL_MESSAGES_PER_MINUTE,
+            history_retention_hours: DEFAULT_HISTORY_RETENTION_HOURS,
+            history_max_events: DEFAULT_HISTORY_MAX_EVENTS,
+        }
+    }
+}
+
+impl PushRelayConfig {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+
+    /// Check every numeric setting against its bounds, naming the first one
+    /// out of range.
+    pub fn validate(&self) -> Result<(), String> {
+        fn check(
+            name: &str,
+            value: u32,
+            range: &std::ops::RangeInclusive<u32>,
+        ) -> Result<(), String> {
+            if range.contains(&value) {
+                Ok(())
+            } else {
+                Err(format!(
+                    "{name} must be between {} and {}, got {value}",
+                    range.start(),
+                    range.end()
+                ))
+            }
+        }
+        check(
+            "channel_messages_per_minute",
+            self.channel_messages_per_minute,
+            &CHANNEL_MESSAGES_PER_MINUTE_RANGE,
+        )?;
+        check(
+            "history_retention_hours",
+            self.history_retention_hours,
+            &HISTORY_RETENTION_HOURS_RANGE,
+        )?;
+        check(
+            "history_max_events",
+            self.history_max_events,
+            &HISTORY_MAX_EVENTS_RANGE,
+        )
+    }
+}
+
+/// Per-client push permission tree. Every level is optional and an absent
+/// entry inherits from the level above it:
+/// event type → server → client → global default.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PushPermissions {
+    /// Client-wide override (`None` = inherit the global default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub global: Option<PushPermission>,
+    /// Per upstream server (key: server id).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub servers: HashMap<String, PushPermission>,
+    /// Per event type (key: `server_id__event_name`, see [`Self::event_key`]).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub events: HashMap<String, PushPermission>,
+}
+
+impl PushPermissions {
+    pub fn is_empty(&self) -> bool {
+        self.global.is_none() && self.servers.is_empty() && self.events.is_empty()
+    }
+
+    /// Whether any explicit entry, at any level, is something other than
+    /// `Off` — i.e. whether this tree can let an event through when the
+    /// global default is `Off`.
+    pub fn enables_anything(&self) -> bool {
+        self.global
+            .iter()
+            .chain(self.servers.values())
+            .chain(self.events.values())
+            .any(|p| *p != PushPermission::Off)
+    }
+
+    /// Key of an event type in [`Self::events`]: the server id and the
+    /// upstream's own (unqualified) event name, joined like tool names.
+    pub fn event_key(server_id: &str, event_name: &str) -> String {
+        format!("{server_id}__{event_name}")
+    }
+
+    /// The effective permission for one event type: the most specific entry
+    /// wins (event → server → client → `global_default`).
+    pub fn effective(
+        &self,
+        global_default: PushPermission,
+        server_id: &str,
+        event_name: &str,
+    ) -> PushPermission {
+        self.events
+            .get(&Self::event_key(server_id, event_name))
+            .or_else(|| self.servers.get(server_id))
+            .or(self.global.as_ref())
+            .copied()
+            .unwrap_or(global_default)
+    }
+
+    /// The effective permission for a server as a whole, ignoring per-event
+    /// overrides (server → client → `global_default`).
+    pub fn effective_for_server(
+        &self,
+        global_default: PushPermission,
+        server_id: &str,
+    ) -> PushPermission {
+        self.servers
+            .get(server_id)
+            .or(self.global.as_ref())
+            .copied()
+            .unwrap_or(global_default)
+    }
+}
+
+/// Delivery mode an upstream offers for one event type (SEP-3415).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum EventDeliveryMode {
+    /// `events/stream`
+    Push,
+    /// `events/poll`
+    Poll,
+    /// `events/subscribe` (never consumed upstream by LocalRouter)
+    Webhook,
+}
+
+/// Summary of the push an upstream offers, derived from its capabilities and
+/// event catalogue.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpstreamPushSummary {
+    /// Delivery modes per upstream event name. Event types offering only
+    /// `webhook` are listed, so they can be shown as unsupported.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub events_modes: BTreeMap<String, Vec<EventDeliveryMode>>,
+    /// The server declared `experimental["claude/channel"]`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub channels: bool,
+    /// The server declared `resources.subscribe`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub resource_subscribe: bool,
+}
+
+impl UpstreamPushSummary {
+    /// Whether any push source LocalRouter can consume exists: an event type
+    /// with push or poll, or Claude Channels. Resource updates count only when
+    /// the caller enables them.
+    pub fn has_consumable_push(&self, include_resource_updates: bool) -> bool {
+        self.channels
+            || (include_resource_updates && self.resource_subscribe)
+            || self.events_modes.values().any(|modes| {
+                modes
+                    .iter()
+                    .any(|m| matches!(m, EventDeliveryMode::Push | EventDeliveryMode::Poll))
+            })
+    }
+}
+
+/// What an upstream MCP server offered the last time it initialised.
+/// Machine-recorded: never shown as a user edit and never part of the
+/// server's identity (see [`McpServerConfig::same_connection`]).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpstreamCapabilitySnapshot {
+    /// [`fingerprint_for`] of the server configuration this was observed
+    /// with. A different fingerprint invalidates the snapshot.
+    pub fingerprint: String,
+    /// Protocol version the upstream negotiated.
+    pub protocol_version: String,
+    /// Raw capabilities, including `experimental`, `extensions` and unknown
+    /// top-level fields such as `events`.
+    pub capabilities: serde_json::Value,
+    /// Derived push summary.
+    #[serde(default)]
+    pub push: UpstreamPushSummary,
+    /// Raw `events/list` result entries (names, descriptions, schemas,
+    /// delivery modes). Empty when the server has no events capability.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub event_catalogue: Vec<serde_json::Value>,
+    /// When this content was last recorded.
+    pub observed_at: DateTime<Utc>,
+}
+
+impl UpstreamCapabilitySnapshot {
+    /// Same observed content, ignoring when it was observed.
+    pub fn same_content(&self, other: &Self) -> bool {
+        self.fingerprint == other.fingerprint
+            && self.protocol_version == other.protocol_version
+            && self.capabilities == other.capabilities
+            && self.push == other.push
+            && self.event_catalogue == other.event_catalogue
+    }
+
+    /// Whether this snapshot still describes `server`.
+    pub fn is_current_for(&self, server: &McpServerConfig) -> bool {
+        self.fingerprint == fingerprint_for(server)
+    }
+}
+
+/// Stable identity of an upstream server: transport, command + args or URL,
+/// and the authentication method. Environment values, header values and
+/// secret references are never part of the input, so rotating a secret does
+/// not invalidate the remembered capabilities.
+pub fn fingerprint_for(server: &McpServerConfig) -> String {
+    use sha2::{Digest, Sha256};
+
+    let mut identity = serde_json::Map::new();
+    let transport = match &server.transport_config {
+        McpTransportConfig::Stdio { command, args, .. } => serde_json::json!({
+            "type": "stdio",
+            "command": command,
+            "args": args,
+        }),
+        McpTransportConfig::HttpSse { url, .. } | McpTransportConfig::Sse { url, .. } => {
+            serde_json::json!({ "type": "http", "url": url })
+        }
+        McpTransportConfig::WebSocket { url, .. } => {
+            serde_json::json!({ "type": "websocket", "url": url })
+        }
+    };
+    identity.insert("transport".into(), transport);
+    let auth = match &server.auth_config {
+        None | Some(McpAuthConfig::None) => serde_json::json!({ "method": "none" }),
+        Some(McpAuthConfig::BearerToken { .. }) => serde_json::json!({ "method": "bearer_token" }),
+        Some(McpAuthConfig::CustomHeaders { header_refs }) => {
+            let mut names: Vec<&String> = header_refs.keys().collect();
+            names.sort();
+            serde_json::json!({ "method": "custom_headers", "headers": names })
+        }
+        Some(McpAuthConfig::OAuth {
+            client_id,
+            auth_url,
+            token_url,
+            scopes,
+            ..
+        }) => serde_json::json!({
+            "method": "oauth",
+            "client_id": client_id,
+            "auth_url": auth_url,
+            "token_url": token_url,
+            "scopes": scopes,
+        }),
+        Some(McpAuthConfig::OAuthBrowser {
+            client_id,
+            auth_url,
+            token_url,
+            scopes,
+            ..
+        }) => serde_json::json!({
+            "method": "oauth_browser",
+            "client_id": client_id,
+            "auth_url": auth_url,
+            "token_url": token_url,
+            "scopes": scopes,
+        }),
+        Some(McpAuthConfig::EnvVars { env_refs }) => {
+            let mut names: Vec<&String> = env_refs.keys().collect();
+            names.sort();
+            serde_json::json!({ "method": "env_vars", "variables": names })
+        }
+    };
+    identity.insert("auth".into(), auth);
+
+    // Built in a fixed order, so the encoding is stable.
+    let encoded = serde_json::Value::Object(identity).to_string();
+    let digest = Sha256::digest(encoded.as_bytes());
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        hex.push_str(&format!("{byte:02x}"));
+    }
+    format!("sha256:{hex}")
+}
+
+/// A client's push settings, as handed to the gateway with every request.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ClientPushSettings {
+    pub permissions: PushPermissions,
+    pub webhook_urls: Vec<String>,
+}
+
+impl ClientPushSettings {
+    pub fn from_client(client: &crate::Client) -> Self {
+        Self {
+            permissions: client.push_permissions.clone(),
+            webhook_urls: client.push_webhook_urls.clone(),
+        }
+    }
+
+    /// Copy these settings onto a client.
+    pub fn apply_to(&self, client: &mut crate::Client) {
+        client.push_permissions = self.permissions.clone();
+        client.push_webhook_urls = self.webhook_urls.clone();
+    }
+}
+
+impl crate::Client {
+    /// Record a per-event push permission (`None` removes the override).
+    pub fn set_push_event_permission(
+        &mut self,
+        server_id: &str,
+        event_name: &str,
+        permission: Option<PushPermission>,
+    ) {
+        let key = PushPermissions::event_key(server_id, event_name);
+        match permission {
+            Some(permission) => {
+                self.push_permissions.events.insert(key, permission);
+            }
+            None => {
+                self.push_permissions.events.remove(&key);
+            }
+        }
+    }
+
+    /// Remember an approved webhook callback URL. Returns whether it was new.
+    pub fn approve_push_webhook_url(&mut self, url: &str) -> bool {
+        if self.push_webhook_urls.iter().any(|u| u == url) {
+            return false;
+        }
+        self.push_webhook_urls.push(url.to_string());
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{AppConfig, Client, McpTransportType};
+
+    fn stdio_server(command: &str) -> McpServerConfig {
+        McpServerConfig::new(
+            "Test".to_string(),
+            McpTransportType::Stdio,
+            McpTransportConfig::Stdio {
+                command: command.to_string(),
+                args: vec![],
+                env: HashMap::new(),
+                cwd: None,
+            },
+        )
+    }
+
+    fn snapshot_for(server: &McpServerConfig) -> UpstreamCapabilitySnapshot {
+        let mut events_modes = BTreeMap::new();
+        events_modes.insert(
+            "message.received".to_string(),
+            vec![EventDeliveryMode::Push, EventDeliveryMode::Poll],
+        );
+        UpstreamCapabilitySnapshot {
+            fingerprint: fingerprint_for(server),
+            protocol_version: "2025-11-25".to_string(),
+            capabilities: serde_json::json!({
+                "tools": {},
+                "events": {},
+                "experimental": { "claude/channel": {} },
+                "extensions": { "io.modelcontextprotocol/events": { "listChanged": true } }
+            }),
+            push: UpstreamPushSummary {
+                events_modes,
+                channels: true,
+                resource_subscribe: false,
+            },
+            event_catalogue: vec![serde_json::json!({
+                "name": "message.received",
+                "delivery": ["push", "poll"]
+            })],
+            observed_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn old_config_without_push_relay_loads_with_defaults() {
+        let yaml = r#"
+version: 1
+clients:
+  - id: c1
+    name: Client
+    created_at: "2026-01-01T00:00:00Z"
+    strategy_id: s1
+mcp_servers:
+  - id: m1
+    name: Server
+    transport: stdio
+    transport_config:
+      type: stdio
+      command: echo
+    created_at: "2026-01-01T00:00:00Z"
+"#;
+        let config: AppConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.push_relay, PushRelayConfig::default());
+        assert_eq!(config.push_relay.default_permission, PushPermission::Allow);
+        let client = &config.clients[0];
+        assert!(client.push_permissions.is_empty());
+        assert!(client.push_webhook_urls.is_empty());
+        assert!(config.mcp_servers[0].capability_snapshot.is_none());
+    }
+
+    #[test]
+    fn defaults_are_not_serialized() {
+        let mut config = AppConfig::default();
+        config
+            .clients
+            .push(Client::new_with_strategy("c".into(), "s".into()));
+        config.mcp_servers.push(stdio_server("echo"));
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        for key in [
+            "push_relay",
+            "push_permissions",
+            "push_webhook_urls",
+            "capability_snapshot",
+        ] {
+            assert!(!yaml.contains(key), "{key} serialized at default:\n{yaml}");
+        }
+    }
+
+    #[test]
+    fn non_default_settings_round_trip() {
+        let mut config = AppConfig::default();
+        config.push_relay.default_permission = PushPermission::Ask;
+
+        let mut client = Client::new_with_strategy("c".into(), "s".into());
+        client.push_permissions.global = Some(PushPermission::Off);
+        client
+            .push_permissions
+            .servers
+            .insert("m1".into(), PushPermission::Allow);
+        client.push_permissions.events.insert(
+            PushPermissions::event_key("m1", "message.received"),
+            PushPermission::Ask,
+        );
+        client.push_webhook_urls = vec!["http://127.0.0.1:9000/hook".into()];
+        config.clients.push(client);
+
+        let mut server = stdio_server("echo");
+        server.capability_snapshot = Some(snapshot_for(&server));
+        config.mcp_servers.push(server);
+
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        assert!(yaml.contains("default_permission: ask"));
+        assert!(yaml.contains("global: off"), "{yaml}");
+        let push_yaml = serde_yaml::to_string(&config.push_relay).unwrap();
+        assert!(!push_yaml.contains("enabled"), "{push_yaml}");
+        let parsed: AppConfig = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(parsed.push_relay, config.push_relay);
+        assert_eq!(parsed.clients[0], config.clients[0]);
+        assert_eq!(parsed.mcp_servers[0], config.mcp_servers[0]);
+    }
+
+    #[test]
+    fn config_with_removed_settings_still_loads() {
+        let yaml = r#"
+version: 1
+push_relay:
+  enabled: false
+  default_permission: ask
+  webhook_egress_enabled: false
+  allow_loopback_http: false
+  ask_timeout_secs: 60
+  limits:
+    journal_max_events: 5
+    ask_timeout_secs: 60
+    ask_hold_cap: 2
+    webhook_retry_delays_secs: [1, 2]
+clients:
+  - id: c1
+    name: Client
+    created_at: "2026-01-01T00:00:00Z"
+    strategy_id: s1
+    push_fallback_tools: never
+    claude_channels_launched: true
+    push_webhook_urls: ["http://127.0.0.1:9000/hook"]
+"#;
+        let config: AppConfig = serde_yaml::from_str(yaml).unwrap();
+        // `enabled: false` turned everything off, whatever the default said
+        assert_eq!(config.push_relay.default_permission, PushPermission::Off);
+        assert_eq!(config.push_relay.channel_messages_per_minute, 10);
+        assert_eq!(config.push_relay.history_retention_hours, 24);
+        assert_eq!(config.push_relay.history_max_events, 10_000);
+        assert_eq!(
+            config.clients[0].push_webhook_urls,
+            vec!["http://127.0.0.1:9000/hook".to_string()]
+        );
+        // Saving drops the removed keys
+        let saved = serde_yaml::to_string(&config).unwrap();
+        let push_saved = serde_yaml::to_string(&config.push_relay).unwrap();
+        assert!(!push_saved.contains("enabled"), "{push_saved}");
+        for key in [
+            "limits",
+            "webhook_egress_enabled",
+            "allow_loopback_http",
+            "ask_timeout_secs",
+            "push_fallback_tools",
+            "claude_channels_launched",
+        ] {
+            assert!(!saved.contains(key), "{key} still saved:\n{saved}");
+        }
+    }
+
+    #[test]
+    fn most_specific_permission_wins() {
+        let mut perms = PushPermissions::default();
+        let default = PushPermission::Allow;
+        assert_eq!(perms.effective(default, "m1", "e"), PushPermission::Allow);
+        assert_eq!(
+            perms.effective(PushPermission::Ask, "m1", "e"),
+            PushPermission::Ask
+        );
+
+        perms.global = Some(PushPermission::Off);
+        assert_eq!(perms.effective(default, "m1", "e"), PushPermission::Off);
+
+        perms.servers.insert("m1".into(), PushPermission::Ask);
+        assert_eq!(perms.effective(default, "m1", "e"), PushPermission::Ask);
+        assert_eq!(perms.effective(default, "m2", "e"), PushPermission::Off);
+        assert_eq!(
+            perms.effective_for_server(default, "m1"),
+            PushPermission::Ask
+        );
+
+        perms
+            .events
+            .insert(PushPermissions::event_key("m1", "e"), PushPermission::Allow);
+        assert_eq!(perms.effective(default, "m1", "e"), PushPermission::Allow);
+        assert_eq!(perms.effective(default, "m1", "other"), PushPermission::Ask);
+    }
+
+    #[test]
+    fn global_off_applies_unless_an_override_enables_something() {
+        let mut client = Client::new_with_strategy("c".into(), "s".into());
+        let mut global = PushRelayConfig::default();
+        assert_eq!(
+            client.push_permission(&global, "m", "e"),
+            PushPermission::Allow
+        );
+        assert!(client.may_receive_push(&global));
+
+        global.default_permission = PushPermission::Off;
+        assert_eq!(
+            client.push_permission(&global, "m", "e"),
+            PushPermission::Off
+        );
+        assert!(!client.may_receive_push(&global));
+
+        // Overrides that are themselves Off enable nothing
+        client.push_permissions.global = Some(PushPermission::Off);
+        client
+            .push_permissions
+            .servers
+            .insert("m".into(), PushPermission::Off);
+        assert!(!client.may_receive_push(&global));
+
+        // One event type allowed: that type, and only it, gets through
+        client.set_push_event_permission("m", "e", Some(PushPermission::Allow));
+        assert!(client.may_receive_push(&global));
+        assert_eq!(
+            client.push_permission(&global, "m", "e"),
+            PushPermission::Allow
+        );
+        assert_eq!(
+            client.push_permission(&global, "m", "other"),
+            PushPermission::Off
+        );
+    }
+
+    #[test]
+    fn block_is_read_as_off_and_off_is_written() {
+        let yaml = r#"
+version: 1
+push_relay:
+  default_permission: block
+clients:
+  - id: c1
+    name: Client
+    created_at: "2026-01-01T00:00:00Z"
+    strategy_id: s1
+    push_permissions:
+      global: block
+      servers: { m1: block }
+      events: { m1__e: block }
+"#;
+        let config: AppConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.push_relay.default_permission, PushPermission::Off);
+        let perms = &config.clients[0].push_permissions;
+        assert_eq!(perms.global, Some(PushPermission::Off));
+        assert_eq!(perms.servers["m1"], PushPermission::Off);
+        assert_eq!(perms.events["m1__e"], PushPermission::Off);
+        let saved = serde_yaml::to_string(&config).unwrap();
+        assert!(!saved.contains("block"), "{saved}");
+        assert!(saved.contains("default_permission: off"), "{saved}");
+        let reread: AppConfig = serde_yaml::from_str(&saved).unwrap();
+        assert_eq!(reread.push_relay, config.push_relay);
+        assert_eq!(reread.clients[0], config.clients[0]);
+    }
+
+    #[test]
+    fn old_enabled_switch_migrates_only_when_false() {
+        let read = |yaml: &str| serde_yaml::from_str::<PushRelayConfig>(yaml).unwrap();
+        // Explicitly off: everything was off, so the default becomes Off
+        assert_eq!(
+            read("enabled: false\n").default_permission,
+            PushPermission::Off
+        );
+        assert_eq!(
+            read("enabled: false\ndefault_permission: allow\n").default_permission,
+            PushPermission::Off
+        );
+        // On, or absent: ignored
+        assert_eq!(read("enabled: true\n"), PushRelayConfig::default());
+        assert_eq!(
+            read("enabled: true\ndefault_permission: ask\n").default_permission,
+            PushPermission::Ask
+        );
+        // The key is not written back
+        let saved = serde_yaml::to_string(&read("enabled: false\n")).unwrap();
+        assert!(!saved.contains("enabled"), "{saved}");
+        assert!(saved.contains("default_permission: off"), "{saved}");
+    }
+
+    #[test]
+    fn fingerprint_ignores_secrets_and_tracks_identity() {
+        let base = stdio_server("npx -y server");
+        let fp = fingerprint_for(&base);
+        assert!(fp.starts_with("sha256:"));
+        assert_eq!(fp, fingerprint_for(&base.clone()));
+
+        // Env values, name, enabled flag and the snapshot itself are not identity
+        let mut same = base.clone();
+        same.name = "Renamed".into();
+        same.enabled = false;
+        if let McpTransportConfig::Stdio { env, .. } = &mut same.transport_config {
+            env.insert("API_KEY".into(), "secret".into());
+        }
+        same.auth_config = Some(McpAuthConfig::EnvVars {
+            env_refs: HashMap::from([("TOKEN".into(), "ref-1".into())]),
+        });
+        let mut rotated = same.clone();
+        rotated.auth_config = Some(McpAuthConfig::EnvVars {
+            env_refs: HashMap::from([("TOKEN".into(), "ref-2".into())]),
+        });
+        assert_eq!(fingerprint_for(&same), fingerprint_for(&rotated));
+        same.capability_snapshot = Some(snapshot_for(&base));
+        assert_eq!(fingerprint_for(&same), fingerprint_for(&rotated));
+
+        // Command, transport and auth method are identity
+        assert_ne!(fp, fingerprint_for(&stdio_server("npx -y other")));
+        let mut with_bearer = base.clone();
+        with_bearer.auth_config = Some(McpAuthConfig::BearerToken {
+            token_ref: "t".into(),
+        });
+        assert_ne!(fp, fingerprint_for(&with_bearer));
+        let http = McpServerConfig::new(
+            "Test".into(),
+            McpTransportType::HttpSse,
+            McpTransportConfig::HttpSse {
+                url: "https://example.com/mcp".into(),
+                headers: HashMap::from([("Authorization".into(), "Bearer x".into())]),
+            },
+        );
+        let mut http_other_headers = http.clone();
+        if let McpTransportConfig::HttpSse { headers, .. } =
+            &mut http_other_headers.transport_config
+        {
+            headers.insert("Authorization".into(), "Bearer y".into());
+        }
+        assert_eq!(fingerprint_for(&http), fingerprint_for(&http_other_headers));
+        assert_ne!(fp, fingerprint_for(&http));
+    }
+
+    #[test]
+    fn snapshot_invalidated_by_identity_change() {
+        let mut server = stdio_server("npx -y server");
+        server.capability_snapshot = Some(snapshot_for(&server));
+        assert!(server.current_capability_snapshot().is_some());
+
+        let mut changed = server.clone();
+        changed.transport_config = McpTransportConfig::Stdio {
+            command: "npx -y server --flag".into(),
+            args: vec![],
+            env: HashMap::new(),
+            cwd: None,
+        };
+        assert!(changed.capability_snapshot.is_some());
+        assert!(changed.current_capability_snapshot().is_none());
+    }
+
+    #[test]
+    fn snapshot_is_not_part_of_connection_identity() {
+        let server = stdio_server("echo");
+        let mut with_snapshot = server.clone();
+        with_snapshot.capability_snapshot = Some(snapshot_for(&server));
+        assert_ne!(server, with_snapshot);
+        assert!(server.same_connection(&with_snapshot));
+        let mut renamed = server.clone();
+        renamed.name = "Other".into();
+        assert!(!server.same_connection(&renamed));
+    }
+
+    #[test]
+    fn same_content_ignores_observation_time() {
+        let server = stdio_server("echo");
+        let a = snapshot_for(&server);
+        let mut b = a.clone();
+        b.observed_at = a.observed_at + chrono::Duration::hours(1);
+        assert!(a.same_content(&b));
+        b.push.channels = false;
+        assert!(!a.same_content(&b));
+    }
+
+    #[test]
+    fn push_summary_counts_only_consumable_modes() {
+        let mut summary = UpstreamPushSummary::default();
+        assert!(!summary.has_consumable_push(true));
+        summary
+            .events_modes
+            .insert("e".into(), vec![EventDeliveryMode::Webhook]);
+        assert!(!summary.has_consumable_push(true));
+        summary.resource_subscribe = true;
+        assert!(!summary.has_consumable_push(false));
+        assert!(summary.has_consumable_push(true));
+        summary
+            .events_modes
+            .insert("f".into(), vec![EventDeliveryMode::Poll]);
+        assert!(summary.has_consumable_push(false));
+    }
+
+    #[tokio::test]
+    async fn recording_snapshots_writes_only_on_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = AppConfig::default();
+        let server = stdio_server("echo");
+        let id = server.id.clone();
+        config.mcp_servers.push(server.clone());
+        let manager = crate::ConfigManager::new(config, dir.path().join("settings.yaml"));
+
+        let snapshot = snapshot_for(&server);
+        let mut batch = HashMap::from([(id.clone(), snapshot.clone())]);
+        batch.insert("missing".into(), snapshot.clone());
+        assert!(manager.record_capability_snapshots(&batch).unwrap());
+        assert_eq!(
+            manager.get().mcp_servers[0].capability_snapshot,
+            Some(snapshot.clone())
+        );
+
+        // A later observation of the same content is not a change
+        let mut later = snapshot.clone();
+        later.observed_at = snapshot.observed_at + chrono::Duration::minutes(5);
+        let batch = HashMap::from([(id.clone(), later)]);
+        assert!(!manager.record_capability_snapshots(&batch).unwrap());
+        assert_eq!(
+            manager.get().mcp_servers[0]
+                .capability_snapshot
+                .as_ref()
+                .unwrap()
+                .observed_at,
+            snapshot.observed_at
+        );
+
+        let mut changed = snapshot.clone();
+        changed.protocol_version = "2026-07-28".into();
+        let batch = HashMap::from([(id, changed.clone())]);
+        assert!(manager.record_capability_snapshots(&batch).unwrap());
+        assert_eq!(
+            manager.get().mcp_servers[0].capability_snapshot,
+            Some(changed)
+        );
+    }
+
+    #[test]
+    fn rate_and_history_settings_default_and_round_trip() {
+        let defaults = PushRelayConfig::default();
+        assert_eq!(defaults.channel_messages_per_minute, 10);
+        assert_eq!(defaults.history_retention_hours, 24);
+        assert_eq!(defaults.history_max_events, 10_000);
+
+        // A config that names only the older keys takes the defaults
+        let old: PushRelayConfig =
+            serde_yaml::from_str("enabled: true\ndefault_permission: allow\n").unwrap();
+        assert_eq!(old, defaults);
+
+        // Defaults are not written
+        let yaml = serde_yaml::to_string(&defaults).unwrap();
+        for key in [
+            "channel_messages_per_minute",
+            "history_retention_hours",
+            "history_max_events",
+        ] {
+            assert!(!yaml.contains(key), "{key} saved at its default:\n{yaml}");
+        }
+
+        // Non-default values are written and read back
+        let custom = PushRelayConfig {
+            channel_messages_per_minute: 30,
+            history_retention_hours: 72,
+            history_max_events: 500,
+            ..PushRelayConfig::default()
+        };
+        let yaml = serde_yaml::to_string(&custom).unwrap();
+        assert!(yaml.contains("channel_messages_per_minute: 30"), "{yaml}");
+        assert!(yaml.contains("history_retention_hours: 72"), "{yaml}");
+        assert!(yaml.contains("history_max_events: 500"), "{yaml}");
+        let parsed: PushRelayConfig = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(parsed, custom);
+        assert!(!custom.is_default());
+    }
+
+    #[test]
+    fn validate_checks_bounds() {
+        assert!(PushRelayConfig::default().validate().is_ok());
+        let with = |f: fn(&mut PushRelayConfig)| {
+            let mut c = PushRelayConfig::default();
+            f(&mut c);
+            c.validate()
+        };
+        assert!(with(|c| c.channel_messages_per_minute = 1).is_ok());
+        assert!(with(|c| c.channel_messages_per_minute = 600).is_ok());
+        assert!(with(|c| c.channel_messages_per_minute = 0)
+            .unwrap_err()
+            .contains("channel_messages_per_minute"));
+        assert!(with(|c| c.channel_messages_per_minute = 601).is_err());
+        assert!(with(|c| c.history_retention_hours = 1).is_ok());
+        assert!(with(|c| c.history_retention_hours = 720).is_ok());
+        assert!(with(|c| c.history_retention_hours = 0).is_err());
+        assert!(with(|c| c.history_retention_hours = 721)
+            .unwrap_err()
+            .contains("history_retention_hours"));
+        assert!(with(|c| c.history_max_events = 100).is_ok());
+        assert!(with(|c| c.history_max_events = 1_000_000).is_ok());
+        assert!(with(|c| c.history_max_events = 99).is_err());
+        assert!(with(|c| c.history_max_events = 1_000_001)
+            .unwrap_err()
+            .contains("history_max_events"));
+    }
+}

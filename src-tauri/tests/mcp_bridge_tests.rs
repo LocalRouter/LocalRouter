@@ -61,6 +61,8 @@ fn test_config() -> AppConfig {
                 client_tools_indexing: None,
                 memory_enabled: None,
                 memory_folder: None,
+                push_permissions: Default::default(),
+                push_webhook_urls: Vec::new(),
             },
             Client {
                 id: "disabled_client".to_string(),
@@ -105,6 +107,8 @@ fn test_config() -> AppConfig {
                 client_tools_indexing: None,
                 memory_enabled: None,
                 memory_folder: None,
+                push_permissions: Default::default(),
+                push_webhook_urls: Vec::new(),
             },
             Client {
                 id: "no_mcp_client".to_string(),
@@ -149,6 +153,8 @@ fn test_config() -> AppConfig {
                 client_tools_indexing: None,
                 memory_enabled: None,
                 memory_folder: None,
+                push_permissions: Default::default(),
+                push_webhook_urls: Vec::new(),
             },
         ],
         ..Default::default()

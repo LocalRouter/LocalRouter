@@ -243,6 +243,7 @@ async fn setup_gateway_with_two_servers() -> (
         oauth_config: None,
         enabled: true,
         created_at: Utc::now(),
+        capability_snapshot: None,
     };
 
     let server2_config = McpServerConfig {
@@ -258,6 +259,7 @@ async fn setup_gateway_with_two_servers() -> (
         oauth_config: None,
         enabled: true,
         created_at: Utc::now(),
+        capability_snapshot: None,
     };
 
     // Add servers to manager

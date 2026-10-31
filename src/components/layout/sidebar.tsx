@@ -55,7 +55,7 @@ interface HealthCacheState {
 
 export type View = 'dashboard' | 'clients' | 'resources' | 'mcp-servers' | 'catalog-compression' | 'response-rag' | 'skills'
   | 'coding-agents' | 'marketplace' | 'guardrails' | 'decision-routing' | 'compression' | 'json-repair'
-  | 'secret-scanning' | 'memory' | 'optimize-overview' | 'settings' | 'debug'
+  | 'secret-scanning' | 'memory' | 'push-relay' | 'optimize-overview' | 'settings' | 'debug'
 
 interface SidebarProps {
   activeView: View
@@ -121,7 +121,7 @@ const mcpStaticChildren: NavStaticChild[] = [
   { view: 'marketplace', icon: StoreIcon, label: 'Marketplace' },
 ]
 
-const OPTIMIZE_FEATURES: FeatureKey[] = ['guardrails', 'secretScanning', 'jsonRepair', 'compression', 'routing', 'catalogCompression', 'responseRag']
+const OPTIMIZE_FEATURES: FeatureKey[] = ['guardrails', 'secretScanning', 'jsonRepair', 'compression', 'routing', 'catalogCompression', 'responseRag', 'pushRelay']
 
 const resourceNavEntries: NavEntry[] = [
   {

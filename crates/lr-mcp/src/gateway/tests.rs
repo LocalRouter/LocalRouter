@@ -319,6 +319,115 @@ mod tests {
         assert!(merged.capabilities.completions.is_some());
     }
 
+    fn init_with(capabilities: serde_json::Value) -> types::InitializeResult {
+        serde_json::from_value(json!({
+            "protocolVersion": "2025-11-25",
+            "capabilities": capabilities,
+            "serverInfo": {"name": "s", "version": "1"}
+        }))
+        .unwrap()
+    }
+
+    /// `experimental`, top-level `events` and fields no revision defines yet
+    /// survive deserialisation and serialisation unchanged.
+    #[test]
+    fn server_capabilities_keep_experimental_and_unknown_fields() {
+        let raw = json!({
+            "tools": {"listChanged": true},
+            "events": {"listChanged": true},
+            "experimental": {"claude/channel": {}, "claude/channel/permission": {}},
+            "extensions": {"io.modelcontextprotocol/events": {"listChanged": true}},
+            "futureCapability": {"nested": [1, 2, 3]}
+        });
+        let caps: types::ServerCapabilities = serde_json::from_value(raw.clone()).unwrap();
+        assert!(caps.has_events());
+        assert!(caps.has_claude_channel());
+        assert!(!caps.has_resource_subscribe());
+        assert_eq!(caps.other["futureCapability"], json!({"nested": [1, 2, 3]}));
+        assert_eq!(serde_json::to_value(&caps).unwrap(), raw);
+
+        // Either location declares events
+        let top_level: types::ServerCapabilities =
+            serde_json::from_value(json!({"events": {}})).unwrap();
+        assert!(top_level.has_events());
+        let extension: types::ServerCapabilities =
+            serde_json::from_value(json!({"extensions": {"io.modelcontextprotocol/events": {}}}))
+                .unwrap();
+        assert!(extension.has_events());
+        assert!(!types::ServerCapabilities::default().has_events());
+    }
+
+    /// Two upstreams declaring the same capabilities differently: each keeps
+    /// its own declaration in `providers`; the merged capabilities sent
+    /// downstream never carry upstream `experimental`, unknown fields or the
+    /// events extension, and other extensions stay first-provider-wins.
+    #[test]
+    fn conflicting_providers_are_recorded_not_forwarded() {
+        let a = init_with(json!({
+            "tools": {},
+            "events": {"from": "a"},
+            "experimental": {"claude/channel": {}},
+            "extensions": {
+                "io.modelcontextprotocol/events": {"listChanged": true},
+                "vendor/ext": {"version": "a"}
+            }
+        }));
+        let b = init_with(json!({
+            "resources": {"subscribe": true},
+            "events": {"from": "b"},
+            "experimental": {"other/thing": {"from": "b"}},
+            "extensions": {
+                "io.modelcontextprotocol/events": {"listChanged": false},
+                "vendor/ext": {"version": "b"}
+            }
+        }));
+        let merged = merger::merge_initialize_results(
+            vec![("srv-a".into(), a), ("srv-b".into(), b)],
+            vec![],
+        );
+
+        let downstream = serde_json::to_value(&merged.capabilities).unwrap();
+        assert!(downstream.get("experimental").is_none());
+        assert!(downstream.get("events").is_none());
+        assert_eq!(
+            downstream["extensions"],
+            json!({"vendor/ext": {"version": "a"}})
+        );
+        assert_eq!(downstream["resources"]["subscribe"], true);
+
+        let providers = &merged.providers;
+        assert_eq!(providers.servers_with_events(), vec!["srv-a", "srv-b"]);
+        assert_eq!(providers.servers_with_claude_channel(), vec!["srv-a"]);
+        assert_eq!(
+            providers.servers_with_extension("vendor/ext"),
+            vec!["srv-a", "srv-b"]
+        );
+        let a = providers.get("srv-a").unwrap();
+        let b = providers.get("srv-b").unwrap();
+        assert_eq!(a.other["events"], json!({"from": "a"}));
+        assert_eq!(b.other["events"], json!({"from": "b"}));
+        assert_eq!(
+            b.experimental_capability("other/thing"),
+            Some(&json!({"from": "b"}))
+        );
+        assert_eq!(
+            a.extension("io.modelcontextprotocol/events"),
+            Some(&json!({"listChanged": true}))
+        );
+        assert!(b.has_resource_subscribe());
+    }
+
+    /// When the events extension was the only one, no empty map is sent.
+    #[test]
+    fn events_only_extensions_are_dropped_entirely() {
+        let a = init_with(json!({
+            "extensions": {"io.modelcontextprotocol/events": {}}
+        }));
+        let merged = merger::merge_initialize_results(vec![("a".into(), a)], vec![]);
+        assert!(merged.capabilities.extensions.is_none());
+        assert_eq!(merged.providers.servers_with_events(), vec!["a"]);
+    }
+
     #[test]
     fn test_resource_templates_list_broadcast() {
         // resources/templates/list should be broadcast

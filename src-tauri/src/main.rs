@@ -156,7 +156,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Branch based on mode
     if args.mcp_bridge {
-        run_bridge_mode(args.client_id).await
+        run_bridge_mode(args.client_id, args.url).await
     } else {
         run_gui_mode().await
     }
@@ -186,32 +186,33 @@ fn init_logging() {
 ///
 /// # Arguments
 /// * `client_id` - Optional client ID (auto-detects if None)
+/// * `url` - Optional gateway URL (`--url`; else LOCALROUTER_URL, else config)
 ///
 /// # Returns
 /// Ok on clean shutdown, Err on fatal errors
-async fn run_bridge_mode(client_id: Option<String>) -> anyhow::Result<()> {
+async fn run_bridge_mode(client_id: Option<String>, url: Option<String>) -> anyhow::Result<()> {
     eprintln!("==========================================================");
     eprintln!("LocalRouter - MCP Bridge Mode");
     eprintln!("==========================================================");
     eprintln!();
-    eprintln!("Connecting to LocalRouter server at http://localhost:3625");
-    eprintln!("Make sure the LocalRouter GUI is running!");
-    eprintln!();
 
-    // Create and run bridge (loads config for client secret only)
-    let bridge = mcp::StdioBridge::new(client_id, None).await.map_err(|e| {
-        eprintln!("ERROR: Failed to initialize bridge: {}", e);
-        eprintln!();
-        eprintln!("Common issues:");
-        eprintln!("  - LocalRouter GUI not running (start it first)");
-        eprintln!("  - Client not configured in config.yaml");
-        eprintln!("  - Client secret not found (run GUI once)");
-        eprintln!("  - LOCALROUTER_CLIENT_SECRET not set (if using env var)");
-        eprintln!();
-        e
-    })?;
+    // Create and run bridge (loads config for the client secret and port)
+    let bridge = mcp::StdioBridge::new(client_id, None, url)
+        .await
+        .map_err(|e| {
+            eprintln!("ERROR: Failed to initialize bridge: {}", e);
+            eprintln!();
+            eprintln!("Common issues:");
+            eprintln!("  - LocalRouter GUI not running (start it first)");
+            eprintln!("  - Client not configured in config.yaml");
+            eprintln!("  - Client secret not found (run GUI once)");
+            eprintln!("  - LOCALROUTER_CLIENT_SECRET not set (if using env var)");
+            eprintln!();
+            e
+        })?;
 
-    eprintln!("Bridge ready! Forwarding JSON-RPC requests...");
+    eprintln!("Bridge ready! Relaying MCP to {}", bridge.server_url());
+    eprintln!("Make sure the LocalRouter app is running!");
     eprintln!("==========================================================");
     eprintln!();
 
@@ -770,6 +771,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
 
             // Store managers
             app.manage(Arc::new(lr_replay::ReplayManager::new(config_manager.config_path().parent().ok_or("Config directory is unavailable")?.join("replay"))));
+            app.manage(Arc::new(lr_config::UiStateStore::open_in(config_manager.config_path().parent().ok_or("Config directory is unavailable")?)));
             app.manage(config_manager.clone());
             app.manage(client_manager.clone());
             app.manage(token_store.clone());
@@ -1523,6 +1525,32 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                     });
                 });
                 info!("Registered clients-changed listener for permission notifications");
+
+                // Push Relay settings take effect as soon as they are written.
+                // Every settings write goes through `ConfigManager::update`
+                // (which emits config-changed after syncing the client
+                // manager the relay reads clients from); client edits also
+                // emit clients-changed. Both reach the relay through
+                // `sync_push_relay_settings`, which is idempotent.
+                for event in ["config-changed", "clients-changed"] {
+                    let app_state = app_state.clone();
+                    app.listen(event, move |_event| {
+                        let app_state = app_state.clone();
+                        tauri::async_runtime::spawn(async move {
+                            app_state.sync_push_relay_settings();
+                        });
+                    });
+                }
+
+                // The held (Ask) queue changed: the Push Relay page refreshes
+                if let Some(relay) = &app_state.push_relay {
+                    let app_handle = app.handle().clone();
+                    relay.set_held_changed_listener(std::sync::Arc::new(move || {
+                        if let Err(e) = app_handle.emit("push-approvals-changed", ()) {
+                            tracing::debug!("Failed to emit push-approvals-changed: {}", e);
+                        }
+                    }));
+                }
 
                 // Re-evaluate pending firewall approvals when permissions or strategies change.
                 // clients-changed: covers client permission updates (MCP, model, guardrails)
@@ -2554,6 +2582,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            ui::commands_ui_state::get_ui_state,
+            ui::commands_ui_state::set_ui_state,
             ui::commands_icons::discover_resource_icon,
             ui::commands_replay::replay_current_policy,
             ui::commands_replay::get_response_cache_stats,
@@ -2963,6 +2993,20 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::get_skill,
             ui::commands::get_context_management_config,
             ui::commands::update_context_management_config,
+            // Push Relay commands
+            ui::commands_push_relay::get_push_relay_config,
+            ui::commands_push_relay::update_push_relay_config,
+            ui::commands_push_relay::list_push_sources,
+            ui::commands_push_relay::get_mcp_server_push_status,
+            ui::commands_push_relay::list_pending_push_approvals,
+            ui::commands_push_relay::submit_push_approval,
+            ui::commands_push_relay::send_push_test_event,
+            ui::commands_push_relay::preview_push_channel_message,
+            ui::commands_push_relay::get_client_push_settings,
+            ui::commands_push_relay::set_client_push_permission,
+            ui::commands_push_relay::remove_client_push_webhook_url,
+            ui::commands_push_relay::get_claude_code_mcp_setup,
+            ui::commands_push_relay::switch_claude_code_to_stdio_bridge,
             ui::commands::set_gateway_indexing_permission,
             ui::commands::list_virtual_mcp_indexing_info,
             ui::commands::set_virtual_indexing_permission,

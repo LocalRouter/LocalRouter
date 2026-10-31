@@ -20,11 +20,11 @@ import { Coins, Bot } from "lucide-react"
 import { FEATURES } from "@/constants/features"
 import { isValidHttpUrl } from "@/utils/url"
 import { categoryActionLabel } from "@/components/permissions/CategoryActionButton"
-import type { SafetyVerdict, CategoryActionRequired, SecretFindingSummary } from "@/types/tauri-commands"
+import type { SafetyVerdict, CategoryActionRequired, SecretFindingSummary, PushEventApprovalDetails } from "@/types/tauri-commands"
 
 export type ApprovalAction = "deny" | "deny_session" | "deny_always" | "block_categories" | "allow_once" | "redact_once" | "allow_session" | "allow_1_minute" | "allow_1_hour" | "allow_permanent" | "allow_categories" | "deny_1_hour" | "disable_client"
 
-export type RequestType = "marketplace" | "skill" | "model" | "tool" | "guardrail" | "free_tier_fallback" | "auto_router" | "secret_scan"
+export type RequestType = "marketplace" | "skill" | "model" | "tool" | "guardrail" | "free_tier_fallback" | "auto_router" | "secret_scan" | "push_event"
 
 /** Determine request type from server/tool names */
 export function getRequestType(details: {
@@ -35,7 +35,11 @@ export function getRequestType(details: {
   is_free_tier_fallback?: boolean
   is_auto_router_request?: boolean
   is_secret_scan_request?: boolean
+  is_push_event_request?: boolean
 }): RequestType {
+  if (details.is_push_event_request) {
+    return "push_event"
+  }
   if (details.is_secret_scan_request) {
     return "secret_scan"
   }
@@ -134,6 +138,12 @@ export function getHeaderContent(requestType: RequestType, notifyOnly?: boolean)
         title: "Secrets Detected",
         description: "Potential secrets found in outbound request",
       }
+    case "push_event":
+      return {
+        icon: <FEATURES.pushRelay.icon className={`h-5 w-5 ${FEATURES.pushRelay.color}`} />,
+        title: "Push Event Approval",
+        description: "An MCP server pushed an event; it is held until you decide",
+      }
     default:
       return {
         icon: <McpIcon className="h-5 w-5 text-blue-500" />,
@@ -195,6 +205,13 @@ export interface FirewallApprovalCardProps {
   guardrailFlaggedText?: string
   /** Marketplace listing details for install popups */
   marketplaceListing?: MarketplaceListingInfo | null
+  /** Push Relay approval: a held event or a new webhook callback URL */
+  isPushEventRequest?: boolean
+  pushEvent?: PushEventApprovalDetails | null
+  /** When the held event arrived (RFC 3339), if known */
+  pushReceivedAt?: string | null
+  /** "Allow all pending of this type" (held events only) */
+  onAllowAllPending?: () => void
   /** If not provided, all buttons are disabled (demo mode) */
   onAction?: (action: ApprovalAction) => void
   /** Dismiss handler for notify-only popups */
@@ -230,6 +247,295 @@ function formatConfidence(confidence: number | null): string {
 }
 
 export function FirewallApprovalCard({
+  clientName,
+  toolName,
+  serverName,
+  argumentsPreview,
+  isModelRequest,
+  isGuardrailRequest,
+  isFreeTierFallback,
+  isAutoRouterRequest,
+  isSecretScanRequest,
+  isNotifyOnly,
+  isInactive,
+  decisionAccepted,
+  secretScanFindings,
+  secretScanRequestJson,
+  secretScanLlmSource,
+  guardrailVerdicts,
+  guardrailDirection,
+  guardrailActions,
+  guardrailFlaggedText,
+  marketplaceListing,
+  isPushEventRequest,
+  pushEvent,
+  pushReceivedAt,
+  onAllowAllPending,
+  onAction,
+  onDismiss,
+  onReveal,
+  onAllowSecretPermanently,
+  onRedactPermanently,
+  onEdit,
+  submitting = false,
+  className,
+}: FirewallApprovalCardProps) {
+  if (isPushEventRequest && pushEvent && !isInactive) {
+    return (
+      <PushEventApprovalCard
+        className={className}
+        clientName={clientName}
+        details={pushEvent}
+        receivedAt={pushReceivedAt}
+        onAction={onAction}
+        onAllowAllPending={onAllowAllPending}
+        onEdit={onEdit}
+        submitting={submitting}
+      />
+    )
+  }
+  return (
+    <StandardApprovalCard
+      clientName={clientName}
+      toolName={toolName}
+      serverName={serverName}
+      argumentsPreview={argumentsPreview}
+      isModelRequest={isModelRequest}
+      isGuardrailRequest={isGuardrailRequest}
+      isFreeTierFallback={isFreeTierFallback}
+      isAutoRouterRequest={isAutoRouterRequest}
+      isSecretScanRequest={isSecretScanRequest}
+      isNotifyOnly={isNotifyOnly}
+      isInactive={isInactive}
+      decisionAccepted={decisionAccepted}
+      secretScanFindings={secretScanFindings}
+      secretScanRequestJson={secretScanRequestJson}
+      secretScanLlmSource={secretScanLlmSource}
+      guardrailVerdicts={guardrailVerdicts}
+      guardrailDirection={guardrailDirection}
+      guardrailActions={guardrailActions}
+      guardrailFlaggedText={guardrailFlaggedText}
+      marketplaceListing={marketplaceListing}
+      onAction={onAction}
+      onDismiss={onDismiss}
+      onReveal={onReveal}
+      onAllowSecretPermanently={onAllowSecretPermanently}
+      onRedactPermanently={onRedactPermanently}
+      onEdit={onEdit}
+      submitting={submitting}
+      className={className}
+    />
+  )
+}
+
+/** "3 min ago" for an RFC 3339 timestamp. */
+function timeAgo(iso: string): string {
+  const t = Date.parse(iso)
+  if (Number.isNaN(t)) return iso
+  const secs = Math.max(0, Math.round((Date.now() - t) / 1000))
+  if (secs < 5) return "just now"
+  if (secs < 60) return `${secs} s ago`
+  if (secs < 3600) return `${Math.round(secs / 60)} min ago`
+  return `${Math.round(secs / 3600)} h ago`
+}
+
+/** Pretty JSON for the payload view; strings are shown as they are. */
+export function formatPushPayload(data: unknown): string {
+  if (typeof data === "string") return data
+  try {
+    return JSON.stringify(data, null, 2) ?? "null"
+  } catch {
+    return String(data)
+  }
+}
+
+interface PushEventApprovalCardProps {
+  clientName: string
+  details: PushEventApprovalDetails
+  receivedAt?: string | null
+  onAction?: (action: ApprovalAction) => void
+  onAllowAllPending?: () => void
+  onEdit?: () => void
+  submitting?: boolean
+  className?: string
+}
+
+/** A held push event (or a new webhook callback URL) awaiting a decision. */
+export function PushEventApprovalCard({
+  clientName,
+  details,
+  receivedAt,
+  onAction,
+  onAllowAllPending,
+  onEdit,
+  submitting = false,
+  className,
+}: PushEventApprovalCardProps) {
+  const isWebhookUrl = details.kind === "webhook_url"
+  const disabled = !onAction || submitting
+  const act = (action: ApprovalAction) => {
+    if (!submitting) onAction?.(action)
+  }
+  // pending_of_type includes this event
+  const othersOfType = Math.max(0, details.pending_of_type - 1)
+  const othersForClient = Math.max(0, details.pending_for_client - 1)
+  const header = getHeaderContent("push_event")
+  if (isWebhookUrl) {
+    header.title = "New Webhook URL"
+    header.description = "A client asked for events to be delivered to a callback URL it has not used before"
+  }
+
+  return (
+    <div className={className}>
+      <div className="mb-3 flex-shrink-0">
+        <div className="flex items-center gap-2 mb-0.5">
+          {header.icon}
+          <h1 className="text-sm font-bold">{header.title}</h1>
+        </div>
+        <p className="text-xs text-muted-foreground">{header.description}</p>
+      </div>
+
+      <div className="flex-1 overflow-auto flex flex-col min-h-0">
+        <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-xs flex-shrink-0">
+          <span className="text-muted-foreground">Client:</span>
+          <span className="font-medium truncate">{clientName}</span>
+          <span className="text-muted-foreground">Server:</span>
+          <span className="truncate">{details.server_name}</span>
+          <span className="text-muted-foreground">Event:</span>
+          <code className="font-mono bg-muted px-1 py-0.5 rounded truncate" title={details.qualified_name}>
+            {details.event_name}
+          </code>
+          {isWebhookUrl ? (
+            <>
+              <span className="text-muted-foreground">URL:</span>
+              <code className="font-mono bg-muted px-1 py-0.5 rounded break-all">{details.webhook_url}</code>
+            </>
+          ) : (
+            <>
+              {receivedAt && (
+                <>
+                  <span className="text-muted-foreground">Received:</span>
+                  <span title={receivedAt}>{timeAgo(receivedAt)}</span>
+                </>
+              )}
+              {details.ingress_mode && (
+                <>
+                  <span className="text-muted-foreground">Via:</span>
+                  <span>{details.ingress_mode === "channel" ? "Claude channel" : details.ingress_mode === "test" ? "LocalRouter test source" : `MCP Events (${details.ingress_mode})`}</span>
+                </>
+              )}
+            </>
+          )}
+        </div>
+
+        {!isWebhookUrl && (othersOfType > 0 || othersForClient > 0) && (
+          <p className="mt-2 text-xs text-amber-600 dark:text-amber-400 flex-shrink-0">
+            {othersOfType > 0
+              ? `${othersOfType} more ${details.event_name} event${othersOfType === 1 ? "" : "s"} waiting`
+              : null}
+            {othersOfType > 0 && othersForClient > othersOfType ? " · " : null}
+            {othersForClient > othersOfType
+              ? `${othersForClient} held for ${clientName} in total`
+              : null}
+          </p>
+        )}
+
+        {!isWebhookUrl && (
+          <div className="mt-2 flex flex-col min-h-0 flex-1">
+            <span className="text-[10px] font-semibold text-muted-foreground mb-0.5">Payload</span>
+            <pre className="text-[11px] font-mono bg-muted/50 rounded px-2 py-1.5 whitespace-pre-wrap break-words overflow-auto min-h-[3rem] max-h-56 leading-relaxed">
+              {formatPushPayload(details.data)}
+            </pre>
+          </div>
+        )}
+      </div>
+
+      <div className="flex gap-2 pt-3 mt-auto flex-shrink-0">
+        <div className="flex flex-1">
+          <Button
+            variant="destructive"
+            className={`flex-1 h-10 font-bold ${isWebhookUrl ? "" : "rounded-r-none"}`}
+            onClick={() => act("deny")}
+            disabled={disabled}
+          >
+            Deny
+          </Button>
+          {!isWebhookUrl && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="destructive"
+                  className="h-10 px-2 rounded-l-none border-l border-red-700"
+                  aria-label="More deny options"
+                  disabled={disabled}
+                >
+                  <ChevronDown className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start">
+                <DropdownMenuItem onClick={() => act("deny_session")}>
+                  Deny this event type for session
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => act("deny_always")}>
+                  Turn this event type off
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+        </div>
+
+        {!isWebhookUrl && onEdit && (
+          <Button
+            className="h-10 px-3 bg-yellow-600 hover:bg-yellow-700 dark:bg-[#807000] dark:hover:bg-[#6b5e00] text-white font-bold"
+            onClick={onEdit}
+            disabled={disabled}
+          >
+            <Pencil className="h-3.5 w-3.5 mr-1" />
+            Edit
+          </Button>
+        )}
+
+        <div className="flex flex-1">
+          <Button
+            className="flex-1 h-10 rounded-r-none bg-emerald-600 hover:bg-emerald-700 text-white font-bold"
+            onClick={() => act("allow_once")}
+            disabled={disabled}
+          >
+            Allow
+          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                className="h-10 px-2 rounded-l-none border-l border-emerald-700 bg-emerald-600 hover:bg-emerald-700 text-white"
+                aria-label="More allow options"
+                disabled={disabled}
+              >
+                <ChevronDown className="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              {!isWebhookUrl && othersOfType > 0 && onAllowAllPending && (
+                <DropdownMenuItem onClick={() => { if (!submitting) onAllowAllPending() }}>
+                  Allow all {othersOfType + 1} pending of this type
+                </DropdownMenuItem>
+              )}
+              {!isWebhookUrl && (
+                <DropdownMenuItem onClick={() => act("allow_session")}>
+                  Allow this event type for session
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuItem onClick={() => act("allow_permanent")}>
+                {isWebhookUrl ? "Always allow this URL" : "Always allow this event type"}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function StandardApprovalCard({
   clientName,
   toolName,
   serverName,

@@ -64,6 +64,8 @@ fn create_test_client(id: &str, name: &str, enabled: bool, strategy_id: &str) ->
         client_tools_indexing: None,
         memory_enabled: None,
         memory_folder: None,
+        push_permissions: Default::default(),
+        push_webhook_urls: Vec::new(),
     }
 }
 

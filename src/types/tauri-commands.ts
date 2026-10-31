@@ -28,6 +28,12 @@ export type DiscoveredResourceIcon = string | null
 /** Rust: src-tauri/src/ui/commands.rs - show_approval_popup returns (). */
 export type ShowApprovalPopupResult = null
 
+/**
+ * Rust: src-tauri/src/ui/commands_ui_state.rs - get_ui_state returns
+ * BTreeMap<String, serde_json::Value> (durable UI state, `ui_state.json`).
+ */
+export type UiStateMap = Record<string, unknown>
+
 // =============================================================================
 // Permission & Access Control Types
 // Rust: crates/lr-config/src/types.rs
@@ -312,6 +318,10 @@ export interface ClientInfo {
   reverse_proxy?: ClientReverseProxy | null
   guardrails_active: boolean
   json_repair_active: boolean
+  /** Push Relay permission tree (client → server → event type; absent = inherit) */
+  push_permissions: PushPermissions
+  /** Webhook callback URLs the user approved for this client */
+  push_webhook_urls: string[]
 }
 
 /**
@@ -1569,6 +1579,310 @@ export interface SkillsConfig {
   async_enabled: boolean
   tool_name: string
 }
+
+// =============================================================================
+// Push Relay Types
+// Rust: crates/lr-config/src/push_relay.rs, src-tauri/src/ui/commands_push_relay.rs
+// =============================================================================
+
+/**
+ * Allow / Ask / Off for pushed events — the same vocabulary as MCP permissions
+ * (PermissionState). Rust reads an older `block` as `off`.
+ * Rust: crates/lr-config/src/push_relay.rs - PushPermission enum
+ */
+export type PushPermission = 'allow' | 'ask' | 'off'
+
+/**
+ * Per-client push permission tree; an absent entry inherits from the level above
+ * (event type → server → client → global default).
+ * Rust: crates/lr-config/src/push_relay.rs - PushPermissions struct
+ */
+export interface PushPermissions {
+  /** Client-wide override (absent = inherit the global default) */
+  global?: PushPermission | null
+  /** Per upstream server id (omitted when empty) */
+  servers?: Record<string, PushPermission>
+  /** Per event type, keyed `server_id__event_name` (omitted when empty) */
+  events?: Record<string, PushPermission>
+}
+
+/**
+ * Delivery mode an upstream offers for an event type (SEP-3415).
+ * Rust: crates/lr-config/src/push_relay.rs - EventDeliveryMode enum
+ */
+export type EventDeliveryMode = 'push' | 'poll' | 'webhook'
+
+/**
+ * Global Push Relay settings: the default permission (Allow / Ask / Off, the
+ * only global control), the Claude Channels rate and how much event history
+ * each client keeps. Every other limit is internal to the relay and not
+ * configurable.
+ * Rust: src-tauri/src/ui/commands_push_relay.rs - PushRelayConfigView struct
+ */
+export interface PushRelayConfig {
+  /** Off with no client override enabling anything turns Push Relay off entirely */
+  default_permission: PushPermission
+  /** Claude Channels messages per client session per minute (default 10, 1–600) */
+  channel_messages_per_minute: number
+  /** Hours an event stays in a client's journal (default 24, 1–720) */
+  history_retention_hours: number
+  /** Events kept in each client's journal (default 10,000, 100–1,000,000) */
+  history_max_events: number
+}
+
+/**
+ * One event type an upstream offers.
+ * Rust: src-tauri/src/ui/commands_push_relay.rs - PushEventTypeInfo struct
+ */
+export interface PushEventTypeInfo {
+  /** The upstream's own (unqualified) event name */
+  name: string
+  description: string | null
+  modes: EventDeliveryMode[]
+  /** Push or poll is offered (webhook-only types are not supported) */
+  supported: boolean
+}
+
+/**
+ * Remembered push capabilities of one MCP server.
+ * Rust: src-tauri/src/ui/commands_push_relay.rs - PushSourceInfo struct
+ */
+export interface PushSourceInfo {
+  server_id: string
+  server_name: string
+  enabled: boolean
+  /** none = never observed; stale = observed under a different server configuration */
+  snapshot_status: 'none' | 'stale' | 'current'
+  protocol_version: string | null
+  /** When the remembered capabilities last changed (RFC 3339) */
+  observed_at: string | null
+  channels: boolean
+  resource_subscribe: boolean
+  events: PushEventTypeInfo[]
+  has_consumable_push: boolean
+  /**
+   * Enabled clients that may receive at least one of this server's push sources
+   * (MCP access and a permission other than Off); 0 when push is off for all.
+   */
+  receiving_clients: number
+}
+
+/** Live ingress state of one upstream event type */
+export type PushIngressState = 'listening' | 'connecting' | 'reconnecting' | 'idle'
+
+/**
+ * Live ingress of one upstream event type.
+ * Rust: src-tauri/src/ui/commands_push_relay.rs - PushEventIngressStatus struct
+ */
+export interface PushEventIngressStatus {
+  /** The upstream's own event name (`channel.message` for Claude Code channel messages) */
+  event: string
+  /** push, poll or channel while LocalRouter listens */
+  ingress_mode: 'push' | 'poll' | 'channel' | null
+  state: PushIngressState
+  /** Why the last attempt failed (while reconnecting) */
+  last_error: string | null
+  /** Open upstream subscriptions (one per connection and arguments) */
+  subscriptions: number
+  /** Events received since LocalRouter started */
+  events_received: number
+  /** RFC 3339 */
+  last_event_at: string | null
+}
+
+/**
+ * What LocalRouter is doing with one MCP server's push right now, from the running relay.
+ * Rust: src-tauri/src/ui/commands_push_relay.rs - McpServerPushStatus struct
+ */
+export interface McpServerPushStatus {
+  server_id: string
+  /** The Push Relay runs in this process */
+  relay_running: boolean
+  /** At least one event type is being listened to */
+  listening: boolean
+  /** Event types with live ingress or events received since start; a missing type is idle */
+  event_types: PushEventIngressStatus[]
+  /** Events received from the server since LocalRouter started */
+  events_received: number
+  /** RFC 3339 */
+  last_event_at: string | null
+  /** Clients consuming the server's events right now (stream, recent poll, webhook, watch, channel) */
+  consuming_clients: number
+  /** Downstream sessions among them */
+  consuming_sessions: number
+}
+
+/**
+ * A server in a client's push tree, with the client's MCP access to it.
+ * Rust: src-tauri/src/ui/commands_push_relay.rs - ClientPushServerAccess struct
+ */
+export interface ClientPushServerAccess {
+  server_id: string
+  /** MCP permissions allow the server; push never widens MCP access */
+  mcp_access: boolean
+  effective: PushPermission
+}
+
+/**
+ * A client's Push Relay settings and what they resolve to.
+ * Rust: src-tauri/src/ui/commands_push_relay.rs - ClientPushSettings struct
+ */
+export interface ClientPushSettings {
+  client_id: string
+  permissions: PushPermissions
+  webhook_urls: string[]
+  global_default: PushPermission
+  effective_client: PushPermission
+  /** Any push can reach this client (the global default or an override is not Off) */
+  receives_push: boolean
+  servers: ClientPushServerAccess[]
+}
+
+/**
+ * LocalRouter's entry in Claude Code's config and how to launch Claude.
+ * Rust: src-tauri/src/ui/commands_push_relay.rs - ClaudeCodeMcpSetup struct
+ */
+export interface ClaudeCodeMcpSetup {
+  /** http = tools only; stdio_bridge = tools and Channels */
+  transport: 'none' | 'http' | 'stdio_bridge' | 'other'
+  config_path: string
+  launch_command: string
+  binary_path: string | null
+}
+
+// --- Held events (Ask) ---------------------------------------------------------
+// Rust: src-tauri/src/ui/commands_push_relay.rs. The `push-approvals-changed`
+// event fires whenever the held queue changes.
+
+/**
+ * Decision recorded for a pushed event (Monitor `McpPushEvent` record).
+ * Records stored with the older `blocked` are shown as `off`
+ * (see `normalizePushDecision`).
+ * Rust: crates/lr-mcp/src/gateway/push_relay/relay.rs - monitor decisions
+ */
+export type PushEventDecision =
+  | 'pending'
+  | 'allowed'
+  | 'asked_allowed'
+  | 'asked_edited'
+  | 'denied'
+  | 'off'
+  | 'hold_cap'
+  | 'too_large'
+
+/**
+ * How an occurrence reached LocalRouter (Rust: journal.rs - IngressMode).
+ * `test` is the built-in test source (send_push_test_event), not an upstream.
+ */
+export type PushIngressMode = 'push' | 'poll' | 'channel' | 'test'
+
+/**
+ * What send_push_test_event sent.
+ * Rust: src-tauri/src/ui/commands_push_relay.rs - PushTestEventResult struct
+ */
+export interface PushTestEventResult {
+  /** Namespaced event id, `localrouter__test-…` */
+  event_id: string
+  /** `localrouter__test.event` */
+  name: string
+  /** Clients it was admitted to, each under its own permission (Allow / Ask / Block) */
+  client_ids: string[]
+}
+
+/**
+ * A Claude Code channel message (`notifications/claude/channel`) as a STDIO
+ * bridge session receives it, rendered by the relay.
+ * Rust: src-tauri/src/ui/commands_push_relay.rs - PushChannelPreview struct
+ */
+export interface PushChannelPreview {
+  content: string
+  /** `source`, `event`, `event_id` */
+  meta: Record<string, string>
+}
+
+/**
+ * How an occurrence is delivered to a client (Monitor `egress_modes`).
+ * Rust: relay.rs - HolderKind::egress (`tools` covers EventPoll/EventWait).
+ */
+export type PushEgressMode = 'stream' | 'poll' | 'channel' | 'webhook' | 'tools'
+
+/**
+ * One held (Ask) event awaiting a decision for one client.
+ * Rust: src-tauri/src/ui/commands_push_relay.rs - PendingPushApproval struct
+ */
+export interface PendingPushApproval {
+  /** The held event's id; pass to submit_push_approval */
+  request_id: string
+  client_id: string
+  client_name: string
+  server_id: string
+  /** Slugified server name, as used in qualified event names */
+  server_name: string
+  /** Upstream (unqualified) event name */
+  event_name: string
+  /** `<server slug>__<event>` */
+  qualified_name: string
+  event_id: string
+  ingress: PushIngressMode
+  /** When the event was held (RFC 3339) */
+  received_at: string
+  /** The event's `data`, as it would be delivered */
+  data: unknown
+  /** Position in its (client, event type) queue; 0 = being asked now */
+  position: number
+  /** Other held events of the same type for this client */
+  pending_of_type: number
+  /** Already decided, waiting for the events ahead of it */
+  decided: boolean
+  /** The approval popup asking about it, while one is open */
+  firewall_request_id: string | null
+}
+
+/**
+ * What a Push Relay approval popup asks about.
+ * Rust: crates/lr-mcp/src/gateway/firewall.rs - PushApprovalKind enum
+ */
+export type PushApprovalKind = 'event' | 'webhook_url'
+
+/**
+ * Push Relay details on a firewall approval (`push_event_details`).
+ * Rust: crates/lr-mcp/src/gateway/firewall.rs - PushEventApprovalDetails struct
+ */
+export interface PushEventApprovalDetails {
+  kind: PushApprovalKind
+  /** Relay id of the held item (`request_id` for submit_push_approval) */
+  hold_id: string
+  server_id: string
+  /** Slugified server name */
+  server_name: string
+  /** Upstream (unqualified) event name */
+  event_name: string
+  /** `<server slug>__<event>` */
+  qualified_name: string
+  event_id: string
+  /** `push`, `poll` or `channel` (empty for webhook URL approvals) */
+  ingress_mode: string
+  /** The event's data as received (`{url}` for webhook URL approvals) */
+  data: unknown
+  /** How the event is rendered for Claude Code Channels */
+  rendered_content: string
+  webhook_url?: string | null
+  /** Held events of this client waiting for a decision */
+  pending_for_client: number
+  /** Of those, of this event type (including this one) */
+  pending_of_type: number
+}
+
+/** Answer to a held event. Type-level actions apply to later events of the type; `_always` writes the client's permission tree. */
+export type PushApprovalAction =
+  | 'allow'
+  | 'allow_edited'
+  | 'deny'
+  | 'allow_all_pending_of_type'
+  | 'allow_type_session'
+  | 'deny_type_session'
+  | 'allow_type_always'
+  | 'deny_type_always'
 
 /**
  * Effective context management configuration (every field resolved).
@@ -2882,7 +3196,7 @@ export interface ClientFeatureStatus {
 
 /** Params for get_feature_clients_status */
 export interface GetFeatureClientsStatusParams {
-  feature: 'json_repair' | 'prompt_compression' | 'guardrails' | 'secret_scanning' | 'catalog_compression' | 'context_management' | 'memory' | 'decision_routing' | 'strong_weak' | 'coding_agents'
+  feature: 'json_repair' | 'prompt_compression' | 'guardrails' | 'secret_scanning' | 'catalog_compression' | 'context_management' | 'memory' | 'decision_routing' | 'strong_weak' | 'coding_agents' | 'push_relay'
 }
 
 // =============================================================================
@@ -3583,7 +3897,7 @@ export interface GetFirewallFullArgumentsParams {
 
 /** Params for debug_trigger_firewall_popup */
 export interface DebugTriggerFirewallPopupParams {
-  popupType?: "mcp_tool" | "llm_model" | "skill" | "marketplace" | "free_tier_fallback" | null
+  popupType?: "mcp_tool" | "llm_model" | "skill" | "marketplace" | "free_tier_fallback" | "coding_agent" | "guardrail" | "secret_scan" | "secret_scan_notify" | "push_event" | null
   sendMultiple?: boolean | null
 }
 
@@ -4999,7 +5313,7 @@ export interface MemoryReindexComplete {
 export type MonitorEventType =
   | 'llm_call'
   | 'mcp_tool_call' | 'mcp_resource_read' | 'mcp_prompt_get'
-  | 'mcp_elicitation' | 'mcp_sampling'
+  | 'mcp_elicitation' | 'mcp_sampling' | 'mcp_push_event'
   | 'guardrail_scan' | 'guardrail_response_scan' | 'secret_scan'
   | 'route_llm_classify'
   | 'routing_decision' | 'auth_error' | 'access_denied'
@@ -5189,6 +5503,7 @@ export type InterceptCategory =
   | 'secret_scan'
   | 'sampling'
   | 'elicitation'
+  | 'push_event'
 
 /** Active intercept rule for the monitor page (transient, not persisted) */
 /** Rust: crates/lr-mcp/src/gateway/firewall.rs - InterceptRule struct */
@@ -5311,3 +5626,57 @@ export interface BindRoutingProfileParams { strategyId: string; profileId: strin
 
 /** Params for discover_resource_icon */
 export interface DiscoverResourceIconParams { endpointUrl: string }
+
+// Push Relay Command Parameters
+
+/** Params for get_push_relay_config */
+export type GetPushRelayConfigParams = Record<string, never>
+/** Params for update_push_relay_config (a value out of its bounds is refused) */
+export interface UpdatePushRelayConfigParams {
+  defaultPermission?: PushPermission
+  channelMessagesPerMinute?: number
+  historyRetentionHours?: number
+  historyMaxEvents?: number
+}
+/** Params for list_push_sources */
+export type ListPushSourcesParams = Record<string, never>
+/** Params for get_mcp_server_push_status */
+export interface GetMcpServerPushStatusParams { serverId: string }
+/** Params for list_pending_push_approvals (all clients when clientId is omitted) */
+export interface ListPendingPushApprovalsParams { clientId?: string | null }
+/** Params for submit_push_approval (returns how many held events were decided) */
+export interface SubmitPushApprovalParams { requestId: string; action: PushApprovalAction; editedData?: unknown | null }
+/** Params for get_client_push_settings */
+export interface GetClientPushSettingsParams { clientId: string }
+/** Params for set_client_push_permission (state null = inherit) */
+export interface SetClientPushPermissionParams {
+  clientId: string
+  level: 'global' | 'server' | 'event'
+  serverId?: string | null
+  eventName?: string | null
+  state: PushPermission | null
+}
+/** Params for remove_client_push_webhook_url */
+export interface RemoveClientPushWebhookUrlParams { clientId: string; url: string }
+/**
+ * Params for send_push_test_event. Reaches only sessions that opted into push
+ * testing (Try it out's MCP connection; a STDIO bridge with LOCALROUTER_PUSH_TEST=1),
+ * of clientId when given. `data` replaces the default `{message, sent_at}`.
+ */
+export interface SendPushTestEventParams { clientId?: string | null; message?: string | null; data?: unknown | null }
+/** Params for preview_push_channel_message: an occurrence in SEP-3415 wire form */
+export interface PreviewPushChannelMessageParams {
+  event: { eventId?: string; name: string; timestamp?: string; data?: unknown }
+}
+/** Params for get_claude_code_mcp_setup */
+export interface GetClaudeCodeMcpSetupParams { clientId: string }
+/** Params for switch_claude_code_to_stdio_bridge */
+export interface SwitchClaudeCodeToStdioBridgeParams { clientId: string }
+
+/** Params for get_ui_state */
+export type GetUiStateParams = Record<string, never>
+/**
+ * Params for set_ui_state. Key ≤ 200 characters, value ≤ 16 KB of JSON, at
+ * most 500 keys; `null` removes the key.
+ */
+export interface SetUiStateParams { key: string; value: unknown }

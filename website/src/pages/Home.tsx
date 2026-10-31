@@ -37,6 +37,10 @@ import {
   Server,
   Repeat,
   Scale,
+  BellRing,
+  ArrowLeftRight,
+  Eye,
+  Pencil,
 } from 'lucide-react'
 
 export default function Home() {
@@ -1240,6 +1244,146 @@ export default function Home() {
                   Learn more <span aria-hidden="true">&rarr;</span>
                 </Link>
               </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Push Relay */}
+      <section className="border-b py-20 sm:py-32 bg-muted/30">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="grid gap-12 lg:grid-cols-2 lg:gap-16 items-center">
+            {/* Visual: push types in → LocalRouter → push types out, with a held event */}
+            <div className="relative order-2 lg:order-1 overflow-x-auto">
+              <div className="rounded-xl border-2 border-slate-700 bg-gradient-to-br from-slate-900 to-slate-950 p-4 shadow-2xl">
+                <svg viewBox="0 0 560 350" className="w-full" role="img" aria-label="Upstream MCP servers push events to LocalRouter as an MCP Events stream, MCP Events polling or a Claude Code Channel. LocalRouter delivers each event in the form each app understands: a Channel to Claude Code, a webhook to OpenClaw, and polling tools to Codex. An event set to Ask is held for approval with Deny, Edit and Allow.">
+                  {/* Column labels */}
+                  <text x="20" y="20" fill="#38bdf8" fontSize="9" fontWeight="700" letterSpacing="1.5">UPSTREAM SERVERS</text>
+                  <text x="540" y="20" textAnchor="end" fill="#38bdf8" fontSize="9" fontWeight="700" letterSpacing="1.5">APPS</text>
+
+                  {/* Upstream servers, each labelled with the push it offers */}
+                  <rect x="20" y="30" width="150" height="48" rx="10" fill="rgba(255,255,255,0.04)" stroke="#475569" strokeWidth="1.5" />
+                  <image href="/icons/vocalcord.svg" x="32" y="46" width="16" height="16" />
+                  <text x="56" y="51" fill="#f8fafc" fontSize="12" fontWeight="500">VocalCord</text>
+                  <text x="56" y="66" fill="#38bdf8" fontSize="10">Events stream</text>
+
+                  <rect x="20" y="92" width="150" height="48" rx="10" fill="rgba(255,255,255,0.04)" stroke="#475569" strokeWidth="1.5" />
+                  <Server x={32} y={108} width={16} height={16} color="#94a3b8" strokeWidth={2} />
+                  <text x="56" y="113" fill="#f8fafc" fontSize="12" fontWeight="500">Any MCP server</text>
+                  <text x="56" y="128" fill="#a78bfa" fontSize="10">Events poll</text>
+
+                  <rect x="20" y="154" width="150" height="48" rx="10" fill="rgba(255,255,255,0.04)" stroke="#475569" strokeWidth="1.5" />
+                  <image href="/icons/netget.svg" x="32" y="170" width="16" height="16" />
+                  <text x="56" y="175" fill="#f8fafc" fontSize="12" fontWeight="500">NetGet</text>
+                  <text x="56" y="190" fill="#fb923c" fontSize="10">Channel</text>
+
+                  {/* servers → hub */}
+                  <path d="M170,54 C206,54 202,84 235,84" fill="none" stroke="#38bdf8" strokeWidth="2" strokeLinecap="round" />
+                  <line x1="170" y1="116" x2="235" y2="116" stroke="#a78bfa" strokeWidth="2" strokeLinecap="round" />
+                  <path d="M170,178 C206,178 202,148 235,148" fill="none" stroke="#fb923c" strokeWidth="2" strokeLinecap="round" />
+
+                  {/* LocalRouter hub */}
+                  <rect x="235" y="30" width="90" height="172" rx="14" fill="#1e293b" stroke="#475569" strokeWidth="1.5" />
+                  <text x="280" y="50" textAnchor="middle" fill="#e2e8f0" fontSize="11" fontWeight="600" letterSpacing="0.5">LocalRouter</text>
+                  <rect x="245" y="62" width="70" height="22" rx="11" fill="#0f172a" stroke="#475569" strokeWidth="1.2" />
+                  <text x="280" y="77" textAnchor="middle" fill="#cbd5e1" fontSize="9" fontWeight="600">one event</text>
+                  <rect x="241" y="94" width="78" height="22" rx="11" fill="#451a03" stroke="#f59e0b" strokeWidth="1.2" />
+                  <text x="280" y="108.5" textAnchor="middle" fill="#fcd34d" fontSize="7.5" fontWeight="600">Block · Ask · Allow</text>
+                  <rect x="245" y="126" width="70" height="22" rx="11" fill="#0f172a" stroke="#475569" strokeWidth="1.2" />
+                  <text x="280" y="141" textAnchor="middle" fill="#cbd5e1" fontSize="9" fontWeight="600">Monitor</text>
+                  <rect x="245" y="158" width="70" height="22" rx="11" fill="#0f172a" stroke="#475569" strokeWidth="1.2" />
+                  <text x="280" y="173" textAnchor="middle" fill="#cbd5e1" fontSize="9" fontWeight="600">translate</text>
+                  <text x="280" y="195" textAnchor="middle" fill="#64748b" fontSize="8">same event id</text>
+
+                  {/* hub → apps */}
+                  <path d="M325,84 C358,84 354,54 390,54" fill="none" stroke="#fb923c" strokeWidth="2" strokeLinecap="round" />
+                  <line x1="325" y1="116" x2="390" y2="116" stroke="#34d399" strokeWidth="2" strokeLinecap="round" />
+                  <path d="M325,148 C358,148 354,178 390,178" fill="none" stroke="#60a5fa" strokeWidth="2" strokeLinecap="round" />
+
+                  {/* Apps, each labelled with what it receives */}
+                  <rect x="390" y="30" width="150" height="48" rx="10" fill="rgba(255,255,255,0.04)" stroke="#475569" strokeWidth="1.5" />
+                  <image href="/icons/anthropic.svg" x="402" y="46" width="16" height="16" />
+                  <text x="426" y="51" fill="#f8fafc" fontSize="12" fontWeight="500">Claude Code</text>
+                  <text x="426" y="66" fill="#fb923c" fontSize="10">Channel</text>
+
+                  <rect x="390" y="92" width="150" height="48" rx="10" fill="rgba(255,255,255,0.04)" stroke="#475569" strokeWidth="1.5" />
+                  <image href="/icons/openclaw.png" x="402" y="108" width="16" height="16" />
+                  <text x="426" y="113" fill="#f8fafc" fontSize="12" fontWeight="500">OpenClaw</text>
+                  <text x="426" y="128" fill="#34d399" fontSize="10">Webhook</text>
+
+                  <rect x="390" y="154" width="150" height="48" rx="10" fill="rgba(255,255,255,0.04)" stroke="#475569" strokeWidth="1.5" />
+                  <image href="/icons/chatgpt.svg" x="402" y="170" width="16" height="16" />
+                  <text x="426" y="175" fill="#f8fafc" fontSize="12" fontWeight="500">Codex</text>
+                  <text x="426" y="190" fill="#60a5fa" fontSize="10">Polling tools</text>
+
+                  {/* An event set to Ask waits for a decision */}
+                  <line x1="280" y1="202" x2="280" y2="226" stroke="#f59e0b" strokeWidth="1.5" strokeDasharray="3 3" />
+                  <text x="288" y="218" fill="#fbbf24" fontSize="9">held</text>
+                  <foreignObject x="150" y="226" width="260" height="118">
+                    <div className="dark h-full flex flex-col rounded-lg border-2 border-border bg-background p-2 text-foreground">
+                      <div className="flex items-center gap-1.5">
+                        <BellRing className="h-3.5 w-3.5 text-amber-500" />
+                        <span className="text-[11px] font-bold leading-none">Push Event Approval</span>
+                      </div>
+                      <p className="mt-0.5 text-[9px] leading-tight text-muted-foreground">Held until you decide, before it reaches the app</p>
+                      <div className="mt-1.5 grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 text-[9px] leading-tight">
+                        <span className="text-muted-foreground">Client:</span>
+                        <span className="font-medium truncate">Claude Code</span>
+                        <span className="text-muted-foreground">Event:</span>
+                        <code className="font-mono truncate">vocalcord__message.received</code>
+                      </div>
+                      <div className="mt-auto flex gap-1.5">
+                        <div className="flex h-6 flex-1 items-center justify-center rounded-md bg-destructive text-[10px] font-bold text-destructive-foreground">Deny</div>
+                        <div className="flex h-6 items-center justify-center rounded-md bg-[#807000] px-2 text-[10px] font-bold text-white">
+                          <Pencil className="mr-1 h-2.5 w-2.5" />
+                          Edit
+                        </div>
+                        <div className="flex h-6 flex-1 items-center justify-center rounded-md bg-emerald-600 text-[10px] font-bold text-white">Allow</div>
+                      </div>
+                    </div>
+                  </foreignObject>
+                </svg>
+              </div>
+            </div>
+
+            {/* Text */}
+            <div className="order-1 lg:order-2">
+              <div className="flex items-center gap-2 mb-4">
+                <BellRing className="h-5 w-5 text-sky-500" />
+                <span className="text-sm font-medium text-sky-500 uppercase tracking-wide">Push Relay</span>
+              </div>
+              <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
+                Push Notifications, Translated
+              </h2>
+              <p className="mt-4 text-lg text-muted-foreground">
+                MCP servers can push events — new messages, finished jobs, alerts. LocalRouter receives every kind of push and delivers it in whatever form each app understands, so a server speaking MCP Events can wake Claude Code through Channels, and an app with no push support at all still gets it through polling tools.
+              </p>
+              <ul className="mt-8 space-y-4">
+                <li className="flex gap-3">
+                  <ArrowLeftRight className="h-5 w-5 shrink-0 text-sky-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Any push in, any push out</span>
+                    <p className="text-sm text-muted-foreground">MCP Events (push, poll, and webhooks out to apps), Claude Code Channels and resource updates, translated between each other automatically</p>
+                  </div>
+                </li>
+                <li className="flex gap-3">
+                  <Eye className="h-5 w-5 shrink-0 text-sky-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">See and control every event</span>
+                    <p className="text-sm text-muted-foreground">Allow, Ask or Off per app, server and event type; inspect, hold or edit events in Monitor before they reach the app</p>
+                  </div>
+                </li>
+                <li className="flex gap-3">
+                  <Blocks className="h-5 w-5 shrink-0 text-sky-500 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Works with every app</span>
+                    <p className="text-sm text-muted-foreground">Native push where the app supports it, LocalRouter&apos;s polling tools where it doesn&apos;t</p>
+                  </div>
+                </li>
+              </ul>
+              <Link to="/docs/push-relay" className="mt-6 inline-flex items-center gap-1 text-sm font-medium text-sky-500 hover:text-sky-400 transition-colors">
+                Learn more <span aria-hidden="true">&rarr;</span>
+              </Link>
             </div>
           </div>
         </div>

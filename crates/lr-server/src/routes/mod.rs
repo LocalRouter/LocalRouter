@@ -5,6 +5,7 @@ pub mod chat;
 pub mod completions;
 pub mod decisions;
 pub mod embeddings;
+pub mod events_watch;
 pub mod files;
 pub mod finalize;
 pub mod gateway_json;
@@ -31,6 +32,7 @@ pub use audio::{audio_speech, audio_transcriptions, audio_translations};
 pub use chat::chat_completions;
 pub use completions::completions;
 pub use embeddings::embeddings;
+pub use events_watch::events_watch_handler;
 pub use generation::get_generation;
 pub use images::{image_edits, image_generations};
 pub use mcp::{
