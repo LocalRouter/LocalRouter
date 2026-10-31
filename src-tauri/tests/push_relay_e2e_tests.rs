@@ -2905,3 +2905,602 @@ async fn test_events_reach_opted_in_bridge_channels_and_the_poll_tool_only() {
         .await;
     assert!(text.contains(&sent.event_id), "{text}");
 }
+
+// ---------------------------------------------------------------------------
+// A VocalCord-shaped upstream: the SEP-3415 draft profile over HTTP
+// ---------------------------------------------------------------------------
+
+const VC_ID: &str = "vocalcord-like";
+const VC_EVENT: &str = "message.received";
+const VC_MODERN: &str = "2026-07-28";
+
+/// A scripted HTTP upstream that enforces what VocalCord's MCP transport
+/// (`vocalcord-lambda-mcp/src/transport.rs`) enforces: `initialize`
+/// negotiates 2025-03-26, `server/discover` lists 2026-07-28, and
+/// `events/poll` / `events/stream` always use the draft profile, so they need
+/// `MCP-Protocol-Version: 2026-07-28`, `Mcp-Method` and `Mcp-Name` (values
+/// may use the `=?base64?…?=` sentinel) and a body `_meta` revision equal to
+/// the header; `events/stream` needs `Accept: text/event-stream`. Cursors are
+/// scoped to (event name, canonical arguments) and a null cursor starts at
+/// the head. A stream sends `notifications/events/active`, delivers stored
+/// events, sends heartbeats and closes after its lifetime with a final
+/// `{"resultType": "complete"}`.
+struct VocalcordLike {
+    events: parking_lot::Mutex<Vec<Value>>,
+    rejections: parking_lot::Mutex<Vec<String>>,
+    /// Cursors the streams were opened with, in order.
+    stream_cursors: parking_lot::Mutex<Vec<Option<String>>>,
+    polls: AtomicUsize,
+    stream_lifetime: Duration,
+    /// Answer every stream the way a server that cannot serve it would.
+    refuse_streams: bool,
+    /// `delivery` of the event in `events/list` (the gateway refreshes the
+    /// remembered snapshot from it).
+    delivery: Value,
+}
+
+fn vc_cursor(name: &str, arguments: &Value, sequence: usize) -> String {
+    format!("vc1|{name}|{arguments}|{sequence}")
+}
+
+impl VocalcordLike {
+    fn new(stream_lifetime: Duration, refuse_streams: bool, delivery: &[&str]) -> Arc<Self> {
+        Arc::new(Self {
+            events: parking_lot::Mutex::new(Vec::new()),
+            rejections: parking_lot::Mutex::new(Vec::new()),
+            stream_cursors: parking_lot::Mutex::new(Vec::new()),
+            polls: AtomicUsize::new(0),
+            stream_lifetime,
+            refuse_streams,
+            delivery: json!(delivery),
+        })
+    }
+
+    fn store(&self, id: &str, preview: &str) {
+        self.events.lock().push(json!({
+            "eventId": id, "name": VC_EVENT, "timestamp": "2026-10-31T12:34:07Z",
+            "data": {"id": id, "channel": "telegram", "from": "owner", "preview": preview}
+        }));
+    }
+
+    fn decoded(headers: &axum::http::HeaderMap, name: &str) -> Result<Option<String>, String> {
+        use base64::Engine;
+        let Some(value) = headers.get(name) else {
+            return Ok(None);
+        };
+        let text = value
+            .to_str()
+            .map_err(|_| "Invalid MCP request metadata header")?;
+        match text
+            .strip_prefix("=?base64?")
+            .and_then(|s| s.strip_suffix("?="))
+        {
+            Some(encoded) => base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .ok()
+                .and_then(|b| String::from_utf8(b).ok())
+                .map(Some)
+                .ok_or_else(|| "Invalid Base64 MCP header".to_string()),
+            None => Ok(Some(text.to_string())),
+        }
+    }
+
+    /// VocalCord's `validate_modern` without the compatibility allowance,
+    /// which never applies to `events/poll` and `events/stream`.
+    fn validate(headers: &axum::http::HeaderMap, body: &Value) -> Result<(), String> {
+        let method = body["method"].as_str().unwrap_or_default();
+        let header_version = Self::decoded(headers, "mcp-protocol-version")?;
+        let meta_version = body
+            .pointer("/params/_meta/io.modelcontextprotocol~1protocolVersion")
+            .and_then(Value::as_str);
+        if let (Some(header), Some(meta)) = (header_version.as_deref(), meta_version) {
+            if header != meta {
+                return Err("MCP protocol version header does not match request metadata".into());
+            }
+        }
+        if header_version.as_deref() != Some(VC_MODERN) {
+            return Err("MCP-Protocol-Version is required for modern MCP requests".into());
+        }
+        if meta_version.is_some_and(|v| v != VC_MODERN) {
+            return Err("Events and discovery require MCP protocol 2026-07-28".into());
+        }
+        if Self::decoded(headers, "mcp-method")?.as_deref() != Some(method) {
+            return Err("Mcp-Method must match the request method".into());
+        }
+        let name = body.pointer("/params/name").and_then(Value::as_str);
+        if name.is_none() || Self::decoded(headers, "mcp-name")?.as_deref() != name {
+            return Err("Mcp-Name must match the named request parameter".into());
+        }
+        Ok(())
+    }
+
+    /// The sequence a cursor stands for, refusing one minted for another
+    /// (name, arguments) scope.
+    fn sequence(&self, params: &Value) -> Result<usize, String> {
+        let name = params["name"].as_str().unwrap_or_default();
+        if name != VC_EVENT {
+            return Err("Unknown event name".into());
+        }
+        let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
+        let head = self.events.lock().len();
+        match params.get("cursor") {
+            None | Some(Value::Null) => Ok(head),
+            Some(Value::String(cursor)) => {
+                let (scope, sequence) = cursor.rsplit_once('|').ok_or("Invalid cursor")?;
+                if scope != format!("vc1|{name}|{arguments}") {
+                    return Err("cursor does not belong to this subscription".into());
+                }
+                let sequence: usize = sequence.parse().map_err(|_| "Invalid cursor")?;
+                if sequence > head {
+                    return Err("cursor is ahead of the event feed".into());
+                }
+                Ok(sequence)
+            }
+            Some(_) => Err("cursor must be a string or null".into()),
+        }
+    }
+
+    fn page(&self, params: &Value, from: usize) -> (Vec<Value>, String) {
+        let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
+        let events = self.events.lock();
+        let page = events[from..]
+            .iter()
+            .enumerate()
+            .map(|(i, e)| {
+                let mut e = e.clone();
+                e["cursor"] = json!(vc_cursor(VC_EVENT, &arguments, from + i + 1));
+                e
+            })
+            .collect();
+        (page, vc_cursor(VC_EVENT, &arguments, events.len()))
+    }
+
+    fn reject(
+        &self,
+        status: u16,
+        id: &Value,
+        code: i64,
+        message: &str,
+    ) -> axum::response::Response {
+        use axum::response::IntoResponse;
+        self.rejections.lock().push(message.to_string());
+        (
+            axum::http::StatusCode::from_u16(status).unwrap(),
+            axum::Json(
+                json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}}),
+            ),
+        )
+            .into_response()
+    }
+
+    fn handle(
+        self: Arc<Self>,
+        method: axum::http::Method,
+        headers: axum::http::HeaderMap,
+        body: axum::body::Bytes,
+    ) -> axum::response::Response {
+        use axum::response::IntoResponse;
+        if method != axum::http::Method::POST {
+            return axum::http::StatusCode::METHOD_NOT_ALLOWED.into_response();
+        }
+        let Ok(body) = serde_json::from_slice::<Value>(&body) else {
+            return self.reject(400, &Value::Null, -32700, "Invalid JSON");
+        };
+        let id = body.get("id").cloned().unwrap_or(Value::Null);
+        let rpc = body["method"].as_str().unwrap_or_default().to_string();
+        let ok = |result: Value| {
+            axum::Json(json!({"jsonrpc": "2.0", "id": id, "result": result})).into_response()
+        };
+        if body.get("id").is_none() {
+            return axum::http::StatusCode::ACCEPTED.into_response();
+        }
+        let catalogue = json!({"events": [{"name": VC_EVENT, "description": "A message arrived",
+            "delivery": self.delivery, "inputSchema": {"type": "object", "properties": {}}}],
+            "resultType": "complete"});
+        match rpc.as_str() {
+            "initialize" => {
+                return ok(json!({"protocolVersion": "2025-03-26",
+                "capabilities": {"tools": {}, "events": {}}, "serverInfo": {"name": "VocalCord", "version": "1"}}))
+            }
+            "server/discover" => {
+                return ok(json!({"protocolVersions": [VC_MODERN, "2025-03-26"],
+                "capabilities": {"tools": {}, "events": {}}, "serverInfo": {"name": "VocalCord", "version": "1"},
+                "resultType": "complete"}))
+            }
+            "events/list" => return ok(catalogue),
+            "tools/list" => return ok(json!({"tools": [], "resultType": "complete"})),
+            "resources/list" => return ok(json!({"resources": []})),
+            "prompts/list" => return ok(json!({"prompts": []})),
+            "events/poll" | "events/stream" => {}
+            // Like VocalCord (`subscriptions/listen` and the rest); not an
+            // events refusal, so not recorded.
+            _ => {
+                return (
+                    axum::http::StatusCode::NOT_FOUND,
+                    axum::Json(json!({"jsonrpc": "2.0", "id": id,
+                        "error": {"code": -32601, "message": "Method not found"}})),
+                )
+                    .into_response()
+            }
+        }
+        if let Err(reason) = Self::validate(&headers, &body) {
+            return self.reject(400, &id, -32020, &reason);
+        }
+        let params = body.get("params").cloned().unwrap_or(json!({}));
+        let from = match self.sequence(&params) {
+            Ok(from) => from,
+            Err(reason) => return self.reject(200, &id, -32602, &reason),
+        };
+        if rpc == "events/poll" {
+            self.polls.fetch_add(1, Ordering::SeqCst);
+            let (events, cursor) = if params.get("cursor").is_some_and(|c| !c.is_null()) {
+                self.page(&params, from)
+            } else {
+                (vec![], self.page(&params, from).1)
+            };
+            return ok(
+                json!({"events": events, "cursor": cursor, "truncated": false,
+                "hasMore": false, "nextPollMs": 50, "resultType": "complete"}),
+            );
+        }
+        if !headers
+            .get("accept")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.contains("text/event-stream"))
+        {
+            return self.reject(406, &id, -32020, "Accept must include text/event-stream");
+        }
+        if self.refuse_streams {
+            return self.reject(
+                400,
+                &id,
+                -32026,
+                "Streaming requires the streaming endpoint",
+            );
+        }
+        self.stream_cursors
+            .lock()
+            .push(params["cursor"].as_str().map(str::to_string));
+        let (tx, rx) = tokio::sync::mpsc::channel::<axum::body::Bytes>(64);
+        let up = self.clone();
+        tokio::spawn(async move {
+            let frame = |value: Value| axum::body::Bytes::from(format!("data: {value}\n\n"));
+            let notify = |method: &str, mut params: Value| {
+                params["_meta"] = json!({"io.modelcontextprotocol/subscriptionId": id});
+                frame(json!({"jsonrpc": "2.0", "method": method, "params": params}))
+            };
+            let mut sent = from;
+            let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
+            let cursor = vc_cursor(VC_EVENT, &arguments, from);
+            if tx
+                .send(notify(
+                    "notifications/events/active",
+                    json!({"cursor": cursor, "truncated": false}),
+                ))
+                .await
+                .is_err()
+            {
+                return;
+            }
+            let deadline = tokio::time::Instant::now() + up.stream_lifetime;
+            let mut beats = 0u32;
+            while tokio::time::Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                let (page, cursor) = up.page(&params, sent);
+                sent += page.len();
+                for event in page {
+                    if tx
+                        .send(notify("notifications/events/event", event))
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                beats += 1;
+                if beats.is_multiple_of(4)
+                    && tx
+                        .send(notify(
+                            "notifications/events/heartbeat",
+                            json!({"cursor": cursor}),
+                        ))
+                        .await
+                        .is_err()
+                {
+                    return;
+                }
+            }
+            let _ = tx
+                .send(frame(
+                    json!({"jsonrpc": "2.0", "id": id, "result": {"resultType": "complete",
+                    "_meta": {"io.modelcontextprotocol/subscriptionId": id}}}),
+                ))
+                .await;
+        });
+        let body =
+            axum::body::Body::from_stream(futures_util::stream::unfold(rx, |mut rx| async move {
+                rx.recv()
+                    .await
+                    .map(|b| (Ok::<_, std::convert::Infallible>(b), rx))
+            }));
+        (
+            [
+                ("content-type", "text/event-stream"),
+                ("cache-control", "no-store"),
+            ],
+            body,
+        )
+            .into_response()
+    }
+}
+
+async fn vocalcord_like_upstream(upstream: Arc<VocalcordLike>) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+    let app = axum::Router::new().route(
+        "/mcp",
+        axum::routing::any(
+            move |method: axum::http::Method,
+                  headers: axum::http::HeaderMap,
+                  body: axum::body::Bytes| {
+                let upstream = upstream.clone();
+                async move { upstream.handle(method, headers, body) }
+            },
+        ),
+    );
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    url
+}
+
+fn vocalcord_server(url: String, modes: &[EventDeliveryMode]) -> McpServerConfig {
+    let mut server = http_server(url);
+    server.id = VC_ID.to_string();
+    server.name = "VocalCord".to_string();
+    server.capability_snapshot = Some(snapshot(&server, &[(VC_EVENT, modes)], false));
+    server
+}
+
+/// Open a downstream `events/stream` for `name` on `session`, returning the
+/// notification receiver (and the guard that keeps it registered).
+fn open_downstream_stream(
+    h: &Harness,
+    session: &str,
+    name: &str,
+) -> (
+    tokio::sync::mpsc::Receiver<JsonRpcNotification>,
+    localrouter::mcp::gateway::push_relay::PushStreamSinkGuard,
+    tokio::task::JoinHandle<()>,
+) {
+    let sinks = h.gateway.push_stream_sinks();
+    let (notifications, guard) = sinks.register(session, &json!(41), 64);
+    let gateway = h.gateway.clone();
+    let client = h.clients.read()[CLIENT].clone();
+    let servers = h.servers.clone();
+    let session = session.to_string();
+    let name = name.to_string();
+    let task = tokio::spawn(async move {
+        let _ = gateway
+            .handle_request_with_skills(
+                CLIENT,
+                Some(&session),
+                servers,
+                vec![],
+                client.mcp_permissions.clone(),
+                lr_config::SkillsPermissions::default(),
+                client.name.clone(),
+                PermissionState::Off,
+                PermissionState::Off,
+                None,
+                None,
+                PermissionState::default(),
+                PermissionState::default(),
+                None,
+                None,
+                lr_config::ClientMode::default(),
+                lr_config::ClientPushSettings::from_client(&client),
+                JsonRpcRequest::new(
+                    Some(json!(41)),
+                    "events/stream".into(),
+                    Some(json!({"name": name})),
+                ),
+                None,
+            )
+            .await;
+    });
+    (notifications, guard, task)
+}
+
+async fn next_event(rx: &mut tokio::sync::mpsc::Receiver<JsonRpcNotification>) -> Value {
+    loop {
+        let n = recv(rx).await;
+        if n.method == "notifications/events/event" {
+            return n.params.unwrap();
+        }
+    }
+}
+
+/// The real-world failure: VocalCord answers `initialize` with 2025-03-26 and
+/// refuses `events/stream` / `events/poll` unless they are 2026-07-28 draft
+/// requests. The relay must reach it the way the gateway does (a
+/// `server/discover` probe, then stateless requests), survive the stream's
+/// normal completion by reopening from its cursor, and deliver the event to
+/// a downstream stream and poll.
+#[tokio::test]
+async fn vocalcord_draft_profile_stream_reaches_downstream_stream_and_poll() {
+    let upstream = VocalcordLike::new(
+        Duration::from_millis(700),
+        false,
+        &["push", "poll", "webhook"],
+    );
+    let url = vocalcord_like_upstream(upstream.clone()).await;
+    let h = harness(
+        vec![vocalcord_server(
+            url,
+            &[
+                EventDeliveryMode::Push,
+                EventDeliveryMode::Poll,
+                EventDeliveryMode::Webhook,
+            ],
+        )],
+        fast_limits(),
+    );
+    h.initialize("s1", json!({})).await;
+    let name = "vocalcord__message.received";
+    let (mut rx, _guard, _task) = open_downstream_stream(&h, "s1", name);
+    let bootstrap = h.poll("s1", name, None).await;
+    let cursor = bootstrap["cursor"].as_str().unwrap().to_string();
+
+    // The upstream stream completes at its lifetime and is reopened from
+    // the cursor it handed out, without a failure.
+    wait_until("the upstream stream to be reopened", || {
+        upstream.stream_cursors.lock().len() >= 2
+    })
+    .await;
+    upstream.store(
+        "01a191f3-fa35-71f6-bb08-417676aa5ba3",
+        "hello from telegram",
+    );
+
+    let event = next_event(&mut rx).await;
+    assert_eq!(event["name"], name);
+    assert_eq!(
+        event["eventId"],
+        "vocalcord__01a191f3-fa35-71f6-bb08-417676aa5ba3"
+    );
+    assert_eq!(event["data"]["preview"], "hello from telegram");
+
+    let batch = h
+        .poll_until("s1", name, &cursor, |b| {
+            !b["events"].as_array().unwrap().is_empty()
+        })
+        .await;
+    assert_eq!(
+        batch["events"][0]["eventId"],
+        "vocalcord__01a191f3-fa35-71f6-bb08-417676aa5ba3"
+    );
+
+    assert!(
+        upstream.rejections.lock().is_empty(),
+        "upstream refused requests: {:?}",
+        upstream.rejections.lock()
+    );
+    let cursors = upstream.stream_cursors.lock().clone();
+    assert_eq!(cursors[0], None, "the first stream starts at the head");
+    assert!(
+        cursors[1..].iter().all(Option::is_some),
+        "reopened streams resume from a cursor: {cursors:?}"
+    );
+
+    let subscription = h
+        .relay
+        .active_subscriptions()
+        .into_iter()
+        .find(|s| s.server_id == VC_ID && s.event == VC_EVENT)
+        .expect("subscription");
+    assert_eq!(subscription.status.ingress_mode.as_deref(), Some("push"));
+    assert_eq!(
+        subscription.status.reconnects, 0,
+        "a completed stream is not a failure: {:?}",
+        subscription.status.last_error
+    );
+    let status = h.relay.server_push_status(VC_ID);
+    let ingress = status
+        .event_types
+        .iter()
+        .find(|t| t.event == VC_EVENT)
+        .unwrap();
+    assert_eq!(ingress.state, "listening");
+    assert_eq!(ingress.last_error, None);
+    assert!(ingress.events_received >= 1);
+}
+
+/// Poll ingress against the same draft profile: `events/poll` carries the
+/// modern headers and `_meta`, a null cursor bootstraps at the head, and the
+/// scoped cursor is sent back.
+#[tokio::test]
+async fn vocalcord_draft_profile_poll_reaches_downstream_poll() {
+    let upstream = VocalcordLike::new(Duration::from_millis(700), false, &["poll"]);
+    let url = vocalcord_like_upstream(upstream.clone()).await;
+    let h = harness(
+        vec![vocalcord_server(url, &[EventDeliveryMode::Poll])],
+        fast_limits(),
+    );
+    h.initialize("s1", json!({})).await;
+    let name = "vocalcord__message.received";
+    let cursor = h.poll("s1", name, None).await["cursor"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    wait_until("upstream polls", || {
+        upstream.polls.load(Ordering::SeqCst) >= 2
+    })
+    .await;
+    upstream.store("m-poll", "polled");
+    let polls = upstream.polls.load(Ordering::SeqCst);
+    wait_until("an upstream poll after the event", || {
+        upstream.polls.load(Ordering::SeqCst) > polls + 1
+    })
+    .await;
+    assert!(
+        upstream.rejections.lock().is_empty(),
+        "upstream refused requests: {:?}",
+        upstream.rejections.lock()
+    );
+    let batch = h
+        .poll_until("s1", name, &cursor, |b| {
+            !b["events"].as_array().unwrap().is_empty()
+        })
+        .await;
+    assert_eq!(batch["events"][0]["eventId"], "vocalcord__m-poll");
+    assert!(
+        upstream.rejections.lock().is_empty(),
+        "upstream refused requests: {:?}",
+        upstream.rejections.lock()
+    );
+    let status = h.relay.server_push_status(VC_ID);
+    let ingress = status
+        .event_types
+        .iter()
+        .find(|t| t.event == VC_EVENT)
+        .unwrap();
+    assert_eq!(ingress.state, "listening");
+    assert_eq!(ingress.ingress_mode.as_deref(), Some("poll"));
+}
+
+/// An upstream that refuses the stream must not read as listening: the
+/// server's push status says reconnecting and carries the server's own
+/// error text.
+#[tokio::test]
+async fn refused_upstream_stream_shows_in_server_push_status() {
+    let upstream = VocalcordLike::new(Duration::from_millis(700), true, &["push"]);
+    let url = vocalcord_like_upstream(upstream.clone()).await;
+    let h = harness(
+        vec![vocalcord_server(url, &[EventDeliveryMode::Push])],
+        fast_limits(),
+    );
+    h.initialize("s1", json!({})).await;
+    let (_rx, _guard, _task) = open_downstream_stream(&h, "s1", "vocalcord__message.received");
+    wait_until("the refusal to reach the status", || {
+        h.relay
+            .server_push_status(VC_ID)
+            .event_types
+            .iter()
+            .any(|t| t.last_error.is_some())
+    })
+    .await;
+    let status = h.relay.server_push_status(VC_ID);
+    assert!(!status.listening);
+    let ingress = status
+        .event_types
+        .iter()
+        .find(|t| t.event == VC_EVENT)
+        .unwrap();
+    assert_eq!(ingress.state, "reconnecting");
+    let error = ingress.last_error.clone().unwrap();
+    assert!(
+        error.contains("-32026") && error.contains("Streaming requires the streaming endpoint"),
+        "{error}"
+    );
+}
