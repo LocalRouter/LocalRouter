@@ -130,7 +130,7 @@ pub async fn connect_relay_upstream(
         "initialize".to_string(),
         Some(json!({
             "protocolVersion": crate::protocol::MCP_PROTOCOL_VERSION,
-            "capabilities": {},
+            "capabilities": {"extensions": {crate::protocol::EVENTS_EXTENSION_ID: {}}},
             "clientInfo": {
                 "name": "LocalRouter Push Relay",
                 "version": env!("CARGO_PKG_VERSION")
@@ -219,13 +219,9 @@ impl RelayConnection {
 impl UpstreamPort for RelayConnection {
     async fn request(&self, method: &str, params: Value) -> AppResult<JsonRpcResponse> {
         let transport = self.transport().await?;
-        transport
-            .send_request(JsonRpcRequest::new(
-                Some(request_id()),
-                method.to_string(),
-                Some(params),
-            ))
-            .await
+        let mut request = JsonRpcRequest::new(Some(request_id()), method.to_string(), Some(params));
+        crate::protocol::declare_events_on_request(&mut request);
+        transport.send_request(request).await
     }
 
     async fn open_stream(
@@ -235,12 +231,9 @@ impl UpstreamPort for RelayConnection {
         buffer: usize,
     ) -> AppResult<RpcStream> {
         let transport = self.transport().await?;
-        transport
-            .open_rpc_stream(
-                JsonRpcRequest::new(Some(request_id()), method.to_string(), Some(params)),
-                buffer,
-            )
-            .await
+        let mut request = JsonRpcRequest::new(Some(request_id()), method.to_string(), Some(params));
+        crate::protocol::declare_events_on_request(&mut request);
+        transport.open_rpc_stream(request, buffer).await
     }
 
     async fn supports_streams(&self) -> bool {

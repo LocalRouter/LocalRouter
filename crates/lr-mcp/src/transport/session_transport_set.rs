@@ -120,7 +120,10 @@ impl SessionTransportSet {
 
     /// Inject the reserved 2026-07-28 `_meta` keys into a request bound for a
     /// stateless backend. Existing `_meta` values are preserved.
+    /// Upstream `events/*` requests also carry LocalRouter's MCP Events
+    /// declaration in `_meta`, on every revision.
     fn prepare_request_for(&self, server_id: &str, mut request: JsonRpcRequest) -> JsonRpcRequest {
+        crate::protocol::declare_events_on_request(&mut request);
         if !self.revision(server_id).is_stateless() {
             return request;
         }

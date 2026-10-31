@@ -42,7 +42,7 @@ use lr_config::{EventDeliveryMode, UpstreamCapabilitySnapshot, UpstreamPushSumma
 use lr_types::AppResult;
 
 /// SEP-3415 extension id of MCP Events.
-pub const EVENTS_EXTENSION_ID: &str = "io.modelcontextprotocol/events";
+pub const EVENTS_EXTENSION_ID: &str = crate::protocol::EVENTS_EXTENSION_ID;
 /// Top-level capability some clients read instead of the extension id.
 pub const EVENTS_TOP_LEVEL_CAPABILITY: &str = "events";
 /// Claude Code Channels experimental capability.

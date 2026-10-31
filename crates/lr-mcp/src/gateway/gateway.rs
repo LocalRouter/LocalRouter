@@ -2110,11 +2110,15 @@ impl McpGateway {
                 state.client_id.clone(),
                 state.session_key.clone(),
                 state.client_mode,
-                state
-                    .client_capabilities
-                    .as_ref()
-                    .and_then(|c| serde_json::to_value(c).ok())
-                    .unwrap_or_else(|| json!({})),
+                {
+                    let mut caps = state
+                        .client_capabilities
+                        .as_ref()
+                        .and_then(|c| serde_json::to_value(c).ok())
+                        .unwrap_or_else(|| json!({}));
+                    crate::protocol::declare_events_extension(&mut caps);
+                    caps
+                },
             )
         };
         let Some(transports) = transports else {
@@ -3211,6 +3215,21 @@ impl McpGateway {
             let sampling_behavior = self.live_sampling.read().clone();
             let elicitation_mode = self.live_elicitation_mode.read().clone();
             let mut modified_request = request.clone();
+
+            // LocalRouter consumes MCP Events for every client (the Push
+            // Relay translates them), so upstreams are told it supports them
+            // whatever the downstream client declared. Events-aware servers
+            // pick the delivery modes they offer from this declaration.
+            if let Some(params) = modified_request
+                .params
+                .as_mut()
+                .and_then(Value::as_object_mut)
+            {
+                let caps = params
+                    .entry("capabilities".to_string())
+                    .or_insert_with(|| json!({}));
+                crate::protocol::declare_events_extension(caps);
+            }
 
             if let Some(ref mut params) = modified_request.params {
                 if let Some(caps) = params.get_mut("capabilities") {
@@ -4704,7 +4723,8 @@ impl McpGateway {
                 "capabilities": {
                     "sampling": {},
                     "elicitation": { "form": {} },
-                    "roots": { "listChanged": true }
+                    "roots": { "listChanged": true },
+                    "extensions": { crate::protocol::EVENTS_EXTENSION_ID: {} }
                 },
                 "clientInfo": {
                     "name": "LocalRouter",
@@ -4891,7 +4911,7 @@ impl McpGateway {
             "initialize".to_string(),
             Some(json!({
                 "protocolVersion": crate::protocol::MCP_PROTOCOL_VERSION,
-                "capabilities": {},
+                "capabilities": { "extensions": { crate::protocol::EVENTS_EXTENSION_ID: {} } },
                 "clientInfo": { "name": "LocalRouter", "version": env!("CARGO_PKG_VERSION") }
             })),
         );

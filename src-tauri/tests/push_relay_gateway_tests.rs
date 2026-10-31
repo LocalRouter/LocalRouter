@@ -795,3 +795,162 @@ async fn relay_can_stream_and_query_an_upstream_on_a_session() {
         .await
         .is_err());
 }
+
+/// Whether a JSON-RPC body declares MCP Events in
+/// `params._meta["io.modelcontextprotocol/clientCapabilities"]`.
+fn declares_events_in_meta(body: &Value) -> bool {
+    body["params"]["_meta"]["io.modelcontextprotocol/clientCapabilities"]["extensions"]
+        .get(EVENTS_EXTENSION_ID)
+        .is_some()
+}
+
+/// Answers `events/list` the way VocalCord does: its draft profile (push,
+/// poll and webhook) only to a request declaring MCP Events in `_meta`,
+/// otherwise the webhook-only profile it serves OpenAI and OpenClaw.
+struct VocalCordLikeEventsList;
+
+impl wiremock::Respond for VocalCordLikeEventsList {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&request.body).unwrap_or_default();
+        let delivery = if declares_events_in_meta(&body) {
+            json!(["poll", "push", "webhook"])
+        } else {
+            json!(["webhook"])
+        };
+        ResponseTemplate::new(200).set_body_json(json!({
+            "jsonrpc": "2.0",
+            "id": body["id"],
+            "result": {"events": [{"name": "message.received", "delivery": delivery}]}
+        }))
+    }
+}
+
+#[tokio::test]
+async fn upstreams_are_told_localrouter_supports_events() {
+    let server = MockServer::start().await;
+    mock(
+        &server,
+        "initialize",
+        json!({
+            "protocolVersion": "2025-11-25",
+            "capabilities": {"tools": {}, "events": {}, "extensions": {EVENTS_EXTENSION_ID: {}}},
+            "serverInfo": {"name": "vocalcord-like", "version": "1"}
+        }),
+        Duration::ZERO,
+    )
+    .await;
+    Mock::given(http_method("POST"))
+        .and(JsonRpcMethod("events/list"))
+        .respond_with(VocalCordLikeEventsList)
+        .mount(&server)
+        .await;
+    mock(&server, "tools/list", json!({"tools": []}), Duration::ZERO).await;
+    mock(
+        &server,
+        "resources/list",
+        json!({"resources": []}),
+        Duration::ZERO,
+    )
+    .await;
+    mock(
+        &server,
+        "prompts/list",
+        json!({"prompts": []}),
+        Duration::ZERO,
+    )
+    .await;
+
+    // Remembered while LocalRouter did not declare Events: webhook-only
+    let mut config = http_server(SERVER_ID, server.uri());
+    let mut stale = UpstreamCapabilitySnapshot {
+        fingerprint: lr_config::fingerprint_for(&config),
+        protocol_version: "2025-11-25".into(),
+        capabilities: json!({"events": {}}),
+        push: Default::default(),
+        event_catalogue: vec![json!({"name": "message.received", "delivery": ["webhook"]})],
+        observed_at: Utc::now(),
+    };
+    stale.push.events_modes.insert(
+        "message.received".into(),
+        vec![lr_config::EventDeliveryMode::Webhook],
+    );
+    config.capability_snapshot = Some(stale);
+
+    let gateway = gateway_with(vec![config], None);
+    gateway.set_push_relay(Arc::new(FakeRelay::default()));
+    let batches = record_persists(&gateway);
+
+    // The downstream client itself declares no Events support
+    send(
+        &gateway,
+        "s1",
+        "initialize",
+        Some(json!({
+            "protocolVersion": "2025-11-25",
+            "capabilities": {"sampling": {}},
+            "clientInfo": {"name": "plain", "version": "1"}
+        })),
+    )
+    .await;
+    wait_until("snapshot corrected", || !batches.lock().is_empty()).await;
+
+    // initialize carried the declaration, the downstream's own caps kept
+    let requests = server.received_requests().await.unwrap();
+    let bodies: Vec<Value> = requests
+        .iter()
+        .filter_map(|r| serde_json::from_slice(&r.body).ok())
+        .collect();
+    let init = bodies
+        .iter()
+        .find(|b| b["method"] == "initialize")
+        .expect("upstream initialize");
+    assert_eq!(
+        init["params"]["capabilities"]["extensions"][EVENTS_EXTENSION_ID],
+        json!({})
+    );
+    assert!(init["params"]["capabilities"].get("sampling").is_some());
+    // Every events/* request carried it in _meta
+    let event_requests: Vec<&Value> = bodies
+        .iter()
+        .filter(|b| {
+            b["method"]
+                .as_str()
+                .is_some_and(|m| m.starts_with("events/"))
+        })
+        .collect();
+    assert!(!event_requests.is_empty());
+    assert!(event_requests.iter().all(|b| declares_events_in_meta(b)));
+
+    // ... so the server offered push and poll, and the remembered
+    // webhook-only profile was corrected
+    let snapshot = batches.lock()[0][SERVER_ID].clone();
+    let modes = &snapshot.push.events_modes["message.received"];
+    assert!(
+        modes.contains(&lr_config::EventDeliveryMode::Push),
+        "{modes:?}"
+    );
+    assert!(
+        modes.contains(&lr_config::EventDeliveryMode::Poll),
+        "{modes:?}"
+    );
+    assert!(snapshot.push.has_consumable_push(false));
+
+    // A relay request on the session declares it too, merged with its own _meta
+    let list = gateway
+        .upstream_request(
+            "s1",
+            SERVER_ID,
+            "events/list",
+            Some(json!({"_meta": {"progressToken": 7}})),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        list.result.unwrap()["events"][0]["delivery"],
+        json!(["poll", "push", "webhook"])
+    );
+    let last = server.received_requests().await.unwrap();
+    let body: Value = serde_json::from_slice(&last.last().unwrap().body).unwrap();
+    assert!(declares_events_in_meta(&body));
+    assert_eq!(body["params"]["_meta"]["progressToken"], 7);
+}
