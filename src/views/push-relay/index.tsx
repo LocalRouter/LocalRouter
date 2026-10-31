@@ -8,12 +8,11 @@ import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import { Badge } from "@/components/ui/Badge"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card"
-import { Switch } from "@/components/ui/Toggle"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { InfoTooltip } from "@/components/ui/info-tooltip"
 import { listenSafe } from "@/hooks/useTauriListener"
 import { SamplePopupButton } from "@/components/shared/SamplePopupButton"
-import { PushPermissionButton, pushPermissionLabel } from "@/components/permissions/PushPermissionButton"
+import { pushPermissionLabel } from "@/components/permissions/PushPermissionButton"
+import { PermissionStateButton } from "@/components/permissions/PermissionStateButton"
 import type {
   ClientFeatureStatus,
   GetFeatureClientsStatusParams,
@@ -33,7 +32,7 @@ interface PushRelayViewProps {
 const PERMISSION_BADGE: Record<PushPermission, string> = {
   allow: "border-emerald-500/50 text-emerald-600",
   ask: "border-amber-500/50 text-amber-600",
-  block: "border-red-500/50 text-red-600",
+  off: "border-zinc-500/50 text-zinc-600",
 }
 
 export function PushRelayView({ activeSubTab, onTabChange }: PushRelayViewProps) {
@@ -123,7 +122,7 @@ export function PushRelayView({ activeSubTab, onTabChange }: PushRelayViewProps)
         </h1>
         <p className="text-sm text-muted-foreground">
           Relay events that upstream MCP servers push — MCP Events and Claude Channels — to every client
-          in a form it can consume, with Allow / Ask / Block control over each event.
+          in a form it can consume, with Allow / Ask / Off control over each event.
         </p>
       </div>
 
@@ -137,23 +136,12 @@ export function PushRelayView({ activeSubTab, onTabChange }: PushRelayViewProps)
             {config && (
               <Card>
                 <CardHeader className="pb-3">
-                  <div className="flex items-center justify-between gap-4">
-                    <div>
-                      <CardTitle className="text-base">Push Relay</CardTitle>
-                      <CardDescription>
-                        Every pushed event passes through LocalRouter, where it is recorded in Monitor and can
-                        be held for approval. Push is offered to a client only when one of its permitted MCP
-                        servers actually offers it, and never widens the client's MCP access.
-                      </CardDescription>
-                    </div>
-                    <InfoTooltip content="When off, no push is advertised or relayed to any client.">
-                      <Switch
-                        checked={config.enabled}
-                        onCheckedChange={(enabled) => update({ enabled })}
-                        disabled={saving}
-                      />
-                    </InfoTooltip>
-                  </div>
+                  <CardTitle className="text-base">Push Relay</CardTitle>
+                  <CardDescription>
+                    Every pushed event passes through LocalRouter, where it is recorded in Monitor and can
+                    be held for approval. Push is offered to a client only when one of its permitted MCP
+                    servers actually offers it, and never widens the client's MCP access.
+                  </CardDescription>
                 </CardHeader>
                 <CardContent className="pt-0 space-y-3">
                   <div className="flex items-center justify-between gap-4 border-t pt-3">
@@ -161,16 +149,16 @@ export function PushRelayView({ activeSubTab, onTabChange }: PushRelayViewProps)
                       <span className="text-sm font-medium">Default permission</span>
                       <p className="text-xs text-muted-foreground mt-0.5">
                         Applies to every client, server and event type without its own setting. Ask holds each
-                        event until you approve, edit or deny it.
+                        event until you approve, edit or deny it. Off with no client setting that turns
+                        something on means push is off: nothing is advertised, subscribed or waited for.
                       </p>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                       <SamplePopupButton popupType="push_event" />
-                      <PushPermissionButton
+                      <PermissionStateButton
                         value={config.default_permission}
-                        onChange={(p) => p !== "inherit" && update({ defaultPermission: p })}
-                        showInherit={false}
-                        disabled={saving || !config.enabled}
+                        onChange={(p) => update({ defaultPermission: p })}
+                        disabled={saving}
                         size="sm"
                       />
                     </div>
@@ -198,6 +186,7 @@ export function PushRelayView({ activeSubTab, onTabChange }: PushRelayViewProps)
                                 className={cn("text-[10px] px-1.5 py-0", PERMISSION_BADGE[s.effective_value as PushPermission])}
                               >
                                 {pushPermissionLabel(s.effective_value as PushPermission)}
+                                {s.effective_value === "off" && s.active && " · some events on"}
                               </Badge>
                             )}
                             {openClient && (
@@ -219,7 +208,7 @@ export function PushRelayView({ activeSubTab, onTabChange }: PushRelayViewProps)
             )}
 
             {config && (
-              <RelaySettingsCard config={config} disabled={saving || !config.enabled} onUpdate={update} />
+              <RelaySettingsCard config={config} disabled={saving} onUpdate={update} />
             )}
 
             <Card>

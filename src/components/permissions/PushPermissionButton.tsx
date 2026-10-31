@@ -1,32 +1,19 @@
 import { cn } from "@/lib/utils"
 import type { PushPermission } from "@/types/tauri-commands"
+import { permissionStateConfig } from "./PermissionStateButton"
 
 /** A tree value: a real permission, or "inherit" to clear the override. */
 export type PushPermissionChoice = PushPermission | "inherit"
 
-const stateConfig: Record<PushPermission, { label: string; activeClass: string; rollupClass: string }> = {
-  // Same colours as guardrails' CategoryActionButton: Block is red, Ask amber.
-  block: {
-    label: "Block",
-    activeClass: "bg-red-600 text-white",
-    rollupClass: "bg-red-600/30 text-red-600",
-  },
-  ask: {
-    label: "Ask",
-    activeClass: "bg-amber-500 text-white",
-    rollupClass: "bg-amber-500/30 text-amber-600",
-  },
-  allow: {
-    label: "Allow",
-    activeClass: "bg-emerald-500 text-white",
-    rollupClass: "bg-emerald-500/30 text-emerald-600",
-  },
-}
+// Push permissions use the MCP permission vocabulary and colours
+// (PermissionStateButton): Allow, Ask, Off.
+const STATES: PushPermission[] = ["allow", "ask", "off"]
 
-const STATES: PushPermission[] = ["allow", "ask", "block"]
+/** Active style of the Inherit / Default segment (distinct from Off's grey). */
+const INHERIT_ACTIVE = "bg-foreground/80 text-background"
 
 export function pushPermissionLabel(p: PushPermission): string {
-  return stateConfig[p].label
+  return permissionStateConfig[p].label
 }
 
 interface PushPermissionButtonProps {
@@ -44,8 +31,9 @@ interface PushPermissionButtonProps {
 }
 
 /**
- * Allow / Ask / Block selector for Push Relay, with an optional Inherit segment.
- * When inherited, Inherit is active and the inherited value is shown dimmed.
+ * Allow / Ask / Off selector for Push Relay, with an optional Inherit segment.
+ * As in the MCP permission tree, an inherited value is shown dimmed; Inherit is
+ * then active too.
  */
 export function PushPermissionButton({
   value,
@@ -73,16 +61,14 @@ export function PushPermissionButton({
           className={cn(
             "transition-colors font-medium rounded-l-md",
             segment,
-            inherited
-              ? "bg-zinc-500 text-white"
-              : "text-muted-foreground hover:text-foreground hover:bg-muted",
+            inherited ? INHERIT_ACTIVE : "text-muted-foreground hover:text-foreground hover:bg-muted",
           )}
         >
           Inherit
         </button>
       )}
       {STATES.map((state, idx) => {
-        const config = stateConfig[state]
+        const config = permissionStateConfig[state]
         const isActive = value === state
         const isChildRollup = childRollupStates?.has(state) && !isActive
         return (
@@ -95,7 +81,7 @@ export function PushPermissionButton({
               "transition-colors font-medium",
               segment,
               isActive
-                ? cn(config.activeClass, inherited && "opacity-50")
+                ? cn(config.activeClass, inherited && "opacity-60")
                 : isChildRollup
                   ? config.rollupClass
                   : "text-muted-foreground hover:text-foreground hover:bg-muted",
@@ -121,7 +107,7 @@ interface PushPermissionWithDefaultButtonProps {
   childRollupStates?: Set<PushPermissionChoice>
 }
 
-/** Root-level selector: "Default (Allow)" | Allow | Ask | Block. */
+/** Root-level selector: "Default (Allow)" | Allow | Ask | Off. */
 export function PushPermissionWithDefaultButton({
   value,
   globalDefault,
@@ -145,15 +131,13 @@ export function PushPermissionWithDefaultButton({
         className={cn(
           "transition-colors font-medium rounded-l-md",
           segment,
-          value === null
-            ? "bg-zinc-500 text-white"
-            : "text-muted-foreground hover:text-foreground hover:bg-muted",
+          value === null ? INHERIT_ACTIVE : "text-muted-foreground hover:text-foreground hover:bg-muted",
         )}
       >
         Default ({pushPermissionLabel(globalDefault)})
       </button>
       {STATES.map((state, idx) => {
-        const config = stateConfig[state]
+        const config = permissionStateConfig[state]
         const isActive = value === state
         const isChildRollup = childRollupStates?.has(state) && !isActive
         return (

@@ -11,11 +11,11 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card"
 import { Input } from "@/components/ui/Input"
 import { Label } from "@/components/ui/label"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/Select"
 import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
+import { PushPermissionButton } from "@/components/permissions/PushPermissionButton"
 import type { McpConnectionState } from "@/lib/mcp-client"
 import type {
   ClientPushSettings,
@@ -225,8 +225,8 @@ export function PushPanel({ tester, connectionState, clientId, clientName }: Pus
       setLastSent(
         effective === "ask"
           ? `Sent ${result.event_id} — held for approval in the popup`
-          : effective === "block"
-            ? `Sent ${result.event_id} — blocked for this client (see Monitor)`
+          : effective === "off"
+            ? `Sent ${result.event_id} — off for this client (see Monitor)`
             : `Sent ${result.event_id}`,
       )
     } catch (error) {
@@ -320,15 +320,15 @@ export function PushPanel({ tester, connectionState, clientId, clientName }: Pus
                 <>
                   <div className="space-y-1.5">
                     <Label className="text-xs">Permission for {clientName ?? "this client"}</Label>
-                    <Select value={testPermission} onValueChange={v => void setTestPermission(v as PermissionChoice)}>
-                      <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="inherit">Inherit{inherited ? ` (${inherited})` : ""}</SelectItem>
-                        <SelectItem value="allow">Allow</SelectItem>
-                        <SelectItem value="ask">Ask — approve each event</SelectItem>
-                        <SelectItem value="block">Block</SelectItem>
-                      </SelectContent>
-                    </Select>
+                    <div>
+                      <PushPermissionButton
+                        value={testPermission === "inherit" ? (inherited ?? "allow") : testPermission}
+                        inherited={testPermission === "inherit"}
+                        onChange={choice => void setTestPermission(choice)}
+                        size="sm"
+                      />
+                    </div>
+                    <p className="text-[11px] text-muted-foreground">Ask holds each event for approval in the popup.</p>
                   </div>
                   <div className="space-y-1.5">
                     <Label className="text-xs" htmlFor="push-test-message">Message</Label>

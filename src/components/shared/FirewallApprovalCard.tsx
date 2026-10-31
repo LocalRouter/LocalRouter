@@ -477,7 +477,7 @@ export function PushEventApprovalCard({
                   Deny this event type for session
                 </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => act("deny_always")}>
-                  Always block this event type
+                  Turn this event type off
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>

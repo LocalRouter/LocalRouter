@@ -25,7 +25,7 @@ import type { ShowApprovalPopupResult, NativeOperation, GetClientNativeOperation
 import { toast } from 'sonner'
 import { mockReplay } from './mockReplay'
 import { mockData } from './mockData'
-import { clientPush, mockClaudeCodeTransport, mockClientPushSettings, mockPendingPushApprovals, mockPushRelayConfig, mockPushSources } from './mockPushRelay'
+import { clientPush, mockClaudeCodeTransport, mockClientPushSettings, mockPendingPushApprovals, mockPushRelayConfig, mockPushSourcesFor, mockReceivesPush } from './mockPushRelay'
 import type { ClaudeCodeMcpSetup, ClientPushSettings, PendingPushApproval, PushChannelPreview, PushRelayConfig, PushSourceInfo, PushTestEventResult } from '@app/types/tauri-commands'
 
 import { mockNativeOperations, mockUpstreamTools, mockClientPrivacy, mockClientSecurity, mockClientSecrets } from './mockClientPolicies'
@@ -1408,6 +1408,13 @@ function mockMcpAuth(config: any, serverId: string, existing?: any): any {
   return config
 }
 
+/** Whether a demo client's MCP permissions allow a server (Allow or Ask). */
+function mockMcpAccess(client: { mcp_permissions?: { global?: string; servers?: Record<string, string> } } | undefined, serverId: string): boolean {
+  const perms = client?.mcp_permissions
+  const state = perms?.servers?.[serverId] ?? perms?.global ?? 'off'
+  return state !== 'off'
+}
+
 const mockHandlers: Record<string, (args?: any) => unknown> = {
   ...mockReplay,
   // ============================================================================
@@ -1467,12 +1474,12 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     if (args?.feature === 'push_relay') {
       const id = (c as unknown as { id: string }).id
       const p = clientPush(id).permissions
-      const value = mockPushRelayConfig.enabled ? (p.global ?? mockPushRelayConfig.default_permission) : 'block'
+      const value = p.global ?? mockPushRelayConfig.default_permission
       const overridden = p.global != null || Object.keys(p.servers ?? {}).length > 0 || Object.keys(p.events ?? {}).length > 0
       return {
         client_id: c.client_id,
         client_name: c.name,
-        active: value !== 'block',
+        active: mockReceivesPush(p),
         source: overridden ? 'override' as const : 'global' as const,
         effective_value: value,
       }
@@ -4010,7 +4017,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // ============================================================================
   'get_push_relay_config': (): PushRelayConfig => ({ ...mockPushRelayConfig }),
   'update_push_relay_config': (args): PushRelayConfig => {
-    if (args?.enabled !== undefined) mockPushRelayConfig.enabled = args.enabled
     if (args?.defaultPermission !== undefined) mockPushRelayConfig.default_permission = args.defaultPermission
     if (args?.channelMessagesPerMinute !== undefined) mockPushRelayConfig.channel_messages_per_minute = args.channelMessagesPerMinute
     if (args?.historyRetentionHours !== undefined) mockPushRelayConfig.history_retention_hours = args.historyRetentionHours
@@ -4018,7 +4024,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     setTimeout(() => emit('clients-changed', {}), 10)
     return { ...mockPushRelayConfig }
   },
-  'list_push_sources': (): PushSourceInfo[] => mockPushSources,
+  'list_push_sources': (): PushSourceInfo[] => mockPushSourcesFor(mockData.clients.map(c => ({ id: c.id, mcpAccess: (serverId: string) => mockMcpAccess(c, serverId) }))),
   'list_pending_push_approvals': (args): PendingPushApproval[] =>
     mockPendingPushApprovals.filter(a => !args?.clientId || a.client_id === args.clientId),
   'submit_push_approval': (args): number => {
@@ -4043,7 +4049,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     const event_id = `localrouter__test-${generateId()}`
     const name = 'localrouter__test.event'
     const data = args?.data ?? { message: args?.message || 'Test event from LocalRouter', sent_at: now }
-    // Like the relay: each target client's permission decides (Allow / Ask / Block)
+    // Like the relay: each target client's permission decides (Allow / Ask / Off)
     const client = mockData.clients.find(c => c.id === args?.clientId || c.client_id === args?.clientId) ?? mockData.clients[0]
     const p = clientPush(client.id).permissions
     const permission = p.events?.['localrouter__test.event'] ?? p.servers?.['localrouter'] ?? p.global ?? mockPushRelayConfig.default_permission
@@ -4077,10 +4083,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)
     const id = client?.id ?? args?.clientId
     const perms = client?.mcp_permissions
-    return mockClientPushSettings(id, (serverId) => {
-      const state = perms?.servers?.[serverId] ?? perms?.global ?? 'off'
-      return state !== 'off'
-    })
+    return mockClientPushSettings(id, (serverId) => mockMcpAccess(client, serverId))
   },
   'set_client_push_permission': (args) => {
     const client = mockData.clients.find(c => c.client_id === args?.clientId || c.id === args?.clientId)

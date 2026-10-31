@@ -5,8 +5,9 @@ import { Zap, ArrowRight, CheckCircle2, XCircle, Download } from "lucide-react"
 import { Button } from "@/components/ui/Button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 import { Switch } from "@/components/ui/Toggle"
-import type { JsonRepairConfig, PromptCompressionConfig, CompressionStatus, PushRelayConfig, UpdatePushRelayConfigParams } from "@/types/tauri-commands"
+import type { JsonRepairConfig, PromptCompressionConfig, CompressionStatus, PushPermission, PushRelayConfig, UpdatePushRelayConfigParams } from "@/types/tauri-commands"
 import { InfoTooltip } from "@/components/ui/info-tooltip"
+import { PermissionStateButton } from "@/components/permissions/PermissionStateButton"
 import { OptimizeDiagram } from "./OptimizeDiagram"
 import { FEATURES } from "@/constants/features"
 
@@ -104,11 +105,13 @@ export function OptimizeOverviewView({ onTabChange }: OptimizeOverviewProps) {
     }
   }
 
-  const updatePushRelayEnabled = async (enabled: boolean) => {
+  const updatePushRelayDefault = async (defaultPermission: PushPermission) => {
     setSavingPushRelay(true)
     try {
       setPushRelayConfig(
-        await invoke<PushRelayConfig>("update_push_relay_config", { enabled } satisfies UpdatePushRelayConfigParams),
+        await invoke<PushRelayConfig>("update_push_relay_config", {
+          defaultPermission,
+        } satisfies UpdatePushRelayConfigParams),
       )
     } catch (err) {
       console.error("Failed to update Push Relay config:", err)
@@ -316,18 +319,19 @@ export function OptimizeOverviewView({ onTabChange }: OptimizeOverviewProps) {
                 <CardTitle className="text-base">{FEATURES.pushRelay.name}</CardTitle>
               </div>
               {pushRelayConfig && (
-                <InfoTooltip content="When off, no push is advertised or relayed to any client.">
-                  <Switch
-                    checked={pushRelayConfig.enabled}
-                    onCheckedChange={updatePushRelayEnabled}
+                <InfoTooltip content="Default permission for every client, server and event type without its own setting. Off with no setting that turns something on means no push is advertised or relayed.">
+                  <PermissionStateButton
+                    value={pushRelayConfig.default_permission}
+                    onChange={updatePushRelayDefault}
                     disabled={savingPushRelay}
+                    size="sm"
                   />
                 </InfoTooltip>
               )}
             </div>
             <CardDescription>
               Relay events that upstream MCP servers push (MCP Events, Claude Channels) to every client in a
-              form it can consume, with Allow / Ask / Block per client, server and event type.
+              form it can consume, with Allow / Ask / Off per client, server and event type.
             </CardDescription>
           </CardHeader>
           <CardContent className="pt-0">

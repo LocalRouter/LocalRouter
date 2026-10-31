@@ -7,7 +7,7 @@ export const PUSH_DECISION_LABELS: Record<PushEventDecision, string> = {
   asked_allowed: 'Approved',
   asked_edited: 'Approved with edits',
   denied: 'Denied',
-  blocked: 'Blocked by permission',
+  off: 'Off by permission',
   hold_cap: 'Dropped (too many held events)',
   too_large: 'Dropped (too large)',
 }
@@ -29,8 +29,14 @@ export const PUSH_EGRESS_LABELS: Record<string, string> = {
   tools: 'EventPoll / EventWait tools',
 }
 
+/** A record's decision, with the older `blocked` read as `off`. */
+export function normalizePushDecision(decision: string): string {
+  return decision === 'blocked' ? 'off' : decision
+}
+
 export function pushDecisionLabel(decision: string): string {
-  return PUSH_DECISION_LABELS[decision as PushEventDecision] ?? decision
+  const normalized = normalizePushDecision(decision)
+  return PUSH_DECISION_LABELS[normalized as PushEventDecision] ?? decision
 }
 
 /** The event reached the client. */

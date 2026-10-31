@@ -1586,10 +1586,11 @@ export interface SkillsConfig {
 // =============================================================================
 
 /**
- * Block / Ask / Allow for pushed events.
+ * Allow / Ask / Off for pushed events — the same vocabulary as MCP permissions
+ * (PermissionState). Rust reads an older `block` as `off`.
  * Rust: crates/lr-config/src/push_relay.rs - PushPermission enum
  */
-export type PushPermission = 'allow' | 'ask' | 'block'
+export type PushPermission = 'allow' | 'ask' | 'off'
 
 /**
  * Per-client push permission tree; an absent entry inherits from the level above
@@ -1612,13 +1613,14 @@ export interface PushPermissions {
 export type EventDeliveryMode = 'push' | 'poll' | 'webhook'
 
 /**
- * Global Push Relay settings: the master switch, the default permission, the
- * Claude Channels rate and how much event history each client keeps. Every
- * other limit is internal to the relay and not configurable.
+ * Global Push Relay settings: the default permission (Allow / Ask / Off, the
+ * only global control), the Claude Channels rate and how much event history
+ * each client keeps. Every other limit is internal to the relay and not
+ * configurable.
  * Rust: src-tauri/src/ui/commands_push_relay.rs - PushRelayConfigView struct
  */
 export interface PushRelayConfig {
-  enabled: boolean
+  /** Off with no client override enabling anything turns Push Relay off entirely */
   default_permission: PushPermission
   /** Claude Channels messages per client session per minute (default 10, 1–600) */
   channel_messages_per_minute: number
@@ -1658,6 +1660,11 @@ export interface PushSourceInfo {
   resource_subscribe: boolean
   events: PushEventTypeInfo[]
   has_consumable_push: boolean
+  /**
+   * Enabled clients that may receive at least one of this server's push sources
+   * (MCP access and a permission other than Off); 0 when push is off for all.
+   */
+  receiving_clients: number
 }
 
 /**
@@ -1681,7 +1688,8 @@ export interface ClientPushSettings {
   webhook_urls: string[]
   global_default: PushPermission
   effective_client: PushPermission
-  relay_enabled: boolean
+  /** Any push can reach this client (the global default or an override is not Off) */
+  receives_push: boolean
   servers: ClientPushServerAccess[]
 }
 
@@ -1703,6 +1711,8 @@ export interface ClaudeCodeMcpSetup {
 
 /**
  * Decision recorded for a pushed event (Monitor `McpPushEvent` record).
+ * Records stored with the older `blocked` are shown as `off`
+ * (see `normalizePushDecision`).
  * Rust: crates/lr-mcp/src/gateway/push_relay/relay.rs - monitor decisions
  */
 export type PushEventDecision =
@@ -1711,7 +1721,7 @@ export type PushEventDecision =
   | 'asked_allowed'
   | 'asked_edited'
   | 'denied'
-  | 'blocked'
+  | 'off'
   | 'hold_cap'
   | 'too_large'
 
@@ -5578,7 +5588,6 @@ export interface DiscoverResourceIconParams { endpointUrl: string }
 export type GetPushRelayConfigParams = Record<string, never>
 /** Params for update_push_relay_config (a value out of its bounds is refused) */
 export interface UpdatePushRelayConfigParams {
-  enabled?: boolean
   defaultPermission?: PushPermission
   channelMessagesPerMinute?: number
   historyRetentionHours?: number

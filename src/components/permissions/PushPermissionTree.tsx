@@ -57,7 +57,7 @@ interface PushPermissionTreeProps {
 }
 
 /**
- * Client → server → event type push permissions with Inherit / Allow / Ask / Block.
+ * Client → server → event type push permissions with Inherit / Allow / Ask / Off.
  * Servers the client has no MCP access to are listed but locked: push never
  * widens MCP access.
  */

@@ -14,7 +14,7 @@ import { markdownLinkComponents } from '@/components/shared/MarkdownLink'
 import remarkGfm from 'remark-gfm'
 import { capturedExcerpt, capturedRequestBody, capturedResponseMessages, contentText, requestMessages } from './message-content'
 import { LLM_API_LABELS, llmApiFlow, type ApiFlow } from './llm-api'
-import { PUSH_EGRESS_LABELS, PUSH_INGRESS_LABELS, pushDecisionDelivered, pushDecisionLabel, pushPayloadEdited } from './push-event'
+import { PUSH_EGRESS_LABELS, PUSH_INGRESS_LABELS, normalizePushDecision, pushDecisionDelivered, pushDecisionLabel, pushPayloadEdited } from './push-event'
 import type { EventStatus, LlmProtocol, MonitorEvent, ReadMemoryArchiveFileParams } from '@/types/tauri-commands'
 import { decisionAnswersForView, decisionQuestionsForView } from '@/utils/decisions'
 import type { SystemOneAnswer, SystemOneQuestion } from '@/types/systemone'
@@ -1484,7 +1484,9 @@ function McpPushEventDetail({ data }: { data: EventData }) {
   const held = typeof data.held_ms === 'number' ? data.held_ms : null
   const tone = decision === 'pending'
     ? 'warning'
-    : pushDecisionDelivered(decision) ? 'success' : 'destructive'
+    : pushDecisionDelivered(decision)
+      ? 'success'
+      : normalizePushDecision(decision) === 'off' ? 'secondary' : 'destructive'
   return (
     <div className="space-y-4">
       <Section title="Event">

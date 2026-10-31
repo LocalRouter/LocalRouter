@@ -8,7 +8,7 @@ import { CLAUDE_CHANNELS_LAUNCH_COMMAND, claudeCodeStdioConfig } from '../../../
 const source = (patch: Partial<PushSourceInfo> = {}): PushSourceInfo => ({
   server_id: 's', server_name: 'S', enabled: true, snapshot_status: 'current',
   protocol_version: '2025-11-25', observed_at: null, channels: false, resource_subscribe: false,
-  events: [], has_consumable_push: false, ...patch,
+  events: [], has_consumable_push: false, receiving_clients: 1, ...patch,
 })
 
 test('sources without consumable push say why', () => {
@@ -34,9 +34,11 @@ test('Claude Code defaults to the STDIO bridge with the channels flag', () => {
 })
 
 test('Monitor push records label every decision and detect edits structurally', () => {
-  const decisions: PushEventDecision[] = ['pending', 'allowed', 'asked_allowed', 'asked_edited', 'denied', 'blocked', 'hold_cap', 'too_large']
+  const decisions: PushEventDecision[] = ['pending', 'allowed', 'asked_allowed', 'asked_edited', 'denied', 'off', 'hold_cap', 'too_large']
   for (const d of decisions) expect(PUSH_DECISION_LABELS[d]).toBeTruthy()
   expect(pushDecisionLabel('something_new')).toBe('something_new')
+  // Records stored before the Off vocabulary still display
+  expect(pushDecisionLabel('blocked')).toBe(PUSH_DECISION_LABELS.off)
   expect(pushDecisionDelivered('asked_edited')).toBe(true)
   expect(pushDecisionDelivered('denied')).toBe(false)
   expect(pushPayloadEdited({ a: 1, b: 2 }, { b: 2, a: 1 })).toBe(false)

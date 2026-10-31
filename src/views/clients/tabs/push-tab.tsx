@@ -98,8 +98,8 @@ export function ClientPushCard({ client, onUpdate, onViewChange }: ClientPushCar
         <div className="flex items-center gap-2">
           <FEATURES.pushRelay.icon className={`h-5 w-5 ${FEATURES.pushRelay.color}`} />
           <CardTitle className="text-base">{FEATURES.pushRelay.name}</CardTitle>
-          {settings && !settings.relay_enabled && (
-            <Badge variant="outline" className="text-[10px] px-1.5 py-0">Off globally</Badge>
+          {settings && !settings.receives_push && (
+            <Badge variant="outline" className="text-[10px] px-1.5 py-0">Off</Badge>
           )}
         </div>
         <CardDescription>
@@ -108,11 +108,12 @@ export function ClientPushCard({ client, onUpdate, onViewChange }: ClientPushCar
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
-        {settings && !settings.relay_enabled && (
+        {settings && !settings.receives_push && (
           <div className="flex items-start gap-2 rounded-lg bg-muted/50 p-3 text-xs text-muted-foreground">
             <Info className="h-4 w-4 shrink-0 mt-0.5" />
             <span>
-              Push Relay is turned off, so nothing is relayed to any client.{" "}
+              Push is off for this client: nothing is advertised or relayed to it. Set a server or event type
+              below to Allow or Ask to turn it on, or change the default permission.{" "}
               {onViewChange && (
                 <button className="text-primary hover:underline" onClick={() => onViewChange("push-relay")}>
                   Global settings
@@ -128,7 +129,7 @@ export function ClientPushCard({ client, onUpdate, onViewChange }: ClientPushCar
             <div className="space-y-1.5">
               <p className="text-sm font-medium">Permissions</p>
               <p className="text-xs text-muted-foreground">
-                Allow relays each event; Ask holds each one for your approval; Block hides the event type. The most
+                Allow relays each event; Ask holds each one for your approval; Off hides the event type. The most
                 specific setting wins.
               </p>
             </div>
@@ -143,7 +144,6 @@ export function ClientPushCard({ client, onUpdate, onViewChange }: ClientPushCar
                 load()
                 onUpdate()
               }}
-              disabled={!settings.relay_enabled}
             />
           ) : (
             <p className="text-sm text-muted-foreground py-4 text-center">Loading...</p>
