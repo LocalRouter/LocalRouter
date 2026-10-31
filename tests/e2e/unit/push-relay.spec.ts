@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test'
 import type { PushEventDecision, PushSourceInfo } from '../../../src/types/tauri-commands'
 import { PUSH_DECISION_LABELS, pushDecisionDelivered, pushDecisionLabel, pushPayloadEdited } from '../../../src/views/monitor/push-event'
 import { formatRelativeTime } from '../../../src/views/push-relay/format'
-import { noPushReason } from '../../../src/views/push-relay/push-relay-utils'
+import { noPushReason, serverPushSummary, snapshotStatusLabel } from '../../../src/views/push-relay/push-relay-utils'
 import { CLAUDE_CHANNELS_LAUNCH_COMMAND, claudeCodeStdioConfig } from '../../../src/components/client/claude-code-bridge-config'
 
 const source = (patch: Partial<PushSourceInfo> = {}): PushSourceInfo => ({
@@ -20,6 +20,28 @@ test('sources without consumable push say why', () => {
     events: [{ name: 'invoice.paid', description: null, modes: ['webhook'], supported: false }],
   }))).toBe('Webhook only — not supported')
   expect(noPushReason(source())).toBe('No push offered')
+})
+
+test('an MCP server page says what LocalRouter does with its push', () => {
+  const pushing = source({
+    has_consumable_push: true,
+    events: [{ name: 'message.received', description: null, modes: ['push', 'poll'], supported: true }],
+  })
+  expect(serverPushSummary(pushing, 'allow')).toBe('Relayed through Push Relay to 1 client.')
+  expect(serverPushSummary({ ...pushing, receiving_clients: 3 }, 'allow')).toMatch(/to 3 clients/)
+  // Nobody receives it: with the default Off, say push is off
+  expect(serverPushSummary({ ...pushing, receiving_clients: 0 }, 'off')).toMatch(/^Push is off/)
+  expect(serverPushSummary({ ...pushing, receiving_clients: 0 }, 'allow')).toMatch(/Not relayed to any client/)
+  expect(serverPushSummary(source({ snapshot_status: 'none' }), 'allow')).toMatch(/not known yet/)
+  expect(serverPushSummary(source({ snapshot_status: 'stale' }), 'allow')).toMatch(/reconnects/)
+  expect(serverPushSummary(source({ enabled: false }), 'allow')).toMatch(/disabled/)
+  expect(serverPushSummary(source({
+    events: [{ name: 'invoice.paid', description: null, modes: ['webhook'], supported: false }],
+  }), 'allow')).toMatch(/Only webhook delivery/)
+  expect(serverPushSummary(source(), 'allow')).toBe('No push advertised.')
+  expect(snapshotStatusLabel(source())).toBe('Current')
+  expect(snapshotStatusLabel(source({ snapshot_status: 'stale' }))).toBe('Stale')
+  expect(snapshotStatusLabel(source({ snapshot_status: 'none' }))).toBe('Not known yet')
 })
 
 test('Claude Code defaults to the STDIO bridge with the channels flag', () => {

@@ -897,6 +897,46 @@ export const mockData = {
       description: "Automate browser interactions and web scraping",
       tools_count: 10,
     },
+    {
+      id: "mcp-vocalcord",
+      name: "VocalCord",
+      enabled: true,
+      transport: "Sse",
+      transport_config: {
+        url: "https://api.vocalcord.io/mcp",
+        headers: {},
+      },
+      auth_config: { type: "bearer_token" },
+      description: "Message your phone across Telegram, Discord and Slack; pushes incoming messages",
+      tools_count: 6,
+    },
+    {
+      id: "mcp-netget",
+      name: "NetGet",
+      enabled: true,
+      transport: "Stdio",
+      transport_config: {
+        command: "netget",
+        args: ["--mcp"],
+        env: {},
+      },
+      auth_config: null,
+      description: "LLM-controlled network protocol servers; pushes Claude Channels and MCP Events",
+      tools_count: 24,
+    },
+    {
+      id: "mcp-billing",
+      name: "Billing Webhooks",
+      enabled: true,
+      transport: "Sse",
+      transport_config: {
+        url: "https://billing.example.com/mcp",
+        headers: {},
+      },
+      auth_config: null,
+      description: "Invoices and subscriptions; offers events by webhook only",
+      tools_count: 4,
+    },
   ] as McpServer[],
 
   strategies: [
@@ -1139,6 +1179,9 @@ export const mockData = {
       "mcp-slack": { status: "healthy" as const, name: "Slack", latency_ms: 178, last_check: new Date().toISOString() },
       "mcp-postgres": { status: "unknown" as const, name: "PostgreSQL", latency_ms: null, last_check: null },
       "mcp-browser": { status: "healthy" as const, name: "Browser Control", latency_ms: 23, last_check: new Date().toISOString() },
+      "mcp-vocalcord": { status: "healthy" as const, name: "VocalCord", latency_ms: 96, last_check: new Date().toISOString() },
+      "mcp-netget": { status: "healthy" as const, name: "NetGet", latency_ms: 31, last_check: new Date().toISOString() },
+      "mcp-billing": { status: "healthy" as const, name: "Billing Webhooks", latency_ms: 142, last_check: new Date().toISOString() },
     },
   },
 

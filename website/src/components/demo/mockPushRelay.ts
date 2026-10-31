@@ -78,6 +78,8 @@ export const mockPushSources: PushSourceInfo[] = [
   { server_id: 'mcp-github', server_name: 'GitHub', enabled: true, snapshot_status: 'current', protocol_version: '2025-06-18', observed_at: minutesAgo(600), channels: false, resource_subscribe: false, has_consumable_push: false, receiving_clients: 0, events: [] },
   { server_id: 'mcp-filesystem', server_name: 'Filesystem', enabled: true, snapshot_status: 'current', protocol_version: '2025-03-26', observed_at: minutesAgo(900), channels: false, resource_subscribe: true, has_consumable_push: false, receiving_clients: 0, events: [] },
   { server_id: 'mcp-slack', server_name: 'Slack', enabled: true, snapshot_status: 'none', protocol_version: null, observed_at: null, channels: false, resource_subscribe: false, has_consumable_push: false, receiving_clients: 0, events: [] },
+  { server_id: 'mcp-postgres', server_name: 'PostgreSQL', enabled: false, snapshot_status: 'none', protocol_version: null, observed_at: null, channels: false, resource_subscribe: false, has_consumable_push: false, receiving_clients: 0, events: [] },
+  { server_id: 'mcp-browser', server_name: 'Browser Control', enabled: true, snapshot_status: 'current', protocol_version: '2025-06-18', observed_at: minutesAgo(75), channels: false, resource_subscribe: false, has_consumable_push: false, receiving_clients: 0, events: [] },
 ]
 
 export interface MockClientPush {
