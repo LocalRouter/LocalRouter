@@ -19,13 +19,15 @@ import {
 } from "@/components/ui/tooltip"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Button } from "@/components/ui/Button"
-import { Wrench, FileText, MessageSquare, Radio, HelpCircle, AlertCircle, Circle, Info, Users, Globe, Zap, BookOpen, RefreshCw, Loader2 } from "lucide-react"
+import { Wrench, FileText, MessageSquare, Radio, HelpCircle, AlertCircle, Circle, Info, Users, Globe, Zap, BookOpen, RefreshCw, Loader2, BellRing } from "lucide-react"
 import { ConnectionInfoPanel } from "./connection-info-panel"
 import { ToolsPanel } from "./tools-panel"
 import { ResourcesPanel } from "./resources-panel"
 import { PromptsPanel } from "./prompts-panel"
 import { SamplingPanel } from "./sampling-panel"
 import { ElicitationPanel } from "./elicitation-panel"
+import { PushPanel } from "./push-panel"
+import { usePushTester } from "./use-push-tester"
 import {
   createMcpClient,
   type McpClientWrapper,
@@ -229,6 +231,7 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
   const [toolsRefreshTrigger, setToolsRefreshTrigger] = useState(0)
   const [resourcesRefreshTrigger, setResourcesRefreshTrigger] = useState(0)
   const [promptsRefreshTrigger, setPromptsRefreshTrigger] = useState(0)
+  const [eventsRefreshTrigger, setEventsRefreshTrigger] = useState(0)
 
   // Resources panel state (lifted to persist across tab switches)
   const [resourceState, setResourceState] = useState<ResourceState>({
@@ -546,6 +549,9 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
       mcpAccess,
       skillsAccess,
       codingAgentAccess,
+      // Push permissions belong to a client: against one, this session opts
+      // into the Push Relay's test source (the Push subtab sends to it)
+      pushTest: mode === "client" ? true : undefined,
     }
   }, [canConnect, serverPort, mode, clientApiKey, internalTestToken, selectedDirectTarget])
 
@@ -590,6 +596,7 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
           onToolsListChanged: () => setToolsRefreshTrigger(prev => prev + 1),
           onResourcesListChanged: () => setResourcesRefreshTrigger(prev => prev + 1),
           onPromptsListChanged: () => setPromptsRefreshTrigger(prev => prev + 1),
+          onEventsListChanged: () => setEventsRefreshTrigger(prev => prev + 1),
         })
 
         mcpClientRef.current = client
@@ -621,6 +628,15 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
   }
 
   const { isConnected, isConnecting, error: connectionError, capabilities } = connectionState
+
+  // Push testing state lives here so streams and auto-poll survive subtab switches
+  const pushTester = usePushTester({
+    mcpClient: mcpClientRef.current,
+    isConnected,
+    eventsRefreshTrigger,
+    toolsRefreshTrigger,
+  })
+  const pushClient = mode === "client" ? clients.find(c => c.id === selectedClientId) ?? null : null
 
   return (
     <div className="flex flex-col h-full gap-4">
@@ -872,6 +888,13 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
                     <Circle className="h-2 w-2 fill-primary text-primary absolute -top-0.5 -right-0.5" />
                   )}
                 </TabsTrigger>
+                <TabsTrigger value="push" className="flex items-center gap-1 relative">
+                  <BellRing className="h-3 w-3" />
+                  Push
+                  {pushTester.streams.some(s => s.status === "active") && (
+                    <Circle className="h-2 w-2 fill-green-500 text-green-500 absolute -top-0.5 -right-0.5" />
+                  )}
+                </TabsTrigger>
               </TabsList>
             </TooltipProvider>
           </CardHeader>
@@ -957,6 +980,15 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
                 onResolve={resolveElicitationRequest}
                 elicitationState={elicitationState}
                 onElicitationStateChange={setElicitationState}
+              />
+            </TabsContent>
+
+            <TabsContent value="push" className="h-full m-0">
+              <PushPanel
+                tester={pushTester}
+                connectionState={connectionState}
+                clientId={pushClient?.id ?? null}
+                clientName={pushClient?.name ?? null}
               />
             </TabsContent>
           </CardContent>

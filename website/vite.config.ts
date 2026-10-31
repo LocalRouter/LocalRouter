@@ -19,6 +19,12 @@ function resolveAppAlias(): Plugin {
         return null
       }
 
+      // The demo has no gateway to connect to: Try it out's MCP client is a
+      // stand-in with bundled sample data (including Push Relay events)
+      if (source === '@/lib/mcp-client' && importer && importer.startsWith(mainAppSrc) && !importer.startsWith(websiteSrc)) {
+        return path.resolve(websiteSrc, 'stubs/mcp-client.ts')
+      }
+
       // Determine which src folder to use based on where the import is from
       if (importer && importer.startsWith(mainAppSrc) && !importer.startsWith(websiteSrc)) {
         // Import from main app - resolve to main app's src

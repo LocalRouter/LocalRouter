@@ -23,6 +23,18 @@ export function pushEventKey(serverId: string, eventName: string): string {
   return `${serverId}__${eventName}`
 }
 
+/** The built-in push test source (Try it out → MCP → Push). Not an MCP server. */
+export const PUSH_TEST_SOURCE_ID = "localrouter"
+export const PUSH_TEST_EVENT = "test.event"
+
+/** The test source is listed only once a permission is configured for it. */
+export function showPushTestSource(settings: ClientPushSettings): boolean {
+  return (
+    settings.permissions.servers?.[PUSH_TEST_SOURCE_ID] !== undefined ||
+    settings.permissions.events?.[pushEventKey(PUSH_TEST_SOURCE_ID, PUSH_TEST_EVENT)] !== undefined
+  ) && !settings.servers.some((s) => s.server_id === PUSH_TEST_SOURCE_ID)
+}
+
 /** Servers worth showing in a push tree: they offer consumable push. */
 export function pushTreeSources(sources: PushSourceInfo[]): PushSourceInfo[] {
   return sources.filter((s) => s.has_consumable_push)
@@ -57,9 +69,10 @@ export function PushPermissionTree({ clientId, sources, settings, onUpdate, disa
     [settings.servers],
   )
 
+  const showTest = showPushTestSource(settings)
   const nodes: TreeNode[] = useMemo(
-    () =>
-      pushTreeSources(sources).map((source) => {
+    () => [
+      ...pushTreeSources(sources).map((source) => {
         const hasAccess = access.get(source.server_id) ?? false
         return {
           id: SERVER_PREFIX + source.server_id,
@@ -79,7 +92,20 @@ export function PushPermissionTree({ clientId, sources, settings, onUpdate, disa
           })),
         }
       }),
-    [sources, access],
+      ...(showTest
+        ? [{
+            id: SERVER_PREFIX + PUSH_TEST_SOURCE_ID,
+            label: "LocalRouter test source",
+            description: "Built-in test events from Try it out → MCP → Push; only sessions that opted into push testing receive them",
+            children: [{
+              id: EVENT_PREFIX + pushEventKey(PUSH_TEST_SOURCE_ID, PUSH_TEST_EVENT),
+              label: PUSH_TEST_EVENT,
+              description: "Test event",
+            }],
+          }]
+        : []),
+    ],
+    [sources, access, showTest],
   )
 
   const flatPermissions = useMemo(() => {
@@ -107,6 +133,9 @@ export function PushPermissionTree({ clientId, sources, settings, onUpdate, disa
       return save({ clientId, level: "server", serverId: nodeId.slice(SERVER_PREFIX.length), state })
     }
     const key = nodeId.slice(EVENT_PREFIX.length)
+    if (showTest && key === pushEventKey(PUSH_TEST_SOURCE_ID, PUSH_TEST_EVENT)) {
+      return save({ clientId, level: "event", serverId: PUSH_TEST_SOURCE_ID, eventName: PUSH_TEST_EVENT, state })
+    }
     const source = sources.find((s) => key.startsWith(`${s.server_id}__`))
     if (!source) return
     return save({
