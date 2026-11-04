@@ -338,10 +338,14 @@ function WindowRow({ window: w, now }: { window: UsageWindowView; now: number })
     w.projected_percent !== null ? Math.min(100, Math.max(used, w.projected_percent)) : null
   const resetsIn = w.resets_at !== null && !w.stale ? w.resets_at - now / 1000 : null
   const breakdown = windowBreakdown(w)
+  const dense = breakdown !== null && breakdown.bars.length > 7
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <div className="flex items-center gap-3 text-xs" tabIndex={0}>
+        <div
+          className={cn('flex text-xs', dense ? 'flex-col gap-1' : 'items-center gap-3')}
+          tabIndex={0}
+        >
           <div className="min-w-0 flex-1 space-y-1">
             <div className="grid grid-cols-[1fr_auto_3.75rem] items-baseline gap-2">
               <span className="truncate text-muted-foreground">{shortLabel(w)}</span>
@@ -406,18 +410,22 @@ function WindowRow({ window: w, now }: { window: UsageWindowView; now: number })
 
 /**
  * The window's bars, oldest first and ending at the reset: per hour for a
- * 5-hour window, per day (weekday initials) for a week, per week for a month.
+ * short window (including daily windows), per day for a week, per week for a month.
  * A full bar is twice the even-pace share; spans still ahead are a baseline.
  */
 function BreakdownBars({ breakdown }: { breakdown: WindowBreakdown }) {
+  const dense = breakdown.bars.length > 7
+  // Keep every hourly bar, but leave enough room for two-digit axis labels.
+  const labelEvery = dense ? Math.ceil(breakdown.bars.length / 8) : 1
   return (
     <div
-      className="flex w-28 shrink-0 justify-end gap-0.5"
+      className={cn('grid shrink-0 gap-0.5', dense ? 'w-full' : 'w-28')}
+      style={{ gridTemplateColumns: `repeat(${breakdown.bars.length}, minmax(0, 1fr))` }}
       role="img"
       aria-label={breakdownSummary(breakdown)}
     >
       {breakdown.bars.map((b, i) => (
-        <div key={i} className="flex w-3.5 flex-col items-center gap-0.5" aria-hidden>
+        <div key={i} className="flex min-w-0 flex-col items-center gap-0.5" aria-hidden>
           <div className="flex h-6 w-full items-end">
             {b.height === null ? (
               <div className="h-px w-full bg-muted-foreground/30" />
@@ -434,6 +442,7 @@ function BreakdownBars({ breakdown }: { breakdown: WindowBreakdown }) {
           <span
             className={cn(
               'text-[9px] leading-none tabular-nums',
+              i % labelEvery !== 0 && 'invisible',
               b.current ? 'font-semibold text-foreground' : 'text-muted-foreground',
             )}
           >
