@@ -7,7 +7,7 @@
 - [x] Test Coverage Review: cover containment, meter separation, labels and compact windows.
 - [x] Bug Hunt: inspect sizing and label edge cases.
 - [x] Run desktop unit/build and shared website build checks.
-- [ ] Commit and push, merge with --no-ff into master and push master.
+- [x] Commit and push, merge with --no-ff into master and push master (`a8af112b`).
 
 ## Validation and review
 
