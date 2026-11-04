@@ -2,6 +2,20 @@
 
 **Status: plan only (2026-11-04). Nothing implemented.**
 
+**The mechanism catalog, per-provider matrix and staged adoption path are in
+`plan/2026-11-04-MODEL_INTEGRITY_RESEARCH.md`, which overrides this plan's tier table and
+phases.** Its main additions:
+
+- Vendor replay oracles: Anthropic thinking signatures, OpenAI `encrypted_content`, and Gemini
+  `thoughtSignature`.
+- Hardware attestation: Tinfoil binds the weights; ACI/Phala and NEAR attest the platform.
+- Provider-declared quantization and routing enforcement (OpenRouter).
+- Bundled third-party fidelity data.
+- Better audits: KBF, One-Token JSD, logprob drift, AgentProv, GateScope.
+
+This document remains the reference for the verdict engine, UI, warning modal, config, Tauri
+commands, and website section, and for FlashProve as a watch-list item.
+
 Providers and resellers sometimes serve something other than the model they bill for: a cheaper
 model, an aggressive quantization, an old revision, or a broken deployment (wrong chat template,
 broken tool-call parsing). LocalRouter sits on every request, so it can gather evidence about what
