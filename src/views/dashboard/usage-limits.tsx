@@ -338,12 +338,11 @@ function WindowRow({ window: w, now }: { window: UsageWindowView; now: number })
     w.projected_percent !== null ? Math.min(100, Math.max(used, w.projected_percent)) : null
   const resetsIn = w.resets_at !== null && !w.stale ? w.resets_at - now / 1000 : null
   const breakdown = windowBreakdown(w)
-  const dense = breakdown !== null && breakdown.bars.length > 7
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <div
-          className={cn('flex text-xs', dense ? 'flex-col gap-1' : 'items-center gap-3')}
+          className="flex items-center gap-3 text-xs"
           tabIndex={0}
         >
           <div className="min-w-0 flex-1 space-y-1">
@@ -416,10 +415,10 @@ function WindowRow({ window: w, now }: { window: UsageWindowView; now: number })
 function BreakdownBars({ breakdown }: { breakdown: WindowBreakdown }) {
   const dense = breakdown.bars.length > 7
   // Keep every hourly bar, but leave enough room for two-digit axis labels.
-  const labelEvery = dense ? Math.ceil(breakdown.bars.length / 8) : 1
+  const labelEvery = dense ? Math.ceil(breakdown.bars.length / 6) : 1
   return (
     <div
-      className={cn('grid shrink-0 gap-0.5', dense ? 'w-full' : 'w-28')}
+      className="grid w-28 shrink-0 gap-0.5"
       style={{ gridTemplateColumns: `repeat(${breakdown.bars.length}, minmax(0, 1fr))` }}
       role="img"
       aria-label={breakdownSummary(breakdown)}
