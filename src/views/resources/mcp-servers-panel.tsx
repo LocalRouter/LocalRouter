@@ -18,6 +18,7 @@ import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
 import { buildMcpAuthUpdate, getMcpAuthMethod, retainedMcpTransportHeaders, type McpAuthMethod, type McpAuthConfig, type OAuthEndpoints } from "@/utils/mcp-auth-update"
+import { resolveMcpCreateTransport } from "@/utils/mcp-create-transport"
 import { resolveMcpTemplateUrl } from "@/utils/mcp-template-url"
 import { Checkbox } from "@/components/ui/checkbox"
 import type { McpOAuthDiscovery, DiscoverMcpOAuthEndpointsParams, UpdateMcpServerParams } from "@/types/tauri-commands"
@@ -44,6 +45,7 @@ import KeyValueInput from "@/components/ui/KeyValueInput"
 import { McpServerTemplates, McpServerTemplate, MCP_SERVER_TEMPLATES, initialTemplateFieldValues } from "@/components/mcp/McpServerTemplates"
 import { McpAuthFields } from "@/components/mcp/McpAuthFields"
 import { McpOAuthModal } from "@/components/mcp/McpOAuthModal"
+import { McpConnectionTest } from "@/components/mcp/McpConnectionTest"
 import { CustomMcpDiscovery } from "@/components/mcp/CustomMcpDiscovery"
 import { MarketplaceSearchPanel, McpServerListing } from "@/components/add-resource"
 import ServiceIcon from "@/components/ServiceIcon"
@@ -462,6 +464,31 @@ export function McpServersPanel({
     // Keep form data in case user wants to go back
   }
 
+  const resolveCreateTransport = () => resolveMcpCreateTransport(
+    selectedSource?.type === "template" ? selectedSource.template : null,
+    templateFieldValues, transportType, command, envVars, cwd, url,
+  )
+
+  const createTransport = resolveCreateTransport()
+  const createTemplate = selectedSource?.type === "template" ? selectedSource.template : null
+  const createAuthMethod = transportType === "Sse" ? createTemplate?.authMethod ?? authMethod : "none"
+  const createBearerField = createTemplate?.fields?.find(field => field.type === "bearer")
+  const createBearerToken = createBearerField ? (templateFieldValues[createBearerField.id] || "").trim() : bearerToken
+  const connectionTest = (
+    <McpConnectionTest
+      params={{
+        target: createTransport.type === "stdio" ? createTransport.command! : createTransport.url!,
+        transportOverride: createTransport.type,
+        env: createTransport.env ?? {}, cwd: createTransport.cwd ?? null,
+        headers: createAuthMethod === "custom_headers" ? headers
+          : createAuthMethod === "bearer" && createBearerToken ? { Authorization: `Bearer ${createBearerToken}` } : {},
+      }}
+      revision={JSON.stringify([showCreateModal, dialogPage, dialogTab, selectedSource, templateFieldValues, oauthClientId, oauthClientSecret, createAuthMethod])}
+      oauth={createAuthMethod === "oauth_browser" || createAuthMethod === "oauth_pregenerated"}
+      disabled={isCreating}
+    />
+  )
+
   const handleCreateServer = async (e: React.FormEvent) => {
     e.preventDefault()
     setIsCreating(true)
@@ -469,38 +496,9 @@ export function McpServersPanel({
 
     try {
       const template = selectedSource?.type === "template" ? selectedSource.template : null
-      const hasTemplateFields = template?.fields && template.fields.length > 0
 
-      let transportConfig
-      if (hasTemplateFields && template) {
-        // Build transport config from template + field values
-        if (template.transport === "Stdio") {
-          let resolvedArgs = [...(template.args || [])]
-          const envVarsFromFields: Record<string, string> = {}
+      const transportConfig = resolveCreateTransport()
 
-          template.fields!.forEach(field => {
-            const value = templateFieldValues[field.id] || ""
-            if (field.type === "arg") {
-              resolvedArgs = resolvedArgs.map(arg =>
-                arg.includes(`{{${field.id}}}`) ? arg.replace(`{{${field.id}}}`, value) : arg
-              )
-            } else if (field.type === "env_var" && value) {
-              envVarsFromFields[field.id] = value
-            }
-          })
-
-          const fullCommand = [template.command, ...resolvedArgs].join(" ")
-          transportConfig = { type: "stdio", command: fullCommand, env: envVarsFromFields, cwd: cwd.trim() || null }
-        } else {
-          transportConfig = { type: "http_sse", url: resolveMcpTemplateUrl(template, templateFieldValues) || url, headers: {} }
-        }
-      } else if (transportType === "Stdio") {
-        transportConfig = { type: "stdio", command, env: envVars, cwd: cwd.trim() || null }
-      } else {
-        transportConfig = { type: "http_sse", url, headers: {} }
-      }
-
-      const bearerField = template?.fields?.find(field => field.type === "bearer")
       const clientIdField = template?.fields?.find(field => field.type === "oauth_client_id")
       const clientSecretField = template?.fields?.find(field => field.type === "oauth_client_secret")
       const templateClientId = clientIdField ? templateFieldValues[clientIdField.id]?.trim() : undefined
@@ -509,8 +507,8 @@ export function McpServersPanel({
         throw new Error("Client ID and Client Secret are required for this template")
       }
       const authConfig = await buildMcpAuthUpdate(
-        transportType === "Sse" ? template?.authMethod ?? authMethod : "none", null,
-        bearerField ? (templateFieldValues[bearerField.id] || "").trim() : bearerToken,
+        createAuthMethod, null,
+        createBearerToken,
         templateClientId ?? oauthClientId, templateClientSecret ?? oauthClientSecret,
         () => invoke<OAuthEndpoints | null>("discover_mcp_oauth_endpoints", { baseUrl: url }),
         template?.defaultScopes, headers,
@@ -1321,6 +1319,7 @@ export function McpServersPanel({
                     {authenticationFields}
                   </>
                 )}
+                {connectionTest}
                 <div className="flex justify-end gap-2 pt-4">
                   <Button type="button" variant="secondary" onClick={() => { setShowCreateModal(false); resetForm() }} disabled={isCreating}>Cancel</Button>
                   <Button type="submit" disabled={isCreating}>{isCreating ? "Creating..." : "Create"}</Button>
@@ -1448,6 +1447,7 @@ export function McpServersPanel({
                 </div>
               )}
 
+              {connectionTest}
               <div className="flex justify-end gap-2 pt-4">
                 <Button type="button" variant="secondary" onClick={() => { setShowCreateModal(false); resetForm() }} disabled={isCreating}>Cancel</Button>
                 <Button type="submit" disabled={isCreating}>{isCreating ? "Creating..." : "Create"}</Button>
@@ -1516,6 +1516,7 @@ export function McpServersPanel({
                 </div>
               )}
               {transportType === "Sse" && authenticationFields}
+              {connectionTest}
               <div className="flex justify-end gap-2 pt-4">
                 <Button type="button" variant="secondary" onClick={() => { setShowCreateModal(false); resetForm() }} disabled={isCreating}>Cancel</Button>
                 <Button type="submit" disabled={isCreating}>{isCreating ? "Creating..." : "Create"}</Button>
