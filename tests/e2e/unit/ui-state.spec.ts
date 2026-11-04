@@ -127,7 +127,7 @@ test('reads before the backend loads come from localStorage and are stable', asy
   expect(store.get('f')).toEqual({ a: 1 })
 })
 
-test('when the backend is unavailable localStorage keeps working', async () => {
+test('a failed startup read still permits durable writes and mirrors them', async () => {
   const backend = new FakeBackend()
   backend.failLoad = true
   const mirror = new FakeMirror({ k: '1' })
@@ -137,7 +137,8 @@ test('when the backend is unavailable localStorage keeps working', async () => {
   store.set('k', 0)
   await store.whenIdle()
   expect(mirror.items.k).toBe('0')
-  expect(backend.saves).toEqual([])
+  expect(backend.saves).toEqual([['k', 0]])
+  expect(backend.data.k).toBe(0)
 })
 
 test('a slow backend load times out instead of blocking startup', async () => {
@@ -170,3 +171,27 @@ test('section decoders accept current and legacy values and reject the rest', ()
   expect(decodeDetailSize(10)).toBeUndefined()
   expect(decodeDetailSize('')).toBeUndefined()
 })
+
+for (const failLoad of [false, true]) {
+  test(`section states survive a fresh store without localStorage (startup read failure: ${failLoad})`, async () => {
+    const backend = new FakeBackend()
+    backend.failLoad = failLoad
+    const first = new UiStateStore(backend, new FakeMirror())
+    await first.init()
+    first.set('localrouter.dashboard.usage-limits.collapsed', true)
+    first.set('localrouter.dashboard.traffic.collapsed', false)
+    await first.whenIdle()
+    backend.failLoad = false
+    const restarted = new UiStateStore(backend, new FakeMirror())
+    await restarted.init()
+    expect(restarted.get('localrouter.dashboard.usage-limits.collapsed')).toBe(true)
+    expect(restarted.get('localrouter.dashboard.traffic.collapsed')).toBe(false)
+    restarted.set('localrouter.dashboard.usage-limits.collapsed', false)
+    restarted.set('localrouter.dashboard.traffic.collapsed', true)
+    await restarted.whenIdle()
+    const again = new UiStateStore(backend, null)
+    await again.init()
+    expect(again.get('localrouter.dashboard.usage-limits.collapsed')).toBe(false)
+    expect(again.get('localrouter.dashboard.traffic.collapsed')).toBe(true)
+  })
+}

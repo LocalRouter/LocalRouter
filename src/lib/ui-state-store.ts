@@ -157,9 +157,11 @@ export class UiStateStore {
     while (this.pendingWrites.size > 0) {
       const [key, value] = this.pendingWrites.entries().next().value as [string, unknown]
       this.pendingWrites.delete(key)
-      if (!this.backendAvailable) continue
+      // A failed startup read must not disable durable writes for the session.
+      // The write endpoint may be available even when the initial load timed out.
       try {
         await this.backend.save(key, value)
+        this.backendAvailable = true
         this.backendKeys.add(key)
       } catch (error) {
         console.warn(`Failed to save UI state "${key}":`, error)
