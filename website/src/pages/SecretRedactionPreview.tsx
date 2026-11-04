@@ -1,3 +1,8 @@
+import { SamplingApproval } from '@app/views/sampling-approval'
+import { ElicitationForm } from '@app/views/elicitation-form'
+import { JsonTree } from '@app/components/shared/JsonTree'
+import { EventDetail } from '@app/views/monitor/event-detail'
+import type { MonitorEvent, PushEventApprovalDetails } from '@app/types/tauri-commands'
 import { useState } from 'react'
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks'
 import { emit } from '@tauri-apps/api/event'
@@ -23,6 +28,8 @@ type SavedPolicy = { choice: Choice; hash: string }
 /** Development-only review using the real approval component and simulated requests.
  * No requests are sent; saved hashes remain in memory. */
 export default function SecretRedactionPreview() {
+  const kind = new URLSearchParams(window.location.search).get('kind')
+  if (kind) return <LargePopupPreview kind={kind} />
   return new URLSearchParams(window.location.search).has('native')
     ? <NativeApprovalPreview /> : <SharedApprovalPreview />
 }
@@ -97,10 +104,12 @@ function NativeApprovalPreview() {
 function SharedApprovalPreview() {
   const jwt = new URLSearchParams(window.location.search).has('jwt')
   const jwtPart = (value: object) => btoa(String.fromCharCode(...new TextEncoder().encode(JSON.stringify(value)))).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_')
-  const samples = jwt ? [`${jwtPart({ alg: 'HS256', typ: 'JWT' })}.${new URLSearchParams(window.location.search).get('jwt') === 'malformed' ? 'bm90LWpzb24' : jwtPart({ sub: 'user-123', name: 'Mátúš', scope: ['read', 'write'] })}.example-signature`] : SAMPLES
+  const samples = jwt ? [`${jwtPart({ alg: 'HS256', typ: 'JWT' })}.${new URLSearchParams(window.location.search).get('jwt') === 'malformed' ? 'bm90LWpzb24' : jwtPart({ sub: 'user-123', name: 'Mátúš', scope: ['read', 'write'] })}.example-signature`] : new URLSearchParams(window.location.search).has('longSecret') ? ['s'.repeat(32_000)] : SAMPLES
   const findings = jwt ? [{ ...FINDINGS[0], rule_id: 'jwt-token', rule_description: 'JSON Web Token', matched_text: 'eyJhbG********************ture' }] : FINDINGS
   const count = new URLSearchParams(window.location.search).has('multiple') && !jwt ? 2 : 1
-  const source = `${INTRO}\n${samples.slice(0, count).map((secret, i) => `${jwt ? 'Authorization: Bearer ' : `aws_secret_access_key_${i + 1}=`}${secret}`).join('\n')}\n${OUTRO}`
+  const large = new URLSearchParams(window.location.search).get('large')
+  const padding = large !== null ? 'Long conversation message with many words. '.repeat(large ? 500 : 125_000) : ''
+  const source = `${large === 'start' ? '' : padding}${INTRO}\n${samples.slice(0, count).map((secret, i) => `${jwt ? 'Authorization: Bearer ' : `aws_secret_access_key_${i + 1}=`}${secret}`).join('\n')}\n${OUTRO}${large === 'end' ? '' : padding}`
   const requestJson = JSON.stringify({ model: 'gpt-4o', messages: [{ role: 'assistant', content: 'Previous conversation message' }, { role: 'user', content: samples.reduce((text, secret) => text.split(secret).join(MARKER), source) }], temperature: 0.7 }, null, 2)
   const offsets = Array.from(requestJson.matchAll(/\[REDACTED: secret removed by LocalRouter\]/g), match => match.index!)
   const [current, setCurrent] = useState<number | null>(0)
@@ -155,7 +164,7 @@ function SharedApprovalPreview() {
       <div><p className="text-xs uppercase tracking-widest text-blue-400">Local preview · no requests sent</p><h1 className="text-2xl font-semibold mt-2">Secret redaction</h1><p className="text-sm text-muted-foreground mt-2">Actual approval UI with simulated requests and in-memory hashes.</p><a className="text-sm underline text-muted-foreground" href={count === 1 ? '?multiple' : '?'}>{count === 1 ? 'Try a request with two secrets' : 'Try a request with one secret'}</a></div>
       <div className="grid gap-8 lg:grid-cols-2 items-start">
         <div className="space-y-4">
-          {current !== null ? <div className="rounded-lg border shadow-xl w-[440px] max-w-full" style={{ height: new URLSearchParams(window.location.search).has('notify') ? 415 : 480 }} data-testid="approval-popup"><FirewallApprovalCard key={current} className="flex h-full flex-col p-4 overflow-hidden" clientName="Cursor" toolName="gpt-4o" serverName="openai" isSecretScanRequest isInactive={inactive} secretScanLlmSource={new URLSearchParams(window.location.search).get('llmSource') ?? 'OpenAI'} secretScanRequestJson={requestJson} isNotifyOnly={new URLSearchParams(window.location.search).has('notify')} onDismiss={() => setCurrent(null)} secretScanFindings={[{ ...findings[current], request_match: { start: offsets[current], end: offsets[current] + MARKER.length } }]} onAction={action} onReveal={async () => samples[current]} onAllowSecretPermanently={() => remember('allow')} onRedactPermanently={() => remember('redact')} submitting={saving} /></div> : <div className="rounded-lg border p-6 text-sm" role="status">{status}</div>}
+          {current !== null ? <div className="rounded-lg border shadow-xl w-[440px] max-w-full" style={{ height: new URLSearchParams(window.location.search).has('notify') ? 415 : 480 }} data-testid="approval-popup"><FirewallApprovalCard key={current} className="flex h-full flex-col p-4 overflow-hidden" clientName="Cursor" toolName="gpt-4o" serverName="openai" isSecretScanRequest isInactive={inactive} secretScanLlmSource={new URLSearchParams(window.location.search).get('llmSource') ?? 'OpenAI'} secretScanRequestJson={requestJson} isNotifyOnly={new URLSearchParams(window.location.search).has('notify')} onDismiss={() => setCurrent(null)} secretScanFindings={[{ ...findings[current], request_match: new URLSearchParams(window.location.search).has('unlocated') ? null : { start: offsets[current], end: offsets[current] + MARKER.length } }]} onAction={action} onReveal={async () => samples[current]} onAllowSecretPermanently={() => remember('allow')} onRedactPermanently={() => remember('redact')} submitting={saving} /></div> : <div className="rounded-lg border p-6 text-sm" role="status">{status}</div>}
           <div className="flex gap-3 text-sm"><button className="rounded border px-3 py-2 hover:bg-muted" onClick={() => { setInactive(false); nextRequest() }}>Send the same request again</button><button className="rounded border px-3 py-2 hover:bg-muted" onClick={() => { setInactive(false); setPolicies({}); setDecisions({}); setCurrent(0); setPayload(null); setStatus('Request paused for your decision') }}>Reset preview</button><button className="rounded border px-3 py-2 hover:bg-muted" onClick={() => setInactive(true)}>Simulate ended approval</button></div>
         </div>
         <div className="space-y-5 text-sm">
@@ -164,5 +173,49 @@ function SharedApprovalPreview() {
         </div>
       </div>
     </div>
+  </main>
+}
+
+/** Large local fixtures across every approval view; IPC never leaves this page. */
+function LargePopupPreview({ kind }: { kind: string }) {
+  const [payload] = useState(() => 'Long payload with many words. '.repeat(350_000))
+  const [action, setAction] = useState('Pending')
+  const [submitted, setSubmitted] = useState<Record<string, unknown>>({})
+  mockWindows(`${kind === 'editor' ? 'firewall-approval' : kind === 'sampling' ? 'sampling-approval' : 'elicitation-form'}-large`)
+  mockIPC(async (command, args) => {
+    if (command === 'plugin:window|is_focused') return true
+    if (command === 'get_firewall_approval_details') return { request_id: 'large', client_id: 'fixture', client_name: 'Fixture', tool_name: 'large', server_name: 'fixture', arguments_preview: '{}', timeout_seconds: 86400, created_at_secs_ago: 0 }
+    if (command === 'get_firewall_full_arguments') return JSON.stringify({ message: payload, untouched: 'keep me' })
+    if (command === 'submit_firewall_approval') { setSubmitted(JSON.parse((args as { editedArguments: string }).editedArguments)); setAction('submitted') }
+    if (command === 'get_sampling_approval_details') return {
+      request_id: 'large', server_id: 'fixture', message_count: 2000,
+      messages_preview: Array.from({ length: 2000 }, (_, i) => ({ role: 'user', content: `Message ${i + 1} ${i === 0 ? payload : 'small'}` })),
+      system_prompt: null, max_tokens: 100, model_preferences: null,
+    }
+    if (command === 'get_elicitation_details') return {
+      request_id: 'large', server_id: 'fixture', message: payload,
+      schema: { type: 'object', properties: Object.fromEntries(Array.from({ length: 200 }, (_, i) => [`field${i}`, i === 0
+        ? { type: 'string', title: 'Choice', enum: Array.from({ length: 1000 }, (_, j) => `Option ${j}`) }
+        : { type: 'string', title: `Field ${i}`, default: `default ${i}` }])) },
+    }
+    if (command === 'submit_elicitation_response') { setSubmitted((args as { data: Record<string, unknown> }).data); setAction('submitted') }
+    if (command === 'cancel_elicitation') setAction('cancelled')
+    if (command === 'submit_sampling_approval') setAction(String((args as { action: string }).action))
+    return null
+  })
+  const push = { kind: 'event', server_name: 'Fixture', event_name: 'large', qualified_name: 'fixture/large', data: payload, pending_of_type: 1, pending_for_client: 1 } as PushEventApprovalDetails
+  const content = kind === 'editor' ? <FirewallApproval /> : kind === 'sampling' ? <SamplingApproval /> : kind === 'elicitation' ? <ElicitationForm />
+    : kind === 'json' ? <JsonTree data={Array.from({ length: 20_000 }, (_, i) => ({ index: i, value: i === 0 ? payload : 'small' }))} />
+    : kind === 'monitor' ? <EventDetail event={{ id: 'large', event_type: 'mcp_tool_call', status: 'complete', timestamp: new Date().toISOString(), data: { type: 'mcp_tool_call', server_name: 'fixture', tool_name: 'large', arguments: { message: payload }, response_preview: payload } } as unknown as MonitorEvent} />
+    : <FirewallApprovalCard className="flex h-full flex-col p-4 overflow-hidden" clientName="Fixture" toolName={kind === 'marketplace' ? 'MarketplaceInstall' : kind === 'skill' ? 'SkillRead' : 'large'} serverName="fixture"
+      argumentsPreview={JSON.stringify(Object.fromEntries(Array.from({ length: 2000 }, (_, i) => [`argument${i}`, i === 0 ? payload : 'small'])))}
+      isGuardrailRequest={kind === 'guardrail'} isModelRequest={kind === 'model'} isAutoRouterRequest={kind === 'auto_router'} isFreeTierFallback={kind === 'free_tier'} marketplaceListing={kind === 'marketplace' ? { name: 'Fixture', description: payload, install_type: 'mcp_server' } : null}
+      guardrailFlaggedText={payload} guardrailVerdicts={[]} guardrailActions={[]}
+      isPushEventRequest={kind === 'push'} pushEvent={push}
+      onAction={value => setAction(value)} />
+  return <main className="dark bg-background text-foreground">
+    <div style={{ width: kind === 'monitor' || kind === 'json' ? 900 : 440, height: 600 }} data-testid="large-popup">{content}</div>
+    <output data-testid="popup-action">{action}</output>
+    <output data-testid="submitted-fields">{JSON.stringify(kind === 'editor' ? { ...submitted, message: typeof submitted.message === 'string' ? { length: submitted.message.length, beginning: submitted.message.slice(0, 40), section: submitted.message.slice(16_000, 16_020), end: submitted.message.slice(-40) } : null } : submitted)}</output>
   </main>
 }

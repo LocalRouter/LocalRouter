@@ -1,3 +1,5 @@
+import { SectionedText } from "./SectionedText"
+import { PagedItems } from "./PagedItems"
 /**
  * Shared presentational component for the firewall approval dialog.
  * Used by both the Tauri app (src/views/firewall-approval.tsx)
@@ -444,9 +446,7 @@ export function PushEventApprovalCard({
         {!isWebhookUrl && (
           <div className="mt-2 flex flex-col min-h-0 flex-1">
             <span className="text-[10px] font-semibold text-muted-foreground mb-0.5">Payload</span>
-            <pre className="text-[11px] font-mono bg-muted/50 rounded px-2 py-1.5 whitespace-pre-wrap break-words overflow-auto min-h-[3rem] max-h-56 leading-relaxed">
-              {formatPushPayload(details.data)}
-            </pre>
+            <SectionedText label="Push event payload" className="text-[11px] bg-muted/50 rounded px-2 py-1.5 min-h-[3rem] leading-relaxed" text={formatPushPayload(details.data)} />
           </div>
         )}
       </div>
@@ -668,7 +668,7 @@ function StandardApprovalCard({
                   {marketplaceListing.description && (
                     <>
                       <span className="text-muted-foreground">Description:</span>
-                      <span className="truncate" title={marketplaceListing.description}>{marketplaceListing.description}</span>
+                      <SectionedText text={marketplaceListing.description} label="Description" className="max-h-24" />
                     </>
                   )}
                   <span className="text-muted-foreground">Type:</span>
@@ -720,7 +720,7 @@ function StandardApprovalCard({
               {argumentsPreview && (
                 <>
                   <span className="text-muted-foreground">Models:</span>
-                  <span className="font-mono truncate text-[11px]" title={argumentsPreview}>{argumentsPreview}</span>
+                  <SectionedText text={argumentsPreview} label="Candidate models" className="text-[11px] max-h-24" />
                 </>
               )}
             </>
@@ -755,30 +755,28 @@ function StandardApprovalCard({
           )}
 
           {/* Arguments inline (non-guardrail, non-marketplace with listing) */}
-          {requestType !== "guardrail" && requestType !== "secret_scan" && !(requestType === "marketplace" && marketplaceListing) && parsedArgs.map(({ key, value }) => (
+          {requestType !== "guardrail" && requestType !== "secret_scan" && !(requestType === "marketplace" && marketplaceListing) && <PagedItems items={parsedArgs} label="Arguments">{({ key, value }) => (
             <span key={key} className="contents">
               <span className="text-muted-foreground">{key}:</span>
-              <span className="font-mono truncate" title={value}>
+              <span className="font-mono truncate" title={value.slice(0, 16_000)}>
                 {value.length > 60 ? `${value.slice(0, 60)}...` : value}
               </span>
             </span>
-          ))}
+          )}</PagedItems>}
         </div>
 
         {/* Flagged text context */}
         {requestType === "guardrail" && guardrailFlaggedText && (
           <div className="mt-2 bg-muted/50 rounded px-2 py-1.5">
             <span className="text-[10px] font-semibold text-muted-foreground">Flagged Content</span>
-            <p className="text-xs mt-0.5 whitespace-pre-wrap break-words max-h-24 overflow-auto font-mono leading-relaxed">
-              {guardrailFlaggedText}
-            </p>
+            <SectionedText label="Flagged content" className="mt-0.5 max-h-24 leading-relaxed" text={guardrailFlaggedText} />
           </div>
         )}
 
         {/* Safety verdicts - grouped by model */}
         {requestType === "guardrail" && guardrailVerdicts && guardrailVerdicts.length > 0 && (
           <div className="mt-2 space-y-2 max-h-48 overflow-auto">
-            {guardrailVerdicts.map((verdict) => (
+            <PagedItems items={guardrailVerdicts} label="Verdicts">{(verdict) => (
               <div key={verdict.model_id} className="bg-muted/50 rounded px-2 py-1.5 text-xs space-y-1">
                 <div className="flex items-center justify-between">
                   <span className="font-semibold">{verdict.model_label || verdict.model_id}</span>
@@ -791,13 +789,13 @@ function StandardApprovalCard({
                 </div>
                 {verdict.flagged_categories.length > 0 && (
                   <div className="space-y-0.5 pl-1">
-                    {verdict.flagged_categories.map((cat, i) => (
+                    <PagedItems items={verdict.flagged_categories} label="Categories">{(cat, i) => (
                       <div key={i} className="flex items-center gap-1.5 text-[10px]">
                         <span className="text-red-500 font-medium">{formatCategory(cat.category)}</span>
                         <span className="text-muted-foreground">({cat.native_label})</span>
                         <span className="ml-auto font-mono">{formatConfidence(cat.confidence)}</span>
                       </div>
-                    ))}
+                    )}</PagedItems>
                   </div>
                 )}
                 {verdict.confidence !== null && (
@@ -806,14 +804,14 @@ function StandardApprovalCard({
                   </div>
                 )}
               </div>
-            ))}
+            )}</PagedItems>
 
             {/* Actions required summary */}
             {guardrailActions && guardrailActions.length > 0 && (
               <div className="border-t border-border pt-1.5">
                 <span className="text-[10px] font-semibold text-muted-foreground">Actions Required</span>
                 <div className="space-y-0.5 mt-0.5">
-                  {guardrailActions.map((act, i) => (
+                  <PagedItems items={guardrailActions} label="Actions">{(act, i) => (
                     <div key={i} className="flex items-center gap-1.5 text-[10px]">
                       <span className={`px-1 py-0.5 rounded font-bold ${act.action === "allow" ? "bg-emerald-500/20 text-emerald-600" : act.action === "block" ? "bg-red-600/20 text-red-600" : act.action === "ask" ? "bg-amber-500/20 text-amber-600" : "bg-blue-500/20 text-blue-600"}`}>
                         {categoryActionLabel(act.action).toUpperCase()}
@@ -821,7 +819,7 @@ function StandardApprovalCard({
                       <span className="font-medium">{formatCategory(act.category)}</span>
                       <span className="text-muted-foreground ml-auto">{act.model_id}</span>
                     </div>
-                  ))}
+                  )}</PagedItems>
                 </div>
               </div>
             )}
@@ -832,7 +830,7 @@ function StandardApprovalCard({
         {requestType === "secret_scan" && secretScanFindings && secretScanFindings.length > 0 && (
           <div className="mt-3 space-y-2 max-h-80 overflow-auto">
             <span className="text-xs font-semibold text-muted-foreground">{isNotifyOnly ? "Detected secrets" : "Detected secret"}</span>
-            {secretScanFindings.map((finding, i) => (
+            <PagedItems items={secretScanFindings} label="Findings">{(finding, i) => (
               <div key={i} className="bg-muted/50 rounded px-3 py-3 text-xs space-y-2">
                 <div className="flex items-center justify-between">
                   <span className="font-semibold">{finding.rule_description}</span>
@@ -851,12 +849,7 @@ function StandardApprovalCard({
                 {secretScanRequestJson ? (
                   <SecretScanEvent finding={finding} requestJson={secretScanRequestJson} revealed={revealed[i]} />
                 ) : (
-                  <div
-                    className="font-mono text-xs leading-relaxed font-semibold bg-background/70 rounded px-3 py-3 break-all select-all"
-                    title={revealed[i] ?? finding.matched_text}
-                  >
-                    {revealed[i] ?? finding.matched_text}
-                  </div>
+                  <SectionedText className="leading-relaxed font-semibold bg-background/70 rounded px-3 py-3 select-text" text={revealed[i] ?? finding.matched_text} label="Secret preview" />
                 )}
                 {finding.rule_id === "jwt-token" && revealed[i] !== undefined && <JwtContent token={revealed[i]} />}
                 {revealError[i] && (
@@ -870,7 +863,7 @@ function StandardApprovalCard({
                   <div className="text-[10px] text-destructive" role="alert">{policyErrors[i]}</div>
                 )}
               </div>
-            ))}
+            )}</PagedItems>
           </div>
         )}
       </div>

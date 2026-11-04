@@ -1,3 +1,5 @@
+import { SectionedText } from "./SectionedText"
+import { PagedItems } from "./PagedItems"
 import { useState } from 'react'
 import { Check, ChevronRight, Copy } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -29,7 +31,7 @@ function Scalar({ value }: { value: unknown }) {
   const clipped = !full && text.length > STRING_PREVIEW
   return (
     <span className="text-emerald-700 dark:text-emerald-400 whitespace-pre-wrap break-words">
-      "{clipped ? text.slice(0, STRING_PREVIEW) : text}"
+      "{clipped ? text.slice(0, STRING_PREVIEW) : text.length > STRING_PREVIEW ? <SectionedText text={text} label="String value" /> : text}"
       {text.length > STRING_PREVIEW && (
         <button type="button" onClick={() => setFull(f => !f)} className="ml-1 rounded border border-border/60 px-1 text-[10px] text-muted-foreground hover:text-foreground">
           {full ? 'less' : `+${(text.length - STRING_PREVIEW).toLocaleString()} chars`}
@@ -70,7 +72,7 @@ function Node({ name, value, depth }: { name: string | null; value: unknown; dep
       {open && (
         <>
           <div className="border-l border-border/50 ml-[3px]">
-            {entries.map(([key, child]) => <Node key={key} name={key} value={child} depth={depth + 1} />)}
+            <PagedItems items={entries} label="JSON entries">{([key, child]) => <Node key={key} name={key} value={child} depth={depth + 1} />}</PagedItems>
           </div>
           <div className="leading-5 text-muted-foreground">{brackets[1]}</div>
         </>

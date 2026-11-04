@@ -1,3 +1,5 @@
+import { SectionedText, TEXT_SECTION_SIZE } from "@/components/shared/SectionedText"
+import { PagedItems } from "@/components/shared/PagedItems"
 import { localCacheReceipt } from '@/utils/response-cache'
 import { gatewayAttribution } from '@/utils/gateway'
 import { Badge } from '@/components/ui/Badge'
@@ -50,9 +52,7 @@ function RawBlock({ text, label }: { text: string | undefined; label?: string })
         {copied ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
         {copied ? 'Copied' : label ? `Copy ${label}` : 'Copy'}
       </button>
-      <pre className="p-2 bg-muted rounded text-[11px] font-mono whitespace-pre-wrap break-all max-h-[480px] overflow-auto">
-        {text}
-      </pre>
+      <SectionedText text={text} className="p-2 bg-muted rounded text-[11px] max-h-[480px]" />
     </div>
   )
 }
@@ -90,6 +90,11 @@ function detectFormat(text: string): 'json' | 'markdown' | 'text' {
  * for JSON and Markdown, a toggle to view the raw source.
  */
 function SmartText({ text }: { text: string }) {
+  if (text.length > TEXT_SECTION_SIZE) return <SectionedText text={text} label="Large message" />
+  return <FormattedText text={text} />
+}
+
+function FormattedText({ text }: { text: string }) {
   const format = detectFormat(text)
   const [raw, setRaw] = useState(false)
 
@@ -110,9 +115,7 @@ function SmartText({ text }: { text: string }) {
         </button>
       </div>
       {raw ? (
-        <pre className="whitespace-pre-wrap font-mono text-[11px]">
-          {format === 'json' ? formatJsonString(text) : text}
-        </pre>
+        <SectionedText className="whitespace-pre-wrap font-mono text-[11px]" text={format === 'json' ? formatJsonString(text) : text} />
       ) : format === 'json' ? (
         <JsonTree data={JSON.parse(text.trim())} />
       ) : (
@@ -245,7 +248,7 @@ export function EventDetail({ event, loading, error, onRetry, toolbar, onReplay 
   }
 
   if (event.payload_redacted) {
-    return <div className="space-y-3 p-4"><p className="text-sm font-medium">Payload capture was disabled for this event.</p><p className="text-xs text-muted-foreground">Request bodies, responses, previews, findings and raw errors were not retained. Usage and lifecycle metadata remain available.</p><pre className="overflow-auto whitespace-pre-wrap break-all text-xs">{JSON.stringify(event, null, 2)}</pre></div>
+    return <div className="space-y-3 p-4"><p className="text-sm font-medium">Payload capture was disabled for this event.</p><p className="text-xs text-muted-foreground">Request bodies, responses, previews, findings and raw errors were not retained. Usage and lifecycle metadata remain available.</p><SectionedText className="overflow-auto whitespace-pre-wrap break-all text-xs" text={JSON.stringify(event, null, 2)} /></div>
   }
 
   const data = event.data as EventData
@@ -415,12 +418,12 @@ function Properties({ items }: { items: [string, ReactNode][] }) {
   if (visible.length === 0) return <p className="text-xs italic text-muted-foreground">Nothing recorded.</p>
   return (
     <dl className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-x-6 gap-y-3 rounded-lg border bg-muted/10 p-3">
-      {visible.map(([label, value]) => (
+      <PagedItems items={visible} label="Properties">{([label, value]) => (
         <div key={label} className="min-w-0">
           <dt className="text-[11px] text-muted-foreground">{label}</dt>
           <dd className="mt-0.5 text-xs font-medium break-words">{value}</dd>
         </div>
-      ))}
+      )}</PagedItems>
     </dl>
   )
 }
@@ -523,9 +526,7 @@ function MessageItem({ message }: { message: Record<string, unknown> }) {
               <div key={i} className="border-l-2 border-blue-500/40 pl-2">
                 <code className="font-mono font-medium text-[11px]">{String(fn?.name ?? '')}</code>
                 {fn?.arguments != null && (
-                  <pre className="bg-muted rounded p-1 mt-0.5 text-[10px] whitespace-pre-wrap max-h-[150px] overflow-auto">
-                    {formatToolArgs(fn.arguments)}
-                  </pre>
+                  <SectionedText className="bg-muted rounded p-1 mt-0.5 text-[10px] whitespace-pre-wrap max-h-[150px] overflow-auto" text={formatToolArgs(fn.arguments)} />
                 )}
               </div>
             )
@@ -574,14 +575,14 @@ function ArgumentsBlock({ args }: { args: unknown }) {
 
   return (
     <dl className="divide-y divide-border/40 rounded-md border text-xs">
-      {entries.map(([key, value]) => (
+      <PagedItems items={entries} label="Arguments">{([key, value]) => (
         <div key={key} className="grid grid-cols-[minmax(90px,160px)_1fr] gap-3 px-2.5 py-1.5">
           <dt className="text-muted-foreground font-mono text-[11px] break-all">{key}</dt>
           <dd className="min-w-0 font-mono text-[11px] whitespace-pre-wrap break-words">
-            {value !== null && typeof value === 'object' ? <JsonTree data={value} /> : String(value)}
+            {value !== null && typeof value === 'object' ? <JsonTree data={value} /> : <SectionedText text={String(value)} />}
           </dd>
         </div>
-      ))}
+      )}</PagedItems>
     </dl>
   )
 }
@@ -765,7 +766,7 @@ function LlmResponseContent({ data, status }: { data: EventData; status: EventSt
       </Disclosure>}
       {systemOne ? <SystemOneAnswersList data={data} /> : visibleMessages.length > 0 ? (
         <div className="space-y-2">
-          {visibleMessages.map((message, index) => <MessageItem key={index} message={message} />)}
+          <PagedItems items={visibleMessages} label="Messages">{(message, index) => <MessageItem key={index} message={message} />}</PagedItems>
         </div>
       ) : excerpt ? <div><p className="text-muted-foreground mb-2">Captured excerpt</p><SmartText text={excerpt} /></div>
       : data.content_preview ? <SmartText text={data.content_preview} /> : !data.error && !body?.error ? (
@@ -791,7 +792,7 @@ function RequestContent({ body: capturedBody, raw }: { body: Record<string, unkn
         <Disclosure title="Conversation context" description={`${messages.length} message${messages.length === 1 ? '' : 's'}`}>
           {body?.system != null && <MessageItem message={{ role: 'system', content: body.system }} />}
           {body?.instructions != null && <MessageItem message={{ role: 'developer', content: body.instructions }} />}
-          {messages.map((message, index) => <MessageItem key={index} message={message} />)}
+          <PagedItems items={messages} label="Messages">{(message, index) => <MessageItem key={index} message={message} />}</PagedItems>
         </Disclosure>
       )}
     </>
@@ -1200,9 +1201,7 @@ function McpElicitationDetail({ data }: { data: EventData }) {
           <ServerField data={data} />
         </div>
         {data.message && (
-          <pre className="p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[200px] overflow-auto">
-            {data.message as string}
-          </pre>
+          <SectionedText className="p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[200px] overflow-auto" text={data.message as string} />
         )}
         {data.schema && <JsonBlock data={data.schema as unknown} />}
       </ExchangeCard>
@@ -1245,9 +1244,7 @@ function McpSamplingDetail({ data }: { data: EventData }) {
             {data.latency_ms != null && <Field label="Latency" value={`${data.latency_ms}ms`} />}
           </div>
           {data.content_preview && (
-            <pre className="p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[200px] overflow-auto">
-              {data.content_preview as string}
-            </pre>
+            <SectionedText className="p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[200px] overflow-auto" text={data.content_preview as string} />
           )}
         </ExchangeCard>
       )}
@@ -1272,9 +1269,7 @@ function GuardrailDetail({ data }: { data: EventData }) {
         {data.text_preview && (
           <div className="text-xs">
             <span className="text-muted-foreground font-medium">Input:</span>
-            <pre className="mt-1 p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[200px] overflow-auto">
-              {data.text_preview as string}
-            </pre>
+            <SectionedText className="mt-1 p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[200px] overflow-auto" text={data.text_preview as string} />
           </div>
         )}
       </ExchangeCard>
@@ -1318,9 +1313,7 @@ function SecretScanDetail({ data }: { data: EventData }) {
         {data.text_preview && (
           <div className="text-xs">
             <span className="text-muted-foreground font-medium">Input:</span>
-            <pre className="mt-1 p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[200px] overflow-auto">
-              {data.text_preview as string}
-            </pre>
+            <SectionedText className="mt-1 p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[200px] overflow-auto" text={data.text_preview as string} />
           </div>
         )}
       </ExchangeCard>
@@ -1386,9 +1379,7 @@ function AuthErrorDetail({ data }: { data: EventData }) {
       </div>
       {data.message && (
         <section aria-label="Response">
-          <pre className="p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive">
-            {data.message as string}
-          </pre>
+          <SectionedText className="p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive" text={data.message as string} />
         </section>
       )}
     </div>
@@ -1408,9 +1399,7 @@ function RateLimitDetail({ data }: { data: EventData }) {
       </div>
       {data.message && (
         <section aria-label="Response">
-          <pre className="p-2 bg-amber-500/10 rounded text-xs whitespace-pre-wrap text-amber-700 dark:text-amber-400">
-            {data.message as string}
-          </pre>
+          <SectionedText className="p-2 bg-amber-500/10 rounded text-xs whitespace-pre-wrap text-amber-700 dark:text-amber-400" text={data.message as string} />
         </section>
       )}
     </div>
@@ -1429,9 +1418,7 @@ function ValidationErrorDetail({ data }: { data: EventData }) {
       </div>
       {data.message && (
         <section aria-label="Response">
-          <pre className="p-2 bg-yellow-500/10 rounded text-xs whitespace-pre-wrap text-yellow-700 dark:text-yellow-400">
-            {data.message as string}
-          </pre>
+          <SectionedText className="p-2 bg-yellow-500/10 rounded text-xs whitespace-pre-wrap text-yellow-700 dark:text-yellow-400" text={data.message as string} />
         </section>
       )}
     </div>
@@ -1465,9 +1452,7 @@ function McpServerEventDetail({ data }: { data: EventData }) {
       </div>
       {data.message && (
         <section aria-label="Details">
-          <pre className="p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive">
-            {data.message as string}
-          </pre>
+          <SectionedText className="p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive" text={data.message as string} />
         </section>
       )}
     </div>
@@ -1506,7 +1491,7 @@ function McpPushEventDetail({ data }: { data: EventData }) {
         </p>
       )}
       {typeof data.error === 'string' && data.error && (
-        <pre className="p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive">{data.error}</pre>
+        <SectionedText className="p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive" text={data.error} />
       )}
       {edited ? (
         <ExchangeGrid>
@@ -1540,9 +1525,7 @@ function OAuthEventDetail({ data }: { data: EventData }) {
       </div>
       {data.message && (
         <section aria-label="Response">
-          <pre className="p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive">
-            {data.message as string}
-          </pre>
+          <SectionedText className="p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive" text={data.message as string} />
         </section>
       )}
     </div>
@@ -1560,9 +1543,7 @@ function InternalErrorDetail({ data }: { data: EventData }) {
       </div>
       {data.message && (
         <section aria-label="Response">
-          <pre className="p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive">
-            {data.message as string}
-          </pre>
+          <SectionedText className="p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive" text={data.message as string} />
         </section>
       )}
     </div>
@@ -1580,9 +1561,7 @@ function ModerationEventDetail({ data }: { data: EventData }) {
       </div>
       {data.message && (
         <section aria-label="Response">
-          <pre className="p-2 bg-orange-500/10 rounded text-xs whitespace-pre-wrap text-orange-700 dark:text-orange-400">
-            {data.message as string}
-          </pre>
+          <SectionedText className="p-2 bg-orange-500/10 rounded text-xs whitespace-pre-wrap text-orange-700 dark:text-orange-400" text={data.message as string} />
         </section>
       )}
     </div>
@@ -1600,9 +1579,7 @@ function ConnectionErrorDetail({ data }: { data: EventData }) {
       </div>
       {data.message && (
         <section aria-label="Response">
-          <pre className="p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive">
-            {data.message as string}
-          </pre>
+          <SectionedText className="p-2 bg-destructive/10 rounded text-xs whitespace-pre-wrap text-destructive" text={data.message as string} />
         </section>
       )}
     </div>
@@ -1790,9 +1767,7 @@ function ArchiveFileField({ label, path }: { label: string; path: string }) {
         <div className="text-[10px] text-destructive">{error}</div>
       )}
       {expanded && content !== null && (
-        <pre className="text-xs whitespace-pre-wrap font-mono bg-muted/50 p-2 rounded max-h-64 overflow-y-auto">
-          {content}
-        </pre>
+        <SectionedText className="text-xs whitespace-pre-wrap font-mono bg-muted/50 p-2 rounded max-h-64 overflow-y-auto" text={content} />
       )}
     </div>
   )
