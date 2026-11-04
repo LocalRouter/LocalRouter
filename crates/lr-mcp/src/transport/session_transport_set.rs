@@ -243,9 +243,13 @@ impl SessionTransportSet {
         // this transport cannot race a late error's reconnect marker.
         let _current_transport = current;
         match &result {
-            Err(_) if method != "server/discover" => {
+            Err(error) if method != "server/discover" => {
                 self.reconnect_required.insert(server_id.to_string());
-                self.record_failure(server_id, &method, &format!("MCP connection failed during {method}; check authentication and server availability"));
+                self.record_failure(
+                    server_id,
+                    &method,
+                    &format!("MCP connection failed during {method}: {error}"),
+                );
             }
             Ok(response) if response.error.is_none() && !response.is_tool_error() => {
                 if method == "initialize" {
@@ -281,7 +285,10 @@ impl SessionTransportSet {
                 self.record_failure(
                     server_id,
                     &method,
-                    &format!("MCP {method} rejected; check authentication and permissions"),
+                    &format!(
+                        "MCP {method} rejected: {}",
+                        serde_json::to_string(&response.error).unwrap_or_default()
+                    ),
                 );
             }
             _ => {}
@@ -313,7 +320,11 @@ impl SessionTransportSet {
                     .is_some_and(|current| Arc::ptr_eq(current.value(), &transport))
                 {
                     self.reconnect_required.insert(server_id.to_string());
-                    self.record_failure(server_id, &method, "MCP streaming request failed; check authentication and server availability");
+                    self.record_failure(
+                        server_id,
+                        &method,
+                        &format!("MCP {method} streaming request failed: {error}"),
+                    );
                 }
                 return Err(error);
             }
@@ -325,20 +336,20 @@ impl SessionTransportSet {
         let id = server_id.to_string();
         Ok(Box::pin(stream.inspect(move |chunk| {
             let current = current_transports.get(&id);
-            if chunk.is_err()
-                && current
+            let Err(cause) = chunk else { return; };
+            if current
                     .as_ref()
                     .is_some_and(|current| Arc::ptr_eq(current.value(), &transport))
             {
-                let error = "MCP response stream interrupted; the operation outcome is unknown";
+                let error = format!("MCP {method} response stream interrupted; the operation outcome is unknown: {cause}");
                 reconnect.insert(id.clone());
                 failures
                     .write()
                     .entry(id.clone())
                     .or_default()
-                    .insert(method.clone(), error.into());
+                    .insert(method.clone(), error.clone());
                 if let Some(callback) = &callback {
-                    callback(&id, Some(error));
+                    callback(&id, Some(&error));
                 }
             }
         })))
@@ -458,6 +469,84 @@ mod tests {
             self.closed.store(true, Ordering::Relaxed);
             Ok(())
         }
+    }
+
+    struct FailingTransport;
+
+    #[async_trait]
+    impl Transport for FailingTransport {
+        async fn send_request(&self, request: JsonRpcRequest) -> AppResult<JsonRpcResponse> {
+            if request.method == "tools/list" {
+                return Ok(serde_json::from_value(serde_json::json!({
+                    "jsonrpc":"2.0", "id":1,
+                    "error":{"code":-32000,"message":"scope denied","data":{"scope":"ddsql"}}
+                }))
+                .unwrap());
+            }
+            Err(AppError::Mcp("upstream socket closed".into()))
+        }
+        async fn stream_request(
+            &self,
+            request: JsonRpcRequest,
+        ) -> AppResult<Pin<Box<dyn Stream<Item = AppResult<StreamingChunk>> + Send>>> {
+            if request.method == "fail-open" {
+                return Err(AppError::Mcp("HTTP 503: temporarily unavailable".into()));
+            }
+            Ok(Box::pin(futures_util::stream::iter(vec![Err(
+                AppError::Mcp("response body truncated".into()),
+            )])))
+        }
+        async fn is_healthy(&self) -> bool {
+            true
+        }
+        async fn close(&self) -> AppResult<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn failures_retain_upstream_details_in_storage_and_callbacks() {
+        use futures_util::StreamExt;
+        let set = SessionTransportSet::new();
+        set.insert("s1".into(), Arc::new(FailingTransport));
+        let reported = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let captured = reported.clone();
+        set.set_failure_callback(Arc::new(move |_, error| {
+            if let Some(error) = error {
+                captured.lock().push(error.to_string());
+            }
+        }));
+        set.send_request("s1", JsonRpcRequest::with_id(1, "initialize".into(), None))
+            .await
+            .unwrap_err();
+        set.send_request("s1", JsonRpcRequest::with_id(2, "tools/list".into(), None))
+            .await
+            .unwrap();
+        assert!(set
+            .stream_request("s1", JsonRpcRequest::with_id(3, "fail-open".into(), None))
+            .await
+            .is_err());
+        let mut stream = set
+            .stream_request("s1", JsonRpcRequest::with_id(4, "tools/call".into(), None))
+            .await
+            .unwrap();
+        assert!(stream.next().await.unwrap().is_err());
+        let failures = set.failures.read();
+        for (method, detail) in [
+            ("initialize", "upstream socket closed"),
+            ("tools/list", "ddsql"),
+            ("fail-open", "HTTP 503"),
+            ("tools/call", "response body truncated"),
+        ] {
+            assert!(failures["s1"][method].contains(detail));
+            assert!(reported
+                .lock()
+                .iter()
+                .any(|e| e.contains(method) && e.contains(detail)));
+        }
+        assert!(failures["s1"]["tools/list"].contains("-32000"));
+        assert!(failures["s1"]["tools/list"].contains("scope denied"));
+        assert!(failures["s1"]["tools/call"].contains("outcome is unknown"));
     }
 
     #[tokio::test]

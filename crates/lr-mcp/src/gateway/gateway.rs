@@ -2206,7 +2206,7 @@ impl McpGateway {
                     }
                     Err(error) => {
                         tracing::warn!(server_id = %id, "MCP reconnection failed: {error}");
-                        let error = "MCP upstream connection failed; check authentication and server availability".to_string();
+                        let error = format!("MCP upstream connection failed: {error}");
                         transports.record_failure(&id, "_connect", &error);
                         state.allowed_servers.retain(|server| server != &id);
                         state.server_init_status.insert(

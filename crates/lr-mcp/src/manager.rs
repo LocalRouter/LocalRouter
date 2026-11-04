@@ -786,7 +786,7 @@ impl McpServerManager {
             transport_set.record_failure(
                 &failure.server_id,
                 "_connect",
-                "MCP connection could not start; check authentication and server availability",
+                &format!("MCP connection could not start: {}", failure.error),
             );
         }
         (transport_set, failures)
@@ -1257,34 +1257,14 @@ impl McpServerManager {
         // per-operation recovery remain owned by SessionTransportSet.
         // A live process/socket alone does not prove protocol availability.
         let (status, latency_ms, error) = if has_live_global_transport {
-            let probe = async {
-                let response = self
-                    .send_request(
-                        server_id,
-                        JsonRpcRequest::with_id(0, "tools/list".into(), None),
-                    )
-                    .await?;
-                if response.error.as_ref().is_some_and(|e| e.code == -32601) {
-                    // A resource/prompt-only MCP server can legitimately have no tools.
-                    let ping = self
-                        .send_request(server_id, JsonRpcRequest::with_id(1, "ping".into(), None))
-                        .await?;
-                    if ping.error.is_none() {
-                        return Ok(());
-                    }
-                } else if response.error.is_none()
-                    && response
-                        .result
-                        .as_ref()
-                        .is_some_and(|v| v.get("tools").is_some_and(serde_json::Value::is_array))
-                {
-                    return Ok(());
-                }
-                Err::<(), AppError>(AppError::Mcp("Running MCP catalog request failed".into()))
-            };
-            match tokio::time::timeout(std::time::Duration::from_secs(10), probe).await {
-                Ok(Ok(())) => (HealthStatus::Healthy, None, None),
-                _ => (HealthStatus::Unhealthy, None, Some("Running MCP connection failed protocol/tool discovery; check authentication and server availability".into())),
+            // Global transports are opened without an MCP handshake and may
+            // retain an expired upstream session. Probe a fresh initialized
+            // connection, independently of UI/client-owned transport state.
+            let (status, latency, error) = self.check_protocol_readiness(server_id).await;
+            if status == HealthStatus::Ready {
+                (HealthStatus::Healthy, latency, None)
+            } else {
+                (status, latency, error)
             }
         } else {
             // Clean up any dead global transports before the readiness check
@@ -1329,7 +1309,7 @@ impl McpServerManager {
                 } else {
                     (
                         "health_check_failed",
-                        format!("Health check could not start {server_name}. {err_msg}"),
+                        format!("Health check failed for {server_name}: {err_msg}"),
                     )
                 };
                 self.emit_monitor_event(
@@ -1594,9 +1574,14 @@ impl McpServerManager {
         // Owning the temporary transport in a set guarantees cleanup even
         // when the outer deadline cancels the handshake/discovery future.
         let transports = crate::transport::SessionTransportSet::new();
+        let mut operation = "connect";
         let probe = async {
-            let transport = self.create_transport(server_id).await?;
+            let transport = self
+                .create_transport(server_id)
+                .await
+                .map_err(|e| AppError::Mcp(format!("connect: {e}")))?;
             transports.insert(server_id.to_string(), transport);
+            operation = "initialize";
             let initialize = JsonRpcRequest::with_id(
                 0,
                 "initialize".into(),
@@ -1606,10 +1591,14 @@ impl McpServerManager {
                     "clientInfo": {"name": "localrouter-health-check", "version": "1"}
                 })),
             );
-            let response = transports.send_request(server_id, initialize).await?;
+            let response = transports
+                .send_request(server_id, initialize)
+                .await
+                .map_err(|e| AppError::Mcp(format!("initialize: {e}")))?;
             let capabilities = if response.error.is_some() {
                 // Stateless backends reject initialize. Negotiate discovery
                 // before deciding they are down, as the gateway does.
+                operation = "server/discover";
                 let discover = JsonRpcRequest::with_id(
                     1,
                     "server/discover".into(),
@@ -1617,10 +1606,26 @@ impl McpServerManager {
                         "_meta": {crate::protocol::meta_keys::PROTOCOL_VERSION: crate::protocol::MCP_PROTOCOL_VERSION_STATELESS}
                     })),
                 );
-                let discovered = transports.send_request(server_id, discover).await?;
+                let discovered =
+                    transports
+                        .send_request(server_id, discover)
+                        .await
+                        .map_err(|e| {
+                            AppError::Mcp(format!(
+                                "initialize rejected: {}; server/discover: {e}",
+                                serde_json::to_string(&response.error).unwrap_or_default()
+                            ))
+                        })?;
+                if let Some(error) = &discovered.error {
+                    return Err(AppError::Mcp(format!(
+                        "initialize rejected: {}; server/discover rejected: {}",
+                        serde_json::to_string(&response.error).unwrap_or_default(),
+                        serde_json::to_string(error).unwrap_or_default(),
+                    )));
+                }
                 let value = discovered
                     .result
-                    .ok_or_else(|| AppError::Mcp("MCP handshake rejected".into()))?;
+                    .ok_or_else(|| AppError::Mcp("server/discover: missing result".into()))?;
                 if !value
                     .get("protocolVersions")
                     .and_then(|v| v.as_array())
@@ -1630,44 +1635,47 @@ impl McpServerManager {
                         })
                     })
                 {
-                    return Err(AppError::Mcp(
-                        "MCP discovery did not negotiate a supported protocol".into(),
-                    ));
+                    return Err(AppError::Mcp(format!(
+                        "server/discover: no supported protocol in {value}"
+                    )));
                 }
                 transports.set_revision(server_id, crate::protocol::ProtocolRevision::V2026_07_28);
                 serde_json::from_value::<crate::gateway::types::ServerCapabilities>(
                     value.get("capabilities").cloned().unwrap_or_default(),
                 )
-                .map_err(|_| AppError::Mcp("Invalid MCP discovery capabilities".into()))?
+                .map_err(|e| {
+                    AppError::Mcp(format!(
+                        "server/discover: invalid capabilities: {e}; result: {value}"
+                    ))
+                })?
             } else {
+                let value = response.result.unwrap_or_default();
                 let initialized: crate::gateway::types::InitializeResult =
-                    serde_json::from_value(response.result.unwrap_or_default())
-                        .map_err(|_| AppError::Mcp("Invalid MCP initialize response".into()))?;
+                    serde_json::from_value(value.clone()).map_err(|e| {
+                        AppError::Mcp(format!(
+                            "initialize: invalid response: {e}; result: {value}"
+                        ))
+                    })?;
+                operation = "notifications/initialized";
                 transports
                     .send_request(
                         server_id,
                         JsonRpcRequest::new(None, "notifications/initialized".into(), None),
                     )
-                    .await?;
+                    .await
+                    .map_err(|e| AppError::Mcp(format!("notifications/initialized: {e}")))?;
                 initialized.capabilities
             };
             if capabilities.tools.is_some() {
+                operation = "tools/list";
                 let response = transports
                     .send_request(
                         server_id,
                         JsonRpcRequest::with_id(1, "tools/list".into(), None),
                     )
-                    .await?;
-                if response.error.is_some()
-                    || !response
-                        .result
-                        .as_ref()
-                        .is_some_and(|v| v.get("tools").is_some_and(serde_json::Value::is_array))
-                {
-                    return Err(AppError::Mcp(
-                        "MCP tools/list failed; check authentication and permissions".into(),
-                    ));
-                }
+                    .await
+                    .map_err(|e| AppError::Mcp(format!("tools/list: {e}")))?;
+                validate_health_tools_response(&response)?;
             }
             Ok::<(), AppError>(())
         };
@@ -1679,23 +1687,17 @@ impl McpServerManager {
                 Some(start.elapsed().as_millis() as u64),
                 Some("MCP handshake verified; client sessions connect independently".into()),
             ),
-            // Do not surface arbitrary upstream response bodies or credential-bearing URLs.
             Ok(Err(error)) => (
                 HealthStatus::Unhealthy,
-                None,
-                Some({
-                    let description = error.to_string().to_lowercase();
-                    if description.contains("not found") || description.contains("no such file") {
-                        "MCP server executable or endpoint not found".into()
-                    } else {
-                        "Authenticated MCP handshake or tool discovery failed; check server authentication and availability".into()
-                    }
-                }),
+                Some(start.elapsed().as_millis() as u64),
+                Some(format!("Authenticated MCP health check failed: {error}")),
             ),
             Err(_) => (
                 HealthStatus::Unhealthy,
                 None,
-                Some("Authenticated MCP health check timed out after 20s".into()),
+                Some(format!(
+                    "Authenticated MCP health check timed out after 20s during {operation}"
+                )),
             ),
         }
     }
@@ -1778,6 +1780,28 @@ impl McpServerManager {
             }
         }
     }
+}
+
+/// Preserve the upstream JSON-RPC error (including code/data) or malformed
+/// result so monitoring can explain why catalog discovery failed.
+fn validate_health_tools_response(response: &JsonRpcResponse) -> AppResult<()> {
+    if let Some(error) = &response.error {
+        return Err(AppError::Mcp(format!(
+            "tools/list rejected: {}",
+            serde_json::to_string(error).unwrap_or_default()
+        )));
+    }
+    if !response
+        .result
+        .as_ref()
+        .is_some_and(|v| v.get("tools").is_some_and(serde_json::Value::is_array))
+    {
+        return Err(AppError::Mcp(format!(
+            "tools/list: expected a tools array; result: {}",
+            response.result.as_ref().unwrap_or(&serde_json::Value::Null)
+        )));
+    }
+    Ok(())
 }
 
 /// MCP initialize request written to a stdio server during a readiness probe
@@ -1876,10 +1900,15 @@ mod tests {
                     let result = match request.method.as_str() {
                         "initialize" => serde_json::json!({"protocolVersion":"2025-11-25", "capabilities":{"tools":{}}, "serverInfo":{"name":"fixture","version":"1"}}),
                         "tools/list" if state.load(std::sync::atomic::Ordering::Relaxed) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+                        "tools/list" if !headers.contains_key("mcp-session-id") => {
+                            return Json(JsonRpcResponse::error(request.id.unwrap_or_default(), crate::protocol::JsonRpcError::invalid_request("Session not initialized"))).into_response();
+                        }
                         "tools/list" => serde_json::json!({"tools":[]}),
                         _ => serde_json::json!({}),
                     };
-                    Json(JsonRpcResponse::success(request.id.unwrap_or_default(), result)).into_response()
+                    let mut response = Json(JsonRpcResponse::success(request.id.unwrap_or_default(), result)).into_response();
+                    response.headers_mut().insert("mcp-session-id", "health-session".parse().unwrap());
+                    response
                 }
             }
         ));
@@ -1912,7 +1941,10 @@ mod tests {
         broken.store(true, std::sync::atomic::Ordering::Relaxed);
         let failed = manager.get_server_health(&id).await;
         assert_eq!(failed.status, HealthStatus::Unhealthy);
-        assert!(!failed.error.unwrap().contains("health-fixture"));
+        let error = failed.error.unwrap();
+        assert!(error.contains("tools/list"), "{error}");
+        assert!(error.contains("503"), "{error}");
+        assert!(!error.contains("health-fixture"));
         broken.store(false, std::sync::atomic::Ordering::Relaxed);
         assert_eq!(
             manager.get_server_health(&id).await.status,
@@ -1930,6 +1962,61 @@ mod tests {
         task.abort();
     }
 
+    #[test]
+    fn health_tools_errors_preserve_code_message_data_and_malformed_result() {
+        let response: JsonRpcResponse = serde_json::from_value(serde_json::json!({
+            "jsonrpc":"2.0", "id":1,
+            "error":{"code":-32000, "message":"Datadog permission denied", "data":{"reason":"missing ddsql scope"}}
+        })).unwrap();
+        let error = validate_health_tools_response(&response)
+            .unwrap_err()
+            .to_string();
+        for detail in [
+            "tools/list",
+            "-32000",
+            "Datadog permission denied",
+            "missing ddsql scope",
+        ] {
+            assert!(error.contains(detail), "{error}");
+        }
+        let response =
+            JsonRpcResponse::success(serde_json::json!(1), serde_json::json!({"unexpected":true}));
+        let error = validate_health_tools_response(&response)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("expected a tools array"));
+        assert!(error.contains("unexpected"));
+    }
+
+    #[tokio::test]
+    async fn health_monitor_preserves_failed_operation_and_transport_error() {
+        let (manager, id, broken, task) = health_fixture().await;
+        let events = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let captured = events.clone();
+        manager.set_monitor_emit(Arc::new(move |_, _, _, _, data, _, _| {
+            captured.lock().push(data);
+            "test-event".into()
+        }));
+        manager.start_server(&id).await.unwrap();
+        broken.store(true, std::sync::atomic::Ordering::Relaxed);
+        let failed = manager.get_server_health(&id).await;
+        assert_eq!(failed.status, HealthStatus::Unhealthy);
+        {
+            let events = events.lock();
+            let lr_monitor::MonitorEventData::McpServerEvent { message, .. } =
+                events.last().unwrap()
+            else {
+                panic!("missing health event")
+            };
+            assert!(message.contains("tools/list"), "{message}");
+            assert!(message.contains("503"), "{message}");
+            assert!(message.contains(failed.error.as_ref().unwrap()));
+            assert!(!message.contains("could not start"));
+        }
+        manager.stop_server(&id).await.unwrap();
+        task.abort();
+    }
+
     #[tokio::test]
     async fn open_global_socket_does_not_hide_broken_tools() {
         let (manager, id, broken, task) = health_fixture().await;
@@ -1944,6 +2031,45 @@ mod tests {
             HealthStatus::Unhealthy
         );
         manager.stop_server(&id).await.unwrap();
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn rejected_handshake_retains_initialize_and_discovery_errors() {
+        use axum::{http::StatusCode, routing::get, Json, Router};
+        let app = Router::new().route("/mcp", get(|| async { StatusCode::METHOD_NOT_ALLOWED }).post(
+            |Json(request): Json<JsonRpcRequest>| async move {
+                Json(serde_json::json!({"jsonrpc":"2.0", "id":request.id,
+                    "error":{"code":-32001,"message":format!("{} denied", request.method),"data":{"reason":"invalid_grant"}}}))
+            }
+        ));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let manager = McpServerManager::new_for_test();
+        let config = McpServerConfig::new(
+            "expired grant".into(),
+            McpTransportType::HttpSse,
+            McpTransportConfig::HttpSse {
+                url,
+                headers: HashMap::new(),
+            },
+        );
+        let id = config.id.clone();
+        manager.add_config(config);
+        let health = manager.get_server_health(&id).await;
+        assert_eq!(health.status, HealthStatus::Unhealthy);
+        let error = health.error.unwrap();
+        for detail in [
+            "initialize denied",
+            "server/discover denied",
+            "-32001",
+            "invalid_grant",
+        ] {
+            assert!(error.contains(detail), "{error}");
+        }
         task.abort();
     }
 
@@ -2167,7 +2293,9 @@ mod tests {
         let health = manager.get_server_health(&server_id).await;
         assert_eq!(health.status, HealthStatus::Unhealthy);
         assert!(health.error.is_some());
-        assert!(health.error.unwrap().contains("not found"));
+        let error = health.error.unwrap();
+        assert!(error.contains("connect"), "{error}");
+        assert!(error.to_lowercase().contains("no such file"), "{error}");
     }
 
     #[tokio::test]
