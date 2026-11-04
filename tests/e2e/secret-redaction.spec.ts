@@ -275,3 +275,36 @@ test('Dismiss remains usable if window closure fails again after an accepted red
   await dismiss.click()
   await expect(popup).toContainText('Window closed · submissions 1')
 })
+
+for (const mode of ['', '&notify']) {
+  test(`JWT contents follow reveal and hide in the popup ${mode}`, async ({ page }) => {
+    await page.goto(`/__preview/secret-redaction?jwt${mode}`)
+    const popup = page.getByTestId('approval-popup')
+    await expect(popup.getByText('JSON Web Token', { exact: true })).toBeVisible()
+    await expect(popup.getByLabel('Decoded JWT')).toHaveCount(0)
+    await expect(popup).not.toContainText('user-123')
+    await popup.getByRole('button', { name: 'Reveal secret', exact: true }).click()
+    await expect(popup.getByLabel('JWT header')).toContainText('"alg": "HS256"')
+    await expect(popup.getByLabel('JWT payload')).toContainText('"name": "Mátúš"')
+    await expect(popup.getByLabel('JWT payload')).toContainText('user-123')
+    await expect(popup).toContainText('Signature not verified')
+    await popup.getByLabel('JWT payload').scrollIntoViewIfNeeded()
+    await expect(popup.getByLabel('JWT payload')).toBeInViewport()
+    await expect(popup.getByRole('button', { name: mode ? 'Dismiss' : 'Block', exact: true })).toBeInViewport()
+    await popup.getByRole('button', { name: 'Hide secret', exact: true }).click()
+    await expect(popup.getByLabel('Decoded JWT')).toHaveCount(0)
+    await expect(popup).not.toContainText('user-123')
+    await expect(page.getByTestId('outgoing-payload')).toHaveText('Not forwarded')
+  })
+}
+
+test('malformed JWT claims leave the original token and decisions usable', async ({ page }) => {
+  await page.goto('/__preview/secret-redaction?jwt=malformed')
+  const popup = page.getByTestId('approval-popup')
+  await popup.getByRole('button', { name: 'Reveal secret', exact: true }).click()
+  await expect(popup.getByRole('status')).toHaveText('Could not decode JWT header and payload.')
+  await expect(popup.getByLabel('Complete request JSON')).toContainText('.bm90LWpzb24.')
+  await popup.getByRole('button', { name: 'Block', exact: true }).click()
+  await expect(popup).toHaveCount(0)
+  await expect(page.getByTestId('outgoing-payload')).toHaveText('Not forwarded')
+})

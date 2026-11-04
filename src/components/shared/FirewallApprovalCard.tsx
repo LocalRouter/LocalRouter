@@ -7,6 +7,7 @@
  */
 import { useRef, useState } from "react"
 import { ChevronDown, Pencil, Eye, EyeOff } from "lucide-react"
+import { JwtContent } from "./JwtContent"
 import { SecretScanEvent } from "./SecretScanEvent"
 import { Button } from "@/components/ui/Button"
 import {
@@ -857,6 +858,7 @@ function StandardApprovalCard({
                     {revealed[i] ?? finding.matched_text}
                   </div>
                 )}
+                {finding.rule_id === "jwt-token" && revealed[i] !== undefined && <JwtContent token={revealed[i]} />}
                 {revealError[i] && (
                   <div className="text-[10px] text-destructive">{revealError[i]}</div>
                 )}
