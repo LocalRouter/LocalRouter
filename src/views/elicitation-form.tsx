@@ -1,3 +1,5 @@
+import { SectionedText } from "@/components/shared/SectionedText"
+import { PagedItems } from "@/components/shared/PagedItems"
 import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import type { ShowApprovalPopupParams, ShowApprovalPopupResult } from "@/types/tauri-commands"
@@ -23,10 +25,14 @@ function SchemaField({ name, schema, value, onChange }: {
   value: unknown
   onChange: (val: unknown) => void
 }) {
+  const [enumPage, setEnumPage] = useState(0)
   const title = (schema.title as string) || name
   const description = schema.description as string | undefined
 
   if (schema.enum) {
+    const options = schema.enum as string[]
+    const start = Math.min(enumPage * 100, Math.max(0, Math.floor((options.length - 1) / 100) * 100))
+    const visible = options.slice(start, start + 100)
     return (
       <div className="grid grid-cols-[auto_1fr] gap-x-3 items-center">
         <label className="text-xs text-muted-foreground">{title}:</label>
@@ -36,10 +42,16 @@ function SchemaField({ name, schema, value, onChange }: {
           onChange={(e) => onChange(e.target.value)}
         >
           <option value="">Select...</option>
-          {(schema.enum as string[]).map((opt: string) => (
+          {value && !visible.includes(value as string) ? <option value={value as string}>{String(value)}</option> : null}
+          {visible.map((opt: string) => (
             <option key={opt} value={opt}>{opt}</option>
           ))}
         </select>
+        {options.length > 100 && <div className="col-span-2 flex gap-2 text-[10px]">
+          <button type="button" disabled={start === 0} onClick={() => setEnumPage(Math.max(0, enumPage - 1))}>Previous options</button>
+          <span>{start + 1}–{Math.min(options.length, start + 100)} of {options.length}</span>
+          <button type="button" disabled={start + 100 >= options.length} onClick={() => setEnumPage(enumPage + 1)}>Next options</button>
+        </div>}
       </div>
     )
   }
@@ -221,13 +233,13 @@ export function ElicitationForm() {
 
         {/* Message */}
         {details.message && (
-          <p className="text-xs mb-3 flex-shrink-0">{details.message}</p>
+          <SectionedText text={details.message} label="Input request" className="mb-3 max-h-24" />
         )}
 
         {/* Form Fields */}
         <div className="flex-1 overflow-auto">
           <div className="space-y-2">
-            {propertyEntries.map(([key, propSchema]) => (
+            <PagedItems items={propertyEntries} label="Fields">{([key, propSchema]) => (
               <SchemaField
                 key={key}
                 name={key}
@@ -235,7 +247,7 @@ export function ElicitationForm() {
                 value={formData[key]}
                 onChange={(val) => setFormData(prev => ({ ...prev, [key]: val }))}
               />
-            ))}
+            )}</PagedItems>
             {propertyEntries.length === 0 && details.schema?.type === "string" && (
               <SchemaField
                 name="value"

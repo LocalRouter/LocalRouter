@@ -1,3 +1,5 @@
+import { SectionedText } from "@/components/shared/SectionedText"
+import { PagedItems } from "@/components/shared/PagedItems"
 import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import type { ShowApprovalPopupParams, ShowApprovalPopupResult } from "@/types/tauri-commands"
@@ -163,12 +165,12 @@ export function SamplingApproval() {
             <div className="mt-2">
               <span className="text-[10px] font-semibold text-muted-foreground uppercase">Messages</span>
               <div className="mt-0.5 space-y-1 max-h-28 overflow-auto">
-                {details.messages_preview.map((msg, i) => (
+                <PagedItems items={details.messages_preview} label="Messages">{(msg, i) => (
                   <div key={i} className="text-xs bg-muted/50 rounded p-1.5">
                     <span className="font-semibold text-muted-foreground">{msg.role}: </span>
-                    <span className="font-mono">{msg.content}</span>
+                    <SectionedText text={msg.content} label="Message content" />
                   </div>
-                ))}
+                )}</PagedItems>
               </div>
             </div>
           )}

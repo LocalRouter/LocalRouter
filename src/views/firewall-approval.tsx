@@ -1,3 +1,5 @@
+import { SectionedText } from "@/components/shared/SectionedText"
+import { PagedItems } from "@/components/shared/PagedItems"
 import { useState, useEffect, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import type { ShowApprovalPopupParams, ShowApprovalPopupResult } from "@/types/tauri-commands"
@@ -825,7 +827,7 @@ export function FirewallApproval() {
         </button>
       </div>
       <div className="flex flex-col gap-2 overflow-auto flex-1">
-        {editedMessages.map((msg, idx) => (
+        <PagedItems items={editedMessages} label="Messages">{(msg, idx) => (
           <div key={idx} className="flex flex-col gap-1 bg-muted/30 rounded p-2">
             <div className="flex items-center gap-2">
               <select
@@ -849,19 +851,17 @@ export function FirewallApproval() {
                 Remove
               </button>
             </div>
-            <textarea
+            <SectionedText label={`Message ${idx + 1}`}
               className="min-h-[48px] px-2 py-1 text-xs rounded border border-border bg-background text-foreground font-mono resize-y focus:outline-none focus:ring-1 focus:ring-ring"
-              value={msg.content}
-              rows={Math.min(6, Math.max(2, msg.content.split("\n").length))}
-              onChange={(e) => {
+              text={msg.content}
+              onChange={(value) => {
                 const updated = [...editedMessages]
-                updated[idx] = { ...msg, content: e.target.value }
+                updated[idx] = { ...msg, content: value }
                 setEditedMessages(updated)
               }}
-              spellCheck={false}
             />
           </div>
-        ))}
+        )}</PagedItems>
         {editedMessages.length === 0 && (
           <div className="text-xs text-muted-foreground italic">No messages</div>
         )}
@@ -872,21 +872,20 @@ export function FirewallApproval() {
   // Render raw JSON editor
   const renderRawJsonEditor = () => (
     <div className="flex flex-col flex-1 overflow-hidden">
-      <textarea
+      <SectionedText label="Raw JSON"
         className={`flex-1 px-2 py-1 text-xs rounded border font-mono resize-none bg-background text-foreground focus:outline-none focus:ring-1 focus:ring-ring ${
           jsonValid ? "border-border" : "border-destructive"
         }`}
-        value={editedJson}
-        onChange={(e) => {
-          setEditedJson(e.target.value)
+        text={editedJson}
+        onChange={(value) => {
+          setEditedJson(value)
           try {
-            JSON.parse(e.target.value)
+            JSON.parse(value)
             setJsonValid(true)
           } catch {
             setJsonValid(false)
           }
         }}
-        spellCheck={false}
       />
     </div>
   )
@@ -918,24 +917,23 @@ export function FirewallApproval() {
 
       {editorTab === "params" ? (
         <div className="flex flex-col gap-1.5 overflow-auto flex-1">
-          {kvPairs.map(({ key, value }, idx) => (
+          <PagedItems items={kvPairs} label="Arguments">{({ key, value }, idx) => (
             <div key={key} className="grid grid-cols-[100px_1fr] gap-2 items-start">
               <label className="text-xs text-muted-foreground pt-1 truncate" title={key}>
                 {key}:
               </label>
-              <textarea
+              <SectionedText label={key}
                 className="min-h-[28px] px-2 py-1 text-xs rounded border border-border bg-background text-foreground font-mono resize-y focus:outline-none focus:ring-1 focus:ring-ring"
-                value={value}
-                rows={value.length > 60 ? 3 : 1}
-                onChange={(e) => {
+                text={value}
+                onChange={(nextValue) => {
                   const newPairs = [...kvPairs]
-                  newPairs[idx] = { key, value: e.target.value }
+                  newPairs[idx] = { key, value: nextValue }
                   setKvPairs(newPairs)
                   syncKvToJson(newPairs)
                 }}
               />
             </div>
-          ))}
+          )}</PagedItems>
           {kvPairs.length === 0 && (
             <div className="text-xs text-muted-foreground italic">No arguments</div>
           )}
