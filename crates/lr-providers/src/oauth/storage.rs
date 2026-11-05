@@ -121,6 +121,14 @@ impl OAuthStorage {
         Ok(self.cache.read().await.get(provider_id).cloned())
     }
 
+    /// Credentials for a provider, readable from synchronous code.
+    ///
+    /// Returns `None` while a write holds the cache, as well as when no
+    /// credentials are stored.
+    pub fn credentials_now(&self, provider_id: &str) -> Option<OAuthCredentials> {
+        self.cache.try_read().ok()?.get(provider_id).cloned()
+    }
+
     /// Delete credentials for a provider
     pub async fn delete_credentials(&self, provider_id: &str) -> AppResult<()> {
         let cache = self.cache.clone().write_owned().await;

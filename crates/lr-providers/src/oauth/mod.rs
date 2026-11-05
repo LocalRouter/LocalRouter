@@ -115,6 +115,12 @@ pub trait OAuthProvider: Send + Sync {
 
     /// Cancel the current OAuth flow
     async fn cancel_oauth_flow(&self);
+
+    /// Remove any copy of the tokens the provider keeps outside the
+    /// credential store, when the user disconnects.
+    async fn forget_tokens(&self) -> AppResult<()> {
+        Ok(())
+    }
 }
 
 /// OAuth manager for handling multiple OAuth providers
@@ -236,6 +242,9 @@ impl OAuthManager {
 
     /// Delete stored credentials for a provider
     pub async fn delete_credentials(&self, provider_id: &str) -> AppResult<()> {
+        if let Some(provider) = self.get_provider(provider_id) {
+            provider.forget_tokens().await?;
+        }
         self.storage.delete_credentials(provider_id).await?;
         notify_tokens_updated(provider_id);
         Ok(())
