@@ -12,3 +12,14 @@
 - [ ] Record results and limitations, then commit and push the verification record.
 
 The owner explicitly authorized a new release after the fixes, including the other changes that reached master. This supersedes the earlier instruction not to release. No paid model calls or installed desktop app replacement are requested.
+
+## Hosted validation follow-up
+
+- [x] Inspect the first exact-SHA hosted run and distinguish test results from runner interruption.
+- [x] Extend the Rust job timeout from 30 to 45 minutes so workspace tests, Clippy, formatting and cache upload can finish.
+- [x] Plan review, test coverage review and bug hunt: verify this changes only the job time allowance and preserves all checks.
+- [ ] Validate workflow syntax, commit/push the correction, merge using no-ff, then rerun exact-SHA validation.
+
+Run 42063389661 at a461d8ee96768926a1f88dc0ba6cc71b0ece8f9e passed all Rust tests and all frontend/website checks. The Rust job reached its 30-minute limit during Clippy; formatting and cache upload were skipped. Local all-target Clippy and formatting had passed. This hosted run is not recorded as a green validation.
+
+Workflow validation: actionlint passed; exact content comparison confirms the timeout is the sole workflow change.
