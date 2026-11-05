@@ -13,8 +13,8 @@
 - [x] Run relevant Rust tests, all-target lint and formatting with rustup stable; record actual proof and limits.
 - [x] Commit/push signed changes with Matus identity and integrate using no-ff merges; retain unrelated work.
 - [x] Validate the exact merged SHA in hosted release-validation CI.
-- [ ] Publish the corrective stable release after validation, monitor every enabled release and Docker job, and verify the live updater and artifact signatures.
-- [ ] Commit/push the release verification record.
+- [x] Publish the corrective stable release after validation, monitor every enabled release and Docker job, and verify the live updater and artifact signatures.
+- [x] Commit/push the release verification record.
 
 The previous release's transport tests used uncompressed synthetic JSON. They did not cover Codex's actual zstd content encoding. This task closes that specific gap without claiming a paid/live model test. Never bypass redaction or send plaintext after a decoding error. Do not capture user secrets to diagnose the failure.
 
@@ -42,3 +42,13 @@ Installed-client compatibility check: `/opt/homebrew/bin/codex --version` report
 - Updated paper/docs are prepared locally for publication after the application release. The initial docs/static build passed; final publication and verification remain pending.
 
 Application v0.0.176 was published at https://github.com/LocalRouter/LocalRouter/releases/tag/v0.0.176 at 2026-11-05T20:48:30Z. All five platform build jobs passed. Downloaded both macOS updater bundles, both Linux AppImages and the Windows NSIS installer and verified all five signatures with minisign using the application's configured updater public key; file sizes matched release metadata. The docs/static build passed after integrating the v0.0.176 version bump (33 prerendered public pages, 34 verified route outputs). Supplemental package jobs, Docker and live website verification are still being monitored.
+
+## Final publication result
+
+- Release workflow 42100716600 completed successfully: all five signed application targets, both Snap builds, both Flatpak builds, publication, and Nix pin update passed. The existing package-manager repository publishing job remains explicitly disabled (`if: false`) and was skipped.
+- Latest-release API confirms stable v0.0.176 with 32 nonempty assets. The application's real `releases/latest/download/latest.json` endpoint serves v0.0.176 with all five platforms. All five downloaded updater artifacts passed cryptographic verification using the configured public updater key.
+- Docker workflow 42106849400 succeeded. Public GHCR tags 0.0.176, v0.0.176 and latest share sha256:c09192fd9d0e5abce562d39c17bda61813f2348a62dd35b635c48db9ca7a17dd and include Linux amd64 and arm64 manifests.
+- Website deployment 42107346706 at f8345cd6320a889d81207612433e80629eb39e95 succeeded. Fetched the public root, its bundled script, secret-scanning docs and research paper; verified the new zstd, MCP namespace and installed 0.166.0 conformance text.
+- Plan review, test coverage review and bug hunt are complete. The corrective source and final verification record are committed and pushed with Matus Faro's signing identity, using no-ff merges and preserving unrelated root files. No failed enabled release jobs remain.
+
+The wire proof uses local upstreams and synthetic credentials with the actual upstream request encoder. It does not claim a paid/live ChatGPT test, universal secret detection, or native Windows/Linux credential-store runtime verification. The application release is published; installing the update is a separate user action.
