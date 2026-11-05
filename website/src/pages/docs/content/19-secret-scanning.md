@@ -37,6 +37,8 @@ HTTP Basic authorization headers are decoded locally and checked for a plausible
 
 Choose **Redact** to automatically replace detected secrets with an OS-stored reference on supported text gateway and active native proxy requests. **Ask** offers **Use placeholder** for a finding; **Redact once** remains irreversible. Off, Notify and existing per-client inheritance retain their meanings.
 
+Native HTTP proxies inspect Codex's zstd-compressed requests before scanning. gzip, HTTP deflate and Brotli are also supported, with bounded decoding. Default Codex freeform tools and MCP tool namespaces can coexist with redaction. Hosted tools receive placeholders; originals are restored when the response returns locally. Unverified constrained tool grammars and unsupported binary transports retain explicit protection errors.
+
 ```xml
 <localrouter-redacted id="abc123" usage="Unmasked when returned verbatim"/>
 ```
