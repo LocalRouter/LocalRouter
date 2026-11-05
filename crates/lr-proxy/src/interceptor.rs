@@ -42,6 +42,11 @@ pub enum RequestAction {
     Forward,
     /// Forward a rewritten request body instead (e.g. model rewrite / transform).
     Replace(Vec<u8>),
+    /// Masked wire request and its request-owned restoration capability.
+    Protect {
+        body: Vec<u8>,
+        vault: std::sync::Arc<lr_secret_scanner::placeholders::Vault>,
+    },
     /// Block the request; return this synthesized response to the client and
     /// never contact the upstream (firewall deny).
     Reject {
@@ -78,6 +83,8 @@ pub struct ObservedExchange {
     /// Per-request identity, shared with scans and approval decisions. Each
     /// websocket cycle gets its own ID, independently of the connection trace.
     pub session_id: Option<String>,
+    /// Explicit authenticated conversation affinity, independent of monitor IDs.
+    pub secret_session: Option<String>,
     /// Monitor event id of the pending event opened at request time, so the
     /// response half updates it (pending → complete) instead of pushing a new one.
     pub event_id: Option<String>,

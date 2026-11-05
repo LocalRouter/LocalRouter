@@ -206,9 +206,7 @@ pub async fn serve_state(
                     let owners=config.clients.iter().map(|c|c.id.clone()).collect::<Vec<_>>();
                     let retention=u64::from(config.responses.active_window_hours)*3600;
                     let _=tokio::task::spawn_blocking(move || {
-                        for owner in owners {
-                            if lr_secret_scanner::placeholders::Vault::cleanup_client(Arc::new(lr_api_keys::keychain_trait::SystemKeychain),&owner,retention).is_err(){tracing::warn!("Could not complete OS secret-reference cleanup");}
-                        }
+                        if lr_secret_scanner::placeholders::Vault::cleanup_registered(Arc::new(lr_api_keys::keychain_trait::SystemKeychain),&owners,retention).is_err(){tracing::warn!("Could not complete OS secret-reference cleanup");}
                     }).await;
                 }
             }

@@ -570,10 +570,11 @@ fn passthrough_status(ex: &PassthroughExchange) -> EventStatus {
 
 /// Project a reverse-proxy exchange onto the shared observation type, so both
 /// proxies produce identical monitor events and metrics.
-fn observed_from_reverse(ex: &crate::reverse::ReverseExchange) -> ObservedExchange {
+pub(crate) fn observed_from_reverse(ex: &crate::reverse::ReverseExchange) -> ObservedExchange {
     ObservedExchange {
         client_id: ex.client_id.clone(),
-        session_id: None,
+        session_id: ex.session_id.clone(),
+        secret_session: ex.secret_session.clone(),
         event_id: ex.event_id.clone(),
         strategy_id: ex.strategy_id.clone(),
         latency_ms: ex.latency_ms,

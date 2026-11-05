@@ -13,7 +13,7 @@ import {
   type ApprovalAction,
   type MarketplaceListingInfo,
 } from "@/components/shared/FirewallApprovalCard"
-import type { ModelInfo, ClientInfo, ModelPermissions, SafetyVerdict, CategoryActionRequired, McpServerListing, SkillListing, SecretFindingSummary, RedactSecretPermanentlyParams, PushEventApprovalDetails, PendingPushApproval, ListPendingPushApprovalsParams, SubmitPushApprovalParams } from "@/types/tauri-commands"
+import type { DecodedSecretJwt, DecodeSecretScanJwtParams, ModelInfo, ClientInfo, ModelPermissions, SafetyVerdict, CategoryActionRequired, McpServerListing, SkillListing, SecretFindingSummary, RedactSecretPermanentlyParams, PushEventApprovalDetails, PendingPushApproval, ListPendingPushApprovalsParams, SubmitPushApprovalParams } from "@/types/tauri-commands"
 
 interface ApprovalDetails {
   request_id: string
@@ -247,10 +247,7 @@ export function FirewallApproval() {
           await win.setSize(new LogicalSize(440, height))
           await win.center()
         } else if (result.is_secret_scan_request) {
-          // Each finding carries rule, value + reveal, entropy, and the
-          // permanent-ignore control — the default 320px clips even one.
-          const findingCount = result.secret_scan_details?.findings?.length || 1
-          const height = Math.min(660, (result.is_notify_only ? 260 : 325) + findingCount * 155)
+          const height = 560
           await win.setSize(new LogicalSize(440, height))
           await win.center()
         }
@@ -577,9 +574,14 @@ export function FirewallApproval() {
     }
   }
 
+  const handleDecodeJwt = async (findingIndex: number): Promise<DecodedSecretJwt | null> => {
+    if (!details || inactiveRef.current) return null
+    return invoke<DecodedSecretJwt>("decode_secret_scan_jwt", { requestId: details.request_id, findingIndex } satisfies DecodeSecretScanJwtParams)
+  }
+
   /** Permanently stop flagging one finding's value for this client. */
   const handleIgnorePermanently = async (findingIndex: number): Promise<void> => {
-    if (!details) return
+    if (!details || inactiveRef.current) throw new Error("This secret is no longer available")
     await invoke("ignore_secret_permanently", {
       requestId: details.request_id,
       findingIndex,
@@ -1069,6 +1071,7 @@ export function FirewallApproval() {
           onAction={buttonsReady && !inactive ? handleAction : undefined}
           onDismiss={buttonsReady || inactive ? handleDismiss : undefined}
           onReveal={details.is_secret_scan_request ? handleReveal : undefined}
+          onDecodeJwt={details.is_secret_scan_request ? handleDecodeJwt : undefined}
           onRedactPermanently={details.is_secret_scan_request && !details.is_notify_only && !inactive ? handleRedactPermanently : undefined}
           onAllowSecretPermanently={
             details.is_secret_scan_request && !inactive ? handleIgnorePermanently : undefined

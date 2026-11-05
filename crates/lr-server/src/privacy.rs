@@ -14,24 +14,7 @@ pub fn check_ingress(state: &AppState, client_id: &str, path: &str) -> ApiResult
         .unwrap_or(&config.secret_scanning.action);
     if *action == lr_config::SecretScanAction::Redact {
         let text_path = path.strip_prefix("/v1").unwrap_or(path);
-        if matches!(
-            text_path,
-            "/chat/completions"
-                | "/completions"
-                | "/responses"
-                | "/messages"
-                | "/systemone"
-                | "/decisions"
-        ) {
-            if client
-                .as_ref()
-                .is_some_and(|c| c.llm_mode != LlmMode::Gateway)
-            {
-                return Err(ApiErrorResponse::forbidden(
-                    "Restorable secret redaction requires text gateway mode",
-                ));
-            }
-        } else if text_path.contains("/audio")
+        if text_path.contains("/audio")
             || text_path.contains("/images")
             || text_path.contains("/realtime")
             || text_path.contains("/videos")

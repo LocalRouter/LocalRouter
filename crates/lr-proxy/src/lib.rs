@@ -101,6 +101,8 @@ pub fn should_mitm_host(host: &str) -> bool {
         .any(|allowed| host == *allowed || host.ends_with(&format!(".{allowed}")))
 }
 
+mod protected_response;
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -485,6 +485,30 @@ impl McpGateway {
             ));
         };
 
+        let protected_schema = if lr_types::secret_context::current().is_some() {
+            let s = session.read().await;
+            Some(
+                s.cached_tools
+                    .as_ref()
+                    .and_then(|cache| cache.data.iter().find(|tool| tool.name == tool_name))
+                    .map(|tool| tool.input_schema.clone())
+                    .ok_or_else(|| {
+                        AppError::InvalidParams("Protected tool has no input schema".into())
+                    })?,
+            )
+        } else {
+            None
+        };
+        if let Some(schema) = &protected_schema {
+            let arguments = request
+                .params
+                .as_ref()
+                .and_then(|p| p.get("arguments"))
+                .cloned()
+                .unwrap_or(json!({}));
+            lr_secret_scanner::schema::validate(schema, &arguments)?;
+        }
+
         // Firewall check for MCP tools
         // Pass both namespaced name (for session tracking/display) and original name (for permission lookup)
         let firewall_result = self
@@ -521,6 +545,32 @@ impl McpGateway {
                 if let Some(obj) = params.as_object_mut() {
                     obj.insert("arguments".to_string(), new_args);
                 }
+            }
+        }
+
+        if let Some(context) = lr_types::secret_context::current() {
+            if let Some(arguments) = transformed_request
+                .params
+                .as_mut()
+                .and_then(|p| p.get_mut("arguments"))
+            {
+                context.restore(arguments, true)?;
+                if let Some(schema) = &protected_schema {
+                    lr_secret_scanner::schema::validate(schema, arguments)?;
+                }
+            }
+            let s = session.read().await;
+            let check = access_control::check_needs_approval(&FirewallCheckContext::McpTool {
+                permissions: &s.mcp_permissions,
+                server_id: &server_id,
+                original_tool_name: &original_name,
+                session_approved: s.firewall_session_approvals.contains(&tool_name),
+                session_denied: s.firewall_session_denials.contains(&tool_name),
+            });
+            if s.client_id != "internal-test" && check == FirewallCheckResult::Deny {
+                return Err(AppError::InvalidParams(
+                    "Protected tool call denied by effective permissions".into(),
+                ));
             }
         }
 
@@ -597,7 +647,7 @@ impl McpGateway {
         // resultType: "input_required" (MRTR, SEP-2322); those rounds are
         // resolved through the elicitation manager before returning.
         let session_key_for_mrtr = { session.read().await.session_key.clone() };
-        let result = self
+        let mut result = self
             .send_tool_call_with_mrtr(
                 &transports,
                 &server_id,
@@ -612,6 +662,25 @@ impl McpGateway {
             session_write.pending_requests.remove(&request_id_str);
         }
 
+        if let Ok(response) = result.as_mut() {
+            self.protect_model_response(response).await?;
+        }
+        if let (Some(context), Err(error)) = (lr_types::secret_context::current(), result.as_mut())
+        {
+            let message = match error {
+                AppError::Mcp(message)
+                | AppError::Provider(message)
+                | AppError::Router(message)
+                | AppError::Internal(message)
+                | AppError::InvalidParams(message) => Some(message),
+                _ => None,
+            };
+            if let Some(message) = message {
+                let mut value = Value::String(message.clone());
+                context.prepare(&mut value).await?;
+                *message = value.as_str().unwrap_or_default().into();
+            }
+        }
         let tool_call_latency = tool_call_start.elapsed().as_millis() as u64;
 
         // Update the monitor event with response data
@@ -813,12 +882,17 @@ impl McpGateway {
                 };
 
                 // Extract arguments preview (truncated) and full arguments
-                let full_arguments = request
+                let mut full_arguments = request
                     .params
                     .as_ref()
                     .and_then(|p| p.get("arguments"))
                     .cloned();
 
+                if let (Some(context), Some(arguments)) =
+                    (lr_types::secret_context::current(), full_arguments.as_mut())
+                {
+                    context.protect(arguments)?;
+                }
                 let arguments_preview = full_arguments
                     .as_ref()
                     .map(|args| firewall::truncate_arguments_preview(args, 200))
@@ -1010,6 +1084,35 @@ impl McpGateway {
     ) -> AppResult<JsonRpcResponse> {
         use super::virtual_server::*;
 
+        let protected_schema = if lr_types::secret_context::current().is_some() {
+            let s = session.read().await;
+            let state = s.virtual_server_state.get(vs.id()).ok_or_else(|| {
+                AppError::InvalidParams("Missing protected virtual tool state".into())
+            })?;
+            Some(
+                vs.list_tools(state.as_ref())
+                    .into_iter()
+                    .find(|tool| tool.name == tool_name)
+                    .map(|tool| tool.input_schema)
+                    .ok_or_else(|| {
+                        AppError::InvalidParams("Protected virtual tool has no input schema".into())
+                    })?,
+            )
+        } else {
+            None
+        };
+        if let Some(schema) = &protected_schema {
+            lr_secret_scanner::schema::validate(
+                schema,
+                &request
+                    .params
+                    .as_ref()
+                    .and_then(|p| p.get("arguments"))
+                    .cloned()
+                    .unwrap_or(json!({})),
+            )?;
+        }
+
         // 1. Permission check (read lock, then drop)
         let (firewall_result, client_id, client_name) = {
             let session_read = session.read().await;
@@ -1076,7 +1179,7 @@ impl McpGateway {
         };
 
         // Handle Blocked / ProceedWithEdits
-        let arguments = match decision {
+        let mut arguments = match decision {
             FirewallDecisionResult::Blocked(resp) => return Ok(resp),
             FirewallDecisionResult::ProceedWithEdits {
                 edited_arguments: Some(new_args),
@@ -1088,6 +1191,35 @@ impl McpGateway {
                 .cloned()
                 .unwrap_or(json!({})),
         };
+
+        if let Some(context) = lr_types::secret_context::current() {
+            context.restore(&mut arguments, true)?;
+            if let Some(schema) = &protected_schema {
+                lr_secret_scanner::schema::validate(schema, &arguments)?;
+            }
+            let s = session.read().await;
+            let state = s.virtual_server_state.get(vs.id()).ok_or_else(|| {
+                AppError::InvalidParams("Missing protected virtual tool state".into())
+            })?;
+            if s.client_id != "internal-test" {
+                let checked = vs.check_permissions(
+                    state.as_ref(),
+                    tool_name,
+                    Some(&arguments),
+                    s.firewall_session_approvals.contains(tool_name),
+                    s.firewall_session_denials.contains(tool_name),
+                );
+                if matches!(
+                    checked,
+                    VirtualFirewallResult::Standard(FirewallCheckResult::Deny)
+                        | VirtualFirewallResult::Handled(FirewallDecisionResult::Blocked(_))
+                ) {
+                    return Err(AppError::InvalidParams(
+                        "Protected virtual tool denied by effective permissions".into(),
+                    ));
+                }
+            }
+        }
 
         // 3. Clone state out of session (can't hold lock across await)
         let state = {
@@ -1142,7 +1274,7 @@ impl McpGateway {
         let tool_call_start = std::time::Instant::now();
 
         // 5. Call handler
-        let result = vs
+        let mut result = vs
             .handle_tool_call(
                 state,
                 tool_name,
@@ -1152,6 +1284,20 @@ impl McpGateway {
             )
             .await;
 
+        if let Some(context) = lr_types::secret_context::current() {
+            match &mut result {
+                VirtualToolCallResult::Success(response)
+                | VirtualToolCallResult::SuccessWithSideEffects { response, .. } => {
+                    context.prepare(response).await?
+                }
+                VirtualToolCallResult::ToolError(message) => {
+                    let mut value = Value::String(message.clone());
+                    context.prepare(&mut value).await?;
+                    *message = value.as_str().unwrap_or_default().into();
+                }
+                _ => {}
+            }
+        }
         let tool_call_latency = tool_call_start.elapsed().as_millis() as u64;
 
         // 6. Apply result and update monitor event
@@ -1328,9 +1474,15 @@ impl McpGateway {
         &self,
         session: &Arc<RwLock<GatewaySession>>,
         tool_name: &str,
-        response: JsonRpcResponse,
+        mut response: JsonRpcResponse,
         scope: IndexingScope<'_>,
     ) -> JsonRpcResponse {
+        if let Err(error) = self.protect_model_response(&mut response).await {
+            return JsonRpcResponse::error(
+                response.id,
+                JsonRpcError::invalid_params(error.to_string()),
+            );
+        }
         // Never compress error responses
         if response.error.is_some() {
             return response;

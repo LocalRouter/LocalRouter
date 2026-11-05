@@ -22,6 +22,9 @@
  * See AGENTS.md "Adding/Modifying Tauri Commands" for full checklist.
  */
 
+/** Rust: src-tauri/src/ui/commands_clients.rs - DecodedSecretJwt */
+export interface DecodedSecretJwt { header: Record<string, unknown>; payload: Record<string, unknown> }
+
 /** Rust: src-tauri/src/ui/commands_icons.rs - PNG data URL or no discovered icon. */
 export type DiscoveredResourceIcon = string | null
 
@@ -3883,6 +3886,9 @@ export interface GetFirewallApprovalDetailsParams {
 export interface DismissFirewallNotificationParams {
   requestId: string
 }
+
+/** Params for decode_secret_scan_jwt */
+export interface DecodeSecretScanJwtParams { requestId: string; findingIndex: number }
 
 /** Params for reveal_secret_scan_match (reveal button in the secret-scan popup) */
 export interface RevealSecretScanMatchParams {

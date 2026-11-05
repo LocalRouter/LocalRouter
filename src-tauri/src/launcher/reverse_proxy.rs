@@ -62,7 +62,7 @@ pub struct ReverseListenerState {
 
 /// Owns every reverse-proxy listener and reconciles them against config.
 pub struct ReverseProxyService {
-    recorder: Arc<PassiveInterceptor>,
+    recorder: Arc<lr_proxy::active::ActiveInterceptor>,
     config_manager: ConfigManager,
     dedupe: RequestDedupeFlag,
     running: Mutex<HashMap<String, RunningListener>>,
@@ -77,15 +77,26 @@ impl ReverseProxyService {
         client_manager: Arc<lr_clients::ClientManager>,
         config_manager: ConfigManager,
         dedupe: RequestDedupeFlag,
+        state: lr_server::state::AppState,
     ) -> Self {
         // Same recorder the MITM proxy uses, so reverse-proxied calls land in
         // the Monitor and the dashboards identically (tagged ReverseProxy).
         let recorder = PassiveInterceptor::new(monitor_store)
-            .with_metrics(metrics_collector)
+            .with_metrics(metrics_collector.clone())
             .with_pricing(Arc::new(CatalogPricing))
             .with_client_names(Arc::new(AppClientNames { client_manager }));
         Self {
-            recorder: Arc::new(recorder),
+            recorder: Arc::new(lr_proxy::active::ActiveInterceptor::new(
+                recorder,
+                Arc::new(crate::launcher::proxy::AppFirewall {
+                    secret_storage: Arc::new(lr_api_keys::keychain_trait::SystemKeychain),
+                    config_manager: config_manager.clone(),
+                    firewall: state.mcp_gateway.firewall_manager.clone(),
+                    model_approvals: state.model_approval_tracker.clone(),
+                    metrics: metrics_collector,
+                    state,
+                }),
+            )),
             config_manager,
             dedupe,
             running: Mutex::new(HashMap::new()),

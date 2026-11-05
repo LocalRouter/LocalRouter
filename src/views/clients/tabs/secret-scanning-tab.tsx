@@ -47,10 +47,10 @@ type ButtonValue = "default" | SecretScanAction
 
 const BUTTON_STYLES: Record<ButtonValue, string> = {
   default: "bg-zinc-500 text-white",
-  redact: "bg-yellow-600 text-white",
+  redact: "bg-red-600 text-white",
   ask: "bg-amber-500 text-white",
   notify: "bg-blue-500 text-white",
-  off: "bg-red-500 text-white",
+  off: "bg-emerald-500 text-white",
 }
 
 export function ClientSecretScanningTab({ client, onUpdate, onViewChange }: SecretScanningTabProps) {
@@ -141,10 +141,10 @@ export function ClientSecretScanningTab({ client, onUpdate, onViewChange }: Secr
 
   const buttons: { key: ButtonValue; label: string }[] = [
     { key: "default", label: `Default (${globalActionLabel})` },
-    { key: "off", label: "Off" },
-    { key: "notify", label: "Notify" },
     { key: "redact", label: "Redact" },
     { key: "ask", label: "Ask" },
+    { key: "notify", label: "Notify" },
+    { key: "off", label: "Off" },
   ]
 
   return (

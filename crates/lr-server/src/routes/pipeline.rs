@@ -1563,7 +1563,8 @@ pub(crate) async fn run_secret_scan_check(
         crate::documents::protect_text_files(&mut original, context.as_ref())
             .map_err(ApiErrorResponse::from)?;
         context
-            .protect(&mut original)
+            .prepare(&mut original)
+            .await
             .map_err(ApiErrorResponse::from)?;
         *request = serde_json::from_value(original.clone())
             .map_err(|_| ApiErrorResponse::forbidden("Could not protect conversation history"))?;
@@ -1632,6 +1633,18 @@ pub async fn scan_request_for_secrets_with_source(
     if lr_types::secret_context::current().is_some_and(|context| context.scanned()) {
         return SecretScanOutcome::Allow;
     }
+    scan_request_for_secrets_fresh(state, client_id, model, body, source_hint, session_id).await
+}
+
+/// Scan new tool content or approval edits even after initial ingress was scanned.
+pub async fn scan_request_for_secrets_fresh(
+    state: &AppState,
+    client_id: &str,
+    model: &str,
+    body: &serde_json::Value,
+    source_hint: Option<&str>,
+    session_id: Option<&str>,
+) -> SecretScanOutcome {
     // Standalone scans still need one identity shared by the scan and all of
     // its approval decisions. Gateway/proxy callers supply the parent request.
     let fallback_session = uuid::Uuid::new_v4().to_string();
@@ -1674,7 +1687,11 @@ pub async fn scan_request_for_secrets_with_source(
         };
     };
     if !scanner.has_rules() {
-        return SecretScanOutcome::Allow;
+        return if *effective_action == lr_config::SecretScanAction::Redact {
+            SecretScanOutcome::Deny("Secret scanner has no detection rules".into())
+        } else {
+            SecretScanOutcome::Allow
+        };
     }
 
     // Extract text from request using guardrails text extractor. It recognizes

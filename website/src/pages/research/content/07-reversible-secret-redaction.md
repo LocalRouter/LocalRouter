@@ -43,6 +43,8 @@ Original values use the existing native credential abstraction: macOS Keychain, 
 
 An owner/session record separates clients and conversations. Requests receive only the references authorized by their protected context. Durable scopes can be recovered after a restart from OS-stored records; missing or revoked records do not fall back to another scope. A failed native write blocks dispatch rather than sending plaintext. Large values use the existing native credential chunking layer.
 
+Native Codex compaction and encrypted reasoning state remain byte-for-byte intact. OS-backed metadata binds the fingerprint of returned opaque state to the references authorized in that client and conversation. Replaying that exact state can recover those references after restart; modified, foreign and revoked state grants no access. Visible reasoning summaries are restored separately and protected again on replay.
+
 Transient plaintext is needed when receiving the original, storing it and restoring a reply. Secrets are excluded from normal monitor payloads and tokenized response histories remain tokenized at rest.
 
 <!-- @entry redaction-caching -->
@@ -68,7 +70,7 @@ Model:  write_file(.env, "API_KEY=<localrouter-redacted .../>")
 Caller: write_file(.env, "API_KEY=demo-only-secret")
 ```
 
-The example is synthetic. For automatic MCP execution, LocalRouter restores an execution-only argument copy before its existing tool permissions and approval boundary. User edits must be checked against the arguments actually executed. Assistant history remains tokenized, and known originals in tool results are replaced again before model dispatch.
+The example is synthetic. For automatic MCP execution, LocalRouter restores an execution-only argument copy before its existing tool permissions and approval boundary. User edits are restored and schema-validated before execution, with effective permissions checked again. Assistant history remains tokenized, and known originals in tool results are replaced again before model dispatch.
 
 Hosted provider tools execute before LocalRouter can intercept their arguments and cannot use this local restoration mechanism.
 
@@ -81,20 +83,21 @@ Reproduce core checks without a paid model call:
 ```sh
 rustup run stable cargo test -p lr-secret-scanner placeholders
 rustup run stable cargo test -p lr-server secret_placeholders
+rustup run stable cargo test -p lr-proxy
 ```
 
-An explicitly ignored native-store smoke test creates a dedicated synthetic credential, recovers it through a new vault instance and removes it:
+An explicitly ignored native-store smoke test creates a dedicated synthetic credential, recovers it in a fresh child process and a new vault instance and removes it:
 
 ```sh
 rustup run stable cargo test -p lr-secret-scanner native_os_store_round_trip -- --ignored
 ```
 
-Local evaluation on macOS with Rust stable 1.99.1 includes 83 passing scanner tests, ten gateway/boundary tests, a separate successful native Keychain smoke test, a 2,000-input adversarial parser corpus and exhaustive split positions for representative references. The gateway proof checks that model-facing input contains a reference and unchanged system instructions, while a synthetic file-write receives the original bytes. The desktop/mobile landing diagram, research navigation and Ask placeholder choice have browser regressions. These are deterministic local checks, not evidence of a particular hosted model's willingness to copy references.
+Local evaluation on macOS uses Rust stable and deterministic fake upstreams. Tests exercise the Codex native path through CONNECT, TLS, HTTP/SSE and WebSocket framing, and the reverse proxy's native Ollama NDJSON path. The MCP execution proof writes the restored value, rechecks edited arguments and effective permissions, and checks the tokenized response index. The native Keychain proof recovers a scope in a new process. Parser cases include adversarial input and exhaustive split positions. The landing diagram, research navigation, action selectors and Ask/Notify popup flows have browser regressions. These checks do not measure a hosted model's willingness to copy references.
 
 The unit suite uses a mock credential store. Native platform checks and build results should be reported separately; success on macOS is not evidence that Windows or Linux native integration has been exercised. No hosted-model success rate or cache-hit benchmark is claimed here.
 
 <!-- @entry redaction-limits -->
 
-Secret detection is not universal and cannot inspect opaque image, audio or binary content without a separate extraction path. Arbitrary HTML/entity/URL-encoded references are not decoded as an attempt to guess the model's intended value. Strict output schemas can be incompatible with the placeholder or restored original and require explicit validation.
+Secret detection is not universal and cannot inspect opaque image, audio or binary content without a separate extraction path. Arbitrary HTML/entity/URL-encoded references are not decoded as an attempt to guess the model's intended value. Known incompatible strict schemas and custom tool grammars are rejected before dispatch. Restored tool arguments and structured output are validated locally with bounded schemas; remote references and recursive schemas are refused.
 
-The protected text gateway is distinct from passive HTTPS inspection or opaque WebSocket traffic. Unsupported paths must not claim reversible protection. Tool execution can reveal the credential to an authorized destination even though the model provider does not receive its bytes. A caller that receives a restored answer is responsible for its own logs and subsequent handling.
+The text gateway and active native proxy share response restoration. The proxy covers JSON and SSE responses, Codex Responses over WebSocket and native compaction, and native Ollama NDJSON through the reverse proxy. Provider framing is decoded before restoration; masked traffic reaches monitoring before any originals return to the caller. Binary and opaque provider execution remain outside this textual mechanism. Tool execution can reveal the credential to an authorized destination even though the model provider does not receive its bytes. A caller that receives a restored answer is responsible for its own logs and subsequent handling.

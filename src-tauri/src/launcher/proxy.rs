@@ -72,23 +72,24 @@ impl lr_proxy::interceptor::PricingResolver for CatalogPricing {
 /// gateway client uses: the strategy's Model Permissions (allowed-models list +
 /// the Allow/Ask/Off access control) and its rate limits. There is no separate
 /// proxy firewall config — what you set on the LLM tab drives interception.
-struct AppFirewall {
-    config_manager: lr_config::ConfigManager,
+pub(crate) struct AppFirewall {
+    pub(crate) config_manager: lr_config::ConfigManager,
     /// The app's shared firewall — the SAME approval system the MCP gateway/LLM
     /// path uses. An "ask" opens the real popup *window* (works from the tray)
     /// and supports editing/rewriting the request, rather than a bespoke dialog.
-    firewall: Arc<lr_mcp::gateway::firewall::FirewallManager>,
+    pub(crate) firewall: Arc<lr_mcp::gateway::firewall::FirewallManager>,
     /// Time-based model approvals ("Allow 1 Minute"/"Allow 1 Hour" from the
     /// popup), shared with the gateway so a bypass granted there also
     /// suppresses proxy asks — and vice versa.
-    model_approvals: Arc<lr_server::state::ModelApprovalTracker>,
+    pub(crate) model_approvals: Arc<lr_server::state::ModelApprovalTracker>,
     /// Metrics-based rate-limit backend, shared with the gateway path. Proxied
     /// exchanges are already recorded here (keyed by strategy), so the rolling
     /// windows include proxy traffic.
-    metrics: Arc<lr_monitoring::metrics::MetricsCollector>,
+    pub(crate) metrics: Arc<lr_monitoring::metrics::MetricsCollector>,
     /// Server state, used to run the *same* secret scan the gateway runs
     /// (scanner, per-client action, monitor events, approval popup).
-    state: lr_server::state::AppState,
+    pub(crate) state: lr_server::state::AppState,
+    pub(crate) secret_storage: Arc<dyn lr_api_keys::KeychainStorage>,
 }
 
 /// Replicates the gateway's metrics-based strategy rate-limit check
@@ -146,7 +147,162 @@ fn limit_exceeded(
 
 #[async_trait::async_trait]
 impl lr_proxy::active::Firewall for AppFirewall {
+    fn protects_secrets(&self, client_id: &str) -> bool {
+        let config = self.config_manager.get();
+        let action = config
+            .clients
+            .iter()
+            .find(|c| c.id == client_id)
+            .and_then(|c| c.secret_scanning.action.as_ref())
+            .unwrap_or(&config.secret_scanning.action);
+        matches!(
+            action,
+            lr_config::SecretScanAction::Redact | lr_config::SecretScanAction::Ask
+        )
+    }
     async fn evaluate(
+        &self,
+        req: &lr_proxy::active::FirewallRequest,
+    ) -> lr_proxy::interceptor::RequestAction {
+        use lr_proxy::interceptor::RequestAction;
+        use lr_secret_scanner::placeholders::Vault;
+        use lr_types::secret_context::{self, SecretContext};
+        let config = self.config_manager.get();
+        let client = config.clients.iter().find(|c| c.id == req.client_id);
+        let action = client
+            .and_then(|c| c.secret_scanning.action.as_ref())
+            .unwrap_or(&config.secret_scanning.action);
+        if !matches!(
+            action,
+            lr_config::SecretScanAction::Redact | lr_config::SecretScanAction::Ask
+        ) {
+            return self.evaluate_policy(req).await;
+        }
+        let retrieval = req.method == "GET" && lr_proxy::wire::response_id(&req.path).is_some();
+        if !req.body.is_object() && !retrieval {
+            return RequestAction::reject_json(400, "Invalid protected request JSON");
+        }
+        let storage = self.secret_storage.clone();
+        let mut session_options = req.body.pointer("/extensions/localrouter.session").cloned();
+        if let Some(header) = &req.secret_session {
+            let options = session_options.get_or_insert_with(|| serde_json::json!({}));
+            let Some(options) = options.as_object_mut() else {
+                return RequestAction::reject_json(400, "Invalid secret session options");
+            };
+            options.insert("id".into(), serde_json::Value::String(header.clone()));
+        }
+        let session = match lr_providers::session::SessionOptions::parse(session_options.as_ref()) {
+            Ok(options) => options.map(|options| options.id),
+            Err(_) => return RequestAction::reject_json(400, "Invalid secret session identity"),
+        };
+        let fallback = uuid::Uuid::new_v4().to_string();
+        let previous = req
+            .body
+            .get("previous_response_id")
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| {
+                if retrieval {
+                    lr_proxy::wire::response_id(&req.path)
+                } else {
+                    None
+                }
+            });
+        let vault = if let Some(previous) = previous {
+            match Vault::continue_response(storage, &req.client_id, previous) {
+                Ok(vault) => vault,
+                Err(_) => {
+                    return RequestAction::reject_json(
+                        400,
+                        "Secret scope for previous_response_id is missing or expired",
+                    )
+                }
+            }
+        } else {
+            Vault::new(
+                storage,
+                &req.client_id,
+                session.as_deref().unwrap_or(&fallback),
+                session.is_none() && !req.path.contains("responses"),
+            )
+        };
+        let vault = Arc::new(vault);
+        if req
+            .body
+            .pointer("/extensions/localrouter.session/reset")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+            && vault.forget().is_err()
+        {
+            return RequestAction::reject_json(400, "Could not reset secret scope");
+        }
+        let context: Arc<dyn SecretContext> = vault.clone();
+        secret_context::scope(Some(context.clone()), async {
+            let action = self.evaluate_policy(req).await;
+            let mut body = match action {
+                RequestAction::Forward => req.body.clone(),
+                RequestAction::Replace(bytes) => match serde_json::from_slice(&bytes) {
+                    Ok(body) => body,
+                    Err(_) => {
+                        return RequestAction::reject_json(400, "Invalid edited request JSON")
+                    }
+                },
+                other => return other,
+            };
+            if lr_server::documents::protect_text_files(&mut body, context.as_ref()).is_err()
+                || context.protect(&mut body).is_err()
+            {
+                return RequestAction::reject_json(
+                    403,
+                    "Could not protect request secrets in OS credential storage",
+                );
+            }
+            if context.active()
+                && body
+                    .get("tools")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|tools| {
+                        tools.iter().any(|t| {
+                            t.get("type")
+                                .and_then(serde_json::Value::as_str)
+                                .is_some_and(|kind| !matches!(kind, "function" | "custom"))
+                        })
+                    })
+            {
+                return RequestAction::reject_json(
+                    400,
+                    "Restorable secrets require locally executed tools",
+                );
+            }
+            if let Err(error) = vault.set_request_contract(&body) {
+                return RequestAction::reject_json(400, &error.to_string());
+            }
+            if let Some(extensions) = body
+                .get_mut("extensions")
+                .and_then(serde_json::Value::as_object_mut)
+            {
+                extensions.remove("localrouter.session");
+                if extensions.is_empty() {
+                    body.as_object_mut()
+                        .expect("request object")
+                        .remove("extensions");
+                }
+            }
+            let encoded = if retrieval {
+                Ok(Vec::new())
+            } else {
+                serde_json::to_vec(&body)
+            };
+            match encoded {
+                Ok(body) => RequestAction::Protect { body, vault },
+                Err(_) => RequestAction::reject_json(400, "Could not encode protected request"),
+            }
+        })
+        .await
+    }
+}
+
+impl AppFirewall {
+    async fn evaluate_policy(
         &self,
         req: &lr_proxy::active::FirewallRequest,
     ) -> lr_proxy::interceptor::RequestAction {
@@ -155,23 +311,14 @@ impl lr_proxy::active::Firewall for AppFirewall {
 
         let config = self.config_manager.get();
         let Some(client) = config.clients.iter().find(|c| c.id == req.client_id) else {
-            return RequestAction::Forward;
+            return RequestAction::reject_json(403, "Client policy is no longer available");
         };
-        if *client
-            .secret_scanning
-            .action
-            .as_ref()
-            .unwrap_or(&config.secret_scanning.action)
-            == lr_config::SecretScanAction::Redact
-        {
-            return RequestAction::reject_json(403, "Restorable secret redaction requires the text gateway; this proxy transport is unsupported");
-        }
         let Some(strategy) = config
             .strategies
             .iter()
             .find(|s| s.id == client.strategy_id)
         else {
-            return RequestAction::Forward;
+            return RequestAction::reject_json(403, "Client strategy is no longer available");
         };
 
         // Access control (the Model Permissions button): Off blocks everything.
@@ -208,11 +355,20 @@ impl lr_proxy::active::Firewall for AppFirewall {
         // Messages or OpenAI Responses, including a websocket `response.create`
         // message); the shared text extractor understands all of them.
         let mut body = req.body.clone();
+        let (projection, _) = match lr_server::documents::scan_projection(&body) {
+            Ok(projection) => projection,
+            Err(_) => {
+                return RequestAction::reject_json(
+                    400,
+                    "Could not inspect protected request documents",
+                )
+            }
+        };
         let redacted = match lr_server::routes::pipeline::scan_request_for_secrets_with_source(
             &self.state,
             &req.client_id,
             req.model.as_deref().unwrap_or_default(),
-            &body,
+            &projection,
             Some(&req.provider),
             req.session_id.as_deref(),
         )
@@ -230,6 +386,14 @@ impl lr_proxy::active::Firewall for AppFirewall {
             }
             lr_server::routes::pipeline::SecretScanOutcome::Allow => None,
         };
+
+        if let Some(context) = lr_types::secret_context::current() {
+            if lr_server::documents::protect_text_files(&mut body, context.as_ref()).is_err()
+                || context.protect(&mut body).is_err()
+            {
+                return RequestAction::reject_json(403, "Could not protect outbound secrets");
+            }
+        }
 
         // GuardRails — same safety models, category actions, monitor events and
         // approval popup as the gateway path, so a client's configured
@@ -296,41 +460,64 @@ impl lr_proxy::active::Firewall for AppFirewall {
                 );
             }
             match resp {
-                Ok(r) => match r.action {
-                    A::AllowOnce
-                    | A::AllowSession
-                    | A::Allow1Minute
-                    | A::Allow1Hour
-                    | A::AllowPermanent
-                    | A::AllowCategories => {
-                        // If the user edited the request in the popup, send the
-                        // rewritten body upstream instead of the original.
-                        if let Some(mut edited) = r.edited_arguments {
-                            if let Some(redaction) = &redacted {
-                                if lr_server::documents::redact_text_files(&mut edited, redaction)
+                Ok(r) => {
+                    match r.action {
+                        A::AllowOnce
+                        | A::AllowSession
+                        | A::Allow1Minute
+                        | A::Allow1Hour
+                        | A::AllowPermanent
+                        | A::AllowCategories => {
+                            // If the user edited the request in the popup, send the
+                            // rewritten body upstream instead of the original.
+                            if let Some(mut edited) = r.edited_arguments {
+                                if let Some(redaction) = &redacted {
+                                    if lr_server::documents::redact_text_files(
+                                        &mut edited,
+                                        redaction,
+                                    )
                                     .is_err()
-                                {
-                                    return RequestAction::reject_json(
-                                        403,
-                                        "Could not redact edited document secrets",
-                                    );
+                                    {
+                                        return RequestAction::reject_json(
+                                            403,
+                                            "Could not redact edited document secrets",
+                                        );
+                                    }
+                                    redaction.apply(&mut edited);
                                 }
-                                redaction.apply(&mut edited);
+                                let (projection, _) =
+                                    match lr_server::documents::scan_projection(&edited) {
+                                        Ok(value) => value,
+                                        Err(_) => {
+                                            return RequestAction::reject_json(
+                                                400,
+                                                "Could not inspect edited request",
+                                            )
+                                        }
+                                    };
+                                match lr_server::routes::pipeline::scan_request_for_secrets_with_source(&self.state, &req.client_id, req.model.as_deref().unwrap_or_default(), &projection, Some(&req.provider), req.session_id.as_deref()).await {
+                                lr_server::routes::pipeline::SecretScanOutcome::Deny(message) => return RequestAction::reject_json(403, &message),
+                                lr_server::routes::pipeline::SecretScanOutcome::Redact(redaction) => {
+                                    if lr_server::documents::redact_text_files(&mut edited, &redaction).is_err() { return RequestAction::reject_json(403, "Could not redact edited document secrets"); }
+                                    redaction.apply(&mut edited);
+                                },
+                                _ => {},
                             }
-                            if let Ok(bytes) = serde_json::to_vec(&edited) {
-                                return RequestAction::Replace(bytes);
+                                if let Ok(bytes) = serde_json::to_vec(&edited) {
+                                    return RequestAction::Replace(bytes);
+                                }
                             }
                         }
+                        // Any deny/disable action blocks the request.
+                        _ => return RequestAction::reject_json(403, "Denied by user"),
                     }
-                    // Any deny/disable action blocks the request.
-                    _ => return RequestAction::reject_json(403, "Denied by user"),
-                },
+                }
                 // Timeout / channel error → fail closed.
                 Err(_) => return RequestAction::reject_json(403, "Approval timed out"),
             }
         }
 
-        if redacted.is_some() {
+        if redacted.is_some() || body != req.body {
             match serde_json::to_vec(&body) {
                 Ok(bytes) => RequestAction::Replace(bytes),
                 Err(_) => RequestAction::reject_json(403, "Could not serialize redacted request"),
@@ -403,6 +590,7 @@ impl ProxyService {
                 client_manager: client_manager.clone(),
             }));
         let firewall = Arc::new(AppFirewall {
+            secret_storage: Arc::new(lr_api_keys::keychain_trait::SystemKeychain),
             config_manager,
             firewall: firewall_manager,
             model_approvals,
@@ -556,5 +744,168 @@ mod tests {
             limit_exceeded(&limit(Cost, 1.0, true), 0, 0, 0.9, 0.0, 0.2),
             Some("cost")
         );
+    }
+}
+
+#[cfg(test)]
+mod secret_policy_tests {
+    use super::*;
+    use lr_proxy::{
+        active::{Firewall, FirewallRequest},
+        interceptor::RequestAction,
+    };
+    use serde_json::{json, Value};
+    const KEY: &str = "6nmCEa00cbNmH0B4zKPSYOPP5z1oYFR26doJldQr";
+    fn fixture(
+        root: &std::path::Path,
+        mode: lr_config::LlmMode,
+        storage: Arc<dyn lr_api_keys::KeychainStorage>,
+    ) -> (AppFirewall, FirewallRequest) {
+        let mut config = lr_config::AppConfig::default();
+        config.secret_scanning.action = lr_config::SecretScanAction::Redact;
+        let strategy = lr_config::Strategy::new("Synthetic".into());
+        let mut client =
+            lr_config::Client::new_with_strategy("Synthetic".into(), strategy.id.clone());
+        client.llm_mode = mode;
+        config.strategies = vec![strategy];
+        config.clients = vec![client.clone()];
+        let manager = Arc::new(lr_config::ConfigManager::new(
+            config,
+            root.join("settings.yaml"),
+        ));
+        let providers = Arc::new(lr_providers::registry::ProviderRegistry::new());
+        let limits = Arc::new(lr_router::RateLimiterManager::new(None));
+        let metrics = Arc::new(lr_monitoring::metrics::MetricsCollector::new(Arc::new(
+            lr_monitoring::storage::MetricsDatabase::new(root.join("metrics.db")).unwrap(),
+        )));
+        let router = Arc::new(lr_router::Router::new(
+            manager.clone(),
+            providers.clone(),
+            limits.clone(),
+            metrics.clone(),
+            Arc::new(lr_router::FreeTierManager::new(None)),
+        ));
+        let clients = Arc::new(lr_clients::ClientManager::with_keychain(
+            vec![client.clone()],
+            Arc::new(lr_api_keys::MockKeychain::new()),
+        ));
+        let state = lr_server::state::AppState::new(
+            router,
+            limits,
+            providers,
+            manager.clone(),
+            clients,
+            Arc::new(lr_clients::TokenStore::new()),
+            metrics.clone(),
+            None,
+        );
+        *state.secret_scanner.write() = Some(Arc::new(
+            lr_secret_scanner::SecretScanEngine::new(&lr_secret_scanner::SecretScanEngineConfig {
+                entropy_threshold: 3.0,
+                allowlist: vec![],
+                scan_system_messages: true,
+            })
+            .unwrap(),
+        ));
+        let firewall = AppFirewall {
+            config_manager: (*manager).clone(),
+            firewall: state.mcp_gateway.firewall_manager.clone(),
+            model_approvals: state.model_approval_tracker.clone(),
+            metrics,
+            state,
+            secret_storage: storage,
+        };
+        let request = FirewallRequest {
+            client_id: client.id,
+            session_id: Some("monitor-only".into()),
+            secret_session: Some("conversation".into()),
+            host: "chatgpt.com".into(),
+            method: "POST".into(),
+            path: "/backend-api/codex/responses".into(),
+            provider: "openai".into(),
+            model: Some("local-test".into()),
+            has_tools: false,
+            message_count: 1,
+            body: json!({"model":"local-test","input":[{"role":"user","content":format!("aws_secret_access_key={KEY}")} ]}),
+        };
+        (firewall, request)
+    }
+    #[tokio::test]
+    async fn configured_redact_supports_actual_proxy_policy_and_owned_retrieval() {
+        for mode in [lr_config::LlmMode::Proxy, lr_config::LlmMode::ReverseProxy] {
+            let root =
+                std::env::temp_dir().join(format!("lr-native-policy-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&root).unwrap();
+            let (firewall, mut request) =
+                fixture(&root, mode, Arc::new(lr_api_keys::MockKeychain::new()));
+            request.body["extensions"] = json!({"localrouter.session":{"id":"body-affinity"}});
+            let RequestAction::Protect { body, vault } = firewall.evaluate(&request).await else {
+                panic!("Redact must protect this Codex request");
+            };
+            assert!(!String::from_utf8_lossy(&body).contains(KEY));
+            let body: Value = serde_json::from_slice(&body).unwrap();
+            assert!(body.get("extensions").is_none());
+            let tag = body["input"][0]["content"]
+                .as_str()
+                .unwrap()
+                .strip_prefix("aws_secret_access_key=")
+                .unwrap();
+            let mut codec = lr_secret_scanner::wire::ResponseRestorer::new(vault);
+            let response = json!({"id":"resp_owned","object":"response","output":[{"type":"output_text","text":tag}]});
+            assert!(
+                String::from_utf8(codec.json(response.to_string().as_bytes()).unwrap())
+                    .unwrap()
+                    .contains(KEY)
+            );
+            request.method = "GET".into();
+            request.path = "/backend-api/codex/responses/resp_owned".into();
+            request.body = Value::Null;
+            let RequestAction::Protect { body, vault } = firewall.evaluate(&request).await else {
+                panic!("Owned response must be retrievable");
+            };
+            assert!(body.is_empty());
+            assert!(String::from_utf8(
+                lr_secret_scanner::wire::ResponseRestorer::new(vault)
+                    .json(response.to_string().as_bytes())
+                    .unwrap()
+            )
+            .unwrap()
+            .contains(KEY));
+            request.client_id = "different-client".into();
+            assert!(matches!(
+                firewall.evaluate(&request).await,
+                RequestAction::Reject { .. }
+            ));
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+    struct Unavailable;
+    impl lr_api_keys::KeychainStorage for Unavailable {
+        fn store(&self, _: &str, _: &str, _: &str) -> AppResult<()> {
+            Err(AppError::Internal("synthetic storage failure".into()))
+        }
+        fn get(&self, _: &str, _: &str) -> AppResult<Option<String>> {
+            Ok(None)
+        }
+        fn delete(&self, _: &str, _: &str) -> AppResult<()> {
+            Ok(())
+        }
+    }
+    #[tokio::test]
+    async fn native_policy_blocks_unavailable_os_storage_or_scanner() {
+        let root =
+            std::env::temp_dir().join(format!("lr-native-policy-failure-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let (firewall, request) = fixture(&root, lr_config::LlmMode::Proxy, Arc::new(Unavailable));
+        assert!(matches!(
+            firewall.evaluate(&request).await,
+            RequestAction::Reject { .. }
+        ));
+        *firewall.state.secret_scanner.write() = None;
+        assert!(matches!(
+            firewall.evaluate(&request).await,
+            RequestAction::Reject { .. }
+        ));
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

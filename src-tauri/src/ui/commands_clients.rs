@@ -674,12 +674,6 @@ pub async fn delete_client(
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    lr_secret_scanner::placeholders::Vault::forget_client(
-        std::sync::Arc::new(lr_api_keys::keychain_trait::SystemKeychain),
-        &client_id,
-    )
-    .map_err(|_| "Could not remove this client's OS-stored redacted secrets".to_string())?;
-
     token_store.revoke_client_tokens(&client_id);
 
     tracing::info!("Deleting client: {}", client_id);
@@ -2964,6 +2958,54 @@ pub async fn reveal_secret_scan_match(
         .firewall_manager
         .reveal_secret_match(&request_id, finding_index)
         .ok_or_else(|| "This secret is no longer available".to_string())
+}
+
+/// Display-only JWT data. The signature and original token never enter this response.
+#[derive(serde::Serialize)]
+pub struct DecodedSecretJwt {
+    pub header: serde_json::Value,
+    pub payload: serde_json::Value,
+}
+
+fn decode_jwt_display(token: &str) -> Result<DecodedSecretJwt, String> {
+    use base64::Engine;
+    let parts = token.split('.').collect::<Vec<_>>();
+    if parts.len() != 3 {
+        return Err("Could not decode JWT header and payload".into());
+    }
+    let decode = |part: &str| -> Result<serde_json::Value, String> {
+        let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(part.trim_end_matches('='))
+            .map_err(|_| "Could not decode JWT header and payload".to_string())?;
+        let value: serde_json::Value = serde_json::from_slice(&bytes)
+            .map_err(|_| "Could not decode JWT header and payload".to_string())?;
+        if !value.is_object() {
+            return Err("Could not decode JWT header and payload".into());
+        }
+        Ok(value)
+    };
+    Ok(DecodedSecretJwt {
+        header: decode(parts[0])?,
+        payload: decode(parts[1])?,
+    })
+}
+
+/// Open decoded JWT data independently of revealing its signed token.
+#[tauri::command]
+pub async fn decode_secret_scan_jwt(
+    request_id: String,
+    finding_index: usize,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<DecodedSecretJwt, String> {
+    let (_, finding) = state
+        .mcp_gateway
+        .firewall_manager
+        .secret_finding_at(&request_id, finding_index)
+        .ok_or_else(|| "This secret is no longer available".to_string())?;
+    if finding.rule_id != "jwt-token" {
+        return Err("This finding is not a JWT".into());
+    }
+    decode_jwt_display(&finding.raw_text)
 }
 
 /// Permanently stop flagging one specific value for the client that sent it.
@@ -5346,5 +5388,36 @@ mod tests {
         assert!(
             cleared.sources.is_empty() && cleared.skills.is_empty() && cleared.tools.is_empty()
         );
+    }
+}
+
+#[cfg(test)]
+mod decoded_jwt_tests {
+    use super::*;
+    use base64::Engine;
+    #[test]
+    fn display_decode_returns_unicode_claims_without_signature_or_token() {
+        let header = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(br#"{"alg":"HS256","typ":"JWT"}"#);
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode("{\"sub\":\"user-123\",\"name\":\"Mátúš\"}");
+        let token = format!("{header}.{payload}.synthetic-signature");
+        let decoded = decode_jwt_display(&token).unwrap();
+        assert_eq!(decoded.payload["name"], "Mátúš");
+        let json = serde_json::to_string(&decoded).unwrap();
+        assert!(!json.contains("synthetic-signature"));
+        assert!(!json.contains(&token));
+    }
+    #[test]
+    fn malformed_claims_fail_without_echoing_token_data() {
+        for token in [
+            "not-a-token",
+            "e30.bm90LWpzb24.signature",
+            "W10.e30.signature",
+            "e30.W10.signature",
+        ] {
+            let error = decode_jwt_display(token).err().unwrap();
+            assert_eq!(error, "Could not decode JWT header and payload");
+        }
     }
 }

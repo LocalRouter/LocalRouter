@@ -3,7 +3,8 @@ import { ElicitationForm } from '@app/views/elicitation-form'
 import { JsonTree } from '@app/components/shared/JsonTree'
 import { EventDetail } from '@app/views/monitor/event-detail'
 import type { MonitorEvent, PushEventApprovalDetails } from '@app/types/tauri-commands'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { decodeJwt } from '@app/utils/jwt'
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks'
 import { emit } from '@tauri-apps/api/event'
 import { FirewallApproval } from '@app/views/firewall-approval'
@@ -28,6 +29,12 @@ type SavedPolicy = { choice: Choice; hash: string }
 /** Development-only review using the real approval component and simulated requests.
  * No requests are sent; saved hashes remain in memory. */
 export default function SecretRedactionPreview() {
+  useEffect(() => {
+    void import('@app/index.css')
+    const root=document.documentElement; const previous=root.classList.contains('dark')
+    root.classList.toggle('dark',new URLSearchParams(window.location.search).get('theme') !== 'light')
+    return () => { root.classList.toggle('dark',previous) }
+  }, [])
   const kind = new URLSearchParams(window.location.search).get('kind')
   if (kind) return <LargePopupPreview kind={kind} />
   return new URLSearchParams(window.location.search).has('native')
@@ -42,8 +49,9 @@ function NativeApprovalPreview() {
   const query = new URLSearchParams(window.location.search)
   const [backend] = useState(() => ({
     pending: !query.has('missing'), nextPending: false,
-    submits: 0, attempts: 0, dismisses: 0, closes: 0, forwarded: false,
+    submits: 0, attempts: 0, dismisses: 0, closes: 0, ignores: 0, forwarded: query.has('notify'),
   }))
+  const jwtSample = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyLTEyMyIsIm5hbWUiOiJNw6F0w7rFoSIsInNjb3BlIjpbInJlYWQiLCJ3cml0ZSJdfQ.example-signature'
   mockWindows(`firewall-approval-${requestId}`)
   mockIPC(async (command, args) => {
     const id = (args as { requestId?: string } | undefined)?.requestId
@@ -57,10 +65,12 @@ function NativeApprovalPreview() {
         request_id: id, client_id: 'client', client_name: 'Cursor',
         tool_name: 'gpt-4o', server_name: 'Secret Scan', arguments_preview: '',
         timeout_seconds: 86400, created_at_secs_ago: 0,
-        is_secret_scan_request: true, is_notify_only: false,
-        secret_scan_details: { findings: [FINDINGS[id === 'preview-next' ? 1 : 0]], scan_duration_ms: 1, request_json: null, llm_source: 'OpenAI' },
+        is_secret_scan_request: true, is_notify_only: query.has('notify'),
+        secret_scan_details: { findings: [query.has('jwt') ? { ...FINDINGS[0], rule_id: 'jwt-token', rule_description: 'JSON Web Token', matched_text: 'eyJhbG********************ture' } : FINDINGS[id === 'preview-next' ? 1 : 0]], scan_duration_ms: 1, request_json: null, llm_source: 'OpenAI' },
       }
     }
+    if (command === 'decode_secret_scan_jwt') return decodeJwt(jwtSample)
+    if (command === 'reveal_secret_scan_match') return query.has('jwt') ? jwtSample : SAMPLES[0]
     if (command === 'plugin:window|is_focused') return true
     if (command === 'submit_firewall_approval') {
       backend.attempts++
@@ -82,7 +92,11 @@ function NativeApprovalPreview() {
       refresh(value => value + 1)
       await emit('firewall-approval-ended')
     }
-    if (command === 'dismiss_firewall_notification') backend.dismisses++
+    if (command === 'ignore_secret_permanently') {
+      if (query.has('saveError')) throw 'Could not save this secret’s policy'
+      backend.ignores++
+    }
+    if (command === 'dismiss_firewall_notification') { backend.dismisses++; backend.pending = false; refresh(value => value + 1) }
     if (command === 'plugin:window|close') {
       backend.closes++
       const failures = query.has('closeFailureTwice') ? 2 : query.has('closeFailure') ? 1 : 0
@@ -91,10 +105,10 @@ function NativeApprovalPreview() {
     }
     return null
   })
-  return <main className="dark bg-background text-foreground">
+  return <main className="bg-background text-foreground">
     <button onClick={async () => { backend.pending = false; await emit('firewall-approval-ended') }}>End backend approval</button>
     <button onClick={() => { setRequestId('preview-next'); setClosed(false) }}>Review next approval</button>
-    <output data-testid="backend-state">Submissions {backend.submits} · attempts {backend.attempts} · second pending {String(backend.nextPending)} · forwarded {String(backend.forwarded)}</output>
+    <output data-testid="backend-state">Submissions {backend.submits} · attempts {backend.attempts} · second pending {String(backend.nextPending)} · forwarded {String(backend.forwarded)} · ignored {backend.ignores} · dismissed {backend.dismisses}</output>
     <div data-testid="native-approval" style={{ width: 440, height: 620 }}>
       {closed ? <p>Window closed · submissions {backend.submits} · dismissals {backend.dismisses}</p> : <FirewallApproval key={requestId} />}
     </div>
@@ -105,7 +119,7 @@ function SharedApprovalPreview() {
   const jwt = new URLSearchParams(window.location.search).has('jwt')
   const jwtPart = (value: object) => btoa(String.fromCharCode(...new TextEncoder().encode(JSON.stringify(value)))).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_')
   const samples = jwt ? [`${jwtPart({ alg: 'HS256', typ: 'JWT' })}.${new URLSearchParams(window.location.search).get('jwt') === 'malformed' ? 'bm90LWpzb24' : jwtPart({ sub: 'user-123', name: 'Mátúš', scope: ['read', 'write'] })}.example-signature`] : new URLSearchParams(window.location.search).has('longSecret') ? ['s'.repeat(32_000)] : SAMPLES
-  const findings = jwt ? [{ ...FINDINGS[0], rule_id: 'jwt-token', rule_description: 'JSON Web Token', matched_text: 'eyJhbG********************ture' }] : FINDINGS
+  const findings = jwt ? [{ ...FINDINGS[0], rule_id: 'jwt-token', rule_description: 'JSON Web Token', matched_text: 'eyJhbG********************ture', context: { source: 'Message 2 · user message', line: 63, before: `${INTRO}\nAuthorization: Bearer `, after: `\n${OUTRO}` } }] : FINDINGS
   const count = new URLSearchParams(window.location.search).has('multiple') && !jwt ? 2 : 1
   const large = new URLSearchParams(window.location.search).get('large')
   const padding = large !== null ? 'Long conversation message with many words. '.repeat(large ? 500 : 125_000) : ''
@@ -159,12 +173,12 @@ function SharedApprovalPreview() {
     advance(choices, 0)
   }
 
-  return <main className="dark min-h-screen bg-background text-foreground p-8">
+  return <main className="min-h-screen bg-background text-foreground p-8">
     <div className="mx-auto max-w-5xl space-y-6">
       <div><p className="text-xs uppercase tracking-widest text-blue-400">Local preview · no requests sent</p><h1 className="text-2xl font-semibold mt-2">Secret redaction</h1><p className="text-sm text-muted-foreground mt-2">Actual approval UI with simulated requests and in-memory hashes.</p><a className="text-sm underline text-muted-foreground" href={count === 1 ? '?multiple' : '?'}>{count === 1 ? 'Try a request with two secrets' : 'Try a request with one secret'}</a></div>
       <div className="grid gap-8 lg:grid-cols-2 items-start">
         <div className="space-y-4">
-          {current !== null ? <div className="rounded-lg border shadow-xl w-[440px] max-w-full" style={{ height: new URLSearchParams(window.location.search).has('notify') ? 415 : 480 }} data-testid="approval-popup"><FirewallApprovalCard key={current} className="flex h-full flex-col p-4 overflow-hidden" clientName="Cursor" toolName="gpt-4o" serverName="openai" isSecretScanRequest isInactive={inactive} secretScanLlmSource={new URLSearchParams(window.location.search).get('llmSource') ?? 'OpenAI'} secretScanRequestJson={requestJson} isNotifyOnly={new URLSearchParams(window.location.search).has('notify')} onDismiss={() => setCurrent(null)} secretScanFindings={[{ ...findings[current], request_match: new URLSearchParams(window.location.search).has('unlocated') ? null : { start: offsets[current], end: offsets[current] + MARKER.length } }]} onAction={action} onReveal={async () => samples[current]} onAllowSecretPermanently={() => remember('allow')} onRedactPermanently={() => remember('redact')} submitting={saving} /></div> : <div className="rounded-lg border p-6 text-sm" role="status">{status}</div>}
+          {current !== null ? <div className="rounded-lg border shadow-xl w-[440px] max-w-full" style={{ height: 560 }} data-testid="approval-popup"><FirewallApprovalCard key={current} className="flex h-full flex-col p-4 overflow-hidden" clientName="Cursor" toolName="gpt-4o" serverName="openai" isSecretScanRequest isInactive={inactive} secretScanLlmSource={new URLSearchParams(window.location.search).get('llmSource') ?? 'OpenAI'} secretScanRequestJson={requestJson} isNotifyOnly={new URLSearchParams(window.location.search).has('notify')} onDismiss={() => setCurrent(null)} secretScanFindings={[{ ...findings[current], request_match: new URLSearchParams(window.location.search).has('unlocated') ? null : { start: offsets[current], end: offsets[current] + MARKER.length } }]} onAction={action} onReveal={async () => samples[current]} onDecodeJwt={async () => decodeJwt(samples[current])} onAllowSecretPermanently={() => remember('allow')} onRedactPermanently={() => remember('redact')} submitting={saving} /></div> : <div className="rounded-lg border p-6 text-sm" role="status">{status}</div>}
           <div className="flex gap-3 text-sm"><button className="rounded border px-3 py-2 hover:bg-muted" onClick={() => { setInactive(false); nextRequest() }}>Send the same request again</button><button className="rounded border px-3 py-2 hover:bg-muted" onClick={() => { setInactive(false); setPolicies({}); setDecisions({}); setCurrent(0); setPayload(null); setStatus('Request paused for your decision') }}>Reset preview</button><button className="rounded border px-3 py-2 hover:bg-muted" onClick={() => setInactive(true)}>Simulate ended approval</button></div>
         </div>
         <div className="space-y-5 text-sm">
@@ -213,7 +227,7 @@ function LargePopupPreview({ kind }: { kind: string }) {
       guardrailFlaggedText={payload} guardrailVerdicts={[]} guardrailActions={[]}
       isPushEventRequest={kind === 'push'} pushEvent={push}
       onAction={value => setAction(value)} />
-  return <main className="dark bg-background text-foreground">
+  return <main className="bg-background text-foreground">
     <div style={{ width: kind === 'monitor' || kind === 'json' ? 900 : 440, height: 600 }} data-testid="large-popup">{content}</div>
     <output data-testid="popup-action">{action}</output>
     <output data-testid="submitted-fields">{JSON.stringify(kind === 'editor' ? { ...submitted, message: typeof submitted.message === 'string' ? { length: submitted.message.length, beginning: submitted.message.slice(0, 40), section: submitted.message.slice(16_000, 16_020), end: submitted.message.slice(-40) } : null } : submitted)}</output>

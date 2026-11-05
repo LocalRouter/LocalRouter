@@ -16,7 +16,7 @@
  * See AGENTS.md "Adding/Modifying Tauri Commands" for full checklist.
  */
 
-import type { DiscoveredResourceIcon, LaunchResult } from '@app/types/tauri-commands'
+import type { DecodedSecretJwt, DiscoveredResourceIcon, LaunchResult } from '@app/types/tauri-commands'
 
 import { mockIPC, mockWindows, clearMocks } from '@tauri-apps/api/mocks'
 import { emit } from '@tauri-apps/api/event'
@@ -5615,6 +5615,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   },
   'show_approval_popup': (): ShowApprovalPopupResult => null,
   'dismiss_firewall_notification': () => null,
+  'decode_secret_scan_jwt': (): DecodedSecretJwt => ({ header: { alg: 'HS256', typ: 'JWT' }, payload: { sub: 'demo-user', scope: ['read'] } }),
   'reveal_secret_scan_match': () => 'AKIAIOSFODNN7EXAMPLE',
   'ignore_secret_permanently': () => null,
   'redact_secret_permanently': () => null,
