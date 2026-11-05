@@ -2632,16 +2632,8 @@ impl McpGateway {
         session: Arc<RwLock<GatewaySession>>,
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
-        match request.method.as_str() {
-            "tools/call" => {
-                let mut response = self.handle_tools_call(session, request).await?;
-                if let Some(context) = lr_types::secret_context::current() {
-                    if let Some(result) = response.result.as_mut() {
-                        context.protect(result)?;
-                    }
-                }
-                Ok(response)
-            }
+        let mut response = match request.method.as_str() {
+            "tools/call" => self.handle_tools_call(session, request).await,
             "resources/read" => self.handle_resources_read(session, request).await,
             "prompts/get" => self.handle_prompts_get(session, request).await,
 
@@ -2688,7 +2680,31 @@ impl McpGateway {
                     JsonRpcError::method_not_found(&request.method),
                 ))
             }
+        }?;
+        self.protect_model_response(&mut response).await?;
+        Ok(response)
+    }
+
+    /// Protect before monitoring, indexing, compression, or model replay.
+    pub(crate) async fn protect_model_response(
+        &self,
+        response: &mut JsonRpcResponse,
+    ) -> AppResult<()> {
+        if let Some(context) = lr_types::secret_context::current() {
+            if let Some(result) = response.result.as_mut() {
+                context.prepare(result).await?;
+            }
+            // Upstream errors can also carry tool-returned credentials.
+            if let Some(error) = response.error.as_mut() {
+                let mut value = serde_json::to_value(&*error)
+                    .map_err(|_| AppError::Internal("Could not protect tool error".into()))?;
+                context.prepare(&mut value).await?;
+                *error = serde_json::from_value(value).map_err(|_| {
+                    AppError::Internal("Could not encode protected tool error".into())
+                })?;
+            }
         }
+        Ok(())
     }
 
     /// Handle roots/list request (MCP client capability)

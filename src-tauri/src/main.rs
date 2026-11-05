@@ -711,6 +711,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                 client_manager.clone(),
                 config_manager.clone(),
                 request_dedupe_flag.clone(),
+                state,
             ))
         });
     if let Some(svc) = reverse_proxy_service.clone() {
@@ -2793,6 +2794,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::submit_firewall_approval,
             ui::commands::dismiss_firewall_notification,
             ui::commands::reveal_secret_scan_match,
+            ui::commands::decode_secret_scan_jwt,
             ui::commands::ignore_secret_permanently,
             ui::commands::redact_secret_permanently,
             ui::commands::list_client_dismissed_secrets,

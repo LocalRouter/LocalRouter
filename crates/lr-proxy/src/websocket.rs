@@ -302,6 +302,7 @@ struct Cycle {
     /// existing reconstruction pipeline parses them unchanged.
     capture: String,
     started: Instant,
+    restorer: Option<lr_secret_scanner::wire::ResponseRestorer>,
 }
 
 /// Firewall + monitor capture for one intercepted LLM websocket connection.
@@ -322,6 +323,9 @@ impl WsSession {
         mut base: ObservedExchange,
     ) -> Self {
         base.connection_trace = true;
+        if base.secret_session.is_none() {
+            base.secret_session = Some(uuid::Uuid::new_v4().to_string());
+        }
         Self {
             interceptor,
             format,
@@ -340,17 +344,49 @@ impl WsSession {
     /// Run one client data message through the firewall and open a monitor
     /// cycle for it when it is allowed through.
     async fn on_client_message(&self, payload: &[u8]) -> ClientAction {
+        if let Ok(Value::Object(message)) = serde_json::from_slice::<Value>(payload) {
+            if message.get("type").and_then(Value::as_str) == Some("response.cancel") {
+                // Cancellation belongs to the current response; it must neither
+                // replace that response's capability nor start a new cycle.
+                if message.iter().all(|(key, value)| {
+                    matches!(key.as_str(), "type" | "response_id" | "event_id") && value.is_string()
+                }) {
+                    return ClientAction::Forward;
+                }
+                return ClientAction::Reject(reject_event(
+                    400,
+                    br#"{"error":{"message":"Invalid cancellation message"}}"#,
+                ));
+            }
+        }
+        if self
+            .cycle
+            .lock()
+            .as_ref()
+            .is_some_and(|cycle| cycle.restorer.is_some())
+        {
+            return ClientAction::Reject(reject_event(409, br#"{"error":{"message":"Wait for the protected response to complete before starting another turn"}}"#));
+        }
         let mut ex = self.base.clone();
         ex.session_id = Some(uuid::Uuid::new_v4().to_string());
         ex.request_body = Some(payload.to_vec());
         match self.interceptor.on_request(&ex).await {
             RequestAction::Forward => {
-                self.begin_cycle(ex).await;
+                self.begin_cycle(ex, None).await;
                 ClientAction::Forward
             }
             RequestAction::Replace(body) => {
                 ex.request_body = Some(body.clone());
-                self.begin_cycle(ex).await;
+                self.begin_cycle(ex, None).await;
+                ClientAction::Replace(body)
+            }
+            RequestAction::Protect { body, vault } => {
+                ex.request_body = Some(body.clone());
+                self.begin_cycle(
+                    ex,
+                    Some(lr_secret_scanner::wire::ResponseRestorer::new(vault)),
+                )
+                .await;
                 ClientAction::Replace(body)
             }
             RequestAction::Reject { status, body, .. } => {
@@ -368,7 +404,11 @@ impl WsSession {
 
     /// Open a Pending monitor event for a new cycle (closing out any cycle the
     /// server never terminated).
-    async fn begin_cycle(&self, ex: ObservedExchange) {
+    async fn begin_cycle(
+        &self,
+        ex: ObservedExchange,
+        restorer: Option<lr_secret_scanner::wire::ResponseRestorer>,
+    ) {
         self.finish_cycle(None).await;
         let request_body = ex.request_body.clone().unwrap_or_default();
         let event_id = self.interceptor.begin(&ex);
@@ -378,12 +418,13 @@ impl WsSession {
             request_body,
             capture: String::new(),
             started: Instant::now(),
+            restorer,
         });
     }
 
     /// Capture one server message; completes the open cycle when the message
     /// is a terminal event for this wire format.
-    async fn on_server_message(&self, text: &str) {
+    async fn on_server_message(&self, text: &str) -> lr_types::AppResult<Vec<String>> {
         let json = serde_json::from_str::<Value>(text).ok();
         if let (Some(usage), Some(j)) = (&self.usage, &json) {
             // Rate-limit events can arrive outside a request cycle. They
@@ -397,10 +438,16 @@ impl WsSession {
         let terminal = json
             .as_ref()
             .is_some_and(|j| wire::is_terminal_event(self.format, j));
+        let output;
         {
             let mut guard = self.cycle.lock();
             let Some(cycle) = guard.as_mut() else {
-                return;
+                return Ok(vec![text.to_owned()]);
+            };
+            output = if let Some(restorer) = &mut cycle.restorer {
+                restorer.message(text)?
+            } else {
+                vec![text.to_owned()]
             };
             // Framed as one SSE event: "data: " + payload + "\n\n".
             let needed = text.len() + 8;
@@ -409,7 +456,7 @@ impl WsSession {
                 // it carries the whole response object (model, usage, output),
                 // so it wins the remaining room by dropping earlier deltas.
                 if !terminal || needed > CAPTURE_CAP {
-                    return;
+                    return Ok(output);
                 }
                 cycle.capture.clear();
                 cycle
@@ -424,6 +471,7 @@ impl WsSession {
             let status = json.map(|j| wire::terminal_status(self.format, &j));
             self.finish_cycle(status).await;
         }
+        Ok(output)
     }
 
     /// Complete the open cycle, if any. `status: None` marks it as ended
@@ -492,15 +540,18 @@ where
     let (mut upstream_rd, mut upstream_wr) = tokio::io::split(upstream);
     // Shared because rejections are answered from the client→upstream task.
     let client_wr = Arc::new(tokio::sync::Mutex::new(client_wr));
+    let stop_client = Arc::new(tokio::sync::Notify::new());
 
     let c2u = {
         let session = session.clone();
         let client_wr = client_wr.clone();
+        let stop_client = stop_client.clone();
         async move {
             let mut decoder = FrameDecoder::new();
             let mut buf = vec![0u8; 16 * 1024];
             'conn: loop {
-                let n = match client_rd.read(&mut buf).await {
+                let read = tokio::select! { read = client_rd.read(&mut buf) => read, _ = stop_client.notified() => break };
+                let n = match read {
                     Ok(0) | Err(_) => break,
                     Ok(n) => n,
                 };
@@ -561,27 +612,51 @@ where
         async move {
             let mut decoder = FrameDecoder::new();
             let mut buf = vec![0u8; 16 * 1024];
-            loop {
+            'server: loop {
                 let n = match upstream_rd.read(&mut buf).await {
                     Ok(0) | Err(_) => break,
                     Ok(n) => n,
                 };
-                // Tee: the client always receives the upstream bytes verbatim.
-                if client_wr.lock().await.write_all(&buf[..n]).await.is_err() {
-                    break;
-                }
                 let Some(session) = session.as_ref() else {
+                    if client_wr.lock().await.write_all(&buf[..n]).await.is_err() {
+                        break;
+                    }
                     continue;
                 };
                 for msg in decoder.push(&buf[..n]) {
-                    match msg {
-                        WsMessage::Text(t) => session.on_server_message(&t).await,
-                        WsMessage::Binary(b) => {
-                            session
-                                .on_server_message(&String::from_utf8_lossy(&b))
-                                .await
+                    let messages = match &msg {
+                        WsMessage::Text(text) => session.on_server_message(text).await,
+                        WsMessage::Binary(bytes) => match std::str::from_utf8(bytes) {
+                            Ok(text) => session.on_server_message(text).await,
+                            Err(_) => Err(lr_types::AppError::InvalidParams(
+                                "Invalid protected WebSocket JSON".into(),
+                            )),
+                        },
+                        _ => Ok(Vec::new()),
+                    };
+                    let messages = match messages {
+                        Ok(messages) => messages,
+                        Err(_) => {
+                            break 'server;
                         }
-                        _ => {}
+                    };
+                    let mut writer = client_wr.lock().await;
+                    if matches!(msg, WsMessage::Text(_) | WsMessage::Binary(_)) {
+                        for text in messages {
+                            let output = match msg {
+                                WsMessage::Binary(_) => WsMessage::Binary(text.into_bytes()),
+                                _ => WsMessage::Text(text),
+                            };
+                            if writer
+                                .write_all(&encode_frame(&output, false))
+                                .await
+                                .is_err()
+                            {
+                                break 'server;
+                            }
+                        }
+                    } else if writer.write_all(&encode_frame(&msg, false)).await.is_err() {
+                        break 'server;
                     }
                 }
                 if decoder.is_poisoned() {
@@ -591,6 +666,7 @@ where
                     break;
                 }
             }
+            stop_client.notify_one();
             let _ = client_wr.lock().await.shutdown().await;
         }
     };
@@ -731,7 +807,8 @@ mod tests {
                     "secondary":null}})
                 .to_string(),
             )
-            .await;
+            .await
+            .unwrap();
         let snap = usage.snapshot();
         let account = snap
             .accounts
@@ -765,7 +842,7 @@ mod tests {
                 .await;
             let pending = store.list(0, 1, None).events.remove(0);
             assert!(pending.session_id.is_some());
-            session.on_server_message(&completed_event()).await;
+            session.on_server_message(&completed_event()).await.unwrap();
             let completed = store.list(0, 1, None).events.remove(0);
             assert_eq!(completed.session_id, pending.session_id);
         }
@@ -792,10 +869,10 @@ mod tests {
         let delta =
             json!({"type":"response.output_text.delta","delta":"x".repeat(4096)}).to_string();
         for _ in 0..(CAPTURE_CAP / 4096 + 2) {
-            session.on_server_message(&delta).await;
+            session.on_server_message(&delta).await.unwrap();
         }
         // ...then the terminal event, which must still be captured.
-        session.on_server_message(&completed_event()).await;
+        session.on_server_message(&completed_event()).await.unwrap();
 
         let events = store.list(0, 10, None);
         let ev = store.get(&events.events[0].id).expect("event exists");
@@ -876,8 +953,9 @@ mod tests {
                 .on_server_message(
                     &json!({"type":"response.output_text.delta","delta":"he"}).to_string(),
                 )
-                .await;
-            session.on_server_message(&completed_event()).await;
+                .await
+                .unwrap();
+            session.on_server_message(&completed_event()).await.unwrap();
         }
         session.on_close().await;
 
@@ -926,7 +1004,8 @@ mod tests {
             .on_server_message(
                 &json!({"type":"response.output_text.delta","delta":"par"}).to_string(),
             )
-            .await;
+            .await
+            .unwrap();
         session.on_close().await;
 
         let events = store.list(0, 10, None);
@@ -1087,5 +1166,71 @@ mod tests {
         };
         assert_eq!(model, "gpt-5.5");
         assert_eq!(*input_tokens, Some(12));
+    }
+}
+
+#[cfg(test)]
+mod protected_cancellation_tests {
+    use super::*;
+    struct Protect;
+    #[async_trait::async_trait]
+    impl ProxyInterceptor for Protect {
+        fn on_connect(
+            &self,
+            _: &str,
+            _: &crate::interceptor::ClientCtx,
+        ) -> crate::interceptor::ConnectDecision {
+            crate::interceptor::ConnectDecision::Mitm
+        }
+        async fn on_request(&self, ex: &ObservedExchange) -> RequestAction {
+            RequestAction::Protect {
+                body: ex.request_body.clone().unwrap(),
+                vault: Arc::new(lr_secret_scanner::placeholders::Vault::new(
+                    Arc::new(lr_api_keys::MockKeychain::new()),
+                    "cancel",
+                    "scope",
+                    true,
+                )),
+            }
+        }
+    }
+    #[tokio::test]
+    async fn cancellation_retains_capability_until_terminal_event_and_rejects_hidden_input() {
+        let session = WsSession::new(
+            Arc::new(Protect),
+            WireFormat::OpenAiResponses,
+            ObservedExchange::default(),
+        );
+        assert!(matches!(
+            session
+                .on_client_message(br#"{"type":"response.create","input":"hello"}"#)
+                .await,
+            ClientAction::Replace(_)
+        ));
+        assert!(matches!(
+            session
+                .on_client_message(br#"{"type":"response.cancel"}"#)
+                .await,
+            ClientAction::Forward
+        ));
+        assert!(session.cycle.lock().as_ref().unwrap().restorer.is_some());
+        assert!(matches!(
+            session
+                .on_client_message(br#"{"type":"response.cancel","input":"must not forward"}"#)
+                .await,
+            ClientAction::Reject(_)
+        ));
+        session
+            .on_server_message(r#"{"type":"response.incomplete","response":{"id":"resp_cancel"}}"#)
+            .await
+            .unwrap();
+        assert!(session.cycle.lock().is_none());
+        assert!(matches!(
+            session
+                .on_client_message(br#"{"type":"response.create","input":"next"}"#)
+                .await,
+            ClientAction::Replace(_)
+        ));
+        session.on_close().await;
     }
 }

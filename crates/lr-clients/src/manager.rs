@@ -27,6 +27,7 @@ pub struct ClientManager {
     clients: Arc<RwLock<Vec<Client>>>,
     /// Keychain storage for client secrets
     keychain: Arc<dyn KeychainStorage>,
+    secret_storage: Arc<dyn KeychainStorage>,
 }
 
 impl ClientManager {
@@ -40,7 +41,11 @@ impl ClientManager {
             );
             CachedKeychain::system()
         });
-        Self::with_keychain(clients, Arc::new(keychain))
+        Self {
+            clients: Arc::new(RwLock::new(clients)),
+            keychain: Arc::new(keychain),
+            secret_storage: Arc::new(lr_api_keys::keychain_trait::SystemKeychain),
+        }
     }
 
     /// Create a new client manager with a specific keychain implementation
@@ -48,6 +53,7 @@ impl ClientManager {
     pub fn with_keychain(clients: Vec<Client>, keychain: Arc<dyn KeychainStorage>) -> Self {
         Self {
             clients: Arc::new(RwLock::new(clients)),
+            secret_storage: keychain.clone(),
             keychain,
         }
     }
@@ -127,6 +133,7 @@ impl ClientManager {
             .ok_or_else(|| AppError::Config(format!("Client not found: {}", client_id)))?;
 
         let id = client.id.clone();
+        lr_secret_scanner::placeholders::Vault::forget_client(self.secret_storage.clone(), &id)?;
 
         // Remove from in-memory storage
         clients.retain(|c| c.id != client_id);
@@ -542,6 +549,21 @@ impl ClientManager {
         for client in &mut clients {
             if let Some(old) = current.iter().find(|old| old.id == client.id) {
                 client.last_used = client.last_used.max(old.last_used);
+            }
+        }
+        for removed in current
+            .iter()
+            .filter(|old| !clients.iter().any(|client| client.id == old.id))
+        {
+            if lr_secret_scanner::placeholders::Vault::forget_client(
+                self.secret_storage.clone(),
+                &removed.id,
+            )
+            .is_err()
+            {
+                tracing::warn!(
+                    "Could not finish OS secret cleanup for a removed client; cleanup will retry"
+                );
             }
         }
         *current = clients;
@@ -1015,5 +1037,30 @@ mod security_tests {
         manager.sync_clients(vec![saved]);
         assert_eq!(manager.get_client(&id).unwrap().last_used, used);
         assert!(manager.verify_secret(&secret).unwrap().is_none());
+    }
+}
+
+#[cfg(test)]
+mod secret_cleanup_tests {
+    use super::*;
+    use lr_types::secret_context::SecretContext;
+    #[test]
+    fn shared_delete_and_config_reload_revoke_secret_scopes() {
+        for reload in [false, true] {
+            let storage = Arc::new(lr_api_keys::MockKeychain::new());
+            let manager = ClientManager::with_keychain(vec![], storage.clone());
+            let (id, _, _) = manager
+                .create_client("Synthetic".into(), "strategy".into())
+                .unwrap();
+            let vault = lr_secret_scanner::placeholders::Vault::new(storage, &id, "scope", false);
+            vault.register("synthetic original").unwrap();
+            if reload {
+                manager.sync_clients(vec![]);
+            } else {
+                manager.delete_client(&id).unwrap();
+            }
+            assert!(manager.get_client(&id).is_none());
+            assert!(vault.knows("synthetic original").is_err());
+        }
     }
 }

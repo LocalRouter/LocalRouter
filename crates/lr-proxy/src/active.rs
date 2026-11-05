@@ -21,7 +21,9 @@ use crate::wire;
 pub struct FirewallRequest {
     pub client_id: String,
     pub session_id: Option<String>,
+    pub secret_session: Option<String>,
     pub host: String,
+    pub method: String,
     pub path: String,
     /// Catalog/metrics provider name derived from the host ("anthropic", "openai").
     pub provider: String,
@@ -40,6 +42,9 @@ pub struct FirewallRequest {
 #[async_trait]
 pub trait Firewall: Send + Sync {
     async fn evaluate(&self, req: &FirewallRequest) -> RequestAction;
+    fn protects_secrets(&self, _client_id: &str) -> bool {
+        false
+    }
 }
 
 /// Interceptor that runs the firewall on requests and records on responses.
@@ -70,12 +75,38 @@ impl ProxyInterceptor for ActiveInterceptor {
     async fn on_request(&self, ex: &ObservedExchange) -> RequestAction {
         // A request an earlier LocalRouter hop already handled was already
         // judged (and possibly rewritten) there — pass it through verbatim.
-        if ex.is_duplicate_hop() {
+        if ex.is_duplicate_hop() && !self.firewall.protects_secrets(&ex.client_id) {
             return RequestAction::Forward;
         }
         // Only recognized LLM API calls are subject to the firewall; anything
         // else (auth preflights, etc.) passes through untouched.
         let Some(format) = wire::detect(&ex.path) else {
+            let path = ex.path.split('?').next().unwrap_or(&ex.path);
+            let unsupported = [
+                "/audio",
+                "/images",
+                "/realtime",
+                "/videos",
+                "/batches",
+                "/embeddings",
+                "/moderations",
+                "/files",
+                "/rerank",
+                "/ocr",
+                "/search",
+                "/conversation",
+            ]
+            .iter()
+            .any(|part| path.contains(part));
+            if self.firewall.protects_secrets(&ex.client_id)
+                && unsupported
+                && (ex.method == "POST" || path.contains("/realtime"))
+            {
+                return RequestAction::reject_json(
+                    403,
+                    "This endpoint has no restorable text mapping",
+                );
+            }
             return RequestAction::Forward;
         };
         let body: Value = ex
@@ -87,9 +118,14 @@ impl ProxyInterceptor for ActiveInterceptor {
         let req = FirewallRequest {
             client_id: ex.client_id.clone(),
             session_id: ex.session_id.clone(),
+            secret_session: ex.secret_session.clone(),
             host: ex.host.clone(),
+            method: ex.method.clone(),
             path: ex.path.clone(),
-            provider: wire::provider_for_host(&ex.host).to_string(),
+            provider: ex
+                .provider_override
+                .clone()
+                .unwrap_or_else(|| wire::provider_for_host(&ex.host).to_string()),
             model: meta.model,
             has_tools: meta.has_tools,
             message_count: meta.message_count,
@@ -119,6 +155,19 @@ impl ProxyInterceptor for ActiveInterceptor {
 
     fn end_passthrough(&self, event_id: Option<String>, ex: &PassthroughExchange) {
         self.recorder.end_passthrough(event_id, ex);
+    }
+}
+
+#[async_trait]
+impl crate::reverse::ReverseRecorder for ActiveInterceptor {
+    async fn on_request(&self, ex: &crate::reverse::ReverseExchange) -> RequestAction {
+        ProxyInterceptor::on_request(self, &crate::passive::observed_from_reverse(ex)).await
+    }
+    fn begin(&self, ex: &crate::reverse::ReverseExchange) -> Option<String> {
+        crate::reverse::ReverseRecorder::begin(&self.recorder, ex)
+    }
+    async fn record(&self, ex: crate::reverse::ReverseExchange) {
+        crate::reverse::ReverseRecorder::record(&self.recorder, ex).await;
     }
 }
 
@@ -279,5 +328,64 @@ mod tests {
             it.on_request(&ex).await,
             RequestAction::Reject { status: 403, .. }
         ));
+    }
+}
+
+#[cfg(test)]
+mod protected_endpoint_tests {
+    use super::*;
+    struct Protected;
+    #[async_trait]
+    impl Firewall for Protected {
+        async fn evaluate(&self, _: &FirewallRequest) -> RequestAction {
+            RequestAction::Forward
+        }
+        fn protects_secrets(&self, _: &str) -> bool {
+            true
+        }
+    }
+    #[tokio::test]
+    async fn unsupported_inference_cannot_bypass_redaction_while_auth_still_works() {
+        let interceptor = ActiveInterceptor::new(
+            PassiveInterceptor::new(Arc::new(lr_monitor::MonitorEventStore::new(4))),
+            Arc::new(Protected),
+        );
+        for path in [
+            "/v1/embeddings",
+            "/v1/audio/speech",
+            "/v1/images/generations",
+            "/v1/files",
+            "/v1/realtime",
+            "/v1/batches",
+            "/backend-api/conversation",
+        ] {
+            let exchange = ObservedExchange {
+                method: if path.contains("realtime") {
+                    "GET"
+                } else {
+                    "POST"
+                }
+                .into(),
+                path: path.into(),
+                ..Default::default()
+            };
+            assert!(matches!(
+                interceptor.on_request(&exchange).await,
+                RequestAction::Reject { .. }
+            ));
+        }
+        let auth = ObservedExchange {
+            method: "POST".into(),
+            path: "/oauth/token".into(),
+            ..Default::default()
+        };
+        assert!(matches!(
+            interceptor.on_request(&auth).await,
+            RequestAction::Forward
+        ));
+        assert_eq!(
+            wire::detect("/backend-api/codex/responses/compact"),
+            Some(crate::wire::WireFormat::OpenAiResponses)
+        );
     }
 }

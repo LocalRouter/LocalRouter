@@ -536,10 +536,14 @@ async fn secrets_are_approved_one_at_a_time_and_denial_stops_the_sequence() {
         );
         let events = state.monitor_store.list(0, 20, None).events;
         assert_eq!(events.len(), actions.len() + 1);
-        let session = events[0].session_id.as_ref().expect("scan request ID");
-        assert!(events
-            .iter()
-            .all(|e| e.session_id.as_ref() == Some(session)));
+        // Ask capture is withheld even before the first secret is registered.
+        // A new tool secret must not enter normal monitor payloads or caller
+        // supplied session metadata while its decision is pending.
+        assert!(events.iter().all(|event| event.payload_redacted));
+        assert!(events.iter().all(|event| event.session_id.is_none()));
+        let captured = serde_json::to_string(&events).unwrap();
+        assert!(!captured.contains(REDACTION_SECRET));
+        assert!(!captured.contains(SECOND));
         assert_eq!(
             events
                 .iter()

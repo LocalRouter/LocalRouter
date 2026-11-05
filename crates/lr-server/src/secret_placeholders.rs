@@ -11,10 +11,13 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use futures::StreamExt;
-use lr_secret_scanner::placeholders::{TextStream, Vault};
+use lr_secret_scanner::{
+    placeholders::Vault,
+    wire::{frame_end, Events},
+};
 use lr_types::secret_context::{self, SecretContext};
 use serde_json::Value;
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 const LIMIT: usize = 16 * 1024 * 1024; // Main API body limit.
 
 pub async fn middleware(State(state): State<AppState>, request: Request, next: Next) -> Response {
@@ -107,65 +110,171 @@ async fn run(
         })?;
     }
     let context: Arc<dyn SecretContext> = vault.clone();
-    secret_context::scope(Some(context.clone()),async {
-        // Native server tools execute at the provider and cannot be restored locally.
-        if value.get("tools").and_then(Value::as_array).is_some_and(|tools|tools.iter().any(|t|t.get("type").and_then(Value::as_str).is_some_and(|kind|!matches!(kind,"function"|"custom")))) {
-            return Err(ApiErrorResponse::bad_request("Restorable secrets require locally executed tools"));
-        }
-        let model=value.get("model").and_then(Value::as_str).unwrap_or("").to_owned();
-        let (projection,_)=crate::documents::scan_projection(&value).map_err(ApiErrorResponse::from)?;
-        match crate::routes::pipeline::scan_request_for_secrets_with_source(&state,&owner,&model,&projection,None,Some(&session)).await {
-            crate::routes::pipeline::SecretScanOutcome::Deny(message)=>return Err(ApiErrorResponse::forbidden(message)),
-            crate::routes::pipeline::SecretScanOutcome::Redact(redaction)=>{
-                crate::documents::redact_text_files(&mut value,&redaction).map_err(ApiErrorResponse::from)?;
+    secret_context::scope(Some(context.clone()), async {
+        let model = value
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+        let (projection, _) =
+            crate::documents::scan_projection(&value).map_err(ApiErrorResponse::from)?;
+        match crate::routes::pipeline::scan_request_for_secrets_with_source(
+            &state,
+            &owner,
+            &model,
+            &projection,
+            None,
+            Some(&session),
+        )
+        .await
+        {
+            crate::routes::pipeline::SecretScanOutcome::Deny(message) => {
+                return Err(ApiErrorResponse::forbidden(message))
+            }
+            crate::routes::pipeline::SecretScanOutcome::Redact(redaction) => {
+                crate::documents::redact_text_files(&mut value, &redaction)
+                    .map_err(ApiErrorResponse::from)?;
                 redaction.apply(&mut value);
-            },
-            _=>{}
+            }
+            _ => {}
         }
-        crate::documents::protect_text_files(&mut value,context.as_ref()).map_err(ApiErrorResponse::from)?;
-        context.protect(&mut value).map_err(ApiErrorResponse::from)?;
+        crate::documents::protect_text_files(&mut value, context.as_ref())
+            .map_err(ApiErrorResponse::from)?;
+        context
+            .protect(&mut value)
+            .map_err(ApiErrorResponse::from)?;
+        // Native server tools execute at the provider and cannot be restored locally.
+        if context.active()
+            && value
+                .get("tools")
+                .and_then(Value::as_array)
+                .is_some_and(|tools| {
+                    tools.iter().any(|t| {
+                        t.get("type")
+                            .and_then(Value::as_str)
+                            .is_some_and(|kind| !matches!(kind, "function" | "custom"))
+                    })
+                })
+        {
+            return Err(ApiErrorResponse::bad_request(
+                "Restorable secrets require locally executed tools",
+            ));
+        }
+        vault
+            .set_request_contract(&value)
+            .map_err(ApiErrorResponse::from)?;
         context.mark_scanned();
         // Subsequent automatic tool iterations can introduce new credentials.
         // Reuse the exact scanner/exceptions rather than exposing them to the provider.
-        let scan_state=state.clone(); let scan_owner=owner.clone();
-        let automatic=*action==lr_config::SecretScanAction::Redact;
-        let allowed_plaintext = scan_state.secret_scanner.read().as_ref().map(|scanner|{
-            let texts=lr_guardrails::text_extractor::extract_request_text(&value).into_iter().enumerate().map(|(i,t)|lr_secret_scanner::ExtractedText{label:t.label,text:t.text,message_index:i}).collect::<Vec<_>>();
-            scanner.scan(&texts).findings.into_iter().map(|f|f.raw_text).collect::<std::collections::HashSet<_>>()
-        }).unwrap_or_default();
-        let weak_vault=Arc::downgrade(&vault);
-        vault.set_detector(Arc::new(move |body| {
-            let scanner=scan_state.secret_scanner.read().clone();
-            let Some(scanner)=scanner else {return Err(lr_types::AppError::Internal("Secret scanner unavailable".into()))};
-            let mut texts=lr_guardrails::text_extractor::extract_request_text(body);
-            if texts.is_empty() && body.get("content").is_some(){
-                let mut copy=body.clone();
-                lr_secret_scanner::placeholders::visit(&mut copy,&mut |text,_|{texts.push(lr_guardrails::text_extractor::ExtractedText{label:"tool".into(),text:text.into(),message_index:None,role:"tool".into()});Ok(text.into())},false)?;
+        install_followup_detector(
+            state.clone(),
+            owner.clone(),
+            &vault,
+            *action == lr_config::SecretScanAction::Redact,
+            &value,
+        );
+        parts.headers.remove(axum::http::header::CONTENT_LENGTH);
+        let body = serde_json::to_vec(&value)
+            .map_err(|_| ApiErrorResponse::internal_error("Could not encode protected request"))?;
+        let response = next.run(Request::from_parts(parts, Body::from(body))).await;
+        restore_response(response, context, vault).await
+    })
+    .await
+}
+fn install_followup_detector(
+    state: AppState,
+    owner: String,
+    vault: &Arc<Vault>,
+    automatic: bool,
+    value: &Value,
+) {
+    let scan_state = state;
+    let scan_owner = owner;
+    let allowed_plaintext = scan_state
+        .secret_scanner
+        .read()
+        .as_ref()
+        .map(|scanner| {
+            let texts = lr_guardrails::text_extractor::extract_request_text(value)
+                .into_iter()
+                .enumerate()
+                .map(|(i, t)| lr_secret_scanner::ExtractedText {
+                    label: t.label,
+                    text: t.text,
+                    message_index: i,
+                })
+                .collect::<Vec<_>>();
+            scanner
+                .scan(&texts)
+                .findings
+                .into_iter()
+                .map(|f| f.raw_text)
+                .collect::<std::collections::HashSet<_>>()
+        })
+        .unwrap_or_default();
+    let allowed_plaintext = Arc::new(parking_lot::Mutex::new(allowed_plaintext));
+    vault.set_async_detector(Arc::new(move |mut body| {
+        let state = scan_state.clone();
+        let owner = scan_owner.clone();
+        let allowed = allowed_plaintext.clone();
+        Box::pin(async move {
+            let mut strings = Vec::new();
+            let (mut scan, _) = crate::documents::scan_projection(&body)?;
+            lr_secret_scanner::placeholders::visit(
+                &mut scan,
+                &mut |text, _| {
+                    strings.push(text.to_owned());
+                    Ok(text.to_owned())
+                },
+                false,
+            )?;
+            let mut projection =
+                serde_json::json!({"messages":[{"role":"tool","content":strings.join("\n")} ]});
+            if !automatic {
+                let mut ignored = lr_secret_scanner::redaction::Redaction::default();
+                for text in allowed.lock().iter() {
+                    ignored.add(text);
+                }
+                ignored.apply(&mut projection);
             }
-            let texts=texts.into_iter().enumerate().map(|(i,t)|lr_secret_scanner::ExtractedText{label:t.label,text:t.text,message_index:i}).collect::<Vec<_>>();
-            let result=scanner.scan(&texts);
-            let client=scan_state.client_manager.get_client(&scan_owner);
-            let scanning=client.as_ref().map(|c|&c.secret_scanning);
-            let salt=scanning.and_then(|c|c.dismiss_salt.as_deref());
-            let exceptions=scanning.map(|c|c.dismissed_secrets.as_slice()).unwrap_or_default();
-            let ignored=exceptions.iter().filter(|e|!e.redact).map(|e|lr_secret_scanner::dismissal::DismissedDigest{hash:&e.hash,iterations:e.iterations}).collect::<Vec<_>>();
-            let permanent=exceptions.iter().filter(|e|e.redact).map(|e|lr_secret_scanner::dismissal::DismissedDigest{hash:&e.hash,iterations:e.iterations}).collect::<Vec<_>>();
-            let mut irreversible=lr_secret_scanner::redaction::Redaction::default();let mut secrets=Vec::new();
-            for finding in result.findings {
-                if scan_state.secret_dismissal_cache.is_dismissed(&format!("redact:{scan_owner}"),salt,&permanent,&finding.raw_text){irreversible.add(&finding.raw_text);}
-                else if !scan_state.secret_dismissal_cache.is_dismissed(&scan_owner,salt,&ignored,&finding.raw_text) {
-                    if !automatic && allowed_plaintext.contains(&finding.raw_text){continue;}
-                    if !automatic && !weak_vault.upgrade().is_some_and(|v|v.knows(&finding.raw_text).unwrap_or(false)){return Err(lr_types::AppError::InvalidParams("A tool returned a new secret; resubmit it for an explicit secret decision".into()));}
-                    secrets.push(finding.raw_text);
+            match crate::routes::pipeline::scan_request_for_secrets_fresh(
+                &state,
+                &owner,
+                "",
+                &projection,
+                None,
+                None,
+            )
+            .await
+            {
+                crate::routes::pipeline::SecretScanOutcome::Deny(message) => {
+                    return Err(lr_types::AppError::InvalidParams(message))
+                }
+                crate::routes::pipeline::SecretScanOutcome::Redact(redaction) => {
+                    crate::documents::redact_text_files(&mut body, &redaction)?;
+                    redaction.apply(&mut body)
+                }
+                _ => {
+                    if !automatic {
+                        if let Some(scanner) = state.secret_scanner.read().clone() {
+                            let result = scanner.scan(&[lr_secret_scanner::ExtractedText {
+                                label: "tool".into(),
+                                text: strings.join("\n"),
+                                message_index: 0,
+                            }]);
+                            allowed.lock().extend(
+                                result.findings.into_iter().map(|finding| finding.raw_text),
+                            );
+                        }
+                    }
                 }
             }
-            irreversible.apply(body);Ok(secrets)
-        }));
-        parts.headers.remove(axum::http::header::CONTENT_LENGTH);
-        let body=serde_json::to_vec(&value).map_err(|_|ApiErrorResponse::internal_error("Could not encode protected request"))?;
-        let response=next.run(Request::from_parts(parts,Body::from(body))).await;
-        restore_response(response,context,vault).await
-    }).await
+            if let Some(context) = secret_context::current() {
+                crate::documents::protect_text_files(&mut body, context.as_ref())?;
+            }
+            Ok(body)
+        })
+    }));
 }
 fn request_session(
     value: &Value,
@@ -204,7 +313,16 @@ async fn restore_response(
         .get("content-type")
         .is_some_and(|v| v.as_bytes().starts_with(b"text/event-stream"));
     let (mut parts, body) = response.into_parts();
-    parts.headers.remove(axum::http::header::CONTENT_LENGTH);
+    for header in [
+        "content-length",
+        "etag",
+        "content-md5",
+        "digest",
+        "content-digest",
+        "trailer",
+    ] {
+        parts.headers.remove(header);
+    }
     parts.headers.insert(
         axum::http::header::CACHE_CONTROL,
         axum::http::HeaderValue::from_static("no-store"),
@@ -222,8 +340,12 @@ async fn restore_response(
         {
             vault.bind_response(id).map_err(ApiErrorResponse::from)?;
         }
+        vault.bind_opaque(&value).map_err(ApiErrorResponse::from)?;
         context
             .restore(&mut value, false)
+            .map_err(ApiErrorResponse::from)?;
+        context
+            .validate_response(&value)
             .map_err(ApiErrorResponse::from)?;
         let encoded = serde_json::to_vec(&value)
             .map_err(|_| ApiErrorResponse::internal_error("Could not encode restored response"))?;
@@ -248,6 +370,7 @@ async fn restore_response(
                 // Bind the response identity independently of delta content.
                 if let Some(data)=frame.lines().find_map(|line|line.strip_prefix("data: ")) {
                     if let Ok(value)=serde_json::from_str::<Value>(data) {
+                        vault.bind_opaque(&value).map_err(std::io::Error::other)?;
                         if let Some(id)=value.pointer("/response/id").or_else(||value.get("id")).and_then(Value::as_str).filter(|id|id.starts_with("resp_")) {vault.bind_response(id).map_err(std::io::Error::other)?;}
                     }
                 }
@@ -261,318 +384,6 @@ async fn restore_response(
     });
     Ok(Response::from_parts(parts, Body::from_stream(stream)))
 }
-fn frame_end(bytes: &[u8]) -> Option<(usize, usize)> {
-    let lf = bytes.windows(2).position(|w| w == b"\n\n").map(|i| (i, 2));
-    let crlf = bytes
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .map(|i| (i, 4));
-    match (lf, crlf) {
-        (Some(a), Some(b)) => Some(if a.0 < b.0 { a } else { b }),
-        (a, b) => a.or(b),
-    }
-}
-#[derive(Default)]
-struct Events {
-    done: bool,
-    text: BTreeMap<String, (TextStream, Value, String)>,
-    arguments: BTreeMap<String, (String, Value, String)>,
-}
-fn encode(value: &Value, event: &str) -> String {
-    format!(
-        "{}data: {}\n\n",
-        if event.is_empty() {
-            String::new()
-        } else {
-            format!("event: {event}\n")
-        },
-        value
-    )
-}
-impl Events {
-    fn frame(
-        &mut self,
-        frame: &str,
-        context: &Arc<dyn SecretContext>,
-    ) -> lr_types::AppResult<Vec<String>> {
-        let data = frame
-            .lines()
-            .filter_map(|line| line.strip_prefix("data:").map(str::trim_start))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let event = frame
-            .lines()
-            .find_map(|line| line.strip_prefix("event:").map(str::trim))
-            .unwrap_or("");
-        if data == "[DONE]" {
-            self.done = true;
-            let mut out = self.finish(context)?;
-            out.push("data: [DONE]\n\n".into());
-            return Ok(out);
-        }
-        if data.is_empty() {
-            return Ok(vec![format!("{frame}\n\n")]);
-        }
-        let mut value: Value = serde_json::from_str(&data)
-            .map_err(|_| lr_types::AppError::Internal("Invalid protected SSE event".into()))?;
-        let kind = value["type"].as_str().unwrap_or("");
-        let mut prefixes = Vec::new();
-        let all = matches!(
-            kind,
-            "response.completed" | "response.failed" | "message_stop"
-        );
-        if all {
-            self.done = true;
-        }
-        if kind == "content_block_stop" {
-            prefixes.push(format!("messages:{}:", value["index"]));
-        }
-        if kind.ends_with(".done") {
-            let identity = value
-                .get("item_id")
-                .or_else(|| value.pointer("/item/id"))
-                .unwrap_or(&Value::Null);
-            prefixes.push(format!("responses:{identity}:"));
-        }
-        if let Some(choices) = value["choices"].as_array() {
-            for choice in choices {
-                if !choice["finish_reason"].is_null() {
-                    prefixes.push(format!("chat:{}:", choice["index"]));
-                }
-            }
-        }
-        let mut out = self.flush(context, |channel| {
-            all || prefixes.iter().any(|prefix| channel.starts_with(prefix))
-        })?;
-        let mut paths = Vec::new();
-        collect_deltas(&value, "", &mut paths);
-        for (path, arguments) in paths {
-            let arguments = arguments
-                || value["type"].as_str().is_some_and(|kind| {
-                    (kind.contains("arguments") || kind.contains("custom_tool_call_input"))
-                        && kind.ends_with(".delta")
-                });
-            let Some(text) = value
-                .pointer(&path)
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-            else {
-                continue;
-            };
-            // Include wire identities, not just array position, for interleaved calls.
-            let channel = channel_key(&value, &path);
-            let mut template = value.clone();
-            clear_delta_strings(&mut template);
-            if arguments {
-                let entry = self
-                    .arguments
-                    .entry(channel)
-                    .or_insert_with(|| (String::new(), template, path.clone()));
-                entry.0.push_str(&text);
-                if entry.0.len() > LIMIT {
-                    return Err(lr_types::AppError::Internal(
-                        "Protected tool arguments exceed limit".into(),
-                    ));
-                }
-                *value.pointer_mut(&path).unwrap() = Value::String(String::new());
-            } else {
-                let entry = self
-                    .text
-                    .entry(channel)
-                    .or_insert_with(|| (TextStream::default(), template, path.clone()));
-                let restored = entry
-                    .0
-                    .push(&text, false, |s| context.restore_text(s, false))?;
-                *value.pointer_mut(&path).unwrap() = Value::String(restored);
-            }
-        }
-        // Deltas are handled incrementally above; full snapshots need a fresh pass.
-        if !is_delta(&value) {
-            context.restore(&mut value, false)?;
-        }
-        out.push(encode(&value, event));
-        Ok(out)
-    }
-    fn finish(&mut self, context: &Arc<dyn SecretContext>) -> lr_types::AppResult<Vec<String>> {
-        self.flush(context, |_| true)
-    }
-    fn flush(
-        &mut self,
-        context: &Arc<dyn SecretContext>,
-        selected: impl Fn(&str) -> bool,
-    ) -> lr_types::AppResult<Vec<String>> {
-        let mut out = Vec::new();
-        let keys: Vec<_> = self
-            .text
-            .keys()
-            .filter(|key| selected(key))
-            .cloned()
-            .collect();
-        for key in keys {
-            let (mut stream, mut template, path) =
-                self.text.remove(&key).expect("selected channel");
-            let text = stream.push("", true, |s| context.restore_text(s, false))?;
-            if !text.is_empty() {
-                *template.pointer_mut(&path).unwrap() = Value::String(text);
-                out.push(encode(&template, template["type"].as_str().unwrap_or("")));
-            }
-        }
-        let keys: Vec<_> = self
-            .arguments
-            .keys()
-            .filter(|key| selected(key))
-            .cloned()
-            .collect();
-        for key in keys {
-            let (arguments, mut template, path) = self
-                .arguments
-                .remove(&key)
-                .expect("selected argument channel");
-            let restored = if key.contains("custom_tool_call_input") {
-                context.restore_text(&arguments, true)?
-            } else {
-                let mut args: Value = serde_json::from_str(&arguments).map_err(|_| {
-                    lr_types::AppError::InvalidParams("Incomplete protected tool arguments".into())
-                })?;
-                context.restore(&mut args, true)?;
-                serde_json::to_string(&args).map_err(|_| {
-                    lr_types::AppError::Internal("Could not restore tool arguments".into())
-                })?
-            };
-            *template.pointer_mut(&path).unwrap() = Value::String(restored);
-            out.push(encode(&template, template["type"].as_str().unwrap_or("")));
-        }
-        Ok(out)
-    }
-}
-fn channel_key(value: &Value, path: &str) -> String {
-    if path.starts_with("/choices/") {
-        let parts: Vec<_> = path.split('/').collect();
-        let choice = value
-            .pointer(&format!("/choices/{}/index", parts[2]))
-            .unwrap_or(&Value::Null);
-        let call = parts
-            .iter()
-            .position(|s| *s == "tool_calls")
-            .and_then(|i| parts.get(i + 1))
-            .and_then(|i| {
-                value.pointer(&format!("/choices/{}/delta/tool_calls/{i}/index", parts[2]))
-            })
-            .unwrap_or(&Value::Null);
-        let field = parts.last().unwrap_or(&"");
-        return format!("chat:{choice}:{call}:{field}");
-    }
-    if value["type"]
-        .as_str()
-        .is_some_and(|s| s.starts_with("content_block"))
-    {
-        return format!("messages:{}:{path}", value["index"]);
-    }
-    format!(
-        "responses:{}:{}:{}:{path}",
-        value["item_id"], value["content_index"], value["type"]
-    )
-}
-fn clear_delta_strings(value: &mut Value) {
-    if let Some(choices) = value.get_mut("choices").and_then(Value::as_array_mut) {
-        for choice in choices {
-            if let Some(delta) = choice.get_mut("delta") {
-                fn clear(v: &mut Value) {
-                    match v {
-                        Value::String(s) => s.clear(),
-                        Value::Array(a) => {
-                            for v in a {
-                                clear(v)
-                            }
-                        }
-                        Value::Object(m) => {
-                            m.remove("role");
-                            m.remove("id");
-                            m.remove("name");
-                            for v in m.values_mut() {
-                                clear(v)
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                clear(delta);
-            }
-        }
-    } else if let Some(delta) = value.get_mut("delta") {
-        fn clear(v: &mut Value) {
-            match v {
-                Value::String(s) => s.clear(),
-                Value::Object(m) => {
-                    for (k, v) in m {
-                        if k != "type" {
-                            clear(v)
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        clear(delta);
-    }
-}
-fn is_delta(value: &Value) -> bool {
-    value
-        .get("choices")
-        .and_then(Value::as_array)
-        .is_some_and(|a| a.iter().any(|v| v.get("delta").is_some()))
-        || value["type"]
-            .as_str()
-            .is_some_and(|s| s.ends_with(".delta") || s == "content_block_delta")
-}
-fn collect_deltas(value: &Value, path: &str, out: &mut Vec<(String, bool)>) {
-    if value.pointer("/delta/type").and_then(Value::as_str) == Some("thinking_delta") {
-        return;
-    }
-    if !is_delta(value) {
-        return;
-    }
-    fn walk(value: &Value, path: &str, out: &mut Vec<(String, bool)>) {
-        match value {
-            Value::Object(map) => {
-                for (key, v) in map {
-                    let p = format!("{path}/{key}");
-                    if v.is_string()
-                        && matches!(
-                            key.as_str(),
-                            "content"
-                                | "reasoning_content"
-                                | "text"
-                                | "thinking"
-                                | "refusal"
-                                | "delta"
-                                | "arguments"
-                                | "partial_json"
-                        )
-                    {
-                        out.push((
-                            p,
-                            matches!(key.as_str(), "arguments" | "partial_json")
-                                || value["type"]
-                                    .as_str()
-                                    .is_some_and(|s| s.contains("arguments")),
-                        ))
-                    } else {
-                        walk(v, &p, out)
-                    }
-                }
-            }
-            Value::Array(a) => {
-                for (i, v) in a.iter().enumerate() {
-                    walk(v, &format!("{path}/{i}"), out)
-                }
-            }
-            _ => {}
-        }
-    }
-    walk(value, path, out)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -829,12 +640,15 @@ mod boundary_tests {
     use lr_config::{AppConfig, ConfigManager};
     use tower::ServiceExt;
     const SYNTHETIC: &str = "6nmCEa00cbNmH0B4zKPSYOPP5z1oYFR26doJldQr";
-    fn state(root: &std::path::Path) -> AppState {
+    pub(super) fn state(root: &std::path::Path) -> AppState {
         let mut config = AppConfig::default();
         config.secret_scanning.action = lr_config::SecretScanAction::Redact;
         let client =
             lr_config::Client::new_with_strategy("synthetic client".into(), "strategy".into());
         config.clients = vec![client.clone()];
+        let mut strategy = lr_config::Strategy::new("Synthetic".into());
+        strategy.id = "strategy".into();
+        config.strategies = vec![strategy];
         let config = Arc::new(ConfigManager::new(config, root.join("config.yaml")));
         let providers = Arc::new(lr_providers::registry::ProviderRegistry::new());
         let limits = Arc::new(lr_router::RateLimiterManager::new(None));
@@ -966,5 +780,332 @@ mod session_tests {
         );
         headers.insert("x-session-id", axum::http::HeaderValue::from_static(""));
         assert!(request_session(&value, &headers).is_err());
+    }
+}
+
+#[cfg(test)]
+mod executable_boundary_tests {
+    use super::*;
+    use lr_mcp::{
+        gateway::{access_control::FirewallCheckResult, virtual_server::*, FirewallDecisionResult},
+        protocol::{JsonRpcRequest, McpTool},
+    };
+    use serde_json::json;
+    use std::{any::Any, path::PathBuf, sync::Mutex};
+    #[derive(Clone)]
+    struct ToolState;
+    impl VirtualSessionState for ToolState {
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+        fn as_any_mut(&mut self) -> &mut dyn Any {
+            self
+        }
+        fn clone_box(&self) -> Box<dyn VirtualSessionState> {
+            Box::new(self.clone())
+        }
+    }
+    struct FileTool {
+        file: PathBuf,
+        edit: Value,
+        seen: Arc<Mutex<Vec<Value>>>,
+        deny_effective: bool,
+    }
+    #[async_trait::async_trait]
+    impl VirtualMcpServer for FileTool {
+        fn id(&self) -> &str {
+            "_secret_fixture"
+        }
+        fn display_name(&self) -> &str {
+            "Synthetic file tool"
+        }
+        fn owns_tool(&self, name: &str) -> bool {
+            name == "fixture_write"
+        }
+        fn is_enabled(&self, _: &lr_config::Client) -> bool {
+            true
+        }
+        fn list_tools(&self, _: &dyn VirtualSessionState) -> Vec<McpTool> {
+            vec![McpTool {
+                name: "fixture_write".into(),
+                description: None,
+                input_schema: json!({"type":"object","required":["content"],"properties":{"content":{"type":"string"}},"additionalProperties":false}),
+            }]
+        }
+        fn check_permissions(
+            &self,
+            _: &dyn VirtualSessionState,
+            _: &str,
+            args: Option<&Value>,
+            _: bool,
+            _: bool,
+        ) -> VirtualFirewallResult {
+            let args = args.cloned().unwrap_or(Value::Null);
+            self.seen.lock().unwrap().push(args.clone());
+            if self.deny_effective && args["content"] == "synthetic file secret" {
+                VirtualFirewallResult::Standard(FirewallCheckResult::Deny)
+            } else {
+                VirtualFirewallResult::Handled(FirewallDecisionResult::ProceedWithEdits {
+                    edited_arguments: Some(self.edit.clone()),
+                })
+            }
+        }
+        async fn handle_tool_call(
+            &self,
+            _: Box<dyn VirtualSessionState>,
+            _: &str,
+            args: Value,
+            _: &str,
+            _: &str,
+        ) -> VirtualToolCallResult {
+            std::fs::write(&self.file, args["content"].as_str().unwrap()).unwrap();
+            VirtualToolCallResult::Success(
+                json!({"content":[{"type":"text","text":args["content"].as_str().unwrap().repeat(512)}]}),
+            )
+        }
+        fn build_instructions(&self, _: &dyn VirtualSessionState) -> Option<VirtualInstructions> {
+            None
+        }
+        fn create_session_state(&self, _: &lr_config::Client) -> Box<dyn VirtualSessionState> {
+            Box::new(ToolState)
+        }
+        fn update_session_state(&self, _: &mut dyn VirtualSessionState, _: &lr_config::Client) {}
+        fn all_tool_names(&self) -> Vec<String> {
+            vec!["fixture_write".into()]
+        }
+    }
+    async fn case(deny: bool, invalid: bool) {
+        let root =
+            std::env::temp_dir().join(format!("lr-secret-executable-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let state = super::boundary_tests::state(&root);
+        let owner = state.config_manager.get().clients[0].id.clone();
+        let vault = Arc::new(Vault::new(
+            Arc::new(lr_api_keys::MockKeychain::new()),
+            &owner,
+            "file",
+            true,
+        ));
+        vault.register("synthetic file secret").unwrap();
+        let mut edit = json!({"content":"synthetic file secret"});
+        vault.protect(&mut edit).unwrap();
+        if invalid {
+            edit["content"] = json!(123);
+        }
+        let file = root.join(".env");
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        state
+            .mcp_gateway
+            .register_virtual_server(Arc::new(FileTool {
+                file: file.clone(),
+                edit,
+                seen: seen.clone(),
+                deny_effective: deny,
+            }));
+        let context: Arc<dyn SecretContext> = vault;
+        state.mcp_gateway.register_virtual_server(Arc::new(
+            lr_mcp::gateway::context_mode::ContextModeVirtualServer::new(
+                lr_config::ContextManagementConfig {
+                    response_threshold_bytes: 512,
+                    catalog_compression: false,
+                    ..Default::default()
+                },
+            ),
+        ));
+        let result=secret_context::scope(Some(context),async {
+            let init=JsonRpcRequest::new(Some(json!(1)),"initialize".into(),Some(json!({"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"synthetic","version":"1"}})));
+            state.mcp_gateway.handle_request(&owner,vec![],vec![],init).await.unwrap();
+            let call=JsonRpcRequest::new(Some(json!(2)),"tools/call".into(),Some(json!({"name":"fixture_write","arguments":{"content":"initial harmless content"}})));
+            state.mcp_gateway.handle_request(&owner,vec![],vec![],call).await
+        }).await;
+        if deny || invalid {
+            assert!(result.is_err() || result.unwrap().error.is_some());
+            assert!(!file.exists());
+        } else {
+            assert_eq!(
+                std::fs::read_to_string(&file).unwrap(),
+                "synthetic file secret"
+            );
+            assert!(seen
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|a| a["content"] == "synthetic file secret"));
+            let response = serde_json::to_string(&result.unwrap()).unwrap();
+            assert!(!response.contains("synthetic file secret"));
+            assert!(response.contains("localrouter-redacted"));
+            let session = state.mcp_gateway.get_session(&owner).unwrap();
+            let store = {
+                let session = session.read().await;
+                session
+                    .virtual_server_state
+                    .get("_context_mode")
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<lr_mcp::gateway::context_mode::ContextModeSessionState>()
+                    .unwrap()
+                    .store
+                    .clone()
+            };
+            let sources = store.list_sources(None, None).unwrap();
+            assert!(
+                !sources.is_empty(),
+                "The response indexing path must actually run"
+            );
+            for source in sources {
+                let mut offset = None;
+                loop {
+                    let read = store
+                        .read(&source.label, offset.as_deref(), Some(usize::MAX))
+                        .unwrap();
+                    assert!(!read.content.contains("synthetic file secret"));
+                    let Some(next) = read.next_offset else {
+                        break;
+                    };
+                    offset = Some(next);
+                }
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[tokio::test]
+    async fn edited_placeholder_is_restored_validated_and_written_by_actual_mcp_dispatch() {
+        case(false, false).await;
+    }
+    #[tokio::test]
+    async fn effective_permission_denial_prevents_file_write() {
+        case(true, false).await;
+    }
+    #[tokio::test]
+    async fn invalid_edited_schema_prevents_file_write() {
+        case(false, true).await;
+    }
+}
+
+#[cfg(test)]
+mod followup_approval_tests {
+    use super::*;
+    use lr_mcp::gateway::firewall::FirewallApprovalAction;
+    use serde_json::json;
+    async fn case(action: FirewallApprovalAction) {
+        let root =
+            std::env::temp_dir().join(format!("lr-followup-approval-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let state = super::boundary_tests::state(&root);
+        state
+            .config_manager
+            .update(|config| config.secret_scanning.action = lr_config::SecretScanAction::Ask)
+            .unwrap();
+        let owner = state.config_manager.get().clients[0].id.clone();
+        let vault = Arc::new(Vault::new(
+            Arc::new(lr_api_keys::MockKeychain::new()),
+            &owner,
+            "followup",
+            true,
+        ));
+        install_followup_detector(
+            state.clone(),
+            owner,
+            &vault,
+            false,
+            &json!({"messages":[{"role":"user","content":"harmless"}]}),
+        );
+        vault.mark_scanned();
+        let context: Arc<dyn SecretContext> = vault;
+        let allowed = matches!(action, FirewallApprovalAction::AllowOnce);
+        let denied = matches!(action, FirewallApprovalAction::Deny);
+        let task = tokio::spawn(async move {
+            secret_context::scope(Some(context.clone()),async move{
+            let mut body=json!({"content":[{"type":"text","text":"aws_secret_access_key=6nmCEa00cbNmH0B4zKPSYOPP5z1oYFR26doJldQr"}]});
+            context.prepare(&mut body).await?;
+            if allowed {tokio::time::timeout(std::time::Duration::from_secs(2),context.prepare(&mut body)).await.map_err(|_|lr_types::AppError::Internal("Duplicate secret approval".into()))??;}
+            Ok::<_,lr_types::AppError>(body)
+        }).await
+        });
+        let pending = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Some(pending) = state
+                    .mcp_gateway
+                    .firewall_manager
+                    .list_pending()
+                    .into_iter()
+                    .next()
+                {
+                    break pending;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(pending.is_secret_scan_request);
+        assert!(!serde_json::to_string(&pending)
+            .unwrap()
+            .contains("6nmCEa00cbNmH0B4zKPSYOPP5z1oYFR26doJldQr"));
+        state
+            .mcp_gateway
+            .firewall_manager
+            .submit_response(&pending.request_id, action, None)
+            .unwrap();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap();
+        if denied {
+            assert!(result.is_err());
+        } else if allowed {
+            assert!(result
+                .unwrap()
+                .to_string()
+                .contains("6nmCEa00cbNmH0B4zKPSYOPP5z1oYFR26doJldQr"));
+        } else {
+            assert!(result.unwrap().to_string().contains("localrouter-redacted"));
+        }
+        assert!(state.mcp_gateway.firewall_manager.list_pending().is_empty());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[tokio::test]
+    async fn new_tool_secret_opens_real_approval_and_can_use_placeholder() {
+        case(FirewallApprovalAction::ReplaceSecrets).await;
+    }
+    #[tokio::test]
+    async fn new_tool_secret_denial_stops_dispatch() {
+        case(FirewallApprovalAction::Deny).await;
+    }
+    #[tokio::test]
+    async fn allow_once_does_not_ask_twice_within_one_request() {
+        case(FirewallApprovalAction::AllowOnce).await;
+    }
+}
+
+#[cfg(test)]
+mod followup_attachment_tests {
+    use super::*;
+    use base64::Engine;
+    use serde_json::json;
+    #[tokio::test]
+    async fn new_text_attachment_is_decoded_scanned_and_masked_before_dispatch() {
+        let root = std::env::temp_dir().join(format!("lr-followup-file-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let state = super::boundary_tests::state(&root);
+        let owner = state.config_manager.get().clients[0].id.clone();
+        let vault = Arc::new(Vault::new(
+            Arc::new(lr_api_keys::MockKeychain::new()),
+            &owner,
+            "file",
+            true,
+        ));
+        install_followup_detector(state, owner, &vault, true, &json!({}));
+        let context: Arc<dyn SecretContext> = vault;
+        let text = "aws_secret_access_key=6nmCEa00cbNmH0B4zKPSYOPP5z1oYFR26doJldQr";
+        let mut body = json!({"messages":[{"role":"tool","content":[{"type":"file","file":{"filename":"tool.env","file_data":format!("data:text/plain;base64,{}",base64::engine::general_purpose::STANDARD.encode(text))}}]}]});
+        secret_context::scope(Some(context.clone()), context.prepare(&mut body))
+            .await
+            .unwrap();
+        let (projected, _) = crate::documents::scan_projection(&body).unwrap();
+        let projected = projected.to_string();
+        assert!(projected.contains("localrouter-redacted"));
+        assert!(!projected.contains("6nmCEa00cbNmH0B4zKPSYOPP5z1oYFR26doJldQr"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

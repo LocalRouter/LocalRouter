@@ -28,17 +28,17 @@ interface SecretScanningViewProps {
 }
 
 const ACTION_LABELS: Record<SecretScanAction, { label: string; description: string }> = {
-  off: { label: "Off", description: "No scanning" },
-  notify: { label: "Notify", description: "Allow the request but show a notification" },
   redact: { label: "Redact", description: "Replace secrets with restorable placeholders, held in OS credential storage" },
   ask: { label: "Ask", description: "Block the request and show a popup for user decision" },
+  notify: { label: "Notify", description: "Allow the request but show a notification" },
+  off: { label: "Off", description: "No scanning" },
 }
 
 const BUTTON_STYLES: Record<SecretScanAction, string> = {
-  redact: "bg-yellow-600 text-white",
+  redact: "bg-red-600 text-white",
   ask: "bg-amber-500 text-white",
   notify: "bg-blue-500 text-white",
-  off: "bg-red-500 text-white",
+  off: "bg-emerald-500 text-white",
 }
 
 const DEFAULT_TEST_INPUT = [

@@ -2603,7 +2603,7 @@ impl Router {
         if let Some(context) = lr_types::secret_context::current() {
             let mut value = serde_json::to_value(&request)
                 .map_err(|_| AppError::Internal("Could not protect model request".into()))?;
-            context.protect(&mut value)?;
+            context.prepare(&mut value).await?;
             request = serde_json::from_value(value)
                 .map_err(|_| AppError::Internal("Could not protect model request".into()))?;
         }
@@ -2728,7 +2728,7 @@ impl Router {
         if let Some(context) = lr_types::secret_context::current() {
             let mut value = serde_json::to_value(&request)
                 .map_err(|_| AppError::Internal("Could not protect model request".into()))?;
-            context.protect(&mut value)?;
+            context.prepare(&mut value).await?;
             request = serde_json::from_value(value)
                 .map_err(|_| AppError::Internal("Could not protect model request".into()))?;
         }

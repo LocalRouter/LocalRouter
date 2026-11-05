@@ -5231,6 +5231,7 @@ dependencies = [
  "dashmap",
  "lr-api-keys",
  "lr-config",
+ "lr-secret-scanner",
  "lr-types",
  "lr-utils",
  "parking_lot",
@@ -5484,6 +5485,7 @@ dependencies = [
  "lr-oauth",
  "lr-providers",
  "lr-router",
+ "lr-secret-scanner",
  "lr-skills",
  "lr-types",
  "lr-utils",
@@ -5664,6 +5666,7 @@ dependencies = [
 name = "lr-proxy"
 version = "0.0.174"
 dependencies = [
+ "async-stream",
  "async-trait",
  "base64 0.22.1",
  "bytes",
@@ -5674,9 +5677,11 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "lr-api-keys",
  "lr-config",
  "lr-monitor",
  "lr-monitoring",
+ "lr-secret-scanner",
  "lr-types",
  "lr-usage",
  "lr-utils",
@@ -5768,6 +5773,7 @@ version = "0.0.174"
 dependencies = [
  "aho-corasick",
  "base64 0.22.1",
+ "jsonschema",
  "lr-api-keys",
  "lr-types",
  "regex",

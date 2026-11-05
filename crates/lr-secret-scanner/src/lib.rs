@@ -23,3 +23,7 @@ pub use regex_engine::RuleMetadata;
 pub use types::{ExtractedText, ScanResult, SecretFinding, SecretScanAction};
 
 pub mod placeholders;
+
+pub mod wire;
+
+pub mod schema;

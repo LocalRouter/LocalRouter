@@ -9,8 +9,7 @@ import { PagedItems } from "./PagedItems"
  */
 import { useRef, useState } from "react"
 import { ChevronDown, Pencil, Eye, EyeOff } from "lucide-react"
-import { JwtContent } from "./JwtContent"
-import { SecretScanEvent } from "./SecretScanEvent"
+import { SecretFindingDetails } from "./SecretFindingDetails"
 import { Button } from "@/components/ui/Button"
 import {
   DropdownMenu,
@@ -23,7 +22,7 @@ import { Coins, Bot } from "lucide-react"
 import { FEATURES } from "@/constants/features"
 import { isValidHttpUrl } from "@/utils/url"
 import { categoryActionLabel } from "@/components/permissions/CategoryActionButton"
-import type { SafetyVerdict, CategoryActionRequired, SecretFindingSummary, PushEventApprovalDetails } from "@/types/tauri-commands"
+import type { DecodedSecretJwt, SafetyVerdict, CategoryActionRequired, SecretFindingSummary, PushEventApprovalDetails } from "@/types/tauri-commands"
 
 export type ApprovalAction = "deny" | "deny_session" | "deny_always" | "block_categories" | "allow_once" | "redact_once" | "replace_secrets" | "allow_session" | "allow_1_minute" | "allow_1_hour" | "allow_permanent" | "allow_categories" | "deny_1_hour" | "disable_client"
 
@@ -95,7 +94,7 @@ export function getHeaderContent(requestType: RequestType, notifyOnly?: boolean)
     return {
       icon: <FEATURES.secretScanning.icon className={`h-5 w-5 ${FEATURES.secretScanning.color}`} />,
       title: "Secrets Detected",
-      description: "Potential secrets were sent in an outbound request (Notify mode — not blocked)",
+      description: "Sent to the provider · Notify mode",
     }
   }
   switch (requestType) {
@@ -193,7 +192,7 @@ export interface FirewallApprovalCardProps {
   isFreeTierFallback?: boolean
   isAutoRouterRequest?: boolean
   isSecretScanRequest?: boolean
-  /** Non-blocking notification: request already allowed, show Dismiss only */
+  /** Non-blocking notification: request already sent; offer dismissal policies. */
   isNotifyOnly?: boolean
   /** Backend session ended unexpectedly; retain context and offer only Dismiss. */
   isInactive?: boolean
@@ -224,6 +223,7 @@ export interface FirewallApprovalCardProps {
    * Returns null when it is no longer available. Omitted (demo) = no reveal.
    */
   onReveal?: (findingIndex: number) => Promise<string | null>
+  onDecodeJwt?: (findingIndex: number) => Promise<DecodedSecretJwt | null>
   /** Remember a salted hash so this specific value is always allowed for this client. */
   onAllowSecretPermanently?: (findingIndex: number) => Promise<void>
   /** Save a salted hash for automatic redaction of this exact value. */
@@ -277,6 +277,7 @@ export function FirewallApprovalCard({
   onAction,
   onDismiss,
   onReveal,
+  onDecodeJwt,
   onAllowSecretPermanently,
   onRedactPermanently,
   onEdit,
@@ -322,6 +323,7 @@ export function FirewallApprovalCard({
       onAction={onAction}
       onDismiss={onDismiss}
       onReveal={onReveal}
+      onDecodeJwt={onDecodeJwt}
       onAllowSecretPermanently={onAllowSecretPermanently}
       onRedactPermanently={onRedactPermanently}
       onEdit={onEdit}
@@ -560,6 +562,7 @@ function StandardApprovalCard({
   onAction,
   onDismiss,
   onReveal,
+  onDecodeJwt,
   onAllowSecretPermanently,
   onRedactPermanently,
   onEdit,
@@ -579,13 +582,14 @@ function StandardApprovalCard({
 
   const rememberSecret = async (index: number, policy: "redact" | "allow") => {
     const save = policy === "redact" ? onRedactPermanently : onAllowSecretPermanently
-    if (isInactive || !onAction || !save || savingPolicyRef.current || submitting) return
+    if (isInactive || !(isNotifyOnly ? onDismiss : onAction) || !save || savingPolicyRef.current || submitting) return
     savingPolicyRef.current = true
     setSavingPolicy(true)
     setPolicyErrors({})
     try {
       await save(index)
-      onAction(policy === "redact" ? "redact_once" : "allow_once")
+      if (isNotifyOnly) await onDismiss?.()
+      else onAction?.(policy === "redact" ? "redact_once" : "allow_once")
     } catch (err) {
       setPolicyErrors({ [index]: typeof err === "string" ? err : "Could not save this secret's policy" })
     } finally {
@@ -647,8 +651,8 @@ function StandardApprovalCard({
         </p>
       )}
       {/* Details Grid */}
-      <div className="flex-1 overflow-auto">
-        <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-xs">
+      <div className={requestType === "secret_scan" ? "flex min-h-0 flex-1 flex-col" : "flex-1 overflow-auto"}>
+        <div className="shrink-0 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 text-xs">
           <span className="text-muted-foreground">Client:</span>
           <span className="font-medium truncate">{clientName}</span>
 
@@ -826,42 +830,22 @@ function StandardApprovalCard({
           </div>
         )}
 
-        {/* Secret scan findings */}
         {requestType === "secret_scan" && secretScanFindings && secretScanFindings.length > 0 && (
-          <div className="mt-3 space-y-2 max-h-80 overflow-auto">
-            <span className="text-xs font-semibold text-muted-foreground">{isNotifyOnly ? "Detected secrets" : "Detected secret"}</span>
-            <PagedItems items={secretScanFindings} label="Findings">{(finding, i) => (
-              <div key={i} className="bg-muted/50 rounded px-3 py-3 text-xs space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="font-semibold">{finding.rule_description}</span>
-                  {onReveal && (
-                    <button
-                      className="shrink-0 p-1 text-muted-foreground hover:text-foreground"
-                      onClick={() => { void toggleReveal(i) }}
-                      disabled={isInactive && revealed[i] === undefined}
-                      title={revealed[i] !== undefined ? "Hide secret" : "Reveal secret"}
-                      aria-label={revealed[i] !== undefined ? "Hide secret" : "Reveal secret"}
-                    >
+          <div className="mt-3 flex min-h-0 flex-1 flex-col gap-2">
+            <PagedItems items={secretScanFindings} pageSize={1} label="Secrets">{(finding, i) => (
+              <div key={i} className="flex min-h-0 flex-1 flex-col gap-3">
+                <section className="shrink-0 rounded-md border bg-muted/50 p-3 text-xs space-y-2" aria-label="Detected secret">
+                  <div className="flex items-center justify-between gap-2">
+                    <h3 className="font-semibold">{finding.rule_description}</h3>
+                    {onReveal && <button className="shrink-0 p-1 text-muted-foreground hover:text-foreground" onClick={() => { void toggleReveal(i) }} disabled={isInactive && revealed[i] === undefined} title={revealed[i] !== undefined ? "Hide secret" : "Reveal secret"} aria-label={revealed[i] !== undefined ? "Hide secret" : "Reveal secret"}>
                       {revealed[i] !== undefined ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                    </button>
-                  )}
-                </div>
-                {secretScanRequestJson ? (
-                  <SecretScanEvent finding={finding} requestJson={secretScanRequestJson} revealed={revealed[i]} />
-                ) : (
-                  <SectionedText className="leading-relaxed font-semibold bg-background/70 rounded px-3 py-3 select-text" text={revealed[i] ?? finding.matched_text} label="Secret preview" />
-                )}
-                {finding.rule_id === "jwt-token" && revealed[i] !== undefined && <JwtContent token={revealed[i]} />}
-                {revealError[i] && (
-                  <div className="text-[10px] text-destructive">{revealError[i]}</div>
-                )}
-                <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
-                  <span>Entropy: <span className="font-mono font-medium text-foreground">{finding.entropy.toFixed(2)}</span></span>
-                  <span className="ml-auto font-mono">{finding.rule_id}</span>
-                </div>
-                {policyErrors[i] && (
-                  <div className="text-[10px] text-destructive" role="alert">{policyErrors[i]}</div>
-                )}
+                    </button>}
+                  </div>
+                  <pre aria-label="Secret preview" className="max-h-16 overflow-auto whitespace-pre-wrap break-all font-mono leading-relaxed select-text">{(revealed[i] ?? finding.matched_text).slice(0, 2048)}{(revealed[i] ?? finding.matched_text).length > 2048 && '…'}</pre>
+                  {revealError[i] && <p className="text-destructive">{revealError[i]}</p>}
+                  {policyErrors[i] && <p className="text-destructive" role="alert">{policyErrors[i]}</p>}
+                </section>
+                <SecretFindingDetails finding={finding} requestJson={secretScanRequestJson} revealed={revealed[i]} loadJwt={onDecodeJwt ? () => onDecodeJwt(i) : undefined} />
               </div>
             )}</PagedItems>
           </div>
@@ -876,7 +860,7 @@ function StandardApprovalCard({
           <div className="flex flex-1">
             <Button
               className={`flex-1 h-10 font-bold ${isInactive ? "" : "rounded-r-none"}`}
-              onClick={onDismiss}
+              onClick={() => { if (isInactive || (!savingPolicyRef.current && !submitting)) onDismiss?.() }}
               disabled={!onDismiss || (!isInactive && (submitting || savingPolicy))}
             >
               Dismiss
@@ -885,16 +869,23 @@ function StandardApprovalCard({
               <DropdownMenuTrigger asChild>
                 <Button
                   className="h-10 px-2 rounded-l-none border-l border-background/30"
-                  disabled={!onAction || submitting || savingPolicy}
+                  aria-label="More dismiss options"
+                  disabled={(!onAction && !onAllowSecretPermanently) || submitting || savingPolicy}
                 >
                   <ChevronDown className="h-4 w-4" />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={() => act("allow_1_hour")}>
+                {isSecretScanRequest && onAllowSecretPermanently && (secretScanFindings ?? []).map((finding, i) => (
+                  <DropdownMenuItem key={`dismiss-secret-${i}`} className="flex-col items-start" disabled={!onDismiss} onClick={() => rememberSecret(i, "allow")}>
+                    <span>Always dismiss this secret</span>
+                    {(secretScanFindings?.length ?? 0) > 1 && <span className="text-xs text-muted-foreground">{finding.matched_text}</span>}
+                  </DropdownMenuItem>
+                ))}
+                <DropdownMenuItem disabled={!onAction} onClick={() => act("allow_1_hour")}>
                   Dismiss for 1 Hour
                 </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => act("deny_always")}>
+                <DropdownMenuItem disabled={!onAction} onClick={() => act("deny_always")}>
                   Ignore Secrets for Client
                 </DropdownMenuItem>
               </DropdownMenuContent>

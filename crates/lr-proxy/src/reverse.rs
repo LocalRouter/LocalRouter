@@ -54,6 +54,8 @@ const HOP_BY_HOP: &[&str] = &[
 pub struct ReverseExchange {
     /// Client that owns this listener.
     pub client_id: String,
+    pub session_id: Option<String>,
+    pub secret_session: Option<String>,
     /// Strategy attached to that client (for metrics attribution).
     pub strategy_id: String,
     /// Provider instance name being wrapped, when known.
@@ -85,6 +87,9 @@ pub struct ReverseExchange {
 /// metrics); kept as a trait so this crate stays free of app dependencies.
 #[async_trait::async_trait]
 pub trait ReverseRecorder: Send + Sync {
+    async fn on_request(&self, _exchange: &ReverseExchange) -> crate::interceptor::RequestAction {
+        crate::interceptor::RequestAction::Forward
+    }
     /// Open a pending monitor event for an in-flight request. Returning `None`
     /// (the default) simply means no pending event is shown.
     fn begin(&self, _exchange: &ReverseExchange) -> Option<String> {
@@ -255,6 +260,17 @@ impl ReverseProxy {
 
         let mut base = ReverseExchange {
             client_id: self.client.client_id.clone(),
+            session_id: Some(uuid::Uuid::new_v4().to_string()),
+            secret_session: [
+                "x-session-id",
+                "x-session-affinity",
+                "session_id",
+                "session-id",
+            ]
+            .iter()
+            .find_map(|name| parts.headers.get(*name))
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned),
             strategy_id: self.client.strategy_id.clone(),
             provider_instance: self.client.provider_instance.clone(),
             upstream: self.upstream.clone(),
@@ -264,6 +280,40 @@ impl ReverseProxy {
             started_at: Some(started_at),
             trace,
             ..Default::default()
+        };
+        let mut vault = None;
+        let req_bytes = match self.recorder.on_request(&base).await {
+            crate::interceptor::RequestAction::Forward => req_bytes,
+            crate::interceptor::RequestAction::Replace(body) => {
+                base.request_body = Some(body.clone());
+                Bytes::from(body)
+            }
+            crate::interceptor::RequestAction::Protect {
+                body,
+                vault: capability,
+            } => {
+                base.request_body = Some(body.clone());
+                vault = Some(capability);
+                Bytes::from(body)
+            }
+            crate::interceptor::RequestAction::Reject {
+                status,
+                content_type,
+                body,
+            } => {
+                base.status = Some(status);
+                base.response_body = Some(body.clone());
+                self.recorder.record(base).await;
+                return Response::builder()
+                    .status(status)
+                    .header(hyper::header::CONTENT_TYPE, content_type)
+                    .body(
+                        Full::new(Bytes::from(body))
+                            .map_err(|e: Infallible| match e {})
+                            .boxed_unsync(),
+                    )
+                    .expect("firewall response");
+            }
         };
         base.event_id = self.recorder.begin(&base);
 
@@ -317,6 +367,8 @@ impl ReverseProxy {
         );
 
         let recorder = self.recorder.clone();
+        let sse = base.response_is_sse;
+        let ndjson = base.response_is_ndjson;
         let mut recorded = base;
         let on_end: Box<dyn FnOnce(Vec<u8>) + Send> = Box::new(move |bytes| {
             recorded.response_body = (!bytes.is_empty()).then_some(bytes);
@@ -327,7 +379,17 @@ impl ReverseProxy {
         });
 
         let tapped = crate::tap::TappedBody::new(rbody, MAX_CAPTURE, on_end);
-        Response::from_parts(rparts, BodyExt::boxed_unsync(tapped))
+        if let Some(vault) = vault {
+            match crate::protected_response::restore(rparts, tapped, vault, sse, ndjson).await {
+                Ok(response) => response,
+                Err(_) => error_response(
+                    StatusCode::BAD_GATEWAY,
+                    "Protected response restoration failed",
+                ),
+            }
+        } else {
+            Response::from_parts(rparts, BodyExt::boxed_unsync(tapped))
+        }
     }
 
     fn authority(&self) -> String {

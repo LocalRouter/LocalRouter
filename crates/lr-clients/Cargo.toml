@@ -9,6 +9,7 @@ description = "Unified client management for LocalRouter"
 
 [dependencies]
 lr-types = { workspace = true }
+lr-secret-scanner = { workspace = true }
 lr-config = { workspace = true }
 lr-api-keys = { workspace = true }
 lr-utils = { workspace = true }

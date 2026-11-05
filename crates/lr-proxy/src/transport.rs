@@ -335,7 +335,10 @@ async fn proxy_request(
 
     // Buffer the (small) request body so we can both forward and inspect it.
     let (mut parts, body) = req.into_parts();
-    let req_bytes = match body.collect().await {
+    let req_bytes = match http_body_util::Limited::new(body, lr_secret_scanner::wire::LIMIT)
+        .collect()
+        .await
+    {
         Ok(c) => c.to_bytes(),
         Err(_) => return bad_gateway("failed reading request body"),
     };
@@ -384,6 +387,16 @@ async fn proxy_request(
     let mut base = ObservedExchange {
         client_id: (*client_id).clone(),
         session_id: Some(uuid::Uuid::new_v4().to_string()),
+        secret_session: [
+            "x-session-id",
+            "x-session-affinity",
+            "session_id",
+            "session-id",
+        ]
+        .iter()
+        .find_map(|name| parts.headers.get(*name))
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned),
         strategy_id: (*strategy_id).clone(),
         host: (*host).clone(),
         port,
@@ -399,14 +412,21 @@ async fn proxy_request(
     // websocket message inside the connection instead (see websocket::WsSession),
     // so don't ask it to judge the empty upgrade body (Ask-mode would pop a
     // model-less approval dialog).
-    let action = if is_ws_upgrade {
+    let action = if is_ws_upgrade && wire::detect(&base.path).is_some() {
         RequestAction::Forward
     } else {
         ctx.interceptor.on_request(&base).await
     };
+    let mut secret_vault = None;
     let forward_bytes: Bytes = match action {
         RequestAction::Forward => req_bytes,
         RequestAction::Replace(new_body) => Bytes::from(new_body),
+        RequestAction::Protect { body, vault } => {
+            // Monitoring sees only the masked outbound request.
+            base.request_body = Some(body.clone());
+            secret_vault = Some(vault);
+            Bytes::from(body)
+        }
         RequestAction::Reject {
             status,
             content_type,
@@ -564,7 +584,14 @@ async fn proxy_request(
     });
 
     let tapped = crate::tap::TappedBody::new(rbody, MAX_CAPTURE, on_end);
-    Response::from_parts(rparts, BodyExt::boxed_unsync(tapped))
+    if let Some(vault) = secret_vault {
+        match crate::protected_response::restore(rparts, tapped, vault, is_sse, false).await {
+            Ok(response) => response,
+            Err(_) => bad_gateway("protected response restoration failed"),
+        }
+    } else {
+        Response::from_parts(rparts, BodyExt::boxed_unsync(tapped))
+    }
 }
 
 async fn connect_upstream(

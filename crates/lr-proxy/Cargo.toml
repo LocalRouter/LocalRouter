@@ -13,6 +13,9 @@ lr-utils = { workspace = true }
 lr-monitor = { workspace = true }
 lr-monitoring = { workspace = true }
 lr-types = { workspace = true }
+lr-secret-scanner = { workspace = true }
+futures = { workspace = true }
+async-stream = { workspace = true }
 lr-usage = { workspace = true }
 
 serde = { workspace = true }
@@ -43,6 +46,7 @@ http = "1"
 bytes = "1"
 
 [dev-dependencies]
+lr-api-keys = { workspace = true }
 tokio = { workspace = true }
 http-body-util = "0.1"
 hyper-util = { version = "0.1", features = ["tokio"] }

@@ -63,9 +63,12 @@ pub fn detect(path: &str) -> Option<WireFormat> {
     let path = path.split('?').next().unwrap_or(path);
     if anthropic::is_messages_path(path) {
         Some(WireFormat::AnthropicMessages)
-    } else if path.ends_with("/chat/completions") {
+    } else if path.ends_with("/completions") {
         Some(WireFormat::OpenAiChat)
-    } else if path.ends_with("/responses") {
+    } else if path.ends_with("/responses")
+        || path.ends_with("/responses/compact")
+        || response_id(path).is_some()
+    {
         Some(WireFormat::OpenAiResponses)
     } else if path.ends_with("/decisions") {
         Some(WireFormat::Decisions)
@@ -74,6 +77,18 @@ pub fn detect(path: &str) -> Option<WireFormat> {
     } else {
         ollama::detect(path).map(WireFormat::Ollama)
     }
+}
+
+/// A retrieval is authorized through the original response's owner/scope alias.
+pub fn response_id(path: &str) -> Option<&str> {
+    let path = path.split('?').next()?;
+    let (_, suffix) = path.rsplit_once("/responses/")?;
+    let id = suffix.strip_suffix("/input_items").unwrap_or(suffix);
+    (id.starts_with("resp_")
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-')))
+    .then_some(id)
 }
 
 /// Catalog/metrics provider name for an intercepted host.

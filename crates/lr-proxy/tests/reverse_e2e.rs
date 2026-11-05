@@ -48,6 +48,30 @@ async fn upstream_handler(
         .to_string();
     let body = req.into_body().collect().await.unwrap().to_bytes();
 
+    if path == "/api/generate" {
+        let request: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let text = request["prompt"].as_str().unwrap();
+        assert!(!text.contains("synthetic reverse secret"));
+        assert!(text.contains("localrouter-redacted"));
+        let split = text.len() / 2;
+        let events = [
+            serde_json::json!({"response":&text[..split],"done":false}),
+            serde_json::json!({"response":&text[split..],"done":true}),
+        ];
+        let wire = events
+            .iter()
+            .map(|event| format!("{event}\n"))
+            .collect::<String>();
+        let chunks = wire
+            .as_bytes()
+            .chunks(3)
+            .map(|bytes| Ok::<_, std::io::Error>(Frame::data(Bytes::copy_from_slice(bytes))))
+            .collect::<Vec<_>>();
+        return Ok(Response::builder()
+            .header("content-type", "application/x-ndjson")
+            .body(StreamBody::new(futures::stream::iter(chunks)).boxed_unsync())
+            .unwrap());
+    }
     if path == "/api/chat" {
         // Two NDJSON chunks, delivered with a gap so a buffering proxy would
         // be visible as a single combined read on the client side.
@@ -361,4 +385,100 @@ async fn disabled_dedupe_leaves_headers_alone() {
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     let seen = recorder.seen.lock().await;
     assert!(seen.iter().all(|e| e.trace.is_none()));
+}
+
+struct SecretFirewall;
+#[async_trait::async_trait]
+impl lr_proxy::active::Firewall for SecretFirewall {
+    async fn evaluate(
+        &self,
+        request: &lr_proxy::active::FirewallRequest,
+    ) -> lr_proxy::interceptor::RequestAction {
+        use lr_types::secret_context::SecretContext;
+        let vault = Arc::new(lr_secret_scanner::placeholders::Vault::new(
+            Arc::new(lr_api_keys::MockKeychain::new()),
+            &request.client_id,
+            "reverse",
+            true,
+        ));
+        vault.register("synthetic reverse secret").unwrap();
+        let mut body = request.body.clone();
+        vault.protect(&mut body).unwrap();
+        lr_proxy::interceptor::RequestAction::Protect {
+            body: serde_json::to_vec(&body).unwrap(),
+            vault,
+        }
+    }
+}
+#[tokio::test]
+async fn native_reverse_ndjson_restores_fragmented_refs_and_captures_masked_wire() {
+    let upstream_port = start_upstream().await;
+    let store = Arc::new(lr_monitor::MonitorEventStore::new(16));
+    let recorder = Arc::new(lr_proxy::active::ActiveInterceptor::new(
+        lr_proxy::passive::PassiveInterceptor::new(store.clone()),
+        Arc::new(SecretFirewall),
+    ));
+    let proxy = Arc::new(
+        ReverseProxy::new(
+            &format!("http://127.0.0.1:{upstream_port}"),
+            ReverseClient {
+                client_id: "reverse-client".into(),
+                strategy_id: "strategy".into(),
+                provider_instance: Some("ollama".into()),
+            },
+            recorder,
+        )
+        .unwrap(),
+    );
+    let listener = ReverseProxy::bind("127.0.0.1", 0).await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let task = tokio::spawn(async move {
+        proxy.serve(listener, std::future::pending::<()>()).await;
+    });
+    let tcp = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(tcp))
+        .await
+        .unwrap();
+    let connection = tokio::spawn(async move {
+        conn.await.ok();
+    });
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/generate")
+        .header("host", format!("127.0.0.1:{port}"))
+        .body(Full::new(Bytes::from(
+            serde_json::json!({"model":"local","prompt":"synthetic reverse secret","stream":true})
+                .to_string(),
+        )))
+        .unwrap();
+    let response = sender.send_request(request).await.unwrap();
+    assert_eq!(response.status(), 200);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let text: String = std::str::from_utf8(&bytes)
+        .unwrap()
+        .lines()
+        .map(|line| {
+            serde_json::from_str::<serde_json::Value>(line).unwrap()["response"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(text, "synthetic reverse secret");
+    for _ in 0..100 {
+        if store
+            .list(0, 10, None)
+            .events
+            .iter()
+            .any(|event| event.status != lr_monitor::EventStatus::Pending)
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    let events = serde_json::to_string(&store.list(0, 10, None)).unwrap();
+    assert!(!events.contains("synthetic reverse secret"));
+    assert!(events.contains("localrouter-redacted"));
+    task.abort();
+    connection.abort();
 }

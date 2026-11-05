@@ -19,6 +19,7 @@ use zeroize::Zeroizing;
 pub const TAG: &str = "localrouter-redacted";
 pub const MAX_TAG_BYTES: usize = 16 * 1024 * 1024; // The existing gateway request/response body budget.
 const SERVICE: &str = "LocalRouter-Redacted-Secrets-v1";
+const OWNERS: &str = "owner-index-v1";
 static STORE_LOCK: Mutex<()> = Mutex::new(());
 static ACTIVE: Mutex<BTreeMap<String, usize>> = Mutex::new(BTreeMap::new());
 fn now() -> u64 {
@@ -52,7 +53,7 @@ fn error() -> AppError {
 fn parse_index(raw: &str) -> AppResult<Value> {
     let mut value: Value = serde_json::from_str(raw).map_err(|_| storage_error())?;
     let map = value.as_object_mut().ok_or_else(storage_error)?;
-    for name in ["scopes", "responses", "revoked_scopes"] {
+    for name in ["scopes", "responses", "revoked_scopes", "opaque"] {
         let item = map.entry(name).or_insert_with(|| serde_json::json!({}));
         if !item.is_object() {
             return Err(storage_error());
@@ -173,6 +174,38 @@ fn candidate(text: &str, start: usize) -> Option<(usize, String)> {
     }
 }
 
+// JSON/code content may contain a tag whose attribute quotes are JSON escaped.
+// Decode only a complete tag and JSON-escape only the inserted original.
+fn reference(text: &str, start: usize) -> Option<(usize, String, bool)> {
+    if let Some((end, id)) = candidate(text, start) {
+        return Some((end, id, false));
+    }
+    let name_end = start.checked_add(1 + TAG.len())?;
+    if !text.get(start + 1..name_end)?.eq_ignore_ascii_case(TAG) {
+        return None;
+    }
+    let mut quote = None;
+    for (offset, ch) in text.get(name_end..)?.char_indices() {
+        if name_end + offset - start > MAX_TAG_BYTES {
+            break;
+        }
+        match (quote, ch) {
+            (Some(q), c) if q == c => quote = None,
+            (None, '\'' | '"') => quote = Some(ch),
+            (None, '>') => {
+                let end = name_end + offset + 1;
+                let decoded: String =
+                    serde_json::from_str(&format!("\"{}\"", &text[start..end])).ok()?;
+                let (decoded_end, id) = candidate(&decoded, 0)?;
+                return (decoded_end == decoded.len()).then_some((end, id, true));
+            }
+            (_, '<') => return None,
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Transform recognized references in one pass; do not recursively inspect inserted originals.
 pub fn restore_text(
     text: &str,
@@ -185,16 +218,23 @@ pub fn restore_text(
         if start < offset {
             continue;
         }
-        if let Some((end, id)) = candidate(text, start) {
+        if let Some((end, id, escaped)) = reference(text, start) {
             out.push_str(&text[offset..start]);
             match resolve(&id)? {
                 Some(value) => {
+                    let encoded;
+                    let value = if escaped {
+                        encoded = serde_json::to_string(&value).map_err(|_| error())?;
+                        &encoded[1..encoded.len() - 1]
+                    } else {
+                        value.as_str()
+                    };
                     if out.len().saturating_add(value.len()) > MAX_TAG_BYTES {
                         return Err(AppError::InvalidParams(
                             "Restored content exceeds the gateway response budget".into(),
                         ));
                     }
-                    out.push_str(&value);
+                    out.push_str(value);
                 }
                 None if strict => return Err(error()),
                 None => {
@@ -223,6 +263,9 @@ pub struct TextStream {
     quote: Option<char>,
 }
 impl TextStream {
+    pub(crate) fn buffered_bytes(&self) -> usize {
+        self.pending.len()
+    }
     pub fn push(
         &mut self,
         text: &str,
@@ -293,9 +336,46 @@ impl TextStream {
     }
 }
 
+// Opaque provider reasoning/compaction must stay byte-for-byte intact. A
+// fingerprint authorizes only the references carried by that exact returned
+// state, within the same authenticated owner and explicit conversation.
+fn opaque_values(value: &Value) -> Vec<&str> {
+    fn collect<'a>(value: &'a Value, out: &mut Vec<&'a str>) {
+        match value {
+            Value::Object(map) => {
+                if map.get("type").and_then(Value::as_str).is_some_and(|kind| {
+                    matches!(kind, "reasoning" | "compaction" | "compaction_summary")
+                }) {
+                    if let Some(text) = map
+                        .get("encrypted_content")
+                        .and_then(Value::as_str)
+                        .filter(|s| !s.is_empty())
+                    {
+                        out.push(text);
+                    }
+                }
+                for value in map.values() {
+                    collect(value, out);
+                }
+            }
+            Value::Array(values) => {
+                for value in values {
+                    collect(value, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut values = Vec::new();
+    collect(value, &mut values);
+    values
+}
 /// A request capability over a durable owner/session record. Each request has
 /// its own allowed-reference set; OS records are never searched globally.
 type Detector = dyn Fn(&mut Value) -> AppResult<Vec<String>> + Send + Sync;
+type AsyncDetector = dyn Fn(Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = AppResult<Value>> + Send>>
+    + Send
+    + Sync;
 pub struct Vault {
     storage: Arc<dyn KeychainStorage>,
     account: String,
@@ -304,6 +384,8 @@ pub struct Vault {
     ephemeral: bool,
     scanned: AtomicBool,
     detector: Mutex<Option<Arc<Detector>>>,
+    async_detector: Mutex<Option<Arc<AsyncDetector>>>,
+    contract: Mutex<crate::schema::ResponseContract>,
 }
 impl Vault {
     pub fn new(
@@ -322,10 +404,42 @@ impl Vault {
             ephemeral,
             scanned: AtomicBool::new(false),
             detector: Mutex::new(None),
+            async_detector: Mutex::new(None),
+            contract: Mutex::new(crate::schema::ResponseContract::default()),
         }
     }
     pub fn set_detector(&self, detector: Arc<Detector>) {
         *self.detector.lock().expect("detector lock") = Some(detector);
+    }
+    pub fn set_request_contract(&self, request: &Value) -> AppResult<()> {
+        // The provider sees masked schemas. Validate the eventual local values
+        // against the original schema, including secret-valued enums and keys.
+        let mut request = request.clone();
+        if let Some(tools) = request.get_mut("tools").and_then(Value::as_array_mut) {
+            for tool in tools {
+                let function = if tool.get("function").is_some() {
+                    &mut tool["function"]
+                } else {
+                    tool
+                };
+                for key in ["parameters", "input_schema"] {
+                    if let Some(schema) = function.get_mut(key) {
+                        visit(schema, &mut |text, _| self.restore_text(text, false), false)?;
+                    }
+                }
+            }
+        }
+        for path in ["/response_format/json_schema/schema", "/text/format/schema"] {
+            if let Some(schema) = request.pointer_mut(path) {
+                visit(schema, &mut |text, _| self.restore_text(text, false), false)?;
+            }
+        }
+        *self.contract.lock().map_err(|_| error())? =
+            crate::schema::ResponseContract::from_request(&request, self.active())?;
+        Ok(())
+    }
+    pub fn set_async_detector(&self, detector: Arc<AsyncDetector>) {
+        *self.async_detector.lock().expect("async secret detector") = Some(detector);
     }
     pub fn knows(&self, secret: &str) -> AppResult<bool> {
         let _lock = STORE_LOCK.lock().map_err(|_| storage_error())?;
@@ -345,9 +459,47 @@ impl Vault {
         }
     }
     fn save_index(&self, index: &Value) -> AppResult<()> {
+        // Metadata only. Written first so removed clients and interrupted native
+        // deletions remain discoverable across application restarts.
+        let mut owners = Self::registered_owners(self.storage.as_ref())?;
+        if owners.insert(self.owner.clone()) {
+            self.storage
+                .store(
+                    SERVICE,
+                    OWNERS,
+                    &serde_json::to_string(&owners).map_err(|_| storage_error())?,
+                )
+                .map_err(|_| storage_error())?;
+        }
         self.storage
             .store(SERVICE, &self.index_key(), &index.to_string())
             .map_err(|_| storage_error())
+    }
+    pub fn bind_opaque(&self, value: &Value) -> AppResult<()> {
+        let values = opaque_values(value);
+        if values.is_empty() || !self.active() {
+            return Ok(());
+        }
+        let _lock = STORE_LOCK.lock().map_err(|_| storage_error())?;
+        let entries = self.load()?;
+        let ids = self
+            .allowed
+            .lock()
+            .map_err(|_| storage_error())?
+            .iter()
+            .filter(|id| entries.contains_key(*id))
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut index = self.index()?;
+        if index.get("opaque").is_none() {
+            index["opaque"] = serde_json::json!({});
+        }
+        for value in values {
+            index["opaque"][key("opaque", value)] =
+                serde_json::json!({"account":self.account,"ids":ids});
+        }
+        index["scopes"][&self.account] = Value::from(now());
+        self.save_index(&index)
     }
     pub fn bind_response(&self, id: &str) -> AppResult<()> {
         let _lock = STORE_LOCK.lock().map_err(|_| storage_error())?;
@@ -388,6 +540,45 @@ impl Vault {
             .extend(entries.keys().cloned());
         Ok(vault)
     }
+    fn registered_owners(
+        storage: &dyn KeychainStorage,
+    ) -> AppResult<std::collections::BTreeSet<String>> {
+        storage
+            .get(SERVICE, OWNERS)
+            .map_err(|_| storage_error())?
+            .map(|raw| serde_json::from_str(&raw).map_err(|_| storage_error()))
+            .transpose()
+            .map(Option::unwrap_or_default)
+    }
+    /// Retry cleanup for owners removed from settings, including after restart.
+    pub fn cleanup_registered(
+        storage: Arc<dyn KeychainStorage>,
+        live_owners: &[String],
+        ttl_secs: u64,
+    ) -> AppResult<()> {
+        let mut owners = {
+            let _lock = STORE_LOCK.lock().map_err(|_| storage_error())?;
+            Self::registered_owners(storage.as_ref())?
+        };
+        // Adopt live scopes created before the durable owner registry existed.
+        owners.extend(live_owners.iter().cloned());
+        let mut failed = false;
+        for owner in owners {
+            let result = if live_owners.contains(&owner) {
+                Self::cleanup_client(storage.clone(), &owner, ttl_secs)
+            } else {
+                Self::forget_client(storage.clone(), &owner)
+            };
+            if result.is_err() {
+                failed = true;
+            }
+        }
+        if failed {
+            Err(storage_error())
+        } else {
+            Ok(())
+        }
+    }
     pub fn cleanup_client(
         storage: Arc<dyn KeychainStorage>,
         owner: &str,
@@ -421,6 +612,9 @@ impl Vault {
             // leaves the account indexed for a future cleanup attempt.
             if let Some(responses) = index["responses"].as_object_mut() {
                 responses.retain(|_, v| v.as_str() != Some(account));
+            }
+            if let Some(opaque) = index.get_mut("opaque").and_then(Value::as_object_mut) {
+                opaque.retain(|_, value| value["account"].as_str() != Some(account));
             }
         }
         vault.save_index(&index)?;
@@ -465,6 +659,7 @@ impl Vault {
         // Retain the revocation tombstone: an already-running request cannot re-create this client's secrets.
         index["scopes"] = serde_json::json!({});
         index["responses"] = serde_json::json!({});
+        index["opaque"] = serde_json::json!({});
         vault.save_index(&index)
     }
     fn load(&self) -> AppResult<BTreeMap<String, Zeroizing<String>>> {
@@ -522,6 +717,9 @@ impl Vault {
         index["revoked_scopes"][&self.account] = Value::Bool(true);
         if let Some(responses) = index["responses"].as_object_mut() {
             responses.retain(|_, v| v.as_str() != Some(&self.account));
+        }
+        if let Some(opaque) = index.get_mut("opaque").and_then(Value::as_object_mut) {
+            opaque.retain(|_, value| value["account"].as_str() != Some(&self.account));
         }
         self.save_index(&index)?;
         self.storage
@@ -633,6 +831,31 @@ impl SecretContext for Vault {
         }
         Ok(())
     }
+    fn prepare<'a>(
+        &'a self,
+        value: &'a mut Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = AppResult<()>> + Send + 'a>> {
+        Box::pin(async move {
+            // Mask known originals first; only newly introduced secrets need a decision.
+            self.protect(value)?;
+            let detector = self
+                .async_detector
+                .lock()
+                .map_err(|_| storage_error())?
+                .clone();
+            if let Some(detector) = detector {
+                *value = detector(value.clone()).await?;
+            }
+            self.protect(value)?;
+            if self.active() {
+                self.contract
+                    .lock()
+                    .map_err(|_| error())?
+                    .check_placeholders()?;
+            }
+            Ok(())
+        })
+    }
     fn protect(&self, value: &mut Value) -> AppResult<()> {
         let detector = self.detector.lock().map_err(|_| storage_error())?.clone();
         if let Some(detector) = detector {
@@ -642,37 +865,47 @@ impl SecretContext for Vault {
         }
         let _lock = STORE_LOCK.lock().map_err(|_| storage_error())?;
         let mut entries = self.load()?;
+        let index = self.index()?;
+        for opaque in opaque_values(value) {
+            let binding = &index["opaque"][key("opaque", opaque)];
+            if binding["account"].as_str() == Some(&self.account) {
+                if let Some(ids) = binding["ids"].as_array() {
+                    self.allowed.lock().map_err(|_| storage_error())?.extend(
+                        ids.iter()
+                            .filter_map(Value::as_str)
+                            .filter(|id| entries.contains_key(*id))
+                            .map(str::to_owned),
+                    );
+                }
+            }
+        }
         let count = entries.len();
         fn signed_secret(value: &Value, entries: &BTreeMap<String, Zeroizing<String>>) -> bool {
+            fn contains(value: &Value, entries: &BTreeMap<String, Zeroizing<String>>) -> bool {
+                match value {
+                    Value::String(text) => entries
+                        .values()
+                        .any(|secret| text.contains(secret.as_str())),
+                    Value::Object(map) => map.values().any(|v| contains(v, entries)),
+                    Value::Array(values) => values.iter().any(|v| contains(v, entries)),
+                    _ => false,
+                }
+            }
             match value {
                 Value::Object(map) => {
-                    if ["signature", "thought_signature", "encrypted_content"]
-                        .iter()
-                        .any(|key| {
-                            map.get(*key)
-                                .and_then(Value::as_str)
-                                .is_some_and(|s| !s.is_empty())
-                        })
-                    {
-                        fn contains(
-                            value: &Value,
-                            entries: &BTreeMap<String, Zeroizing<String>>,
-                        ) -> bool {
-                            match value {
-                                Value::String(s) => {
-                                    entries.values().any(|secret| s.contains(secret.as_str()))
-                                }
-                                Value::Object(m) => m.values().any(|v| contains(v, entries)),
-                                Value::Array(a) => a.iter().any(|v| contains(v, entries)),
-                                _ => false,
-                            }
-                        }
+                    if ["signature", "thought_signature"].iter().any(|key| {
+                        map.get(*key)
+                            .and_then(Value::as_str)
+                            .is_some_and(|s| !s.is_empty())
+                    }) {
                         contains(value, entries)
                     } else {
-                        map.values().any(|v| signed_secret(v, entries))
+                        map.get("encrypted_content")
+                            .is_some_and(|v| contains(v, entries))
+                            || map.values().any(|v| signed_secret(v, entries))
                     }
                 }
-                Value::Array(a) => a.iter().any(|v| signed_secret(v, entries)),
+                Value::Array(values) => values.iter().any(|v| signed_secret(v, entries)),
                 _ => false,
             }
         }
@@ -681,7 +914,7 @@ impl SecretContext for Vault {
                 "A signed provider block contains a secret and cannot be safely redacted".into(),
             ));
         }
-        visit(
+        visit_with_mode(
             value,
             &mut |text, _| {
                 // Existing references in the authenticated session history are capabilities
@@ -698,6 +931,7 @@ impl SecretContext for Vault {
                 self.transform(text, &mut entries)
             },
             false,
+            true,
         )?;
         if !entries.is_empty() && (entries.len() != count || self.active()) {
             self.save(&entries)?;
@@ -723,7 +957,23 @@ impl SecretContext for Vault {
             value,
             &mut |text, executable| self.restore_text(text, strict || executable),
             !strict,
-        )
+        )?;
+        Ok(())
+    }
+    fn validate_tool(&self, name: Option<&str>, arguments: &Value) -> AppResult<()> {
+        self.contract
+            .lock()
+            .map_err(|_| error())?
+            .tool(name, arguments)
+    }
+    fn validate_output(&self, text: &str) -> AppResult<()> {
+        self.contract.lock().map_err(|_| error())?.output(text)
+    }
+    fn validate_response(&self, value: &Value) -> AppResult<()> {
+        self.contract.lock().map_err(|_| error())?.response(value)
+    }
+    fn structured_output(&self) -> bool {
+        self.contract.lock().is_ok_and(|c| c.structured())
     }
     fn scanned(&self) -> bool {
         self.scanned.load(Ordering::Acquire)
@@ -743,22 +993,28 @@ pub fn visit(
     f: &mut dyn FnMut(&str, bool) -> AppResult<String>,
     response: bool,
 ) -> AppResult<()> {
+    visit_with_mode(value, f, response, response)
+}
+fn visit_with_mode(
+    value: &mut Value,
+    f: &mut dyn FnMut(&str, bool) -> AppResult<String>,
+    response: bool,
+    opaque: bool,
+) -> AppResult<()> {
     match value {
         Value::String(s) => *s = f(s, false)?,
         Value::Array(items) => {
             for item in items {
-                visit(item, f, response)?;
+                visit_with_mode(item, f, response, opaque)?;
             }
         }
         Value::Object(map) => {
             if response
-                && ["signature", "thought_signature", "encrypted_content"]
-                    .iter()
-                    .any(|key| {
-                        map.get(*key)
-                            .and_then(Value::as_str)
-                            .is_some_and(|s| !s.is_empty())
-                    })
+                && ["signature", "thought_signature"].iter().any(|key| {
+                    map.get(*key)
+                        .and_then(Value::as_str)
+                        .is_some_and(|s| !s.is_empty())
+                })
             {
                 return Ok(());
             }
@@ -776,12 +1032,24 @@ pub fn visit(
                             | "output_text"
                             | "thinking"
                             | "reasoning"
+                            | "compaction"
+                            | "compaction_summary"
                     ) || kind.starts_with("response.")
                         || kind.starts_with("content_block")
                 })
                 || (map.contains_key("name") && map.contains_key("arguments"));
             let mut replaced = serde_json::Map::new();
             for (key, mut item) in std::mem::take(map) {
+                if opaque
+                    && protocol_object
+                    && matches!(
+                        key.as_str(),
+                        "encrypted_content" | "signature" | "thought_signature"
+                    )
+                {
+                    replaced.insert(key, item);
+                    continue;
+                }
                 if response
                     && protocol_object
                     && matches!(
@@ -823,10 +1091,11 @@ pub fn visit(
                     }
                 }
                 if !decoded {
-                    visit(
+                    visit_with_mode(
                         &mut item,
                         &mut |s, exec| f(s, executable || exec),
                         response && !executable,
+                        opaque && !executable,
                     )?;
                 }
                 let new_key = if response { key } else { f(&key, false)? };
@@ -1023,18 +1292,52 @@ mod tests {
         let vault = Vault::new(Arc::new(Failed), "owner", "session", false);
         assert!(vault.register("must not dispatch").is_err());
     }
+    struct NativeProofStore(String);
+    impl KeychainStorage for NativeProofStore {
+        fn store(&self, service: &str, account: &str, secret: &str) -> AppResult<()> {
+            lr_api_keys::keychain_trait::SystemKeychain.store(
+                &format!("{service}-{}", self.0),
+                account,
+                secret,
+            )
+        }
+        fn get(&self, service: &str, account: &str) -> AppResult<Option<String>> {
+            lr_api_keys::keychain_trait::SystemKeychain
+                .get(&format!("{service}-{}", self.0), account)
+        }
+        fn delete(&self, service: &str, account: &str) -> AppResult<()> {
+            lr_api_keys::keychain_trait::SystemKeychain
+                .delete(&format!("{service}-{}", self.0), account)
+        }
+    }
     #[test]
     #[ignore = "Explicit native keychain proof; creates and deletes only a synthetic isolated credential"]
     fn native_os_store_round_trip() {
-        let session = format!("native-proof-{}", std::process::id());
-        let owner = format!("synthetic-test-owner-{}", std::process::id());
-        let store = Arc::new(lr_api_keys::keychain_trait::SystemKeychain);
+        let session = format!("native-proof-{}-{}", std::process::id(), now());
+        let owner = format!("synthetic-test-owner-{session}");
+        let store = Arc::new(NativeProofStore(session.clone()));
         let vault = Vault::new(store.clone(), &owner, &session, false);
         vault.register("synthetic-native-secret-🔐").unwrap();
         let mut value = serde_json::json!({"content":"synthetic-native-secret-🔐"});
         vault.protect(&mut value).unwrap();
+        vault.bind_response("resp_native_process_proof").unwrap();
+        let proof = serde_json::json!({"owner":owner,"tag":value["content"],"namespace":session});
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "placeholders::tests::native_os_store_child_process",
+                "--nocapture",
+            ])
+            .env("LOCALROUTER_SYNTHETIC_VAULT_PROOF", proof.to_string())
+            .status()
+            .unwrap();
+        assert!(
+            status.success(),
+            "Fresh process must recover the OS-backed response scope"
+        );
         drop(vault);
-        let recovered = Vault::new(store, &owner, &session, false);
+        let recovered = Vault::new(store.clone(), &owner, &session, false);
         recovered.protect(&mut value).unwrap();
         recovered.restore(&mut value, true).unwrap();
         assert_eq!(value["content"], "synthetic-native-secret-🔐");
@@ -1043,6 +1346,29 @@ mod tests {
             .storage
             .delete(SERVICE, &recovered.index_key())
             .unwrap();
+        store.delete(SERVICE, OWNERS).unwrap();
+    }
+    #[test]
+    #[ignore = "Invoked only by the isolated native OS store proof"]
+    fn native_os_store_child_process() {
+        let Ok(proof) = std::env::var("LOCALROUTER_SYNTHETIC_VAULT_PROOF") else {
+            return;
+        };
+        let proof: Value = serde_json::from_str(&proof).unwrap();
+        let vault = Vault::continue_response(
+            Arc::new(NativeProofStore(
+                proof["namespace"].as_str().unwrap().into(),
+            )),
+            proof["owner"].as_str().unwrap(),
+            "resp_native_process_proof",
+        )
+        .unwrap();
+        assert_eq!(
+            vault
+                .restore_text(proof["tag"].as_str().unwrap(), true)
+                .unwrap(),
+            "synthetic-native-secret-🔐"
+        );
     }
 }
 
@@ -1164,5 +1490,157 @@ mod recovery_tests {
         other.protect(&mut value).unwrap();
         assert!(first.forget().is_err());
         assert!(other.restore(&mut value, true).is_err());
+    }
+}
+
+#[cfg(test)]
+mod owner_cleanup_tests {
+    use super::*;
+    use lr_api_keys::MockKeychain;
+    use std::sync::atomic::AtomicBool;
+    struct FlakyDelete {
+        inner: MockKeychain,
+        fail: AtomicBool,
+    }
+    impl KeychainStorage for FlakyDelete {
+        fn store(&self, s: &str, a: &str, v: &str) -> AppResult<()> {
+            self.inner.store(s, a, v)
+        }
+        fn get(&self, s: &str, a: &str) -> AppResult<Option<String>> {
+            self.inner.get(s, a)
+        }
+        fn delete(&self, s: &str, a: &str) -> AppResult<()> {
+            if self.fail.load(Ordering::Relaxed) {
+                return Err(storage_error());
+            }
+            self.inner.delete(s, a)
+        }
+    }
+    #[test]
+    fn removed_owner_cleanup_retries_after_restart_and_revokes_active_capabilities() {
+        let store = Arc::new(FlakyDelete {
+            inner: MockKeychain::new(),
+            fail: AtomicBool::new(false),
+        });
+        let vault = Vault::new(store.clone(), "removed-owner", "conversation", false);
+        vault.register("synthetic cleanup original").unwrap();
+        vault.bind_response("resp_removed").unwrap();
+        let account = vault.account.clone();
+        store.fail.store(true, Ordering::Relaxed);
+        assert!(Vault::forget_client(store.clone(), "removed-owner").is_err());
+        assert!(vault.knows("synthetic cleanup original").is_err());
+        drop(vault);
+        assert!(Vault::continue_response(store.clone(), "removed-owner", "resp_removed").is_err());
+        store.fail.store(false, Ordering::Relaxed);
+        // No owner remains in application settings. The OS metadata registry
+        // still identifies the failed cleanup after all request objects dropped.
+        Vault::cleanup_registered(store.clone(), &[], 3600).unwrap();
+        assert!(store.get(SERVICE, &account).unwrap().is_none());
+        assert!(Vault::continue_response(store, "removed-owner", "resp_removed").is_err());
+    }
+}
+
+#[cfg(test)]
+mod opaque_history_tests {
+    use super::*;
+    use lr_api_keys::MockKeychain;
+    use serde_json::json;
+    #[test]
+    fn exact_compaction_or_reasoning_state_recovers_only_its_owned_scope_after_restart() {
+        for kind in ["compaction", "compaction_summary", "reasoning"] {
+            let storage = Arc::new(MockKeychain::new());
+            let vault = Arc::new(Vault::new(
+                storage.clone(),
+                "opaque-owner",
+                "explicit-conversation",
+                false,
+            ));
+            vault.register("synthetic opaque original").unwrap();
+            let mut input = json!({"input":"synthetic opaque original"});
+            vault.protect(&mut input).unwrap();
+            let tag = input["input"].as_str().unwrap().to_owned();
+            let response =
+                json!({"output":[{"type":kind,"encrypted_content":"provider-owned-opaque-bytes"}]});
+            let mut codec = crate::wire::ResponseRestorer::new(vault);
+            assert_eq!(
+                serde_json::from_slice::<Value>(
+                    &codec.json(response.to_string().as_bytes()).unwrap()
+                )
+                .unwrap(),
+                response
+            );
+            drop(codec);
+            let resumed = Vault::new(
+                storage.clone(),
+                "opaque-owner",
+                "explicit-conversation",
+                false,
+            );
+            let mut replay = json!({"input":response["output"]});
+            resumed.protect(&mut replay).unwrap();
+            assert_eq!(replay["input"], response["output"]);
+            assert_eq!(
+                resumed.restore_text(&tag, true).unwrap(),
+                "synthetic opaque original"
+            );
+            for (owner, scope, opaque) in [
+                (
+                    "other-client",
+                    "explicit-conversation",
+                    "provider-owned-opaque-bytes",
+                ),
+                (
+                    "opaque-owner",
+                    "other-conversation",
+                    "provider-owned-opaque-bytes",
+                ),
+                (
+                    "opaque-owner",
+                    "explicit-conversation",
+                    "modified-opaque-bytes",
+                ),
+            ] {
+                let other = Vault::new(storage.clone(), owner, scope, false);
+                let mut input = json!({"input":[{"type":kind,"encrypted_content":opaque}]});
+                other.protect(&mut input).unwrap();
+                assert!(other.restore_text(&tag, true).is_err());
+            }
+            resumed.forget().unwrap();
+            let mut replay = json!({"input":response["output"]});
+            resumed.protect(&mut replay).unwrap();
+            assert!(resumed.restore_text(&tag, true).is_err());
+        }
+    }
+}
+
+#[cfg(test)]
+mod reasoning_summary_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn visible_reasoning_summary_round_trips_while_encrypted_state_stays_exact() {
+        let vault = Arc::new(Vault::new(
+            Arc::new(lr_api_keys::MockKeychain::new()),
+            "summary",
+            "conversation",
+            false,
+        ));
+        vault.register("synthetic reasoning original").unwrap();
+        let mut input = json!({"input":"synthetic reasoning original"});
+        vault.protect(&mut input).unwrap();
+        let tag = input["input"].as_str().unwrap();
+        let response = json!({"output":[{"type":"reasoning","encrypted_content":"opaque-bytes","summary":[{"type":"summary_text","text":tag}]}]});
+        let mut codec = crate::wire::ResponseRestorer::new(vault.clone());
+        let response: Value =
+            serde_json::from_slice(&codec.json(response.to_string().as_bytes()).unwrap()).unwrap();
+        assert_eq!(response["output"][0]["encrypted_content"], "opaque-bytes");
+        assert_eq!(
+            response["output"][0]["summary"][0]["text"],
+            "synthetic reasoning original"
+        );
+        let mut replay = json!({"input":response["output"]});
+        vault.protect(&mut replay).unwrap();
+        assert!(!replay.to_string().contains("synthetic reasoning original"));
+        assert_eq!(replay["input"][0]["encrypted_content"], "opaque-bytes");
     }
 }

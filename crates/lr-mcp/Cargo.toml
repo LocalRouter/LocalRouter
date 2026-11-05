@@ -9,6 +9,7 @@ description = "MCP gateway, bridge, and transports for LocalRouter"
 
 [dependencies]
 lr-types = { workspace = true }
+lr-secret-scanner = { workspace = true }
 lr-config = { workspace = true }
 lr-api-keys = { workspace = true }
 lr-memory = { workspace = true }
