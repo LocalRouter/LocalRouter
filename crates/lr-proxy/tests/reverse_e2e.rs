@@ -33,6 +33,7 @@ type Boxed = http_body_util::combinators::UnsyncBoxBody<Bytes, std::io::Error>;
 async fn upstream_handler(
     req: Request<hyper::body::Incoming>,
 ) -> Result<Response<Boxed>, Infallible> {
+    assert_eq!(req.headers()["accept-encoding"], "identity");
     let path = req.uri().path().to_string();
     let had_host = req
         .headers()
@@ -127,14 +128,14 @@ async fn start_upstream() -> u16 {
 
 async fn start_reverse(
     upstream_port: u16,
-    recorder: Arc<CapturingRecorder>,
+    recorder: Arc<dyn ReverseRecorder>,
 ) -> (u16, tokio::sync::oneshot::Sender<()>) {
     start_reverse_with_dedupe(upstream_port, recorder, true).await
 }
 
 async fn start_reverse_with_dedupe(
     upstream_port: u16,
-    recorder: Arc<CapturingRecorder>,
+    recorder: Arc<dyn ReverseRecorder>,
     dedupe: bool,
 ) -> (u16, tokio::sync::oneshot::Sender<()>) {
     let proxy = Arc::new(
@@ -180,6 +181,16 @@ async fn request_with_headers(
     body: &str,
     extra: &[(&str, &str)],
 ) -> (u16, hyper::HeaderMap, String) {
+    request_bytes(port, method, path, body.as_bytes(), extra).await
+}
+
+async fn request_bytes(
+    port: u16,
+    method: &str,
+    path: &str,
+    body: &[u8],
+    extra: &[(&str, &str)],
+) -> (u16, hyper::HeaderMap, String) {
     let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
     let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
         .await
@@ -196,7 +207,7 @@ async fn request_with_headers(
         builder = builder.header(*k, *v);
     }
     let req = builder
-        .body(Full::new(Bytes::from(body.to_string())))
+        .body(Full::new(Bytes::copy_from_slice(body)))
         .unwrap();
     let resp = sender.send_request(req).await.unwrap();
     let status = resp.status().as_u16();
@@ -410,8 +421,7 @@ impl lr_proxy::active::Firewall for SecretFirewall {
         }
     }
 }
-#[tokio::test]
-async fn native_reverse_ndjson_restores_fragmented_refs_and_captures_masked_wire() {
+async fn protected_reverse(compressed: bool) {
     let upstream_port = start_upstream().await;
     let store = Arc::new(lr_monitor::MonitorEventStore::new(16));
     let recorder = Arc::new(lr_proxy::active::ActiveInterceptor::new(
@@ -442,15 +452,23 @@ async fn native_reverse_ndjson_restores_fragmented_refs_and_captures_masked_wire
     let connection = tokio::spawn(async move {
         conn.await.ok();
     });
-    let request = Request::builder()
+    let payload =
+        serde_json::json!({"model":"local","prompt":"synthetic reverse secret","stream":true})
+            .to_string()
+            .into_bytes();
+    let payload = if compressed {
+        zstd::stream::encode_all(payload.as_slice(), 3).unwrap()
+    } else {
+        payload
+    };
+    let mut builder = Request::builder()
         .method("POST")
         .uri("/api/generate")
-        .header("host", format!("127.0.0.1:{port}"))
-        .body(Full::new(Bytes::from(
-            serde_json::json!({"model":"local","prompt":"synthetic reverse secret","stream":true})
-                .to_string(),
-        )))
-        .unwrap();
+        .header("host", format!("127.0.0.1:{port}"));
+    if compressed {
+        builder = builder.header("content-encoding", "zstd");
+    }
+    let request = builder.body(Full::new(Bytes::from(payload))).unwrap();
     let response = sender.send_request(request).await.unwrap();
     assert_eq!(response.status(), 200);
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
@@ -481,4 +499,153 @@ async fn native_reverse_ndjson_restores_fragmented_refs_and_captures_masked_wire
     assert!(events.contains("localrouter-redacted"));
     task.abort();
     connection.abort();
+}
+
+#[tokio::test]
+async fn native_reverse_ndjson_restores_fragmented_refs_and_captures_masked_wire() {
+    protected_reverse(false).await;
+}
+#[tokio::test]
+async fn compressed_reverse_requests_are_masked_and_response_is_restored() {
+    protected_reverse(true).await;
+}
+
+async fn unchanged_forwarding(active: bool) {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let upstream_port = listener.local_addr().unwrap().port();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+    tokio::spawn(async move {
+        loop {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                hyper::server::conn::http1::Builder::new()
+                    .serve_connection(
+                        TokioIo::new(tcp),
+                        service_fn(move |req: Request<hyper::body::Incoming>| {
+                            let tx = tx.clone();
+                            async move {
+                                let headers = req.headers().clone();
+                                let body = req.into_body().collect().await.unwrap().to_bytes();
+                                tx.send((headers, body)).await.unwrap();
+                                Ok::<_, Infallible>(Response::new(Full::new(Bytes::from_static(
+                                    b"{}",
+                                ))))
+                            }
+                        }),
+                    )
+                    .await
+                    .ok();
+            });
+        }
+    });
+    struct ForwardPolicy;
+    #[async_trait::async_trait]
+    impl lr_proxy::active::Firewall for ForwardPolicy {
+        async fn evaluate(
+            &self,
+            req: &lr_proxy::active::FirewallRequest,
+        ) -> lr_proxy::interceptor::RequestAction {
+            assert_eq!(req.model.as_deref(), Some("local"));
+            assert_eq!(req.body["input"], "no secret");
+            lr_proxy::interceptor::RequestAction::Forward
+        }
+    }
+    let recorder: Arc<dyn ReverseRecorder> = if active {
+        Arc::new(lr_proxy::active::ActiveInterceptor::new(
+            lr_proxy::passive::PassiveInterceptor::new(Arc::new(
+                lr_monitor::MonitorEventStore::new(16),
+            )),
+            Arc::new(ForwardPolicy),
+        ))
+    } else {
+        Arc::new(CapturingRecorder::default())
+    };
+    let (port, _shutdown) = start_reverse(upstream_port, recorder).await;
+    for (encoding, body) in [
+        (
+            "zstd",
+            zstd::stream::encode_all(br#"{"model":"local","input":"no secret"}"#.as_slice(), 3)
+                .unwrap(),
+        ),
+        ("unknown", b"opaque representation".to_vec()),
+    ] {
+        if active && encoding == "unknown" {
+            continue;
+        }
+        let (status, _, _) = request_bytes(
+            port,
+            "POST",
+            "/v1/responses",
+            &body,
+            &[("content-encoding", encoding), ("content-md5", "unchanged")],
+        )
+        .await;
+        assert_eq!(status, 200);
+        let (headers, seen) = rx.recv().await.unwrap();
+        assert_eq!(seen.as_ref(), body.as_slice());
+        assert_eq!(headers["content-encoding"], encoding);
+        assert_eq!(headers["content-md5"], "unchanged");
+    }
+}
+
+#[tokio::test]
+async fn active_decode_failures_do_not_contact_upstream() {
+    let upstream = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let upstream_port = upstream.local_addr().unwrap().port();
+    let recorder = Arc::new(lr_proxy::active::ActiveInterceptor::new(
+        lr_proxy::passive::PassiveInterceptor::new(Arc::new(lr_monitor::MonitorEventStore::new(
+            16,
+        ))),
+        Arc::new(SecretFirewall),
+    ));
+    let proxy = Arc::new(
+        ReverseProxy::new(
+            &format!("http://127.0.0.1:{upstream_port}"),
+            ReverseClient::default(),
+            recorder,
+        )
+        .unwrap(),
+    );
+    let listener = ReverseProxy::bind("127.0.0.1", 0).await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let task = tokio::spawn(async move {
+        proxy.serve(listener, std::future::pending::<()>()).await;
+    });
+    for (encoding, payload, expected) in [
+        ("zstd", b"invalid".to_vec(), 400),
+        ("unknown", b"{}".to_vec(), 415),
+        ("gzip", b"invalid".to_vec(), 400),
+        (
+            "zstd",
+            zstd::stream::encode_all(vec![b'x'; 16 * 1024 * 1024 + 1].as_slice(), 3).unwrap(),
+            413,
+        ),
+    ] {
+        let (status, _, body) = request_bytes(
+            port,
+            "POST",
+            "/v1/responses",
+            &payload,
+            &[("content-encoding", encoding)],
+        )
+        .await;
+        assert_eq!(status, expected, "{body}");
+        assert!(body.contains("localrouter_firewall"));
+    }
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(30), upstream.accept())
+            .await
+            .is_err()
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn passive_forwarding_preserves_encoded_bytes_and_integrity_headers() {
+    unchanged_forwarding(false).await;
+}
+#[tokio::test]
+async fn active_unchanged_compressed_json_is_inspected_and_forwarded_exactly() {
+    unchanged_forwarding(true).await;
 }

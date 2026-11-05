@@ -96,7 +96,7 @@ fn make_leaf(ca: &TestCa, host: &str) -> (CertificateDer<'static>, PrivateKeyDer
 
 /// Spawn a TLS upstream that answers one request with the given response.
 /// `seen_ae` records the `Accept-Encoding` header the upstream received (so the
-/// test can assert the proxy stripped it).
+/// test can assert the proxy requests identity).
 async fn spawn_upstream(
     ca: &TestCa,
     sse: bool,
@@ -283,11 +283,11 @@ async fn run_case(sse: bool) -> (u16, Vec<u8>, usize) {
     }
     let total = store.list(0, 10, None).total;
 
-    // The proxy must have stripped Accept-Encoding before forwarding upstream.
+    // The upstream must receive an explicit request for identity responses.
     assert_eq!(
         *seen_ae.lock().unwrap(),
-        Some(None),
-        "proxy should strip Accept-Encoding so responses are inspectable"
+        Some(Some("identity".into())),
+        "proxy should request identity in Accept-Encoding so responses are inspectable"
     );
 
     let _ = shutdown_tx.send(());
@@ -783,6 +783,9 @@ struct ProtectingFirewall;
 impl lr_proxy::active::Firewall for ProtectingFirewall {
     async fn evaluate(&self, req: &lr_proxy::active::FirewallRequest) -> RequestAction {
         use lr_types::secret_context::SecretContext;
+        if !req.body.is_object() {
+            return RequestAction::reject_json(400, "Invalid protected request JSON");
+        }
         let vault = Arc::new(lr_secret_scanner::placeholders::Vault::new(
             Arc::new(lr_api_keys::MockKeychain::new()),
             &req.client_id,
@@ -836,7 +839,7 @@ impl ProxyInterceptor for ProtectingMitm {
     }
 }
 
-async fn protected_roundtrip(sse: bool, compact: bool) {
+async fn protected_roundtrip(sse: bool, compact: bool, encoding: Option<&'static str>) {
     use serde_json::{json, Value};
     tls::ensure_crypto_provider();
     let up_ca = make_ca();
@@ -861,11 +864,22 @@ async fn protected_roundtrip(sse: bool, compact: bool) {
                     "/backend-api/codex/responses"
                 }
             );
+            for name in [
+                "content-encoding",
+                "content-md5",
+                "digest",
+                "content-digest",
+            ] {
+                assert!(
+                    !req.headers().contains_key(name),
+                    "stale {name} reached upstream"
+                );
+            }
             let bytes = req.into_body().collect().await.unwrap().to_bytes();
             let raw = String::from_utf8(bytes.to_vec()).unwrap();
             assert!(!raw.contains(SYNTHETIC_KEY));
             let body: Value = serde_json::from_str(&raw).unwrap();
-            let content = body["input"][0]["content"].as_str().unwrap();
+            let content = body["input"][0]["content"][0]["text"].as_str().unwrap();
             let tag = content.strip_prefix("aws_secret_access_key=").unwrap();
             assert!(tag.starts_with("<localrouter-redacted"));
             let args = json!({"content":tag}).to_string();
@@ -960,8 +974,58 @@ async fn protected_roundtrip(sse: bool, compact: bool) {
     let conn_task = tokio::spawn(async move {
         conn.await.ok();
     });
-    let body = json!({"model":"local-test","input":[{"role":"user","content":format!("aws_secret_access_key={SYNTHETIC_KEY}")}],"tools":[{"type":"function","name":"write_file","parameters":{"type":"object","properties":{"content":{"type":"string"}},"required":["content"]}}],"stream":sse});
-    let req = Request::builder()
+    let mut body = json!({"model":"local-test","input":[{"role":"user","content":[{"type":"input_text","text":format!("aws_secret_access_key={SYNTHETIC_KEY}")}]}],"tools":[{"type":"web_search"},{"type":"function","name":"write_file","parameters":{"type":"object","properties":{"content":{"type":"string"}},"required":["content"]}}],"stream":sse});
+    for (name, definition) in [
+        (
+            "apply_patch",
+            include_str!("../../lr-secret-scanner/src/codex-grammars/apply_patch.lark"),
+        ),
+        (
+            "exec",
+            include_str!("../../lr-secret-scanner/src/codex-grammars/exec.lark"),
+        ),
+        (
+            "js_repl",
+            include_str!("../../lr-secret-scanner/src/codex-grammars/js_repl.lark"),
+        ),
+    ] {
+        body["tools"].as_array_mut().unwrap().push(json!({"type":"custom","name":name,"format":{"type":"grammar","syntax":"lark","definition":definition}}));
+    }
+    body["tools"].as_array_mut().unwrap().extend([
+        json!({"type":"namespace","name":"mcp_files","tools":[{"type":"function","name":"read","parameters":{"type":"object"}}]}),
+        json!({"type":"image_generation","output_format":"png"}),
+        json!({"type":"tool_search","execution":"client"}),
+    ]);
+    let mut payload = body.to_string().into_bytes();
+    if let Some(encodings) = encoding {
+        for encoding in encodings.split(", ") {
+            payload = match encoding {
+                // Exact Codex codex-client/src/request.rs encoding (level 3).
+                "zstd" => zstd::stream::encode_all(payload.as_slice(), 3).unwrap(),
+                "gzip" => {
+                    use std::io::Write;
+                    let mut encoder =
+                        flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+                    encoder.write_all(&payload).unwrap();
+                    encoder.finish().unwrap()
+                }
+                _ => unreachable!(),
+            };
+        }
+    }
+    if encoding == Some("zstd") {
+        let prepared = codex_client::Request::new(
+            http::Method::POST,
+            "https://chatgpt.com/backend-api/codex/responses".into(),
+        )
+        .with_json(&body)
+        .with_compression(codex_client::RequestCompression::Zstd)
+        .prepare_body_for_send()
+        .unwrap();
+        assert_eq!(prepared.headers["content-encoding"], "zstd");
+        payload = prepared.body_bytes().to_vec();
+    }
+    let mut builder = Request::builder()
         .method("POST")
         .uri(if compact {
             "/backend-api/codex/responses/compact"
@@ -970,8 +1034,23 @@ async fn protected_roundtrip(sse: bool, compact: bool) {
         })
         .header("host", format!("{HOST}:{up_port}"))
         .header("session_id", "synthetic-conversation")
-        .header("x-localrouter-trace", "test-hop;hop=2")
-        .body(Full::new(Bytes::from(body.to_string())))
+        .header("x-localrouter-trace", "test-hop;hop=2");
+    if let Some(encoding) = encoding {
+        builder = builder
+            .header("content-encoding", encoding)
+            .header("content-md5", "stale-digest")
+            .header("digest", "sha-256=stale")
+            .header("content-digest", "sha-256=:stale:");
+    }
+    // Unknown body length makes hyper use chunked HTTP request framing.
+    let chunks = payload
+        .chunks(23)
+        .map(|b| Ok::<_, std::io::Error>(hyper::body::Frame::data(Bytes::copy_from_slice(b))))
+        .collect::<Vec<_>>();
+    let req = builder
+        .body(http_body_util::StreamBody::new(futures::stream::iter(
+            chunks,
+        )))
         .unwrap();
     let response = sender.send_request(req).await.unwrap();
     assert_eq!(response.status(), 200);
@@ -1025,14 +1104,34 @@ async fn protected_roundtrip(sse: bool, compact: bool) {
 }
 #[tokio::test]
 async fn codex_http_restores_tool_and_text_and_records_only_masked_data() {
-    protected_roundtrip(false, false).await;
+    protected_roundtrip(false, false, None).await;
 }
 #[tokio::test]
 async fn codex_sse_fragmented_tools_and_text_survive_real_tls_and_http_framing() {
-    protected_roundtrip(true, false).await;
+    protected_roundtrip(true, false, None).await;
 }
 
 #[tokio::test]
 async fn codex_compaction_masks_input_and_preserves_opaque_state_over_tls() {
-    protected_roundtrip(false, true).await;
+    protected_roundtrip(false, true, None).await;
+}
+
+#[tokio::test]
+async fn codex_zstd_requests_restore_secrets_over_real_tls_http_and_sse() {
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        protected_roundtrip(false, false, Some("zstd")).await;
+        protected_roundtrip(true, false, Some("zstd")).await;
+        protected_roundtrip(false, true, Some("zstd")).await;
+    })
+    .await
+    .unwrap();
+}
+#[tokio::test]
+async fn gzip_and_nested_encoded_requests_are_scanned_before_forwarding() {
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        protected_roundtrip(false, false, Some("gzip")).await;
+        protected_roundtrip(true, false, Some("gzip, zstd")).await;
+    })
+    .await
+    .unwrap();
 }

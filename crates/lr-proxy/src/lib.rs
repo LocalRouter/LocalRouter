@@ -41,6 +41,7 @@ pub mod manager;
 pub mod ollama;
 pub mod openai;
 pub mod passive;
+pub mod request_body;
 pub mod resolver;
 pub mod reverse;
 pub mod systemone;

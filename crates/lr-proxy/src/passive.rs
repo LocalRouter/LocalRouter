@@ -589,6 +589,7 @@ pub(crate) fn observed_from_reverse(ex: &crate::reverse::ReverseExchange) -> Obs
         method: ex.method.clone(),
         path: ex.path.clone(),
         request_body: ex.request_body.clone(),
+        request_body_error: ex.request_body_error,
         status: ex.status,
         response_body: ex.response_body.clone(),
         response_is_sse: ex.response_is_sse,

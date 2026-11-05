@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 #[derive(Default)]
 pub struct ResponseContract {
     tools: BTreeMap<String, Value>,
+    aliases: BTreeMap<String, Option<String>>,
     output: Option<Value>,
     incompatible: bool,
 }
@@ -130,13 +131,89 @@ fn incompatible(value: &Value) -> bool {
     });
     constrained || schema_children(value).into_iter().any(incompatible)
 }
+fn verified_codex_grammar(tool: &Value) -> bool {
+    tool.pointer("/format/syntax").and_then(Value::as_str) == Some("lark")
+        && tool
+            .pointer("/format/definition")
+            .and_then(Value::as_str)
+            .is_some_and(|definition| {
+                [
+                    include_str!("codex-grammars/apply_patch.lark"),
+                    include_str!("codex-grammars/exec.lark"),
+                    include_str!("codex-grammars/js_repl.lark"),
+                ]
+                .iter()
+                .any(|known| known.trim() == definition.trim())
+            })
+}
+
+fn tool_definitions<'a>(
+    tools: &'a [Value],
+    prefix: &str,
+    depth: usize,
+    output: &mut Vec<(String, &'a Value)>,
+    budget: &mut usize,
+) -> AppResult<()> {
+    if depth > 8 || tools.len() > *budget {
+        return Err(invalid(
+            "Protected tool definitions exceed inspection budget",
+        ));
+    }
+    *budget -= tools.len();
+    for tool in tools {
+        if tool.get("type").and_then(Value::as_str) == Some("namespace") {
+            let name = tool
+                .get("name")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid("Missing tool namespace name"))?;
+            if name.is_empty() || name.len() > 256 || prefix.len().saturating_add(name.len()) > 1024
+            {
+                return Err(invalid(
+                    "Protected tool namespace name exceeds inspection budget",
+                ));
+            }
+            let children = tool
+                .get("tools")
+                .and_then(Value::as_array)
+                .ok_or_else(|| invalid("Missing tool namespace definitions"))?;
+            tool_definitions(
+                children,
+                &format!("{prefix}{name}."),
+                depth + 1,
+                output,
+                budget,
+            )?;
+        } else {
+            output.push((prefix.into(), tool));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn qualified_tool_name(value: &Value) -> Option<String> {
+    let name = value.get("name").and_then(Value::as_str)?;
+    Some(
+        match value
+            .get("namespace")
+            .and_then(Value::as_str)
+            .filter(|n| !n.is_empty())
+        {
+            Some(namespace) => format!("{namespace}.{name}"),
+            None => name.into(),
+        },
+    )
+}
+
 impl ResponseContract {
     pub fn from_request(request: &Value, active: bool) -> AppResult<Self> {
         let mut result = Self::default();
         if let Some(tools) = request.get("tools").and_then(Value::as_array) {
-            for tool in tools {
+            let mut definitions = Vec::new();
+            tool_definitions(tools, "", 0, &mut definitions, &mut 1024)?;
+            for (prefix, tool) in definitions {
                 if tool.get("type").and_then(Value::as_str) == Some("custom")
                     && tool.pointer("/format/type").and_then(Value::as_str) == Some("grammar")
+                    && !verified_codex_grammar(tool)
                 {
                     result.incompatible = true;
                 }
@@ -152,7 +229,22 @@ impl ResponseContract {
                     {
                         result.incompatible = true;
                     }
-                    result.tools.insert(name.into(), schema.clone());
+                    if name.is_empty() || name.len() > 256 {
+                        return Err(invalid("Protected tool name exceeds inspection budget"));
+                    }
+                    let qualified = format!("{prefix}{name}");
+                    if result
+                        .tools
+                        .insert(qualified.clone(), schema.clone())
+                        .is_some()
+                    {
+                        return Err(invalid("Duplicate protected tool definition"));
+                    }
+                    result
+                        .aliases
+                        .entry(name.into())
+                        .and_modify(|alias| *alias = None)
+                        .or_insert(Some(qualified));
                 }
             }
         }
@@ -187,7 +279,14 @@ impl ResponseContract {
             return Ok(());
         }
         let schema = name
-            .and_then(|name| self.tools.get(name))
+            .and_then(|name| {
+                self.tools.get(name).or_else(|| {
+                    self.aliases
+                        .get(name)
+                        .and_then(Option::as_ref)
+                        .and_then(|key| self.tools.get(key))
+                })
+            })
             .ok_or_else(|| invalid("Protected tool call has no matching request schema"))?;
         validate(schema, arguments)
     }
@@ -216,7 +315,7 @@ impl ResponseContract {
                             })?,
                             value => value.clone(),
                         };
-                        contract.tool(map.get("name").and_then(Value::as_str), &args)?;
+                        contract.tool(qualified_tool_name(value).as_deref(), &args)?;
                     }
                     if map.get("type").and_then(Value::as_str) == Some("tool_use") {
                         if let Some(args) = map.get("input") {
@@ -371,6 +470,78 @@ mod schema_keyword_tests {
         )
         .is_ok());
     }
+    #[test]
+    fn codex_default_grammars_and_namespaces_are_compatible_but_changes_are_not_trusted() {
+        for definition in [
+            include_str!("codex-grammars/apply_patch.lark"),
+            include_str!("codex-grammars/exec.lark"),
+            include_str!("codex-grammars/js_repl.lark"),
+        ] {
+            let mut request = json!({"tools":[{"type":"web_search"},{"type":"custom","name":"local_code","format":{"type":"grammar","syntax":"lark","definition":definition}},{"type":"namespace","name":"files","tools":[{"type":"function","name":"write","parameters":{"type":"object","properties":{"value":{"type":"string"}},"required":["value"]}}]}]});
+            let contract = ResponseContract::from_request(&request, true).unwrap();
+            assert!(contract
+                .tool(Some("files.write"), &json!({"value":"secret"}))
+                .is_ok());
+            assert!(contract
+                .tool(Some("write"), &json!({"value":"secret"}))
+                .is_ok());
+            assert!(contract
+                .tool(Some("files.write"), &json!({"value":42}))
+                .is_err());
+            request["tools"][1]["format"]["definition"] = json!("start: /[a-z]+/");
+            assert!(ResponseContract::from_request(&request, true).is_err());
+        }
+    }
+
+    #[test]
+    fn namespaced_tool_validation_keeps_same_named_tools_distinct() {
+        let request = json!({"tools":[
+            {"type":"namespace","name":"alpha","tools":[{"type":"function","name":"write","parameters":{"type":"string"}}]},
+            {"type":"namespace","name":"beta","tools":[{"type":"function","name":"write","parameters":{"type":"number"}}]}
+        ]});
+        let contract = ResponseContract::from_request(&request, true).unwrap();
+        assert!(contract.tool(Some("write"), &json!("text")).is_err());
+        assert!(contract.response(&json!({"type":"function_call","namespace":"alpha","name":"write","arguments":"\"text\""})).is_ok());
+        assert!(contract.response(&json!({"type":"function_call","namespace":"beta","name":"write","arguments":"\"text\""})).is_err());
+        assert!(contract
+            .response(
+                &json!({"type":"function_call","namespace":"beta","name":"write","arguments":"42"})
+            )
+            .is_ok());
+    }
+
+    #[test]
+    fn namespace_metadata_is_bounded_and_duplicates_are_rejected() {
+        for tool in [
+            json!({"type":"namespace","tools":[]}),
+            json!({"type":"namespace","name":"files"}),
+            json!({"type":"namespace","name":"x".repeat(1025),"tools":[]}),
+            json!({"type":"namespace","name":"","tools":[]}),
+        ] {
+            assert!(ResponseContract::from_request(&json!({"tools":[tool]}), true).is_err());
+        }
+        assert!(ResponseContract::from_request(
+            &json!({"tools":[{"type":"function","name":"x".repeat(1025),"parameters":{}}]}),
+            true
+        )
+        .is_err());
+        let tool = json!({"type":"function","name":"write","parameters":{"type":"object"}});
+        assert!(ResponseContract::from_request(
+            &json!({"tools":[tool.clone(),tool.clone()]}),
+            true
+        )
+        .is_err());
+        assert!(
+            ResponseContract::from_request(&json!({"tools":vec![tool.clone();1025]}), true)
+                .is_err()
+        );
+        let mut nested = tool;
+        for _ in 0..10 {
+            nested = json!({"type":"namespace","name":"nested","tools":[nested]});
+        }
+        assert!(ResponseContract::from_request(&json!({"tools":[nested]}), true).is_err());
+    }
+
     #[test]
     fn custom_grammars_require_a_verified_placeholder_mapping() {
         let request = json!({"tools":[{"type":"custom","name":"code","format":{"type":"grammar","syntax":"regex","definition":"[a-z]+"}}]});

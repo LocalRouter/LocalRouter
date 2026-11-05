@@ -294,10 +294,11 @@ impl Events {
         }
         if let (Some(id), Some(name)) = (
             value.pointer("/item/id"),
-            value.pointer("/item/name").and_then(Value::as_str),
+            value
+                .get("item")
+                .and_then(crate::schema::qualified_tool_name),
         ) {
-            self.tool_names
-                .insert(format!("responses:{id}:"), name.into());
+            self.tool_names.insert(format!("responses:{id}:"), name);
         }
         if let Some(name) = value.pointer("/content_block/name").and_then(Value::as_str) {
             self.tool_names
@@ -695,6 +696,27 @@ mod tests {
                 .as_str()
                 .is_some_and(|s| serde_json::from_str::<Value>(s).unwrap()["content"] == secret)));
     }
+    #[test]
+    fn namespaced_streamed_tools_keep_schema_identity() {
+        let (vault, tag, secret) = fixture();
+        vault.set_request_contract(&json!({"tools":[
+            {"type":"namespace","name":"alpha","tools":[{"type":"function","name":"write","parameters":{"type":"object","properties":{"content":{"type":"string"}},"required":["content"]}}]},
+            {"type":"namespace","name":"beta","tools":[{"type":"function","name":"write","parameters":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}]}
+        ]})).unwrap();
+        let mut restorer = ResponseRestorer::new(vault);
+        for (ns, field) in [("alpha", "content"), ("beta", "path")] {
+            restorer.message(&json!({"type":"response.output_item.added","item":{"id":ns,"type":"function_call","namespace":ns,"name":"write","arguments":""}}).to_string()).unwrap();
+            let arguments = json!({field:tag}).to_string();
+            restorer.message(&json!({"type":"response.function_call_arguments.delta","item_id":ns,"delta":arguments}).to_string()).unwrap();
+            let output=restorer.message(&json!({"type":"response.function_call_arguments.done","item_id":ns,"arguments":arguments}).to_string()).unwrap();
+            assert!(output
+                .iter()
+                .any(|s| serde_json::from_str::<Value>(s).unwrap()["delta"]
+                    .as_str()
+                    .is_some_and(|s| serde_json::from_str::<Value>(s).unwrap()[field] == secret)));
+        }
+    }
+
     #[test]
     fn ollama_streams_restore_content_thinking_and_terminal_fragment() {
         let (vault, tag, secret) = fixture();

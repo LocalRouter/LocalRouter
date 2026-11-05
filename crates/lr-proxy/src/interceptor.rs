@@ -103,6 +103,9 @@ pub struct ObservedExchange {
     pub path: String,
     /// Raw request body bytes (capped), if any.
     pub request_body: Option<Vec<u8>>,
+    /// Safe content-decoding failure; active policy must reject it rather than
+    /// evaluating missing JSON. Passive forwarding retains the original bytes.
+    pub request_body_error: Option<crate::request_body::DecodeError>,
     /// Response status code, once the response head is available.
     pub status: Option<u16>,
     /// Raw response body bytes (capped), if any. For SSE this is the raw event
