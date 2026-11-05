@@ -256,23 +256,8 @@ impl lr_proxy::active::Firewall for AppFirewall {
                     "Could not protect request secrets in OS credential storage",
                 );
             }
-            if context.active()
-                && body
-                    .get("tools")
-                    .and_then(serde_json::Value::as_array)
-                    .is_some_and(|tools| {
-                        tools.iter().any(|t| {
-                            t.get("type")
-                                .and_then(serde_json::Value::as_str)
-                                .is_some_and(|kind| !matches!(kind, "function" | "custom"))
-                        })
-                    })
-            {
-                return RequestAction::reject_json(
-                    400,
-                    "Restorable secrets require locally executed tools",
-                );
-            }
+            // Hosted tools receive masked inputs. The contract checks local
+            // function schemas and compatibility with declared text grammars.
             if let Err(error) = vault.set_request_contract(&body) {
                 return RequestAction::reject_json(400, &error.to_string());
             }
@@ -829,6 +814,67 @@ mod secret_policy_tests {
             body: json!({"model":"local-test","input":[{"role":"user","content":format!("aws_secret_access_key={KEY}")} ]}),
         };
         (firewall, request)
+    }
+    #[tokio::test]
+    async fn codex_default_web_search_can_coexist_with_local_restored_tools() {
+        for kind in ["web_search", "web_search_preview"] {
+            let root =
+                std::env::temp_dir().join(format!("lr-codex-search-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&root).unwrap();
+            let (firewall, mut request) = fixture(
+                &root,
+                lr_config::LlmMode::Proxy,
+                Arc::new(lr_api_keys::MockKeychain::new()),
+            );
+            request.has_tools = true;
+            request.body["input"][0]["content"] =
+                json!([{"type":"input_text","text":format!("aws_secret_access_key={KEY}")}]);
+            request.body["tools"] = json!([
+                {"type":kind},
+                {"type":"function","name":"write_file","parameters":{"type":"object","properties":{"content":{"type":"string"}},"required":["content"]}},
+                {"type":"custom","name":"apply_patch","format":{"type":"grammar","syntax":"lark","definition":include_str!("../../../crates/lr-secret-scanner/src/codex-grammars/apply_patch.lark")}},
+                {"type":"namespace","name":"mcp_files","tools":[{"type":"function","name":"read","parameters":{"type":"object"}}]}
+            ]);
+            let RequestAction::Protect { body, vault } = firewall.evaluate(&request).await else {
+                panic!("Codex's built-in search must not block local secret restoration");
+            };
+            let masked: Value = serde_json::from_slice(&body).unwrap();
+            assert!(!String::from_utf8_lossy(&body).contains(KEY));
+            assert_eq!(masked["tools"][0]["type"], kind);
+            let tag = masked["input"][0]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .strip_prefix("aws_secret_access_key=")
+                .unwrap();
+            let response = json!({"id":"resp_search","output":[
+                {"type":"web_search_call","action":{"type":"search","query":tag}},
+                {"type":"function_call","name":"write_file","arguments":json!({"content":tag}).to_string()},
+                {"type":"custom_tool_call","name":"apply_patch","input":format!("*** Begin Patch\n*** Add File: .env\n+{tag}\n*** End Patch\n")}
+            ]});
+            let restored = lr_secret_scanner::wire::ResponseRestorer::new(vault)
+                .json(response.to_string().as_bytes())
+                .unwrap();
+            let restored: Value = serde_json::from_slice(&restored).unwrap();
+            assert_eq!(restored["output"][0]["action"]["query"], KEY);
+            assert_eq!(
+                restored["output"][2]["input"],
+                format!("*** Begin Patch\n*** Add File: .env\n+{KEY}\n*** End Patch\n")
+            );
+            assert_eq!(
+                serde_json::from_str::<Value>(restored["output"][1]["arguments"].as_str().unwrap())
+                    .unwrap()["content"],
+                KEY
+            );
+            // Tool declarations do not send originals to hosted execution:
+            // the entire outbound JSON is still masked, regardless of type.
+            request.body["tools"] =
+                json!([{"type":"image_generation"},{"type":"tool_search","execution":"client"}]);
+            let RequestAction::Protect { body, .. } = firewall.evaluate(&request).await else {
+                panic!("Hosted tool metadata must not block a masked Responses request");
+            };
+            assert!(!String::from_utf8_lossy(&body).contains(KEY));
+            std::fs::remove_dir_all(root).unwrap();
+        }
     }
     #[tokio::test]
     async fn configured_redact_supports_actual_proxy_policy_and_owned_retrieval() {

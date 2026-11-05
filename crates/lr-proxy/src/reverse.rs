@@ -67,6 +67,7 @@ pub struct ReverseExchange {
     pub path: String,
     pub status: Option<u16>,
     pub request_body: Option<Vec<u8>>,
+    pub request_body_error: Option<crate::request_body::DecodeError>,
     pub response_body: Option<Vec<u8>>,
     /// Response was `text/event-stream` (OpenAI-style streaming).
     pub response_is_sse: bool,
@@ -240,7 +241,10 @@ impl ReverseProxy {
         for name in HOP_BY_HOP {
             parts.headers.remove(*name);
         }
-        parts.headers.remove(hyper::header::ACCEPT_ENCODING);
+        parts.headers.insert(
+            hyper::header::ACCEPT_ENCODING,
+            hyper::header::HeaderValue::from_static("identity"),
+        );
         parts.headers.remove(hyper::header::CONTENT_LENGTH);
         if let Ok(host) = HeaderValue::from_str(&self.authority()) {
             parts.headers.insert(hyper::header::HOST, host);
@@ -258,6 +262,8 @@ impl ReverseProxy {
                 .load(std::sync::atomic::Ordering::Relaxed),
         );
 
+        let inspected =
+            crate::request_body::inspect(&path, &parts.headers, req_bytes.clone()).await;
         let mut base = ReverseExchange {
             client_id: self.client.client_id.clone(),
             session_id: Some(uuid::Uuid::new_v4().to_string()),
@@ -276,7 +282,12 @@ impl ReverseProxy {
             upstream: self.upstream.clone(),
             method,
             path,
-            request_body: (!req_bytes.is_empty()).then(|| req_bytes.to_vec()),
+            request_body: inspected
+                .as_ref()
+                .ok()
+                .filter(|b| !b.is_empty())
+                .map(|b| b.to_vec()),
+            request_body_error: inspected.err(),
             started_at: Some(started_at),
             trace,
             ..Default::default()
@@ -285,6 +296,7 @@ impl ReverseProxy {
         let req_bytes = match self.recorder.on_request(&base).await {
             crate::interceptor::RequestAction::Forward => req_bytes,
             crate::interceptor::RequestAction::Replace(body) => {
+                crate::request_body::rewritten(&mut parts.headers);
                 base.request_body = Some(body.clone());
                 Bytes::from(body)
             }
@@ -292,6 +304,7 @@ impl ReverseProxy {
                 body,
                 vault: capability,
             } => {
+                crate::request_body::rewritten(&mut parts.headers);
                 base.request_body = Some(body.clone());
                 vault = Some(capability);
                 Bytes::from(body)

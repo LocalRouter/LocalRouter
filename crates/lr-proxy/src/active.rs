@@ -109,6 +109,9 @@ impl ProxyInterceptor for ActiveInterceptor {
             }
             return RequestAction::Forward;
         };
+        if let Some(error) = ex.request_body_error {
+            return RequestAction::reject_json(error.status(), error.message());
+        }
         let body: Value = ex
             .request_body
             .as_ref()

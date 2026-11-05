@@ -44,8 +44,12 @@ http-body = "1"
 http-body-util = "0.1"
 http = "1"
 bytes = "1"
+zstd = "0.13"
+flate2 = "1"
+brotli = "8"
 
 [dev-dependencies]
+codex-client = { git = "https://github.com/openai/codex.git", tag = "rust-v0.124.0" }
 lr-api-keys = { workspace = true }
 tokio = { workspace = true }
 http-body-util = "0.1"

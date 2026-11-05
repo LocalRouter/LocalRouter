@@ -343,11 +343,12 @@ async fn proxy_request(
         Err(_) => return bad_gateway("failed reading request body"),
     };
 
-    // Ask the upstream for an uncompressed response so we can read it. Without
-    // this, providers honor the client's `Accept-Encoding: gzip, br` and we'd
-    // capture compressed bytes we can't parse. The client still receives a
-    // valid (now uncompressed) response — semantics are unchanged.
-    parts.headers.remove(hyper::header::ACCEPT_ENCODING);
+    // An absent Accept-Encoding permits any coding. Explicitly request
+    // identity so the response can be inspected and restored while streaming.
+    parts.headers.insert(
+        hyper::header::ACCEPT_ENCODING,
+        hyper::header::HeaderValue::from_static("identity"),
+    );
     // hyper sets Content-Length from the forwarded body; drop the client's so a
     // rewritten (or re-framed) request never carries a stale length.
     parts.headers.remove(hyper::header::CONTENT_LENGTH);
@@ -383,6 +384,7 @@ async fn proxy_request(
         )
     };
 
+    let inspected = crate::request_body::inspect(&path, &parts.headers, req_bytes.clone()).await;
     // Base exchange (request half); response fields filled at stream end.
     let mut base = ObservedExchange {
         client_id: (*client_id).clone(),
@@ -402,7 +404,12 @@ async fn proxy_request(
         port,
         method,
         path: path.clone(),
-        request_body: (!req_bytes.is_empty()).then(|| req_bytes.to_vec()),
+        request_body: inspected
+            .as_ref()
+            .ok()
+            .filter(|b| !b.is_empty())
+            .map(|b| b.to_vec()),
+        request_body_error: inspected.err(),
         trace,
         ..Default::default()
     };
@@ -420,8 +427,13 @@ async fn proxy_request(
     let mut secret_vault = None;
     let forward_bytes: Bytes = match action {
         RequestAction::Forward => req_bytes,
-        RequestAction::Replace(new_body) => Bytes::from(new_body),
+        RequestAction::Replace(new_body) => {
+            crate::request_body::rewritten(&mut parts.headers);
+            base.request_body = Some(new_body.clone());
+            Bytes::from(new_body)
+        }
         RequestAction::Protect { body, vault } => {
+            crate::request_body::rewritten(&mut parts.headers);
             // Monitoring sees only the masked outbound request.
             base.request_body = Some(body.clone());
             secret_vault = Some(vault);
