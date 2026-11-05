@@ -36,7 +36,7 @@ interface Paper {
   subsections: PaperSubSection[]
 }
 
-const papers: Paper[] = [
+export const papers: Paper[] = [
   {
     id: 'reversible-secret-redaction',
     title: 'Reversible Secret Redaction',

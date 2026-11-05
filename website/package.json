@@ -5,10 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
-    "build:check": "tsc && vite build",
+    "build": "vite build && node scripts/prerender.mjs",
+    "build:check": "tsc && npm run build && node scripts/check-static.mjs",
     "typecheck": "tsc --noEmit",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:browser": "node scripts/check-browser.mjs"
   },
   "dependencies": {
     "@heroicons/react": "^2.2.0",

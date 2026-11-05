@@ -42,6 +42,8 @@ const docEmbeds: Record<string, ComponentType> = {
 
 /** Render the embed for a given section ID, if one exists */
 export function DocEmbed({ id }: { id: string }) {
+  // Interactive previews mount in the browser; the article is rendered statically.
+  if (import.meta.env.SSR) return null
   const Component = docEmbeds[id]
   if (!Component) return null
 
