@@ -157,6 +157,15 @@ impl lr_proxy::active::Firewall for AppFirewall {
         let Some(client) = config.clients.iter().find(|c| c.id == req.client_id) else {
             return RequestAction::Forward;
         };
+        if *client
+            .secret_scanning
+            .action
+            .as_ref()
+            .unwrap_or(&config.secret_scanning.action)
+            == lr_config::SecretScanAction::Redact
+        {
+            return RequestAction::reject_json(403, "Restorable secret redaction requires the text gateway; this proxy transport is unsupported");
+        }
         let Some(strategy) = config
             .strategies
             .iter()

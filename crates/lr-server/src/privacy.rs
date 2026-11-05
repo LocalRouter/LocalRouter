@@ -6,6 +6,42 @@ use crate::{
 use lr_config::LlmMode;
 
 pub fn check_ingress(state: &AppState, client_id: &str, path: &str) -> ApiResult<()> {
+    let config = state.config_manager.get();
+    let client = state.client_manager.get_client(client_id);
+    let action = client
+        .as_ref()
+        .and_then(|c| c.secret_scanning.action.as_ref())
+        .unwrap_or(&config.secret_scanning.action);
+    if *action == lr_config::SecretScanAction::Redact {
+        let text_path = path.strip_prefix("/v1").unwrap_or(path);
+        if matches!(
+            text_path,
+            "/chat/completions"
+                | "/completions"
+                | "/responses"
+                | "/messages"
+                | "/systemone"
+                | "/decisions"
+        ) {
+            if client
+                .as_ref()
+                .is_some_and(|c| c.llm_mode != LlmMode::Gateway)
+            {
+                return Err(ApiErrorResponse::forbidden(
+                    "Restorable secret redaction requires text gateway mode",
+                ));
+            }
+        } else if text_path.contains("/audio")
+            || text_path.contains("/images")
+            || text_path.contains("/realtime")
+            || text_path.contains("/videos")
+            || text_path.contains("/batches")
+        {
+            return Err(ApiErrorResponse::forbidden(
+                "This endpoint has no verified restorable-secret mapping",
+            ));
+        }
+    }
     let policy = state.config_manager.client_privacy(client_id);
     if !policy.restricted() {
         return Ok(());

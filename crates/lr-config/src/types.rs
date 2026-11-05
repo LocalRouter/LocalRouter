@@ -3103,6 +3103,8 @@ pub struct ClientJsonRepairConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SecretScanAction {
+    /// Replace detected secrets with restorable LocalRouter references.
+    Redact,
     /// Block the request and show a popup for user decision
     Ask,
     /// Allow the request but show a notification
@@ -3130,6 +3132,20 @@ pub struct SecretScanningConfig {
     /// Allowlist regex patterns that exclude matches (global only)
     #[serde(default)]
     pub allowlist: Vec<String>,
+}
+
+impl SecretScanningConfig {
+    /// A client can enable inspection even while the global default is Off.
+    pub fn enabled_for_any_client(&self, clients: &[Client]) -> bool {
+        self.action != SecretScanAction::Off
+            || clients.iter().any(|client| {
+                client
+                    .secret_scanning
+                    .action
+                    .as_ref()
+                    .is_some_and(|action| *action != SecretScanAction::Off)
+            })
+    }
 }
 
 impl Default for SecretScanningConfig {
@@ -6962,5 +6978,36 @@ models:
             ProviderType::LMStudio.factory_id(),
             serialized(ProviderType::LMStudio)
         );
+    }
+}
+
+#[cfg(test)]
+mod reversible_redaction_config_tests {
+    use super::*;
+    #[test]
+    fn client_can_enable_redaction_with_global_scanning_off() {
+        let mut config = SecretScanningConfig {
+            action: SecretScanAction::Off,
+            ..Default::default()
+        };
+        let mut client = Client::new_with_strategy("fixture".into(), "strategy".into());
+        assert!(!config.enabled_for_any_client(&[client.clone()]));
+        for action in [
+            SecretScanAction::Notify,
+            SecretScanAction::Redact,
+            SecretScanAction::Ask,
+        ] {
+            assert_eq!(
+                serde_json::from_str::<SecretScanAction>(&serde_json::to_string(&action).unwrap())
+                    .unwrap(),
+                action
+            );
+            client.secret_scanning.action = Some(action);
+            assert!(config.enabled_for_any_client(&[client.clone()]));
+        }
+        client.secret_scanning.action = Some(SecretScanAction::Off);
+        assert!(!config.enabled_for_any_client(&[client.clone()]));
+        config.action = SecretScanAction::Redact;
+        assert!(config.enabled_for_any_client(&[client]));
     }
 }

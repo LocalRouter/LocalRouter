@@ -1442,7 +1442,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                 {
                     let app_config = config_manager.get();
                     let ss_config = &app_config.secret_scanning;
-                    if ss_config.action != lr_config::SecretScanAction::Off {
+                    if ss_config.enabled_for_any_client(&app_config.clients) {
                         let engine_config = lr_secret_scanner::SecretScanEngineConfig {
                             entropy_threshold: ss_config.entropy_threshold,
                             allowlist: ss_config.allowlist.clone(),

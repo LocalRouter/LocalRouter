@@ -21,3 +21,5 @@ pub use dismissal::{hash_secret, new_salt, verify_secret, DEFAULT_ITERATIONS};
 pub use engine::{SecretScanEngine, SecretScanEngineConfig};
 pub use regex_engine::RuleMetadata;
 pub use types::{ExtractedText, ScanResult, SecretFinding, SecretScanAction};
+
+pub mod placeholders;

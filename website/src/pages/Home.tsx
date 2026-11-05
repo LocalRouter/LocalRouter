@@ -1,3 +1,4 @@
+import { SecretPlaceholderDiagram } from '@/components/SecretPlaceholderDiagram'
 import { Link } from 'react-router-dom'
 import { Button } from '@/components/ui/Button'
 import { Logo } from '@/components/Logo'
@@ -1389,6 +1390,8 @@ export default function Home() {
         </div>
       </section>
 
+      <SecretPlaceholderDiagram />
+
       {/* Safety Platform */}
       <section className="border-b py-20 sm:py-32">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
@@ -2164,6 +2167,11 @@ export default function Home() {
             </p>
           </div>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 max-w-4xl mx-auto">
+            <Link to="/research/reversible-secret-redaction" className="group rounded-xl border bg-card p-5 hover:border-primary/50 transition-colors">
+              <ShieldCheck className="h-5 w-5 text-primary mb-2" />
+              <h3 className="font-semibold text-sm group-hover:text-primary transition-colors">Reversible Secret Redaction</h3>
+              <p className="text-xs text-muted-foreground mt-1">OS-stored originals, self-describing references and restoration across model replies</p>
+            </Link>
             <Link to="/research/mcp-via-llm" className="group rounded-xl border bg-card p-5 hover:border-primary/50 transition-colors">
               <Zap className="h-5 w-5 text-primary mb-2" />
               <h3 className="font-semibold text-sm group-hover:text-primary transition-colors">MCP via LLM</h3>

@@ -48,3 +48,5 @@ impl RecordedRequest {
 pub trait TokenRecorder: Send + Sync {
     fn record_request(&self, request: &RecordedRequest);
 }
+
+pub mod secret_context;

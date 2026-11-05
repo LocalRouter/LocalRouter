@@ -202,21 +202,34 @@ pub fn public_representation(value: &Value) -> Value {
 pub fn scan_projection(value: &Value) -> AppResult<(Value, bool)> {
     let mut projected = value.clone();
     let mut opaque = false;
-    if let Some(messages) = projected.get_mut("messages").and_then(Value::as_array_mut) {
-        for message in messages {
-            if let Some(parts) = message.get_mut("content").and_then(Value::as_array_mut) {
-                for part in parts {
-                    if part.get("type").and_then(Value::as_str) != Some("file") {
-                        continue;
-                    }
-                    let file: FileInput =
-                        serde_json::from_value(part.get("file").cloned().unwrap_or(Value::Null))?;
-                    let decoded = file.decode()?;
-                    if decoded.mime == "application/pdf" {
-                        opaque = true;
-                        *part = json!({"type":"text","text":format!("[Opaque PDF attachment: {}]",file.filename.as_deref().unwrap_or("unnamed"))});
-                    } else {
-                        *part = json!({"type":"text","text":String::from_utf8(decoded.bytes).map_err(|_|invalid("Invalid document UTF-8"))?});
+    for messages_key in ["messages", "input"] {
+        if let Some(messages) = projected
+            .get_mut(messages_key)
+            .and_then(Value::as_array_mut)
+        {
+            for message in messages {
+                if let Some(parts) = message.get_mut("content").and_then(Value::as_array_mut) {
+                    for part in parts {
+                        if !matches!(
+                            part.get("type").and_then(Value::as_str),
+                            Some("file" | "input_file")
+                        ) {
+                            continue;
+                        }
+                        let file: FileInput = serde_json::from_value(
+                            if part["type"] == "input_file" {
+                                json!({"filename":part.get("filename"),"file_data":part.get("file_data")})
+                            } else {
+                                part.get("file").cloned().unwrap_or(Value::Null)
+                            },
+                        )?;
+                        let decoded = file.decode()?;
+                        if decoded.mime == "application/pdf" {
+                            opaque = true;
+                            *part = json!({"type":"text","text":format!("[Opaque PDF attachment: {}]",file.filename.as_deref().unwrap_or("unnamed"))});
+                        } else {
+                            *part = json!({"type":"text","text":String::from_utf8(decoded.bytes).map_err(|_|invalid("Invalid document UTF-8"))?});
+                        }
                     }
                 }
             }
@@ -231,31 +244,61 @@ pub fn redact_text_files(
     value: &mut Value,
     redaction: &lr_secret_scanner::redaction::Redaction,
 ) -> AppResult<()> {
+    transform_text_files(value, &mut |text| Ok(redaction.apply_text(text)))
+}
+
+pub fn protect_text_files(
+    value: &mut Value,
+    context: &dyn lr_types::secret_context::SecretContext,
+) -> AppResult<()> {
+    transform_text_files(value, &mut |text| {
+        let mut content = Value::String(text.to_owned());
+        context.protect(&mut content)?;
+        Ok(content.as_str().unwrap_or_default().to_owned())
+    })
+}
+fn transform_text_files(
+    value: &mut Value,
+    transform: &mut dyn FnMut(&str) -> AppResult<String>,
+) -> AppResult<()> {
     use base64::Engine;
-    if let Some(messages) = value.get_mut("messages").and_then(Value::as_array_mut) {
-        for message in messages {
-            if let Some(parts) = message.get_mut("content").and_then(Value::as_array_mut) {
-                for part in parts {
-                    if part.get("type").and_then(Value::as_str) != Some("file") {
-                        continue;
+    for messages_key in ["messages", "input"] {
+        if let Some(messages) = value.get_mut(messages_key).and_then(Value::as_array_mut) {
+            for message in messages {
+                if let Some(parts) = message.get_mut("content").and_then(Value::as_array_mut) {
+                    for part in parts {
+                        if !matches!(
+                            part.get("type").and_then(Value::as_str),
+                            Some("file" | "input_file")
+                        ) {
+                            continue;
+                        }
+                        let responses = part["type"] == "input_file";
+                        let mut file: FileInput = serde_json::from_value(if responses {
+                            json!({"filename":part.get("filename"),"file_data":part.get("file_data")})
+                        } else {
+                            part.get("file")
+                                .cloned()
+                                .ok_or_else(|| invalid("Missing document"))?
+                        })?;
+                        let decoded = file.decode()?;
+                        if decoded.mime == "application/pdf" {
+                            continue;
+                        }
+                        let text = String::from_utf8(decoded.bytes)
+                            .map_err(|_| invalid("Invalid document UTF-8"))?;
+                        let redacted = transform(&text)?;
+                        file.file_data = format!(
+                            "data:{};base64,{}",
+                            decoded.mime,
+                            base64::engine::general_purpose::STANDARD.encode(redacted.as_bytes())
+                        );
+                        if responses {
+                            part["file_data"] = Value::String(file.file_data);
+                        } else {
+                            part["file"] = serde_json::to_value(file)?;
+                        }
                     }
-                    let file_value = part
-                        .get_mut("file")
-                        .ok_or_else(|| invalid("Missing document"))?;
-                    let mut file: FileInput = serde_json::from_value(file_value.clone())?;
-                    let decoded = file.decode()?;
-                    if decoded.mime == "application/pdf" {
-                        continue;
-                    }
-                    let text = String::from_utf8(decoded.bytes)
-                        .map_err(|_| invalid("Invalid document UTF-8"))?;
-                    let redacted = redaction.apply_text(&text);
-                    file.file_data = format!(
-                        "data:{};base64,{}",
-                        decoded.mime,
-                        base64::engine::general_purpose::STANDARD.encode(redacted.as_bytes())
-                    );
-                    *file_value = serde_json::to_value(file)?;
                 }
             }
         }
@@ -280,12 +323,14 @@ pub fn enforce_opaque_scan_policy(
         .as_ref()
         .and_then(|c| c.secret_scanning.action.as_ref())
         .unwrap_or(&config.secret_scanning.action);
-    let secret_required = *secret_action == lr_config::SecretScanAction::Ask
-        && state
-            .secret_scanner
-            .read()
-            .as_ref()
-            .is_some_and(|scanner| scanner.has_rules());
+    let secret_required = matches!(
+        secret_action,
+        lr_config::SecretScanAction::Ask | lr_config::SecretScanAction::Redact
+    ) && state
+        .secret_scanner
+        .read()
+        .as_ref()
+        .is_some_and(|scanner| scanner.has_rules());
     let actions = merge_guardrail_category_actions(
         client
             .as_ref()

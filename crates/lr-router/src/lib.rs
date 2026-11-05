@@ -2600,6 +2600,13 @@ impl Router {
         request: CompletionRequest,
     ) -> AppResult<(CompletionResponse, Option<serde_json::Value>)> {
         let mut request = request;
+        if let Some(context) = lr_types::secret_context::current() {
+            let mut value = serde_json::to_value(&request)
+                .map_err(|_| AppError::Internal("Could not protect model request".into()))?;
+            context.protect(&mut value)?;
+            request = serde_json::from_value(value)
+                .map_err(|_| AppError::Internal("Could not protect model request".into()))?;
+        }
         self.prepare_privacy_request(client_id, &mut request)?;
         self.prepare_upstream_tools(client_id, &mut request)?;
         self.prepare_document_request(client_id, &mut request)?;
@@ -2718,6 +2725,13 @@ impl Router {
         Option<serde_json::Value>,
     )> {
         let mut request = request;
+        if let Some(context) = lr_types::secret_context::current() {
+            let mut value = serde_json::to_value(&request)
+                .map_err(|_| AppError::Internal("Could not protect model request".into()))?;
+            context.protect(&mut value)?;
+            request = serde_json::from_value(value)
+                .map_err(|_| AppError::Internal("Could not protect model request".into()))?;
+        }
         self.prepare_privacy_request(client_id, &mut request)?;
         self.prepare_upstream_tools(client_id, &mut request)?;
         self.prepare_document_request(client_id, &mut request)?;

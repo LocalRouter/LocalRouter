@@ -4,20 +4,25 @@
 - [x] Save and review this design; validate the documentation diff; commit and push only this plan.
 - [x] Refine the approved XML tag/parser, OS storage, Redact action, caching and full-response restoration requirements.
 - [x] Include a dedicated research paper, landing-page research card and expanded test matrix.
-- [ ] Implement the scoped OS-credential-store vault and reversible text/JSON transforms.
-- [ ] Wire request protection and response restoration into supported gateway codecs.
-- [ ] Protect MCP-via-LLM iterations and restore arguments before tool approval/execution.
-- [ ] Add explicit configuration, approval UI, types and demo support.
-- [ ] Implement the landing-page section, research paper/card and secret-scanning documentation.
-- [ ] Plan Review: reconcile implementation against every requirement and supported-path claim below.
-- [ ] Test Coverage Review: cover lifecycle, isolation, streaming, serialization, tools and failures.
-- [ ] Bug Hunt: review secret exposure, approvals, retries, caches, concurrency and protocol finalization.
-- [ ] Run appropriate stable Rust, frontend, website and focused integration checks.
+- [x] Implement the scoped OS-credential-store vault and reversible text/JSON transforms.
+- [x] Wire request protection and response restoration into supported gateway codecs.
+- [x] Protect MCP-via-LLM iterations and restore arguments before tool approval/execution.
+- [x] Add explicit configuration, approval UI, types and demo support.
+- [x] Implement the landing-page section, research paper/card and secret-scanning documentation.
+- [x] Plan Review: reconcile implementation against every requirement and supported-path claim below.
+- [x] Test Coverage Review: cover lifecycle, isolation, streaming, serialization, tools and failures.
+- [x] Bug Hunt: review secret exposure, approvals, retries, caches, concurrency and protocol finalization.
+- [x] Run appropriate stable Rust, frontend, website and focused integration checks.
 - [ ] Commit and push validated implementation, preserving unrelated changes and including automatic catalog updates.
 
 # Reversible secret placeholders
 
-Status: design only; no feature code or website changes are implemented by this task.
+Status: implementation authorized 2026-11-04, including local tests, merge to master and a new release. Work occurs in the isolated feat/reversible-secret-redaction worktree. The checklist records completion as each step is verified.
+
+- [x] Fetch origin and merge origin/master with --no-ff into the isolated implementation branch (already up to date at 99fa0143).
+- [x] Run local end-to-end synthetic-provider/credential-store proofs and inspect the website preview.
+- [ ] Merge the validated branch to master with --no-ff; push normally.
+- [ ] Dispatch the next unused stable release; monitor builds and verify published assets and website.
 
 ## Goal and example
 
@@ -215,3 +220,21 @@ Unknown/wrong-scope/expired or malformed reserved tags in executable output fail
 Run stable-toolchain workspace Clippy (all targets, warnings denied), fmt and workspace tests for Rust changes per AGENTS.md, confirming rustup compiler selection. Run desktop unit tests/build and `npx tsc --noEmit` for frontend/Tauri type changes; run `npm --prefix website run build:check` for shared/frontend/website inputs. Run focused protocol, integration, parser property/fuzz and browser tests in addition to these checks. Do not claim these implementation checks ran as part of this documentation-only refinement.
 
 Mandatory final review: reconcile plan with code, review coverage, perform a fresh bug hunt, record supported paths, native platform coverage and actual checks, then commit/push only task changes plus any automatically refreshed catalog. Use the configured signed user identity, normal push and merge commits for integration. Preserve concurrent work. Refresh only the owned PR-description section if a PR is involved. Do not dispatch hosted CI or a release/deployment merely to validate this feature.
+
+## Implementation and validation record (2026-11-04)
+
+The implementation uses one OS credential record per authenticated owner/scope, including its protected originals, and an OS-stored ownership/reference index. This replaces the proposed SQLite metadata migration: keeping both originals and recovery metadata in the existing native abstraction avoids an additional persistence mechanism. All native operations use SystemKeychain explicitly; mocks are injected into tests. Request-local records are deleted at completion. Durable scope expiry follows the existing Responses active-window policy; active requests are pinned, reset/client deletion revoke references, and failed deletions remain discoverable for cleanup.
+
+The authenticated middleware protects before normal request capture, and restores after tokenized response capture. The narrow SecretContext capability travels with spawn_traced into automatic MCP loops. Restored execution arguments reach the existing permission/firewall path; gateway tool results are protected before being stored in the assistant conversation. Later router iterations scan new tool-result secrets and re-mask known originals. Ask requires a new explicit decision for new secrets discovered during an internal tool loop, rather than sending them silently. No system/developer instruction or manifest is injected.
+
+The actual action controls are Off / Notify / Redact / Ask globally and Default / Off / Notify / Redact / Ask per client. Per-client Redact works while the global default is Off: startup and scanner rebuild account for client overrides, and client action updates rebuild the scanner. Existing irreversible redaction remains a separate action.
+
+Supported return paths include Chat/Completions, Responses and Messages text and structured content, function/custom-tool arguments, streamed deltas and terminal snapshots, System One/decision JSON content, and MCP execution. Native Chat and Responses UTF-8 text attachments are decoded before masking and re-encoded. Provider-owned identities and signed/opaque reasoning remain untouched; a signed block containing a known raw secret is rejected. Hosted provider tools, unsupported media and proxy redaction are explicitly rejected rather than advertised as reversible. Strict schemas are never silently relaxed; constraints can be incompatible with a reference, as described in the research limits.
+
+Local verification so far: all 81 workspace unit/integration targets passed using a streaming cargo artifact runner, and all 32 workspace doc-test targets passed together. The initial monolithic workspace command exhausted disk while linking, so task-generated test executables are removed after running. No other checkout's build artifacts or source files were removed. Rust stable 1.99.1 is selected explicitly through rustup sysroot PATH and RUSTC; debug symbols/incremental artifacts are disabled for disk capacity. Focused checks after final review cover 83 scanner tests (including a 2,000-input adversarial corpus and exhaustive representative streaming splits), the native macOS credential smoke test, ten gateway/boundary tests, and client/global configuration behavior. Windows/Linux native credential behavior has not been exercised locally.
+
+Frontend verification: 148 unit tests, desktop build and website build:check passed; all 46 existing secret-popup browser regressions and six new landing/research/placeholder-choice browser tests passed, including light/dark modes. Desktop and mobile diagram screenshots were inspected. Browser tests use the already-installed Chromium binary. The research paper records only synthetic/local evaluation and claims no hosted-model success rates or cache-hit measurements.
+
+Final Rust checks and release outcome are recorded below when complete. Release authorization is explicit in this conversation; no additional confirmation is required. Latest verified published release before dispatch is v0.0.173, with no competing release run; recheck before choosing the next tag.
+
+Final local checks: workspace all-target Clippy with warnings denied and rustfmt check passed on stable 1.99.1. The final scanner suite passed 83 tests with the explicitly opt-in native test skipped in that run; the isolated native Keychain proof passed separately. All ten gateway tests and the global-Off/client-Redact configuration regression passed. A cleanup test initially shared an owner/scope with another concurrent mock test; isolated its synthetic owner and reran the suite successfully. Native test owners are unique per run and their value/index entries are deleted afterward. Existing block 0.1.6 future-incompatibility and frontend bundle-size notices remain informational.

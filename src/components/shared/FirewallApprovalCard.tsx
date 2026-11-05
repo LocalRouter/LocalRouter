@@ -25,7 +25,7 @@ import { isValidHttpUrl } from "@/utils/url"
 import { categoryActionLabel } from "@/components/permissions/CategoryActionButton"
 import type { SafetyVerdict, CategoryActionRequired, SecretFindingSummary, PushEventApprovalDetails } from "@/types/tauri-commands"
 
-export type ApprovalAction = "deny" | "deny_session" | "deny_always" | "block_categories" | "allow_once" | "redact_once" | "allow_session" | "allow_1_minute" | "allow_1_hour" | "allow_permanent" | "allow_categories" | "deny_1_hour" | "disable_client"
+export type ApprovalAction = "deny" | "deny_session" | "deny_always" | "block_categories" | "allow_once" | "redact_once" | "replace_secrets" | "allow_session" | "allow_1_minute" | "allow_1_hour" | "allow_permanent" | "allow_categories" | "deny_1_hour" | "disable_client"
 
 export type RequestType = "marketplace" | "skill" | "model" | "tool" | "guardrail" | "free_tier_fallback" | "auto_router" | "secret_scan" | "push_event"
 
@@ -972,7 +972,7 @@ function StandardApprovalCard({
             >
               Redact once
             </Button>
-            {onRedactPermanently && (
+            {(
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button className="h-10 px-2 rounded-l-none border-l border-yellow-700 dark:border-[#6b5e00] bg-yellow-600 hover:bg-yellow-700 dark:bg-[#807000] dark:hover:bg-[#6b5e00] text-white" disabled={disabled} aria-label="More redaction options">
@@ -980,7 +980,10 @@ function StandardApprovalCard({
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="center">
-                  {(secretScanFindings ?? []).map((finding, i) => (
+                  <DropdownMenuItem onClick={() => act("replace_secrets")}>
+                    Use placeholder
+                  </DropdownMenuItem>
+                  {onRedactPermanently && (secretScanFindings ?? []).map((finding, i) => (
                     <DropdownMenuItem key={i} className="flex-col items-start" onClick={() => rememberSecret(i, "redact")}>
                       <span>Always redact this secret</span>
                       {(secretScanFindings?.length ?? 0) > 1 && <span className="text-xs text-muted-foreground">{finding.rule_description} · {finding.matched_text}</span>}

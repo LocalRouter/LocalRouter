@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SecretScanAction {
+    /// Replace detected secrets with restorable LocalRouter references.
+    Redact,
     /// Block the request and show a popup for user decision
     Ask,
     /// Allow the request but show a notification
