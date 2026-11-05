@@ -312,7 +312,7 @@ export function sessionNoPushReason(
   receivesPush: boolean | null,
 ): string | null {
   if (mechanisms.anyOffered) return null
-  if (!clientId) return "Push permissions belong to a client — connect in Against Client mode"
+  if (!clientId) return "No push source this session may use"
   if (receivesPush === false) return "Push is off for this client"
   return "No push source this client may use"
 }
