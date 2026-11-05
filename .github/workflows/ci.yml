@@ -46,7 +46,7 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       # Ubuntu runners ship with Android SDK, .NET, Haskell GHC, large
       # Docker images, etc. The cargo workspace + target dir has been
