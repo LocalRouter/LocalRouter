@@ -42,12 +42,15 @@ import type { PushTester } from "./use-push-tester"
 interface PushPanelProps {
   tester: PushTester
   connectionState: McpConnectionState
-  /** The client this session runs as (Against Client mode), else null. */
+  /** The client this session runs as (Against Client mode), else null (the internal test client). */
   clientId: string | null
   clientName: string | null
 }
 
 type PermissionChoice = PushPermission | "inherit"
+
+/** The client All and Direct sessions run as. */
+const INTERNAL_TEST_CLIENT_ID = "internal-test"
 
 const MODE_BADGE: Record<PushDeliveryMode, string> = {
   push: "Push",
@@ -217,13 +220,15 @@ export function PushPanel({ tester, connectionState, clientId, clientName }: Pus
     setSending(true)
     try {
       const result = await invoke<PushTestEventResult>("send_push_test_event", {
-        clientId,
+        clientId: clientId ?? INTERNAL_TEST_CLIENT_ID,
         message: message.trim() || null,
         data: data ?? null,
       } satisfies SendPushTestEventParams)
       const effective = testPermission === "inherit" ? inherited : testPermission
       setLastSent(
-        effective === "ask"
+        !clientId
+          ? `Sent ${result.event_id} — the global default push permission applies`
+          : effective === "ask"
           ? `Sent ${result.event_id} — held for approval in the popup`
           : effective === "off"
             ? `Sent ${result.event_id} — off for this client (see Monitor)`
@@ -299,8 +304,9 @@ export function PushPanel({ tester, connectionState, clientId, clientName }: Pus
               />
               {!eventsAdvertised && (
                 <p className="pt-2 text-xs text-muted-foreground">
-                  Nothing was advertised: no upstream push source this client may use was known when the session started.
-                  The test source is offered to Try it out sessions against a client — reconnect after switching to Against Client.
+                  Nothing was advertised: no push source this session may use was known when it started. LocalRouter offers an
+                  upstream's events once it has seen the server advertise them, and push may be off for this client —
+                  reconnect after either changes.
                 </p>
               )}
             </CardContent>
@@ -317,38 +323,37 @@ export function PushPanel({ tester, connectionState, clientId, clientName }: Pus
             </CardHeader>
             <CardContent className="space-y-3 pt-0">
               {clientId ? (
-                <>
-                  <div className="space-y-1.5">
-                    <Label className="text-xs">Permission for {clientName ?? "this client"}</Label>
-                    <div>
-                      <PushPermissionButton
-                        value={testPermission === "inherit" ? (inherited ?? "allow") : testPermission}
-                        inherited={testPermission === "inherit"}
-                        onChange={choice => void setTestPermission(choice)}
-                        size="sm"
-                      />
-                    </div>
-                    <p className="text-[11px] text-muted-foreground">Ask holds each event for approval in the popup.</p>
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Permission for {clientName ?? "this client"}</Label>
+                  <div>
+                    <PushPermissionButton
+                      value={testPermission === "inherit" ? (inherited ?? "allow") : testPermission}
+                      inherited={testPermission === "inherit"}
+                      onChange={choice => void setTestPermission(choice)}
+                      size="sm"
+                    />
                   </div>
-                  <div className="space-y-1.5">
-                    <Label className="text-xs" htmlFor="push-test-message">Message</Label>
-                    <Input id="push-test-message" className="h-8" placeholder="Test event from LocalRouter" value={message} onChange={e => setMessage(e.target.value)} />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label className="text-xs" htmlFor="push-test-data">Data (JSON, optional — replaces the message)</Label>
-                    <Textarea id="push-test-data" className="min-h-[60px] font-mono text-xs" placeholder='{"text": "hello"}' value={dataText} onChange={e => setDataText(e.target.value)} />
-                  </div>
-                  <Button size="sm" onClick={() => void sendTestEvent()} disabled={sending}>
-                    {sending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Send className="h-3.5 w-3.5 mr-1.5" />}
-                    Send test event
-                  </Button>
-                  {lastSent && <p className="text-xs text-muted-foreground break-all">{lastSent}</p>}
-                </>
+                  <p className="text-[11px] text-muted-foreground">Ask holds each event for approval in the popup.</p>
+                </div>
               ) : (
                 <p className="text-xs text-muted-foreground">
-                  Push permissions belong to a client. Connect in <span className="font-medium">Against Client</span> mode to send test events.
+                  This session runs as the internal test client, which uses the global default push permission. Connect in{" "}
+                  <span className="font-medium">Against Client</span> mode to test a client&apos;s own permissions.
                 </p>
               )}
+              <div className="space-y-1.5">
+                <Label className="text-xs" htmlFor="push-test-message">Message</Label>
+                <Input id="push-test-message" className="h-8" placeholder="Test event from LocalRouter" value={message} onChange={e => setMessage(e.target.value)} />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs" htmlFor="push-test-data">Data (JSON, optional — replaces the message)</Label>
+                <Textarea id="push-test-data" className="min-h-[60px] font-mono text-xs" placeholder='{"text": "hello"}' value={dataText} onChange={e => setDataText(e.target.value)} />
+              </div>
+              <Button size="sm" onClick={() => void sendTestEvent()} disabled={sending}>
+                {sending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Send className="h-3.5 w-3.5 mr-1.5" />}
+                Send test event
+              </Button>
+              {lastSent && <p className="text-xs text-muted-foreground break-all">{lastSent}</p>}
             </CardContent>
           </Card>
 

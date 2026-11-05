@@ -652,7 +652,8 @@ built-in **test source** so that needs no upstream server offering push.
 - **Scope: a session opts in; nothing else sees the source.** A session opts in by sending
   `X-LocalRouter-Push-Test: 1` on its requests, recorded per session like the STDIO bridge header
   (`McpGateway::set_push_test_session` → `PushRelaySessionContext::push_test_source`). Try it out
-  sends it in Against Client mode; the STDIO bridge sends it when `LOCALROUTER_PUSH_TEST=1`, which
+  sends it in every mode (All and Direct sessions run as the internal test client, which inherits
+  the global default permission); the STDIO bridge sends it when `LOCALROUTER_PUSH_TEST=1`, which
   is how Channels are tested with a real Claude Code. The relay adds the test entry only to an
   opted-in session's catalogue (`catalogue_for(.., include_test)`; `catalogue()` never includes
   it), and the channel pump skips test occurrences for sessions that did not opt in, so the
