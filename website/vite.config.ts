@@ -128,7 +128,13 @@ export default defineConfig({
     react(),
   ],
   base: '/',
+  // Resolve ESM router exports and keep shared Radix components on one React instance.
+  ssr: {
+    noExternal: ['react-router', 'react-router-dom', /^@radix-ui\//],
+    resolve: { conditions: ['module', 'import'] },
+  },
   resolve: {
+    dedupe: ['react', 'react-dom'],
     alias: {
       "@app": path.resolve(__dirname, "../src"),       // Main Tauri app src
       // Force single reactflow instance (main app components import from root node_modules,

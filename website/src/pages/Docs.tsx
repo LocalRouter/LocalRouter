@@ -50,7 +50,7 @@ interface DocSection {
   subsections: DocSubSection[]
 }
 
-const sections: DocSection[] = [
+export const sections: DocSection[] = [
   {
     id: 'introduction',
     title: 'Introduction',

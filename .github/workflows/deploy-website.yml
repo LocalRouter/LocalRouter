@@ -51,19 +51,6 @@ jobs:
         working-directory: ./website
         run: npm run build:check
 
-      - name: Add CNAME file
-        working-directory: ./website/dist
-        run: echo "localrouter.ai" > CNAME
-
-      - name: Add 404.html and SPA route indexes
-        working-directory: ./website/dist
-        run: |
-          cp index.html 404.html
-          mkdir -p demo docs research download research/decision-model-routing
-          for dir in demo docs research download research/decision-model-routing; do
-            cp index.html "$dir/index.html"
-          done
-
       - name: Setup Pages
         uses: actions/configure-pages@v4
 

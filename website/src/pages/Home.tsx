@@ -1912,7 +1912,7 @@ export default function Home() {
                     <span><span className="font-medium">Streaming</span> — character-at-a-time state machine, no buffering</span>
                   </li>
                 </ul>
-                <Link to="/docs/json-repair" className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-blue-500 hover:text-blue-400 transition-colors">
+                <Link to="/research/json-healing" className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-blue-500 hover:text-blue-400 transition-colors">
                   Learn more <span aria-hidden="true">&rarr;</span>
                 </Link>
               </div>
