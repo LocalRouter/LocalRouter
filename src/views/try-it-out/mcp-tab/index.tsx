@@ -549,9 +549,10 @@ export function McpTab({ innerPath, onPathChange, initialMode, initialDirectTarg
       mcpAccess,
       skillsAccess,
       codingAgentAccess,
-      // Push permissions belong to a client: against one, this session opts
-      // into the Push Relay's test source (the Push subtab sends to it)
-      pushTest: mode === "client" ? true : undefined,
+      // Opt into the Push Relay's test source (the Push subtab sends to it).
+      // All and Direct sessions run as the internal test client, which
+      // inherits the global default push permission.
+      pushTest: true,
     }
   }, [canConnect, serverPort, mode, clientApiKey, internalTestToken, selectedDirectTarget])
 

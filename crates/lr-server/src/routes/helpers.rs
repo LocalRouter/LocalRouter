@@ -43,6 +43,18 @@ pub fn is_internal_client(client_id: &str) -> bool {
     client_id == "internal-test"
 }
 
+/// The client the Push Relay sees for Try it out's internal test sessions
+/// ("All" and "Direct" modes). It may see every MCP server; each session's
+/// own requested servers bound what that session is offered. Its push
+/// permissions are empty, so every event type inherits the global default
+/// permission. Nothing about it is persisted.
+pub fn internal_push_client() -> Client {
+    let mut client = Client::new_with_strategy("Try it out".to_string(), "internal".to_string());
+    client.id = "internal-test".to_string();
+    client.mcp_permissions.global = lr_config::PermissionState::Allow;
+    client
+}
+
 /// Create a synthetic client for internal tokens (no persisted config).
 fn synthetic_internal_client(client_id: &str) -> Client {
     Client::new_with_strategy(client_id.to_string(), "internal".to_string())
@@ -359,5 +371,23 @@ pub fn check_mcp_access(client: &Client) -> HelperResult<()> {
 
 #[cfg(test)]
 mod tests {
-    // Tests would go here with mock state
+    use super::*;
+
+    #[test]
+    fn internal_push_client_inherits_the_global_push_default() {
+        let client = internal_push_client();
+        assert!(is_internal_client(&client.id));
+        assert!(client.enabled);
+        assert!(!client.security.privacy.restricted());
+        assert!(client.push_permissions.is_empty());
+        assert_eq!(
+            client.mcp_permissions.global,
+            lr_config::PermissionState::Allow
+        );
+
+        let mut global = lr_config::PushRelayConfig::default();
+        assert!(client.may_receive_push(&global));
+        global.default_permission = lr_config::PushPermission::Off;
+        assert!(!client.may_receive_push(&global));
+    }
 }

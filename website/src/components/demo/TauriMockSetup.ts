@@ -4056,8 +4056,13 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     const name = 'localrouter__test.event'
     const data = args?.data ?? { message: args?.message || 'Test event from LocalRouter', sent_at: now }
     // Like the relay: each target client's permission decides (Allow / Ask / Off)
-    const client = mockData.clients.find(c => c.id === args?.clientId || c.client_id === args?.clientId) ?? mockData.clients[0]
-    const p = clientPush(client.id).permissions
+    // Try it out's All and Direct modes send as the internal test client,
+    // which inherits the global default permission
+    const internal = args?.clientId === 'internal-test'
+    const client = internal
+      ? { id: 'internal-test', name: 'Try it out' }
+      : mockData.clients.find(c => c.id === args?.clientId || c.client_id === args?.clientId) ?? mockData.clients[0]
+    const p = internal ? {} as ReturnType<typeof clientPush>['permissions'] : clientPush(client.id).permissions
     const permission = p.events?.['localrouter__test.event'] ?? p.servers?.['localrouter'] ?? p.global ?? mockPushRelayConfig.default_permission
     if (permission === 'allow') {
       window.dispatchEvent(new CustomEvent('localrouter-demo-push', { detail: { eventId: event_id, name, timestamp: now, data } }))

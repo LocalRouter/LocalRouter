@@ -156,7 +156,7 @@ test('the Connection tab lists every push mechanism for this session', () => {
   const bare = sessionPushMechanisms({ tools: {} }, [{ delivery: ['push'] }], [])
   expect(bare.deliveryModes).toEqual({ push: false, poll: false, webhook: false })
   expect(bare.anyOffered).toBe(false)
-  expect(sessionNoPushReason(bare, null, null)).toMatch(/Against Client/)
+  expect(sessionNoPushReason(bare, null, null)).toBe('No push source this session may use')
   expect(sessionNoPushReason(bare, 'c', false)).toBe('Push is off for this client')
   expect(sessionNoPushReason(bare, 'c', true)).toBe('No push source this client may use')
   expect(sessionPushMechanisms(undefined, [], []).eventsListChanged).toBe(false)

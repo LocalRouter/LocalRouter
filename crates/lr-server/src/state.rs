@@ -1144,11 +1144,18 @@ impl AppState {
 
         // Push Relay: relays upstream push to clients. It reads clients from
         // the client manager and writes permanent decisions to the config.
+        // Try it out's internal test sessions are not in the manager; they
+        // get a stand-in client that inherits the global default permission.
         let client_manager = self.client_manager.clone();
         let push_relay = lr_mcp::gateway::push_relay::PushRelay::new(
             mcp_gateway.as_ref().clone(),
             self.config_manager.get().push_relay,
-            Arc::new(move |client_id| client_manager.get_client(client_id)),
+            Arc::new(move |client_id| {
+                client_manager.get_client(client_id).or_else(|| {
+                    crate::routes::helpers::is_internal_client(client_id)
+                        .then(crate::routes::helpers::internal_push_client)
+                })
+            }),
         );
         let persist_config = self.config_manager.clone();
         push_relay.set_persister(Arc::new(move |client_id, change| {

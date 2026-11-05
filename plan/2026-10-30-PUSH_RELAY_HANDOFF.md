@@ -391,7 +391,12 @@ Design and scope: "Testing pushes" in `plan/2026-10-30-PUSH_RELAY.md`. What exis
 | Panel | `src/views/try-it-out/mcp-tab/push-panel.tsx`, `use-push-tester.ts`, `push-log.ts`; `mcp-client.ts` (`pushTest` config, `listEvents`, `pollEvents`, `streamEvents`, `rawServerCapabilities`, `onEventsListChanged`). |
 | Tests | `push_relay_e2e_tests.rs`: `test_source_reaches_only_sessions_that_opted_in`, `test_event_flows_through_allow_ask_off_monitor_poll_and_stream`, `test_events_reach_opted_in_bridge_channels_and_the_poll_tool_only`; `tests/e2e/unit/try-it-out-push.spec.ts` (dedupe, notices, tool-text parsers, notification routing). |
 
-Try it out sessions against a client always opt in, so they see the test source (and with it
-the events capability, the fallback tools and the `<events>` block) even when no upstream offers
-push. Try it out's "All" and "Direct" modes use the internal test client, which has no push
-permissions; the panel asks for Against Client mode there.
+Try it out sessions always opt in, so they see the test source (and with it the events
+capability, the fallback tools and the `<events>` block) even when no upstream offers push.
+Try it out's "All" and "Direct" modes run as the internal test client (`internal-test`), which
+is not in the client manager: the relay's client lookup (`state.rs`) falls back to
+`routes::helpers::internal_push_client`, which may see every MCP server and has empty push
+permissions, so every event type inherits the global default. Each session's requested servers
+(All: every enabled server; Direct: the one target) bound what it is offered. Nothing about the
+stand-in client is persisted, so permanent Ask decisions for it are not saved. The panel shows
+per-client permission controls only against a client.
