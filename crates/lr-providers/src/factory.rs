@@ -3055,19 +3055,13 @@ impl ProviderFactory for GitHubCopilotProviderFactory {
         _instance_name: String,
         _config: HashMap<String, String>,
     ) -> AppResult<Arc<dyn ModelProvider>> {
-        // GitHub Copilot uses a custom API, create OpenAI-compatible provider
-        // with the OAuth token from keychain
-        use lr_api_keys::{keychain_trait::KeychainStorage, CachedKeychain};
-
-        let keychain = CachedKeychain::auto().unwrap_or_else(|_| CachedKeychain::system());
-        let access_token = keychain
-            .get("LocalRouter-ProviderTokens", "github-copilot_access_token")?
-            .ok_or_else(|| {
-                AppError::Config(
-                    "No GitHub Copilot OAuth credentials found. Please authenticate first."
-                        .to_string(),
-                )
-            })?;
+        // GitHub Copilot speaks the OpenAI wire format, authenticated with
+        // the GitHub OAuth token from the device-code login.
+        let access_token = crate::oauth::github_copilot::load_access_token()?.ok_or_else(|| {
+            AppError::Config(
+                "No GitHub Copilot OAuth credentials found. Please authenticate first.".to_string(),
+            )
+        })?;
 
         // GitHub Copilot uses a custom endpoint
         Ok(Arc::new(

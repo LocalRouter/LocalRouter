@@ -393,10 +393,7 @@ impl UsagePoller {
             return;
         }
         let token = tokio::task::spawn_blocking(|| {
-            use lr_api_keys::{keychain_trait::KeychainStorage, CachedKeychain};
-            let keychain = CachedKeychain::auto().unwrap_or_else(|_| CachedKeychain::system());
-            keychain
-                .get("LocalRouter-ProviderTokens", "github-copilot_access_token")
+            lr_providers::oauth::github_copilot::load_access_token()
                 .ok()
                 .flatten()
         })

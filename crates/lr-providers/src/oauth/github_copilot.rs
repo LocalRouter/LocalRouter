@@ -14,14 +14,59 @@ use reqwest_middleware::ClientWithMiddleware;
 use serde::Deserialize;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use super::{OAuthCredentials, OAuthFlowResult, OAuthProvider};
+use lr_api_keys::{keychain_trait::KeychainStorage, CachedKeychain};
 use lr_types::{AppError, AppResult};
 
 const GITHUB_CLIENT_ID: &str = "Ov23li8tweQw6odWQebz";
 const GITHUB_DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
 const GITHUB_ACCESS_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
+
+/// OAuth provider id, also the key of its entry in the OAuth credential store.
+pub const PROVIDER_ID: &str = "github-copilot";
+/// Keychain service holding the access token the provider and the usage
+/// poller send upstream.
+pub const KEYCHAIN_SERVICE: &str = "LocalRouter-ProviderTokens";
+/// Keychain account holding the access token.
+pub const KEYCHAIN_ACCOUNT: &str = "github-copilot_access_token";
+
+fn default_keychain() -> CachedKeychain {
+    CachedKeychain::auto().unwrap_or_else(|_| CachedKeychain::system())
+}
+
+/// The GitHub OAuth token for Copilot requests.
+///
+/// The keychain is authoritative. A token present only in the OAuth
+/// credential store (a login recorded before the keychain copy was written)
+/// is copied into the keychain so the usage poller sees it too.
+pub fn load_access_token() -> AppResult<Option<String>> {
+    load_access_token_from(&default_keychain(), super::credential_store().as_deref())
+}
+
+fn load_access_token_from(
+    keychain: &CachedKeychain,
+    store: Option<&super::storage::OAuthStorage>,
+) -> AppResult<Option<String>> {
+    if let Some(token) = keychain.get(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)? {
+        return Ok(Some(token));
+    }
+    let Some(credentials) = store.and_then(|store| store.credentials_now(PROVIDER_ID)) else {
+        return Ok(None);
+    };
+    if let Err(e) = keychain.store(
+        KEYCHAIN_SERVICE,
+        KEYCHAIN_ACCOUNT,
+        &credentials.access_token,
+    ) {
+        warn!(
+            "Failed to copy GitHub Copilot token into the keychain: {}",
+            e
+        );
+    }
+    Ok(Some(credentials.access_token))
+}
 
 /// GitHub device code response
 #[derive(Debug, Deserialize)]
@@ -114,15 +159,33 @@ fn apply_token_response(state: &mut FlowState, response: TokenResponse, now: i64
 pub struct GitHubCopilotOAuthProvider {
     client: ClientWithMiddleware,
     current_flow: Arc<RwLock<Option<FlowState>>>,
+    /// Where the access token is kept for the provider and usage poller.
+    keychain: CachedKeychain,
 }
 
 impl GitHubCopilotOAuthProvider {
     /// Create a new GitHub Copilot OAuth provider
     pub fn new() -> Self {
+        Self::with_keychain(default_keychain())
+    }
+
+    /// Create a provider that keeps its access token in `keychain`.
+    pub fn with_keychain(keychain: CachedKeychain) -> Self {
         Self {
             client: crate::http_client::default_client(),
             current_flow: Arc::new(RwLock::new(None)),
+            keychain,
         }
+    }
+
+    async fn keychain_op<F>(&self, op: F) -> AppResult<()>
+    where
+        F: FnOnce(&CachedKeychain) -> AppResult<()> + Send + 'static,
+    {
+        let keychain = self.keychain.clone();
+        tokio::task::spawn_blocking(move || op(&keychain))
+            .await
+            .map_err(|e| AppError::Internal(format!("Keychain task failed: {}", e)))?
     }
 }
 
@@ -135,7 +198,7 @@ impl Default for GitHubCopilotOAuthProvider {
 #[async_trait]
 impl OAuthProvider for GitHubCopilotOAuthProvider {
     fn provider_id(&self) -> &str {
-        "github-copilot"
+        PROVIDER_ID
     }
 
     fn provider_name(&self) -> &str {
@@ -312,9 +375,14 @@ impl OAuthProvider for GitHubCopilotOAuthProvider {
             TokenAction::Success { access_token } => {
                 info!("GitHub Copilot OAuth flow completed successfully");
                 *self.current_flow.write().await = None;
+                let token = access_token.clone();
+                self.keychain_op(move |keychain| {
+                    keychain.store(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT, &token)
+                })
+                .await?;
                 Ok(OAuthFlowResult::Success {
                     credentials: OAuthCredentials {
-                        provider_id: "github-copilot".to_string(),
+                        provider_id: PROVIDER_ID.to_string(),
                         access_token,
                         refresh_token: None,
                         expires_at: None,
@@ -347,11 +415,91 @@ impl OAuthProvider for GitHubCopilotOAuthProvider {
         *self.current_flow.write().await = None;
         info!("GitHub Copilot OAuth flow cancelled");
     }
+
+    async fn forget_tokens(&self) -> AppResult<()> {
+        self.keychain_op(|keychain| keychain.delete(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT))
+            .await
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn credentials(token: &str) -> OAuthCredentials {
+        OAuthCredentials {
+            provider_id: PROVIDER_ID.to_string(),
+            access_token: token.to_string(),
+            refresh_token: None,
+            expires_at: None,
+            account_id: None,
+            created_at: Utc::now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn load_access_token_prefers_keychain() {
+        let dir = tempfile::tempdir().unwrap();
+        let keychain = CachedKeychain::file(dir.path().join("secrets.json")).unwrap();
+        keychain
+            .store(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT, "from-keychain")
+            .unwrap();
+        let store = super::super::storage::OAuthStorage::new(dir.path().join("oauth.json"))
+            .await
+            .unwrap();
+        store
+            .store_credentials(&credentials("from-store"))
+            .await
+            .unwrap();
+
+        let token = load_access_token_from(&keychain, Some(&store)).unwrap();
+        assert_eq!(token.as_deref(), Some("from-keychain"));
+    }
+
+    #[tokio::test]
+    async fn load_access_token_copies_store_login_into_keychain() {
+        let dir = tempfile::tempdir().unwrap();
+        let keychain = CachedKeychain::file(dir.path().join("secrets.json")).unwrap();
+        let store = super::super::storage::OAuthStorage::new(dir.path().join("oauth.json"))
+            .await
+            .unwrap();
+        store
+            .store_credentials(&credentials("from-store"))
+            .await
+            .unwrap();
+
+        let token = load_access_token_from(&keychain, Some(&store)).unwrap();
+        assert_eq!(token.as_deref(), Some("from-store"));
+        assert_eq!(
+            keychain
+                .get(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
+                .unwrap()
+                .as_deref(),
+            Some("from-store")
+        );
+    }
+
+    #[tokio::test]
+    async fn load_access_token_none_without_login() {
+        let dir = tempfile::tempdir().unwrap();
+        let keychain = CachedKeychain::file(dir.path().join("secrets.json")).unwrap();
+        assert_eq!(load_access_token_from(&keychain, None).unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn forget_tokens_clears_keychain() {
+        let dir = tempfile::tempdir().unwrap();
+        let keychain = CachedKeychain::file(dir.path().join("secrets.json")).unwrap();
+        keychain
+            .store(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT, "token")
+            .unwrap();
+        let provider = GitHubCopilotOAuthProvider::with_keychain(keychain.clone());
+        provider.forget_tokens().await.unwrap();
+        assert_eq!(
+            keychain.get(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT).unwrap(),
+            None
+        );
+    }
 
     #[test]
     fn test_provider_info() {

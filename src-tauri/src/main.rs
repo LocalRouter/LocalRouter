@@ -549,7 +549,9 @@ async fn run_gui_mode() -> anyhow::Result<()> {
     // Register OAuth providers
     info!("Registering OAuth providers...");
     oauth_manager.register_provider(Arc::new(
-        providers::oauth::github_copilot::GitHubCopilotOAuthProvider::new(),
+        providers::oauth::github_copilot::GitHubCopilotOAuthProvider::with_keychain(
+            keychain.clone(),
+        ),
     ));
     oauth_manager.register_provider(Arc::new(
         providers::oauth::openai_codex::OpenAICodexOAuthProvider::new(keychain.clone()),

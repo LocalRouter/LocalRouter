@@ -1,5 +1,6 @@
 import { Toaster as Sonner } from "sonner"
 import { useEffect, useState } from "react"
+import { createPortal } from "react-dom"
 
 type ToasterProps = React.ComponentProps<typeof Sonner>
 
@@ -24,7 +25,10 @@ const Toaster = ({ ...props }: ToasterProps) => {
     return () => observer.disconnect()
   }, [])
 
-  return (
+  // #root is position: fixed, which makes it its own stacking context, so a
+  // toast rendered inside it can never rise above a dialog overlay portalled
+  // to <body>. Render on <body> as well so the z-index applies.
+  return createPortal(
     <Sonner
       theme={theme}
       className="toaster group"
@@ -41,7 +45,8 @@ const Toaster = ({ ...props }: ToasterProps) => {
         },
       }}
       {...props}
-    />
+    />,
+    document.body,
   )
 }
 
