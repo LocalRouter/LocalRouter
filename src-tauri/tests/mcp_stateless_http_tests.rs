@@ -614,3 +614,91 @@ async fn skills_only_websocket_receives_its_session_notifications() {
     assert!(!text.contains("other"), "{text}");
     socket.close(None).await.unwrap();
 }
+
+/// The listener can choose a different port than settings.yaml (including
+/// port conflicts and ephemeral test listeners). Detection must use that port.
+#[tokio::test]
+async fn client_cwd_is_detected_and_bridge_context_is_isolated_per_session() {
+    use localrouter::mcp::gateway::types::streamable_session_key;
+    let (base_url, secret, state) = start_test_server_with_state().await;
+    let http = reqwest::Client::new();
+    let init = json!({"jsonrpc":"2.0", "id":1, "method":"initialize", "params":{
+        "protocolVersion":"2025-06-18", "capabilities":{}, "clientInfo":{"name":"cwd-test","version":"1"}
+    }});
+    #[cfg(target_os = "macos")]
+    {
+        let response = http
+            .post(&base_url)
+            .bearer_auth(&secret)
+            .json(&init)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let id = response.headers()["mcp-session-id"].to_str().unwrap();
+        let session = state
+            .mcp_gateway
+            .get_session(&streamable_session_key("internal-test", id))
+            .unwrap();
+        assert_eq!(
+            session
+                .read()
+                .await
+                .client_cwd
+                .as_ref()
+                .unwrap()
+                .canonicalize()
+                .unwrap(),
+            std::env::current_dir().unwrap().canonicalize().unwrap()
+        );
+    }
+    let root = std::env::temp_dir().join(format!("lr-http-cwd-{}", uuid::Uuid::new_v4()));
+    let a = root.join("client a");
+    let b = root.join("client b");
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+    let mut ids = Vec::new();
+    for directory in [&a, &b] {
+        let response = http
+            .post(&base_url)
+            .bearer_auth(&secret)
+            .header(
+                lr_mcp::client_cwd::BRIDGE_CWD_HEADER,
+                directory.to_str().unwrap().replace(' ', "%20"),
+            )
+            .json(&init)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let id = response.headers()["mcp-session-id"]
+            .to_str()
+            .unwrap()
+            .to_string();
+        let session = state
+            .mcp_gateway
+            .get_session(&streamable_session_key("internal-test", &id))
+            .unwrap();
+        assert_eq!(session.read().await.client_cwd.as_ref(), Some(directory));
+        ids.push(id);
+    }
+    let response = http
+        .post(&base_url)
+        .bearer_auth(&secret)
+        .header("mcp-session-id", &ids[0])
+        .header(
+            lr_mcp::client_cwd::BRIDGE_CWD_HEADER,
+            b.to_str().unwrap().replace(' ', "%20"),
+        )
+        .json(&json!({"jsonrpc":"2.0","id":2,"method":"ping"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let session = state
+        .mcp_gateway
+        .get_session(&streamable_session_key("internal-test", &ids[0]))
+        .unwrap();
+    assert_eq!(session.read().await.client_cwd.as_ref(), Some(&a));
+    std::fs::remove_dir_all(root).unwrap();
+}

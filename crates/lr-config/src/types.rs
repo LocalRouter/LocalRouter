@@ -3840,7 +3840,7 @@ pub enum McpTransportConfig {
         /// Base environment variables (auth env vars go in McpAuthConfig::EnvVars)
         #[serde(default)]
         env: std::collections::HashMap<String, String>,
-        /// Working directory the subprocess is spawned in.
+        /// Fallback working directory when the client directory cannot be detected.
         ///
         /// `None` (the default) means the user's home directory — see
         /// [`default_mcp_working_dir`]. LocalRouter runs as a background app

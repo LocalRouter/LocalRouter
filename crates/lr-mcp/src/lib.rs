@@ -3,6 +3,7 @@
 //! This module provides MCP server management and proxy functionality.
 
 pub mod bridge;
+pub mod client_cwd;
 pub mod discovery;
 pub mod gateway;
 pub mod manager;

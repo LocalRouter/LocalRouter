@@ -49,6 +49,10 @@ use lr_router::{RateLimiterManager, Router as AppRouter};
 use self::middleware::auth_layer::AuthLayer;
 use self::state::AppState;
 
+/// Actual listener port, supplied to request handlers after binding.
+#[derive(Clone, Copy)]
+pub struct BoundServerPort(pub u16);
+
 /// Web server configuration
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
@@ -174,6 +178,7 @@ pub async fn serve_state(
     // Port zero asks the OS for an ephemeral port. Publish the actual bound
     // port so callers can connect to it and health status stays accurate.
     let port = listener.local_addr()?.port();
+    let app = app.layer(axum::Extension(BoundServerPort(port)));
     if let Some(relay) = &state.push_relay {
         relay.set_local_base_url(format!("http://127.0.0.1:{port}"));
     }
