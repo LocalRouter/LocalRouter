@@ -779,6 +779,7 @@ pub(crate) async fn check_model_firewall_for(
                 }
                 FirewallApprovalAction::Deny
                 | FirewallApprovalAction::DenySession
+                | FirewallApprovalAction::ReplaceSecrets
                 | FirewallApprovalAction::RedactOnce
                 | FirewallApprovalAction::DenyAlways
                 | FirewallApprovalAction::BlockCategories
@@ -1458,6 +1459,7 @@ pub async fn handle_guardrail_result(
         }
         FirewallApprovalAction::Deny
         | FirewallApprovalAction::DenySession
+        | FirewallApprovalAction::ReplaceSecrets
         | FirewallApprovalAction::RedactOnce
         | FirewallApprovalAction::DenyAlways
         | FirewallApprovalAction::BlockCategories
@@ -1557,6 +1559,15 @@ pub(crate) async fn run_secret_scan_check(
     let mut original = serde_json::to_value(&*request).map_err(|_| {
         ApiErrorResponse::internal_error("Could not serialize request for secret scanning")
     })?;
+    if let Some(context) = lr_types::secret_context::current() {
+        crate::documents::protect_text_files(&mut original, context.as_ref())
+            .map_err(ApiErrorResponse::from)?;
+        context
+            .protect(&mut original)
+            .map_err(ApiErrorResponse::from)?;
+        *request = serde_json::from_value(original.clone())
+            .map_err(|_| ApiErrorResponse::forbidden("Could not protect conversation history"))?;
+    }
     let (body, _) = crate::documents::scan_projection(&original).map_err(ApiErrorResponse::from)?;
     match scan_request_for_secrets_with_source(
         state,
@@ -1618,6 +1629,9 @@ pub async fn scan_request_for_secrets_with_source(
     source_hint: Option<&str>,
     session_id: Option<&str>,
 ) -> SecretScanOutcome {
+    if lr_types::secret_context::current().is_some_and(|context| context.scanned()) {
+        return SecretScanOutcome::Allow;
+    }
     // Standalone scans still need one identity shared by the scan and all of
     // its approval decisions. Gateway/proxy callers supply the parent request.
     let fallback_session = uuid::Uuid::new_v4().to_string();
@@ -1651,7 +1665,13 @@ pub async fn scan_request_for_secrets_with_source(
         guard.as_ref().cloned()
     };
     let Some(scanner) = scanner else {
-        return SecretScanOutcome::Allow;
+        return if *effective_action == lr_config::SecretScanAction::Redact {
+            SecretScanOutcome::Deny(
+                "Secret scanner is unavailable; automatic redaction cannot proceed".into(),
+            )
+        } else {
+            SecretScanOutcome::Allow
+        };
     };
     if !scanner.has_rules() {
         return SecretScanOutcome::Allow;
@@ -1758,7 +1778,9 @@ pub async fn scan_request_for_secrets_with_source(
 
     let scan_latency = scan_start.elapsed().as_millis() as u64;
 
-    if result.findings.is_empty() || bypass {
+    if result.findings.is_empty()
+        || (bypass && *effective_action != lr_config::SecretScanAction::Redact)
+    {
         if dismissed_count > 0 {
             tracing::debug!(
                 "Secret scan: {dismissed_count} finding(s) ignored by client {client_id}'s dismissed-secret list"
@@ -1805,6 +1827,21 @@ pub async fn scan_request_for_secrets_with_source(
     );
 
     let outcome = match effective_action {
+        lr_config::SecretScanAction::Redact => {
+            let Some(context) = lr_types::secret_context::current() else {
+                return SecretScanOutcome::Deny(
+                    "Reversible redaction is not supported on this transport".into(),
+                );
+            };
+            for finding in &result.findings {
+                if context.register(&finding.raw_text).is_err() {
+                    return SecretScanOutcome::Deny(
+                        "Could not store redacted secret in OS credential storage".into(),
+                    );
+                }
+            }
+            SecretScanOutcome::Allow
+        }
         lr_config::SecretScanAction::Notify => {
             // Open the standalone secret-scan popup in notify-only mode (the
             // same window the Ask action uses, so it shows even when the main
@@ -2071,6 +2108,18 @@ pub(crate) async fn handle_secret_scan_approval(
         );
         match response.action {
             FirewallApprovalAction::RedactOnce => redaction.add(&one.findings[0].raw_text),
+            FirewallApprovalAction::ReplaceSecrets => {
+                let Some(context) = lr_types::secret_context::current() else {
+                    return SecretScanOutcome::Deny(
+                        "Restorable placeholders require a text gateway request".into(),
+                    );
+                };
+                if context.register(&one.findings[0].raw_text).is_err() {
+                    return SecretScanOutcome::Deny(
+                        "Could not store redacted secret in OS credential storage".into(),
+                    );
+                }
+            }
             FirewallApprovalAction::AllowOnce
             | FirewallApprovalAction::AllowSession
             | FirewallApprovalAction::Allow1Minute

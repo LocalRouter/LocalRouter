@@ -29,11 +29,13 @@ interface SecretScanningViewProps {
 
 const ACTION_LABELS: Record<SecretScanAction, { label: string; description: string }> = {
   off: { label: "Off", description: "No scanning" },
-  ask: { label: "Ask", description: "Block the request and show a popup for user decision" },
   notify: { label: "Notify", description: "Allow the request but show a notification" },
+  redact: { label: "Redact", description: "Replace secrets with restorable placeholders, held in OS credential storage" },
+  ask: { label: "Ask", description: "Block the request and show a popup for user decision" },
 }
 
 const BUTTON_STYLES: Record<SecretScanAction, string> = {
+  redact: "bg-yellow-600 text-white",
   ask: "bg-amber-500 text-white",
   notify: "bg-blue-500 text-white",
   off: "bg-red-500 text-white",
@@ -218,6 +220,7 @@ export function SecretScanningView({ activeSubTab, onTabChange }: SecretScanning
                   </div>
                   <InfoTooltip content={
                     <div className="space-y-1">
+                      <p><strong>Redact</strong> — Send restorable placeholders; originals stay in OS credential storage</p>
                       <p><strong>Ask</strong> — Block the request and prompt for decision</p>
                       <p><strong>Notify</strong> — Allow the request but show a warning</p>
                       <p><strong>Off</strong> — No scanning performed</p>

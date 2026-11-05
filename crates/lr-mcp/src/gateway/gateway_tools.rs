@@ -401,6 +401,12 @@ impl McpGateway {
         session: Arc<RwLock<GatewaySession>>,
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
+        let mut request = request;
+        if let Some(context) = lr_types::secret_context::current() {
+            if let Some(arguments) = request.params.as_mut().and_then(|p| p.get_mut("arguments")) {
+                context.restore(arguments, true)?;
+            }
+        }
         // Extract tool name from params
         let tool_name = match request
             .params
@@ -921,6 +927,7 @@ impl McpGateway {
                         )))
                     }
                     FirewallApprovalAction::DenyAlways
+                    | FirewallApprovalAction::ReplaceSecrets
                     | FirewallApprovalAction::RedactOnce
                     | FirewallApprovalAction::BlockCategories
                     | FirewallApprovalAction::Deny1Hour

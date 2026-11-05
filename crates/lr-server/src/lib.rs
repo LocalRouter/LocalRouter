@@ -19,6 +19,8 @@ pub mod video_jobs;
 // Re-export manager types for convenience
 pub use manager::{ServerManager, ServerStatus};
 
+mod secret_placeholders;
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -190,6 +192,7 @@ pub async fn serve_state(
     let gateway_for_cleanup = state.mcp_gateway.clone();
     let mcp_via_llm_for_cleanup = state.mcp_via_llm_manager.clone();
     let session_cleanup_shutdown = shutdown.clone();
+    let secret_cleanup_config = state.config_manager.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(SESSION_CLEANUP_INTERVAL);
         loop {
@@ -199,6 +202,14 @@ pub async fn serve_state(
                 _ = interval.tick() => {
                     gateway_for_cleanup.cleanup_expired_sessions().await;
                     mcp_via_llm_for_cleanup.cleanup_expired_sessions();
+                    let config=secret_cleanup_config.get();
+                    let owners=config.clients.iter().map(|c|c.id.clone()).collect::<Vec<_>>();
+                    let retention=u64::from(config.responses.active_window_hours)*3600;
+                    let _=tokio::task::spawn_blocking(move || {
+                        for owner in owners {
+                            if lr_secret_scanner::placeholders::Vault::cleanup_client(Arc::new(lr_api_keys::keychain_trait::SystemKeychain),&owner,retention).is_err(){tracing::warn!("Could not complete OS secret-reference cleanup");}
+                        }
+                    }).await;
                 }
             }
         }
@@ -428,6 +439,10 @@ fn build_app(state: AppState, enable_cors: bool, shutdown: CancellationToken) ->
         .with_state(state.clone());
 
     // Apply auth layer (checks all API routes with or without /v1 prefix)
+    router = router.layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        secret_placeholders::middleware,
+    ));
     router = router.layer(AuthLayer::new(state.clone()));
 
     // Apply 16MB body limit to main routes BEFORE merging audio routes

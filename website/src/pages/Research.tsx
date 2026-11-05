@@ -15,6 +15,7 @@ import {
   ChevronLeft,
   ChevronRight,
   FlaskConical,
+  ShieldCheck,
   GitBranch,
 
 } from 'lucide-react'
@@ -36,6 +37,25 @@ interface Paper {
 }
 
 const papers: Paper[] = [
+  {
+    id: 'reversible-secret-redaction',
+    title: 'Reversible Secret Redaction',
+    icon: <ShieldCheck className="h-4 w-4" />,
+    tagline: 'Keeping detected secrets local while preserving their use in model replies and tools',
+    status: 'published',
+    subsections: [
+      { id: 'redaction-abstract', title: 'Abstract' },
+      { id: 'redaction-threat-model', title: 'Problem and Threat Model' },
+      { id: 'redaction-format', title: 'Self-Describing References' },
+      { id: 'redaction-recognition', title: 'Recognition Algorithm' },
+      { id: 'redaction-storage', title: 'OS Storage and Scope' },
+      { id: 'redaction-caching', title: 'Cache and Conversation Continuity' },
+      { id: 'redaction-streaming', title: 'Streaming and Response Content' },
+      { id: 'redaction-tools', title: 'Tool Execution' },
+      { id: 'redaction-evaluation', title: 'Evaluation and Reproduction' },
+      { id: 'redaction-limits', title: 'Limits' },
+    ],
+  },
   {
     id: 'decision-model-routing',
     title: 'Decision Models for Configurable Routing',

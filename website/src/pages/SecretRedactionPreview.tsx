@@ -22,7 +22,7 @@ const FINDINGS: SecretFindingSummary[] = SAMPLES.map((_, i) => ({
     before: `${INTRO}\nHelp me configure the deployment.\naws_secret_access_key_${i + 1}=`,
     after: `\nPlease check why authentication fails.\n${OUTRO}`,  },
 }))
-type Choice = 'redact' | 'allow'
+type Choice = 'redact' | 'allow' | 'placeholder'
 type SavedPolicy = { choice: Choice; hash: string }
 
 /** Development-only review using the real approval component and simulated requests.
@@ -69,7 +69,7 @@ function NativeApprovalPreview() {
       if (!pending) {
         refresh(value => value + 1)
         const action = (args as { action?: string }).action
-        if (action === 'redact_once') throw 'Redaction is only available for a pending blocking secret scan'
+        if (action === 'redact_once' || action === 'replace_secrets') throw 'Redaction is only available for a pending blocking secret scan'
         throw `Invalid parameters: Firewall approval request ${id} not found or expired`
       }
       backend.submits++
@@ -122,7 +122,7 @@ function SharedApprovalPreview() {
 
   const finish = (choices: Record<number, Choice>) => {
     setCurrent(null)
-    setPayload(samples.slice(0, count).reduce((text, secret, i) => choices[i] === 'redact' ? text.split(secret).join(MARKER) : text, source))
+    setPayload(samples.slice(0, count).reduce((text, secret, i) => choices[i] === 'redact' ? text.split(secret).join(MARKER) : choices[i] === 'placeholder' ? text.split(secret).join(`<localrouter-redacted id="preview${i}" usage="Unmasked when returned verbatim"/>`) : text, source))
     setStatus('All secrets reviewed — request continued')
   }
   const advance = (choices: Record<number, Choice>, start: number) => {
@@ -133,8 +133,8 @@ function SharedApprovalPreview() {
   }
   const action = (value: ApprovalAction) => {
     if (current === null) return
-    if (value === 'redact_once' || value.startsWith('allow')) {
-      advance({ ...decisions, [current]: value === 'redact_once' ? 'redact' : 'allow' }, current + 1)
+    if (value === 'redact_once' || value === 'replace_secrets' || value.startsWith('allow')) {
+      advance({ ...decisions, [current]: value === 'redact_once' ? 'redact' : value === 'replace_secrets' ? 'placeholder' : 'allow' }, current + 1)
     } else {
       setCurrent(null)
       setPayload(null)

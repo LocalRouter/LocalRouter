@@ -129,7 +129,10 @@ where
     F: std::future::Future + Send + 'static,
     F::Output: Send + 'static,
 {
-    tokio::spawn(OUTBOUND_TRACE.scope(current_outbound_trace(), fut))
+    tokio::spawn(crate::secret_context::scope(
+        crate::secret_context::current(),
+        OUTBOUND_TRACE.scope(current_outbound_trace(), fut),
+    ))
 }
 
 #[cfg(test)]

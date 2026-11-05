@@ -4264,7 +4264,7 @@ pub async fn rebuild_secret_scanner(
     let config = config_manager.get();
     let ss_config = &config.secret_scanning;
 
-    if ss_config.action == lr_config::SecretScanAction::Off {
+    if !ss_config.enabled_for_any_client(&config.clients) {
         // Clear the scanner when scanning is disabled
         *state.secret_scanner.write() = None;
         tracing::info!("Secret scanner cleared (scanning is off)");

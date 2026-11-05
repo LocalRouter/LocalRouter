@@ -9,6 +9,8 @@ description = "Regex + entropy based secret scanning for outbound LLM requests"
 
 [dependencies]
 lr-types = { workspace = true }
+lr-api-keys = { workspace = true }
+zeroize = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }

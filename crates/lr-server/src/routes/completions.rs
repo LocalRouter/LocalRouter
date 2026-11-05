@@ -388,6 +388,7 @@ async fn handle_guardrail_approval(
         | FirewallApprovalAction::AllowCategories => Ok(()),
         FirewallApprovalAction::Deny
         | FirewallApprovalAction::DenySession
+        | FirewallApprovalAction::ReplaceSecrets
         | FirewallApprovalAction::RedactOnce
         | FirewallApprovalAction::DenyAlways
         | FirewallApprovalAction::BlockCategories

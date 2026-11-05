@@ -2681,7 +2681,7 @@ export interface PendingApprovalInfo {
  * Firewall approval action.
  * Rust: crates/lr-mcp/src/gateway/firewall.rs - FirewallApprovalAction enum
  */
-export type FirewallApprovalAction = 'deny' | 'deny_session' | 'deny_always' | 'block_categories' | 'allow_once' | 'redact_once' | 'allow_session' | 'allow_1_minute' | 'allow_1_hour' | 'allow_permanent' | 'allow_categories' | 'deny_1_hour'
+export type FirewallApprovalAction = 'deny' | 'deny_session' | 'deny_always' | 'block_categories' | 'allow_once' | 'redact_once' | 'replace_secrets' | 'allow_session' | 'allow_1_minute' | 'allow_1_hour' | 'allow_permanent' | 'allow_categories' | 'deny_1_hour'
 
 // =============================================================================
 // Active Connections Types
@@ -4825,7 +4825,7 @@ export interface DiscoverProviderResult {
 // =============================================================================
 
 /** Secret scan action: what to do when a secret is detected */
-export type SecretScanAction = 'ask' | 'notify' | 'off'
+export type SecretScanAction = 'off' | 'notify' | 'redact' | 'ask'
 
 /** Rust: crates/lr-config/src/types.rs - SecretScanningConfig */
 export interface SecretScanningConfig {

@@ -62,6 +62,7 @@ impl From<&FirewallApprovalAction> for PushDecisionAction {
     fn from(action: &FirewallApprovalAction) -> Self {
         match action {
             FirewallApprovalAction::AllowOnce
+            | FirewallApprovalAction::ReplaceSecrets
             | FirewallApprovalAction::RedactOnce
             | FirewallApprovalAction::Allow1Minute
             | FirewallApprovalAction::Allow1Hour

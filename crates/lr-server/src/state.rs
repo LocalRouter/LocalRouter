@@ -1044,7 +1044,20 @@ impl AppState {
 
         let capture_config = result.config_manager.clone();
         result.monitor_store.set_payload_policy(move |client| {
-            client.is_some_and(|id| capture_config.client_privacy(id).redact_payloads())
+            lr_types::secret_context::current().is_some_and(|context| context.active())
+                || client.is_some_and(|id| {
+                    if capture_config.client_privacy(id).redact_payloads() {
+                        return true;
+                    }
+                    let config = capture_config.get();
+                    let action = config
+                        .clients
+                        .iter()
+                        .find(|c| c.id == id)
+                        .and_then(|c| c.secret_scanning.action.as_ref())
+                        .unwrap_or(&config.secret_scanning.action);
+                    *action == lr_config::SecretScanAction::Redact
+                })
         });
 
         // Wire MCP via LLM monitor callbacks

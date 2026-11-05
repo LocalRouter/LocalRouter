@@ -674,6 +674,12 @@ pub async fn delete_client(
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
+    lr_secret_scanner::placeholders::Vault::forget_client(
+        std::sync::Arc::new(lr_api_keys::keychain_trait::SystemKeychain),
+        &client_id,
+    )
+    .map_err(|_| "Could not remove this client's OS-stored redacted secrets".to_string())?;
+
     token_store.revoke_client_tokens(&client_id);
 
     tracing::info!("Deleting client: {}", client_id);
@@ -1777,6 +1783,7 @@ pub async fn get_feature_clients_status(
                         .as_ref()
                         .unwrap_or(&config.secret_scanning.action);
                     let value = match effective_action {
+                        lr_config::SecretScanAction::Redact => "redact",
                         lr_config::SecretScanAction::Ask => "ask",
                         lr_config::SecretScanAction::Notify => "notify",
                         lr_config::SecretScanAction::Off => "off",
@@ -1919,13 +1926,15 @@ pub async fn submit_firewall_approval(
         edited_arguments.is_some()
     );
 
-    if action == FirewallApprovalAction::RedactOnce
-        && !state
-            .mcp_gateway
-            .firewall_manager
-            .list_pending()
-            .iter()
-            .any(|p| p.request_id == request_id && p.is_secret_scan_request && !p.is_notify_only)
+    if matches!(
+        action,
+        FirewallApprovalAction::RedactOnce | FirewallApprovalAction::ReplaceSecrets
+    ) && !state
+        .mcp_gateway
+        .firewall_manager
+        .list_pending()
+        .iter()
+        .any(|p| p.request_id == request_id && p.is_secret_scan_request && !p.is_notify_only)
     {
         return Err("Redaction is only available for a pending blocking secret scan".into());
     }
@@ -4747,6 +4756,7 @@ pub async fn update_client_secret_scanning_config(
     config_json: String,
     config_manager: State<'_, ConfigManager>,
     app: tauri::AppHandle,
+    state: State<'_, Arc<lr_server::state::AppState>>,
 ) -> Result<(), String> {
     let new_config: lr_config::ClientSecretScanningConfig =
         serde_json::from_str(&config_json).map_err(|e| format!("Invalid config JSON: {}", e))?;
@@ -4775,6 +4785,7 @@ pub async fn update_client_secret_scanning_config(
     }
 
     config_manager.save().await.map_err(|e| e.to_string())?;
+    super::commands::rebuild_secret_scanner(config_manager, state).await?;
 
     if let Err(e) = app.emit("clients-changed", ()) {
         tracing::error!("Failed to emit clients-changed event: {}", e);

@@ -34,6 +34,8 @@ pub enum FirewallApprovalAction {
     AllowOnce,
     /// Remove detected secrets and forward this request (secret scans only).
     RedactOnce,
+    /// Reuse an original through an OS-backed placeholder.
+    ReplaceSecrets,
     /// Allow this tool for the rest of the session (MCP/Skills)
     AllowSession,
     /// Allow this for 1 minute (Models & guardrails: short time-based bypass)

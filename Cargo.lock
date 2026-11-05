@@ -5768,6 +5768,7 @@ version = "0.0.173"
 dependencies = [
  "aho-corasick",
  "base64 0.22.1",
+ "lr-api-keys",
  "lr-types",
  "regex",
  "ring",
@@ -5775,6 +5776,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]

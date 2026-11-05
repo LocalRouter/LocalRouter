@@ -2633,7 +2633,15 @@ impl McpGateway {
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
         match request.method.as_str() {
-            "tools/call" => self.handle_tools_call(session, request).await,
+            "tools/call" => {
+                let mut response = self.handle_tools_call(session, request).await?;
+                if let Some(context) = lr_types::secret_context::current() {
+                    if let Some(result) = response.result.as_mut() {
+                        context.protect(result)?;
+                    }
+                }
+                Ok(response)
+            }
             "resources/read" => self.handle_resources_read(session, request).await,
             "prompts/get" => self.handle_prompts_get(session, request).await,
 
