@@ -13,16 +13,16 @@
 - [x] Test Coverage Review: cover lifecycle, isolation, streaming, serialization, tools and failures.
 - [x] Bug Hunt: review secret exposure, approvals, retries, caches, concurrency and protocol finalization.
 - [x] Run appropriate stable Rust, frontend, website and focused integration checks.
-- [ ] Commit and push validated implementation, preserving unrelated changes and including automatic catalog updates.
+- [x] Commit and push validated implementation, preserving unrelated changes and including automatic catalog updates.
 
 # Reversible secret placeholders
 
-Status: implementation authorized 2026-11-04, including local tests, merge to master and a new release. Work occurs in the isolated feat/reversible-secret-redaction worktree. The checklist records completion as each step is verified.
+Status: implemented, locally validated, merged to master and released as v0.0.174 on 2026-11-05. Source work is isolated in the feat/reversible-secret-redaction worktree; all requested implementation/release steps are complete.
 
 - [x] Fetch origin and merge origin/master with --no-ff into the isolated implementation branch (already up to date at 99fa0143).
 - [x] Run local end-to-end synthetic-provider/credential-store proofs and inspect the website preview.
-- [ ] Merge the validated branch to master with --no-ff; push normally.
-- [ ] Dispatch the next unused stable release; monitor builds and verify published assets and website.
+- [x] Merge the validated branch to master with --no-ff; push normally.
+- [x] Dispatch the next unused stable release; monitor builds and verify published assets and website.
 
 ## Goal and example
 
@@ -238,3 +238,15 @@ Frontend verification: 148 unit tests, desktop build and website build:check pas
 Final Rust checks and release outcome are recorded below when complete. Release authorization is explicit in this conversation; no additional confirmation is required. Latest verified published release before dispatch is v0.0.173, with no competing release run; recheck before choosing the next tag.
 
 Final local checks: workspace all-target Clippy with warnings denied and rustfmt check passed on stable 1.99.1. The final scanner suite passed 83 tests with the explicitly opt-in native test skipped in that run; the isolated native Keychain proof passed separately. All ten gateway tests and the global-Off/client-Redact configuration regression passed. A cleanup test initially shared an owner/scope with another concurrent mock test; isolated its synthetic owner and reran the suite successfully. Native test owners are unique per run and their value/index entries are deleted afterward. Existing block 0.1.6 future-incompatibility and frontend bundle-size notices remain informational.
+
+## Release completion (2026-11-05)
+
+Published **v0.0.174** at https://github.com/LocalRouter/LocalRouter/releases/tag/v0.0.174 on 2026-11-05T05:16:14Z. Feature commit 22cf5e27 is merged by signed master merge fc2e3fe6; release tag af2e6e7c39e0d6ca68c83ad768e4f8a30cb5634a contains that candidate and only the workflow-owned version-file updates beyond the validated tree. GitHub's latest stable release points to v0.0.174.
+
+Release workflow **41968102086** completed successfully: all five native platforms, both Flatpak architectures, both Snap architectures, the Nix pin and post-release tasks. Docker workflow **41972972575** also completed successfully for this release. The existing package-manager publication job and Snap Store uploads remain intentionally disabled; no Homebrew/Scoop/AUR/WinGet/store publication is claimed. Intel macOS took longer than the other native targets but completed successfully; there were no release-job failures.
+
+Verified all 32 attached assets are nonempty. Downloaded and checked GitHub SHA-256 digests for 13 versioned native payloads and four Flatpak/Snap payloads. Verified all six detached updater/installer signatures with minisign against the configured Tauri public key, all five updater mappings/signature strings, both macOS bundle versions, all eight stable-alias digests, and both generated Nix Debian hashes. The release version and Nix pin are integrated locally from origin/master using a normal signed --no-ff merge.
+
+Website workflow **41968058036** for exact feature master SHA fc2e3fe6 succeeded. Fetched the public root and its content-hashed script (/assets/index-IE9DdQwl.js), verifying the landing section, approved tag and research-paper content. The research paper is live at https://localrouter.ai/research/reversible-secret-redaction . No real provider call was used in local tests. The user's running LocalRouter installation was not restarted or replaced.
+
+The isolated source worktree and test logs/screenshots remain at /Users/matus/dev/localrouterai-secret-redaction and /tmp/localrouter-secret-logs. Removed only this worktree's generated Rust output after validation, reclaiming about 7 GiB; main-checkout artifacts and unrelated October release plans are preserved. Final completion documentation changes no application source and needs no additional Rust build.
