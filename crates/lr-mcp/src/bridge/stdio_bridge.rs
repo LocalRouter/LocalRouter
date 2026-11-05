@@ -371,6 +371,16 @@ impl Ctx {
         let mut builder = builder
             .bearer_auth(&self.secret)
             .header(BRIDGE_HEADER, BRIDGE_HEADER_VALUE);
+        if let Some(cwd) = std::env::var("CLAUDE_PROJECT_DIR")
+            .ok()
+            .and_then(|value| crate::client_cwd::valid_directory(&value))
+            .or_else(|| std::env::current_dir().ok())
+        {
+            builder = builder.header(
+                crate::client_cwd::BRIDGE_CWD_HEADER,
+                urlencoding::encode(&cwd.to_string_lossy()).as_ref(),
+            );
+        }
         if self.push_test {
             builder = builder.header(PUSH_TEST_HEADER, "1");
         }

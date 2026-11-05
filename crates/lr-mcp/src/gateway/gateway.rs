@@ -975,6 +975,55 @@ impl McpGateway {
         request: JsonRpcRequest,
         monitor_session_id: Option<String>,
     ) -> AppResult<JsonRpcResponse> {
+        self.handle_request_with_client_cwd(
+            client_id,
+            session_id,
+            allowed_servers,
+            roots,
+            mcp_permissions,
+            skills_permissions,
+            client_name,
+            marketplace_permission,
+            coding_agent_permission,
+            coding_agent_type,
+            context_management_overrides,
+            mcp_sampling_permission,
+            mcp_elicitation_permission,
+            memory_enabled,
+            memory_folder,
+            client_mode,
+            push_settings,
+            request,
+            monitor_session_id,
+            None,
+        )
+        .await
+    }
+
+    /// Handle a request with a locally resolved client launch directory.
+    pub async fn handle_request_with_client_cwd(
+        &self,
+        client_id: &str,
+        session_id: Option<&str>,
+        allowed_servers: Vec<String>,
+        roots: Vec<crate::protocol::Root>,
+        mcp_permissions: lr_config::McpPermissions,
+        skills_permissions: lr_config::SkillsPermissions,
+        client_name: String,
+        marketplace_permission: lr_config::PermissionState,
+        coding_agent_permission: lr_config::PermissionState,
+        coding_agent_type: Option<lr_config::CodingAgentType>,
+        context_management_overrides: Option<lr_config::ContextManagementOverrides>,
+        mcp_sampling_permission: lr_config::PermissionState,
+        mcp_elicitation_permission: lr_config::PermissionState,
+        memory_enabled: Option<bool>,
+        memory_folder: Option<String>,
+        client_mode: lr_config::ClientMode,
+        push_settings: lr_config::ClientPushSettings,
+        request: JsonRpcRequest,
+        monitor_session_id: Option<String>,
+        client_cwd: Option<std::path::PathBuf>,
+    ) -> AppResult<JsonRpcResponse> {
         let method = request.method.clone();
         let _request_id = request.id.clone();
         let is_broadcast = should_broadcast(&method);
@@ -1057,6 +1106,9 @@ impl McpGateway {
             let list_changes = session_write.apply_listing_snapshot(
                 super::session::ClientListingSnapshot::from_client(&synthetic_client),
             );
+            if session_write.transports.is_none() && session_write.client_cwd.is_none() {
+                session_write.client_cwd = client_cwd;
+            }
             session_write.client_name = client_name;
             session_write.is_stdio_bridge = self.stdio_bridge_sessions.contains(session_key);
             session_write.push_test_source = self.push_test_sessions.contains(session_key);
@@ -2103,13 +2155,14 @@ impl McpGateway {
         session: &Arc<RwLock<GatewaySession>>,
         server_ids: Vec<String>,
     ) {
-        let (transports, client_id, session_key, client_mode, capabilities) = {
+        let (transports, client_id, session_key, client_mode, client_cwd, capabilities) = {
             let state = session.read().await;
             (
                 state.transports.clone(),
                 state.client_id.clone(),
                 state.session_key.clone(),
                 state.client_mode,
+                state.client_cwd.clone(),
                 {
                     let mut caps = state
                         .client_capabilities
@@ -2138,6 +2191,7 @@ impl McpGateway {
             let capabilities = capabilities.clone();
             let client_id = client_id.clone();
             let session_key = session_key.clone();
+            let client_cwd = client_cwd.clone();
             async move {
                 // An enabled check here also protects attachment after a settings
                 // change while a failed connection was waiting for its retry.
@@ -2149,7 +2203,7 @@ impl McpGateway {
                         return Err(AppError::Mcp("MCP client session ended during reconnection".into()));
                     }
                     transports.close_server(server_id).await;
-                    let (transport, config) = self.server_manager.create_transport_snapshot(server_id).await?;
+                    let (transport, config) = self.server_manager.create_transport_snapshot_in(server_id, client_cwd.as_deref()).await?;
                     transports.insert_configured(server_id.clone(), transport, config);
                     transports.mark_connecting(server_id);
                     let ids = vec![server_id.clone()];
@@ -3099,6 +3153,7 @@ impl McpGateway {
 
         let session_read = session.read().await;
         let allowed_servers = session_read.allowed_servers.clone();
+        let client_cwd = session_read.client_cwd.clone();
         drop(session_read);
         {
             let mut state = session.write().await;
@@ -3110,7 +3165,7 @@ impl McpGateway {
         let start_timeout = tokio::time::Duration::from_secs(15);
         let (transport_set, start_failures) = self
             .server_manager
-            .create_transports(&allowed_servers, start_timeout)
+            .create_transports_in(&allowed_servers, start_timeout, client_cwd.as_deref())
             .await;
         let transport_set = Arc::new(transport_set);
         let started_servers = transport_set.running_server_ids();

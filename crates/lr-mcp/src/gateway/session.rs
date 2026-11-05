@@ -162,6 +162,9 @@ pub struct GatewaySession {
     /// Merged from global config + per-client overrides
     pub roots: Vec<Root>,
 
+    /// Locally detected client launch directory, fixed for this session.
+    pub client_cwd: Option<std::path::PathBuf>,
+
     /// Subscribed resource URIs (uri -> server_id)
     /// Tracks which resources this session has subscribed to for change notifications
     pub subscribed_resources: HashMap<String, String>,
@@ -318,6 +321,7 @@ impl GatewaySession {
             last_broadcast_failures: Vec::new(),
             resources_list_fetched: false,
             roots,
+            client_cwd: None,
             subscribed_resources: HashMap::new(),
             mcp_permissions: lr_config::McpPermissions::default(),
             listing_snapshot: None,

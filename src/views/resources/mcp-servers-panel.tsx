@@ -172,7 +172,7 @@ export function McpServersPanel({
         directory: true,
         multiple: false,
         defaultPath: cwd || homeDir || undefined,
-        title: "Select Working Directory",
+        title: "Select Fallback Working Directory",
       })
       if (selected && typeof selected === "string") {
         setCwd(selected)
@@ -182,10 +182,10 @@ export function McpServersPanel({
     }
   }
 
-  // Working-directory field shared by the edit/create/template STDIO forms.
+  // Saved fallback directory, editable after creating a STDIO server.
   const workingDirectoryField = (
     <div>
-      <label className="block text-sm font-medium mb-2">Working Directory</label>
+      <label className="block text-sm font-medium mb-2">Fallback Working Directory</label>
       <div className="flex gap-2">
         <Input
           value={cwd}
@@ -198,9 +198,8 @@ export function McpServersPanel({
         </Button>
       </div>
       <p className="text-xs text-muted-foreground mt-1">
-        Directory the server process runs in. Defaults to your home directory
-        {homeDir ? ` (${homeDir})` : ""}. Set this for servers that resolve relative paths or
-        need to run inside a specific project.
+        Used when the client’s working directory cannot be detected, including remote clients. Defaults to your home directory
+        {homeDir ? ` (${homeDir})` : ""}. Local clients use their detected directory.
       </p>
     </div>
   )
@@ -466,7 +465,7 @@ export function McpServersPanel({
 
   const resolveCreateTransport = () => resolveMcpCreateTransport(
     selectedSource?.type === "template" ? selectedSource.template : null,
-    templateFieldValues, transportType, command, envVars, cwd, url,
+    templateFieldValues, transportType, command, envVars, "", url,
   )
 
   const createTransport = resolveCreateTransport()
@@ -905,9 +904,9 @@ export function McpServersPanel({
                                 </div>
                               )}
                               <div>
-                                <p className="text-sm text-muted-foreground">Working Directory</p>
+                                <p className="text-sm text-muted-foreground">Fallback Working Directory</p>
                                 <code className="text-sm break-all">{tc.cwd || homeDir || "Home directory"}</code>
-                                {!tc.cwd && <span className="text-xs text-muted-foreground ml-2">(default)</span>}
+                                {!tc.cwd && <span className="text-xs text-muted-foreground ml-2">(home directory)</span>}
                               </div>
                               {tc.env && Object.keys(tc.env).length > 0 && (
                                 <div>
@@ -1275,8 +1274,8 @@ export function McpServersPanel({
                   params={{ target: transportType === "Sse" ? url : command,
                     transportOverride: transportType === "Sse" ? "http_sse" : "stdio",
                     headers: { ...(authMethod === "custom_headers" ? headers : {}), ...(authMethod === "bearer" && bearerToken ? { Authorization: `Bearer ${bearerToken}` } : {}) },
-                    env: envVars, cwd: cwd.trim() || null }}
-                  formRevision={JSON.stringify([serverName, authMethod, transportType, url, command, headers, envVars, cwd, bearerToken])}
+                    env: envVars, cwd: null }}
+                  formRevision={JSON.stringify([serverName, authMethod, transportType, url, command, headers, envVars, bearerToken])}
                   onTargetChange={target => {
                     if (/^https?:\/\//i.test(target.trim())) { setTransportType("Sse"); setUrl(target) }
                     else { setTransportType("Stdio"); setCommand(target) }
@@ -1303,7 +1302,7 @@ export function McpServersPanel({
                       <Input value={command} onChange={(e) => setCommand(e.target.value)} placeholder="npx -y @modelcontextprotocol/server-everything" required />
                       <p className="text-xs text-muted-foreground mt-1">Full command with arguments</p>
                     </div>
-                    {workingDirectoryField}
+
                     <div>
                       <label className="block text-sm font-medium mb-2">Environment Variables</label>
                       <KeyValueInput value={envVars} onChange={setEnvVars} keyPlaceholder="KEY" valuePlaceholder="VALUE" />
@@ -1502,7 +1501,7 @@ export function McpServersPanel({
                     <Input value={command} onChange={(e) => setCommand(e.target.value)} placeholder="npx -y @modelcontextprotocol/server-everything" required />
                     <p className="text-xs text-muted-foreground mt-1">Full command with arguments (e.g., npx -y @modelcontextprotocol/server-filesystem /tmp)</p>
                   </div>
-                  {workingDirectoryField}
+
                   <div>
                     <label className="block text-sm font-medium mb-2">Environment Variables</label>
                     <KeyValueInput value={envVars} onChange={setEnvVars} keyPlaceholder="KEY" valuePlaceholder="VALUE" />

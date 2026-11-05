@@ -640,7 +640,15 @@ impl McpServerManager {
         &self,
         server_id: &str,
     ) -> AppResult<(Arc<dyn Transport>, McpServerConfig)> {
-        let config = self
+        self.create_transport_snapshot_in(server_id, None).await
+    }
+
+    pub(crate) async fn create_transport_snapshot_in(
+        &self,
+        server_id: &str,
+        client_cwd: Option<&std::path::Path>,
+    ) -> AppResult<(Arc<dyn Transport>, McpServerConfig)> {
+        let mut config = self
             .configs
             .get(server_id)
             .ok_or_else(|| AppError::Mcp(format!("Server not found: {}", server_id)))?
@@ -648,6 +656,15 @@ impl McpServerManager {
 
         if !config.enabled {
             return Err(AppError::Mcp(format!("Server is disabled: {}", server_id)));
+        }
+
+        // Keep the saved snapshot for configuration-change detection. The
+        // session retains its client directory separately for recovery.
+        let saved_config = config.clone();
+        if let McpTransportConfig::Stdio { cwd, .. } = &mut config.transport_config {
+            if let Some(dir) = client_cwd.filter(|dir| dir.is_absolute() && dir.is_dir()) {
+                *cwd = Some(dir.to_string_lossy().into_owned());
+            }
         }
 
         #[allow(deprecated)]
@@ -661,7 +678,7 @@ impl McpServerManager {
                     .await
             }
         }?;
-        Ok((transport, config))
+        Ok((transport, saved_config))
     }
 
     /// Create transports for multiple servers in parallel.
@@ -672,6 +689,18 @@ impl McpServerManager {
         &self,
         server_ids: &[String],
         timeout: std::time::Duration,
+    ) -> (
+        crate::transport::SessionTransportSet,
+        Vec<crate::gateway::types::ServerFailure>,
+    ) {
+        self.create_transports_in(server_ids, timeout, None).await
+    }
+
+    pub async fn create_transports_in(
+        &self,
+        server_ids: &[String],
+        timeout: std::time::Duration,
+        client_cwd: Option<&std::path::Path>,
     ) -> (
         crate::transport::SessionTransportSet,
         Vec<crate::gateway::types::ServerFailure>,
@@ -736,7 +765,7 @@ impl McpServerManager {
                     let start = std::time::Instant::now();
                     let result = tokio::time::timeout(
                         timeout,
-                        manager.create_transport_snapshot(&server_id),
+                        manager.create_transport_snapshot_in(&server_id, client_cwd),
                     )
                     .await;
                     manager.report_startup_phase(
@@ -2213,6 +2242,60 @@ mod tests {
         );
         transports.close_all().await;
         task.abort();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn session_cwd_overrides_fallback_without_changing_saved_configuration() {
+        let root = std::env::temp_dir().join(format!("lr-cwd-{}", uuid::Uuid::new_v4()));
+        let client_a = root.join("client a");
+        let client_b = root.join("client b");
+        let fallback = root.join("fallback");
+        for dir in [&client_a, &client_b, &fallback] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let script = r#"while IFS= read -r line; do printf '{"jsonrpc":"2.0","id":1,"result":"%s"}\n' "$PWD"; done"#;
+        let manager = McpServerManager::new_for_test();
+        let config = McpServerConfig::new(
+            "cwd test".into(),
+            McpTransportType::Stdio,
+            McpTransportConfig::Stdio {
+                command: format!("/bin/sh -c {}", shell_words::quote(script)),
+                args: vec![],
+                env: HashMap::new(),
+                cwd: Some(fallback.to_string_lossy().into_owned()),
+            },
+        );
+        let id = config.id.clone();
+        manager.add_config(config.clone());
+        for (detected, expected) in [
+            (Some(client_a.as_path()), &client_a),
+            (Some(client_b.as_path()), &client_b),
+            (None, &fallback),
+            (Some(root.join("missing").as_path()), &fallback),
+        ] {
+            let (transport, effective) = manager
+                .create_transport_snapshot_in(&id, detected)
+                .await
+                .unwrap();
+            // Inferred cwd must not look like a user configuration change:
+            // otherwise every request would restart the session's server.
+            assert_eq!(effective.transport_config, config.transport_config);
+            let response = transport
+                .send_request(JsonRpcRequest::with_id(1, "test/cwd".into(), None))
+                .await
+                .unwrap();
+            assert_eq!(
+                response.result.unwrap(),
+                serde_json::json!(expected.to_string_lossy())
+            );
+            transport.close().await.unwrap();
+            assert_eq!(
+                manager.get_config(&id).unwrap().transport_config,
+                config.transport_config
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

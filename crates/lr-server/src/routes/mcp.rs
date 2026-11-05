@@ -457,6 +457,11 @@ pub async fn mcp_gateway_delete_handler(
 pub async fn mcp_gateway_handler(
     State(state): State<AppState>,
     client_auth: Option<axum::Extension<ClientAuthContext>>,
+    peer: Result<
+        axum::extract::ConnectInfo<std::net::SocketAddr>,
+        axum::extract::rejection::ExtensionRejection,
+    >,
+    bound_port: Option<axum::Extension<crate::BoundServerPort>>,
     headers: axum::http::HeaderMap,
     query: Query<McpQueryParams>,
     Json(body): Json<serde_json::Value>,
@@ -658,6 +663,30 @@ pub async fn mcp_gateway_handler(
             None => {}
         }
     }
+
+    // Resolve only while creating an isolated MCP session. Shared stateless
+    // client identities cannot safely represent a single process directory.
+    let client_cwd = if let (Some(session), Ok(peer)) = (session_id.as_deref(), peer) {
+        if state.mcp_gateway.get_session(session).is_none() {
+            let bridge_cwd = headers
+                .get(lr_mcp::client_cwd::BRIDGE_CWD_HEADER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| lr_mcp::client_cwd::bridge_directory(peer.0, v));
+            match bridge_cwd {
+                Some(cwd) => Some(cwd),
+                None => match bound_port {
+                    Some(axum::Extension(crate::BoundServerPort(port))) => {
+                        lr_mcp::client_cwd::detect(peer.0, port).await
+                    }
+                    None => None,
+                },
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     // Record client activity for connection graph
     state.record_client_activity(&client_id);
@@ -1119,6 +1148,7 @@ pub async fn mcp_gateway_handler(
             session_id,
             allowed_servers,
             roots,
+            client_cwd,
             request,
         );
     }
@@ -1161,7 +1191,7 @@ pub async fn mcp_gateway_handler(
             });
             let result = tokio::time::timeout(
                 gateway_timeout,
-                gateway.handle_request_with_skills(
+                gateway.handle_request_with_client_cwd(
                     &client_id_owned,
                     session_id_owned.as_deref(),
                     allowed_servers,
@@ -1184,6 +1214,7 @@ pub async fn mcp_gateway_handler(
                     lr_config::ClientPushSettings::from_client(&client),
                     request,
                     None, // monitor_session_id
+                    client_cwd,
                 ),
             )
             .await;
@@ -1261,6 +1292,7 @@ pub async fn mcp_gateway_handler(
                 session_id,
                 allowed_servers,
                 roots,
+                client_cwd,
                 request,
             )
             .await;
@@ -1269,7 +1301,7 @@ pub async fn mcp_gateway_handler(
         // No SSE connection — process synchronously and return response in body
         match state
             .mcp_gateway
-            .handle_request_with_skills(
+            .handle_request_with_client_cwd(
                 &client_id,
                 session_id.as_deref(),
                 allowed_servers,
@@ -1292,6 +1324,7 @@ pub async fn mcp_gateway_handler(
                 lr_config::ClientPushSettings::from_client(&client),
                 request,
                 None, // monitor_session_id
+                client_cwd,
             )
             .await
         {
@@ -1355,6 +1388,7 @@ async fn run_stateless_with_mrtr(
     session_id: Option<String>,
     allowed_servers: Vec<String>,
     roots: Vec<Root>,
+    client_cwd: Option<std::path::PathBuf>,
     request: JsonRpcRequest,
 ) -> Response {
     let elicitation_mgr = state.mcp_gateway.get_elicitation_manager();
@@ -1439,7 +1473,7 @@ async fn run_stateless_with_mrtr(
         let session_id_for_task = session_id.clone();
         tokio::spawn(async move {
             gateway
-                .handle_request_with_skills(
+                .handle_request_with_client_cwd(
                     &client_id_for_task,
                     session_id_for_task.as_deref(),
                     allowed_servers,
@@ -1462,6 +1496,7 @@ async fn run_stateless_with_mrtr(
                     lr_config::ClientPushSettings::from_client(&client_for_task),
                     request,
                     None, // monitor_session_id
+                    client_cwd,
                 )
                 .await
         })
@@ -1793,6 +1828,7 @@ fn events_stream_response(
     session_id: Option<String>,
     allowed_servers: Vec<String>,
     roots: Vec<Root>,
+    client_cwd: Option<std::path::PathBuf>,
     request: JsonRpcRequest,
 ) -> Response {
     let session_key = session_id.clone().unwrap_or_else(|| client_id.clone());
@@ -1806,7 +1842,7 @@ fn events_stream_response(
     let gateway = state.mcp_gateway.clone();
     let task = tokio::spawn(async move {
         gateway
-            .handle_request_with_skills(
+            .handle_request_with_client_cwd(
                 &client_id,
                 session_id.as_deref(),
                 allowed_servers,
@@ -1829,6 +1865,7 @@ fn events_stream_response(
                 lr_config::ClientPushSettings::from_client(&client),
                 request,
                 None,
+                client_cwd,
             )
             .await
     });
