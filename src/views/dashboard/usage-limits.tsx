@@ -136,7 +136,7 @@ export function UsageLimits({ className, onOpenSettings }: UsageLimitsProps) {
             ) : accounts.length === 0 ? (
               <p className="text-xs text-muted-foreground">No usage seen yet.</p>
             ) : (
-              <div className="grid gap-2 [grid-template-columns:repeat(auto-fill,minmax(300px,1fr))]">
+              <div className="grid gap-2 [grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr))]">
                 {[...subscriptions, ...others].map((a) => (
                   <AccountCard
                     key={a.id}
