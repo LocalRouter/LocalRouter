@@ -11,8 +11,8 @@
 - [x] Test coverage review: add missing transport and failure-path regressions.
 - [x] Bug hunt: inspect framing, header propagation, bounds, parsing and monitoring.
 - [x] Run relevant Rust tests, all-target lint and formatting with rustup stable; record actual proof and limits.
-- [ ] Commit/push signed changes with Matus identity and integrate using no-ff merges; retain unrelated work.
-- [ ] Validate the exact merged SHA in hosted release-validation CI.
+- [x] Commit/push signed changes with Matus identity and integrate using no-ff merges; retain unrelated work.
+- [x] Validate the exact merged SHA in hosted release-validation CI.
 - [ ] Publish the corrective stable release after validation, monitor every enabled release and Docker job, and verify the live updater and artifact signatures.
 - [ ] Commit/push the release verification record.
 
@@ -31,3 +31,14 @@ Rustup stable 1.99.1 was verified current. `cargo test --workspace -j 3` passed 
 One full-run MCP reconnect case (`recovery_retries_explicitly_expired_sessions_but_not_uncertain_writes`) failed once with "Server not running: reset". Its complete 28-test target passed on rerun, and both subsequent complete workspace runs passed. No reconnect implementation or fixture was changed. The failure log is retained, not counted as a green run.
 
 Logs: /tmp/localrouter-request-compression/. Initial compressed regression failed before implementation; passing tests now use codex-client rust-v0.124.0's actual request encoder with local TLS upstreams. They do not exercise a paid live ChatGPT call. Automatic models.dev snapshot refresh and Cargo-generated lockfile updates are included under repository policy. No installed app was replaced or restarted.
+
+Installed-client compatibility check: `/opt/homebrew/bin/codex --version` reports 0.166.0. Public rust-v0.166.0 sources were fetched read-only: http-client/src/request.rs still uses zstd level 3 and Content-Encoding: zstd; core/assets/tools/apply_patch.lark and the CODE_MODE_FREEFORM_GRAMMAR in core/src/tools/code_mode/execute_spec.rs match the pinned test fixtures exactly. Results are retained in /tmp/localrouter-request-compression/codex-0.166/conformance.json. This is source/wire-format conformance, not a live ChatGPT request.
+
+## Corrective release validation
+
+- Signed implementation commit: 2afb4e70; signed no-ff master merge: 08570e92f496bebfdc772e2b121437f0be2b58a5.
+- Exact-SHA hosted CI run 42095731741 passed: workspace Rust tests, Clippy, formatting, frontend/unit/build and website checks. The source was unchanged during this run.
+- Stable v0.0.176 release dispatched once after CI passed: run 42100716600. Tag 6b2b2c5b3a3b2e732cbd4cff2578f3be4fefc43b includes the validated merge. The complete diff from that source is exactly the four manifests/lockfiles with 0.0.175 changed to 0.0.176; no dependency or implementation changes were introduced by the version bump.
+- Updated paper/docs are prepared locally for publication after the application release. The initial docs/static build passed; final publication and verification remain pending.
+
+Application v0.0.176 was published at https://github.com/LocalRouter/LocalRouter/releases/tag/v0.0.176 at 2026-11-05T20:48:30Z. All five platform build jobs passed. Downloaded both macOS updater bundles, both Linux AppImages and the Windows NSIS installer and verified all five signatures with minisign using the application's configured updater public key; file sizes matched release metadata. The docs/static build passed after integrating the v0.0.176 version bump (33 prerendered public pages, 34 verified route outputs). Supplemental package jobs, Docker and live website verification are still being monitored.
