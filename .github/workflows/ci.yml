@@ -110,6 +110,10 @@ jobs:
 
       - name: Test real Codex secret-redaction conversations
         timeout-minutes: 10
+        env:
+          # Keep workspace filesystem isolation without requiring a private
+          # loopback namespace, which the hosted kernel denies.
+          LOCALROUTER_TEST_CODEX_COMMAND_NETWORK: 'true'
         run: scripts/test-codex-secret-lifecycle.sh
 
       - name: Run Clippy
