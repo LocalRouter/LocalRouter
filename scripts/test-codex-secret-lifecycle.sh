@@ -10,20 +10,16 @@ if [[ -z "${LOCALROUTER_TEST_CODEX:-}" ]]; then
   fi
   codex_fixture_dir="$(mktemp -d)"
   trap 'rm -rf "$codex_fixture_dir"' EXIT
-  download_component() {
-    local component="$1" digest="$2"
-    curl --fail --location --retry 3 \
-      "https://github.com/openai/codex/releases/download/rust-v0.166.0/${component}-x86_64-unknown-linux-musl.tar.gz" \
-      --output "$codex_fixture_dir/$component.tar.gz"
-    # GitHub's digest for each pinned upstream release asset.
-    printf '%s  %s\n' "$digest" "$codex_fixture_dir/$component.tar.gz" | sha256sum --check
-    tar -xzf "$codex_fixture_dir/$component.tar.gz" -C "$codex_fixture_dir"
-    mv "$codex_fixture_dir/${component}-x86_64-unknown-linux-musl" "$codex_fixture_dir/$component"
-  }
-  download_component codex a0bf572d2f93f056c6712a6da348e96078dc84f3885fd7be67807ef389cb3978
-  download_component codex-code-mode-host 7588334fd47bc4003d970b70dfd4d1e4578491b1e9baa72976a4c2d7e97590da
-  download_component codex-exec-server 16f698d576fcd1d94e5e38b5c6ce48168afad1d95737b1eb2d84b3f0219ea6e3
-  export LOCALROUTER_TEST_CODEX="$codex_fixture_dir/codex"
+  # The official platform bundle includes Code Mode and sandbox resources.
+  curl --fail --location --retry 3 \
+    'https://github.com/openai/codex/releases/download/rust-v0.166.0/codex-npm-linux-x64-0.166.0.tgz' \
+    --output "$codex_fixture_dir/codex.tgz"
+  printf '%s  %s\n' 'cbc00a26d3d0e2ceefc4be8891f8a81ef1e349b3b175bc0ae308762bc001fd93' "$codex_fixture_dir/codex.tgz" | sha256sum --check
+  tar -xzf "$codex_fixture_dir/codex.tgz" -C "$codex_fixture_dir"
+  codex_platform_dir="$codex_fixture_dir/package/vendor/x86_64-unknown-linux-musl"
+  test -x "$codex_platform_dir/bin/codex-code-mode-host"
+  test -x "$codex_platform_dir/codex-resources/bwrap"
+  export LOCALROUTER_TEST_CODEX="$codex_platform_dir/bin/codex"
 fi
 codex_fixture_version="$("$LOCALROUTER_TEST_CODEX" --version)"
 printf '%s\n' "$codex_fixture_version"

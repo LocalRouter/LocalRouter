@@ -595,6 +595,10 @@ async fn run_installed_codex(transition: bool, websockets: bool, disable_after_f
     );
     std::fs::write(home.join("auth.json"),json!({"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"id_token":token,"access_token":token,"refresh_token":"synthetic","account_id":"synthetic-account"},"last_refresh":chrono::Utc::now().to_rfc3339()}).to_string()).unwrap();
     let proxy_url = running.url.clone();
+    let command_network = matches!(
+        std::env::var("LOCALROUTER_TEST_CODEX_COMMAND_NETWORK").as_deref(),
+        Ok("true")
+    );
     for resume in [false, true] {
         let mut command = tokio::process::Command::new(&binary);
         command
@@ -636,6 +640,12 @@ async fn run_installed_codex(transition: bool, websockets: bool, disable_after_f
             .arg(&workspace)
             .current_dir(&workspace)
             .kill_on_drop(true);
+        if command_network {
+            // Hosted Linux disallows bubblewrap's private-loopback setup.
+            // Keep the workspace filesystem policy; this fixture's commands
+            // are fixed local printf/file writes from its controlled provider.
+            command.args(["-c", "sandbox_workspace_write.network_access=true"]);
+        }
         if resume {
             command
                 .args(["resume", "--last"])
@@ -742,7 +752,7 @@ async fn run_installed_codex(transition: bool, websockets: bool, disable_after_f
             "real CLI must actually use previous_response_id"
         );
     }
-    eprintln!("Installed Codex lifecycle PASS: storage={storage_label}, transition={transition}, disable_after_first={disable_after_first}, websockets={websockets}, requests={}, transports={:?}, compressed={}, file-write + tool-result + assistant + fresh-process resume restored",state.requests.len(),state.transports,state.compressed);
+    eprintln!("Installed Codex lifecycle PASS: storage={storage_label}, command_network={command_network}, transition={transition}, disable_after_first={disable_after_first}, websockets={websockets}, requests={}, transports={:?}, compressed={}, file-write + tool-result + assistant + fresh-process resume restored",state.requests.len(),state.transports,state.compressed);
     drop(state);
     drop(running);
     upstream.abort();
