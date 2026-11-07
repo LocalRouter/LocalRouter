@@ -10,13 +10,20 @@ if [[ -z "${LOCALROUTER_TEST_CODEX:-}" ]]; then
   fi
   codex_fixture_dir="$(mktemp -d)"
   trap 'rm -rf "$codex_fixture_dir"' EXIT
-  curl --fail --location --retry 3 \
-    'https://github.com/openai/codex/releases/download/rust-v0.166.0/codex-x86_64-unknown-linux-musl.tar.gz' \
-    --output "$codex_fixture_dir/codex.tar.gz"
-  # GitHub's digest for the pinned upstream release asset.
-  printf '%s  %s\n' 'a0bf572d2f93f056c6712a6da348e96078dc84f3885fd7be67807ef389cb3978' "$codex_fixture_dir/codex.tar.gz" | sha256sum --check
-  tar -xzf "$codex_fixture_dir/codex.tar.gz" -C "$codex_fixture_dir"
-  export LOCALROUTER_TEST_CODEX="$codex_fixture_dir/codex-x86_64-unknown-linux-musl"
+  download_component() {
+    local component="$1" digest="$2"
+    curl --fail --location --retry 3 \
+      "https://github.com/openai/codex/releases/download/rust-v0.166.0/${component}-x86_64-unknown-linux-musl.tar.gz" \
+      --output "$codex_fixture_dir/$component.tar.gz"
+    # GitHub's digest for each pinned upstream release asset.
+    printf '%s  %s\n' "$digest" "$codex_fixture_dir/$component.tar.gz" | sha256sum --check
+    tar -xzf "$codex_fixture_dir/$component.tar.gz" -C "$codex_fixture_dir"
+    mv "$codex_fixture_dir/${component}-x86_64-unknown-linux-musl" "$codex_fixture_dir/$component"
+  }
+  download_component codex a0bf572d2f93f056c6712a6da348e96078dc84f3885fd7be67807ef389cb3978
+  download_component codex-code-mode-host 7588334fd47bc4003d970b70dfd4d1e4578491b1e9baa72976a4c2d7e97590da
+  download_component codex-exec-server 16f698d576fcd1d94e5e38b5c6ce48168afad1d95737b1eb2d84b3f0219ea6e3
+  export LOCALROUTER_TEST_CODEX="$codex_fixture_dir/codex"
 fi
 codex_fixture_version="$("$LOCALROUTER_TEST_CODEX" --version)"
 printf '%s\n' "$codex_fixture_version"
