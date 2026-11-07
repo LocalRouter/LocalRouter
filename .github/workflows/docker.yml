@@ -21,6 +21,11 @@ on:
         description: 'Version to package (e.g. 0.1.0, no leading v)'
         required: true
         type: string
+      verify_only:
+        description: 'Verify an existing published image without rebuilding it'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -32,6 +37,7 @@ env:
 jobs:
   build-and-push:
     name: Build and push image
+    if: ${{ inputs.verify_only != true }}
     runs-on: ubuntu-latest
     # arm64 stages run under QEMU emulation, which slows apt-get considerably.
     timeout-minutes: 45
@@ -66,10 +72,12 @@ jobs:
             echo "Error: invalid version '$VERSION' (expected e.g. 0.1.0 or 1.0.0-beta.1)"
             exit 1
           fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "is_prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
-          echo "appimage_url_amd64=https://github.com/${{ github.repository }}/releases/download/v${VERSION}/LocalRouter_${VERSION}_amd64.AppImage" >> "$GITHUB_OUTPUT"
-          echo "appimage_url_arm64=https://github.com/${{ github.repository }}/releases/download/v${VERSION}/LocalRouter_${VERSION}_aarch64.AppImage" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=$VERSION"
+            echo "is_prerelease=$IS_PRERELEASE"
+            echo "appimage_url_amd64=https://github.com/${{ github.repository }}/releases/download/v${VERSION}/LocalRouter_${VERSION}_amd64.AppImage"
+            echo "appimage_url_arm64=https://github.com/${{ github.repository }}/releases/download/v${VERSION}/LocalRouter_${VERSION}_aarch64.AppImage"
+          } >> "$GITHUB_OUTPUT"
           echo "Resolved version: $VERSION (prerelease=$IS_PRERELEASE)"
 
       - name: Compute AppImage checksums
@@ -154,3 +162,50 @@ jobs:
           echo "AppImage sources:"
           echo "  amd64: ${{ steps.ver.outputs.appimage_url_amd64 }}"
           echo "  arm64: ${{ steps.ver.outputs.appimage_url_arm64 }}"
+
+  verify-runtime:
+    name: Verify startup - ${{ matrix.settings.arch }}
+    needs: build-and-push
+    if: ${{ !cancelled() && (needs.build-and-push.result == 'success' || (github.event_name == 'workflow_dispatch' && inputs.verify_only)) }}
+    permissions: {}
+    strategy:
+      fail-fast: false
+      matrix:
+        settings:
+          - runner: ubuntu-22.04
+            arch: amd64
+          - runner: ubuntu-22.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.settings.runner }}
+    timeout-minutes: 10
+    steps:
+      - name: Verify the published AppImage starts and reports its release version
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          VERIFY_ARCH: ${{ matrix.settings.arch }}
+        run: |
+          set -euo pipefail
+          if [ -n "$INPUT_VERSION" ]; then
+            verify_version="$INPUT_VERSION"
+          else
+            verify_version="${RELEASE_TAG#v}"
+          fi
+          if ! [[ "$verify_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
+            echo "Invalid release version" >&2
+            exit 1
+          fi
+          case "$VERIFY_ARCH:$(uname -m)" in
+            amd64:x86_64|arm64:aarch64) ;;
+            *) echo "Published runtime checks require a native architecture runner" >&2; exit 1 ;;
+          esac
+          verify_image="${IMAGE_NAME}:${verify_version}"
+          docker pull --platform "linux/${VERIFY_ARCH}" "$verify_image"
+          docker run --rm --platform "linux/${VERIFY_ARCH}" \
+            --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --memory 2g --cpus 1 \
+            --tmpfs /home/app:rw,mode=1777,size=16m -v /tmp \
+            "$verify_image" /app/LocalRouter.AppImage \
+            --appimage-extract-and-run --version \
+            | tee "$RUNNER_TEMP/localrouter-version-${VERIFY_ARCH}.log"
+          grep -Fx "localrouter ${verify_version}" "$RUNNER_TEMP/localrouter-version-${VERIFY_ARCH}.log"
