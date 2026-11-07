@@ -59,7 +59,15 @@ where
             }
             bytes.extend_from_slice(&chunk);
         }
-        let bytes = codec.json(&bytes).map_err(std::io::Error::other)?;
+        let bytes = if bytes.is_empty()
+            && matches!(
+                parts.status,
+                http::StatusCode::NO_CONTENT | http::StatusCode::NOT_MODIFIED
+            ) {
+            bytes
+        } else {
+            codec.json(&bytes).map_err(std::io::Error::other)?
+        };
         let body = Full::new(Bytes::from(bytes))
             .map_err(|e: Infallible| match e {})
             .boxed_unsync();
@@ -112,6 +120,31 @@ mod tests {
         let mut value = json!({"content":"synthetic secret"});
         vault.protect(&mut value).unwrap();
         (vault, storage, value["content"].as_str().unwrap().into())
+    }
+    #[tokio::test]
+    async fn empty_resource_responses_preserve_status_without_accepting_invalid_json() {
+        for status in [204, 304, 200] {
+            let (vault, _, _) = vault();
+            let response = http::Response::builder()
+                .status(status)
+                .body(Full::new(Bytes::new()))
+                .unwrap();
+            let (parts, body) = response.into_parts();
+            let result = restore(parts, body, vault, false, false).await;
+            if status == 200 {
+                assert!(result.is_err(), "empty inference responses remain invalid");
+            } else {
+                let response = result.unwrap();
+                assert_eq!(response.status().as_u16(), status);
+                assert!(response
+                    .into_body()
+                    .collect()
+                    .await
+                    .unwrap()
+                    .to_bytes()
+                    .is_empty());
+            }
+        }
     }
     #[tokio::test]
     async fn dropping_unpolled_stream_releases_ephemeral_scope() {

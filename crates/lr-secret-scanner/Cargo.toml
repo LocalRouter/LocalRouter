@@ -20,6 +20,7 @@ regex = { workspace = true }
 aho-corasick = "1"
 ring = { workspace = true }
 base64 = { workspace = true }
+percent-encoding = "2"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

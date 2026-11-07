@@ -80,15 +80,8 @@ pub fn detect(path: &str) -> Option<WireFormat> {
 }
 
 /// A retrieval is authorized through the original response's owner/scope alias.
-pub fn response_id(path: &str) -> Option<&str> {
-    let path = path.split('?').next()?;
-    let (_, suffix) = path.rsplit_once("/responses/")?;
-    let id = suffix.strip_suffix("/input_items").unwrap_or(suffix);
-    (id.starts_with("resp_")
-        && id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-')))
-    .then_some(id)
+pub fn response_id(path: &str) -> Option<String> {
+    lr_secret_scanner::wire::response_id(path)
 }
 
 /// Catalog/metrics provider name for an intercepted host.

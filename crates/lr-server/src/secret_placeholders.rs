@@ -13,7 +13,7 @@ use axum::{
 use futures::StreamExt;
 use lr_secret_scanner::{
     placeholders::Vault,
-    wire::{frame_end, Events},
+    wire::{frame_end, ResponseRestorer},
 };
 use lr_types::secret_context::{self, SecretContext};
 use serde_json::Value;
@@ -55,16 +55,27 @@ async fn run(
         .as_ref()
         .and_then(|c| c.secret_scanning.action.as_ref())
         .unwrap_or(&config.secret_scanning.action);
-    if !matches!(
-        path.as_str(),
-        "/chat/completions"
-            | "/completions"
-            | "/responses"
-            | "/messages"
-            | "/systemone"
-            | "/decisions"
-    ) || request.method() != axum::http::Method::POST
-    {
+    let masking = matches!(
+        action,
+        lr_config::SecretScanAction::Redact | lr_config::SecretScanAction::Ask
+    );
+    let resource = lr_secret_scanner::wire::response_id(&path);
+    let control = resource.is_some()
+        && (matches!(
+            *request.method(),
+            axum::http::Method::GET | axum::http::Method::DELETE
+        ) || (request.method() == axum::http::Method::POST && path.ends_with("/cancel")));
+    let inference = request.method() == axum::http::Method::POST
+        && matches!(
+            path.as_str(),
+            "/chat/completions"
+                | "/completions"
+                | "/responses"
+                | "/messages"
+                | "/systemone"
+                | "/decisions"
+        );
+    if !inference && !control {
         if *action == lr_config::SecretScanAction::Redact
             && request.method() == axum::http::Method::POST
         {
@@ -74,32 +85,72 @@ async fn run(
         }
         return Ok(next.run(request).await);
     }
-    if !matches!(
-        action,
-        lr_config::SecretScanAction::Redact | lr_config::SecretScanAction::Ask
-    ) {
-        return Ok(next.run(request).await);
-    }
     let (mut parts, body) = request.into_parts();
     let bytes = to_bytes(body, LIMIT)
         .await
         .map_err(|_| ApiErrorResponse::bad_request("Could not read protected request"))?;
-    let mut value: Value = serde_json::from_slice(&bytes)
-        .map_err(|_| ApiErrorResponse::bad_request("Invalid request JSON"))?;
-    let session = request_session(&value, &parts.headers)?;
-    let ephemeral = session.is_none();
+    let mut value: Value = if control {
+        serde_json::json!({})
+    } else {
+        match serde_json::from_slice(&bytes) {
+            Ok(value) => value,
+            Err(_) if !masking => {
+                return Ok(next
+                    .run(Request::from_parts(parts, Body::from(bytes)))
+                    .await)
+            }
+            Err(_) => return Err(ApiErrorResponse::bad_request("Invalid request JSON")),
+        }
+    };
+    let session = match request_session(&value, &parts.headers) {
+        Ok(session) => session,
+        Err(_) if !masking || control => None,
+        Err(error) => return Err(error),
+    };
+    let previous = value
+        .get("previous_response_id")
+        .and_then(Value::as_str)
+        .or(if control { resource.as_deref() } else { None });
+    let continuation =
+        match Vault::find_scope(storage.clone(), &owner, previous, session.as_deref()) {
+            Ok(vault) => vault,
+            Err(_) if !masking || (control && parts.method != axum::http::Method::GET) => {
+                return Ok(next
+                    .run(Request::from_parts(parts, Body::from(bytes)))
+                    .await)
+            }
+            Err(error) => return Err(ApiErrorResponse::from(error)),
+        };
+    if !masking && continuation.is_none() {
+        return Ok(next
+            .run(Request::from_parts(parts, Body::from(bytes)))
+            .await);
+    }
+    let ephemeral = session.is_none() && path != "/responses" && !control;
     let session = session.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let vault = Arc::new(
-        if let Some(previous) = value.get("previous_response_id").and_then(Value::as_str) {
-            Vault::continue_response(storage, &owner, previous).map_err(|_| {
-                ApiErrorResponse::bad_request(
-                    "Secret scope for previous_response_id is missing or expired",
-                )
-            })?
-        } else {
-            Vault::new(storage, &owner, &session, ephemeral && path != "/responses")
-        },
-    );
+    let vault =
+        Arc::new(continuation.unwrap_or_else(|| Vault::new(storage, &owner, &session, ephemeral)));
+    if !masking || control {
+        if !masking {
+            vault.set_restore_only();
+        }
+        if !control {
+            vault
+                .set_request_contract(&value)
+                .map_err(ApiErrorResponse::from)?;
+        }
+        let context: Arc<dyn SecretContext> = vault.clone();
+        return secret_context::scope(Some(context), async move {
+            let body = if control {
+                Body::empty()
+            } else {
+                Body::from(bytes)
+            };
+            let response = next.run(Request::from_parts(parts, body)).await;
+            restore_response(response, vault).await
+        })
+        .await;
+    }
     if value
         .pointer("/extensions/localrouter.session/reset")
         .and_then(Value::as_bool)
@@ -143,23 +194,6 @@ async fn run(
         context
             .protect(&mut value)
             .map_err(ApiErrorResponse::from)?;
-        // Native server tools execute at the provider and cannot be restored locally.
-        if context.active()
-            && value
-                .get("tools")
-                .and_then(Value::as_array)
-                .is_some_and(|tools| {
-                    tools.iter().any(|t| {
-                        t.get("type")
-                            .and_then(Value::as_str)
-                            .is_some_and(|kind| !matches!(kind, "function" | "custom"))
-                    })
-                })
-        {
-            return Err(ApiErrorResponse::bad_request(
-                "Restorable secrets require locally executed tools",
-            ));
-        }
         vault
             .set_request_contract(&value)
             .map_err(ApiErrorResponse::from)?;
@@ -177,7 +211,7 @@ async fn run(
         let body = serde_json::to_vec(&value)
             .map_err(|_| ApiErrorResponse::internal_error("Could not encode protected request"))?;
         let response = next.run(Request::from_parts(parts, Body::from(body))).await;
-        restore_response(response, context, vault).await
+        restore_response(response, vault).await
     })
     .await
 }
@@ -305,9 +339,9 @@ fn request_session(
 }
 async fn restore_response(
     response: Response,
-    context: Arc<dyn SecretContext>,
     vault: Arc<Vault>,
 ) -> Result<Response, ApiErrorResponse> {
+    let context: Arc<dyn SecretContext> = vault.clone();
     let streaming = response
         .headers()
         .get("content-type")
@@ -331,35 +365,22 @@ async fn restore_response(
         let bytes = to_bytes(body, LIMIT)
             .await
             .map_err(|_| ApiErrorResponse::internal_error("Protected response exceeds limit"))?;
-        let mut value: Value = serde_json::from_slice(&bytes)
-            .map_err(|_| ApiErrorResponse::internal_error("Invalid protected response"))?;
-        if let Some(id) = value
-            .get("id")
-            .and_then(Value::as_str)
-            .filter(|s| s.starts_with("resp_"))
-        {
-            vault.bind_response(id).map_err(ApiErrorResponse::from)?;
-        }
-        vault.bind_opaque(&value).map_err(ApiErrorResponse::from)?;
-        context
-            .restore(&mut value, false)
-            .map_err(ApiErrorResponse::from)?;
-        context
-            .validate_response(&value)
-            .map_err(ApiErrorResponse::from)?;
-        let encoded = serde_json::to_vec(&value)
-            .map_err(|_| ApiErrorResponse::internal_error("Could not encode restored response"))?;
-        if encoded.len() > LIMIT {
-            return Err(ApiErrorResponse::internal_error(
-                "Restored response exceeds the gateway response budget",
-            ));
-        }
+        let mut codec = ResponseRestorer::new(vault);
+        let encoded = if bytes.is_empty()
+            && matches!(
+                parts.status,
+                axum::http::StatusCode::NO_CONTENT | axum::http::StatusCode::NOT_MODIFIED
+            ) {
+            bytes.to_vec()
+        } else {
+            codec.json(&bytes).map_err(ApiErrorResponse::from)?
+        };
         return Ok(Response::from_parts(parts, Body::from(encoded)));
     }
     let stream: std::pin::Pin<
         Box<dyn futures::Stream<Item = Result<axum::body::Bytes, std::io::Error>> + Send>,
     > = Box::pin(async_stream::try_stream! {
-        let mut body=body.into_data_stream();let mut pending=Vec::new();let mut scanned=0;let mut codec=Events::default();
+        let mut body=body.into_data_stream();let mut pending=Vec::new();let mut scanned=0;let mut codec=ResponseRestorer::new(vault);
         while let Some(chunk)=secret_context::scope(Some(context.clone()),body.next()).await {
             let chunk=chunk.map_err(std::io::Error::other)?;pending.extend_from_slice(&chunk);
             if pending.len()>LIMIT {Err(std::io::Error::other("Protected response frame exceeds limit"))?;}
@@ -367,26 +388,19 @@ async fn restore_response(
                 let end=scanned+relative;scanned=0;
                 let frame=String::from_utf8(pending.drain(..end).collect()).map_err(std::io::Error::other)?;
                 pending.drain(..separator);
-                // Bind the response identity independently of delta content.
-                if let Some(data)=frame.lines().find_map(|line|line.strip_prefix("data: ")) {
-                    if let Ok(value)=serde_json::from_str::<Value>(data) {
-                        vault.bind_opaque(&value).map_err(std::io::Error::other)?;
-                        if let Some(id)=value.pointer("/response/id").or_else(||value.get("id")).and_then(Value::as_str).filter(|id|id.starts_with("resp_")) {vault.bind_response(id).map_err(std::io::Error::other)?;}
-                    }
-                }
-                for event in codec.frame(&frame,&context).map_err(std::io::Error::other)? {yield axum::body::Bytes::from(event);}
+                for event in codec.frame(&frame).map_err(std::io::Error::other)? {yield axum::body::Bytes::from(event);}
             }
             scanned=pending.len().saturating_sub(3);
         }
         if !pending.is_empty(){Err(std::io::Error::other("Incomplete protected response event"))?;}
-        if !codec.done {Err(std::io::Error::other("Protected stream ended without completion"))?;}
-        for event in codec.finish(&context).map_err(std::io::Error::other)? {yield axum::body::Bytes::from(event);}
+        for event in codec.finish().map_err(std::io::Error::other)? {yield axum::body::Bytes::from(event);}
     });
     Ok(Response::from_parts(parts, Body::from_stream(stream)))
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lr_secret_scanner::wire::Events;
     use serde_json::json;
     fn fixture() -> (Arc<dyn SecretContext>, String, String) {
         let vault: Arc<dyn SecretContext> = Arc::new(Vault::new(
@@ -592,19 +606,49 @@ mod tests {
         .await;
     }
     #[tokio::test]
+    async fn empty_resource_responses_keep_their_status_and_body() {
+        for status in [204, 304, 200] {
+            let vault = Arc::new(Vault::new(
+                Arc::new(lr_api_keys::MockKeychain::new()),
+                "empty-resource",
+                "scope",
+                false,
+            ));
+            let response = Response::builder()
+                .status(status)
+                .body(Body::empty())
+                .unwrap();
+            let result = restore_response(response, vault).await;
+            if status == 200 {
+                assert!(result.is_err(), "empty inference responses remain invalid");
+            } else {
+                let response = result.unwrap();
+                assert_eq!(response.status().as_u16(), status);
+                assert!(to_bytes(response.into_body(), LIMIT)
+                    .await
+                    .unwrap()
+                    .is_empty());
+            }
+        }
+    }
+    #[tokio::test]
     async fn secret_placeholders_json_and_fragmented_sse_body() {
-        let (context, tag, secret) = fixture();
+        let (_, _, secret) = fixture();
         let vault = Arc::new(Vault::new(
             Arc::new(lr_api_keys::MockKeychain::new()),
             "client",
             "other",
             false,
         ));
+        vault.register(&secret).unwrap();
+        let mut protected = json!({"content":secret});
+        vault.protect(&mut protected).unwrap();
+        let tag = protected["content"].as_str().unwrap().to_owned();
         let json_response = Response::builder()
             .header("content-type", "application/json")
             .body(Body::from(json!({"content":tag}).to_string()))
             .unwrap();
-        let result = restore_response(json_response, context.clone(), vault.clone())
+        let result = restore_response(json_response, vault.clone())
             .await
             .unwrap();
         let bytes = to_bytes(result.into_body(), LIMIT).await.unwrap();
@@ -625,7 +669,7 @@ mod tests {
             .header("content-type", "text/event-stream")
             .body(Body::from_stream(futures::stream::iter(chunks)))
             .unwrap();
-        let result = restore_response(response, context, vault).await.unwrap();
+        let result = restore_response(response, vault).await.unwrap();
         let bytes = to_bytes(result.into_body(), LIMIT).await.unwrap();
         let actual = String::from_utf8(bytes.to_vec()).unwrap();
         assert!(actual.contains("[DONE]"));
@@ -720,6 +764,151 @@ mod boundary_tests {
             format!("aws_secret_access_key={SYNTHETIC}")
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+    #[tokio::test]
+    async fn gateway_untracked_then_opaque_continuation_restores_json_and_sse() {
+        for streaming in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let state = state(root.path());
+            let owner = state.config_manager.get().clients[0].id.clone();
+            let storage = Arc::new(lr_api_keys::MockKeychain::new());
+            let stored = storage.clone();
+            let marker = Arc::new(std::sync::Mutex::new(None::<String>));
+            let app=axum::Router::new().route("/v1/responses",post(move |Json(body):Json<Value>|{
+                let marker=marker.clone();async move {
+                    assert!(!body.to_string().contains(SYNTHETIC),"gateway must dispatch only placeholders");
+                    if let Some(text)=body.pointer("/input/0/content").and_then(Value::as_str) {
+                        *marker.lock().unwrap()=Some(text.split_once('=').unwrap().1.into());
+                    }
+                    let tag=marker.lock().unwrap().clone().unwrap();
+                    if streaming {
+                        let events=[serde_json::json!({"type":"response.created","response":{"id":"opaque-gateway-id"}}),serde_json::json!({"type":"response.output_item.done","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":tag}]}}),serde_json::json!({"type":"response.completed","response":{"id":"opaque-gateway-id"}})];
+                        Response::builder().header("content-type","text/event-stream").body(Body::from(events.iter().map(|event|format!("data: {event}\n\n")).collect::<String>())).unwrap()
+                    } else {
+                        Json(serde_json::json!({"object":"response","id":"opaque-gateway-id","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":tag}]}]})).into_response()
+                    }
+                }
+            })).layer(axum::middleware::from_fn_with_state(state,move |State(state):State<AppState>,request:Request,next:Next| {
+                let storage=stored.clone();async move {match run(state,request,next,storage).await {Ok(response)=>response,Err(error)=>error.into_response()}}
+            })).layer(Extension(AuthContext{api_key_id:owner,credential_scope:None,model_selection:None}));
+            for first in [true, false] {
+                let input = if first {
+                    serde_json::json!([{"role":"user","content":format!("aws_secret_access_key={SYNTHETIC}")}])
+                } else {
+                    serde_json::json!([{"type":"function_call_output","call_id":"call-1","output":"done without the original"}])
+                };
+                let request = serde_json::json!({"model":"local-test","stream":streaming,"previous_response_id":if first {"opaque-before-redaction"} else {"opaque-gateway-id"},"input":input,"tools":[{"type":"web_search"},{"type":"function","name":"write","parameters":{"type":"object"}}]});
+                let response = app
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .method("POST")
+                            .uri("/v1/responses")
+                            .header("content-type", "application/json")
+                            .body(Body::from(request.to_string()))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                let status = response.status();
+                let bytes = to_bytes(response.into_body(), LIMIT).await.unwrap();
+                let text = String::from_utf8(bytes.to_vec()).unwrap();
+                assert_eq!(status, 200, "streaming={streaming}, first={first}: {text}");
+                assert!(
+                    text.contains(SYNTHETIC),
+                    "continuation must recover its owned native-store scope"
+                );
+                assert!(!text.contains("localrouter-redacted"));
+            }
+        }
+    }
+    #[tokio::test]
+    async fn gateway_resource_reads_cancel_and_delete_restore_the_owned_scope_after_mode_changes() {
+        use axum::routing::get;
+        let root = tempfile::tempdir().unwrap();
+        let state = state(root.path());
+        let manager = state.config_manager.clone();
+        let owner = manager.get().clients[0].id.clone();
+        let storage = Arc::new(lr_api_keys::MockKeychain::new());
+        let vault = Arc::new(Vault::new(storage.clone(), &owner, "resource-scope", false));
+        vault.register(SYNTHETIC).unwrap();
+        let mut tag = Value::String(SYNTHETIC.into());
+        vault.protect(&mut tag).unwrap();
+        let mut codec = ResponseRestorer::new(vault);
+        codec
+            .json(
+                serde_json::json!({"object":"response","id":"opaque/id:ABC","output":[]})
+                    .to_string()
+                    .as_bytes(),
+            )
+            .unwrap();
+        drop(codec);
+        let stored = storage.clone();
+        let handler = move || {
+            let tag = tag.clone();
+            async move {
+                Json(
+                    serde_json::json!({"object":"response","id":"opaque/id:ABC","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":tag}]}]}),
+                )
+            }
+        };
+        let app = axum::Router::new()
+            .route(
+                "/v1/responses/{id}",
+                get(handler.clone()).delete(handler.clone()),
+            )
+            .route("/v1/responses/{id}/input_items", get(handler.clone()))
+            .route("/v1/responses/{id}/cancel", post(handler))
+            .layer(axum::middleware::from_fn_with_state(
+                state,
+                move |State(state): State<AppState>, request: Request, next: Next| {
+                    let storage = stored.clone();
+                    async move {
+                        match run(state, request, next, storage).await {
+                            Ok(response) => response,
+                            Err(error) => error.into_response(),
+                        }
+                    }
+                },
+            ))
+            .layer(Extension(AuthContext {
+                api_key_id: owner,
+                credential_scope: None,
+                model_selection: None,
+            }));
+        for action in [
+            lr_config::SecretScanAction::Redact,
+            lr_config::SecretScanAction::Notify,
+            lr_config::SecretScanAction::Off,
+        ] {
+            manager
+                .update(|c| c.secret_scanning.action = action)
+                .unwrap();
+            for (method, suffix) in [
+                ("GET", ""),
+                ("GET", "/input_items"),
+                ("POST", "/cancel"),
+                ("DELETE", ""),
+            ] {
+                let response = app
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .method(method)
+                            .uri(format!("/v1/responses/opaque%2Fid%3AABC{suffix}"))
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), 200);
+                let bytes = to_bytes(response.into_body(), LIMIT).await.unwrap();
+                assert!(
+                    String::from_utf8_lossy(&bytes).contains(SYNTHETIC),
+                    "{method} {suffix} must restore only its owned scope"
+                );
+            }
+        }
     }
 }
 

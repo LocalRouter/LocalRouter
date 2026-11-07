@@ -168,31 +168,70 @@ impl lr_proxy::active::Firewall for AppFirewall {
         use lr_secret_scanner::placeholders::Vault;
         use lr_types::secret_context::{self, SecretContext};
         let config = self.config_manager.get();
-        let client = config.clients.iter().find(|c| c.id == req.client_id);
+        let Some(client) = config.clients.iter().find(|c| c.id == req.client_id) else {
+            return RequestAction::reject_json(403, "Client policy is no longer available");
+        };
+        if !client.enabled || !(client.llm_proxy_enabled() || client.llm_reverse_proxy_enabled()) {
+            return RequestAction::reject_json(403, "Proxy access is disabled for this client");
+        }
         let action = client
-            .and_then(|c| c.secret_scanning.action.as_ref())
+            .secret_scanning
+            .action
+            .as_ref()
             .unwrap_or(&config.secret_scanning.action);
-        if !matches!(
+        let masking = matches!(
             action,
             lr_config::SecretScanAction::Redact | lr_config::SecretScanAction::Ask
-        ) {
-            return self.evaluate_policy(req).await;
+        );
+        let resource = lr_proxy::wire::response_id(&req.path);
+        let retrieval = resource.is_some()
+            && (matches!(req.method.as_str(), "GET" | "DELETE")
+                || (req.method == "POST"
+                    && req
+                        .path
+                        .split('?')
+                        .next()
+                        .is_some_and(|p| p.ends_with("/cancel"))));
+        if retrieval {
+            let Some(strategy) = config
+                .strategies
+                .iter()
+                .find(|s| s.id == client.strategy_id)
+            else {
+                return RequestAction::reject_json(403, "Client strategy is no longer available");
+            };
+            if req.method == "GET"
+                && strategy
+                    .auto_config
+                    .as_ref()
+                    .is_some_and(|a| a.permission == lr_config::PermissionState::Off)
+            {
+                return RequestAction::reject_json(403, "LLM access is disabled for this client");
+            }
         }
-        let retrieval = req.method == "GET" && lr_proxy::wire::response_id(&req.path).is_some();
         if !req.body.is_object() && !retrieval {
+            if !masking {
+                return self.evaluate_policy(req).await;
+            }
             return RequestAction::reject_json(400, "Invalid protected request JSON");
         }
         let storage = self.secret_storage.clone();
-        let mut session_options = req.body.pointer("/extensions/localrouter.session").cloned();
-        if let Some(header) = &req.secret_session {
-            let options = session_options.get_or_insert_with(|| serde_json::json!({}));
-            let Some(options) = options.as_object_mut() else {
-                return RequestAction::reject_json(400, "Invalid secret session options");
-            };
-            options.insert("id".into(), serde_json::Value::String(header.clone()));
-        }
-        let session = match lr_providers::session::SessionOptions::parse(session_options.as_ref()) {
-            Ok(options) => options.map(|options| options.id),
+        let session = (|| -> Result<Option<String>, ()> {
+            let mut options = req.body.pointer("/extensions/localrouter.session").cloned();
+            if let Some(header) = &req.secret_session {
+                options
+                    .get_or_insert_with(|| serde_json::json!({}))
+                    .as_object_mut()
+                    .ok_or(())?
+                    .insert("id".into(), serde_json::Value::String(header.clone()));
+            }
+            lr_providers::session::SessionOptions::parse(options.as_ref())
+                .map(|o| o.map(|o| o.id))
+                .map_err(|_| ())
+        })();
+        let session = match session {
+            Ok(session) => session,
+            Err(_) if !masking || retrieval => None,
             Err(_) => return RequestAction::reject_json(400, "Invalid secret session identity"),
         };
         let fallback = uuid::Uuid::new_v4().to_string();
@@ -200,31 +239,90 @@ impl lr_proxy::active::Firewall for AppFirewall {
             .body
             .get("previous_response_id")
             .and_then(serde_json::Value::as_str)
-            .or_else(|| {
-                if retrieval {
-                    lr_proxy::wire::response_id(&req.path)
+            .or(if retrieval { resource.as_deref() } else { None });
+        let continuation = match Vault::find_scope(
+            storage.clone(),
+            &req.client_id,
+            previous,
+            session.as_deref(),
+        ) {
+            Ok(vault) => vault,
+            Err(_) if retrieval && req.method != "GET" => return RequestAction::Forward,
+            Err(_) if !masking => {
+                return if retrieval {
+                    RequestAction::Forward
                 } else {
-                    None
-                }
-            });
-        let vault = if let Some(previous) = previous {
-            match Vault::continue_response(storage, &req.client_id, previous) {
-                Ok(vault) => vault,
-                Err(_) => {
-                    return RequestAction::reject_json(
-                        400,
-                        "Secret scope for previous_response_id is missing or expired",
-                    )
+                    self.evaluate_policy(req).await
                 }
             }
-        } else {
+            Err(_) => {
+                return RequestAction::reject_json(
+                    400,
+                    "Secret continuation could not be authorized using OS credential storage",
+                )
+            }
+        };
+        if retrieval {
+            if !masking && continuation.is_none() {
+                return RequestAction::Forward;
+            }
+            let vault = continuation.unwrap_or_else(|| {
+                Vault::new(
+                    storage,
+                    &req.client_id,
+                    session.as_deref().unwrap_or(&fallback),
+                    false,
+                )
+            });
+            if !masking {
+                vault.set_restore_only();
+            }
+            return RequestAction::Protect {
+                body: Vec::new(),
+                vault: Arc::new(vault),
+            };
+        }
+        if !masking {
+            let Some(vault) = continuation else {
+                return self.evaluate_policy(req).await;
+            };
+            // Keep ordinary Off/Notify outbound policy and data unchanged.
+            // Only references issued to this owned conversation are restored.
+            let action = self.evaluate_policy(req).await;
+            let body = match action {
+                RequestAction::Forward => req.body.clone(),
+                RequestAction::Replace(bytes) => match serde_json::from_slice(&bytes) {
+                    Ok(body) => body,
+                    Err(_) => {
+                        return RequestAction::reject_json(400, "Invalid edited request JSON")
+                    }
+                },
+                other => return other,
+            };
+            vault.set_restore_only();
+            if vault.set_request_contract(&body).is_err() {
+                return RequestAction::reject_json(400, "Invalid response restoration contract");
+            }
+            return match if retrieval {
+                Ok(Vec::new())
+            } else {
+                serde_json::to_vec(&body)
+            } {
+                Ok(body) => RequestAction::Protect {
+                    body,
+                    vault: Arc::new(vault),
+                },
+                Err(_) => RequestAction::reject_json(400, "Could not encode request"),
+            };
+        }
+        let vault = continuation.unwrap_or_else(|| {
             Vault::new(
                 storage,
                 &req.client_id,
                 session.as_deref().unwrap_or(&fallback),
                 session.is_none() && !req.path.contains("responses"),
             )
-        };
+        });
         let vault = Arc::new(vault);
         if req
             .body
@@ -740,8 +838,8 @@ mod secret_policy_tests {
         interceptor::RequestAction,
     };
     use serde_json::{json, Value};
-    const KEY: &str = "6nmCEa00cbNmH0B4zKPSYOPP5z1oYFR26doJldQr";
-    fn fixture(
+    pub(super) const KEY: &str = "6nmCEa00cbNmH0B4zKPSYOPP5z1oYFR26doJldQr";
+    pub(super) fn fixture(
         root: &std::path::Path,
         mode: lr_config::LlmMode,
         storage: Arc<dyn lr_api_keys::KeychainStorage>,
@@ -814,6 +912,278 @@ mod secret_policy_tests {
             body: json!({"model":"local-test","input":[{"role":"user","content":format!("aws_secret_access_key={KEY}")} ]}),
         };
         (firewall, request)
+    }
+    #[tokio::test]
+    async fn untracked_provider_continuation_does_not_require_a_local_secret_record() {
+        let root = tempfile::tempdir().unwrap();
+        let (firewall, mut request) = fixture(
+            root.path(),
+            lr_config::LlmMode::Proxy,
+            Arc::new(lr_api_keys::MockKeychain::new()),
+        );
+        request.secret_session = None;
+        request.body["previous_response_id"] = json!("provider-response-before-redaction");
+        match firewall.evaluate(&request).await {
+            RequestAction::Protect { body, .. } => {
+                assert!(!String::from_utf8_lossy(&body).contains(KEY));
+                assert_eq!(
+                    serde_json::from_slice::<Value>(&body).unwrap()["previous_response_id"],
+                    "provider-response-before-redaction"
+                );
+            }
+            RequestAction::Reject { status, body, .. } => panic!(
+                "valid continuation rejected {status}: {}",
+                String::from_utf8_lossy(&body)
+            ),
+            _ => panic!("Redact must protect the continuation"),
+        }
+    }
+    #[tokio::test]
+    async fn continuation_only_custom_tool_content_is_scanned_and_restorable() {
+        use lr_types::secret_context::SecretContext;
+        for item in [
+            json!({"type":"custom_tool_call","call_id":"call-1","name":"exec","input":format!("aws_secret_access_key={KEY}")}),
+            json!({"type":"custom_tool_call_output","call_id":"call-1","output":[{"type":"input_text","text":format!("aws_secret_access_key={KEY}")}]}),
+            json!({"type":"additional_tools","role":"developer","tools":[{"type":"function","name":"write","description":format!("aws_secret_access_key={KEY}"),"parameters":{"type":"object"}}]}),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let (firewall, mut request) = fixture(
+                root.path(),
+                lr_config::LlmMode::Proxy,
+                Arc::new(lr_api_keys::MockKeychain::new()),
+            );
+            request.body =
+                json!({"model":"local-test","previous_response_id":"untracked","input":[item]});
+            let RequestAction::Protect { body, vault } = firewall.evaluate(&request).await else {
+                panic!("custom continuation must protect")
+            };
+            assert!(
+                !String::from_utf8_lossy(&body).contains(KEY),
+                "first-time custom content must be scanned"
+            );
+            let mut restored: Value = serde_json::from_slice(&body).unwrap();
+            vault.restore(&mut restored, false).unwrap();
+            assert!(
+                restored.to_string().contains(KEY),
+                "newly detected original must be recoverable"
+            );
+        }
+    }
+    #[tokio::test]
+    async fn escaped_multiline_credentials_are_masked_as_originals_in_json_text() {
+        use base64::Engine;
+        use lr_types::secret_context::SecretContext;
+        let material="whtWShJK3py2Nh1bWey7TsPWCMmmPRsRIs0cg240wR5nPxMgnPFkNj6Dl0IbSfxxVikEf/GcBB/TEZ5PhCH5a2Px9L8ihbSWxS+T2qPjUrE3Xtt5QSqydTGneV72XJxG";
+        let secret = format!("-----BEGIN PRIVATE KEY-----\n{material}\n-----END PRIVATE KEY-----");
+        let text = json!({"private_key":secret}).to_string();
+        for input in [
+            json!({"role":"user","content":text}),
+            json!({"type":"custom_tool_call_output","call_id":"call-1","output":[{"type":"input_text","text":text}]}),
+            json!({"role":"user","content":[{"type":"input_file","filename":"credentials.json","file_data":format!("data:text/plain;base64,{}",base64::engine::general_purpose::STANDARD.encode(&text))}]}),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let (firewall, mut request) = fixture(
+                root.path(),
+                lr_config::LlmMode::Proxy,
+                Arc::new(lr_api_keys::MockKeychain::new()),
+            );
+            request.body = json!({"model":"local-test","input":[input]});
+            let RequestAction::Protect { body, vault } = firewall.evaluate(&request).await else {
+                panic!("multiline credential must protect")
+            };
+            let protected: Value = serde_json::from_slice(&body).unwrap();
+            let (mut restored, _) = lr_server::documents::scan_projection(&protected).unwrap();
+            assert!(
+                !restored.to_string().contains(material),
+                "JSON escaping must not bypass redaction"
+            );
+            vault.restore(&mut restored, false).unwrap();
+            let (original, _) = lr_server::documents::scan_projection(&request.body).unwrap();
+            assert_eq!(restored, original, "original JSON encoding must round-trip");
+        }
+    }
+    #[tokio::test]
+    async fn owned_response_lifecycle_operations_accept_opaque_ids_and_empty_bodies() {
+        use lr_types::secret_context::SecretContext;
+        let root = tempfile::tempdir().unwrap();
+        let (firewall, mut request) = fixture(
+            root.path(),
+            lr_config::LlmMode::Proxy,
+            Arc::new(lr_api_keys::MockKeychain::new()),
+        );
+        let RequestAction::Protect { body, vault } = firewall.evaluate(&request).await else {
+            panic!("initial scope")
+        };
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        let tag = body["input"][0]["content"]
+            .as_str()
+            .unwrap()
+            .split_once('=')
+            .unwrap()
+            .1
+            .to_owned();
+        let mut codec = lr_secret_scanner::wire::ResponseRestorer::new(vault);
+        codec
+            .json(
+                json!({"object":"response","id":"opaque/id:ABC","output":[]})
+                    .to_string()
+                    .as_bytes(),
+            )
+            .unwrap();
+        drop(codec);
+        request.secret_session = None;
+        request.body = Value::Null;
+        for action in [
+            lr_config::SecretScanAction::Redact,
+            lr_config::SecretScanAction::Notify,
+            lr_config::SecretScanAction::Off,
+        ] {
+            firewall
+                .config_manager
+                .update(|c| c.secret_scanning.action = action)
+                .unwrap();
+            for (method, suffix) in [
+                ("GET", ""),
+                ("GET", "/input_items"),
+                ("POST", "/cancel"),
+                ("DELETE", ""),
+            ] {
+                request.method = method.into();
+                request.path = format!("/backend-api/codex/responses/opaque%2Fid%3AABC{suffix}");
+                let RequestAction::Protect { body, vault } = firewall.evaluate(&request).await
+                else {
+                    panic!("response lifecycle must keep its owned restoration scope")
+                };
+                assert!(body.is_empty());
+                assert_eq!(vault.restore_text(&tag, true).unwrap(), KEY);
+            }
+        }
+        request.method = "GET".into();
+        request.path = "/backend-api/codex/responses/opaque%2Fid%3AABC".into();
+        firewall
+            .config_manager
+            .update(|c| {
+                c.strategies[0]
+                    .auto_config
+                    .get_or_insert_with(Default::default)
+                    .permission = lr_config::PermissionState::Off
+            })
+            .unwrap();
+        assert!(
+            matches!(
+                firewall.evaluate(&request).await,
+                RequestAction::Reject { .. }
+            ),
+            "disabling LLM access must still block owned response reads"
+        );
+        request.method = "POST".into();
+        request.path.push_str("/cancel");
+        assert!(
+            matches!(
+                firewall.evaluate(&request).await,
+                RequestAction::Protect { .. }
+            ),
+            "generation permissions must not prevent cancellation"
+        );
+        firewall
+            .config_manager
+            .update(|c| c.clients[0].enabled = false)
+            .unwrap();
+        assert!(
+            matches!(
+                firewall.evaluate(&request).await,
+                RequestAction::Reject { .. }
+            ),
+            "disabled clients cannot use lifecycle operations"
+        );
+    }
+    #[tokio::test]
+    async fn off_and_cancellation_do_not_acquire_a_new_native_store_requirement() {
+        struct Unavailable;
+        impl lr_api_keys::KeychainStorage for Unavailable {
+            fn store(&self, _: &str, _: &str, _: &str) -> lr_types::AppResult<()> {
+                Err(lr_types::AppError::Internal("synthetic unavailable".into()))
+            }
+            fn get(&self, _: &str, _: &str) -> lr_types::AppResult<Option<String>> {
+                Err(lr_types::AppError::Internal("synthetic unavailable".into()))
+            }
+            fn delete(&self, _: &str, _: &str) -> lr_types::AppResult<()> {
+                Err(lr_types::AppError::Internal("synthetic unavailable".into()))
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let (firewall, mut request) = fixture(
+            root.path(),
+            lr_config::LlmMode::Proxy,
+            Arc::new(Unavailable),
+        );
+        firewall
+            .config_manager
+            .update(|c| c.secret_scanning.action = lr_config::SecretScanAction::Off)
+            .unwrap();
+        request.body["previous_response_id"] = json!("ordinary-provider-id");
+        assert!(matches!(
+            firewall.evaluate(&request).await,
+            RequestAction::Forward
+        ));
+        firewall
+            .config_manager
+            .update(|c| c.secret_scanning.action = lr_config::SecretScanAction::Redact)
+            .unwrap();
+        request.body = Value::Null;
+        request.path = "/backend-api/codex/responses/ordinary-provider-id/cancel".into();
+        assert!(
+            matches!(firewall.evaluate(&request).await, RequestAction::Forward),
+            "cancellation must reach the provider even if the native store is unavailable"
+        );
+        request.method = "GET".into();
+        request.path = "/backend-api/codex/responses/ordinary-provider-id".into();
+        assert!(
+            matches!(
+                firewall.evaluate(&request).await,
+                RequestAction::Reject { .. }
+            ),
+            "protected retrieval must report inaccessible secret storage"
+        );
+    }
+    #[tokio::test]
+    async fn foreign_response_id_cannot_restore_another_clients_secret() {
+        use lr_types::secret_context::SecretContext;
+        let root = tempfile::tempdir().unwrap();
+        let other_root = tempfile::tempdir().unwrap();
+        let storage = Arc::new(lr_api_keys::MockKeychain::new());
+        let (owner, request) = fixture(root.path(), lr_config::LlmMode::Proxy, storage.clone());
+        let RequestAction::Protect { body, vault } = owner.evaluate(&request).await else {
+            panic!("owner request must protect")
+        };
+        let protected: Value = serde_json::from_slice(&body).unwrap();
+        let tag = protected["input"][0]["content"]
+            .as_str()
+            .unwrap()
+            .split_once('=')
+            .unwrap()
+            .1;
+        let mut restorer = lr_secret_scanner::wire::ResponseRestorer::new(vault);
+        restorer
+            .message(
+                &json!({"type":"response.created","response":{"id":"opaque-owner-response"}})
+                    .to_string(),
+            )
+            .unwrap();
+        drop(restorer);
+        let (other, mut request) = fixture(other_root.path(), lr_config::LlmMode::Proxy, storage);
+        request.secret_session = None;
+        request.body = json!({"model":"local-test","previous_response_id":"opaque-owner-response","input":"ordinary continuation"});
+        let RequestAction::Protect { vault, .. } = other.evaluate(&request).await else {
+            panic!("untracked provider ID must not block request")
+        };
+        assert!(
+            vault.restore_text(tag, true).is_err(),
+            "foreign provider ID cannot grant a secret capability"
+        );
+        let mut text = Value::String(tag.into());
+        vault.restore(&mut text, false).unwrap();
+        assert_eq!(text, tag);
     }
     #[tokio::test]
     async fn codex_default_web_search_can_coexist_with_local_restored_tools() {
@@ -955,3 +1325,7 @@ mod secret_policy_tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "proxy_lifecycle_tests.rs"]
+mod lifecycle_tests;

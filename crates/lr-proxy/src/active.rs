@@ -95,6 +95,7 @@ impl ProxyInterceptor for ActiveInterceptor {
                 "/ocr",
                 "/search",
                 "/conversation",
+                "/responses",
             ]
             .iter()
             .any(|part| path.contains(part));
@@ -361,6 +362,7 @@ mod protected_endpoint_tests {
             "/v1/realtime",
             "/v1/batches",
             "/backend-api/conversation",
+            "/backend-api/codex/responses/id/unknown-action",
         ] {
             let exchange = ObservedExchange {
                 method: if path.contains("realtime") {
