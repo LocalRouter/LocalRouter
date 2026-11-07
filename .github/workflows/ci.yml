@@ -45,7 +45,9 @@ jobs:
 
   test:
     name: Test
-    runs-on: ubuntu-latest
+    # Match the Linux release baseline, whose kernel supports the real
+    # Codex workspace sandbox's user/network namespaces.
+    runs-on: ubuntu-22.04
     timeout-minutes: 45
     steps:
       # Ubuntu runners ship with Android SDK, .NET, Haskell GHC, large
@@ -105,15 +107,15 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Check Codex sandbox runtime
+        timeout-minutes: 5
+        run: scripts/test-codex-secret-lifecycle.sh --preflight-only
+
       - name: Run Rust tests
         run: cargo test --workspace
 
       - name: Test real Codex secret-redaction conversations
         timeout-minutes: 10
-        env:
-          # Keep workspace filesystem isolation without requiring a private
-          # loopback namespace, which the hosted kernel denies.
-          LOCALROUTER_TEST_CODEX_COMMAND_NETWORK: 'true'
         run: scripts/test-codex-secret-lifecycle.sh
 
       - name: Run Clippy
