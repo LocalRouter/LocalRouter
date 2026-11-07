@@ -547,7 +547,15 @@ async fn start_proxy(
 async fn run_installed_codex(transition: bool, websockets: bool, disable_after_first: bool) {
     let binary = std::env::var("LOCALROUTER_TEST_CODEX")
         .expect("set LOCALROUTER_TEST_CODEX to installed Codex CLI");
-    let root = tempfile::tempdir().unwrap();
+    // Codex deliberately refuses to create its helper aliases beneath /tmp
+    // on Linux. Keep the isolated home in a disposable user-cache directory
+    // so Code Mode and the client sandbox run with their normal helpers.
+    let cache = dirs::cache_dir().expect("user cache directory for installed-client fixture");
+    std::fs::create_dir_all(&cache).unwrap();
+    let root = tempfile::Builder::new()
+        .prefix("localrouter-codex-lifecycle-")
+        .tempdir_in(cache)
+        .unwrap();
     let (storage, storage_label): (Arc<dyn KeychainStorage>, &str) =
         match std::env::var("LOCALROUTER_TEST_KEYCHAIN").as_deref() {
             Ok("mock") => (Arc::new(lr_api_keys::MockKeychain::new()), "mock"),
