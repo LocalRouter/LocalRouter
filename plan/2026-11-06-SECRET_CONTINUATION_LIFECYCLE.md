@@ -1,0 +1,46 @@
+# Native conversation secret-scope lifecycle
+
+- [x] Reproduce the exact missing-scope rejection on a multi-turn conversation through the real AppFirewall and proxy, including enabling Redact after an unprotected turn.
+- [x] Drive the installed Codex client against a controlled local provider through the proxy, with isolated credentials/config/workspace and real tool execution; retain requests/results as synthetic test evidence only.
+- [x] Separate opaque provider continuation IDs from local secret capabilities: untracked continuations grant no old-secret access, but must not block ordinary provider requests.
+- [x] Bind provider response IDs by protocol structure, without assuming a resp_ prefix; preserve owner/session boundaries and fail closed on credential-store errors.
+- [x] Test tool-result turns, HTTP/SSE, WebSocket continuations/reconnect, process restart, cleanup, mixed-mode transitions, foreign clients and unknown/revoked references.
+- [x] Make the pinned real-client lifecycle test a hosted validation gate, using a mock credential store on headless Linux and native storage in the desktop proof.
+- [x] Audit and fix the gateway boundary as well as the proxy: share response restoration/binding, permit untracked provider continuations without importing another scope, and cover mixed hosted/local tool declarations.
+- [x] Cover current Codex custom-tool input and structured output text in secret extraction; verify first-time secrets in continuation-only payloads.
+- [x] Support the installed client's Responses Lite additional_tools prefix in schema validation and scanning; retain declarations in the fake provider across incremental requests instead of disabling the default protocol.
+- [x] Preserve restoration of available owned scopes after Redact-to-Off/Notify; keep outbound scanning disabled in those modes and avoid introducing an OS-store requirement for fresh Off requests.
+- [x] Cover response retrieval, input-item listing, cancellation and deletion with opaque URL-encoded provider IDs at gateway and proxy boundaries.
+- [x] Accept LF/CRLF differences in the pinned SDK grammars while still rejecting changes to grammar rules, including Windows checkouts.
+- [x] Plan review: check implementation against every lifecycle scenario.
+- [x] Test coverage review: add regression cases for all new lookup/binding and failure paths.
+- [x] Bug hunt: inspect capability authorization, concurrent conversations, persistence, protocol identities and cancellation.
+- [x] Run local workspace tests, all-target Clippy, formatting and the real-client lifecycle test; record failures and limitations accurately.
+- [ ] Commit/push signed changes and integrate with no-ff merges, preserving unrelated work.
+- [ ] Validate and publish a corrective release only after lifecycle evidence passes; monitor release, updater signatures, Docker and documentation deployment to completion.
+
+Previous tests covered one protected request and manually pre-bound response IDs. They did not prove the lifecycle of a real conversation or the Off-to-Redact transition. Do not conflate successful builds and artifact signatures with conversation-level verification. Do not use real user credentials, paid providers, or capture private traffic for the fixture.
+
+## Validation evidence
+
+- `/tmp/localrouter-continuation/lifecycle-v4.log`: installed Codex 0.166.0, native macOS Keychain, default Responses Lite/code-mode tools. Four complete lifecycle cases pass: Redact from start and Off-to-Redact, each over HTTP/SSE and WebSocket. Each executes two real tools, checks exact restored file bytes, observes the tool-result request, restores final assistant text, then starts a fresh Codex process and resumes the saved conversation. HTTP cases make four inference requests; WebSocket cases make six including prewarms. Off-to-Redact HTTP receives the real client's zstd representation on the initial unprotected turn.
+- The ordinary-suite HTTP test recreates the proxy/firewall between turns and continues using only the persisted response binding, without replaying the original in the last request.
+- Earlier installed-client attempts failed in the synthetic provider bootstrap/declaration handling. They are not counted as passes: the fixture must implement workspace routing, empty Apps MCP bootstrap, and Responses Lite's additional-tools context.
+- Gateway-boundary JSON/SSE continuation tests, typed/custom tool-output extraction, escaped multiline credential cases and owned resource-operation regressions are included in the ordinary workspace suite. Exact-SHA hosted validation and publication remain pending.
+
+- `/tmp/localrouter-continuation/counterproof-old-rejection.log`: reinstating the original AppFirewall branch makes installed Codex execute its first real tool, then fail with the exact production message `Secret scope for previous_response_id is missing or expired` on the next WebSocket request. This is an expected failing countercheck, not a passing test.
+- `/tmp/localrouter-continuation/counterproof-old-prefix.log`: reinstating the old `resp_` filter makes the opaque-response-ID regression fail. Corrected sources were restored after both checks; backups are in `/tmp/localrouter-continuation/*-before-counterproof.rs`.
+
+- `/tmp/localrouter-continuation/lifecycle-final-native.log`: six installed Codex 0.166.0 cases pass with native macOS Keychain. Redact from start, Off-to-Redact and Redact-to-Off each run over HTTP/SSE and WebSocket; all provider output uses seven-byte deltas plus realistic added/done/completed snapshots. Each case verifies exactly two successful real shell executions, exact file bytes, exactly one restored final message, and fresh-process resume with no repeated tool execution. The default Responses Lite/code-mode contract remains enabled.
+- `/tmp/localrouter-continuation/workspace-final.log`: 5,022 passed, zero failed, 84 ignored. Ignored cases include external-service/native/installed-client fixtures, with the six installed-client scenarios run separately above. A final rerun includes valid empty 204/304 resource-response regressions; unexpected empty 200 inference responses remain rejected.
+- `/tmp/localrouter-continuation/native-process-proof.log`: native credential scope recovery in a fresh process passes, binding the opaque response ID through the shared production response restorer.
+- `/tmp/localrouter-continuation/website-build-check.log`: website type/build/prerender validation passes, including the revised research paper.
+- Plan review, coverage review and bug hunt completed: checked both gateway/proxy boundaries, untracked versus revoked/unavailable scopes, authenticated owner/session isolation, disabled clients/LLM access, native-store failure behavior, mode transitions, response-resource operations, RLite namespaces, encoded multiline credentials and CRLF grammar definitions. The review found and fixed a missing client-policy check on resource operations and the empty-response edge case. Reinstating the old rejection and ID-prefix assumptions fails the regression tests.
+
+## Evidence boundaries
+
+The installed CLI uses synthetic credentials and a controlled local TLS provider through the production AppFirewall and MITM transport. It executes real local tools and resumes real saved Codex conversations. This establishes transport, policy, restoration and client execution behavior; it is not a paid live-model test or a launch of the packaged Tauri application. Native credential storage is exercised on macOS; the headless CI variant uses the same storage interface with a mock, and does not establish Windows/Linux native credential-service behavior. The fixture rejects public proxy destinations and uses isolated HOME, XDG and CODEX_HOME directories.
+
+- Final local rerun: `/tmp/localrouter-continuation/workspace-final2.log` reports 5,024 passed, zero failed, 84 ignored; the two additional tests cover empty resource responses at both boundaries. `/tmp/localrouter-continuation/clippy-final2.log` passes workspace/all-target Clippy with warnings denied; `/tmp/localrouter-continuation/fmt-final2.log` passes formatting. The compiler is rustup stable 1.99.1. The existing transitive `block 0.1.6` future-incompatibility notice is not a new lint failure.
+
+- `/tmp/localrouter-continuation/lifecycle-final-mock.log`: all six complete installed-CLI cases also pass with mock credential storage, matching the headless CI configuration. The official Linux asset download, archive filename and SHA-256 pin were independently verified; execution of that Linux binary is left to the hosted gate.

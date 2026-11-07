@@ -4,6 +4,33 @@ use lr_types::secret_context::SecretContext;
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
 pub const LIMIT: usize = 16 * 1024 * 1024;
+/// Decode one Responses resource segment without assuming a provider ID prefix.
+/// Endpoint suffixes remain structural; encoded slashes belong to the opaque ID.
+pub fn response_id(path: &str) -> Option<String> {
+    let (_, suffix) = path.split('?').next()?.rsplit_once("/responses/")?;
+    let id = suffix
+        .strip_suffix("/input_items")
+        .or_else(|| suffix.strip_suffix("/cancel"))
+        .unwrap_or(suffix);
+    let bytes = id.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if bytes.get(i + 1).is_some_and(u8::is_ascii_hexdigit)
+                && bytes.get(i + 2).is_some_and(u8::is_ascii_hexdigit) =>
+            {
+                i += 3
+            }
+            b if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') => i += 1,
+            _ => return None,
+        }
+    }
+    let decoded = percent_encoding::percent_decode_str(id)
+        .decode_utf8()
+        .ok()?;
+    (!decoded.is_empty() && !decoded.chars().any(char::is_control)).then(|| decoded.into_owned())
+}
+
 pub fn frame_end(bytes: &[u8]) -> Option<(usize, usize)> {
     let lf = bytes.windows(2).position(|w| w == b"\n\n").map(|i| (i, 2));
     let crlf = bytes
@@ -529,11 +556,28 @@ impl ResponseRestorer {
     }
     fn bind(&self, value: &Value) -> lr_types::AppResult<()> {
         self.vault.bind_opaque(value)?;
-        if let Some(id) = value
-            .pointer("/response/id")
-            .or_else(|| value.get("id"))
+        // Bind response objects, never item/call/event IDs. Providers choose
+        // their own ID format; no prefix is part of the Responses contract.
+        let response = if value
+            .get("type")
             .and_then(Value::as_str)
-            .filter(|id| id.starts_with("resp_"))
+            .is_some_and(|kind| kind.starts_with("response."))
+        {
+            value.get("response")
+        } else if matches!(
+            value.get("object").and_then(Value::as_str),
+            Some("response" | "response.compaction")
+        ) || (value.get("type").is_none()
+            && value.get("output").is_some_and(Value::is_array))
+        {
+            Some(value)
+        } else {
+            None
+        };
+        if let Some(id) = response
+            .and_then(|response| response.get("id"))
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
         {
             self.vault.bind_response(id)?;
         }
@@ -620,6 +664,93 @@ mod tests {
                     .and_then(|d| serde_json::from_str(d).ok())
             })
             .collect()
+    }
+    #[test]
+    fn response_resource_paths_keep_opaque_ids_and_structural_suffixes_separate() {
+        for path in [
+            "/v1/responses/opaque%2Fid%3AABC",
+            "/v1/responses/opaque%2Fid%3AABC/input_items?limit=1",
+            "/backend-api/codex/responses/opaque%2Fid%3AABC/cancel",
+        ] {
+            assert_eq!(response_id(path).as_deref(), Some("opaque/id:ABC"));
+        }
+        assert_eq!(
+            response_id("/v1/responses/resp-1").as_deref(),
+            Some("resp-1")
+        );
+        for path in [
+            "/v1/responses/",
+            "/v1/responses/id/unknown",
+            "/v1/responses/%ZZ",
+            "/v1/responses/%00",
+            "/v1/responses/%FF",
+        ] {
+            assert!(response_id(path).is_none(), "{path}");
+        }
+    }
+    #[test]
+    fn binds_only_response_objects_across_http_sse_and_websocket() {
+        let store = Arc::new(lr_api_keys::MockKeychain::new());
+        let vault = Arc::new(Vault::new(store.clone(), "wire-binding", "scope", false));
+        let mut restorer = ResponseRestorer::new(vault);
+        for event in [
+            json!({"type":"response.created", "response":{"id":"warm-up/id"}}),
+            json!({"type":"response.completed", "response":{"id":"opaque-final"}}),
+        ] {
+            restorer.message(&event.to_string()).unwrap();
+        }
+        restorer
+            .frame(&format!(
+                "data: {}",
+                json!({"type":"response.created","response":{"id":"sse-id"}})
+            ))
+            .unwrap();
+        restorer
+            .json(
+                json!({"object":"response.compaction", "id":"compaction-id", "output":[]})
+                    .to_string()
+                    .as_bytes(),
+            )
+            .unwrap();
+        restorer.bind(&json!({"type":"response.output_item.done","id":"resp_not_a_response","item":{"id":"tool-id"}})).unwrap();
+        for id in ["warm-up/id", "opaque-final", "sse-id", "compaction-id"] {
+            assert!(
+                Vault::find_response(store.clone(), "wire-binding", id)
+                    .unwrap()
+                    .is_some(),
+                "{id}"
+            );
+        }
+        for id in ["resp_not_a_response", "tool-id"] {
+            assert!(
+                Vault::find_response(store.clone(), "wire-binding", id)
+                    .unwrap()
+                    .is_none(),
+                "{id}"
+            );
+        }
+    }
+    #[test]
+    fn provider_response_ids_are_opaque_and_not_prefix_filtered() {
+        let store = Arc::new(lr_api_keys::MockKeychain::new());
+        let vault = Arc::new(Vault::new(
+            store.clone(),
+            "opaque-id-owner",
+            "conversation",
+            false,
+        ));
+        let mut restorer = ResponseRestorer::new(vault);
+        restorer
+            .json(
+                json!({"object":"response","id":"opaque-provider-response","output":[]})
+                    .to_string()
+                    .as_bytes(),
+            )
+            .unwrap();
+        drop(restorer);
+        assert!(
+            Vault::continue_response(store, "opaque-id-owner", "opaque-provider-response").is_ok()
+        );
     }
     #[test]
     fn legacy_completion_and_structured_json_every_split() {

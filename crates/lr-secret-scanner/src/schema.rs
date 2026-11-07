@@ -143,7 +143,7 @@ fn verified_codex_grammar(tool: &Value) -> bool {
                     include_str!("codex-grammars/js_repl.lark"),
                 ]
                 .iter()
-                .any(|known| known.trim() == definition.trim())
+                .any(|known| known.trim().lines().eq(definition.trim().lines()))
             })
 }
 
@@ -204,12 +204,37 @@ pub(crate) fn qualified_tool_name(value: &Value) -> Option<String> {
     )
 }
 
+/// Tool declarations in ordinary Responses and Codex Responses Lite. Lite
+/// transports carry developer `additional_tools` items in the input prefix.
+pub(crate) fn request_tool_groups(request: &Value) -> Vec<&[Value]> {
+    request
+        .get("tools")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .into_iter()
+        .chain(
+            request
+                .get("input")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter(|item| item["type"] == "additional_tools")
+                .filter_map(|item| {
+                    item.get("tools")
+                        .and_then(Value::as_array)
+                        .map(Vec::as_slice)
+                }),
+        )
+        .collect()
+}
+
 impl ResponseContract {
     pub fn from_request(request: &Value, active: bool) -> AppResult<Self> {
         let mut result = Self::default();
-        if let Some(tools) = request.get("tools").and_then(Value::as_array) {
+        let mut budget = 1024;
+        for tools in request_tool_groups(request) {
             let mut definitions = Vec::new();
-            tool_definitions(tools, "", 0, &mut definitions, &mut 1024)?;
+            tool_definitions(tools, "", 0, &mut definitions, &mut budget)?;
             for (prefix, tool) in definitions {
                 if tool.get("type").and_then(Value::as_str) == Some("custom")
                     && tool.pointer("/format/type").and_then(Value::as_str) == Some("grammar")
@@ -547,5 +572,59 @@ mod schema_keyword_tests {
         let request = json!({"tools":[{"type":"custom","name":"code","format":{"type":"grammar","syntax":"regex","definition":"[a-z]+"}}]});
         assert!(ResponseContract::from_request(&request, true).is_err());
         assert!(ResponseContract::from_request(&request, false).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod lite_tests {
+    use super::*;
+    use lr_types::secret_context::SecretContext;
+    use serde_json::json;
+    use std::sync::Arc;
+    #[test]
+    fn lite_tool_schemas_restore_and_validate_under_their_namespace() {
+        let vault = crate::placeholders::Vault::new(
+            Arc::new(lr_api_keys::MockKeychain::new()),
+            "lite-contract",
+            "scope",
+            false,
+        );
+        let secret = "synthetic schema secret";
+        vault.register(secret).unwrap();
+        let mut request = json!({"input":[{"type":"additional_tools","role":"developer","tools":[{"type":"namespace","name":"functions","tools":[{"type":"function","name":"write","parameters":{"type":"object","properties":{"content":{"enum":[secret]}},"required":["content"]}}]}]},{"role":"user","content":secret}]});
+        vault.protect(&mut request).unwrap();
+        assert!(!request.to_string().contains(secret));
+        vault.set_request_contract(&request).unwrap();
+        vault
+            .validate_tool(Some("functions.write"), &json!({"content":secret}))
+            .unwrap();
+        assert!(vault
+            .validate_tool(Some("functions.write"), &json!({"content":"wrong"}))
+            .is_err());
+        assert!(vault
+            .validate_tool(Some("unrelated.write"), &json!({"content":secret}))
+            .is_err());
+    }
+    #[test]
+    fn pinned_tool_grammars_accept_platform_line_endings_without_accepting_changed_rules() {
+        for known in [
+            include_str!("codex-grammars/apply_patch.lark"),
+            include_str!("codex-grammars/exec.lark"),
+            include_str!("codex-grammars/js_repl.lark"),
+        ] {
+            let crlf = known.replace("\r\n", "\n").replace('\n', "\r\n");
+            let mut body = json!({"input":[{"type":"additional_tools","tools":[{"type":"custom","name":"exec","format":{"type":"grammar","syntax":"lark","definition":crlf}}]}]});
+            ResponseContract::from_request(&body, true).unwrap();
+            body["input"][0]["tools"][0]["format"]["definition"] =
+                json!(format!("{crlf}\nchanged_rule: /untrusted/"));
+            assert!(ResponseContract::from_request(&body, true).is_err());
+        }
+    }
+    #[test]
+    fn lite_tool_grammars_and_inspection_budgets_are_enforced() {
+        let body = json!({"input":[{"type":"additional_tools","tools":[{"type":"namespace","name":"functions","tools":[{"type":"custom","name":"exec","format":{"type":"grammar","syntax":"lark","definition":"unknown grammar"}}]}]}]});
+        assert!(ResponseContract::from_request(&body, true).is_err());
+        let body = json!({"input":(0..1025).map(|_|json!({"type":"additional_tools","tools":[{"type":"web_search"}]})).collect::<Vec<_>>()});
+        assert!(ResponseContract::from_request(&body, true).is_err());
     }
 }

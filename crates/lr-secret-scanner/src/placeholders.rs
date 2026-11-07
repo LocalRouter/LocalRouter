@@ -383,6 +383,7 @@ pub struct Vault {
     allowed: Mutex<HashSet<String>>,
     ephemeral: bool,
     scanned: AtomicBool,
+    restore_only: AtomicBool,
     detector: Mutex<Option<Arc<Detector>>>,
     async_detector: Mutex<Option<Arc<AsyncDetector>>>,
     contract: Mutex<crate::schema::ResponseContract>,
@@ -403,10 +404,15 @@ impl Vault {
             allowed: Mutex::new(HashSet::new()),
             ephemeral,
             scanned: AtomicBool::new(false),
+            restore_only: AtomicBool::new(false),
             detector: Mutex::new(None),
             async_detector: Mutex::new(None),
             contract: Mutex::new(crate::schema::ResponseContract::default()),
         }
+    }
+    /// Continue resolving issued references without masking new outbound data.
+    pub fn set_restore_only(&self) {
+        self.restore_only.store(true, Ordering::Release);
     }
     pub fn set_detector(&self, detector: Arc<Detector>) {
         *self.detector.lock().expect("detector lock") = Some(detector);
@@ -415,18 +421,40 @@ impl Vault {
         // The provider sees masked schemas. Validate the eventual local values
         // against the original schema, including secret-valued enums and keys.
         let mut request = request.clone();
-        if let Some(tools) = request.get_mut("tools").and_then(Value::as_array_mut) {
-            for tool in tools {
-                let function = if tool.get("function").is_some() {
-                    &mut tool["function"]
-                } else {
-                    tool
-                };
-                for key in ["parameters", "input_schema"] {
-                    if let Some(schema) = function.get_mut(key) {
-                        visit(schema, &mut |text, _| self.restore_text(text, false), false)?;
+        fn restore_schemas(vault: &Vault, tools: &mut Value) -> AppResult<()> {
+            if let Some(tools) = tools.as_array_mut() {
+                for tool in tools {
+                    if tool["type"] == "namespace" {
+                        restore_schemas(vault, &mut tool["tools"])?;
+                    } else {
+                        let function = if tool.get("function").is_some() {
+                            &mut tool["function"]
+                        } else {
+                            tool
+                        };
+                        for key in ["parameters", "input_schema"] {
+                            if let Some(schema) = function.get_mut(key) {
+                                visit(
+                                    schema,
+                                    &mut |text, _| vault.restore_text(text, false),
+                                    false,
+                                )?;
+                            }
+                        }
                     }
                 }
+            }
+            Ok(())
+        }
+        if let Some(tools) = request.get_mut("tools") {
+            restore_schemas(self, tools)?;
+        }
+        if let Some(items) = request.get_mut("input").and_then(Value::as_array_mut) {
+            for item in items
+                .iter_mut()
+                .filter(|item| item["type"] == "additional_tools")
+            {
+                restore_schemas(self, &mut item["tools"])?;
             }
         }
         for path in ["/response_format/json_schema/schema", "/text/format/schema"] {
@@ -435,7 +463,10 @@ impl Vault {
             }
         }
         *self.contract.lock().map_err(|_| error())? =
-            crate::schema::ResponseContract::from_request(&request, self.active())?;
+            crate::schema::ResponseContract::from_request(
+                &request,
+                self.active() && !self.restore_only.load(Ordering::Acquire),
+            )?;
         Ok(())
     }
     pub fn set_async_detector(&self, detector: Arc<AsyncDetector>) {
@@ -509,18 +540,27 @@ impl Vault {
         index["responses"][id] = Value::String(self.account.clone());
         self.save_index(&index)
     }
-    pub fn continue_response(
+    /// Resolve an owned provider response binding. Provider IDs are opaque;
+    /// an untracked ID is not an invalid request and grants no secret access.
+    /// Storage failures and explicit revocations still fail closed.
+    pub fn find_response(
         storage: Arc<dyn KeychainStorage>,
         owner: &str,
         id: &str,
-    ) -> AppResult<Self> {
+    ) -> AppResult<Option<Self>> {
         let mut vault = Self::new(storage, owner, "", false);
         let _lock = STORE_LOCK.lock().map_err(|_| storage_error())?;
         let index = vault.index()?;
-        let account = index["responses"][id]
-            .as_str()
-            .ok_or_else(error)?
-            .to_owned();
+        if index["revoked"] == true {
+            return Err(error());
+        }
+        let Some(binding) = index["responses"].get(id) else {
+            return Ok(None);
+        };
+        let account = binding.as_str().ok_or_else(storage_error)?.to_owned();
+        if index["revoked_scopes"][&account] == true {
+            return Err(error());
+        }
         unpin(&vault.account);
         vault.account = account;
         pin(&vault.account);
@@ -530,7 +570,7 @@ impl Vault {
             .map_err(|_| storage_error())?
             .is_none()
         {
-            return Err(error());
+            return Ok(None);
         }
         let entries = vault.load()?;
         vault
@@ -538,7 +578,59 @@ impl Vault {
             .lock()
             .map_err(|_| storage_error())?
             .extend(entries.keys().cloned());
-        Ok(vault)
+        Ok(Some(vault))
+    }
+    /// An explicit authenticated owner/session identity can recover only its
+    /// own native record, including when the provider omits continuation IDs.
+    pub fn find_session(
+        storage: Arc<dyn KeychainStorage>,
+        owner: &str,
+        session: &str,
+    ) -> AppResult<Option<Self>> {
+        let vault = Self::new(storage, owner, session, false);
+        let _lock = STORE_LOCK.lock().map_err(|_| storage_error())?;
+        let index = vault.index()?;
+        if index["revoked"] == true || index["revoked_scopes"][&vault.account] == true {
+            return Err(error());
+        }
+        if vault
+            .storage
+            .get(SERVICE, &vault.account)
+            .map_err(|_| storage_error())?
+            .is_none()
+        {
+            return Ok(None);
+        }
+        let entries = vault.load()?;
+        vault
+            .allowed
+            .lock()
+            .map_err(|_| storage_error())?
+            .extend(entries.keys().cloned());
+        Ok(Some(vault))
+    }
+    pub fn find_scope(
+        storage: Arc<dyn KeychainStorage>,
+        owner: &str,
+        previous: Option<&str>,
+        session: Option<&str>,
+    ) -> AppResult<Option<Self>> {
+        if let Some(id) = previous {
+            if let Some(vault) = Self::find_response(storage.clone(), owner, id)? {
+                return Ok(Some(vault));
+            }
+        }
+        match session {
+            Some(id) => Self::find_session(storage, owner, id),
+            None => Ok(None),
+        }
+    }
+    pub fn continue_response(
+        storage: Arc<dyn KeychainStorage>,
+        owner: &str,
+        id: &str,
+    ) -> AppResult<Self> {
+        Self::find_response(storage, owner, id)?.ok_or_else(error)
     }
     fn registered_owners(
         storage: &dyn KeychainStorage,
@@ -857,6 +949,10 @@ impl SecretContext for Vault {
         })
     }
     fn protect(&self, value: &mut Value) -> AppResult<()> {
+        if self.restore_only.load(Ordering::Acquire) {
+            return Ok(());
+        }
+
         let detector = self.detector.lock().map_err(|_| storage_error())?.clone();
         if let Some(detector) = detector {
             for secret in detector(value)? {
@@ -945,12 +1041,16 @@ impl SecretContext for Vault {
         let _lock = STORE_LOCK.lock().map_err(|_| storage_error())?;
         let entries = self.load()?;
         let allowed = self.allowed.lock().map_err(|_| storage_error())?;
-        restore_text(text, strict, |id| {
-            Ok(entries
-                .get(id)
-                .filter(|_| allowed.contains(id))
-                .map(|s| s.to_string()))
-        })
+        restore_text(
+            text,
+            strict && !self.restore_only.load(Ordering::Acquire),
+            |id| {
+                Ok(entries
+                    .get(id)
+                    .filter(|_| allowed.contains(id))
+                    .map(|s| s.to_string()))
+            },
+        )
     }
     fn restore(&self, value: &mut Value, strict: bool) -> AppResult<()> {
         visit(
@@ -1316,11 +1416,13 @@ mod tests {
         let session = format!("native-proof-{}-{}", std::process::id(), now());
         let owner = format!("synthetic-test-owner-{session}");
         let store = Arc::new(NativeProofStore(session.clone()));
-        let vault = Vault::new(store.clone(), &owner, &session, false);
+        let vault = Arc::new(Vault::new(store.clone(), &owner, &session, false));
         vault.register("synthetic-native-secret-🔐").unwrap();
         let mut value = serde_json::json!({"content":"synthetic-native-secret-🔐"});
         vault.protect(&mut value).unwrap();
-        vault.bind_response("resp_native_process_proof").unwrap();
+        let mut restorer = crate::wire::ResponseRestorer::new(vault.clone());
+        restorer.json(serde_json::json!({"object":"response","id":"opaque-native-process-proof","output":[]}).to_string().as_bytes()).unwrap();
+        drop(restorer);
         let proof = serde_json::json!({"owner":owner,"tag":value["content"],"namespace":session});
         let status = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
@@ -1360,7 +1462,7 @@ mod tests {
                 proof["namespace"].as_str().unwrap().into(),
             )),
             proof["owner"].as_str().unwrap(),
-            "resp_native_process_proof",
+            "opaque-native-process-proof",
         )
         .unwrap();
         assert_eq!(
@@ -1454,6 +1556,108 @@ mod robustness_tests {
 #[cfg(test)]
 mod recovery_tests {
     use super::*;
+    #[test]
+    fn owned_session_restores_after_scanning_is_disabled_without_masking_new_data() {
+        let store = Arc::new(lr_api_keys::MockKeychain::new());
+        let source = Vault::new(store.clone(), "restore-only-owner", "conversation", false);
+        source.register("synthetic secret").unwrap();
+        let mut marker = Value::String("synthetic secret".into());
+        source.protect(&mut marker).unwrap();
+        drop(source);
+        assert!(
+            Vault::find_session(store.clone(), "other-owner", "conversation")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            Vault::find_session(store.clone(), "restore-only-owner", "unrelated")
+                .unwrap()
+                .is_none()
+        );
+        let vault = Vault::find_scope(
+            store,
+            "restore-only-owner",
+            Some("untracked-provider-id"),
+            Some("conversation"),
+        )
+        .unwrap()
+        .unwrap();
+        vault.set_restore_only();
+        let mut outgoing = serde_json::json!({"content":"synthetic secret"});
+        vault.protect(&mut outgoing).unwrap();
+        assert_eq!(outgoing["content"], "synthetic secret");
+        vault.restore(&mut marker, true).unwrap();
+        assert_eq!(marker, "synthetic secret");
+        let unknown = "<localrouter-redacted id=example/>";
+        assert_eq!(
+            vault.restore_text(unknown, true).unwrap(),
+            unknown,
+            "Off permits literal examples while restoring matching owned IDs"
+        );
+        vault.set_request_contract(&serde_json::json!({"tools":[{"type":"function","name":"write","strict":true,"parameters":{"type":"object","properties":{"content":{"enum":["synthetic secret"]}}}}]})).unwrap();
+        vault
+            .validate_tool(
+                Some("write"),
+                &serde_json::json!({"content":"synthetic secret"}),
+            )
+            .unwrap();
+        assert!(vault
+            .validate_tool(Some("write"), &serde_json::json!({"content":"wrong"}))
+            .is_err());
+    }
+    #[test]
+    fn unknown_expired_and_foreign_response_ids_grant_no_capability() {
+        let store = Arc::new(lr_api_keys::MockKeychain::new());
+        assert!(
+            Vault::find_response(store.clone(), "owner", "before-redaction")
+                .unwrap()
+                .is_none()
+        );
+        let vault = Vault::new(store.clone(), "owner", "scope", false);
+        vault.register("synthetic secret").unwrap();
+        vault.bind_response("opaque/id:ABC").unwrap();
+        assert!(
+            Vault::find_response(store.clone(), "other-owner", "opaque/id:ABC")
+                .unwrap()
+                .is_none()
+        );
+        let account = vault.account.clone();
+        drop(vault);
+        store.delete(SERVICE, &account).unwrap();
+        assert!(Vault::find_response(store, "owner", "opaque/id:ABC")
+            .unwrap()
+            .is_none());
+    }
+    #[test]
+    fn response_lookup_does_not_hide_revocation_corruption_or_storage_failure() {
+        let store = Arc::new(lr_api_keys::MockKeychain::new());
+        let vault = Vault::new(store.clone(), "revoked-owner", "scope", false);
+        vault.bind_response("opaque").unwrap();
+        drop(vault);
+        Vault::forget_client(store.clone(), "revoked-owner").unwrap();
+        assert!(Vault::find_response(store.clone(), "revoked-owner", "unknown").is_err());
+        store
+            .store(
+                SERVICE,
+                &format!("index-{}", key("corrupt", "")),
+                r#"{"responses":[]}"#,
+            )
+            .unwrap();
+        assert!(Vault::find_response(store, "corrupt", "unknown").is_err());
+        struct Unavailable;
+        impl KeychainStorage for Unavailable {
+            fn store(&self, _: &str, _: &str, _: &str) -> AppResult<()> {
+                Err(storage_error())
+            }
+            fn get(&self, _: &str, _: &str) -> AppResult<Option<String>> {
+                Err(storage_error())
+            }
+            fn delete(&self, _: &str, _: &str) -> AppResult<()> {
+                Err(storage_error())
+            }
+        }
+        assert!(Vault::find_response(Arc::new(Unavailable), "owner", "unknown").is_err());
+    }
     #[test]
     fn empty_responses_scopes_can_continue_before_the_first_secret() {
         let store = Arc::new(lr_api_keys::MockKeychain::new());

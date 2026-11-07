@@ -23,7 +23,8 @@ pub struct ExtractedText {
 ///   content-part array), `messages[].tool_calls[].function.arguments`
 /// - **Completions**: `prompt`
 /// - **OpenAI Responses (Codex)**: `input` (string or item array, including
-///   `input_text` / `output_text` parts and `function_call` arguments) and
+///   `input_text` / `output_text` parts, custom/function calls, tool outputs,
+///   and Responses Lite `additional_tools` declarations) and
 ///   the top-level `instructions` system prompt
 /// - **Anthropic Messages**: the top-level `system` prompt (string or blocks)
 ///
@@ -44,7 +45,7 @@ pub fn extract_request_text(body: &serde_json::Value) -> Vec<ExtractedText> {
                 if let Some(text) = content.as_str() {
                     if !text.is_empty() {
                         texts.push(ExtractedText {
-                            text: text.to_string(),
+                            text: inspectable_tool_text(text),
                             message_index: Some(i),
                             label: format!("{} message", role),
                             role: role.to_string(),
@@ -89,10 +90,19 @@ pub fn extract_request_text(body: &serde_json::Value) -> Vec<ExtractedText> {
                                 });
                             }
                         }
-                        if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
+                        if let Some(text) = part
+                            .get("text")
+                            .or_else(|| part.get("thinking"))
+                            .or_else(|| part.get("refusal"))
+                            .and_then(|t| t.as_str())
+                        {
                             if !text.is_empty() {
                                 texts.push(ExtractedText {
-                                    text: text.to_string(),
+                                    text: if part.get("text").is_some() {
+                                        inspectable_tool_text(text)
+                                    } else {
+                                        text.to_owned()
+                                    },
                                     message_index: Some(i),
                                     label: format!("{} message (text part)", role),
                                     role: role.to_string(),
@@ -103,6 +113,19 @@ pub fn extract_request_text(body: &serde_json::Value) -> Vec<ExtractedText> {
                 }
             }
 
+            if let Some(refusal) = msg
+                .get("refusal")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+            {
+                texts.push(ExtractedText {
+                    text: refusal.into(),
+                    message_index: Some(i),
+                    label: format!("{role} refusal"),
+                    role: role.into(),
+                });
+            }
+
             // Extract tool call arguments
             if let Some(tool_calls) = msg.get("tool_calls").and_then(|tc| tc.as_array()) {
                 for tc in tool_calls {
@@ -110,10 +133,11 @@ pub fn extract_request_text(body: &serde_json::Value) -> Vec<ExtractedText> {
                         .get("function")
                         .and_then(|f| f.get("arguments"))
                         .and_then(|a| a.as_str())
+                        .or_else(|| tc.pointer("/custom/input").and_then(|v| v.as_str()))
                     {
                         if !args.is_empty() {
                             texts.push(ExtractedText {
-                                text: args.to_string(),
+                                text: inspectable_tool_text(args),
                                 message_index: Some(i),
                                 label: format!("{} tool call arguments", role),
                                 role: role.to_string(),
@@ -125,16 +149,22 @@ pub fn extract_request_text(body: &serde_json::Value) -> Vec<ExtractedText> {
         }
     }
 
-    // Also check "prompt" field for completions API
-    if let Some(prompt) = body.get("prompt").and_then(|p| p.as_str()) {
-        if !prompt.is_empty() {
-            texts.push(ExtractedText {
-                text: prompt.to_string(),
-                message_index: None,
-                label: "prompt".to_string(),
-                role: "user".to_string(),
-            });
+    // Text completions accept one prompt or a batch of prompts. Token-ID
+    // arrays contain no inspectable text.
+    let prompts = match body.get("prompt") {
+        Some(serde_json::Value::String(prompt)) => vec![prompt.as_str()],
+        Some(serde_json::Value::Array(prompts)) => {
+            prompts.iter().filter_map(|p| p.as_str()).collect()
         }
+        _ => Vec::new(),
+    };
+    for prompt in prompts.into_iter().filter(|p| !p.is_empty()) {
+        texts.push(ExtractedText {
+            text: prompt.into(),
+            message_index: None,
+            label: "prompt".into(),
+            role: "user".into(),
+        });
     }
 
     // Anthropic Messages puts the system prompt in a top-level `system` field
@@ -221,7 +251,41 @@ pub fn extract_request_text(body: &serde_json::Value) -> Vec<ExtractedText> {
         }
     }
 
+    // Model-visible schemas/descriptions can introduce a secret without any
+    // corresponding message. Preserve field names as detector context.
+    for (value, label) in [
+        (body.get("tools"), "system tool definitions"),
+        (body.get("functions"), "system function definitions"),
+        (body.get("response_format"), "system response format"),
+        (body.pointer("/text/format"), "system response format"),
+    ] {
+        if let Some(value) = value {
+            let text = inspectable_tool_input(value);
+            if !text.is_empty() {
+                texts.push(ExtractedText {
+                    text,
+                    message_index: None,
+                    label: label.into(),
+                    role: "system".into(),
+                });
+            }
+        }
+    }
+
     texts
+}
+
+/// Decode JSON-encoded tool text only when escapes hide its original values.
+/// Ordinary text and unescaped JSON retain their existing source representation.
+fn inspectable_tool_text(text: &str) -> String {
+    if text.contains('\\') {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(text) {
+            if value.is_object() || value.is_array() {
+                return inspectable_tool_input(&value);
+            }
+        }
+    }
+    text.to_owned()
 }
 
 /// Render field context without JSON-escaping string values. A scanner's
@@ -237,7 +301,17 @@ fn inspectable_tool_input(value: &serde_json::Value) -> String {
                 format!(
                     "{}: {}",
                     serde_json::to_string(key).unwrap_or_default(),
-                    inspectable_tool_input(value)
+                    if matches!(
+                        key.as_str(),
+                        "arguments" | "partial_json" | "input" | "content" | "text" | "output"
+                    ) {
+                        value
+                            .as_str()
+                            .map(inspectable_tool_text)
+                            .unwrap_or_else(|| inspectable_tool_input(value))
+                    } else {
+                        inspectable_tool_input(value)
+                    }
                 )
             })
             .collect::<Vec<_>>()
@@ -324,7 +398,7 @@ fn extract_response_input_item(
     match item.get("content") {
         Some(serde_json::Value::String(s)) if !s.is_empty() => {
             texts.push(ExtractedText {
-                text: s.clone(),
+                text: inspectable_tool_text(s),
                 message_index: Some(index),
                 label: format!("{label_role} input"),
                 role: role.clone(),
@@ -335,7 +409,7 @@ fn extract_response_input_item(
                 if let Some(t) = part.get("text").and_then(|t| t.as_str()) {
                     if !t.is_empty() {
                         texts.push(ExtractedText {
-                            text: t.to_string(),
+                            text: inspectable_tool_text(t),
                             message_index: Some(index),
                             label: format!("{label_role} input (text part)"),
                             role: role.clone(),
@@ -347,28 +421,63 @@ fn extract_response_input_item(
         _ => {}
     }
 
-    // Function-call items carry their arguments as a JSON string; a leaked
-    // secret is just as exposed there as in message text.
-    if let Some(args) = item.get("arguments").and_then(|a| a.as_str()) {
-        if !args.is_empty() {
+    if let Some(summary) = item.get("summary").and_then(|v| v.as_array()) {
+        for text in summary
+            .iter()
+            .filter_map(|part| part.get("text").and_then(|v| v.as_str()))
+            .filter(|s| !s.is_empty())
+        {
             texts.push(ExtractedText {
-                text: args.to_string(),
+                text: text.into(),
                 message_index: Some(index),
-                label: format!("{label_role} function call arguments"),
+                label: format!("{label_role} reasoning summary"),
                 role: role.clone(),
             });
         }
     }
-    // Function-call *output* items put the result in `output`.
-    if let Some(out) = item.get("output").and_then(|o| o.as_str()) {
-        if !out.is_empty() {
+    if item.get("type").and_then(|t| t.as_str()) == Some("additional_tools") {
+        if let Some(tools) = item.get("tools") {
             texts.push(ExtractedText {
-                text: out.to_string(),
+                text: inspectable_tool_input(tools),
                 message_index: Some(index),
-                label: format!("{label_role} function call output"),
-                role,
+                label: "system tool definitions".into(),
+                role: "system".into(),
             });
         }
+    }
+    // Function and custom calls can be replayed without the original user
+    // message. Their arguments/input remain outbound model-visible text.
+    for field in ["arguments", "input"] {
+        if let Some(text) = item
+            .get(field)
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            texts.push(ExtractedText {
+                text: inspectable_tool_text(text),
+                message_index: Some(index),
+                label: format!("{label_role} tool call {field}"),
+                role: role.clone(),
+            });
+        }
+    }
+    // Function/custom output is either a string or typed text/image parts.
+    // Image payloads and opaque server state are not inspectable text.
+    let output = match item.get("output") {
+        Some(serde_json::Value::String(text)) => vec![text.as_str()],
+        Some(serde_json::Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|part| part.get("text").and_then(|v| v.as_str()))
+            .collect(),
+        _ => Vec::new(),
+    };
+    for text in output.into_iter().filter(|s| !s.is_empty()) {
+        texts.push(ExtractedText {
+            text: inspectable_tool_text(text),
+            message_index: Some(index),
+            label: format!("{label_role} function call output"),
+            role: role.clone(),
+        });
     }
 }
 
@@ -686,5 +795,73 @@ mod tool_content_tests {
         assert_eq!(texts[1].text, "plain result");
         assert!(texts[2].text.contains("password"));
         assert!(!texts.iter().any(|t| t.text.contains("binary-payload")));
+    }
+}
+
+#[cfg(test)]
+mod continuation_content_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn custom_calls_and_typed_tool_outputs_are_inspected_without_user_history() {
+        let body = json!({"input":[
+            {"type":"custom_tool_call","input":"aws_secret_access_key=custom-input"},
+            {"type":"custom_tool_call_output","output":[{"type":"input_text","text":"aws_secret_access_key=tool-result"},{"type":"input_image","image_url":"data:image/png;base64,not-text"}]},
+            {"type":"function_call_output","output":"ordinary output"}
+        ]});
+        let texts = extract_request_text(&body);
+        assert_eq!(
+            texts.iter().map(|t| t.text.as_str()).collect::<Vec<_>>(),
+            vec![
+                "aws_secret_access_key=custom-input",
+                "aws_secret_access_key=tool-result",
+                "ordinary output"
+            ]
+        );
+        assert_eq!(texts[1].message_index, Some(1));
+    }
+    #[test]
+    fn replayed_custom_chat_input_and_readable_reasoning_are_inspected() {
+        let body = json!({"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"thinking secret","signature":"opaque"}],"tool_calls":[{"type":"custom","custom":{"name":"exec","input":"custom chat secret"}}],"refusal":"refusal secret"}],"input":[{"type":"reasoning","summary":[{"type":"summary_text","text":"summary secret"}],"encrypted_content":"opaque-ciphertext"}]});
+        let texts = extract_request_text(&body);
+        for text in [
+            "thinking secret",
+            "custom chat secret",
+            "refusal secret",
+            "summary secret",
+        ] {
+            assert!(texts.iter().any(|t| t.text == text), "missing {text}");
+        }
+        assert!(!texts.iter().any(|t| t.text.contains("opaque")));
+    }
+    #[test]
+    fn json_encoded_multiline_tool_values_are_scanned_as_the_original() {
+        let original =
+            "-----BEGIN PRIVATE KEY-----\nsynthetic-key-material\n-----END PRIVATE KEY-----";
+        let encoded = json!({"private_key":original}).to_string();
+        let body = json!({"input":[{"type":"function_call","arguments":encoded},{"type":"custom_tool_call_output","output":[{"type":"input_text","text":encoded}]}]});
+        let texts = extract_request_text(&body);
+        assert_eq!(texts.len(), 2);
+        assert!(texts.iter().all(|t| t.text.contains(original)));
+    }
+    #[test]
+    fn prompt_batches_and_schema_only_secrets_are_inspected() {
+        let body = json!({"prompt":["first secret","second secret",[1,2]],"tools":[{"type":"function","name":"write","description":"api_key=tool-description"}],"text":{"format":{"type":"json_schema","schema":{"description":"api_key=schema-description"}}}});
+        let texts = extract_request_text(&body);
+        for value in [
+            "first secret",
+            "second secret",
+            "api_key=tool-description",
+            "api_key=schema-description",
+        ] {
+            assert!(
+                texts.iter().any(|t| t.text.contains(value)),
+                "missing {value}"
+            );
+        }
+        assert!(texts
+            .iter()
+            .filter(|t| t.label.contains("definitions") || t.label.contains("format"))
+            .all(|t| t.label.starts_with("system") && t.role == "system"));
     }
 }

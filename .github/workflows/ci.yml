@@ -108,6 +108,10 @@ jobs:
       - name: Run Rust tests
         run: cargo test --workspace
 
+      - name: Test real Codex secret-redaction conversations
+        timeout-minutes: 10
+        run: scripts/test-codex-secret-lifecycle.sh
+
       - name: Run Clippy
         run: cargo clippy --workspace -- -D warnings
 

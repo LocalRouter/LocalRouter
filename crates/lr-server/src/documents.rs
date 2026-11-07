@@ -252,9 +252,11 @@ pub fn protect_text_files(
     context: &dyn lr_types::secret_context::SecretContext,
 ) -> AppResult<()> {
     transform_text_files(value, &mut |text| {
-        let mut content = Value::String(text.to_owned());
+        // Use the same JSON-text boundary as message content, including
+        // escaped multiline credentials inside JSON text files.
+        let mut content = json!({"content":text});
         context.protect(&mut content)?;
-        Ok(content.as_str().unwrap_or_default().to_owned())
+        Ok(content["content"].as_str().unwrap_or_default().to_owned())
     })
 }
 fn transform_text_files(
