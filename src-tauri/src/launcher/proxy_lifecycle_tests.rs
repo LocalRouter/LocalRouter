@@ -647,7 +647,15 @@ async fn run_installed_codex(transition: bool, websockets: bool, disable_after_f
         );
         assert_eq!(
             std::fs::read_to_string(workspace.join("restored.env"))
-                .expect("real CLI must execute restored file write"),
+                .unwrap_or_else(|error| {
+                    let state = provider.evidence.lock().unwrap();
+                    let tool_results: Vec<_> = state.requests.iter()
+                        .filter_map(|request| request["input"].as_array())
+                        .flatten()
+                        .filter(|item| matches!(item["type"].as_str(), Some("custom_tool_call_output" | "function_call_output")))
+                        .collect();
+                    panic!("real CLI must execute restored file write: {error}\nCLI stdout: {stdout}\nCLI stderr: {stderr}\nSynthetic tool results: {tool_results:?}")
+                }),
             KEY
         );
         let rows: Vec<Value> = stdout
