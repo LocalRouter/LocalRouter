@@ -180,7 +180,7 @@ pub async fn create_response(
     GatewayJson(mut req): GatewayJson<CreateResponseRequest>,
 ) -> ApiResult<Response> {
     // Correlate logs/monitor events across the turn.
-    let session_id = Uuid::new_v4().to_string();
+    let session_id = super::monitor_helpers::new_request_session();
     let response_id = format!("resp_{}", Uuid::new_v4().simple());
     let started_at = Instant::now();
     let created_at_dt = Utc::now();

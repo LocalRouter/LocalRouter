@@ -8,12 +8,13 @@ use lr_secret_scanner::{
 };
 use std::{convert::Infallible, sync::Arc};
 
-pub(crate) async fn restore<B>(
+async fn restore_with_completion<B>(
     mut parts: http::response::Parts,
     body: B,
     vault: Arc<Vault>,
     streaming: bool,
     ndjson: bool,
+    completed: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<
     http::Response<http_body_util::combinators::UnsyncBoxBody<Bytes, std::io::Error>>,
     std::io::Error,
@@ -68,6 +69,7 @@ where
         } else {
             codec.json(&bytes).map_err(std::io::Error::other)?
         };
+        completed.store(true, std::sync::atomic::Ordering::Release);
         let body = Full::new(Bytes::from(bytes))
             .map_err(|e: Infallible| match e {})
             .boxed_unsync();
@@ -88,7 +90,11 @@ where
                 let events = if ndjson {
                     if frame.trim().is_empty() { Vec::new() } else { codec.message(&frame).map_err(std::io::Error::other)?.into_iter().map(|event| format!("{event}\n")).collect() }
                 } else { codec.frame(&frame).map_err(std::io::Error::other)? };
-                for event in events { yield http_body::Frame::data(Bytes::from(event)); }
+                let last = events.len().saturating_sub(1);
+                for (index, event) in events.into_iter().enumerate() {
+                    if index == last && codec.done() { completed.store(true, std::sync::atomic::Ordering::Release); }
+                    yield http_body::Frame::data(Bytes::from(event));
+                }
             }
             scanned = pending.len().saturating_sub(3);
         }
@@ -98,6 +104,7 @@ where
             for event in codec.message(&frame).map_err(std::io::Error::other)? { yield http_body::Frame::data(Bytes::from(format!("{event}\n"))); }
         }
         for event in codec.finish().map_err(std::io::Error::other)? { yield http_body::Frame::data(Bytes::from(event)); }
+        completed.store(true, std::sync::atomic::Ordering::Release);
     };
     let stream: std::pin::Pin<
         Box<dyn futures::Stream<Item = Result<http_body::Frame<Bytes>, std::io::Error>> + Send>,
@@ -106,6 +113,108 @@ where
         parts,
         StreamBody::new(stream).boxed_unsync(),
     ))
+}
+
+/// Capture the masked provider wire, but complete monitoring only after the
+/// restored client body succeeds or fails. Restoration errors cannot race a
+/// successful upstream tap into an incorrect Complete event.
+pub(crate) async fn restore_recorded<B>(
+    parts: http::response::Parts,
+    body: B,
+    vault: Arc<Vault>,
+    streaming: bool,
+    ndjson: bool,
+    on_complete: Box<dyn FnOnce(crate::tap::Capture) + Send>,
+) -> Result<
+    http::Response<http_body_util::combinators::UnsyncBoxBody<Bytes, std::io::Error>>,
+    std::io::Error,
+>
+where
+    B: http_body::Body<Data = Bytes> + Send + Unpin + 'static,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>> + Send,
+{
+    let captured = Arc::new(std::sync::Mutex::new(None::<crate::tap::Capture>));
+    let wire = captured.clone();
+    let tapped = crate::tap::TappedBody::new(
+        body,
+        1024 * 1024,
+        Box::new(move |capture| *wire.lock().expect("wire capture") = Some(capture)),
+    );
+    let completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let response =
+        match restore_with_completion(parts, tapped, vault, streaming, ndjson, completed.clone())
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                let mut capture =
+                    captured
+                        .lock()
+                        .expect("wire capture")
+                        .take()
+                        .unwrap_or(crate::tap::Capture {
+                            bytes: Vec::new(),
+                            error: None,
+                        });
+                capture.error = Some(format!("Protected response restoration failed: {error}"));
+                on_complete(capture);
+                return Err(error);
+            }
+        };
+    let (parts, body) = response.into_parts();
+    let observed = crate::tap::TappedBody::new(
+        body,
+        0,
+        Box::new(move |outcome| {
+            let mut wire =
+                captured
+                    .lock()
+                    .expect("wire capture")
+                    .take()
+                    .unwrap_or(crate::tap::Capture {
+                        bytes: Vec::new(),
+                        error: None,
+                    });
+            let dropped = "Response body was dropped before completion";
+            let terminal_delivered = completed.load(std::sync::atomic::Ordering::Acquire);
+            if terminal_delivered && wire.error.as_deref() == Some(dropped) {
+                wire.error = None;
+            }
+            if outcome.error.is_some()
+                && !(terminal_delivered && outcome.error.as_deref() == Some(dropped))
+            {
+                wire.error = outcome.error;
+            }
+            on_complete(wire);
+        }),
+    );
+    Ok(http::Response::from_parts(parts, observed.boxed_unsync()))
+}
+
+#[cfg(test)]
+async fn restore<B>(
+    parts: http::response::Parts,
+    body: B,
+    vault: Arc<Vault>,
+    streaming: bool,
+    ndjson: bool,
+) -> Result<
+    http::Response<http_body_util::combinators::UnsyncBoxBody<Bytes, std::io::Error>>,
+    std::io::Error,
+>
+where
+    B: http_body::Body<Data = Bytes> + Send + Unpin + 'static,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>> + Send,
+{
+    restore_with_completion(
+        parts,
+        body,
+        vault,
+        streaming,
+        ndjson,
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -121,6 +230,67 @@ mod tests {
         vault.protect(&mut value).unwrap();
         (vault, storage, value["content"].as_str().unwrap().into())
     }
+    #[tokio::test]
+    async fn monitor_completion_waits_for_restoration_and_distinguishes_terminal_from_abort() {
+        for terminal in [false, true] {
+            let (vault, _, _) = vault();
+            let value = if terminal {
+                json!({"type":"response.completed","response":{"id":"terminal","output":[]}})
+            } else {
+                json!({"type":"response.output_text.delta","item_id":"text","delta":"hello"})
+            };
+            let wire = format!("data: {value}\n\n");
+            let source = futures::stream::iter(vec![Ok::<_, std::io::Error>(
+                http_body::Frame::data(Bytes::from(wire.clone())),
+            )])
+            .chain(futures::stream::pending());
+            let response = http::Response::new(StreamBody::new(source));
+            let (parts, body) = response.into_parts();
+            let captured = Arc::new(std::sync::Mutex::new(None));
+            let sink = captured.clone();
+            let mut restored = restore_recorded(
+                parts,
+                body,
+                vault,
+                true,
+                false,
+                Box::new(move |v| *sink.lock().unwrap() = Some(v)),
+            )
+            .await
+            .unwrap()
+            .into_body();
+            assert!(restored.frame().await.unwrap().is_ok());
+            drop(restored);
+            let result = captured.lock().unwrap().take().unwrap();
+            assert_eq!(String::from_utf8(result.bytes).unwrap(), wire);
+            assert_eq!(result.error.is_none(),terminal,"a delivered terminal event completes a stream even when the client closes before EOF");
+        }
+        let (vault, _, _) = vault();
+        let wire = "data: {invalid}\n\n";
+        let response = http::Response::new(Full::new(Bytes::from(wire)));
+        let (parts, body) = response.into_parts();
+        let captured = Arc::new(std::sync::Mutex::new(None));
+        let sink = captured.clone();
+        let body = restore_recorded(
+            parts,
+            body,
+            vault,
+            true,
+            false,
+            Box::new(move |v| *sink.lock().unwrap() = Some(v)),
+        )
+        .await
+        .unwrap()
+        .into_body();
+        assert!(body.collect().await.is_err());
+        let capture = captured.lock().unwrap().take().unwrap();
+        assert_eq!(capture.bytes, wire.as_bytes());
+        assert!(capture
+            .error
+            .unwrap()
+            .contains("Invalid protected SSE event"));
+    }
+
     #[tokio::test]
     async fn empty_resource_responses_preserve_status_without_accepting_invalid_json() {
         for status in [204, 304, 200] {

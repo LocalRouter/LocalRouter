@@ -5371,6 +5371,7 @@ export interface MonitorConversation {
 
 /** Rust: crates/lr-monitor/src/types.rs - MonitorEventSummary */
 export interface MonitorEventSummary {
+  secret_action?: "redact" | "restore" | null
   conversation?: MonitorConversation | null
   payload_redacted?: boolean
   id: string
@@ -5686,3 +5687,43 @@ export type GetUiStateParams = Record<string, never>
  * most 500 keys; `null` removes the key.
  */
 export interface SetUiStateParams { key: string; value: unknown }
+
+/** Params for reveal_monitor_secret. The backend derives the owner from the retained event. */
+export interface RevealMonitorSecretParams { eventId: string; findingIndex: number }
+
+/** Per-finding diagnostics in a retained secret_scan event. */
+export interface MonitorSecretFinding {
+  rule_id: string
+  rule_description: string
+  category: string
+  matched_text: string
+  message_index: number
+  value?: string | null
+  redacted?: boolean
+  replacement?: string | null
+  action?: 'redacted' | 'restored' | 'allowed' | 'blocked'
+  reference_id?: string
+  operation_location?: string
+  occurrences?: number
+  location?: string
+  context_excerpt?: string
+}
+
+/** Rust: ui/commands_secret_store.rs - RedactedSecretEntry, flattened StoredSecret. */
+export interface RedactedSecretEntry {
+  client_id: string
+  client_name: string
+  reference_id: string
+  placeholder: string
+  masked_value: string
+  last_used_at: number
+  expires_at: number
+  expired: boolean
+  revoked: boolean
+}
+/** Params for list_redacted_secrets. */
+export interface ListRedactedSecretsParams { clientId: string | null }
+/** Params for reveal_redacted_secret. */
+export interface RevealRedactedSecretParams { clientId: string; referenceId: string }
+/** Params for purge_redacted_secrets; null client selects all clients. */
+export interface PurgeRedactedSecretsParams { clientId: string | null; referenceId: string | null }

@@ -1716,12 +1716,9 @@ pub async fn scan_request_for_secrets_fresh(
     let scan_start = std::time::Instant::now();
     let mut result = scanner.scan(&texts);
 
-    // Mask monitor previews before filtering remembered secrets, too.
-    let monitor_preview = if result.findings.is_empty() {
-        String::new()
-    } else {
-        secret_scan_mask(&result).apply_text(texts.first().map(|t| t.text.as_str()).unwrap_or(""))
-    };
+    // The event store masks only secrets selected for redaction. Notify/allowed
+    // findings retain their actual content for local inspection.
+    let monitor_preview = texts.first().map(|t| t.text.clone()).unwrap_or_default();
 
     // Build context before filtering remembered secrets so those values are
     // masked too, including during sequential approvals of later findings.
@@ -1825,23 +1822,11 @@ pub async fn scan_request_for_secrets_fresh(
         client_id
     );
 
-    let findings_json = serde_json::to_value(&result.findings).unwrap_or(serde_json::json!([]));
     let action_name = format!("{:?}", effective_action).to_lowercase();
     // Only scans with findings are recorded in the monitor
     let client_ctx = ClientAuthContext {
         client_id: client_id.to_string(),
     };
-    super::monitor_helpers::record_secret_scan(
-        state,
-        Some(&client_ctx),
-        Some(session_id),
-        &monitor_preview,
-        scanner.rule_metadata().len(),
-        result.findings.len(),
-        findings_json,
-        &action_name,
-        scan_latency,
-    );
 
     let outcome = match effective_action {
         lr_config::SecretScanAction::Redact => {
@@ -1882,6 +1867,81 @@ pub async fn scan_request_for_secrets_fresh(
         }
         lr_config::SecretScanAction::Off => SecretScanOutcome::Allow,
     };
+    let mut findings_json = serde_json::Value::Array(
+        result
+            .findings
+            .iter()
+            .map(|finding| {
+                let mut entry =
+                    serde_json::to_value(finding).unwrap_or_else(|_| serde_json::json!({}));
+                let mut value = serde_json::json!({"value":finding.raw_text});
+                if let Some(context) = lr_types::secret_context::current() {
+                    if context.redact_monitor(&mut value).is_err() {
+                        value["value"] = serde_json::Value::Null;
+                    }
+                }
+                if let SecretScanOutcome::Redact(plan) = &outcome {
+                    plan.apply(&mut value);
+                }
+                let redacted = value["value"]
+                    .as_str()
+                    .is_some_and(|v| v != finding.raw_text);
+                entry["value"] = value["value"].clone();
+                entry["redacted"] = serde_json::Value::Bool(redacted);
+                entry["replacement"] = if redacted {
+                    value["value"].clone()
+                } else {
+                    serde_json::Value::Null
+                };
+                entry["action"] = serde_json::Value::String(
+                    if matches!(&outcome, SecretScanOutcome::Deny(_)) {
+                        "blocked"
+                    } else if redacted {
+                        "redacted"
+                    } else {
+                        "allowed"
+                    }
+                    .into(),
+                );
+                if let Some(text) = texts.get(finding.message_index) {
+                    entry["location"] = serde_json::Value::String(text.label.clone());
+                    let position = text.text.find(&finding.raw_text).unwrap_or_default();
+                    let mut start = position.saturating_sub(120);
+                    while !text.text.is_char_boundary(start) {
+                        start += 1;
+                    }
+                    let mut end = (position + finding.raw_text.len() + 120).min(text.text.len());
+                    while !text.text.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    entry["context_excerpt"] =
+                        serde_json::Value::String(text.text[start..end].to_owned());
+                }
+                entry
+            })
+            .collect(),
+    );
+    if let SecretScanOutcome::Redact(plan) = &outcome {
+        plan.apply(&mut findings_json);
+    }
+    redaction.apply(&mut findings_json);
+    let monitor_preview = findings_json
+        .get(0)
+        .and_then(|f| f["context_excerpt"].as_str())
+        .map(str::to_owned)
+        .unwrap_or(monitor_preview);
+    super::monitor_helpers::record_secret_scan(
+        state,
+        Some(&client_ctx),
+        Some(session_id),
+        &monitor_preview,
+        scanner.rule_metadata().len(),
+        result.findings.len(),
+        findings_json,
+        &action_name,
+        scan_latency,
+    );
+
     match outcome {
         SecretScanOutcome::Deny(message) => SecretScanOutcome::Deny(message),
         SecretScanOutcome::Redact(current) => {

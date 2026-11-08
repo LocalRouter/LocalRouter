@@ -91,7 +91,7 @@ pub(crate) async fn handle_decision(
     };
     state.emit_event("llm-request", "systemone");
 
-    let session_id = Uuid::new_v4().to_string();
+    let session_id = super::monitor_helpers::new_request_session();
     let is_duplicate = lr_types::is_duplicate_hop();
     let model_label = request.model.clone().unwrap_or_else(|| "auto".to_string());
 

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
 import { BellOff, Trash2 } from "lucide-react"
+import { RedactedSecretsStore } from "@/components/shared/RedactedSecretsStore"
 import { FEATURES } from "@/constants/features"
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/Card"
 import { Button } from "@/components/ui/Button"
@@ -195,6 +196,8 @@ export function ClientSecretScanningTab({ client, onUpdate, onViewChange }: Secr
           </CardDescription>
         </CardHeader>
       </Card>
+
+      <RedactedSecretsStore clientId={client.id} />
 
       {dismissed.length > 0 && (
         <Card>

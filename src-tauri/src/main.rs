@@ -2883,6 +2883,9 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::read_memory_archive_file,
             // Secret Scanning commands
             ui::commands::rebuild_secret_scanner,
+            ui::commands_secret_store::list_redacted_secrets,
+            ui::commands_secret_store::reveal_redacted_secret,
+            ui::commands_secret_store::purge_redacted_secrets,
             ui::commands::get_secret_scanning_config,
             ui::commands::update_secret_scanning_config,
             ui::commands::test_secret_scan,
@@ -3099,6 +3102,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             // Monitor commands
             ui::commands_monitor::get_monitor_events,
             ui::commands_monitor::get_monitor_event_detail,
+            ui::commands_monitor::reveal_monitor_secret,
             ui::commands_monitor::clear_monitor_events,
             ui::commands_monitor::get_monitor_stats,
             ui::commands_monitor::set_monitor_max_capacity,

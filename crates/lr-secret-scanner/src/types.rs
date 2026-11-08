@@ -82,11 +82,10 @@ pub struct SecretFinding {
     pub matched_text: String,
     /// The unmasked secret, for on-demand reveal in the approval popup.
     ///
-    /// `#[serde(skip)]` is load-bearing: findings are serialized into monitor
-    /// events that persist to disk, and returned by the scan-test command.
-    /// The plaintext must never travel through any of those paths — it lives
-    /// only in the in-memory pending approval session, and reaches the UI
-    /// solely through the explicit reveal command.
+    /// Excluded from generic scan-result serialization and scan-test responses.
+    /// Monitor explicitly projects each selected outcome: redacted values are
+    /// replaced by their reference, while allowed values remain locally visible.
+    /// Pending approval sessions expose originals only through explicit reveal.
     #[serde(skip)]
     pub raw_text: String,
     /// Shannon entropy (bits/char) of the secret part that gated the match

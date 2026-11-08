@@ -136,7 +136,7 @@ function SharedApprovalPreview() {
 
   const finish = (choices: Record<number, Choice>) => {
     setCurrent(null)
-    setPayload(samples.slice(0, count).reduce((text, secret, i) => choices[i] === 'redact' ? text.split(secret).join(MARKER) : choices[i] === 'placeholder' ? text.split(secret).join(`<localrouter-redacted id="preview${i}" usage="Unmasked when returned verbatim"/>`) : text, source))
+    setPayload(samples.slice(0, count).reduce((text, secret, i) => choices[i] === 'redact' ? text.split(secret).join(MARKER) : choices[i] === 'placeholder' ? text.split(secret).join(`<localrouter-redacted id='preview${i}' usage='Unmasked when returned verbatim'/>`) : text, source))
     setStatus('All secrets reviewed — request continued')
   }
   const advance = (choices: Record<number, Choice>, start: number) => {

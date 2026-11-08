@@ -186,6 +186,7 @@ impl PassiveInterceptor {
             .and_then(|p| p.cost_usd(provider, &model, usage));
 
         let status = match ex.status {
+            _ if ex.error.is_some() => EventStatus::Error,
             Some(code) if code >= 400 => EventStatus::Error,
             Some(_) => EventStatus::Complete,
             None => EventStatus::Error,
@@ -425,11 +426,30 @@ impl PassiveInterceptor {
     }
 
     fn track_conversation(&self, event_id: &str, ex: &ObservedExchange) {
-        if let Some(body) = ex
+        if let Some(mut body) = ex
             .request_body
             .as_ref()
             .and_then(|b| serde_json::from_slice::<serde_json::Value>(b).ok())
         {
+            let caller_session = ex
+                .secret_session
+                .clone()
+                .or_else(|| wire::conversation_id(&body));
+            if let Some(session) = &caller_session {
+                if body.pointer("/extensions/localrouter.session/id").is_none() {
+                    if let Some(object) = body.as_object_mut() {
+                        let extensions = object
+                            .entry("extensions")
+                            .or_insert_with(|| serde_json::json!({}));
+                        if let Some(extensions) = extensions.as_object_mut() {
+                            extensions.insert(
+                                "localrouter.session".into(),
+                                serde_json::json!({"id":session}),
+                            );
+                        }
+                    }
+                }
+            }
             self.monitor.track_conversation(event_id, &body);
         }
     }

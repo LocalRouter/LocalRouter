@@ -11,28 +11,63 @@ use std::task::{Context, Poll};
 use bytes::Bytes;
 use http_body::{Body, Frame};
 
+/// Finish a pending exchange if its service future is dropped before a body
+/// completion callback has taken over (for example a cancelled Codex prewarm).
+pub(crate) struct CancellationGuard(Option<Box<dyn FnOnce() + Send>>);
+impl CancellationGuard {
+    pub(crate) fn new(callback: impl FnOnce() + Send + 'static) -> Self {
+        Self(Some(Box::new(callback)))
+    }
+    pub(crate) fn disarm(&mut self) {
+        self.0.take();
+    }
+}
+impl Drop for CancellationGuard {
+    fn drop(&mut self) {
+        if let Some(callback) = self.0.take() {
+            callback();
+        }
+    }
+}
+
 /// Wraps an inner body, teeing data frames into a capped buffer. When the inner
 /// body ends, `on_end` is invoked exactly once with the captured bytes.
+pub struct Capture {
+    pub bytes: Vec<u8>,
+    pub error: Option<String>,
+}
+
+type Completion = Box<dyn FnOnce(Capture) + Send>;
+
 pub struct TappedBody<B> {
-    inner: B,
+    inner: Option<B>,
     buf: Vec<u8>,
     cap: usize,
-    on_end: Option<Box<dyn FnOnce(Vec<u8>) + Send>>,
+    finished: bool,
+    on_end: Option<Completion>,
 }
 
 impl<B> TappedBody<B> {
-    pub fn new(inner: B, cap: usize, on_end: Box<dyn FnOnce(Vec<u8>) + Send>) -> Self {
+    pub fn new(inner: B, cap: usize, on_end: Completion) -> Self
+    where
+        B: Body,
+    {
+        let finished = inner.is_end_stream();
         Self {
-            inner,
+            inner: Some(inner),
             buf: Vec::new(),
             cap,
+            finished,
             on_end: Some(on_end),
         }
     }
 
-    fn fire(&mut self) {
+    fn fire(&mut self, error: Option<String>) {
         if let Some(cb) = self.on_end.take() {
-            cb(std::mem::take(&mut self.buf));
+            cb(Capture {
+                bytes: std::mem::take(&mut self.buf),
+                error,
+            });
         }
     }
 }
@@ -49,7 +84,7 @@ where
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        match Pin::new(&mut self.inner).poll_frame(cx) {
+        match Pin::new(self.inner.as_mut().expect("body exists until drop")).poll_frame(cx) {
             Poll::Ready(Some(Ok(frame))) => {
                 if let Some(data) = frame.data_ref() {
                     let remaining = self.cap.saturating_sub(self.buf.len());
@@ -58,15 +93,21 @@ where
                         self.buf.extend_from_slice(&data[..take]);
                     }
                 }
+                if self.inner.as_ref().is_some_and(Body::is_end_stream) {
+                    self.finished = true;
+                    self.fire(None);
+                }
                 Poll::Ready(Some(Ok(frame)))
             }
             Poll::Ready(Some(Err(e))) => {
                 // On error we still fire so the exchange is recorded with what we have.
-                self.fire();
-                Poll::Ready(Some(Err(std::io::Error::other(e.into()))))
+                let error = std::io::Error::other(e.into());
+                self.fire(Some(format!("Response body failed: {error}")));
+                Poll::Ready(Some(Err(error)))
             }
             Poll::Ready(None) => {
-                self.fire();
+                self.finished = true;
+                self.fire(None);
                 Poll::Ready(None)
             }
             Poll::Pending => Poll::Pending,
@@ -74,18 +115,21 @@ where
     }
 
     fn is_end_stream(&self) -> bool {
-        self.inner.is_end_stream()
+        self.inner.as_ref().is_none_or(Body::is_end_stream)
     }
 
     fn size_hint(&self) -> http_body::SizeHint {
-        self.inner.size_hint()
+        self.inner.as_ref().map(Body::size_hint).unwrap_or_default()
     }
 }
 
 impl<B> Drop for TappedBody<B> {
     fn drop(&mut self) {
         // If the client hangs up mid-stream, still record what we captured.
-        self.fire();
+        // Drop nested taps first so their captured wire data is available to
+        // the outer completion callback, including on client cancellation.
+        drop(self.inner.take());
+        self.fire((!self.finished).then(|| "Response body was dropped before completion".into()));
     }
 }
 
@@ -104,7 +148,7 @@ mod tests {
         let tapped = TappedBody::new(
             inner,
             5, // cap below body length
-            Box::new(move |bytes| *sink.lock().unwrap() = Some(bytes)),
+            Box::new(move |capture| *sink.lock().unwrap() = Some(capture.bytes)),
         );
 
         let collected = tapped.collect().await.unwrap().to_bytes();

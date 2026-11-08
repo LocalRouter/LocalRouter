@@ -6,6 +6,15 @@ use std::{future::Future, sync::Arc};
 pub trait SecretContext: Send + Sync {
     fn register(&self, secret: &str) -> AppResult<()>;
     fn protect(&self, value: &mut Value) -> AppResult<()>;
+    /// Mask already-protected originals in diagnostic data without detecting
+    /// new secrets or changing the outbound request's authorization.
+    /// A diagnostic-only handle must not keep request retention pins alive.
+    fn monitor_context(&self) -> Option<Arc<dyn SecretContext>> {
+        None
+    }
+    fn redact_monitor(&self, _value: &mut Value) -> AppResult<()> {
+        Ok(())
+    }
     /// Scan newly introduced content, allowing asynchronous user decisions.
     fn prepare<'a>(
         &'a self,
@@ -15,6 +24,9 @@ pub trait SecretContext: Send + Sync {
     }
     fn restore(&self, value: &mut Value, strict: bool) -> AppResult<()>;
     fn restore_text(&self, text: &str, strict: bool) -> AppResult<String>;
+    fn restore_text_at(&self, text: &str, strict: bool, _location: &str) -> AppResult<String> {
+        self.restore_text(text, strict)
+    }
     fn active(&self) -> bool;
     fn validate_tool(&self, _name: Option<&str>, _arguments: &Value) -> AppResult<()> {
         Ok(())

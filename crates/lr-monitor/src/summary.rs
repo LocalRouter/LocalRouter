@@ -1,5 +1,31 @@
 use crate::types::{EventStatus, MonitorEvent, MonitorEventData, MonitorEventSummary};
 
+fn secret_action(data: &MonitorEventData) -> Option<&'static str> {
+    match data {
+        MonitorEventData::SecretScan {
+            action_taken,
+            findings,
+            ..
+        } => {
+            if action_taken.as_deref() == Some("restore") {
+                Some("restore")
+            } else if action_taken.as_deref() == Some("redact")
+                || findings
+                    .as_ref()
+                    .and_then(|f| f.as_array())
+                    .is_some_and(|findings| {
+                        findings.iter().any(|finding| finding["redacted"] == true)
+                    })
+            {
+                Some("redact")
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Generate a one-line summary string from event data for list display.
 /// For combined events, the summary changes based on status (pending vs complete/error).
 pub fn generate_summary(event: &MonitorEvent) -> String {
@@ -214,7 +240,12 @@ pub fn generate_summary(event: &MonitorEvent) -> String {
             _ => {
                 let count = findings_count.unwrap_or(0);
                 let action = action_taken.as_deref().unwrap_or("?");
-                format!("secret scan: {} findings ({})", count, action)
+                let label = match secret_action(&event.data) {
+                    Some("restore") => "Secret Restored",
+                    Some("redact") => "Secret Redacted",
+                    _ => "Secret Scan",
+                };
+                format!("{label}: {count} references ({action})")
             }
         },
 
@@ -422,6 +453,7 @@ pub fn generate_summary(event: &MonitorEvent) -> String {
 pub fn to_summary(event: &MonitorEvent) -> MonitorEventSummary {
     let (question, answer) = crate::preview::question_and_answer(&event.data);
     MonitorEventSummary {
+        secret_action: secret_action(&event.data).map(str::to_owned),
         payload_redacted: event.payload_redacted,
         id: event.id.clone(),
         sequence: event.sequence,

@@ -63,7 +63,7 @@ pub async fn completions(
     state.emit_event("llm-request", "completion");
 
     // Generate session ID for correlated monitor events
-    let session_id = uuid::Uuid::new_v4().to_string();
+    let session_id = super::monitor_helpers::new_request_session();
 
     // Emit monitor event for traffic inspection
     let request_json = serde_json::to_value(&request).unwrap_or_default();

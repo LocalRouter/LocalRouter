@@ -16,6 +16,7 @@ pub mod commands_monitor;
 pub mod commands_providers;
 pub mod commands_push_relay;
 pub mod commands_reverse_proxy;
+pub mod commands_secret_store;
 pub mod commands_usage;
 mod input_validation;
 pub mod popup_activation;

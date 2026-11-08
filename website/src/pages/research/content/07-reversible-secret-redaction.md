@@ -2,13 +2,13 @@
 
 Reversible secret redaction separates a credential's bytes from the model's ability to refer to it. LocalRouter detects selected secrets before model dispatch, stores their originals in the operating system's credential store, and substitutes self-describing references. Returned references are restored locally in response text and tool arguments. A tool result containing the original is protected again before the next model call.
 
-The mechanism adds no system or developer instruction. Its reuse instruction travels in the reference itself. References remain stable within an explicit conversation to preserve identical historical prompt prefixes.
+The mechanism adds no system or developer instruction. Its reuse instruction travels in the reference itself. References remain stable for the same authenticated client to preserve identical historical prompt prefixes.
 
 <!-- @entry redaction-threat-model -->
 
 An assistant may need to write a configuration file containing a credential without sending that credential to a model provider. Removing the credential permanently prevents the assistant from completing the file. Sending an opaque reference lets it describe where the value belongs while the router supplies the original locally.
 
-The protected boundary is the provider-facing model request. An authorized caller or tool can receive the original after restoration. A reference is a capability to request use of a secret within its authorized conversation; it is not permission to execute a tool. Prompt injection can attempt to misuse that capability. Existing tool and destination approvals remain necessary.
+The protected boundary is the provider-facing model request. An authorized caller or tool can receive the original after restoration. A reference is a capability to request use of a secret within its authenticated client; it is not permission to execute a tool. Prompt injection can attempt to misuse that capability. Existing tool and destination approvals remain necessary.
 
 Detection is heuristic. An unknown secret that does not match a detector is outside this guarantee. OS credential storage does not defend against a compromised LocalRouter process or operating system.
 
@@ -17,10 +17,10 @@ Detection is heuristic. An unknown secret that does not match a detector is outs
 The emitted form is:
 
 ```xml
-<localrouter-redacted id="abc123" usage="Unmasked when returned verbatim"/>
+<localrouter-redacted id='abc123' usage='Unmasked when returned verbatim'/>
 ```
 
-`abc123` is a shortened illustrative ID. Production IDs contain 128 random bits encoded as 32 lowercase hexadecimal characters, with collisions checked after case normalization. They do not contain a secret prefix, suffix or digest. The same original within an explicit scope reuses its reference. Other scopes use unrelated IDs.
+`abc123` is a shortened illustrative ID. Production IDs contain 128 random bits encoded as 32 lowercase hexadecimal characters, with collisions checked after case normalization. They do not contain a secret prefix, suffix or digest. The same original reuses its reference for that authenticated client. Different clients use unrelated IDs, even when their original values match.
 
 The `usage` attribute explains reuse without changing the request's system instructions. Its presence is not required for recognition.
 
@@ -39,21 +39,25 @@ These resolve the same illustrative ID. Misspelled tag names and XML/HTML entity
 
 <!-- @entry redaction-storage -->
 
-Original values use the existing native credential abstraction: macOS Keychain, Windows Credential Manager, or the configured Linux OS credential backend. Reversible originals do not use the development plaintext-file keychain fallback. Ordinary unit tests use an in-memory mock. Native tests create isolated synthetic credentials rather than using production credentials.
+Release builds store original values in macOS Keychain, Windows Credential Manager, or the configured Linux OS credential backend. Debug builds default to a separate development file to avoid repeated Keychain dialogs; opting into native debug storage uses an isolated service per environment. Ordinary unit tests use an in-memory mock. Native tests create isolated synthetic credentials rather than using production credentials.
 
-An owner/session record separates clients and conversations. Requests receive only the references authorized by their protected context. Provider response IDs are opaque and remain unchanged: an untracked ID, including one issued before Redact was enabled, does not block an ordinary continuation or grant access to an earlier secret. An explicit owned session or recorded response binding can recover its native scope after restart. Missing, foreign and revoked scopes never trigger a global secret search. A failed native write blocks protected dispatch rather than sending plaintext. Large values use the existing native credential chunking layer.
+Mappings belong to the authenticated client and persist across LocalRouter restarts for fourteen days of client inactivity. Conversation identity is used only for Monitor grouping. No session header or provider response ID is required to recover a client's references. Existing owned conversation records migrate while preserving their reference IDs; records from different clients never merge. Expired or revoked mappings cannot resolve. A failed native write blocks protected dispatch rather than sending plaintext. Large values use the native credential chunking layer.
 
 Turning scanning Off or Notify stops automatic outbound masking while available owned references continue to resolve. Response retrieval, input-item listing, cancellation and deletion preserve their owned restoration context. Cancellation can still reach the provider if credential storage becomes unavailable. Fresh Off requests do not require a working native secret store.
 
-Native Codex compaction and encrypted reasoning state remain byte-for-byte intact. OS-backed metadata binds the fingerprint of returned opaque state to the references authorized in that client and conversation. Replaying that exact state can recover those references after restart; modified, foreign and revoked state grants no access. Visible reasoning summaries are restored separately and protected again on replay.
+Native Codex compaction and encrypted reasoning state remain byte-for-byte intact. Opaque provider state never grants access to another client’s mappings. Restoring references requires the same authenticated client, including after restart. Visible reasoning summaries are restored separately and protected again on replay.
 
-Transient plaintext is needed when receiving the original, storing it and restoring a reply. Secrets are excluded from normal monitor payloads and tokenized response histories remain tokenized at rest.
+Transient plaintext is needed when receiving the original, storing it and restoring a reply. Monitor retains requests, responses, errors and conversation metadata. Values selected for redaction appear as references; Notify and allowed findings retain their original local content. Each scan records its per-finding outcome, replacement and focused context. Originals can be revealed locally from an unexpired client mapping. Tokenized response histories remain tokenized at rest.
+
+The Secret Scan store UI lists masked values, reference IDs and client activity/expiry without refreshing retention. Explicit reveal is local administration; purge can target one original and its legacy aliases, one client, or every client. Purge revokes affected IDs before native writes/deletes, preserves activity timestamps for remaining mappings, and advances an owner epoch so an older in-flight vault cannot recreate cleared records. A failed native removal remains revoked and available for retry. New requests may issue fresh IDs.
+
+Monitor records **Secret Redacted** and **Secret Restored** under the same Secret Scan category, linked to the parent request/conversation. Request-local observers aggregate substitutions by reference and location, including known originals in later tool-result requests. Notifications contain metadata rather than original credential bytes and run after credential locks are released. Schema-contract validation does not create restoration events.
 
 <!-- @entry redaction-caching -->
 
-A fixed self-describing tag avoids injecting a new instruction or per-turn manifest. Canonical spelling, attribute order and reference IDs remain stable for the same secret in an explicitly identified conversation. Model-visible history can therefore retain identical bytes across repeated requests and retries.
+A fixed self-describing tag avoids injecting a new instruction or per-turn manifest. Canonical spelling, attribute order and reference IDs remain stable for the same secret and authenticated client. Model-visible history can therefore retain identical bytes across repeated requests and retries.
 
-This establishes prefix stability, not a guaranteed provider cache hit. Provider-specific caches have additional policies. Without an explicit conversation identity, LocalRouter uses a request-local scope rather than guessing a conversation or sharing secrets client-wide.
+This establishes prefix stability, not a guaranteed provider cache hit. Provider-specific caches have additional policies. Reference reuse is client-wide and does not depend on recognizing a conversation. Activity refreshes the fourteen-day retention period; restarting LocalRouter alone does not.
 
 <!-- @entry redaction-streaming -->
 
@@ -78,7 +82,7 @@ Hosted provider tools execute before LocalRouter can intercept their arguments a
 
 <!-- @entry redaction-evaluation -->
 
-The deterministic test corpus exercises accepted and rejected tag variants, case-insensitive lookup, scope isolation, restart recovery, overlapping secrets, Unicode/JSON escaping, native-store failures and one-pass substitution. Streaming cases split references at every boundary and interleave independent channels. A file-write integration verifies the actual written bytes and that a tool echo is masked on the next model request. Coverage includes Responses Lite tool declarations, custom-call input, typed tool outputs, batched prompts and JSON-escaped multiline credentials in message text and decoded attachments.
+The deterministic test corpus exercises accepted and rejected tag variants, case-insensitive lookup, client isolation, fourteen-day inactivity expiry, restart recovery, overlapping secrets, Unicode/JSON escaping, native-store failures and one-pass substitution. Streaming cases split references at every boundary and interleave independent channels. A file-write integration verifies the actual written bytes and that a tool echo is masked on the next model request. Coverage includes Responses Lite tool declarations, custom-call input, typed tool outputs, batched prompts and JSON-escaped multiline credentials in message text and decoded attachments.
 
 Reproduce core checks without a paid model call:
 
@@ -94,7 +98,7 @@ An explicitly ignored native-store smoke test creates a dedicated synthetic cred
 rustup run stable cargo test -p lr-secret-scanner native_os_store_round_trip -- --ignored
 ```
 
-Full conversation regressions run Codex CLI 0.166.0 with its default Responses Lite and code-mode tools through the real firewall and TLS proxy to a controlled local provider. They cover HTTP/SSE and WebSocket, Redact from the start, enabling Redact mid-conversation, and turning scanning Off after references have been issued. The client executes real shell tools; tests check exact restored file bytes, subsequent tool-result requests, restored assistant text, stable references and a saved conversation resumed in a fresh Codex process. The hosted validation gate uses a mock credential store on headless Linux. The desktop variant uses isolated native Keychain records. The headless gate uses Ubuntu 22.04, matching the Linux release baseline, with the normal client workspace sandbox. A runtime preflight checks that writing inside the workspace succeeds and writing outside it is denied before the Rust suite builds.
+Full conversation regressions run Codex CLI 0.166.0 with its default Responses Lite and code-mode tools through the real firewall and TLS proxy to a controlled local provider. They cover HTTP/SSE and WebSocket, Redact from the start, enabling Redact mid-conversation, and turning scanning Off after references have been issued. The client executes real shell tools; tests check exact restored file bytes, subsequent tool-result requests, restored assistant text, stable references and a saved conversation resumed in a fresh Codex process. The hosted validation gate uses a mock credential store on headless Linux. The desktop fixture can use isolated native Keychain records or a mock; local debug application testing uses its separate development file. The headless gate uses Ubuntu 22.04, matching the Linux release baseline, with the normal client workspace sandbox. A runtime preflight checks that writing inside the workspace succeeds and writing outside it is denied before the Rust suite builds.
 
 Run the pinned real-client suite with an installed CLI and native storage:
 

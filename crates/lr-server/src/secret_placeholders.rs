@@ -25,7 +25,7 @@ pub async fn middleware(State(state): State<AppState>, request: Request, next: N
         state,
         request,
         next,
-        Arc::new(lr_api_keys::keychain_trait::SystemKeychain),
+        lr_api_keys::keychain_trait::redacted_secret_storage(),
     )
     .await
     {
@@ -33,7 +33,40 @@ pub async fn middleware(State(state): State<AppState>, request: Request, next: N
         Err(e) => e.into_response(),
     }
 }
+struct MonitorContext {
+    request_id: String,
+    conversation_id: Option<String>,
+}
+tokio::task_local! { static MONITOR_CONTEXT: std::cell::RefCell<MonitorContext>; }
+pub(crate) fn monitor_request_session() -> String {
+    MONITOR_CONTEXT
+        .try_with(|context| context.borrow().request_id.clone())
+        .unwrap_or_else(|_| uuid::Uuid::new_v4().to_string())
+}
+pub(crate) fn monitor_conversation() -> Option<String> {
+    MONITOR_CONTEXT
+        .try_with(|context| context.borrow().conversation_id.clone())
+        .ok()
+        .flatten()
+}
 async fn run(
+    state: AppState,
+    request: Request,
+    next: Next,
+    storage: Arc<dyn lr_api_keys::KeychainStorage>,
+) -> Result<Response, ApiErrorResponse> {
+    let context = MonitorContext {
+        request_id: uuid::Uuid::new_v4().to_string(),
+        conversation_id: None,
+    };
+    MONITOR_CONTEXT
+        .scope(
+            std::cell::RefCell::new(context),
+            run_scoped(state, request, next, storage),
+        )
+        .await
+}
+async fn run_scoped(
     state: AppState,
     request: Request,
     next: Next,
@@ -102,34 +135,33 @@ async fn run(
             Err(_) => return Err(ApiErrorResponse::bad_request("Invalid request JSON")),
         }
     };
-    let session = match request_session(&value, &parts.headers) {
+    let conversation = match request_session(&value, &parts.headers) {
         Ok(session) => session,
         Err(_) if !masking || control => None,
         Err(error) => return Err(error),
     };
-    let previous = value
-        .get("previous_response_id")
-        .and_then(Value::as_str)
-        .or(if control { resource.as_deref() } else { None });
-    let continuation =
-        match Vault::find_scope(storage.clone(), &owner, previous, session.as_deref()) {
-            Ok(vault) => vault,
-            Err(_) if !masking || (control && parts.method != axum::http::Method::GET) => {
-                return Ok(next
-                    .run(Request::from_parts(parts, Body::from(bytes)))
-                    .await)
-            }
-            Err(error) => return Err(ApiErrorResponse::from(error)),
-        };
+    let _ = MONITOR_CONTEXT.try_with(|context| context.borrow_mut().conversation_id = conversation);
+    let continuation = match Vault::find_client(
+        storage.clone(),
+        &owner,
+        lr_secret_scanner::placeholders::RETENTION_SECS,
+    ) {
+        Ok(vault) => vault,
+        Err(_) if !masking || (control && parts.method != axum::http::Method::GET) => {
+            return Ok(next
+                .run(Request::from_parts(parts, Body::from(bytes)))
+                .await)
+        }
+        Err(error) => return Err(ApiErrorResponse::from(error)),
+    };
     if !masking && continuation.is_none() {
         return Ok(next
             .run(Request::from_parts(parts, Body::from(bytes)))
             .await);
     }
-    let ephemeral = session.is_none() && path != "/responses" && !control;
-    let session = session.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let vault =
-        Arc::new(continuation.unwrap_or_else(|| Vault::new(storage, &owner, &session, ephemeral)));
+    let session = monitor_request_session();
+    let vault = Arc::new(continuation.unwrap_or_else(|| Vault::for_client(storage, &owner)));
+    attach_monitor(&state, &vault, &owner, Some(&session));
     if !masking || control {
         if !masking {
             vault.set_restore_only();
@@ -150,15 +182,6 @@ async fn run(
             restore_response(response, vault).await
         })
         .await;
-    }
-    if value
-        .pointer("/extensions/localrouter.session/reset")
-        .and_then(Value::as_bool)
-        == Some(true)
-    {
-        vault.forget().map_err(|_| {
-            ApiErrorResponse::bad_request("Could not reset secret credential storage")
-        })?;
     }
     let context: Arc<dyn SecretContext> = vault.clone();
     secret_context::scope(Some(context.clone()), async {
@@ -215,6 +238,62 @@ async fn run(
     })
     .await
 }
+/// Request-local lifecycle events use metadata only. Vault callbacks run after
+/// releasing credential locks, so Monitor sanitization can safely read the map.
+pub fn attach_monitor(state: &AppState, vault: &Vault, owner: &str, session: Option<&str>) {
+    let store = state.monitor_store.clone();
+    let after_sequence = store
+        .list(0, 1, None)
+        .events
+        .first()
+        .map_or(0, |event| event.sequence);
+    let owner = owner.to_owned();
+    let name = state
+        .config_manager
+        .get()
+        .clients
+        .iter()
+        .find(|c| c.id == owner)
+        .map(|c| c.name.clone());
+    let session = session.map(str::to_owned);
+    let events = Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::<
+        &'static str,
+        String,
+    >::new()));
+    vault.set_operation_observer(Arc::new(move |operation| {
+        use lr_monitor::{EventStatus, MonitorEventData, MonitorEventType};
+        let Ok(mut events) = events.lock() else { return; };
+        let tag = format!("<localrouter-redacted id='{}' usage='Unmasked when returned verbatim'/>", operation.reference_id);
+        let existing = events.get(operation.action).and_then(|id| store.get(id))
+            .or_else(|| if operation.action == "redact" { session.as_deref().and_then(|s| store.redaction_for_request(&owner, s, after_sequence)) } else { None });
+        let mut findings = existing.as_ref().and_then(|event| {
+            if let MonitorEventData::SecretScan { findings, .. } = &event.data { findings.clone() } else { None }
+        }).and_then(|findings| findings.as_array().cloned()).unwrap_or_default();
+        let matched = findings.iter_mut().find(|finding| {
+            (finding["reference_id"].as_str() == Some(&operation.reference_id) || finding["replacement"].as_str().is_some_and(|tag| tag.to_ascii_lowercase().contains(&operation.reference_id))) &&
+            finding["operation_location"].as_str().is_none_or(|location| location == operation.location)
+        });
+        if let Some(finding) = matched {
+            let count = finding["occurrences"].as_u64().unwrap_or_default();
+            finding["occurrences"] = serde_json::json!(count.saturating_add(operation.occurrences as u64));
+            finding["reference_id"] = operation.reference_id.clone().into();
+            finding["operation_location"] = operation.location.clone().into();
+        } else {
+            findings.push(serde_json::json!({"rule_id":"stored-secret-reference", "rule_description":"Stored secret", "category":"Secret Scan", "matched_text":"Secret held locally", "message_index":0, "value":tag, "redacted":true, "replacement":tag, "reference_id":operation.reference_id, "action":if operation.action == "restore" { "restored" } else { "redacted" }, "location":operation.location, "operation_location":operation.location, "occurrences":operation.occurrences}));
+        }
+        let count = findings.len();
+        let findings = serde_json::Value::Array(findings);
+        let updated = existing.as_ref().is_some_and(|event| store.update(&event.id, |event| {
+            if let MonitorEventData::SecretScan { findings: stored, findings_count, .. } = &mut event.data { *stored = Some(findings.clone()); *findings_count = Some(count); }
+        }));
+        let id = if updated { existing.expect("updated event").id } else {
+            store.push(MonitorEventType::SecretScan, Some(owner.clone()), name.clone(), session.clone(),
+                MonitorEventData::SecretScan { text_preview:tag, rules_count:0, findings_count:Some(count), findings:Some(findings), action_taken:Some(operation.action.into()), latency_ms:None }, EventStatus::Complete, None)
+        };
+        events.insert(operation.action, id);
+    }));
+}
+
 fn install_followup_detector(
     state: AppState,
     owner: String,
@@ -222,6 +301,7 @@ fn install_followup_detector(
     automatic: bool,
     value: &Value,
 ) {
+    let parent_session = monitor_request_session();
     let scan_state = state;
     let scan_owner = owner;
     let allowed_plaintext = scan_state
@@ -250,6 +330,7 @@ fn install_followup_detector(
     vault.set_async_detector(Arc::new(move |mut body| {
         let state = scan_state.clone();
         let owner = scan_owner.clone();
+        let session = parent_session.clone();
         let allowed = allowed_plaintext.clone();
         Box::pin(async move {
             let mut strings = Vec::new();
@@ -277,7 +358,7 @@ fn install_followup_detector(
                 "",
                 &projection,
                 None,
-                None,
+                Some(&session),
             )
             .await
             {
@@ -730,6 +811,103 @@ mod boundary_tests {
         ));
         state
     }
+    #[tokio::test]
+    async fn gateway_redaction_and_restoration_events_share_requests_without_merging_turns() {
+        let root = std::env::temp_dir().join(format!("lr-phase-events-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let state = state(&root);
+        let id = state.config_manager.get().clients[0].id.clone();
+        let monitor = state.monitor_store.clone();
+        let storage: Arc<dyn lr_api_keys::KeychainStorage> =
+            Arc::new(lr_api_keys::MockKeychain::new());
+        let handler_state = state.clone();
+        let handler_id = id.clone();
+        let boundary_storage = storage.clone();
+        let app = axum::Router::new().route("/v1/chat/completions", post(move |Json(request):Json<Value>| {
+            let state = handler_state.clone(); let owner = handler_id.clone();
+            async move {
+                assert!(!request.to_string().contains(SYNTHETIC));
+                let session = crate::routes::monitor_helpers::new_request_session();
+                let auth = Extension(crate::middleware::client_auth::ClientAuthContext { client_id:owner });
+                let guard = crate::routes::monitor_helpers::emit_llm_call(&state, Some(&auth), Some(&session), "/v1/chat/completions", "fake/model", request["stream"] == true, &request);
+                let event = guard.into_event_id();
+                let text = request["messages"][0]["content"].as_str().unwrap();
+                let body = if request["stream"] == true {
+                    let mut wire = String::new();
+                    for part in text.as_bytes().chunks(7) {
+                        wire.push_str(&format!("data: {}\n\n",serde_json::json!({"choices":[{"index":0,"delta":{"content":std::str::from_utf8(part).unwrap()}}]})));
+                    }
+                    wire.push_str("data: [DONE]\n\n");
+                    Response::builder().header("content-type","text/event-stream").body(Body::from(wire)).unwrap()
+                } else {
+                    let response = serde_json::json!({"choices":[{"message":{"role":"assistant","content":text,"tool_calls":[{"id":"call","type":"function","function":{"name":"write","arguments":serde_json::json!({"content":text}).to_string()}}]}}]});
+                    Response::builder().header("content-type","application/json").body(Body::from(response.to_string())).unwrap()
+                };
+                state.monitor_store.update(&event, |event| event.status = lr_monitor::EventStatus::Complete);
+                body
+            }
+        })).layer(axum::middleware::from_fn_with_state(state,move |State(state):State<AppState>,request:Request,next:Next| {
+            let storage = boundary_storage.clone(); async move { match run(state,request,next,storage).await { Ok(response)=>response, Err(error)=>error.into_response() } }
+        })).layer(Extension(AuthContext { api_key_id:id.clone(), credential_scope:None, model_selection:None }));
+        for stream in [false, true] {
+            let request = serde_json::json!({"model":"fake/model","stream":stream,"messages":[{"role":"user","content":format!("aws_secret_access_key={SYNTHETIC}")}], "extensions":{"localrouter.session":{"id":"one-conversation"}}, "tools":[{"type":"function","function":{"name":"write","parameters":{"type":"object","properties":{"content":{"type":"string"}},"required":["content"]}}}]});
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/v1/chat/completions")
+                        .method("POST")
+                        .header("content-type", "application/json")
+                        .body(Body::from(request.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+            let bytes = to_bytes(response.into_body(), LIMIT).await.unwrap();
+            assert!(String::from_utf8_lossy(&bytes).contains(SYNTHETIC));
+        }
+        let events: Vec<_> = monitor
+            .list(0, 100, None)
+            .events
+            .iter()
+            .map(|event| monitor.get(&event.id).unwrap())
+            .collect();
+        assert_eq!(
+            events.len(),
+            6,
+            "one redaction, LLM and restoration event per turn"
+        );
+        let sessions: std::collections::HashSet<_> = events
+            .iter()
+            .map(|event| event.session_id.clone().unwrap())
+            .collect();
+        assert_eq!(sessions.len(), 2);
+        let conversations: std::collections::HashSet<_> = events
+            .iter()
+            .map(|event| event.conversation.as_ref().unwrap().id.clone())
+            .collect();
+        assert_eq!(conversations.len(), 1);
+        for session in sessions {
+            let request: Vec<_> = events
+                .iter()
+                .filter(|event| event.session_id.as_deref() == Some(&session))
+                .collect();
+            assert_eq!(request.len(), 3);
+            let actions: Vec<_> = request
+                .iter()
+                .filter_map(|event| lr_monitor::to_summary(event).secret_action)
+                .collect();
+            assert!(actions.iter().any(|action| action == "redact"));
+            assert!(actions.iter().any(|action| action == "restore"));
+        }
+        assert!(!serde_json::to_string(&events).unwrap().contains(SYNTHETIC));
+        assert!(events.iter().any(|event| serde_json::to_string(event)
+            .unwrap()
+            .contains("Tool arguments")));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[tokio::test]
     async fn secret_placeholders_http_boundary_hides_and_restores_without_prompt_injection() {
         let root = std::env::temp_dir().join(format!(

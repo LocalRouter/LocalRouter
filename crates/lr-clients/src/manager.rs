@@ -44,7 +44,7 @@ impl ClientManager {
         Self {
             clients: Arc::new(RwLock::new(clients)),
             keychain: Arc::new(keychain),
-            secret_storage: Arc::new(lr_api_keys::keychain_trait::SystemKeychain),
+            secret_storage: lr_api_keys::keychain_trait::redacted_secret_storage(),
         }
     }
 

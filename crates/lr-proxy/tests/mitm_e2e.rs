@@ -67,6 +67,111 @@ impl ProxyInterceptor for ForceMitm {
     }
 }
 
+/// Open real pending events while a TLS upstream deliberately withholds headers.
+struct PendingMitm(PassiveInterceptor);
+#[async_trait]
+impl ProxyInterceptor for PendingMitm {
+    fn on_connect(&self, _: &str, _: &ClientCtx) -> ConnectDecision {
+        ConnectDecision::Mitm
+    }
+    fn begin(&self, ex: &ObservedExchange) -> Option<String> {
+        self.0.begin(ex)
+    }
+    async fn on_response(&self, ex: &ObservedExchange) {
+        self.0.on_response(ex).await
+    }
+}
+
+#[tokio::test]
+async fn cancelled_request_before_upstream_headers_never_leaves_a_pending_event() {
+    let up_ca = make_ca();
+    let (leaf, key) = make_leaf(&up_ca, HOST);
+    let acceptor = TlsAcceptor::from(Arc::new(
+        ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![leaf], key)
+            .unwrap(),
+    ));
+    let upstream = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let port = upstream.local_addr().unwrap().port();
+    let (seen_tx, seen_rx) = tokio::sync::oneshot::channel();
+    let provider = tokio::spawn(async move {
+        let (tcp, _) = upstream.accept().await.unwrap();
+        let mut tls = acceptor.accept(tcp).await.unwrap();
+        let mut buffer = [0; 8192];
+        assert!(tls.read(&mut buffer).await.unwrap() > 0);
+        seen_tx.send(()).unwrap();
+        std::future::pending::<()>().await;
+    });
+    let dir = std::env::temp_dir().join(format!("lr-cancel-e2e-{}", uuid::Uuid::new_v4()));
+    let ca = Arc::new(CertAuthority::load_or_create(&dir).unwrap());
+    let proxy_ca = ca.ca_pem().to_string();
+    let store = Arc::new(MonitorEventStore::new(10));
+    let mut roots = RootCertStore::empty();
+    roots.add(up_ca.ca_der.clone()).unwrap();
+    let manager = ProxyManager::with_upstream_roots(
+        ca,
+        Arc::new(PendingMitm(PassiveInterceptor::new(store.clone()))),
+        Arc::new(StaticResolver {
+            client_id: CLIENT_ID.into(),
+            secret: SECRET.into(),
+            proxy_enabled: true,
+        }),
+        roots,
+    )
+    .unwrap();
+    let listener = ProxyManager::bind("127.0.0.1", 0).await.unwrap();
+    let proxy_port = listener.local_addr().unwrap().port();
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let proxy = tokio::spawn(async move {
+        manager
+            .serve(listener, async {
+                let _ = stopped.await;
+            })
+            .await;
+    });
+    let mut tcp = TcpStream::connect(("127.0.0.1", proxy_port)).await.unwrap();
+    use base64::Engine;
+    let auth = base64::engine::general_purpose::STANDARD.encode(format!("{CLIENT_ID}:{SECRET}"));
+    tcp.write_all(format!("CONNECT {HOST}:{port} HTTP/1.1\r\nHost: {HOST}:{port}\r\nProxy-Authorization: Basic {auth}\r\n\r\n").as_bytes()).await.unwrap();
+    assert!(read_connect_response(&mut tcp).await.contains("200"));
+    let config = ClientConfig::builder()
+        .with_root_certificates(client_root_store(&proxy_ca))
+        .with_no_client_auth();
+    let mut client = TlsConnector::from(Arc::new(config))
+        .connect(ServerName::try_from(HOST).unwrap(), tcp)
+        .await
+        .unwrap();
+    let body = r#"{"model":"test","input":[],"stream":true}"#;
+    client.write_all(format!("POST /backend-api/codex/responses HTTP/1.1\r\nHost: {HOST}:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), seen_rx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(store.pending_requests(), 1);
+    drop(client);
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while store.pending_requests() != 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("cancelled client left an orphaned pending request");
+    let events = store.list(0, 10, None);
+    assert_eq!(events.total, 1);
+    let event = store.get(&events.events[0].id).unwrap();
+    assert_eq!(event.status, lr_monitor::EventStatus::Error);
+    let event = serde_json::to_value(event).unwrap();
+    assert!(event["data"]["error"]
+        .as_str()
+        .unwrap()
+        .contains("cancelled before response delivery"));
+    provider.abort();
+    let _ = stop.send(());
+    proxy.await.unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 struct TestCa {
     issuer: rcgen::Issuer<'static, KeyPair>,
     ca_der: CertificateDer<'static>,

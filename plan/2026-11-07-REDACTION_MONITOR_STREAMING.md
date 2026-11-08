@@ -1,0 +1,92 @@
+# Retain usable secret-aware monitor events and repair proxy streaming
+
+- [x] Trace the reported payload removal, relationship loss and stalled requests in production code.
+- [x] Save this plan before code changes in an isolated worktree.
+- [x] Retain event payloads and client/session/conversation metadata; mask only protected secrets, including event updates and errors. Preserve explicit user privacy choices where applicable and do not discard payloads merely because Redact/Ask is enabled.
+- [x] Preserve and test conversation linking through masking and across scan/LLM events.
+- [x] Repair orphaned/cancelled streaming lifecycle paths, retain actionable failures, and test delayed upstream headers and long-lived streams. The original 26-second production failure has no retained error to prove its exact cause; live debug runs now complete.
+- [x] Add realistic regression coverage for payload visibility, structured/raw errors, response restoration, both clients and concurrent sessions.
+- [x] Run the actual local debug desktop app with isolated state and inspect Monitor through its UI.
+- [x] Exercise installed Claude Code and Codex against that debug app, including real local tool execution and resumed conversations; distinguish controlled-provider and live-provider evidence.
+- [x] Show a screenshot or working debug copy with retained masked events and conversation grouping.
+- [x] Plan review: compare the implementation with each requested behavior and fill omissions.
+- [x] Test coverage review: add missing boundary/error tests and run appropriate local workspace/frontend/website checks with rustup stable.
+- [x] Bug hunt: re-read stream, masking, metadata and lifetime code for failures/races.
+- [ ] Commit and push validated changes with Matus Faro identity, preserving concurrent unrelated files. Report exactly what ran and any remaining limitation.
+- [x] Add separate **Secret Redacted** and **Secret Restored** lifecycle events under the existing Secret Scan filter/settings, including known-secret masking on later tool-result requests.
+- [x] Record only client-owned reference IDs, placeholder strings, locations and substitution counts; aggregate streamed fragments and link both phases to the parent request/conversation. Preserve rich detection findings and keep originals masked in these events.
+- [x] Test phase events for text/tool replies, fragmented streaming, rejected references, escaping, client isolation and actual desktop/client exchanges; refresh screenshot and rerun affected checks before release.
+
+- [x] Add a Redacted secrets store in Secret Scan settings and per-client settings: masked entries, references, expiry, explicit reveal, single-secret/client/all-client purge with existing confirmation UI.
+- [x] Browsing must not refresh inactivity. Purge must remove owned native records and invalidate old references, including in-flight vaults; new requests may create fresh mappings. Test persistence, isolation, expiry and purge failure paths.
+
+
+The supplied events have no status_code and end after roughly 26 seconds. Payload deletion currently obscures the underlying error, so do not infer a timeout cause from duration alone. Previous tests used an in-process app firewall and controlled local TLS provider; this task additionally requires the actual debug desktop startup, configuration wiring, both installed client processes and Monitor UI. No release is considered a substitute for this verification.
+
+
+## Additional user requirements
+
+- Secret mappings are tied to the authenticated client only, not the conversation. Preserve existing mapping IDs during migration; never merge different client owners.
+- Persist across restarts for fourteen days of client inactivity. Expire on access and during cleanup; inspecting retained events must not pin secrets forever.
+- Generated XML tags use single-quoted attributes; accept existing double-quoted/case-insensitive variants. Review and test unescaping at parsed JSON boundaries, nested JSON and streaming fragmentation.
+- Debug builds honor file storage for reversible secrets, including startup cleanup; release builds always use native OS credentials.
+- The Secret Scan monitor view must show each secret type, identifying value, per-secret outcome, exact replacement tag, copy/reveal controls and context centered on the finding, using existing UI styles.
+- After the actual debug desktop, Claude Code, Codex, storage/restart/isolation/expiry and formatting tests pass, validate the exact release commit and publish another release; monitor every release/deployment to completion.
+
+The initial live Claude retry failure was caused by a debug-process inherited certificate-bundle override; restarting the debug app with the normal OS trust roots resolves it. Initial Codex invocations were excluded from passing evidence because the CLI loaded production proxy settings from its own .env; the verified test isolates CODEX_HOME and closes stdin. The first routed Claude test found a real scope defect: independent HTTP requests generated different placeholder IDs, so its prior reference could not be restored. Client-level persistent mappings remove that dependency. A test prompt also needs to specify copying just the placeholder, without the surrounding key-assignment label, when asserting exact file bytes.
+
+The first native debug run used the production redaction service and modified its access permissions. Debug native opt-in now uses a separate service per environment, and debug defaults to its own file. The user approved resetting six stale production entries. Both noninteractive macOS deletion attempts returned errSecInvalidOwnerEdit (-25244), leaving every entry intact. A local validated reset namespace selects fresh OS-backed entries in the updated production build without accessing those stale entries; other installations preserve their existing maps. Physical removal of the protected old entries remains blocked by macOS permissions.
+
+## Local debug desktop and live-provider evidence
+
+- Built the actual desktop with rustup stable, launched an isolated `LocalRouter Debug E2E.app` against `~/.localrouter-monitor-e2e/` on ports 33625/33626, and inspected its native Monitor UI. The debug process explicitly uses its separate file keychain and normal OS TLS trust roots.
+- Installed clients: Codex CLI 0.166.0 with default Responses Lite/code-mode tools, and Claude Code 2.1.318 using its authenticated Haiku subscription model. Each client ran three live-provider cases: initial synthetic-secret file/tool/final replay, fresh conversation after restarting the desktop given only the old reference, and a saved original conversation resumed in a fresh CLI process.
+- All six runs exited successfully, executed local shell tools, wrote the original synthetic value without an extra byte, and returned that exact original in their final response. Claude runs took 11.65 / 17.01 / 8.04 seconds; Codex took 14.50 / 24.25 / 9.99 seconds. Earlier failed runs are excluded from this evidence.
+- The desktop's explicitly enabled sanitized Monitor export captured 15 LLM events, including three Codex prewarm calls. All 12 protected inference calls completed. Outbound request captures, including subsequent tool-result turns, contained references and no original synthetic value. Provider response fragments contain references; client transcripts/tool arguments/files contain the restored original. Each client used one stable 32-hex ID, and the two clients used different IDs.
+- Requests and scan events retained client names, payloads, related-event grouping, per-finding redaction outcome, exact replacement and focused context. All protected calls in each individual conversation share its group. Reveal/Hide was exercised through the actual Tauri command and UI.
+- A before/after comparison of the persisted debug store confirms desktop restart alone changes neither mappings nor activity timestamps. Old references restored in fresh conversations after restart, independently of conversation identity.
+- Screenshot: `/tmp/localrouter-monitor-fix/secret-scan-proof.png`; live results, stdout/stderr, sanitized exported events and assertions are in `/tmp/localrouter-monitor-fix/`. The debug application remains open for inspection.
+- Native OS credential smoke tests have not been rerun during this repair because the user is denying password dialogs. The stale native-entry deletion was refused noninteractively; all six old records remain. The approved local reset marker selects a fresh native service in the updated release, without changing other installations' namespace or touching provider/client credentials.
+
+## Final review findings
+
+The actual post-restart Monitor inspection exposed an orphaned Codex prewarm event: cancelling its HTTP service future while awaiting upstream headers bypassed ordinary response-body taps and explicit error branches. Cancellation guards now complete pending events on both native and reverse proxy paths, including cancellation during non-streaming restoration. A real TLS/HTTP regression withholds upstream headers, closes the client connection, and asserts exactly one failed event with an actionable cancellation reason and zero pending requests. The proxy suite passes this regression, the malformed-WebSocket client/Monitor error regression, oversized-terminal completion, restoration/terminal-drop ordering, and existing TLS/compression/reverse cases.
+
+The full stable workspace suite passed before the cancellation guard addition. All-target Clippy found one function positioned after a test module; the helper was moved above the test module. The final build, workspace suite, all-target Clippy and format check are being rerun for the complete implementation. The website build/check passed after the landing/research documentation updates.
+
+The debug app was launched in the background. Activating its window through the native Raise action renders the final webview without a reload. Backend health, live replay tests and retained mappings continue to work. Verify packaged startup separately during release validation.
+
+An additional legacy native-deletion attempt, with interaction disabled at the process level and no authentication query parameter, returned the same `errSecInvalidOwnerEdit` result. No old native record was deleted, and no authentication protection was bypassed. Production PID 97159 is still the source of the password dialogs; the updated namespace is not used by that older binary. The production application must be updated/restarted before that reset can take effect.
+
+## Final desktop rerun and local reset outcome
+
+After the cancellation fix, rebuilt and restarted the actual debug desktop again and reran both installed clients against live providers. Codex completed in 13.50 seconds and Claude Code in 9.63 seconds; both passed exact file bytes, actual tool use and final response checks. All five LLM events completed, all four protected inference requests contained references without the original, both client IDs were unchanged, grouping remained correct, and no orphaned pending LLM events remained. The screenshot was refreshed from this final build. This brings the live-provider check count to eight successful CLI runs.
+
+The approved reset was completed logically by archiving the four remaining stale metadata entries under a retired service; the two old synthetic secret records were already absent. A subsequent attributes-only query of the original production service returns errSecItemNotFound. No provider API keys or client credentials were changed. The metadata rename unexpectedly invoked macOS permission dialogs despite the legacy interaction-suppression setting; this was reported to the user, all mutations were stopped, and no further Keychain mutations are planned. A following 90-second OS-log observation showed no new password dialogs, and production health remained OK. Protected archived entries are physically retained; this is a logical reset, not a successful physical deletion. The validated local reset marker also gives the updated production build a fresh service namespace.
+
+## Additional requested lifecycle events
+
+The user requested an explicit event for restoration as well as redaction, named Secret Redacted and Secret Restored, both grouped under Secret Scan functionality. Keep one existing event category and add a structured summary action for display. Attach request-local observer callbacks to client-owned vaults; callbacks contain references and counts, never original values. Emit callbacks after releasing the vault storage lock to avoid reentering it through Monitor sanitization. Aggregate per phase/request; reuse rich detection findings when an initial scan already records the same redaction. Known-original masking on subsequent requests also needs a redaction event. Distinguish response text from tool arguments, suppress contract-validation-only restoration, and preserve existing request/conversation links.
+
+## Manual store design
+
+Expose a Redacted secrets tab under Secret Scan, plus the same component filtered to the selected client. Tauri commands list masked entries without refreshing activity, reveal a selected owned reference explicitly, and purge one original (including its legacy aliases), all mappings for one client, or all configured clients. List rows include client identity/name, reference/placeholder, masked hint, client activity/expiry timestamps, and expired/revoked state. Use existing Radix confirmation dialogs. No automatic plaintext retrieval into frontend state.
+
+Vault inspection reads owned records without migration or touching timestamps. Purge failures must remain visible and fail closed: mark IDs revoked before rewriting/deleting records, and retain pending revocations if native removal fails. Bulk purge increments an owner epoch so already-running vaults cannot recreate cleared records; new requests adopt the new epoch and may register fresh mappings. Diagnostic handles inherit the epoch but do not pin retention. Purge must preserve timestamps on remaining mappings and must never touch another client. Cover these semantics with mock and persistent-file tests and exercise the actual Tauri UI against synthetic debug entries.
+
+Gateway lifecycle events now use a fresh request-local Monitor identity shared with the chat, completion, Responses, Messages and System One route guards. Explicit conversation identity stays separate and is injected only into a diagnostic correlation copy, preserving provider payload/cache bytes. This fixes the middleware/route mismatch where gateway scan and response events generated different request IDs.
+
+
+## Final phase/store implementation review and desktop evidence
+
+The global **Secret Scanning → Redacted secrets** tab and the per-client Optimize settings expose the same client-owned inventory. The actual desktop UI was exercised against isolated synthetic file-backed entries: Refresh preserved activity timestamps, Reveal/Hide worked, single-secret purge removed all three legacy Claude aliases while preserving Codex, and Purge all removed the synthetic original from every stored record. The per-client view showed only its own reference. Confirmation dialogs identify the selected client/reference or all-client scope.
+
+After purge, fresh live Claude Code and Codex runs created different, client-specific IDs and passed exact restored file bytes, local tool arguments, and final replies. Restarting the actual desktop left the file store and activity timestamps unchanged; new conversations receiving only those pre-restart references passed the same three assertions. These four additional runs completed in 5.76 / 8.49 and 6.65 / 9.07 seconds, respectively. Together with the initial phase-event runs (5.87 / 9.80 seconds), the final build has six successful live CLI runs, twelve protected LLM calls, three distinct explicit conversations per client, matching parent/conversation links on all phase events, and no LLM error or pending event. Codex also made three successful prewarm calls. The complete repair has fourteen successful live CLI runs including the earlier restart/resume cases.
+
+All provider-facing protected request/response captures and Monitor payloads were checked for absence of the synthetic original; client tool transcripts, token.txt bytes and final responses contained the restored value. Non-LLM auxiliary Codex cancellations are separately recorded with actionable reasons. Screenshot evidence: `/tmp/localrouter-monitor-fix/secret-store-proof.png` and `secret-restored-proof.png`. Audit: `final-desktop-audit27.json` and per-client result JSON in that directory.
+
+Coverage additions include observer callbacks outside credential locks, validation-only restoration suppression, gateway JSON and fragmented-SSE parent identities across two turns, actual app-firewall restoration events, single-original rewrite failure with revocation/retry and unrelated-value preservation, bulk native-delete failure/retry, durable inventory after file-store recreation, expiry, and old-vault epoch invalidation. Purge first persists revocation; failed native removals stay visible as purge pending. New requests can create new mappings after successful purge. Final review checked locking order, async reveal/purge races, alias handling, metadata-only privacy and consistent existing UI components.
+
+Final local validation uses rustup stable 1.99.1 and the explicit rustup compiler path. Native OS-store smoke tests were not rerun after the prompt incident; release storage uses the existing native abstraction and namespace isolation is covered with mocks. The archived native metadata is not claimed to have been physically deleted. The actual production process remained healthy after the approved logical reset.
+
+Final local results: `cargo test --workspace` passed 5,044 tests with 84 explicitly ignored across 113 suite results. `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --all -- --check` passed. Desktop frontend: 149 unit tests and production build passed. Website `build:check` passed (33 prerendered public pages and 34 verified route outputs). Logs: `workspace26.log`, `clippy26.log`, `fmt26.log`, `frontend-unit26.log`, `frontend-build26.log`, `website26.log` under `/tmp/localrouter-monitor-fix/`. No failures remain in these checks. Hosted validation and publication are the remaining release steps.

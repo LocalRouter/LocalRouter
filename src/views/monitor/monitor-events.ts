@@ -39,7 +39,7 @@ export function mergeMonitorEvents(
 
 /** Column visibility follows the filter, including types with no captured events. */
 export function showEventTypeColumn(types: MonitorEventType[] | null): boolean {
-  return types == null || new Set(types).size > 1
+  return types == null || types.includes('secret_scan') || new Set(types).size > 1
 }
 
 export function singleLinePreview(text: string | null | undefined): string {

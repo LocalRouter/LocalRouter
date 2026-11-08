@@ -1,5 +1,5 @@
 //! Self-describing secret references and scoped native credential storage.
-//! Originals are serialized only into the OS credential store, never Debug.
+//! Originals use OS credentials in release builds and explicit development storage in debug builds.
 use lr_api_keys::KeychainStorage;
 use lr_types::{secret_context::SecretContext, AppError, AppResult};
 use ring::{
@@ -17,6 +17,8 @@ use std::{
 use zeroize::Zeroizing;
 
 pub const TAG: &str = "localrouter-redacted";
+/// Original mappings expire after fourteen days without client activity.
+pub const RETENTION_SECS: u64 = 14 * 24 * 60 * 60;
 pub const MAX_TAG_BYTES: usize = 16 * 1024 * 1024; // The existing gateway request/response body budget.
 const SERVICE: &str = "LocalRouter-Redacted-Secrets-v1";
 const OWNERS: &str = "owner-index-v1";
@@ -47,13 +49,19 @@ fn unpin(account: &str) {
 
 fn error() -> AppError {
     AppError::InvalidParams(
-        "Secret placeholder could not be resolved in this authorized conversation".into(),
+        "Secret placeholder could not be resolved for this authenticated client".into(),
     )
 }
 fn parse_index(raw: &str) -> AppResult<Value> {
     let mut value: Value = serde_json::from_str(raw).map_err(|_| storage_error())?;
     let map = value.as_object_mut().ok_or_else(storage_error)?;
-    for name in ["scopes", "responses", "revoked_scopes", "opaque"] {
+    for name in [
+        "scopes",
+        "responses",
+        "revoked_scopes",
+        "opaque",
+        "revoked_ids",
+    ] {
         let item = map.entry(name).or_insert_with(|| serde_json::json!({}));
         if !item.is_object() {
             return Err(storage_error());
@@ -75,7 +83,7 @@ fn key(owner: &str, scope: &str) -> String {
         .collect()
 }
 fn marker(id: &str) -> String {
-    format!("<localrouter-redacted id=\"{id}\" usage=\"Unmasked when returned verbatim\"/>")
+    format!("<localrouter-redacted id='{id}' usage='Unmasked when returned verbatim'/>")
 }
 
 /// Scan a literal opening tag. This intentionally accepts XML-style markers,
@@ -212,6 +220,41 @@ pub fn restore_text(
     strict: bool,
     mut resolve: impl FnMut(&str) -> AppResult<Option<String>>,
 ) -> AppResult<String> {
+    restore_text_depth(text, strict, &mut resolve, 0)
+}
+
+fn restore_text_depth(
+    text: &str,
+    strict: bool,
+    resolve: &mut dyn FnMut(&str) -> AppResult<Option<String>>,
+    depth: usize,
+) -> AppResult<String> {
+    if depth > 32 {
+        return Err(AppError::InvalidParams(
+            "Secret reference JSON nesting exceeds limit".into(),
+        ));
+    }
+    // Decode only complete JSON values, one layer at a time. Serialize the
+    // modified value again so inserted quotes, control characters and slashes
+    // cannot change the surrounding JSON syntax.
+    if text.to_ascii_lowercase().contains(TAG) || text.contains("\\u") {
+        if let Ok(mut value) = serde_json::from_str::<Value>(text) {
+            if value.is_object() || value.is_array() || value.is_string() {
+                let original = value.clone();
+                visit(
+                    &mut value,
+                    &mut |s, executable| {
+                        restore_text_depth(s, strict || executable, resolve, depth + 1)
+                    },
+                    false,
+                )?;
+                if value != original {
+                    return serde_json::to_string(&value).map_err(|_| error());
+                }
+                return Ok(text.to_owned());
+            }
+        }
+    }
     let mut out = String::new();
     let mut offset = 0;
     for (start, _) in text.match_indices('<') {
@@ -261,8 +304,30 @@ pub fn restore_text(
 pub struct TextStream {
     pending: String,
     quote: Option<char>,
+    json_depth: usize,
+    json_string: bool,
+    json_escape: bool,
+    tag_in_json_string: bool,
 }
 impl TextStream {
+    fn observe(&mut self, ch: char) {
+        if self.json_string {
+            if self.json_escape {
+                self.json_escape = false;
+            } else if ch == '\\' {
+                self.json_escape = true;
+            } else if ch == '"' {
+                self.json_string = false;
+            }
+        } else if ch == '"' && self.json_depth > 0 {
+            self.json_string = true;
+        } else if matches!(ch, '{' | '[') {
+            self.json_depth = self.json_depth.saturating_add(1);
+        } else if matches!(ch, '}' | ']') {
+            self.json_depth = self.json_depth.saturating_sub(1);
+        }
+    }
+
     pub(crate) fn buffered_bytes(&self) -> usize {
         self.pending.len()
     }
@@ -276,8 +341,10 @@ impl TextStream {
         for ch in text.chars() {
             if self.pending.is_empty() {
                 if ch == '<' {
+                    self.tag_in_json_string = self.json_string;
                     self.pending.push(ch);
                 } else {
+                    self.observe(ch);
                     ready.push(ch);
                 }
                 continue;
@@ -290,8 +357,10 @@ impl TextStream {
                 }
                 ready.push_str(&std::mem::take(&mut self.pending));
                 if ch == '<' {
+                    self.tag_in_json_string = self.json_string;
                     self.pending.push(ch);
                 } else {
+                    self.observe(ch);
                     ready.push(ch);
                 }
                 continue;
@@ -299,8 +368,10 @@ impl TextStream {
             if name_bytes == TAG.len() && !ch.is_ascii_whitespace() && ch != '/' && ch != '>' {
                 ready.push_str(&std::mem::take(&mut self.pending));
                 if ch == '<' {
+                    self.tag_in_json_string = self.json_string;
                     self.pending.push(ch);
                 } else {
+                    self.observe(ch);
                     ready.push(ch);
                 }
                 continue;
@@ -317,7 +388,15 @@ impl TextStream {
                 (Some(q), c) if q == c => self.quote = None,
                 (None, '\'' | '"') => self.quote = Some(ch),
                 (None, '>') => {
-                    ready.push_str(&restore(&self.pending)?);
+                    let mut restored = restore(&self.pending)?;
+                    if self.tag_in_json_string
+                        && restored != self.pending
+                        && reference(&self.pending, 0).is_some_and(|(_, _, escaped)| !escaped)
+                    {
+                        let encoded = serde_json::to_string(&restored).map_err(|_| error())?;
+                        restored = encoded[1..encoded.len() - 1].to_owned();
+                    }
+                    ready.push_str(&restored);
                     self.pending.clear();
                 }
                 _ => {}
@@ -376,12 +455,52 @@ type Detector = dyn Fn(&mut Value) -> AppResult<Vec<String>> + Send + Sync;
 type AsyncDetector = dyn Fn(Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = AppResult<Value>> + Send>>
     + Send
     + Sync;
+/// Safe store inventory; browsing does not refresh the owner's inactivity timer.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct StoredSecret {
+    pub reference_id: String,
+    pub placeholder: String,
+    pub masked_value: String,
+    pub last_used_at: u64,
+    pub expires_at: u64,
+    pub expired: bool,
+    pub revoked: bool,
+}
+
+/// Metadata-only notification: original credential bytes never leave the vault.
+#[derive(Clone, Debug)]
+pub struct SecretOperation {
+    pub action: &'static str,
+    pub reference_id: String,
+    pub location: String,
+    pub occurrences: usize,
+}
+type OperationObserver = dyn Fn(SecretOperation) + Send + Sync;
+
+fn reference_counts(text: &str) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    let mut offset = 0;
+    for (start, _) in text.match_indices('<') {
+        if start < offset {
+            continue;
+        }
+        if let Some((end, id, _)) = reference(text, start) {
+            *counts.entry(id).or_default() += 1;
+            offset = end;
+        }
+    }
+    counts
+}
+
 pub struct Vault {
     storage: Arc<dyn KeychainStorage>,
     account: String,
     owner: String,
     allowed: Mutex<HashSet<String>>,
     ephemeral: bool,
+    retention_pin: bool,
+    observer: Mutex<Option<Arc<OperationObserver>>>,
+    epoch: Mutex<Option<u64>>,
     scanned: AtomicBool,
     restore_only: AtomicBool,
     detector: Mutex<Option<Arc<Detector>>>,
@@ -403,6 +522,9 @@ impl Vault {
             owner: owner.into(),
             allowed: Mutex::new(HashSet::new()),
             ephemeral,
+            retention_pin: true,
+            observer: Mutex::new(None),
+            epoch: Mutex::new(None),
             scanned: AtomicBool::new(false),
             restore_only: AtomicBool::new(false),
             detector: Mutex::new(None),
@@ -436,7 +558,14 @@ impl Vault {
                             if let Some(schema) = function.get_mut(key) {
                                 visit(
                                     schema,
-                                    &mut |text, _| vault.restore_text(text, false),
+                                    &mut |text, _| {
+                                        vault.restore_text_impl(
+                                            text,
+                                            false,
+                                            "Contract validation",
+                                            false,
+                                        )
+                                    },
                                     false,
                                 )?;
                             }
@@ -459,7 +588,13 @@ impl Vault {
         }
         for path in ["/response_format/json_schema/schema", "/text/format/schema"] {
             if let Some(schema) = request.pointer_mut(path) {
-                visit(schema, &mut |text, _| self.restore_text(text, false), false)?;
+                visit(
+                    schema,
+                    &mut |text, _| {
+                        self.restore_text_impl(text, false, "Contract validation", false)
+                    },
+                    false,
+                )?;
             }
         }
         *self.contract.lock().map_err(|_| error())? =
@@ -468,6 +603,66 @@ impl Vault {
                 self.active() && !self.restore_only.load(Ordering::Acquire),
             )?;
         Ok(())
+    }
+    pub fn set_operation_observer(&self, observer: Arc<OperationObserver>) {
+        *self.observer.lock().expect("secret operation observer") = Some(observer);
+    }
+    fn notify_operations(
+        &self,
+        action: &'static str,
+        location: &str,
+        counts: BTreeMap<String, usize>,
+    ) {
+        let observer = self
+            .observer
+            .lock()
+            .ok()
+            .and_then(|observer| observer.clone());
+        if let Some(observer) = observer {
+            for (reference_id, occurrences) in counts {
+                observer(SecretOperation {
+                    action,
+                    reference_id,
+                    location: location.into(),
+                    occurrences,
+                });
+            }
+        }
+    }
+    fn restore_text_impl(
+        &self,
+        text: &str,
+        strict: bool,
+        location: &str,
+        notify: bool,
+    ) -> AppResult<String> {
+        if !text.to_ascii_lowercase().contains(TAG) && !text.contains("\\u") {
+            return Ok(text.into());
+        }
+        let lock = STORE_LOCK.lock().map_err(|_| storage_error())?;
+        let entries = self.load()?;
+        let allowed = self.allowed.lock().map_err(|_| storage_error())?;
+        let mut counts = BTreeMap::new();
+        let restored = restore_text(
+            text,
+            strict && !self.restore_only.load(Ordering::Acquire),
+            |id| {
+                Ok(entries
+                    .get(id)
+                    .filter(|_| allowed.contains(id))
+                    .map(|secret| {
+                        *counts.entry(id.to_owned()).or_default() += 1;
+                        secret.to_string()
+                    }))
+            },
+        )?;
+        drop(allowed);
+        drop(entries);
+        drop(lock);
+        if notify {
+            self.notify_operations("restore", location, counts);
+        }
+        Ok(restored)
     }
     pub fn set_async_detector(&self, detector: Arc<AsyncDetector>) {
         *self.async_detector.lock().expect("async secret detector") = Some(detector);
@@ -625,6 +820,129 @@ impl Vault {
             None => Ok(None),
         }
     }
+    /// Persistent mappings belong to an authenticated client. Session/response
+    /// identities are diagnostic links, never required to recover its secrets.
+    /// Preserve existing IDs when upgrading conversation-based records.
+    pub fn find_client(
+        storage: Arc<dyn KeychainStorage>,
+        owner: &str,
+        retention_secs: u64,
+    ) -> AppResult<Option<Self>> {
+        let vault = Self::new(storage.clone(), owner, "client-secret-map-v2", false);
+        let _lock = STORE_LOCK.lock().map_err(|_| storage_error())?;
+        let mut index = vault.index()?;
+        if index["revoked"] == true {
+            return Err(error());
+        }
+        if index["scopes"][&vault.account]
+            .as_u64()
+            .is_some_and(|updated| now().saturating_sub(updated) >= retention_secs)
+            && ACTIVE
+                .lock()
+                .map_err(|_| storage_error())?
+                .get(&vault.account)
+                .copied()
+                .unwrap_or_default()
+                <= 1
+        {
+            index["revoked_scopes"][&vault.account] = Value::Bool(true);
+            vault.save_index(&index)?;
+            vault
+                .storage
+                .delete(SERVICE, &vault.account)
+                .map_err(|_| storage_error())?;
+            index["scopes"]
+                .as_object_mut()
+                .ok_or_else(storage_error)?
+                .remove(&vault.account);
+            index["responses"]
+                .as_object_mut()
+                .ok_or_else(storage_error)?
+                .retain(|_, v| v.as_str() != Some(&vault.account));
+            index["opaque"]
+                .as_object_mut()
+                .ok_or_else(storage_error)?
+                .retain(|_, v| v["account"].as_str() != Some(&vault.account));
+            index["revoked_scopes"]
+                .as_object_mut()
+                .ok_or_else(storage_error)?
+                .remove(&vault.account);
+            vault.save_index(&index)?;
+            return Ok(None);
+        }
+        let mut entries = vault.load()?;
+        if index["client_record"].as_str() != Some(&vault.account) {
+            let scopes = index["scopes"]
+                .as_object()
+                .ok_or_else(storage_error)?
+                .clone();
+            let mut migrated = HashSet::new();
+            for (account, updated) in scopes {
+                if account == vault.account
+                    || index["revoked_scopes"][&account] == true
+                    || now().saturating_sub(updated.as_u64().ok_or_else(storage_error)?)
+                        >= retention_secs
+                {
+                    continue;
+                }
+                let mut legacy = Self::new(storage.clone(), owner, "", false);
+                unpin(&legacy.account);
+                legacy.account = account.clone();
+                pin(&legacy.account);
+                for (id, value) in legacy.load()? {
+                    if entries.get(&id).is_some_and(|existing| existing != &value) {
+                        return Err(storage_error());
+                    }
+                    entries.insert(id, value);
+                }
+                migrated.insert(account);
+            }
+            if entries.is_empty() {
+                return Ok(None);
+            }
+            vault.save(&entries)?;
+            index = vault.index()?;
+            if let Some(responses) = index["responses"].as_object_mut() {
+                for account in responses.values_mut() {
+                    if account.as_str().is_some_and(|a| migrated.contains(a)) {
+                        *account = Value::String(vault.account.clone());
+                    }
+                }
+            }
+            if let Some(opaque) = index["opaque"].as_object_mut() {
+                for binding in opaque.values_mut() {
+                    if binding["account"]
+                        .as_str()
+                        .is_some_and(|a| migrated.contains(a))
+                    {
+                        binding["account"] = Value::String(vault.account.clone());
+                    }
+                }
+            }
+            index["client_record"] = Value::String(vault.account.clone());
+            vault.save_index(&index)?;
+        }
+        if entries.is_empty() {
+            return Ok(None);
+        }
+        index["scopes"][&vault.account] = Value::from(now());
+        vault.save_index(&index)?;
+        vault
+            .allowed
+            .lock()
+            .map_err(|_| storage_error())?
+            .extend(entries.keys().cloned());
+        Ok(Some(vault))
+    }
+
+    pub fn client_scoped(&self) -> bool {
+        self.account == key(&self.owner, "client-secret-map-v2")
+    }
+
+    pub fn for_client(storage: Arc<dyn KeychainStorage>, owner: &str) -> Self {
+        Self::new(storage, owner, "client-secret-map-v2", false)
+    }
+
     pub fn continue_response(
         storage: Arc<dyn KeychainStorage>,
         owner: &str,
@@ -641,6 +959,12 @@ impl Vault {
             .map(|raw| serde_json::from_str(&raw).map_err(|_| storage_error()))
             .transpose()
             .map(Option::unwrap_or_default)
+    }
+    pub fn stored_owners(
+        storage: &dyn KeychainStorage,
+    ) -> AppResult<std::collections::BTreeSet<String>> {
+        let _lock = STORE_LOCK.lock().map_err(|_| storage_error())?;
+        Self::registered_owners(storage)
     }
     /// Retry cleanup for owners removed from settings, including after restart.
     pub fn cleanup_registered(
@@ -725,6 +1049,166 @@ impl Vault {
         }
         vault.save_index(&index)
     }
+    pub fn list_client(
+        storage: Arc<dyn KeychainStorage>,
+        owner: &str,
+    ) -> AppResult<Vec<StoredSecret>> {
+        let vault = Self::for_client(storage, owner);
+        let _lock = STORE_LOCK.lock().map_err(|_| storage_error())?;
+        let index = vault.index()?;
+        let mut values: BTreeMap<String, (Zeroizing<String>, u64, bool)> = BTreeMap::new();
+        for (account, updated) in index["scopes"].as_object().ok_or_else(storage_error)? {
+            let updated = updated.as_u64().ok_or_else(storage_error)?;
+            for (id, original) in vault.load_record(account)? {
+                let revoked = index["revoked"] == true
+                    || index["revoked_scopes"][account] == true
+                    || index["revoked_ids"][&id] == true;
+                if let Some((existing, timestamp, existing_revoked)) = values.get_mut(&id) {
+                    if existing.as_str() != original.as_str() {
+                        return Err(storage_error());
+                    }
+                    *timestamp = (*timestamp).max(updated);
+                    *existing_revoked |= revoked;
+                } else {
+                    values.insert(id, (original, updated, revoked));
+                }
+            }
+        }
+        Ok(values
+            .into_iter()
+            .map(|(reference_id, (original, last_used_at, revoked))| {
+                let chars: Vec<_> = original.chars().collect();
+                let masked_value = if chars.len() <= 16 {
+                    "********".into()
+                } else {
+                    format!(
+                        "{}…{}",
+                        chars[..6].iter().collect::<String>(),
+                        chars[chars.len() - 4..].iter().collect::<String>()
+                    )
+                };
+                let expires_at = last_used_at.saturating_add(RETENTION_SECS);
+                StoredSecret {
+                    placeholder: marker(&reference_id),
+                    reference_id,
+                    masked_value,
+                    last_used_at,
+                    expires_at,
+                    expired: now() >= expires_at,
+                    revoked,
+                }
+            })
+            .collect())
+    }
+
+    /// Purge one original and all its aliases, or the whole client map. Revocation
+    /// precedes native writes/deletes; an interrupted purge cannot restore it.
+    pub fn purge_client(
+        storage: Arc<dyn KeychainStorage>,
+        owner: &str,
+        reference_id: Option<&str>,
+    ) -> AppResult<usize> {
+        let vault = Self::for_client(storage, owner);
+        let _lock = STORE_LOCK.lock().map_err(|_| storage_error())?;
+        let mut index = vault.index()?;
+        let accounts: Vec<_> = index["scopes"]
+            .as_object()
+            .ok_or_else(storage_error)?
+            .keys()
+            .cloned()
+            .collect();
+        let mut records = BTreeMap::new();
+        for account in accounts {
+            records.insert(account.clone(), vault.load_record(&account)?);
+        }
+        let target = if let Some(id) = reference_id {
+            let id = id.to_ascii_lowercase();
+            let Some(target) = records
+                .values()
+                .find_map(|entries| entries.get(&id))
+                .cloned()
+            else {
+                return Ok(0);
+            };
+            Some(target)
+        } else {
+            None
+        };
+        let mut removed = HashSet::new();
+        for entries in records.values_mut() {
+            entries.retain(|id, secret| {
+                if target
+                    .as_ref()
+                    .is_none_or(|target| target.as_str() == secret.as_str())
+                {
+                    removed.insert(id.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+        if records.is_empty() {
+            return Ok(0);
+        }
+        let epoch = index["epoch"]
+            .as_u64()
+            .unwrap_or_default()
+            .checked_add(1)
+            .ok_or_else(storage_error)?;
+        index["epoch"] = epoch.into();
+        if reference_id.is_none() {
+            index["revoked"] = true.into();
+        }
+        for id in &removed {
+            index["revoked_ids"][id] = true.into();
+        }
+        vault.save_index(&index)?;
+        for (account, entries) in records {
+            if entries.is_empty() {
+                vault
+                    .storage
+                    .delete(SERVICE, &account)
+                    .map_err(|_| storage_error())?;
+                index["scopes"]
+                    .as_object_mut()
+                    .ok_or_else(storage_error)?
+                    .remove(&account);
+                index["responses"]
+                    .as_object_mut()
+                    .ok_or_else(storage_error)?
+                    .retain(|_, value| value.as_str() != Some(&account));
+                index["opaque"]
+                    .as_object_mut()
+                    .ok_or_else(storage_error)?
+                    .retain(|_, value| value["account"].as_str() != Some(&account));
+                index["revoked_scopes"]
+                    .as_object_mut()
+                    .ok_or_else(storage_error)?
+                    .remove(&account);
+            } else {
+                let entries: serde_json::Map<_, _> = entries
+                    .iter()
+                    .map(|(id, secret)| (id.clone(), Value::String(secret.to_string())))
+                    .collect();
+                let record = Zeroizing::new(
+                    serde_json::json!({"owner":owner,"entries":entries}).to_string(),
+                );
+                vault
+                    .storage
+                    .store(SERVICE, &account, &record)
+                    .map_err(|_| storage_error())?;
+            }
+        }
+        if reference_id.is_none() {
+            index["revoked"] = false.into();
+            index["revoked_ids"] = serde_json::json!({});
+            index["client_record"] = vault.account.clone().into();
+        }
+        vault.save_index(&index)?;
+        Ok(removed.len())
+    }
+
     pub fn forget_client(storage: Arc<dyn KeychainStorage>, owner: &str) -> AppResult<()> {
         let vault = Self::new(storage, owner, "", false);
         let _lock = STORE_LOCK.lock().map_err(|_| storage_error())?;
@@ -754,14 +1238,29 @@ impl Vault {
         index["opaque"] = serde_json::json!({});
         vault.save_index(&index)
     }
+    fn check_epoch(&self, index: &Value) -> AppResult<()> {
+        let current = index["epoch"].as_u64().unwrap_or_default();
+        let mut epoch = self.epoch.lock().map_err(|_| storage_error())?;
+        if epoch.is_some_and(|epoch| epoch != current) {
+            return Err(error());
+        }
+        *epoch = Some(current);
+        Ok(())
+    }
     fn load(&self) -> AppResult<BTreeMap<String, Zeroizing<String>>> {
         let index = self.index()?;
         if index["revoked"] == true || index["revoked_scopes"][&self.account] == true {
             return Err(error());
         }
+        self.check_epoch(&index)?;
+        let mut entries = self.load_record(&self.account)?;
+        entries.retain(|id, _| index["revoked_ids"][id] != true);
+        Ok(entries)
+    }
+    fn load_record(&self, account: &str) -> AppResult<BTreeMap<String, Zeroizing<String>>> {
         let Some(raw) = self
             .storage
-            .get(SERVICE, &self.account)
+            .get(SERVICE, account)
             .map_err(|_| storage_error())?
         else {
             return Ok(BTreeMap::new());
@@ -795,6 +1294,7 @@ impl Vault {
         if index["revoked"] == true {
             return Err(error());
         }
+        self.check_epoch(&index)?;
         index["scopes"][&self.account] = Value::from(now());
         // Index first: a failed value write remains discoverable for cleanup.
         self.save_index(&index)?;
@@ -902,7 +1402,9 @@ impl Vault {
 }
 impl Drop for Vault {
     fn drop(&mut self) {
-        unpin(&self.account);
+        if self.retention_pin {
+            unpin(&self.account);
+        }
         if self.ephemeral {
             if self.forget().is_err() {
                 tracing::warn!("Could not clean up request-local secret credential record");
@@ -911,6 +1413,107 @@ impl Drop for Vault {
     }
 }
 impl SecretContext for Vault {
+    fn monitor_context(&self) -> Option<Arc<dyn SecretContext>> {
+        let mut context = Self::new(self.storage.clone(), &self.owner, "", false);
+        unpin(&context.account);
+        context.account = self.account.clone();
+        context.retention_pin = false;
+        let epoch = *self.epoch.lock().expect("secret owner epoch");
+        *context.epoch.lock().expect("diagnostic owner epoch") = epoch;
+        if self.restore_only.load(Ordering::Acquire) {
+            context.set_restore_only();
+        }
+        Some(Arc::new(context))
+    }
+    fn redact_monitor(&self, value: &mut Value) -> AppResult<()> {
+        if self.restore_only.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let _lock = STORE_LOCK.lock().map_err(|_| storage_error())?;
+        let entries = self.load()?;
+        let mut replacements = Vec::new();
+        for (id, secret) in &entries {
+            let tag = marker(id);
+            let encoded = serde_json::to_string(secret.as_str()).map_err(|_| storage_error())?;
+            let escaped = &encoded[1..encoded.len() - 1];
+            if escaped != secret.as_str() {
+                let encoded_tag = serde_json::to_string(&tag).map_err(|_| storage_error())?;
+                replacements.push((
+                    escaped.to_owned(),
+                    encoded_tag[1..encoded_tag.len() - 1].to_owned(),
+                ));
+            }
+            replacements.push((secret.to_string(), tag));
+        }
+        replacements.sort_by_key(|(secret, _)| std::cmp::Reverse(secret.len()));
+        let ids: HashSet<_> = entries.keys().cloned().collect();
+        fn mask(text: &str, replacements: &[(String, String)], ids: &HashSet<String>) -> String {
+            let preserved: Vec<_> = text
+                .match_indices('<')
+                .filter_map(|(start, _)| {
+                    reference(text, start)
+                        .filter(|(_, id, _)| ids.contains(id))
+                        .map(|(end, _, _)| (start, end))
+                })
+                .collect();
+            let mut masked = String::new();
+            let mut offset = 0;
+            loop {
+                let next = replacements
+                    .iter()
+                    .filter_map(|(secret, tag)| {
+                        text[offset..]
+                            .match_indices(secret)
+                            .map(|(found, _)| offset + found)
+                            .find(|start| {
+                                !preserved
+                                    .iter()
+                                    .any(|(a, b)| *start < *b && *start + secret.len() > *a)
+                            })
+                            .map(|start| (start, secret, tag))
+                    })
+                    .min_by_key(|(start, secret, _)| (*start, std::cmp::Reverse(secret.len())));
+                let Some((start, secret, tag)) = next else {
+                    break;
+                };
+                masked.push_str(&text[offset..start]);
+                masked.push_str(tag);
+                offset = start + secret.len();
+            }
+            masked.push_str(&text[offset..]);
+            masked
+        }
+        fn walk(
+            value: &mut Value,
+            replacements: &[(String, String)],
+            ids: &HashSet<String>,
+            root: bool,
+        ) {
+            match value {
+                Value::String(text) => *text = mask(text, replacements, ids),
+                Value::Array(items) => items
+                    .iter_mut()
+                    .for_each(|v| walk(v, replacements, ids, false)),
+                Value::Object(map) => {
+                    let entries = std::mem::take(map);
+                    for (key, mut value) in entries {
+                        walk(&mut value, replacements, ids, false);
+                        map.insert(
+                            if root {
+                                key
+                            } else {
+                                mask(&key, replacements, ids)
+                            },
+                            value,
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+        walk(value, &replacements, &ids, true);
+        Ok(())
+    }
     fn register(&self, secret: &str) -> AppResult<()> {
         if secret.is_empty() {
             return Ok(());
@@ -976,6 +1579,7 @@ impl SecretContext for Vault {
             }
         }
         let count = entries.len();
+        let mut redacted = BTreeMap::new();
         fn signed_secret(value: &Value, entries: &BTreeMap<String, Zeroizing<String>>) -> bool {
             fn contains(value: &Value, entries: &BTreeMap<String, Zeroizing<String>>) -> bool {
                 match value {
@@ -1024,7 +1628,18 @@ impl SecretContext for Vault {
                     }
                     Ok(None)
                 })?;
-                self.transform(text, &mut entries)
+                let masked = self.transform(text, &mut entries)?;
+                if masked != text {
+                    let before = reference_counts(text);
+                    for (id, count) in reference_counts(&masked) {
+                        let added =
+                            count.saturating_sub(before.get(&id).copied().unwrap_or_default());
+                        if added > 0 {
+                            *redacted.entry(id).or_default() += added;
+                        }
+                    }
+                }
+                Ok(masked)
             },
             false,
             true,
@@ -1032,30 +1647,31 @@ impl SecretContext for Vault {
         if !entries.is_empty() && (entries.len() != count || self.active()) {
             self.save(&entries)?;
         }
+        drop(entries);
+        drop(_lock);
+        self.notify_operations("redact", "Outbound request", redacted);
         Ok(())
     }
     fn restore_text(&self, text: &str, strict: bool) -> AppResult<String> {
-        if !text.to_ascii_lowercase().contains(TAG) {
-            return Ok(text.into());
-        }
-        let _lock = STORE_LOCK.lock().map_err(|_| storage_error())?;
-        let entries = self.load()?;
-        let allowed = self.allowed.lock().map_err(|_| storage_error())?;
-        restore_text(
-            text,
-            strict && !self.restore_only.load(Ordering::Acquire),
-            |id| {
-                Ok(entries
-                    .get(id)
-                    .filter(|_| allowed.contains(id))
-                    .map(|s| s.to_string()))
-            },
-        )
+        self.restore_text_impl(text, strict, "Response text", true)
+    }
+    fn restore_text_at(&self, text: &str, strict: bool, location: &str) -> AppResult<String> {
+        self.restore_text_impl(text, strict, location, true)
     }
     fn restore(&self, value: &mut Value, strict: bool) -> AppResult<()> {
         visit(
             value,
-            &mut |text, executable| self.restore_text(text, strict || executable),
+            &mut |text, executable| {
+                self.restore_text_at(
+                    text,
+                    strict || executable,
+                    if strict || executable {
+                        "Tool arguments"
+                    } else {
+                        "Response text"
+                    },
+                )
+            },
             !strict,
         )?;
         Ok(())
@@ -1846,5 +2462,457 @@ mod reasoning_summary_tests {
         vault.protect(&mut replay).unwrap();
         assert!(!replay.to_string().contains("synthetic reasoning original"));
         assert_eq!(replay["input"][0]["encrypted_content"], "opaque-bytes");
+    }
+}
+
+#[cfg(test)]
+mod monitor_mask_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn diagnostic_masking_never_rescans_inserted_placeholders() {
+        let vault = Vault::for_client(
+            Arc::new(lr_api_keys::MockKeychain::new()),
+            "overlapping-monitor",
+        );
+        vault.register("verbatim").unwrap();
+        vault.register("long synthetic credential").unwrap();
+        let mut value = json!({"content":"long synthetic credential then verbatim"});
+        vault.redact_monitor(&mut value).unwrap();
+        let masked = value.clone();
+        vault.redact_monitor(&mut value).unwrap();
+        assert_eq!(value, masked);
+        let text = value["content"].as_str().unwrap();
+        assert_eq!(text.matches("<localrouter-redacted").count(), 2);
+        assert_eq!(
+            text.matches("usage='Unmasked when returned verbatim'/>")
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn diagnostic_masking_retains_payload_and_does_not_authorize_replay() {
+        let vault = Vault::new(
+            Arc::new(lr_api_keys::MockKeychain::new()),
+            "monitor",
+            "scope",
+            false,
+        );
+        let secret = "synthetic \"quoted\"\ncredential";
+        vault.register(secret).unwrap();
+        let mut data = json!({"data":{"request_body":{"content":secret},"raw_request":json!({"content":secret}).to_string(),"error":format!("upstream failed: {secret}")},"client_name":"Codex","session_id":"request","conversation":{"id":"conversation","title":secret}});
+        vault.redact_monitor(&mut data).unwrap();
+        let serialized = data.to_string();
+        assert!(!serialized.contains(
+            &serde_json::to_string(secret).unwrap()
+                [1..serde_json::to_string(secret).unwrap().len() - 1]
+        ));
+        assert_eq!(data["client_name"], "Codex");
+        assert_eq!(data["session_id"], "request");
+        assert_eq!(data["conversation"]["id"], "conversation");
+        assert!(data["data"]["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("upstream failed: <localrouter-redacted"));
+        let raw: Value =
+            serde_json::from_str(data["data"]["raw_request"].as_str().unwrap()).unwrap();
+        assert_eq!(raw["content"], data["data"]["request_body"]["content"]);
+        assert!(vault
+            .restore_text(raw["content"].as_str().unwrap(), true)
+            .is_err());
+        vault.set_restore_only();
+        let mut allowed = json!({"content":secret});
+        vault.redact_monitor(&mut allowed).unwrap();
+        assert_eq!(allowed["content"], secret);
+    }
+}
+
+#[cfg(test)]
+mod client_map_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn client_migration_preserves_ids_and_isolates_other_clients() {
+        let storage = Arc::new(lr_api_keys::MockKeychain::new());
+        let owner = "client-map-migration-test".to_owned();
+        let mut tags = Vec::new();
+        for scope in ["conversation-one", "conversation-two"] {
+            let legacy = Vault::new(storage.clone(), &owner, scope, false);
+            let secret = format!("synthetic-secret-{scope}");
+            legacy.register(&secret).unwrap();
+            let mut value = json!({"content":secret});
+            legacy.protect(&mut value).unwrap();
+            legacy.bind_response(scope).unwrap();
+            tags.push((value["content"].as_str().unwrap().to_owned(), secret));
+        }
+        let client = Vault::find_client(storage.clone(), &owner, RETENTION_SECS)
+            .unwrap()
+            .unwrap();
+        for (tag, secret) in &tags {
+            assert_eq!(client.restore_text(tag, true).unwrap(), *secret);
+        }
+        drop(client);
+        let restarted = Vault::find_client(storage.clone(), &owner, RETENTION_SECS)
+            .unwrap()
+            .unwrap();
+        for (tag, secret) in &tags {
+            assert_eq!(restarted.restore_text(tag, true).unwrap(), *secret);
+            let mut request = json!({"content":secret});
+            restarted.protect(&mut request).unwrap();
+            assert_eq!(request["content"], *tag);
+        }
+        let foreign = Vault::for_client(storage.clone(), "foreign-client");
+        for (tag, _) in &tags {
+            assert!(foreign.restore_text(tag, true).is_err());
+        }
+        assert!(
+            Vault::find_client(storage, "foreign-client", RETENTION_SECS)
+                .unwrap()
+                .is_none()
+        );
+    }
+    #[test]
+    fn expired_client_maps_are_removed_on_access_and_monitor_does_not_pin_them() {
+        let storage = Arc::new(lr_api_keys::MockKeychain::new());
+        let owner = "client-map-expiry-test".to_owned();
+        let client = Vault::for_client(storage.clone(), &owner);
+        client.register("synthetic-expiring-secret").unwrap();
+        let monitor = client.monitor_context().unwrap();
+        let account = client.account.clone();
+        let mut index = client.index().unwrap();
+        index["scopes"][&account] = Value::from(now() - RETENTION_SECS - 1);
+        client.save_index(&index).unwrap();
+        drop(client);
+        assert!(Vault::find_client(storage.clone(), &owner, RETENTION_SECS)
+            .unwrap()
+            .is_none());
+        assert!(storage.get(SERVICE, &account).unwrap().is_none());
+        drop(monitor);
+    }
+    #[test]
+    fn nested_json_and_unicode_escapes_restore_without_corrupting_syntax() {
+        let vault = Vault::for_client(Arc::new(lr_api_keys::MockKeychain::new()), "escaped-client");
+        let secret = "synthetic \"quotes\" and 'apostrophe' \\ path\r\n🔐";
+        vault.register(secret).unwrap();
+        let mut protected = json!({"content":secret});
+        vault.protect(&mut protected).unwrap();
+        let canonical = protected["content"].as_str().unwrap();
+        assert!(canonical.contains("id='"));
+        for tag in [
+            canonical.to_owned(),
+            canonical
+                .replace("id='", "ID='")
+                .replace("localrouter-redacted", "LOCALROUTER-REDACTED"),
+            canonical.replace("'", "\""),
+        ] {
+            for depth in 0..5 {
+                let mut encoded = json!({"token":tag});
+                let mut expected = json!({"token":secret});
+                for _ in 0..depth {
+                    encoded = Value::String(encoded.to_string());
+                    expected = Value::String(expected.to_string());
+                }
+                let text = encoded.to_string();
+                let restored = vault.restore_text(&text, true).unwrap();
+                assert_eq!(serde_json::from_str::<Value>(&restored).unwrap(), expected);
+            }
+            let encoded = json!({"token":tag})
+                .to_string()
+                .replace('<', "\\u003c")
+                .replace('>', "\\u003e");
+            assert_eq!(
+                serde_json::from_str::<Value>(&vault.restore_text(&encoded, true).unwrap())
+                    .unwrap(),
+                json!({"token":secret})
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod store_management_tests {
+    use super::*;
+    use serde_json::json;
+    const SECRET: &str = "synthetic-original-to-purge-1234567890";
+    const OTHER: &str = "synthetic-original-to-keep-0987654321";
+    #[test]
+    fn inventory_never_touches_activity_and_purge_removes_legacy_aliases_only_for_its_owner() {
+        let storage = Arc::new(lr_api_keys::MockKeychain::new());
+        let owner = "store-management-owner";
+        let mut old_tags = Vec::new();
+        for scope in ["one", "two"] {
+            let vault = Vault::new(storage.clone(), owner, scope, false);
+            vault.register(SECRET).unwrap();
+            let mut input = json!({"content":SECRET});
+            vault.protect(&mut input).unwrap();
+            old_tags.push(input["content"].as_str().unwrap().to_owned());
+        }
+        let active = Vault::find_client(storage.clone(), owner, RETENTION_SECS)
+            .unwrap()
+            .unwrap();
+        active.register(OTHER).unwrap();
+        let foreign = Vault::for_client(storage.clone(), "store-foreign-owner");
+        foreign.register(SECRET).unwrap();
+        let mut foreign_tag = json!({"content":SECRET});
+        foreign.protect(&mut foreign_tag).unwrap();
+        let mut index = active.index().unwrap();
+        index["scopes"][&active.account] = json!(now() - 3600);
+        active.save_index(&index).unwrap();
+        let before = storage.get(SERVICE, &active.index_key()).unwrap();
+        let entries = Vault::list_client(storage.clone(), owner).unwrap();
+        assert_eq!(entries.len(), 3);
+        assert!(!serde_json::to_string(&entries).unwrap().contains(SECRET));
+        assert_eq!(storage.get(SERVICE, &active.index_key()).unwrap(), before);
+        let id = candidate(&old_tags[0], 0).unwrap().1;
+        assert_eq!(
+            Vault::purge_client(storage.clone(), owner, Some(&id.to_ascii_uppercase())).unwrap(),
+            2
+        );
+        assert!(active.restore_text(&old_tags[0], true).is_err());
+        assert!(
+            active.register(SECRET).is_err(),
+            "old request must not recreate purged values"
+        );
+        let entries = Vault::list_client(storage.clone(), owner).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].last_used_at,
+            index["scopes"][&active.account].as_u64().unwrap()
+        );
+        let recovered = Vault::find_client(storage.clone(), owner, RETENTION_SECS)
+            .unwrap()
+            .unwrap();
+        for tag in &old_tags {
+            assert!(recovered.restore_text(tag, true).is_err());
+        }
+        assert_eq!(
+            recovered
+                .restore_text(&entries[0].placeholder, true)
+                .unwrap(),
+            OTHER
+        );
+        assert_eq!(
+            foreign
+                .restore_text(foreign_tag["content"].as_str().unwrap(), true)
+                .unwrap(),
+            SECRET
+        );
+        assert_eq!(
+            Vault::purge_client(
+                storage.clone(),
+                owner,
+                Some(
+                    &candidate(foreign_tag["content"].as_str().unwrap(), 0)
+                        .unwrap()
+                        .1
+                )
+            )
+            .unwrap(),
+            0
+        );
+        recovered.register(SECRET).unwrap();
+        let mut fresh = json!({"content":SECRET});
+        recovered.protect(&mut fresh).unwrap();
+        assert!(!old_tags
+            .iter()
+            .any(|tag| tag == fresh["content"].as_str().unwrap()));
+    }
+    #[test]
+    fn purge_failure_revokes_first_and_retry_allows_new_requests_without_reviving_old_vaults() {
+        struct Failing {
+            inner: lr_api_keys::MockKeychain,
+            fail: AtomicBool,
+        }
+        impl KeychainStorage for Failing {
+            fn get(&self, s: &str, a: &str) -> AppResult<Option<String>> {
+                self.inner.get(s, a)
+            }
+            fn store(&self, s: &str, a: &str, v: &str) -> AppResult<()> {
+                self.inner.store(s, a, v)
+            }
+            fn delete(&self, s: &str, a: &str) -> AppResult<()> {
+                if self.fail.load(Ordering::Relaxed) {
+                    Err(storage_error())
+                } else {
+                    self.inner.delete(s, a)
+                }
+            }
+        }
+        let storage = Arc::new(Failing {
+            inner: lr_api_keys::MockKeychain::new(),
+            fail: AtomicBool::new(false),
+        });
+        let active = Vault::for_client(storage.clone(), "purge-failure-owner");
+        active.register(SECRET).unwrap();
+        let mut value = json!({"content":SECRET});
+        active.protect(&mut value).unwrap();
+        storage.fail.store(true, Ordering::Relaxed);
+        assert!(Vault::purge_client(storage.clone(), "purge-failure-owner", None).is_err());
+        assert!(active
+            .restore_text(value["content"].as_str().unwrap(), true)
+            .is_err());
+        assert!(
+            Vault::find_client(storage.clone(), "purge-failure-owner", RETENTION_SECS).is_err()
+        );
+        assert!(Vault::list_client(storage.clone(), "purge-failure-owner").unwrap()[0].revoked);
+        storage.fail.store(false, Ordering::Relaxed);
+        assert_eq!(
+            Vault::purge_client(storage.clone(), "purge-failure-owner", None).unwrap(),
+            1
+        );
+        assert!(Vault::list_client(storage.clone(), "purge-failure-owner")
+            .unwrap()
+            .is_empty());
+        assert!(active.register(SECRET).is_err());
+        let fresh = Vault::for_client(storage, "purge-failure-owner");
+        fresh.register(SECRET).unwrap();
+        assert!(fresh
+            .restore_text(value["content"].as_str().unwrap(), true)
+            .is_err());
+    }
+    #[test]
+    fn failed_single_secret_rewrite_revokes_the_original_and_preserves_other_entries() {
+        struct Failing {
+            inner: lr_api_keys::MockKeychain,
+            account: String,
+            fail: AtomicBool,
+        }
+        impl KeychainStorage for Failing {
+            fn get(&self, s: &str, a: &str) -> AppResult<Option<String>> {
+                self.inner.get(s, a)
+            }
+            fn store(&self, s: &str, a: &str, v: &str) -> AppResult<()> {
+                if a == self.account && self.fail.load(Ordering::Relaxed) {
+                    Err(storage_error())
+                } else {
+                    self.inner.store(s, a, v)
+                }
+            }
+            fn delete(&self, s: &str, a: &str) -> AppResult<()> {
+                self.inner.delete(s, a)
+            }
+        }
+        let owner = "single-purge-write-failure";
+        let storage = Arc::new(Failing {
+            inner: lr_api_keys::MockKeychain::new(),
+            account: key(owner, "client-secret-map-v2"),
+            fail: AtomicBool::new(false),
+        });
+        let vault = Vault::for_client(storage.clone(), owner);
+        vault.register(SECRET).unwrap();
+        vault.register(OTHER).unwrap();
+        let entries = vault.load().unwrap();
+        let id = entries
+            .iter()
+            .find(|(_, value)| value.as_str() == SECRET)
+            .unwrap()
+            .0
+            .clone();
+        storage.fail.store(true, Ordering::Relaxed);
+        assert!(Vault::purge_client(storage.clone(), owner, Some(&id)).is_err());
+        let listed = Vault::list_client(storage.clone(), owner).unwrap();
+        assert_eq!(listed.len(), 2);
+        assert!(
+            listed
+                .iter()
+                .find(|entry| entry.reference_id == id)
+                .unwrap()
+                .revoked
+        );
+        assert!(
+            !listed
+                .iter()
+                .find(|entry| entry.reference_id != id)
+                .unwrap()
+                .revoked
+        );
+        let current = Vault::for_client(storage.clone(), owner);
+        current.allowed.lock().unwrap().insert(id.clone());
+        assert!(current.restore_text(&marker(&id), true).is_err());
+        storage.fail.store(false, Ordering::Relaxed);
+        assert_eq!(
+            Vault::purge_client(storage.clone(), owner, Some(&id)).unwrap(),
+            1
+        );
+        let raw = storage
+            .inner
+            .get(SERVICE, &storage.account)
+            .unwrap()
+            .unwrap();
+        assert!(!raw.contains(SECRET));
+        assert!(raw.contains(OTHER));
+    }
+
+    #[test]
+    fn store_management_survives_file_restart_and_observes_expiry_without_extending_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("originals.json");
+        let storage =
+            Arc::new(lr_api_keys::keychain_trait::FileKeychain::new(path.clone()).unwrap());
+        let vault = Vault::for_client(storage.clone(), "persistent-store-owner");
+        vault.register(SECRET).unwrap();
+        let inventory = Vault::list_client(storage.clone(), "persistent-store-owner").unwrap();
+        drop(vault);
+        drop(storage);
+        let storage =
+            Arc::new(lr_api_keys::keychain_trait::FileKeychain::new(path.clone()).unwrap());
+        let restored = Vault::list_client(storage.clone(), "persistent-store-owner").unwrap();
+        assert_eq!(inventory[0].placeholder, restored[0].placeholder);
+        assert_eq!(inventory[0].expires_at, restored[0].expires_at);
+        let vault = Vault::for_client(storage.clone(), "persistent-store-owner");
+        let mut index = vault.index().unwrap();
+        index["scopes"][&vault.account] = json!(now() - RETENTION_SECS - 1);
+        vault.save_index(&index).unwrap();
+        drop(vault);
+        assert!(Vault::list_client(storage.clone(), "persistent-store-owner").unwrap()[0].expired);
+        assert!(
+            Vault::find_client(storage.clone(), "persistent-store-owner", RETENTION_SECS)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            Vault::list_client(storage.clone(), "persistent-store-owner")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(!std::fs::read_to_string(path).unwrap().contains(SECRET));
+    }
+    #[test]
+    fn operation_observers_report_only_committed_owned_substitutions_after_releasing_locks() {
+        let storage = Arc::new(lr_api_keys::MockKeychain::new());
+        let vault = Vault::for_client(storage.clone(), "operation-observer-owner");
+        vault.register(SECRET).unwrap();
+        let notices = Arc::new(Mutex::new(Vec::new()));
+        let captured = notices.clone();
+        vault.set_operation_observer(Arc::new(move |notice| {
+            assert!(
+                !Vault::list_client(storage.clone(), "operation-observer-owner")
+                    .unwrap()
+                    .is_empty()
+            );
+            captured.lock().unwrap().push(notice);
+        }));
+        let mut value = json!({"content":format!("{SECRET} {SECRET}")});
+        vault.protect(&mut value).unwrap();
+        assert_eq!(notices.lock().unwrap()[0].occurrences, 2);
+        // Use an actual single reference rather than the display string containing two.
+        let one = marker(&notices.lock().unwrap()[0].reference_id);
+        vault.protect(&mut value).unwrap();
+        assert_eq!(notices.lock().unwrap().len(), 1);
+        assert_eq!(
+            vault.restore_text_at(&one, true, "Tool arguments").unwrap(),
+            SECRET
+        );
+        assert_eq!(notices.lock().unwrap()[1].action, "restore");
+        assert_eq!(notices.lock().unwrap()[1].location, "Tool arguments");
+        let before = notices.lock().unwrap().len();
+        assert!(vault
+            .restore_text(&format!("{one} <localrouter-redacted id='unknown'/>"), true)
+            .is_err());
+        assert_eq!(notices.lock().unwrap().len(), before);
+        vault.set_request_contract(&json!({"tools":[{"type":"function","name":"write","parameters":{"type":"object","properties":{"value":{"enum":[one]}}}}]})).unwrap();
+        assert_eq!(notices.lock().unwrap().len(), before);
+        assert!(!format!("{:?}", notices.lock().unwrap()).contains(SECRET));
     }
 }

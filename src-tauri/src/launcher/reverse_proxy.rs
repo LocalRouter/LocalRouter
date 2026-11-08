@@ -89,7 +89,7 @@ impl ReverseProxyService {
             recorder: Arc::new(lr_proxy::active::ActiveInterceptor::new(
                 recorder,
                 Arc::new(crate::launcher::proxy::AppFirewall {
-                    secret_storage: Arc::new(lr_api_keys::keychain_trait::SystemKeychain),
+                    secret_storage: lr_api_keys::keychain_trait::redacted_secret_storage(),
                     config_manager: config_manager.clone(),
                     firewall: state.mcp_gateway.firewall_manager.clone(),
                     model_approvals: state.model_approval_tracker.clone(),
