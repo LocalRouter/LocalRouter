@@ -11,6 +11,11 @@ use crate::state::AppState;
 use axum::Extension;
 use lr_monitor::{EventStatus, MonitorEventData, MonitorEventGuard, MonitorEventType};
 
+/// All steps of one protected gateway request share a correlation identity.
+pub fn new_request_session() -> String {
+    crate::secret_placeholders::monitor_request_session()
+}
+
 // ---- LLM Call Guard ----
 
 /// RAII guard for LlmCall monitor events.
@@ -212,9 +217,17 @@ pub fn emit_llm_call(
         EventStatus::Pending,
         None,
     );
+    let mut correlation_body = request_body.clone();
+    if let Some(conversation) = crate::secret_placeholders::monitor_conversation() {
+        if !correlation_body["extensions"].is_object() {
+            correlation_body["extensions"] = serde_json::json!({});
+        }
+        correlation_body["extensions"]["localrouter.session"] =
+            serde_json::json!({"id":conversation});
+    }
     state
         .monitor_store
-        .track_conversation(&event_id, request_body);
+        .track_conversation(&event_id, &correlation_body);
 
     LlmCallGuard {
         inner: MonitorEventGuard::new(

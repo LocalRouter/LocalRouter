@@ -1044,23 +1044,7 @@ impl AppState {
 
         let capture_config = result.config_manager.clone();
         result.monitor_store.set_payload_policy(move |client| {
-            lr_types::secret_context::current().is_some()
-                || client.is_some_and(|id| {
-                    if capture_config.client_privacy(id).redact_payloads() {
-                        return true;
-                    }
-                    let config = capture_config.get();
-                    let action = config
-                        .clients
-                        .iter()
-                        .find(|c| c.id == id)
-                        .and_then(|c| c.secret_scanning.action.as_ref())
-                        .unwrap_or(&config.secret_scanning.action);
-                    matches!(
-                        action,
-                        lr_config::SecretScanAction::Redact | lr_config::SecretScanAction::Ask
-                    )
-                })
+            client.is_some_and(|id| capture_config.client_privacy(id).redact_payloads())
         });
 
         // Wire MCP via LLM monitor callbacks
@@ -1299,8 +1283,30 @@ impl AppState {
         // Also set app handle on monitor store for event emission
         {
             let h = handle;
+            #[cfg(debug_assertions)]
+            let debug_export = debug_monitor_export();
+            #[cfg(debug_assertions)]
+            let debug_store = Arc::downgrade(&self.monitor_store);
             self.monitor_store.set_emitter(move |event_name, payload| {
                 use tauri::Emitter;
+                #[cfg(debug_assertions)]
+                if let Some(file) = &debug_export {
+                    if let Ok(summary) =
+                        serde_json::from_str::<lr_monitor::MonitorEventSummary>(&payload)
+                    {
+                        if let Some(event) = debug_store
+                            .upgrade()
+                            .and_then(|store| store.get(&summary.id))
+                        {
+                            if let Ok(mut file) = file.lock() {
+                                use std::io::Write;
+                                if serde_json::to_writer(&mut *file, &event).is_ok() {
+                                    let _ = file.write_all(b"\n");
+                                }
+                            }
+                        }
+                    }
+                }
                 let _ = h.emit(event_name, payload);
             });
         }
@@ -1627,6 +1633,27 @@ pub fn apply_push_config_change(
         } => client.set_push_event_permission(server_id, event_name, Some(*permission)),
         PushConfigChange::WebhookUrl { url } => {
             client.approve_push_webhook_url(url);
+        }
+    }
+}
+
+/// Explicit local debug export uses the same already-sanitized event as Monitor.
+/// It is absent from release builds and never enabled by normal app startup.
+#[cfg(debug_assertions)]
+fn debug_monitor_export() -> Option<Arc<std::sync::Mutex<std::fs::File>>> {
+    let path = std::env::var_os("LOCALROUTER_DEBUG_MONITOR_LOG")?;
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    match options.open(path) {
+        Ok(file) => Some(Arc::new(std::sync::Mutex::new(file))),
+        Err(error) => {
+            tracing::warn!("Could not open explicit debug Monitor export: {error}");
+            None
         }
     }
 }

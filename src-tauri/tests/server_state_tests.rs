@@ -185,8 +185,10 @@ async fn secret_scan_with_findings_records_one_event() {
             text_preview,
             ..
         } => {
-            assert!(!text_preview.contains(REDACTION_SECRET));
-            assert!(text_preview.contains(lr_secret_scanner::redaction::REDACTION_MESSAGE));
+            assert!(
+                text_preview.contains(REDACTION_SECRET),
+                "Notify retains the actual local payload"
+            );
             assert!(findings_count.unwrap_or(0) >= 1);
             assert_eq!(action_taken.as_deref(), Some("notify"));
         }
@@ -536,14 +538,16 @@ async fn secrets_are_approved_one_at_a_time_and_denial_stops_the_sequence() {
         );
         let events = state.monitor_store.list(0, 20, None).events;
         assert_eq!(events.len(), actions.len() + 1);
-        // Ask capture is withheld even before the first secret is registered.
-        // A new tool secret must not enter normal monitor payloads or caller
-        // supplied session metadata while its decision is pending.
-        assert!(events.iter().all(|event| event.payload_redacted));
-        assert!(events.iter().all(|event| event.session_id.is_none()));
+        assert!(events.iter().all(|event| !event.payload_redacted));
+        assert!(events.iter().all(|event| event.session_id.is_some()));
         let captured = serde_json::to_string(&events).unwrap();
-        assert!(!captured.contains(REDACTION_SECRET));
-        assert!(!captured.contains(SECOND));
+        for secret in [REDACTION_SECRET, SECOND] {
+            assert_eq!(
+                !captured.contains(secret),
+                redacted_values.iter().any(|value| value == secret),
+                "retain allowed values and hide only the values selected for redaction"
+            );
+        }
         assert_eq!(
             events
                 .iter()

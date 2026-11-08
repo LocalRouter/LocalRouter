@@ -1,7 +1,7 @@
 import { ArrowDown, ArrowRight, FileKey, KeyRound, LockKeyhole, Sparkles } from 'lucide-react'
 import { Link } from 'react-router-dom'
 
-const placeholder = '<localrouter-redacted id="abc123" usage="Unmasked when returned verbatim"/>'
+const placeholder = "<localrouter-redacted id='abc123' usage='Unmasked when returned verbatim'/>"
 
 export function SecretPlaceholderDiagram() {
   return (
@@ -31,13 +31,13 @@ export function SecretPlaceholderDiagram() {
             <div className="p-6 sm:p-8">
               <div className="mb-5 flex items-center gap-2 text-sm font-semibold"><FileKey className="h-4 w-4 text-emerald-500" />3. Restore on return</div>
               <p className="mb-3 text-xs font-medium uppercase tracking-wider text-muted-foreground">Reference returned → original restored</p>
-              <code className="block break-all text-xs text-orange-700 dark:text-orange-300">{'<localrouter-redacted id="abc123"/>'}</code>
+              <code className="block break-all text-xs text-orange-700 dark:text-orange-300">{"<localrouter-redacted id='abc123'/>"}</code>
               <ArrowDown className="my-3 h-4 w-4 text-muted-foreground" aria-hidden="true" />
               <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3"><p className="mb-2 text-xs text-muted-foreground">write_file → .env</p><code className="break-all text-xs text-emerald-700 dark:text-emerald-300">API_KEY=demo-only-secret</code></div>
               <p className="mt-5 text-sm text-muted-foreground">The file gets the original. Tool results are protected again before the next model call.</p>
             </div>
           </div>
-          <figcaption className="border-t px-6 py-4 text-xs leading-relaxed text-muted-foreground">Synthetic example with a shortened ID. Applies to detected secrets on text gateway requests. Tool permissions still apply; the model can request use of a reference. No extra system prompt is added.</figcaption>
+          <figcaption className="border-t px-6 py-4 text-xs leading-relaxed text-muted-foreground">Synthetic example with a shortened ID. Applies to supported text gateway and active proxy requests. Tool permissions still apply; the model can request use of a reference. References belong to one client and persist for 14 days of inactivity. No extra system prompt is added.</figcaption>
         </figure>
         <div className="mt-6 flex flex-wrap gap-x-6 gap-y-3 text-sm font-medium">
           <Link to="/docs/secret-scanning" className="inline-flex items-center gap-1 text-orange-500 hover:underline">Secret scanning <ArrowRight className="h-4 w-4" /></Link>

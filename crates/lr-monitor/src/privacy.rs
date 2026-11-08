@@ -3,6 +3,23 @@ use crate::types::{MonitorEvent, MonitorEventData};
 use serde_json::Value;
 const HIDDEN: &str = "[payload not retained]";
 
+pub(crate) fn mask_secrets(
+    event: &mut MonitorEvent,
+    context: Option<&dyn lr_types::secret_context::SecretContext>,
+) {
+    let Some(context) = context else { return };
+    let result = (|| -> lr_types::AppResult<()> {
+        let mut value = serde_json::to_value(&*event)?;
+        context.redact_monitor(&mut value)?;
+        *event = serde_json::from_value(value)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        // Never expose originals when the credential service becomes unavailable.
+        redact(event);
+    }
+}
+
 pub(crate) fn redact(event: &mut MonitorEvent) {
     event.payload_redacted = true;
     event.client_name = None;

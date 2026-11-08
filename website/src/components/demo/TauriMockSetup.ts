@@ -5461,6 +5461,9 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // ============================================================================
   // Secret Scanning
   // ============================================================================
+  'list_redacted_secrets': () => [],
+  'reveal_redacted_secret': () => 'demo-only-secret',
+  'purge_redacted_secrets': () => 0,
   'get_secret_scanning_config': () => ({
     action: 'off',
     entropy_threshold: 3.5,
@@ -5622,6 +5625,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'dismiss_firewall_notification': () => null,
   'decode_secret_scan_jwt': (): DecodedSecretJwt => ({ header: { alg: 'HS256', typ: 'JWT' }, payload: { sub: 'demo-user', scope: ['read'] } }),
   'reveal_secret_scan_match': () => 'AKIAIOSFODNN7EXAMPLE',
+  'reveal_monitor_secret': () => 'synthetic-demo-secret',
   'ignore_secret_permanently': () => null,
   'redact_secret_permanently': () => null,
   'list_client_dismissed_secrets': () => [
@@ -5695,7 +5699,9 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       // Conversation metadata is kept on both summaries and details, like to_summary.
       events: matching.slice(args?.offset ?? 0, (args?.offset ?? 0) + (args?.limit ?? 100)).map(({ data, ...summary }) => {
         const llm = data as { client_api?: string; upstream_api?: string }
-        return { ...summary, client_api: llm.client_api ?? null, upstream_api: llm.upstream_api ?? null }
+        const secret = data as { action_taken?: string; findings?: { redacted?: boolean }[] }
+        const secretAction = summary.event_type === 'secret_scan' ? secret.action_taken === 'restore' ? 'restore' : secret.action_taken === 'redact' || secret.findings?.some(f => f.redacted) ? 'redact' : null : null
+        return { ...summary, secret_action: secretAction, client_api: llm.client_api ?? null, upstream_api: llm.upstream_api ?? null }
       }),
       total: matching.length,
     }

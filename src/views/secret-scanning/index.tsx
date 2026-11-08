@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { Loader2, ExternalLink } from "lucide-react"
+import { Loader2, ExternalLink, KeyRound } from "lucide-react"
 import { FEATURES } from "@/constants/features"
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import { Badge } from "@/components/ui/Badge"
@@ -12,6 +12,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
 import { listenSafe } from "@/hooks/useTauriListener"
 import { InfoTooltip } from "@/components/ui/info-tooltip"
+import { RedactedSecretsStore } from "@/components/shared/RedactedSecretsStore"
 import { SamplePopupButton } from "@/components/shared/SamplePopupButton"
 import type {
   SecretScanningConfig,
@@ -202,6 +203,7 @@ export function SecretScanningView({ activeSubTab, onTabChange }: SecretScanning
         <TabsList className="flex-shrink-0 w-fit">
           <TabsTrigger value="info"><TAB_ICONS.info className={TAB_ICON_CLASS} />Info</TabsTrigger>
           <TabsTrigger value="try-it-out"><TAB_ICONS.tryItOut className={TAB_ICON_CLASS} />Try It Out</TabsTrigger>
+          <TabsTrigger value="redacted-secrets"><KeyRound className={TAB_ICON_CLASS} />Redacted secrets</TabsTrigger>
           <TabsTrigger value="settings"><TAB_ICONS.settings className={TAB_ICON_CLASS} />Settings</TabsTrigger>
         </TabsList>
 
@@ -487,6 +489,7 @@ export function SecretScanningView({ activeSubTab, onTabChange }: SecretScanning
 
           </div>
         </TabsContent>
+        <TabsContent value="redacted-secrets" className="flex-1 min-h-0 mt-4 overflow-y-auto"><RedactedSecretsStore /></TabsContent>
       </Tabs>
     </div>
   )

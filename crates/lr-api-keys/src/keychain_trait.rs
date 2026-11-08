@@ -34,6 +34,114 @@ pub trait KeychainStorage: Send + Sync {
 /// [`crate::chunked`].
 pub struct SystemKeychain;
 
+/// Reversible originals use native credentials in release builds. Development
+/// honors the same file/system choice as other debug credentials, using a
+/// separate file so independently cached client credentials cannot overwrite it.
+pub fn redacted_secret_storage() -> Arc<dyn KeychainStorage> {
+    #[cfg(debug_assertions)]
+    if std::env::var("LOCALROUTER_KEYCHAIN").as_deref() != Ok("system") {
+        type DebugStores = Mutex<HashMap<std::path::PathBuf, Arc<dyn KeychainStorage>>>;
+        static STORES: std::sync::OnceLock<DebugStores> = std::sync::OnceLock::new();
+        let path = match lr_utils::paths::config_dir() {
+            Ok(path) => path.join("redacted-secrets.debug.json"),
+            Err(error) => return Arc::new(UnavailableSecretStorage(error.to_string())),
+        };
+        let mut stores = STORES
+            .get_or_init(Mutex::default)
+            .lock()
+            .expect("debug credential stores");
+        return stores
+            .entry(path.clone())
+            .or_insert_with(|| match FileKeychain::new(path) {
+                Ok(storage) => Arc::new(storage),
+                Err(error) => Arc::new(UnavailableSecretStorage(error.to_string())),
+            })
+            .clone();
+    }
+    let reset_namespace = match lr_utils::paths::config_dir()
+        .map_err(|error| error.to_string())
+        .and_then(|path| read_redaction_namespace(&path.join("redacted-secrets.namespace")))
+    {
+        Ok(namespace) => namespace,
+        Err(error) => return Arc::new(UnavailableSecretStorage(error)),
+    };
+    #[cfg(debug_assertions)]
+    let namespace = Some(format!(
+        "debug-{}{}",
+        std::env::var("LOCALROUTER_ENV").unwrap_or_else(|_| "dev".into()),
+        reset_namespace
+            .map(|value| format!("-{value}"))
+            .unwrap_or_default(),
+    ));
+    #[cfg(not(debug_assertions))]
+    let namespace = reset_namespace;
+    match namespace {
+        Some(namespace) => Arc::new(NamespacedSecretStorage {
+            backend: Arc::new(SystemKeychain),
+            namespace,
+        }),
+        None => Arc::new(SystemKeychain),
+    }
+}
+
+/// A local reset selects a fresh native service without accessing stale entries
+/// whose ACL may require an interactive password. Absence preserves existing maps.
+fn read_redaction_namespace(path: &std::path::Path) -> Result<Option<String>, String> {
+    let raw = match fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("Cannot read redaction store namespace: {error}")),
+    };
+    let namespace = raw.trim();
+    if namespace.len() != 32 || !namespace.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("Invalid redaction store namespace".into());
+    }
+    Ok(Some(format!("reset-{}", namespace.to_ascii_lowercase())))
+}
+
+struct NamespacedSecretStorage {
+    backend: Arc<dyn KeychainStorage>,
+    namespace: String,
+}
+impl NamespacedSecretStorage {
+    fn service(&self, service: &str) -> String {
+        format!("{service}-{}", self.namespace)
+    }
+}
+impl KeychainStorage for NamespacedSecretStorage {
+    fn store(&self, service: &str, account: &str, secret: &str) -> AppResult<()> {
+        self.backend.store(&self.service(service), account, secret)
+    }
+    fn get(&self, service: &str, account: &str) -> AppResult<Option<String>> {
+        self.backend.get(&self.service(service), account)
+    }
+    fn delete(&self, service: &str, account: &str) -> AppResult<()> {
+        self.backend.delete(&self.service(service), account)
+    }
+}
+
+struct UnavailableSecretStorage(String);
+impl KeychainStorage for UnavailableSecretStorage {
+    fn store(&self, _: &str, _: &str, _: &str) -> AppResult<()> {
+        Err(lr_types::AppError::Config(format!(
+            "Secret storage unavailable: {}",
+            self.0
+        )))
+    }
+    fn get(&self, _: &str, _: &str) -> AppResult<Option<String>> {
+        Err(lr_types::AppError::Config(format!(
+            "Secret storage unavailable: {}",
+            self.0
+        )))
+    }
+    fn delete(&self, _: &str, _: &str) -> AppResult<()> {
+        Err(lr_types::AppError::Config(format!(
+            "Secret storage unavailable: {}",
+            self.0
+        )))
+    }
+}
+
 /// Serializes system keyring access across every `SystemKeychain` user in the
 /// process: several `CachedKeychain` instances share the store, and a secret
 /// written in parts must not interleave with another write of the same secret.
@@ -889,5 +997,91 @@ mod tests {
         assert!(reloaded.get("svc", "acct-7-24").is_ok());
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(all(test, debug_assertions))]
+mod debug_secret_namespace_tests {
+    use super::*;
+    #[test]
+    fn local_native_reset_is_validated_and_cannot_reopen_the_old_service() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("namespace");
+        assert_eq!(read_redaction_namespace(&path).unwrap(), None);
+        fs::write(&path, "bad/namespace").unwrap();
+        assert!(read_redaction_namespace(&path).is_err());
+        fs::write(&path, "ABCDEF0123456789abcdef0123456789\n").unwrap();
+        let namespace = read_redaction_namespace(&path).unwrap().unwrap();
+        assert_eq!(namespace, "reset-abcdef0123456789abcdef0123456789");
+        let native = Arc::new(MockKeychain::new());
+        native
+            .store("LocalRouter-Redacted-Secrets-v1", "owner-index-v1", "stale")
+            .unwrap();
+        let reset = NamespacedSecretStorage {
+            backend: native.clone(),
+            namespace,
+        };
+        assert_eq!(
+            reset
+                .get("LocalRouter-Redacted-Secrets-v1", "owner-index-v1")
+                .unwrap(),
+            None
+        );
+        reset
+            .store("LocalRouter-Redacted-Secrets-v1", "owner-index-v1", "fresh")
+            .unwrap();
+        reset
+            .delete("LocalRouter-Redacted-Secrets-v1", "owner-index-v1")
+            .unwrap();
+        assert_eq!(
+            native
+                .get("LocalRouter-Redacted-Secrets-v1", "owner-index-v1")
+                .unwrap()
+                .as_deref(),
+            Some("stale")
+        );
+    }
+
+    #[test]
+    fn native_debug_storage_never_reads_or_modifies_production_entries() {
+        let native = Arc::new(MockKeychain::new());
+        let debug = NamespacedSecretStorage {
+            backend: native.clone(),
+            namespace: "isolated-test".into(),
+        };
+        native
+            .store(
+                "LocalRouter-Redacted-Secrets-v1",
+                "owner-index-v1",
+                "production",
+            )
+            .unwrap();
+        debug
+            .store("LocalRouter-Redacted-Secrets-v1", "owner-index-v1", "debug")
+            .unwrap();
+        assert_eq!(
+            native
+                .get("LocalRouter-Redacted-Secrets-v1", "owner-index-v1")
+                .unwrap()
+                .as_deref(),
+            Some("production")
+        );
+        assert_eq!(
+            debug
+                .get("LocalRouter-Redacted-Secrets-v1", "owner-index-v1")
+                .unwrap()
+                .as_deref(),
+            Some("debug")
+        );
+        debug
+            .delete("LocalRouter-Redacted-Secrets-v1", "owner-index-v1")
+            .unwrap();
+        assert_eq!(
+            native
+                .get("LocalRouter-Redacted-Secrets-v1", "owner-index-v1")
+                .unwrap()
+                .as_deref(),
+            Some("production")
+        );
     }
 }

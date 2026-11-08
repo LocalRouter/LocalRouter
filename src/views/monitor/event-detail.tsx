@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/Button'
 import { McpToolDisplay, type McpToolDisplayItem } from '@/components/shared/McpToolDisplay'
 import { JsonTree } from '@/components/shared/JsonTree'
 import { cn } from '@/lib/utils'
-import { User, Server, Copy, Check, FileText, AlertTriangle, ChevronRight, ArrowRight, ArrowUpRight, ArrowDownLeft, Loader2, Shuffle } from 'lucide-react'
+import { User, Server, Copy, Check, FileText, AlertTriangle, ChevronRight, ArrowRight, ArrowUpRight, ArrowDownLeft, Loader2, Shuffle, Eye, EyeOff } from 'lucide-react'
 import { EventDuration } from './event-duration'
 import { useState, useCallback, useRef, type ReactNode, type KeyboardEvent } from 'react'
 import { invoke } from '@tauri-apps/api/core'
@@ -17,7 +17,7 @@ import remarkGfm from 'remark-gfm'
 import { capturedExcerpt, capturedRequestBody, capturedResponseMessages, contentText, requestMessages } from './message-content'
 import { LLM_API_LABELS, llmApiFlow, type ApiFlow } from './llm-api'
 import { PUSH_EGRESS_LABELS, PUSH_INGRESS_LABELS, normalizePushDecision, pushDecisionDelivered, pushDecisionLabel, pushPayloadEdited } from './push-event'
-import type { EventStatus, LlmProtocol, MonitorEvent, ReadMemoryArchiveFileParams } from '@/types/tauri-commands'
+import type { EventStatus, LlmProtocol, MonitorEvent, ReadMemoryArchiveFileParams, MonitorSecretFinding, RevealMonitorSecretParams } from '@/types/tauri-commands'
 import { decisionAnswersForView, decisionQuestionsForView } from '@/utils/decisions'
 import type { SystemOneAnswer, SystemOneQuestion } from '@/types/systemone'
 import { SystemOneAnswerView, SystemOneQuestionView } from '@/components/shared/SystemOneAnswers'
@@ -255,7 +255,8 @@ export function EventDetail({ event, loading, error, onRetry, toolbar, onReplay 
   const type = data.type as string
   const tabs = eventTabs(event)
   const active = tabs.find(t => t.id === tab) ?? tabs[0]
-  const title = String(data.model || data.tool_name || data.prompt_name || data.uri || type.replace(/_/g, ' '))
+  const secretTitle = data.action_taken === 'restore' ? 'Secret Restored' : data.action_taken === 'redact' || (Array.isArray(data.findings) && data.findings.some((finding: MonitorSecretFinding) => finding.redacted)) ? 'Secret Redacted' : 'Secret Scan'
+  const title = type === 'secret_scan' ? secretTitle : String(data.model || data.tool_name || data.prompt_name || data.uri || type.replace(/_/g, ' '))
 
   return (
     <div className="flex h-full flex-col min-h-0">
@@ -332,16 +333,16 @@ function eventTabs(event: MonitorEvent): DetailTab[] {
   const type = data.type as string
   if (type === 'llm_call') return llmTabs(event, data)
   const primary = EXCHANGE_TYPES.has(type)
-    ? { id: 'exchange', label: 'Request & response' }
+    ? { id: 'exchange', label: type === 'secret_scan' ? data.action_taken === 'restore' ? 'Restoration' : 'Scan results' : 'Request & response' }
     : { id: 'overview', label: 'Overview' }
   return [
-    { ...primary, content: <TypeDetail data={data} status={event.status} /> },
+    { ...primary, content: <TypeDetail data={data} status={event.status} eventId={event.id} /> },
     { id: 'details', label: 'Details', content: <EventMetadata event={event} /> },
     { id: 'raw', label: 'Raw', content: <RawSection title="Full event"><JsonTree data={event} label="event" /></RawSection> },
   ]
 }
 
-function TypeDetail({ data, status }: { data: EventData; status: EventStatus }) {
+function TypeDetail({ data, status, eventId }: { data: EventData; status: EventStatus; eventId: string }) {
   switch (data.type as string) {
     case 'mcp_tool_call': return <McpToolCallDetail data={data} />
     case 'mcp_resource_read': return <McpResourceReadDetail data={data} />
@@ -350,7 +351,7 @@ function TypeDetail({ data, status }: { data: EventData; status: EventStatus }) 
     case 'mcp_sampling': return <McpSamplingDetail data={data} />
     case 'guardrail_scan':
     case 'guardrail_response_scan': return <GuardrailDetail data={data} />
-    case 'secret_scan': return <SecretScanDetail data={data} />
+    case 'secret_scan': return <SecretScanDetail data={data} eventId={eventId} />
     case 'route_llm_classify':
     case 'routing_decision': return <RoutingDetail data={data} />
     case 'auth_error':
@@ -690,8 +691,8 @@ function ExchangeGrid({ children }: { children: ReactNode }) {
   return <div className="grid grid-cols-1 gap-3 [@container(min-width:640px)]:grid-cols-2" data-testid="exchange-grid">{children}</div>
 }
 
-function ExchangeCard({ title, description, payload, children, error = false }: { title: 'Request' | 'Response'; description?: ReactNode; payload?: unknown; children: ReactNode; error?: boolean }) {
-  const isRequest = title === 'Request'
+function ExchangeCard({ title, description, payload, children, error = false }: { title: 'Request' | 'Response' | 'Detected secrets' | 'Restored secrets' | 'Matched context'; description?: ReactNode; payload?: unknown; children: ReactNode; error?: boolean }) {
+  const isRequest = title === 'Request' || title === 'Matched context'
   const Icon = isRequest ? ArrowUpRight : ArrowDownLeft
   return (
     <section aria-label={title} className={cn('min-w-0 rounded-lg border overflow-hidden self-start', error && 'border-destructive/40')}>
@@ -1301,35 +1302,67 @@ function GuardrailDetail({ data }: { data: EventData }) {
 
 // ---- Secret Scan Detail ----
 
-function SecretScanDetail({ data }: { data: EventData }) {
-  const hasResult = data.findings_count != null
+function SecretScanFindingCard({ finding, index, eventId, action }: { finding: MonitorSecretFinding; index: number; eventId: string; action?: string }) {
+  const [revealed, setRevealed] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+  const redacted = finding.redacted ?? action === 'redact'
+  const restored = action === 'restore' || finding.action === 'restored'
+  const blocked = finding.action === 'blocked'
+  const label = restored ? 'Restored locally' : blocked ? 'Blocked' : redacted ? 'Redacted before sending' : 'Sent unchanged'
+  const reveal = async () => {
+    if (revealed !== null) { setRevealed(null); return }
+    setLoading(true); setError(null)
+    try {
+      setRevealed(await invoke<string>('reveal_monitor_secret', { eventId, findingIndex: index } satisfies RevealMonitorSecretParams))
+    } catch (error) { setError(String(error)) }
+    finally { setLoading(false) }
+  }
+  return <div className="rounded-lg border bg-background p-3 space-y-3">
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <span className="text-sm font-medium">{finding.rule_description || finding.rule_id || 'Detected secret'}</span>
+      <Badge variant={blocked ? 'destructive' : 'outline'}>{label}</Badge>
+    </div>
+    <div className="text-xs text-muted-foreground">{finding.category}{finding.location ? ` · ${finding.location}` : ` · Message ${finding.message_index + 1}`}{finding.occurrences != null ? ` · ${finding.occurrences} occurrence${finding.occurrences === 1 ? '' : 's'}` : ''}</div>
+    <div>
+      <div className="flex items-center justify-between gap-2 text-xs mb-1">
+        <span className="text-muted-foreground">{redacted ? 'Detected value' : 'Value in request'}</span>
+        {redacted && finding.replacement?.toLowerCase().includes('<localrouter-redacted') && <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={reveal} disabled={loading} aria-label={revealed === null ? 'Reveal detected secret' : 'Hide detected secret'}>
+          {loading ? <Loader2 className="h-3 w-3 animate-spin" /> : revealed === null ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
+          <span className="ml-1">{revealed === null ? 'Reveal' : 'Hide'}</span>
+        </Button>}
+      </div>
+      <code className="block rounded bg-muted p-2 text-xs break-all whitespace-pre-wrap">{revealed ?? (redacted ? finding.matched_text : finding.value ?? finding.matched_text)}</code>
+      {error && <p className="mt-1 text-xs text-destructive" role="status">{error}</p>}
+    </div>
+    {redacted && <div className="space-y-1">
+      <p className="text-xs text-muted-foreground">{restored ? 'Reference unmasked locally' : 'Replacement sent to the model'}</p>
+      {finding.replacement ? <RawBlock text={finding.replacement} label={restored ? 'reference' : 'replacement'} /> : <p className="text-xs text-muted-foreground">Replacement was not recorded for this older event.</p>}
+    </div>}
+  </div>
+}
 
-  return (
-    <ExchangeGrid>
-      <ExchangeCard title="Request">
-        <div className="grid grid-cols-2 gap-2 text-xs">
-          {data.rules_count != null && <Field label="Rules" value={String(data.rules_count)} />}
-        </div>
-        {data.text_preview && (
-          <div className="text-xs">
-            <span className="text-muted-foreground font-medium">Input:</span>
-            <SectionedText className="mt-1 p-2 bg-muted rounded text-xs whitespace-pre-wrap max-h-[200px] overflow-auto" text={data.text_preview as string} />
-          </div>
-        )}
-      </ExchangeCard>
-
-      {hasResult && (
-        <ExchangeCard title="Response">
-          <div className="grid grid-cols-2 gap-2 text-xs">
-            <Field label="Findings" value={String(data.findings_count)} />
-            {data.action_taken && <Field label="Action" value={data.action_taken as string} />}
-            {data.latency_ms != null && <Field label="Latency" value={`${data.latency_ms}ms`} />}
-          </div>
-          {data.findings && <JsonBlock data={data.findings as unknown} />}
-        </ExchangeCard>
-      )}
-    </ExchangeGrid>
-  )
+function SecretScanDetail({ data, eventId }: { data: EventData; eventId: string }) {
+  const findings: MonitorSecretFinding[] = Array.isArray(data.findings) ? data.findings : []
+  const restored = data.action_taken === 'restore'
+  return <ExchangeGrid>
+    <ExchangeCard title={restored ? 'Restored secrets' : 'Detected secrets'}>
+      <div className="grid grid-cols-3 gap-2 text-xs">
+        <Field label={restored ? 'References restored' : 'Findings'} value={String(data.findings_count ?? findings.length)} />
+        {data.rules_count > 0 && <Field label="Rules checked" value={String(data.rules_count)} />}
+        {data.latency_ms != null && <Field label="Scan time" value={`${data.latency_ms}ms`} />}
+      </div>
+      {restored && <p className="text-xs text-muted-foreground">Original values were restored locally. Monitor keeps the references masked.</p>}
+      {findings.map((finding, index) => <SecretScanFindingCard key={`${eventId}:${index}`} finding={finding} index={index} eventId={eventId} action={data.action_taken} />)}
+      {findings.length === 0 && <p className="text-xs text-muted-foreground">{data.findings_count ? 'Finding details were not retained.' : 'No secrets detected.'}</p>}
+    </ExchangeCard>
+    <ExchangeCard title="Matched context">
+      {findings.some(f => f.context_excerpt) ? findings.map((finding, index) => finding.context_excerpt && <div key={index} className="space-y-1">
+        <p className="text-xs text-muted-foreground">{finding.location || `Message ${finding.message_index + 1}`}</p>
+        <SectionedText className="p-2 bg-muted rounded text-xs whitespace-pre-wrap" text={finding.context_excerpt} />
+      </div>) : data.text_preview && <SectionedText className="p-2 bg-muted rounded text-xs whitespace-pre-wrap" text={data.text_preview as string} />}
+    </ExchangeCard>
+  </ExchangeGrid>
 }
 
 // ---- Routing Detail ----

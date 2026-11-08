@@ -84,6 +84,30 @@ pub fn response_id(path: &str) -> Option<String> {
     lr_secret_scanner::wire::response_id(path)
 }
 
+/// Explicit caller identity for diagnostics only; never an authorization grant.
+pub fn conversation_id(body: &Value) -> Option<String> {
+    let valid = |id: &str| !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control);
+    for path in [
+        "/client_metadata/session_id",
+        "/client_metadata/thread_id",
+        "/metadata/session_id",
+    ] {
+        if let Some(id) = body
+            .pointer(path)
+            .and_then(Value::as_str)
+            .filter(|id| valid(id))
+        {
+            return Some(id.to_owned());
+        }
+    }
+    let metadata: Value =
+        serde_json::from_str(body.pointer("/metadata/user_id")?.as_str()?).ok()?;
+    metadata["session_id"]
+        .as_str()
+        .filter(|id| valid(id))
+        .map(str::to_owned)
+}
+
 /// Catalog/metrics provider name for an intercepted host.
 pub fn provider_for_host(host: &str) -> &'static str {
     let host = host.to_ascii_lowercase();
@@ -312,5 +336,24 @@ mod tests {
         assert_eq!(provider_for_host("chatgpt.com"), "openai");
         assert_eq!(provider_for_host("api.typesafe.ai"), "typesafe");
         assert_eq!(provider_for_host("example.com"), "unknown");
+    }
+}
+
+#[cfg(test)]
+mod conversation_identity_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn explicit_client_sessions_are_linked_without_using_account_identity() {
+        assert_eq!(conversation_id(&json!({"metadata":{"user_id":json!({"account_uuid":"account","session_id":"first"}).to_string()}})).as_deref(), Some("first"));
+        assert_eq!(
+            conversation_id(&json!({"client_metadata":{"session_id":"codex-thread"}})).as_deref(),
+            Some("codex-thread")
+        );
+        assert!(conversation_id(
+            &json!({"metadata":{"user_id":json!({"account_uuid":"account"}).to_string()}})
+        )
+        .is_none());
+        assert!(conversation_id(&json!({"metadata":{"user_id":"{invalid"}})).is_none());
     }
 }

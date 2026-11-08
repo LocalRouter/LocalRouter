@@ -38,6 +38,46 @@ pub async fn get_monitor_event_detail(
     Ok(monitor_store(&server_manager)?.get(&event_id))
 }
 
+/// Reveal a retained redacted finding only through its captured client identity.
+#[tauri::command]
+pub async fn reveal_monitor_secret(
+    event_id: String,
+    finding_index: usize,
+    server_manager: State<'_, Arc<ServerManager>>,
+) -> Result<String, String> {
+    use lr_types::secret_context::SecretContext;
+    let event = monitor_store(&server_manager)?
+        .get(&event_id)
+        .ok_or("Event is no longer retained")?;
+    let owner = event.client_id.ok_or("Event has no client identity")?;
+    let lr_monitor::MonitorEventData::SecretScan {
+        findings: Some(findings),
+        ..
+    } = event.data
+    else {
+        return Err("Event is not a retained secret scan".into());
+    };
+    let finding = findings
+        .get(finding_index)
+        .ok_or("Finding is not retained")?;
+    if finding["redacted"] != true {
+        return Err("Finding was not redacted".into());
+    }
+    let replacement = finding["replacement"]
+        .as_str()
+        .ok_or("Replacement was not retained")?;
+    let vault = lr_secret_scanner::placeholders::Vault::find_client(
+        lr_api_keys::keychain_trait::redacted_secret_storage(),
+        &owner,
+        lr_secret_scanner::placeholders::RETENTION_SECS,
+    )
+    .map_err(|e| e.to_string())?
+    .ok_or("Secret mapping has expired or was removed")?;
+    vault
+        .restore_text(replacement, true)
+        .map_err(|e| e.to_string())
+}
+
 /// Clear all monitor events.
 #[tauri::command]
 pub async fn clear_monitor_events(

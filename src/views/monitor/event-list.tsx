@@ -63,7 +63,9 @@ function getCategory(type: MonitorEventType): string {
   return 'llm'
 }
 
-function getTypeLabel(type: MonitorEventType): string {
+function getTypeLabel(type: MonitorEventType, secretAction?: string | null): string {
+  if (type === 'secret_scan' && secretAction === 'redact') return 'Secret Redacted'
+  if (type === 'secret_scan' && secretAction === 'restore') return 'Secret Restored'
   return type
     .replace(/_/g, ' ')
     .replace(/\b\w/g, l => l.toUpperCase())
@@ -256,7 +258,7 @@ export function EventList({ grouping = 'events', events, showType, selectedId, o
                 {showType && <td className="px-2 py-1">
                   <div className="flex items-center gap-1">
                     <Icon className={cn('h-3 w-3 shrink-0', config.color)} />
-                    <span className="truncate">{getTypeLabel(event.event_type)}</span>
+                    <span className="truncate">{getTypeLabel(event.event_type, event.secret_action)}</span>
                   </div>
                 </td>}
                 <td className={'px-2 py-1 truncate text-muted-foreground hidden [@container(min-width:480px)]:table-cell'}>

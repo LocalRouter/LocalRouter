@@ -32,6 +32,7 @@ struct Stored {
     event: MonitorEvent,
     size: usize,
     correlation: Option<crate::conversation::Correlation>,
+    secret_context: Option<Arc<dyn lr_types::secret_context::SecretContext>>,
 }
 
 /// The buffer and its running totals, under one lock so they cannot drift.
@@ -204,6 +205,9 @@ impl MonitorEventStore {
             duration_ms,
         };
 
+        let secret_context =
+            lr_types::secret_context::current().and_then(|context| context.monitor_context());
+        crate::privacy::mask_secrets(&mut event, secret_context.as_deref());
         self.new_event_payload_policy(&mut event);
         let summary;
 
@@ -227,6 +231,7 @@ impl MonitorEventStore {
                 event,
                 size,
                 correlation: None,
+                secret_context,
             });
             self.evict(&mut events);
             self.notify_pending(&events, before);
@@ -349,6 +354,7 @@ impl MonitorEventStore {
                 continue;
             }
             stored.event.conversation = Some(conversation.clone());
+            crate::privacy::mask_secrets(&mut stored.event, stored.secret_context.as_deref());
             removed += stored.size;
             stored.size =
                 event_size(&stored.event) + stored.correlation.as_ref().map_or(0, |c| c.size());
@@ -370,6 +376,40 @@ impl MonitorEventStore {
         }
     }
 
+    /// Reuse the detection record for an actual redaction in the same request.
+    pub fn redaction_for_request(
+        &self,
+        client: &str,
+        session: &str,
+        after_sequence: u64,
+    ) -> Option<MonitorEvent> {
+        self.events.read().queue.iter().rev().find_map(|stored| {
+            let event = &stored.event;
+            if event.sequence <= after_sequence
+                || event.client_id.as_deref() != Some(client)
+                || event.session_id.as_deref() != Some(session)
+            {
+                return None;
+            }
+            match &event.data {
+                MonitorEventData::SecretScan {
+                    action_taken,
+                    findings,
+                    ..
+                } if action_taken.as_deref() != Some("restore")
+                    && (action_taken.as_deref() == Some("redact")
+                        || findings
+                            .as_ref()
+                            .and_then(|v| v.as_array())
+                            .is_some_and(|f| f.iter().any(|f| f["redacted"] == true))) =>
+                {
+                    Some(event.clone())
+                }
+                _ => None,
+            }
+        })
+    }
+
     /// Update an existing event (e.g., combined event completion).
     /// Returns true if the event was found and updated.
     pub fn update<F>(&self, id: &str, updater: F) -> bool
@@ -382,6 +422,7 @@ impl MonitorEventStore {
             let was_pending = is_pending_request(&stored.event);
             let was_redacted = stored.event.payload_redacted;
             updater(&mut stored.event);
+            crate::privacy::mask_secrets(&mut stored.event, stored.secret_context.as_deref());
             // An event created without capture stays protected even if its
             // client later selects full capture. Old full captures are unchanged.
             if was_redacted {

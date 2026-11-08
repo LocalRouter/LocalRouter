@@ -64,6 +64,9 @@ pub struct MonitorEvent {
 /// Lightweight summary for list views (avoids sending full data).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MonitorEventSummary {
+    /// Secret Scan lifecycle action; the event category remains Secret Scan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_action: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub payload_redacted: bool,
     pub id: String,
@@ -520,7 +523,7 @@ pub enum MonitorEventData {
         findings_count: Option<usize>,
         #[serde(skip_serializing_if = "Option::is_none")]
         findings: Option<serde_json::Value>,
-        /// "notify", "ask", "block"
+        /// "notify", "ask", "block", "redact", or "restore"
         #[serde(skip_serializing_if = "Option::is_none")]
         action_taken: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]

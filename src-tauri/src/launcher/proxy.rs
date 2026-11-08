@@ -216,35 +216,10 @@ impl lr_proxy::active::Firewall for AppFirewall {
             return RequestAction::reject_json(400, "Invalid protected request JSON");
         }
         let storage = self.secret_storage.clone();
-        let session = (|| -> Result<Option<String>, ()> {
-            let mut options = req.body.pointer("/extensions/localrouter.session").cloned();
-            if let Some(header) = &req.secret_session {
-                options
-                    .get_or_insert_with(|| serde_json::json!({}))
-                    .as_object_mut()
-                    .ok_or(())?
-                    .insert("id".into(), serde_json::Value::String(header.clone()));
-            }
-            lr_providers::session::SessionOptions::parse(options.as_ref())
-                .map(|o| o.map(|o| o.id))
-                .map_err(|_| ())
-        })();
-        let session = match session {
-            Ok(session) => session,
-            Err(_) if !masking || retrieval => None,
-            Err(_) => return RequestAction::reject_json(400, "Invalid secret session identity"),
-        };
-        let fallback = uuid::Uuid::new_v4().to_string();
-        let previous = req
-            .body
-            .get("previous_response_id")
-            .and_then(serde_json::Value::as_str)
-            .or(if retrieval { resource.as_deref() } else { None });
-        let continuation = match Vault::find_scope(
+        let continuation = match Vault::find_client(
             storage.clone(),
             &req.client_id,
-            previous,
-            session.as_deref(),
+            lr_secret_scanner::placeholders::RETENTION_SECS,
         ) {
             Ok(vault) => vault,
             Err(_) if retrieval && req.method != "GET" => return RequestAction::Forward,
@@ -266,14 +241,13 @@ impl lr_proxy::active::Firewall for AppFirewall {
             if !masking && continuation.is_none() {
                 return RequestAction::Forward;
             }
-            let vault = continuation.unwrap_or_else(|| {
-                Vault::new(
-                    storage,
-                    &req.client_id,
-                    session.as_deref().unwrap_or(&fallback),
-                    false,
-                )
-            });
+            let vault = continuation.unwrap_or_else(|| Vault::for_client(storage, &req.client_id));
+            lr_server::attach_secret_monitor(
+                &self.state,
+                &vault,
+                &req.client_id,
+                req.session_id.as_deref(),
+            );
             if !masking {
                 vault.set_restore_only();
             }
@@ -287,7 +261,7 @@ impl lr_proxy::active::Firewall for AppFirewall {
                 return self.evaluate_policy(req).await;
             };
             // Keep ordinary Off/Notify outbound policy and data unchanged.
-            // Only references issued to this owned conversation are restored.
+            // Only references issued to this authenticated client are restored.
             let action = self.evaluate_policy(req).await;
             let body = match action {
                 RequestAction::Forward => req.body.clone(),
@@ -299,6 +273,12 @@ impl lr_proxy::active::Firewall for AppFirewall {
                 },
                 other => return other,
             };
+            lr_server::attach_secret_monitor(
+                &self.state,
+                &vault,
+                &req.client_id,
+                req.session_id.as_deref(),
+            );
             vault.set_restore_only();
             if vault.set_request_contract(&body).is_err() {
                 return RequestAction::reject_json(400, "Invalid response restoration contract");
@@ -315,24 +295,14 @@ impl lr_proxy::active::Firewall for AppFirewall {
                 Err(_) => RequestAction::reject_json(400, "Could not encode request"),
             };
         }
-        let vault = continuation.unwrap_or_else(|| {
-            Vault::new(
-                storage,
-                &req.client_id,
-                session.as_deref().unwrap_or(&fallback),
-                session.is_none() && !req.path.contains("responses"),
-            )
-        });
+        let vault = continuation.unwrap_or_else(|| Vault::for_client(storage, &req.client_id));
         let vault = Arc::new(vault);
-        if req
-            .body
-            .pointer("/extensions/localrouter.session/reset")
-            .and_then(serde_json::Value::as_bool)
-            == Some(true)
-            && vault.forget().is_err()
-        {
-            return RequestAction::reject_json(400, "Could not reset secret scope");
-        }
+        lr_server::attach_secret_monitor(
+            &self.state,
+            &vault,
+            &req.client_id,
+            req.session_id.as_deref(),
+        );
         let context: Arc<dyn SecretContext> = vault.clone();
         secret_context::scope(Some(context.clone()), async {
             let action = self.evaluate_policy(req).await;
@@ -673,7 +643,7 @@ impl ProxyService {
                 client_manager: client_manager.clone(),
             }));
         let firewall = Arc::new(AppFirewall {
-            secret_storage: Arc::new(lr_api_keys::keychain_trait::SystemKeychain),
+            secret_storage: lr_api_keys::keychain_trait::redacted_secret_storage(),
             config_manager,
             firewall: firewall_manager,
             model_approvals,
@@ -1246,6 +1216,98 @@ mod secret_policy_tests {
             std::fs::remove_dir_all(root).unwrap();
         }
     }
+    #[tokio::test]
+    async fn redaction_retains_masked_scan_and_correlates_the_parent_request() {
+        use lr_proxy::interceptor::{ObservedExchange, ProxyInterceptor};
+        let root = tempfile::tempdir().unwrap();
+        let (firewall, request) = fixture(
+            root.path(),
+            lr_config::LlmMode::Proxy,
+            Arc::new(lr_api_keys::MockKeychain::new()),
+        );
+        let store = firewall.state.monitor_store.clone();
+        let recorder = lr_proxy::passive::PassiveInterceptor::new(store.clone());
+        let RequestAction::Protect { body, vault } = firewall.evaluate(&request).await else {
+            panic!("request must be protected")
+        };
+        let exchange = ObservedExchange {
+            client_id: request.client_id.clone(),
+            session_id: request.session_id.clone(),
+            secret_session: Some("caller-conversation".into()),
+            path: request.path.clone(),
+            request_body: Some(body),
+            ..Default::default()
+        };
+        recorder.begin(&exchange);
+        let events: Vec<_> = store
+            .list(0, 100, None)
+            .events
+            .iter()
+            .map(|e| store.get(&e.id).unwrap())
+            .collect();
+        let scan = events
+            .iter()
+            .find(|e| e.event_type == lr_monitor::MonitorEventType::SecretScan)
+            .unwrap();
+        let llm = events
+            .iter()
+            .find(|e| e.event_type == lr_monitor::MonitorEventType::LlmCall)
+            .unwrap();
+        for event in [&scan, &llm] {
+            assert!(!event.payload_redacted);
+            assert_eq!(event.session_id, request.session_id);
+            let serialized = serde_json::to_string(event).unwrap();
+            assert!(!serialized.contains(KEY));
+            assert!(serialized.contains("localrouter-redacted"));
+        }
+        assert_eq!(scan.client_name.as_deref(), Some("Synthetic"));
+        assert_eq!(
+            scan.conversation.as_ref().unwrap().id,
+            llm.conversation.as_ref().unwrap().id
+        );
+        let lr_monitor::MonitorEventData::SecretScan {
+            findings,
+            action_taken,
+            ..
+        } = &scan.data
+        else {
+            unreachable!()
+        };
+        assert_eq!(action_taken.as_deref(), Some("redact"));
+        assert!(findings
+            .as_ref()
+            .unwrap()
+            .as_array()
+            .is_some_and(|v| !v.is_empty()));
+        use lr_types::secret_context::SecretContext;
+        let tag = findings.as_ref().unwrap()[0]["replacement"]
+            .as_str()
+            .unwrap();
+        assert_eq!(vault.restore_text(tag, true).unwrap(), KEY);
+        assert_eq!(
+            vault.restore_text_at(tag, true, "Tool arguments").unwrap(),
+            KEY
+        );
+        let phases: Vec<_> = store
+            .list(0, 100, None)
+            .events
+            .into_iter()
+            .filter(|event| event.event_type == lr_monitor::MonitorEventType::SecretScan)
+            .collect();
+        assert_eq!(phases.len(), 2);
+        let restored = phases
+            .iter()
+            .find(|event| event.secret_action.as_deref() == Some("restore"))
+            .unwrap();
+        assert_eq!(restored.session_id, request.session_id);
+        assert_eq!(
+            restored.conversation.as_ref().unwrap().id,
+            scan.conversation.as_ref().unwrap().id
+        );
+        let restored = store.get(&restored.id).unwrap();
+        assert!(!serde_json::to_string(&restored).unwrap().contains(KEY));
+    }
+
     #[tokio::test]
     async fn configured_redact_supports_actual_proxy_policy_and_owned_retrieval() {
         for mode in [lr_config::LlmMode::Proxy, lr_config::LlmMode::ReverseProxy] {

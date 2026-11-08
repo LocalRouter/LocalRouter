@@ -20,6 +20,7 @@ pub mod video_jobs;
 pub use manager::{ServerManager, ServerStatus};
 
 mod secret_placeholders;
+pub use secret_placeholders::attach_monitor as attach_secret_monitor;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -204,9 +205,9 @@ pub async fn serve_state(
                     mcp_via_llm_for_cleanup.cleanup_expired_sessions();
                     let config=secret_cleanup_config.get();
                     let owners=config.clients.iter().map(|c|c.id.clone()).collect::<Vec<_>>();
-                    let retention=u64::from(config.responses.active_window_hours)*3600;
+                    let retention=lr_secret_scanner::placeholders::RETENTION_SECS;
                     let _=tokio::task::spawn_blocking(move || {
-                        if lr_secret_scanner::placeholders::Vault::cleanup_registered(Arc::new(lr_api_keys::keychain_trait::SystemKeychain),&owners,retention).is_err(){tracing::warn!("Could not complete OS secret-reference cleanup");}
+                        if lr_secret_scanner::placeholders::Vault::cleanup_registered(lr_api_keys::keychain_trait::redacted_secret_storage(),&owners,retention).is_err(){tracing::warn!("Could not complete OS secret-reference cleanup");}
                     }).await;
                 }
             }

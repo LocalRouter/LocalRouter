@@ -469,11 +469,31 @@ async fn proxy_request(
         ctx.interceptor.begin(&base)
     };
 
+    let pending_ctx = ctx.clone();
+    let pending_base = base.clone();
+    let pending_id = event_id.clone();
+    let mut pending = crate::tap::CancellationGuard::new(move || {
+        fail_pending(
+            &pending_ctx,
+            &pending_base,
+            pending_id,
+            started,
+            "Proxy request cancelled before response delivery",
+        );
+    });
+
     // Establish a fresh upstream TLS connection for this request.
     let upstream = match connect_upstream(&ctx, &host, port).await {
         Ok(u) => u,
         Err(e) => {
-            fail_pending(&ctx, &base, event_id, started);
+            pending.disarm();
+            fail_pending(
+                &ctx,
+                &base,
+                event_id,
+                started,
+                &format!("upstream connect: {e}"),
+            );
             return bad_gateway(&format!("upstream connect: {e}"));
         }
     };
@@ -481,7 +501,14 @@ async fn proxy_request(
         match hyper::client::conn::http1::handshake(TokioIo::new(upstream)).await {
             Ok(pair) => pair,
             Err(e) => {
-                fail_pending(&ctx, &base, event_id, started);
+                pending.disarm();
+                fail_pending(
+                    &ctx,
+                    &base,
+                    event_id,
+                    started,
+                    &format!("upstream handshake: {e}"),
+                );
                 return bad_gateway(&format!("upstream handshake: {e}"));
             }
         };
@@ -494,7 +521,14 @@ async fn proxy_request(
     let mut resp = match sender.send_request(up_req).await {
         Ok(r) => r,
         Err(e) => {
-            fail_pending(&ctx, &base, event_id, started);
+            pending.disarm();
+            fail_pending(
+                &ctx,
+                &base,
+                event_id,
+                started,
+                &format!("upstream request: {e}"),
+            );
             return bad_gateway(&format!("upstream request: {e}"));
         }
     };
@@ -578,7 +612,8 @@ async fn proxy_request(
     recorded.event_id = event_id;
     recorded.status = Some(status);
     recorded.response_is_sse = is_sse;
-    let on_end: Box<dyn FnOnce(Vec<u8>) + Send> = Box::new(move |bytes| {
+    let on_end: Box<dyn FnOnce(crate::tap::Capture) + Send> = Box::new(move |capture| {
+        let bytes = capture.bytes;
         if let Some((tracker, endpoint)) = usage_body {
             tracker.observe_usage_body(
                 endpoint,
@@ -588,6 +623,7 @@ async fn proxy_request(
             );
         }
         let mut ex = recorded;
+        ex.error = capture.error;
         ex.response_body = (!bytes.is_empty()).then_some(bytes);
         ex.latency_ms = Some(started.elapsed().as_millis() as u64);
         tokio::spawn(async move {
@@ -595,15 +631,23 @@ async fn proxy_request(
         });
     });
 
-    let tapped = crate::tap::TappedBody::new(rbody, MAX_CAPTURE, on_end);
-    if let Some(vault) = secret_vault {
-        match crate::protected_response::restore(rparts, tapped, vault, is_sse, false).await {
+    let response = if let Some(vault) = secret_vault {
+        match crate::protected_response::restore_recorded(
+            rparts, rbody, vault, is_sse, false, on_end,
+        )
+        .await
+        {
             Ok(response) => response,
             Err(_) => bad_gateway("protected response restoration failed"),
         }
     } else {
-        Response::from_parts(rparts, BodyExt::boxed_unsync(tapped))
-    }
+        Response::from_parts(
+            rparts,
+            BodyExt::boxed_unsync(crate::tap::TappedBody::new(rbody, MAX_CAPTURE, on_end)),
+        )
+    };
+    pending.disarm();
+    response
 }
 
 async fn connect_upstream(
@@ -628,12 +672,14 @@ fn fail_pending(
     base: &ObservedExchange,
     event_id: Option<String>,
     started: std::time::Instant,
+    error: &str,
 ) {
     let Some(id) = event_id else { return };
     let interceptor = ctx.interceptor.clone();
     let mut ex = base.clone();
     ex.event_id = Some(id);
     ex.status = Some(StatusCode::BAD_GATEWAY.as_u16());
+    ex.error = Some(error.to_owned());
     ex.latency_ms = Some(started.elapsed().as_millis() as u64);
     tokio::spawn(async move {
         interceptor.on_response(&ex).await;

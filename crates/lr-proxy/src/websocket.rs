@@ -10,8 +10,8 @@
 //! client data message runs through [`ProxyInterceptor::on_request`] — the same
 //! firewall hook the HTTP path uses — before being re-framed and forwarded, so
 //! model rules, rate limits, and Ask-mode approval apply to websocket traffic
-//! too. The upstream→client direction is a pure byte tee (never rewritten):
-//! server messages are only decoded for capture.
+//! too. Protected upstream responses are restored before client delivery;
+//! monitoring retains the masked provider messages.
 //!
 //! Captured server messages are buffered in SSE shape (`data: {...}\n\n`) so
 //! the whole existing SSE reconstruction pipeline (model, tokens, previews,
@@ -323,9 +323,6 @@ impl WsSession {
         mut base: ObservedExchange,
     ) -> Self {
         base.connection_trace = true;
-        if base.secret_session.is_none() {
-            base.secret_session = Some(uuid::Uuid::new_v4().to_string());
-        }
         Self {
             interceptor,
             format,
@@ -444,10 +441,11 @@ impl WsSession {
             let Some(cycle) = guard.as_mut() else {
                 return Ok(vec![text.to_owned()]);
             };
-            output = if let Some(restorer) = &mut cycle.restorer {
-                restorer.message(text)?
+            // Capture before restoration so rejected provider events remain inspectable.
+            let restored = if let Some(restorer) = &mut cycle.restorer {
+                restorer.message(text)
             } else {
-                vec![text.to_owned()]
+                Ok(vec![text.to_owned()])
             };
             // Framed as one SSE event: "data: " + payload + "\n\n".
             let needed = text.len() + 8;
@@ -455,17 +453,22 @@ impl WsSession {
                 // Over the cap: drop deltas, but never the terminal event —
                 // it carries the whole response object (model, usage, output),
                 // so it wins the remaining room by dropping earlier deltas.
-                if !terminal || needed > CAPTURE_CAP {
-                    return Ok(output);
+                if !terminal {
+                    return restored;
                 }
                 cycle.capture.clear();
                 cycle
                     .capture
                     .push_str("data: {\"type\":\"localrouter.truncated\"}\n\n");
             }
-            cycle.capture.push_str("data: ");
-            cycle.capture.push_str(text);
-            cycle.capture.push_str("\n\n");
+            // The capture budget must never prevent delivery/completion of a
+            // terminal event, even when its full output exceeds the budget.
+            if needed <= CAPTURE_CAP {
+                cycle.capture.push_str("data: ");
+                cycle.capture.push_str(text);
+                cycle.capture.push_str("\n\n");
+            }
+            output = restored?;
         }
         if terminal {
             let status = json.map(|j| wire::terminal_status(self.format, &j));
@@ -478,6 +481,10 @@ impl WsSession {
     /// without a terminal event (disconnect) → recorded as an error with
     /// whatever was salvaged, mirroring the SSE disconnect path.
     async fn finish_cycle(&self, status: Option<u16>) {
+        self.finish_cycle_with_error(status, None).await;
+    }
+
+    async fn finish_cycle_with_error(&self, status: Option<u16>, error: Option<String>) {
         let Some(cycle) = self.cycle.lock().take() else {
             return;
         };
@@ -486,6 +493,11 @@ impl WsSession {
         ex.event_id = cycle.event_id;
         ex.request_body = Some(cycle.request_body);
         ex.status = status;
+        ex.error = error.or_else(|| {
+            status
+                .is_none()
+                .then(|| "WebSocket disconnected before a terminal response event".into())
+        });
         ex.response_body = (!cycle.capture.is_empty()).then(|| cycle.capture.into_bytes());
         ex.response_is_sse = true;
         ex.latency_ms = Some(cycle.started.elapsed().as_millis() as u64);
@@ -524,8 +536,8 @@ fn reject_event(status: u16, body: &[u8]) -> String {
 /// Ferry an upgraded websocket connection between client and upstream.
 ///
 /// With a [`WsSession`] (a recognized LLM path), client data messages are
-/// decoded, firewalled, and re-framed; server bytes are forwarded verbatim
-/// and decoded only for capture. Without one (any other websocket on a
+/// decoded, firewalled, and re-framed; protected server messages are restored
+/// before delivery and captured in their masked form. Without one (any other websocket on a
 /// MITM'd host), both directions are a blind byte copy.
 ///
 /// If either decoder poisons (protocol violation / oversized frame), the
@@ -636,7 +648,18 @@ where
                     };
                     let messages = match messages {
                         Ok(messages) => messages,
-                        Err(_) => {
+                        Err(error) => {
+                            let message = format!("Protected WebSocket response failed: {error}");
+                            session
+                                .finish_cycle_with_error(Some(502), Some(message.clone()))
+                                .await;
+                            let body = serde_json::json!({"error":{"type":"localrouter_proxy","message":message}}).to_string();
+                            let reply = reject_event(502, body.as_bytes());
+                            let _ = client_wr
+                                .lock()
+                                .await
+                                .write_all(&encode_frame(&WsMessage::Text(reply), false))
+                                .await;
                             break 'server;
                         }
                     };
@@ -939,6 +962,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn oversized_terminal_completes_the_cycle_without_waiting_for_disconnect() {
+        let store = Arc::new(MonitorEventStore::new(16));
+        let session = WsSession::new(
+            Arc::new(PassiveInterceptor::new(store.clone())),
+            WireFormat::OpenAiResponses,
+            base_exchange(),
+        );
+        session
+            .on_client_message(response_create().as_bytes())
+            .await;
+        let mut event: Value = serde_json::from_str(&completed_event()).unwrap();
+        event["response"]["output"][0]["content"][0]["text"] =
+            Value::String("x".repeat(CAPTURE_CAP + 1));
+        let event = event.to_string();
+        assert_eq!(
+            session.on_server_message(&event).await.unwrap(),
+            vec![event]
+        );
+        let events = store.list(0, 10, None);
+        assert_eq!(events.events.len(), 1);
+        assert_eq!(events.events[0].status, EventStatus::Complete);
+        assert!(session.cycle.lock().is_none());
+    }
+
+    #[tokio::test]
     async fn session_records_one_event_per_cycle() {
         let store = Arc::new(MonitorEventStore::new(16));
         let interceptor = Arc::new(PassiveInterceptor::new(store.clone()));
@@ -1194,6 +1242,92 @@ mod protected_cancellation_tests {
             }
         }
     }
+    #[tokio::test]
+    async fn restoration_failure_reaches_both_websocket_client_and_monitor() {
+        struct RecordedProtect(crate::passive::PassiveInterceptor);
+        #[async_trait::async_trait]
+        impl ProxyInterceptor for RecordedProtect {
+            fn on_connect(
+                &self,
+                _: &str,
+                _: &crate::interceptor::ClientCtx,
+            ) -> crate::interceptor::ConnectDecision {
+                crate::interceptor::ConnectDecision::Mitm
+            }
+            async fn on_request(&self, ex: &ObservedExchange) -> RequestAction {
+                Protect.on_request(ex).await
+            }
+            fn begin(&self, ex: &ObservedExchange) -> Option<String> {
+                self.0.begin(ex)
+            }
+            async fn on_response(&self, ex: &ObservedExchange) {
+                self.0.on_response(ex).await
+            }
+        }
+        let store = Arc::new(lr_monitor::MonitorEventStore::new(10));
+        let session = Arc::new(WsSession::new(
+            Arc::new(RecordedProtect(crate::passive::PassiveInterceptor::new(
+                store.clone(),
+            ))),
+            WireFormat::OpenAiResponses,
+            ObservedExchange {
+                client_id: "cancel".into(),
+                host: "chatgpt.com".into(),
+                path: "/backend-api/codex/responses".into(),
+                ..Default::default()
+            },
+        ));
+        let (mut client, proxy_client) = tokio::io::duplex(8192);
+        let (mut upstream, proxy_upstream) = tokio::io::duplex(8192);
+        let task = tokio::spawn(relay(proxy_client, proxy_upstream, Some(session)));
+        client
+            .write_all(&encode_frame(
+                &WsMessage::Text(r#"{"type":"response.create","input":"hello"}"#.into()),
+                true,
+            ))
+            .await
+            .unwrap();
+        let mut buffer = [0; 8192];
+        assert!(upstream.read(&mut buffer).await.unwrap() > 0);
+        let malformed = "not valid protected JSON";
+        upstream
+            .write_all(&encode_frame(&WsMessage::Text(malformed.into()), false))
+            .await
+            .unwrap();
+        let mut decoder = FrameDecoder::new();
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let read = client.read(&mut buffer).await.unwrap();
+                assert!(read > 0, "restoration failed without a client error");
+                if let Some(WsMessage::Text(reply)) = decoder.push(&buffer[..read]).pop() {
+                    break reply;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        let reply: Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(reply["status"], 502);
+        assert!(reply["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Protected WebSocket response failed"));
+        drop(client);
+        drop(upstream);
+        task.await.unwrap();
+        let summary = store.list(0, 10, None).events.pop().unwrap();
+        assert_eq!(summary.status, lr_monitor::EventStatus::Error);
+        let event = serde_json::to_value(store.get(&summary.id).unwrap()).unwrap();
+        assert!(event["data"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("Protected WebSocket response failed"));
+        assert!(event["data"]["raw_response"]
+            .as_str()
+            .unwrap()
+            .contains(malformed));
+    }
+
     #[tokio::test]
     async fn cancellation_retains_capability_until_terminal_event_and_rejects_hidden_input() {
         let session = WsSession::new(

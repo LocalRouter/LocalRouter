@@ -79,7 +79,7 @@ pub(crate) async fn chat_completions_with_endpoint(
     state.emit_event("llm-request", "chat");
 
     // Generate session ID for correlating monitor events
-    let session_id = uuid::Uuid::new_v4().to_string();
+    let session_id = super::monitor_helpers::new_request_session();
 
     // Emit monitor event for traffic inspection
     let request_json =

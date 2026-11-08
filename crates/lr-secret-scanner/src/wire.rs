@@ -370,7 +370,7 @@ impl Events {
                 .remove(&key)
                 .expect("selected argument channel");
             let restored = if key.contains("custom_tool_call_input") {
-                context.restore_text(&arguments, true)?
+                context.restore_text_at(&arguments, true, "Tool arguments")?
             } else {
                 let mut args: Value = serde_json::from_str(&arguments).map_err(|_| {
                     lr_types::AppError::InvalidParams("Incomplete protected tool arguments".into())
@@ -555,6 +555,9 @@ impl ResponseRestorer {
         }
     }
     fn bind(&self, value: &Value) -> lr_types::AppResult<()> {
+        if self.vault.client_scoped() {
+            return Ok(());
+        }
         self.vault.bind_opaque(value)?;
         // Bind response objects, never item/call/event IDs. Providers choose
         // their own ID format; no prefix is part of the Responses contract.
@@ -627,6 +630,9 @@ impl ResponseRestorer {
                     })
             })
             .collect()
+    }
+    pub fn done(&self) -> bool {
+        self.events.done
     }
     pub fn finish(&mut self) -> lr_types::AppResult<Vec<String>> {
         if !self.events.done {

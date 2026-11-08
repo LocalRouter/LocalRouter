@@ -157,7 +157,7 @@ pub async fn create_message(
         .map_err(|e| {
             ApiErrorResponse::bad_request(format!("Invalid Messages policy projection: {e}"))
         })?;
-    let session_id = uuid::Uuid::new_v4().to_string();
+    let session_id = super::monitor_helpers::new_request_session();
     state.emit_event("llm-request", "messages");
     state.record_client_activity(&auth.api_key_id);
     let mut guard = super::monitor_helpers::emit_llm_call(
@@ -256,7 +256,7 @@ pub async fn count_tokens(
     let headers = MessagesHeaders::from_headers(&headers).map_err(ApiErrorResponse::from)?;
     let projection: ChatCompletionRequest = serde_json::from_value(native.policy_projection())
         .map_err(|e| ApiErrorResponse::bad_request(e.to_string()))?;
-    let session_id = uuid::Uuid::new_v4().to_string();
+    let session_id = super::monitor_helpers::new_request_session();
     let started = std::time::Instant::now();
     let mut guard = super::monitor_helpers::emit_llm_call(
         &state,

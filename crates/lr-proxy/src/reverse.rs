@@ -329,16 +329,30 @@ impl ReverseProxy {
             }
         };
         base.event_id = self.recorder.begin(&base);
+        let pending_recorder = self.recorder.clone();
+        let mut pending_base = base.clone();
+        let mut pending = crate::tap::CancellationGuard::new(move || {
+            if pending_base.event_id.is_none() {
+                return;
+            }
+            pending_base.status = Some(StatusCode::BAD_GATEWAY.as_u16());
+            pending_base.error = Some("Proxy request cancelled before response delivery".into());
+            pending_base.latency_ms = Some(started.elapsed().as_millis() as u64);
+            tokio::spawn(async move {
+                pending_recorder.record(pending_base).await;
+            });
+        });
 
         let stream =
             match TcpStream::connect((self.upstream_host.as_str(), self.upstream_port)).await {
                 Ok(s) => s,
                 Err(e) => {
+                    pending.disarm();
                     return self.fail(
                         base,
                         started,
                         format!("cannot reach {}: {e}", self.upstream),
-                    )
+                    );
                 }
             };
         let _ = stream.set_nodelay(true);
@@ -346,7 +360,10 @@ impl ReverseProxy {
         let (mut sender, conn) =
             match hyper::client::conn::http1::handshake(TokioIo::new(stream)).await {
                 Ok(pair) => pair,
-                Err(e) => return self.fail(base, started, format!("upstream handshake: {e}")),
+                Err(e) => {
+                    pending.disarm();
+                    return self.fail(base, started, format!("upstream handshake: {e}"));
+                }
             };
         tokio::spawn(async move {
             let _ = conn.await;
@@ -355,7 +372,10 @@ impl ReverseProxy {
         let up_req = Request::from_parts(parts, Full::new(req_bytes));
         let resp = match sender.send_request(up_req).await {
             Ok(r) => r,
-            Err(e) => return self.fail(base, started, format!("upstream request: {e}")),
+            Err(e) => {
+                pending.disarm();
+                return self.fail(base, started, format!("upstream request: {e}"));
+            }
         };
 
         let (mut rparts, rbody) = resp.into_parts();
@@ -383,7 +403,9 @@ impl ReverseProxy {
         let sse = base.response_is_sse;
         let ndjson = base.response_is_ndjson;
         let mut recorded = base;
-        let on_end: Box<dyn FnOnce(Vec<u8>) + Send> = Box::new(move |bytes| {
+        let on_end: Box<dyn FnOnce(crate::tap::Capture) + Send> = Box::new(move |capture| {
+            let bytes = capture.bytes;
+            recorded.error = capture.error;
             recorded.response_body = (!bytes.is_empty()).then_some(bytes);
             recorded.latency_ms = Some(started.elapsed().as_millis() as u64);
             tokio::spawn(async move {
@@ -391,9 +413,12 @@ impl ReverseProxy {
             });
         });
 
-        let tapped = crate::tap::TappedBody::new(rbody, MAX_CAPTURE, on_end);
-        if let Some(vault) = vault {
-            match crate::protected_response::restore(rparts, tapped, vault, sse, ndjson).await {
+        let response = if let Some(vault) = vault {
+            match crate::protected_response::restore_recorded(
+                rparts, rbody, vault, sse, ndjson, on_end,
+            )
+            .await
+            {
                 Ok(response) => response,
                 Err(_) => error_response(
                     StatusCode::BAD_GATEWAY,
@@ -401,8 +426,13 @@ impl ReverseProxy {
                 ),
             }
         } else {
-            Response::from_parts(rparts, BodyExt::boxed_unsync(tapped))
-        }
+            Response::from_parts(
+                rparts,
+                BodyExt::boxed_unsync(crate::tap::TappedBody::new(rbody, MAX_CAPTURE, on_end)),
+            )
+        };
+        pending.disarm();
+        response
     }
 
     fn authority(&self) -> String {
