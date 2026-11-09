@@ -189,6 +189,21 @@ pub async fn serve_state(
     info!("Web server listening on http://{}:{}", config.host, port);
     info!("OpenAI-compatible endpoints available at:");
 
+    // Idle clients cannot drive reconnection themselves once tools disappear.
+    let recovery_gateway = state.mcp_gateway.clone();
+    let recovery_shutdown = shutdown.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                biased;
+                _ = recovery_shutdown.cancelled() => break,
+                _ = interval.tick() => recovery_gateway.recover_idle_backends().await,
+            }
+        }
+    });
+
     // Spawn session cleanup tasks (runs every 10 minutes)
     let gateway_for_cleanup = state.mcp_gateway.clone();
     let mcp_via_llm_for_cleanup = state.mcp_via_llm_manager.clone();

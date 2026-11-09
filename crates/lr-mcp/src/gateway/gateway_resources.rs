@@ -59,7 +59,7 @@ impl McpGateway {
         );
 
         // Fetch from servers
-        let (resources, failures) = self
+        let (mut resources, failures) = self
             .fetch_and_merge_resources(&allowed_servers, request.clone(), &transports)
             .await?;
 
@@ -69,6 +69,18 @@ impl McpGateway {
             failures.len(),
             request_id
         );
+
+        {
+            let state = session.read().await;
+            self.remember_discovery(
+                &state,
+                &state.allowed_servers,
+                "resources",
+                &mut resources,
+                &failures,
+                |item| (&item.server_id, &item.original_name),
+            );
+        }
 
         // Update session mappings, cache, failures, and mark as fetched
         {
@@ -109,11 +121,12 @@ impl McpGateway {
     ) -> AppResult<(Vec<NamespacedResource>, Vec<ServerFailure>)> {
         let timeout = Duration::from_secs(self.config.server_timeout_seconds);
         let max_retries = self.config.max_retry_attempts;
+        let deadline = tokio::time::Instant::now() + timeout;
 
         let results =
             broadcast_request(server_ids, request, transports, timeout, max_retries).await;
 
-        let (successes, failures) = separate_results(results);
+        let (successes, mut failures) = separate_results(results);
 
         // Even if every server failed, return an empty list plus failures:
         // virtual tools (skills, search, ...) are still served, and callers
@@ -129,10 +142,17 @@ impl McpGateway {
         let mut server_resources: Vec<(String, Vec<McpResource>)> = Vec::new();
 
         for (server_id, value) in successes {
-            let mut all_items: Vec<McpResource> = value
+            let Some(mut all_items) = value
                 .get("resources")
-                .and_then(|r| serde_json::from_value::<Vec<McpResource>>(r.clone()).ok())
-                .unwrap_or_default();
+                .and_then(|v| serde_json::from_value::<Vec<McpResource>>(v.clone()).ok())
+            else {
+                failures.push(ServerFailure {
+                    server_id,
+                    error: "Invalid resources catalog response".into(),
+                });
+                continue;
+            };
+            let mut complete = true;
 
             // Exhaust pagination if the server returned a nextCursor
             let mut next_cursor = value
@@ -149,6 +169,7 @@ impl McpGateway {
                         MAX_PAGES,
                         server_id
                     );
+                    complete = false;
                     break;
                 }
 
@@ -158,13 +179,26 @@ impl McpGateway {
                     Some(json!({ "cursor": cursor })),
                 );
 
-                match tokio::time::timeout(
-                    timeout,
+                match tokio::time::timeout_at(
+                    deadline,
                     transports.send_request(&server_id, page_request),
                 )
                 .await
                 {
                     Ok(Ok(response)) => {
+                        if response.error.is_some()
+                            || response
+                                .result
+                                .as_ref()
+                                .and_then(|r| r.get("resources"))
+                                .and_then(|v| {
+                                    serde_json::from_value::<Vec<McpResource>>(v.clone()).ok()
+                                })
+                                .is_none()
+                        {
+                            complete = false;
+                            break;
+                        }
                         if let Some(result) = &response.result {
                             if let Some(resources) = result.get("resources").and_then(|r| {
                                 serde_json::from_value::<Vec<McpResource>>(r.clone()).ok()
@@ -184,6 +218,7 @@ impl McpGateway {
                             page,
                             e
                         );
+                        complete = false;
                         break;
                     }
                     Err(_) => {
@@ -192,11 +227,20 @@ impl McpGateway {
                             server_id,
                             page
                         );
+                        complete = false;
                         break;
                     }
                 }
 
                 page += 1;
+            }
+
+            if !complete {
+                failures.push(ServerFailure {
+                    server_id,
+                    error: "Incomplete resources catalog pagination".into(),
+                });
+                continue;
             }
 
             if !all_items.is_empty() {
@@ -678,9 +722,18 @@ impl McpGateway {
         session: Arc<RwLock<GatewaySession>>,
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
+        let ids = session.read().await.allowed_servers.clone();
+        self.refresh_resource_templates(session, request, ids).await
+    }
+
+    pub(super) async fn refresh_resource_templates(
+        &self,
+        session: Arc<RwLock<GatewaySession>>,
+        request: JsonRpcRequest,
+        allowed_servers: Vec<String>,
+    ) -> AppResult<JsonRpcResponse> {
         let request_id = request.id.clone();
         let session_read = session.read().await;
-        let allowed_servers = session_read.allowed_servers.clone();
         let transports = session_read
             .transports
             .clone()
@@ -689,11 +742,12 @@ impl McpGateway {
 
         let timeout = Duration::from_secs(self.config.server_timeout_seconds);
         let max_retries = self.config.max_retry_attempts;
+        let deadline = tokio::time::Instant::now() + timeout;
 
         let results =
             broadcast_request(&allowed_servers, request, &transports, timeout, max_retries).await;
 
-        let (successes, failures) = separate_results(results);
+        let (successes, mut failures) = separate_results(results);
 
         // Merge resource templates from all servers, namespacing names,
         // exhausting pagination for each server
@@ -701,11 +755,18 @@ impl McpGateway {
 
         for (server_id, value) in successes {
             // Collect templates from the first page
-            let mut server_templates: Vec<serde_json::Value> = value
+            let Some(mut server_templates) = value
                 .get("resourceTemplates")
-                .and_then(|t| t.as_array())
+                .and_then(Value::as_array)
                 .cloned()
-                .unwrap_or_default();
+            else {
+                failures.push(ServerFailure {
+                    server_id,
+                    error: "Invalid resource template catalog response".into(),
+                });
+                continue;
+            };
+            let mut complete = true;
 
             // Exhaust pagination if the server returned a nextCursor
             let mut next_cursor = value
@@ -722,6 +783,7 @@ impl McpGateway {
                         MAX_PAGES,
                         server_id
                     );
+                    complete = false;
                     break;
                 }
 
@@ -731,13 +793,24 @@ impl McpGateway {
                     Some(json!({ "cursor": cursor })),
                 );
 
-                match tokio::time::timeout(
-                    timeout,
+                match tokio::time::timeout_at(
+                    deadline,
                     transports.send_request(&server_id, page_request),
                 )
                 .await
                 {
                     Ok(Ok(response)) => {
+                        if response.error.is_some()
+                            || response
+                                .result
+                                .as_ref()
+                                .and_then(|r| r.get("resourceTemplates"))
+                                .and_then(Value::as_array)
+                                .is_none()
+                        {
+                            complete = false;
+                            break;
+                        }
                         if let Some(result) = &response.result {
                             if let Some(templates) =
                                 result.get("resourceTemplates").and_then(|t| t.as_array())
@@ -757,6 +830,7 @@ impl McpGateway {
                             page,
                             e
                         );
+                        complete = false;
                         break;
                     }
                     Err(_) => {
@@ -765,11 +839,20 @@ impl McpGateway {
                             server_id,
                             page
                         );
+                        complete = false;
                         break;
                     }
                 }
 
                 page += 1;
+            }
+
+            if !complete {
+                failures.push(ServerFailure {
+                    server_id,
+                    error: "Incomplete resource template catalog pagination".into(),
+                });
+                continue;
             }
 
             if page > 1 {
@@ -790,6 +873,8 @@ impl McpGateway {
                         .and_then(|n| n.as_str())
                         .map(|n| n.to_string())
                     {
+                        obj.insert("server_id".into(), json!(server_id));
+                        obj.insert("original_name".into(), json!(name));
                         let ns_name = apply_namespace(&server_id, &name);
                         obj.insert("name".to_string(), serde_json::json!(ns_name));
                     }
@@ -798,15 +883,38 @@ impl McpGateway {
             }
         }
 
+        {
+            let state = session.read().await;
+            self.remember_discovery(
+                &state,
+                &allowed_servers,
+                "resourceTemplates",
+                &mut all_templates,
+                &failures,
+                |item| {
+                    (
+                        item["server_id"].as_str().unwrap_or(""),
+                        item["original_name"].as_str().unwrap_or(""),
+                    )
+                },
+            );
+            all_templates = self.visible_cached_templates(&state, all_templates);
+        }
+
         // Store failures for diagnostics
         if !failures.is_empty() {
             let mut session_write = session.write().await;
-            session_write.last_broadcast_failures = failures;
+            session_write.last_broadcast_failures = failures.clone();
         }
 
+        let mut result = json!({ "resourceTemplates": all_templates });
+        if !failures.is_empty() {
+            result["_meta"] = json!({"partial_failure":true,"failures":failures});
+        }
+        let result = session.read().await.with_initialization_failures(result);
         Ok(JsonRpcResponse::success(
             request_id.unwrap_or(Value::Null),
-            json!({ "resourceTemplates": all_templates }),
+            result,
         ))
     }
 }

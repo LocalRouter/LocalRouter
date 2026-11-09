@@ -220,11 +220,23 @@ impl SessionTransportSet {
         server_id: &str,
         request: JsonRpcRequest,
     ) -> AppResult<JsonRpcResponse> {
+        // A tool call rejected locally before dispatch shares the safe retry
+        // boundary of an explicit upstream session rejection. In particular,
+        // another call may be repairing this server's transport right now.
+        if request.method == "tools/call" && self.reconnect_required.contains(server_id) {
+            return Err(AppError::McpSessionExpired);
+        }
         let transport = self
             .transports
             .get(server_id)
             .map(|e| e.value().clone())
-            .ok_or_else(|| AppError::Mcp(format!("Server not running: {}", server_id)))?;
+            .ok_or_else(|| {
+                if request.method == "tools/call" {
+                    AppError::McpSessionExpired
+                } else {
+                    AppError::Mcp(format!("Server not running: {}", server_id))
+                }
+            })?;
 
         let request = self.prepare_request_for(server_id, request);
         let method = request.method.clone();
@@ -712,5 +724,33 @@ mod tests {
         assert!(!set.is_running("s2"));
         assert!(t1.closed.load(Ordering::Relaxed));
         assert!(t2.closed.load(Ordering::Relaxed));
+    }
+    #[tokio::test]
+    async fn tool_calls_during_transport_replacement_are_rejected_before_dispatch() {
+        let set = SessionTransportSet::new();
+        let tool = JsonRpcRequest::with_id(1, "tools/call".into(), None);
+        assert!(matches!(
+            set.send_request("server", tool.clone()).await,
+            Err(AppError::McpSessionExpired)
+        ));
+        set.insert(
+            "server".into(),
+            Arc::new(MockTransport {
+                closed: AtomicBool::new(false),
+            }),
+        );
+        set.mark_connecting("server");
+        assert!(matches!(
+            set.send_request("server", tool.clone()).await,
+            Err(AppError::McpSessionExpired)
+        ));
+        // Handshake/discovery must still reach the replacement transport.
+        set.send_request(
+            "server",
+            JsonRpcRequest::with_id(2, "initialize".into(), None),
+        )
+        .await
+        .unwrap();
+        assert!(set.send_request("server", tool).await.is_ok());
     }
 }

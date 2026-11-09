@@ -6,6 +6,7 @@
 pub mod access_control;
 pub mod coding_agent_approval;
 pub mod context_mode;
+mod discovery_cache;
 pub mod elicitation;
 pub mod firewall;
 #[allow(clippy::module_inception)]
