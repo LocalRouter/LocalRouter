@@ -255,7 +255,7 @@ export function EventDetail({ event, loading, error, onRetry, toolbar, onReplay 
   const type = data.type as string
   const tabs = eventTabs(event)
   const active = tabs.find(t => t.id === tab) ?? tabs[0]
-  const secretTitle = data.action_taken === 'restore' ? 'Secret Restored' : data.action_taken === 'redact' || (Array.isArray(data.findings) && data.findings.some((finding: MonitorSecretFinding) => finding.redacted)) ? 'Secret Redacted' : 'Secret Scan'
+  const secretTitle = data.action_taken === 'restore_warning' ? 'Secret Not Restored' : data.action_taken === 'restore' ? 'Secret Restored' : data.action_taken === 'redact' || (Array.isArray(data.findings) && data.findings.some((finding: MonitorSecretFinding) => finding.redacted)) ? 'Secret Redacted' : 'Secret Scan'
   const title = type === 'secret_scan' ? secretTitle : String(data.model || data.tool_name || data.prompt_name || data.uri || type.replace(/_/g, ' '))
 
   return (
@@ -691,7 +691,7 @@ function ExchangeGrid({ children }: { children: ReactNode }) {
   return <div className="grid grid-cols-1 gap-3 [@container(min-width:640px)]:grid-cols-2" data-testid="exchange-grid">{children}</div>
 }
 
-function ExchangeCard({ title, description, payload, children, error = false }: { title: 'Request' | 'Response' | 'Detected secrets' | 'Restored secrets' | 'Matched context'; description?: ReactNode; payload?: unknown; children: ReactNode; error?: boolean }) {
+function ExchangeCard({ title, description, payload, children, error = false }: { title: 'Request' | 'Response' | 'Detected secrets' | 'Restored secrets' | 'Restoration diagnostic' | 'Matched context'; description?: ReactNode; payload?: unknown; children: ReactNode; error?: boolean }) {
   const isRequest = title === 'Request' || title === 'Matched context'
   const Icon = isRequest ? ArrowUpRight : ArrowDownLeft
   return (
@@ -1346,7 +1346,8 @@ function SecretScanDetail({ data, eventId }: { data: EventData; eventId: string 
   const findings: MonitorSecretFinding[] = Array.isArray(data.findings) ? data.findings : []
   const restored = data.action_taken === 'restore'
   return <ExchangeGrid>
-    <ExchangeCard title={restored ? 'Restored secrets' : 'Detected secrets'}>
+    <ExchangeCard title={data.action_taken === 'restore_warning' ? 'Restoration diagnostic' : restored ? 'Restored secrets' : 'Detected secrets'}>
+      {data.action_taken === 'restore_warning' && <p className="text-xs text-muted-foreground">The response was delivered. A possible reference or local validation issue is recorded below; original values are never included in this diagnostic.</p>}
       <div className="grid grid-cols-3 gap-2 text-xs">
         <Field label={restored ? 'References restored' : 'Findings'} value={String(data.findings_count ?? findings.length)} />
         {data.rules_count > 0 && <Field label="Rules checked" value={String(data.rules_count)} />}

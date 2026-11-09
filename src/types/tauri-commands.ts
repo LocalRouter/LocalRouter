@@ -4900,8 +4900,14 @@ export interface SecretScanApprovalDetails {
   llm_source: string | null
 }
 
-/** Result of a secret scan */
+/** Rust: crates/lr-secret-scanner/src/preview.rs - SecretScanPreview */
 export interface SecretScanResult {
+  redacted_request: string
+  model_response: string
+  restored_response: string
+  round_trip_matches: boolean
+  restored_references: number
+  warnings: string[]
   findings: SecretFinding[]
   scan_duration_ms: number
   rules_evaluated: number
@@ -4974,6 +4980,9 @@ export interface RemoveClientDismissedSecretParams {
 /** Params for test_secret_scan */
 export interface TestSecretScanParams {
   input: string
+  entropyThreshold?: number | null
+  responseTemplate?: string | null
+  responseEncoding?: 'plain' | 'json' | 'nested_json' | 'html' | null
 }
 
 // =============================================================================

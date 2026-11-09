@@ -27,6 +27,8 @@ pub trait SecretContext: Send + Sync {
     fn restore_text_at(&self, text: &str, strict: bool, _location: &str) -> AppResult<String> {
         self.restore_text(text, strict)
     }
+    /// Metadata-only local diagnostic. Must never include original secret bytes.
+    fn diagnostic(&self, _message: &str) {}
     fn active(&self) -> bool;
     fn validate_tool(&self, _name: Option<&str>, _arguments: &Value) -> AppResult<()> {
         Ok(())

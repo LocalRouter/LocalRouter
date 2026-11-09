@@ -263,6 +263,24 @@ pub fn attach_monitor(state: &AppState, vault: &Vault, owner: &str, session: Opt
     vault.set_operation_observer(Arc::new(move |operation| {
         use lr_monitor::{EventStatus, MonitorEventData, MonitorEventType};
         let Ok(mut events) = events.lock() else { return; };
+        if operation.action == "restore_warning" {
+            if let Some(id) = events.get("restore_warning") {
+                store.update(id, |event| {
+                    if let MonitorEventData::SecretScan { text_preview, .. } = &mut event.data {
+                        if !text_preview.contains(&operation.location) {
+                            text_preview.push('\n'); text_preview.push_str(&operation.location);
+                        }
+                    }
+                });
+            } else {
+                let id = store.push(MonitorEventType::SecretScan, Some(owner.clone()), name.clone(), session.clone(),
+                    MonitorEventData::SecretScan { text_preview: operation.location, rules_count:0,
+                      findings_count:Some(0), findings:None, action_taken:Some("restore_warning".into()), latency_ms:None },
+                    EventStatus::Error, None);
+                events.insert("restore_warning",id);
+            }
+            return;
+        }
         let tag = format!("<localrouter-redacted id='{}' usage='Unmasked when returned verbatim'/>", operation.reference_id);
         let existing = events.get(operation.action).and_then(|id| store.get(id))
             .or_else(|| if operation.action == "redact" { session.as_deref().and_then(|s| store.redaction_for_request(&owner, s, after_sequence)) } else { None });
@@ -655,10 +673,12 @@ mod tests {
         );
     }
     #[test]
-    fn secret_placeholders_unknown_tool_argument_is_blocked() {
+    fn secret_placeholders_unknown_tool_argument_is_preserved() {
         let (context, _, _) = fixture();
         let mut value = json!({"choices":[{"message":{"tool_calls":[{"function":{"arguments":"{\"content\":\"<localrouter-redacted id=unknown>\"}"}}]}}]});
-        assert!(context.restore(&mut value, false).is_err());
+        let original = value.clone();
+        context.restore(&mut value, false).unwrap();
+        assert_eq!(value, original);
     }
     #[tokio::test]
     async fn secret_placeholders_synthetic_file_write_and_echo() {
@@ -700,9 +720,7 @@ mod tests {
                 .body(Body::empty())
                 .unwrap();
             let result = restore_response(response, vault).await;
-            if status == 200 {
-                assert!(result.is_err(), "empty inference responses remain invalid");
-            } else {
+            {
                 let response = result.unwrap();
                 assert_eq!(response.status().as_u16(), status);
                 assert!(to_bytes(response.into_body(), LIMIT)

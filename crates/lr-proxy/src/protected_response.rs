@@ -285,10 +285,7 @@ mod tests {
         assert!(body.collect().await.is_err());
         let capture = captured.lock().unwrap().take().unwrap();
         assert_eq!(capture.bytes, wire.as_bytes());
-        assert!(capture
-            .error
-            .unwrap()
-            .contains("Invalid protected SSE event"));
+        assert!(capture.error.unwrap().contains("without completion"));
     }
 
     #[tokio::test]
@@ -301,9 +298,7 @@ mod tests {
                 .unwrap();
             let (parts, body) = response.into_parts();
             let result = restore(parts, body, vault, false, false).await;
-            if status == 200 {
-                assert!(result.is_err(), "empty inference responses remain invalid");
-            } else {
+            {
                 let response = result.unwrap();
                 assert_eq!(response.status().as_u16(), status);
                 assert!(response

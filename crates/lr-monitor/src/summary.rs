@@ -7,7 +7,9 @@ fn secret_action(data: &MonitorEventData) -> Option<&'static str> {
             findings,
             ..
         } => {
-            if action_taken.as_deref() == Some("restore") {
+            if action_taken.as_deref() == Some("restore_warning") {
+                Some("restore_warning")
+            } else if action_taken.as_deref() == Some("restore") {
                 Some("restore")
             } else if action_taken.as_deref() == Some("redact")
                 || findings
@@ -241,6 +243,7 @@ pub fn generate_summary(event: &MonitorEvent) -> String {
                 let count = findings_count.unwrap_or(0);
                 let action = action_taken.as_deref().unwrap_or("?");
                 let label = match secret_action(&event.data) {
+                    Some("restore_warning") => "Secret Not Restored",
                     Some("restore") => "Secret Restored",
                     Some("redact") => "Secret Redacted",
                     _ => "Secret Scan",
