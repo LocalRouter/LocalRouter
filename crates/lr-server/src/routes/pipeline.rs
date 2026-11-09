@@ -780,6 +780,7 @@ pub(crate) async fn check_model_firewall_for(
                 FirewallApprovalAction::Deny
                 | FirewallApprovalAction::DenySession
                 | FirewallApprovalAction::ReplaceSecrets
+                | FirewallApprovalAction::ContinueWithRedaction
                 | FirewallApprovalAction::RedactOnce
                 | FirewallApprovalAction::DenyAlways
                 | FirewallApprovalAction::BlockCategories
@@ -1460,6 +1461,7 @@ pub async fn handle_guardrail_result(
         FirewallApprovalAction::Deny
         | FirewallApprovalAction::DenySession
         | FirewallApprovalAction::ReplaceSecrets
+        | FirewallApprovalAction::ContinueWithRedaction
         | FirewallApprovalAction::RedactOnce
         | FirewallApprovalAction::DenyAlways
         | FirewallApprovalAction::BlockCategories
@@ -1556,20 +1558,33 @@ pub(crate) async fn run_secret_scan_check(
     let Some(client_ctx) = client_ctx else {
         return Ok(());
     };
-    let mut original = serde_json::to_value(&*request).map_err(|_| {
-        ApiErrorResponse::internal_error("Could not serialize request for secret scanning")
-    })?;
+    let Ok(mut original) = serde_json::to_value(&*request) else {
+        secret_scan_warning(
+            state,
+            &client_ctx.client_id,
+            Some(session_id),
+            "Secret Scan could not serialize this request; content forwarded",
+        );
+        return Ok(());
+    };
     if let Some(context) = lr_types::secret_context::current() {
         crate::documents::protect_text_files(&mut original, context.as_ref())
             .map_err(ApiErrorResponse::from)?;
-        context
-            .prepare(&mut original)
+        lr_types::secret_context::prepare(context.as_ref(), &mut original)
             .await
             .map_err(ApiErrorResponse::from)?;
-        *request = serde_json::from_value(original.clone())
-            .map_err(|_| ApiErrorResponse::forbidden("Could not protect conversation history"))?;
+        match serde_json::from_value(original.clone()) {
+            Ok(candidate) => *request = candidate,
+            Err(_) => {
+                context.protection_diagnostic(
+                    "Masked request could not be represented; original request forwarded",
+                );
+                original = serde_json::to_value(&*request).unwrap_or_default();
+            }
+        }
     }
-    let (body, _) = crate::documents::scan_projection(&original).map_err(ApiErrorResponse::from)?;
+    let (body, _) =
+        crate::documents::scan_projection(&original).unwrap_or_else(|_| (original.clone(), true));
     match scan_request_for_secrets_with_source(
         state,
         &client_ctx.client_id,
@@ -1585,12 +1600,18 @@ pub(crate) async fn run_secret_scan_check(
             crate::documents::redact_text_files(&mut original, &redaction)
                 .map_err(ApiErrorResponse::from)?;
             redaction.apply(&mut original);
-            *request = serde_json::from_value(original).map_err(|_| {
-                ApiErrorResponse::forbidden("Request blocked: could not apply secret redaction")
-            })?;
+            match serde_json::from_value(original) {
+                Ok(candidate) => *request = candidate,
+                Err(_) => secret_scan_warning(
+                    state,
+                    &client_ctx.client_id,
+                    Some(session_id),
+                    "Redacted request could not be represented; original request forwarded",
+                ),
+            }
             Ok(())
         }
-        SecretScanOutcome::Deny(message) => Err(ApiErrorResponse::forbidden(message)),
+        SecretScanOutcome::Deny(_) => Err(lr_types::AppError::SecretScanDenied.into()),
     }
 }
 
@@ -1619,6 +1640,32 @@ pub async fn scan_request_for_secrets(
     body: &serde_json::Value,
 ) -> SecretScanOutcome {
     scan_request_for_secrets_with_source(state, client_id, model, body, None, None).await
+}
+
+/// Metadata only: unavailable inspection must never become a request denial.
+pub fn secret_scan_warning(
+    state: &AppState,
+    client_id: &str,
+    session: Option<&str>,
+    message: &str,
+) {
+    if let Some(context) = lr_types::secret_context::current() {
+        context.protection_diagnostic(message);
+    } else {
+        super::monitor_helpers::record_secret_scan(
+            state,
+            Some(&ClientAuthContext {
+                client_id: client_id.into(),
+            }),
+            session,
+            message,
+            0,
+            0,
+            serde_json::json!([]),
+            "protect_warning",
+            0,
+        );
+    }
 }
 
 /// Native proxy requests already know their provider before scanning.
@@ -1678,20 +1725,26 @@ pub async fn scan_request_for_secrets_fresh(
         guard.as_ref().cloned()
     };
     let Some(scanner) = scanner else {
-        return if *effective_action == lr_config::SecretScanAction::Redact {
-            SecretScanOutcome::Deny(
-                "Secret scanner is unavailable; automatic redaction cannot proceed".into(),
-            )
-        } else {
-            SecretScanOutcome::Allow
-        };
+        if *effective_action == lr_config::SecretScanAction::Redact {
+            secret_scan_warning(
+                state,
+                client_id,
+                Some(session_id),
+                "Secret scanner unavailable; request forwarded without new detection",
+            );
+        }
+        return SecretScanOutcome::Allow;
     };
     if !scanner.has_rules() {
-        return if *effective_action == lr_config::SecretScanAction::Redact {
-            SecretScanOutcome::Deny("Secret scanner has no detection rules".into())
-        } else {
-            SecretScanOutcome::Allow
-        };
+        if *effective_action == lr_config::SecretScanAction::Redact {
+            secret_scan_warning(
+                state,
+                client_id,
+                Some(session_id),
+                "Secret scanner has no rules; request forwarded without new detection",
+            );
+        }
+        return SecretScanOutcome::Allow;
     }
 
     // Extract text from request using guardrails text extractor. It recognizes
@@ -1831,15 +1884,17 @@ pub async fn scan_request_for_secrets_fresh(
     let outcome = match effective_action {
         lr_config::SecretScanAction::Redact => {
             let Some(context) = lr_types::secret_context::current() else {
-                return SecretScanOutcome::Deny(
-                    "Reversible redaction is not supported on this transport".into(),
+                secret_scan_warning(
+                    state,
+                    client_id,
+                    Some(session_id),
+                    "Secret replacement unsupported on this transport; request forwarded unchanged",
                 );
+                return SecretScanOutcome::Allow;
             };
             for finding in &result.findings {
                 if context.register(&finding.raw_text).is_err() {
-                    return SecretScanOutcome::Deny(
-                        "Could not store redacted secret in OS credential storage".into(),
-                    );
+                    secret_scan_warning(state, client_id, Some(session_id), "Secret mapping could not be stored; request forwarded with incomplete coverage");
                 }
             }
             SecretScanOutcome::Allow
@@ -2143,7 +2198,15 @@ pub(crate) async fn handle_secret_scan_approval(
     let mut redaction = lr_secret_scanner::redaction::Redaction::default();
     // Await each decision before creating the next popup. A denial immediately
     // ends the sequence; no later finding is ever presented for this request.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+    let mut fallback = false;
     for finding in details.findings {
+        if fallback || tokio::time::Instant::now() >= deadline {
+            if let Some(context) = lr_types::secret_context::current() {
+                let _ = context.register(&finding.raw_text);
+            }
+            continue;
+        }
         let one = lr_mcp::gateway::firewall::SecretScanApprovalDetails {
             findings: vec![finding],
             scan_duration_ms: details.scan_duration_ms,
@@ -2151,27 +2214,34 @@ pub(crate) async fn handle_secret_scan_approval(
             llm_source: details.llm_source.clone(),
         };
         let preview = secret_scan_popup_preview(&one);
-        let response = match state
-            .mcp_gateway
-            .firewall_manager
-            .request_secret_scan_approval(
-                client_ctx.client_id.clone(),
-                client_name.clone(),
-                model.to_string(),
-                one.clone(),
-                preview,
-            )
-            .await
+        let response = match tokio::time::timeout_at(
+            deadline,
+            state
+                .mcp_gateway
+                .firewall_manager
+                .request_secret_scan_approval(
+                    client_ctx.client_id.clone(),
+                    client_name.clone(),
+                    model.to_string(),
+                    one.clone(),
+                    preview,
+                ),
+        )
+        .await
         {
-            Ok(response) => response,
-            Err(error) => {
-                tracing::error!(
-                    "Secret scan approval failed for {}: {error}",
-                    client_ctx.client_id
+            Ok(Ok(response)) => response,
+            _ => {
+                fallback = true;
+                secret_scan_warning(
+                    state,
+                    &client_ctx.client_id,
+                    Some(session_id),
+                    "Secret Scan approval unavailable; proceeding with best-effort redaction",
                 );
-                return SecretScanOutcome::Deny(
-                    "Request blocked: secret scan approval could not be completed".into(),
-                );
+                if let Some(context) = lr_types::secret_context::current() {
+                    let _ = context.register(&one.findings[0].raw_text);
+                }
+                continue;
             }
         };
         super::monitor_helpers::emit_firewall_decision(
@@ -2184,16 +2254,25 @@ pub(crate) async fn handle_secret_scan_approval(
             None,
         );
         match response.action {
+            FirewallApprovalAction::ContinueWithRedaction => {
+                fallback = true;
+                secret_scan_warning(state,&client_ctx.client_id,Some(session_id),"Secret Scan approval dismissed or unavailable; proceeding with best-effort redaction");
+                if let Some(context) = lr_types::secret_context::current() {
+                    let _ = context.register(&one.findings[0].raw_text);
+                }
+            }
             FirewallApprovalAction::RedactOnce => redaction.add(&one.findings[0].raw_text),
             FirewallApprovalAction::ReplaceSecrets => {
                 let Some(context) = lr_types::secret_context::current() else {
-                    return SecretScanOutcome::Deny(
-                        "Restorable placeholders require a text gateway request".into(),
-                    );
+                    secret_scan_warning(state, &client_ctx.client_id, Some(session_id), "Secret replacement unavailable on this transport; original content forwarded");
+                    continue;
                 };
                 if context.register(&one.findings[0].raw_text).is_err() {
-                    return SecretScanOutcome::Deny(
-                        "Could not store redacted secret in OS credential storage".into(),
+                    secret_scan_warning(
+                        state,
+                        &client_ctx.client_id,
+                        Some(session_id),
+                        "Secret mapping could not be stored; original content forwarded",
                     );
                 }
             }
@@ -2202,10 +2281,21 @@ pub(crate) async fn handle_secret_scan_approval(
             | FirewallApprovalAction::Allow1Minute
             | FirewallApprovalAction::Allow1Hour
             | FirewallApprovalAction::AllowPermanent => {}
-            _ => {
+            FirewallApprovalAction::Deny => {
                 return SecretScanOutcome::Deny(
-                    "Request blocked: potential secrets detected in outbound request".into(),
+                    "Request denied by your Secret Scan decision".into(),
                 )
+            }
+            _ => {
+                secret_scan_warning(
+                    state,
+                    &client_ctx.client_id,
+                    Some(session_id),
+                    "Unexpected Secret Scan approval result; proceeding with best-effort redaction",
+                );
+                if let Some(context) = lr_types::secret_context::current() {
+                    let _ = context.register(&one.findings[0].raw_text);
+                }
             }
         }
     }

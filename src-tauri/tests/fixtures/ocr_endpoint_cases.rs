@@ -269,11 +269,12 @@ async fn ocr_rejects_configured_cost_limits_before_native_dispatch() {
 }
 
 #[tokio::test]
-async fn opaque_ocr_cannot_bypass_a_configured_blocking_secret_scan() {
+async fn opaque_ocr_with_secret_scan_forwards_to_provider_and_records_coverage_warning() {
     let mock = mock().await;
     Mock::given(method("POST"))
-        .respond_with(ResponseTemplate::new(500))
-        .expect(0)
+        .and(path("/ocr"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(result()))
+        .expect(1)
         .mount(&mock)
         .await;
     let (base, secret, state) = start_replay_test_server(
@@ -297,7 +298,9 @@ async fn opaque_ocr_cannot_bypass_a_configured_blocking_secret_scan() {
     let response = post(&base, "/ocr", &secret, &input()).await;
     let status = response.status();
     let text = response.text().await.unwrap();
-    assert_eq!(status, 400, "{text}");
-    assert!(text.contains("Opaque"), "{text}");
+    assert_eq!(status, 200, "{text}");
+    assert!(state.monitor_store.list(0, 100, None).events.iter().any(|event| {
+        state.monitor_store.get(&event.id).is_some_and(|event| matches!(event.data, lr_monitor::MonitorEventData::SecretScan { ref action_taken, .. } if action_taken.as_deref() == Some("protect_warning")))
+    }), "Opaque Secret Scan coverage must be reported without blocking dispatch");
     mock.verify().await;
 }

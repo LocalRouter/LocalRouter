@@ -31,3 +31,6 @@ pub mod schema;
 mod encoding;
 
 pub mod preview;
+
+#[cfg(test)]
+mod nonblocking_tests;

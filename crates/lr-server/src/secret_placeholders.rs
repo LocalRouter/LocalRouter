@@ -4,17 +4,19 @@ use crate::{
     middleware::error::ApiErrorResponse,
     state::{AppState, AuthContext},
 };
+#[cfg(test)]
+use axum::body::to_bytes;
 use axum::{
-    body::{to_bytes, Body},
+    body::Body,
     extract::{Request, State},
     middleware::Next,
     response::{IntoResponse, Response},
 };
 use futures::StreamExt;
-use lr_secret_scanner::{
-    placeholders::Vault,
-    wire::{frame_end, ResponseRestorer},
-};
+#[cfg(test)]
+use lr_secret_scanner::wire::ResponseRestorer;
+
+use lr_secret_scanner::placeholders::Vault;
 use lr_types::secret_context::{self, SecretContext};
 use serde_json::Value;
 use std::sync::Arc;
@@ -109,19 +111,50 @@ async fn run_scoped(
                 | "/decisions"
         );
     if !inference && !control {
-        if *action == lr_config::SecretScanAction::Redact
-            && request.method() == axum::http::Method::POST
-        {
-            return Err(ApiErrorResponse::bad_request(
-                "Automatic secret redaction is supported on text gateway endpoints only",
-            ));
+        if masking && request.method() == axum::http::Method::POST {
+            crate::routes::pipeline::secret_scan_warning(
+                &state,
+                &owner,
+                None,
+                "Secret Scan does not support this endpoint; request forwarded unchanged",
+            );
+            return Ok(next.run(request).await);
         }
         return Ok(next.run(request).await);
     }
     let (mut parts, body) = request.into_parts();
-    let bytes = to_bytes(body, LIMIT)
-        .await
-        .map_err(|_| ApiErrorResponse::bad_request("Could not read protected request"))?;
+    let mut source = body.into_data_stream();
+    let mut buffered = Vec::new();
+    while let Some(chunk) = source.next().await {
+        match chunk {
+            Ok(chunk) => {
+                buffered.extend_from_slice(&chunk);
+                if buffered.len() > LIMIT {
+                    crate::routes::pipeline::secret_scan_warning(&state,&owner,None,"Request exceeds Secret Scan inspection budget; original request forwarded to normal endpoint validation");
+                    let prefix = futures::stream::once(async move {
+                        Ok::<_, axum::Error>(axum::body::Bytes::from(buffered))
+                    });
+                    return Ok(next
+                        .run(Request::from_parts(
+                            parts,
+                            Body::from_stream(prefix.chain(source)),
+                        ))
+                        .await);
+                }
+            }
+            Err(error) => {
+                let prefix =
+                    futures::stream::iter(vec![Ok(axum::body::Bytes::from(buffered)), Err(error)]);
+                return Ok(next
+                    .run(Request::from_parts(
+                        parts,
+                        Body::from_stream(prefix.chain(source)),
+                    ))
+                    .await);
+            }
+        }
+    }
+    let bytes = axum::body::Bytes::from(buffered);
     let mut value: Value = if control {
         serde_json::json!({})
     } else {
@@ -132,13 +165,31 @@ async fn run_scoped(
                     .run(Request::from_parts(parts, Body::from(bytes)))
                     .await)
             }
-            Err(_) => return Err(ApiErrorResponse::bad_request("Invalid request JSON")),
+            Err(_) => {
+                crate::routes::pipeline::secret_scan_warning(
+                    &state,
+                    &owner,
+                    None,
+                    "Secret Scan could not parse this request; original request forwarded",
+                );
+                return Ok(next
+                    .run(Request::from_parts(parts, Body::from(bytes)))
+                    .await);
+            }
         }
     };
     let conversation = match request_session(&value, &parts.headers) {
         Ok(session) => session,
         Err(_) if !masking || control => None,
-        Err(error) => return Err(error),
+        Err(_) => {
+            crate::routes::pipeline::secret_scan_warning(
+                &state,
+                &owner,
+                None,
+                "Secret Scan conversation grouping unavailable; client scope retained",
+            );
+            None
+        }
     };
     let _ = MONITOR_CONTEXT.try_with(|context| context.borrow_mut().conversation_id = conversation);
     let continuation = match Vault::find_client(
@@ -152,7 +203,15 @@ async fn run_scoped(
                 .run(Request::from_parts(parts, Body::from(bytes)))
                 .await)
         }
-        Err(error) => return Err(ApiErrorResponse::from(error)),
+        Err(_) => {
+            crate::routes::pipeline::secret_scan_warning(
+                &state,
+                &owner,
+                None,
+                "Stored references could not be loaded; request proceeds with a fresh client map",
+            );
+            None
+        }
     };
     if !masking && continuation.is_none() {
         return Ok(next
@@ -190,8 +249,12 @@ async fn run_scoped(
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_owned();
-        let (projection, _) =
-            crate::documents::scan_projection(&value).map_err(ApiErrorResponse::from)?;
+        let (projection, _) = crate::documents::scan_projection(&value).unwrap_or_else(|_| {
+            context.protection_diagnostic(
+                "Document inspection incomplete; original content forwarded",
+            );
+            (value.clone(), true)
+        });
         match crate::routes::pipeline::scan_request_for_secrets_with_source(
             &state,
             &owner,
@@ -203,7 +266,8 @@ async fn run_scoped(
         .await
         {
             crate::routes::pipeline::SecretScanOutcome::Deny(message) => {
-                return Err(ApiErrorResponse::forbidden(message))
+                let _ = message;
+                return Err(lr_types::AppError::SecretScanDenied.into());
             }
             crate::routes::pipeline::SecretScanOutcome::Redact(redaction) => {
                 crate::documents::redact_text_files(&mut value, &redaction)
@@ -214,8 +278,7 @@ async fn run_scoped(
         }
         crate::documents::protect_text_files(&mut value, context.as_ref())
             .map_err(ApiErrorResponse::from)?;
-        context
-            .protect(&mut value)
+        lr_types::secret_context::protect(context.as_ref(), &mut value)
             .map_err(ApiErrorResponse::from)?;
         vault
             .set_request_contract(&value)
@@ -231,8 +294,12 @@ async fn run_scoped(
             &value,
         );
         parts.headers.remove(axum::http::header::CONTENT_LENGTH);
-        let body = serde_json::to_vec(&value)
-            .map_err(|_| ApiErrorResponse::internal_error("Could not encode protected request"))?;
+        let body = serde_json::to_vec(&value).unwrap_or_else(|_| {
+            context.protection_diagnostic(
+                "Modified request could not be encoded; original content forwarded",
+            );
+            bytes.to_vec()
+        });
         let response = next.run(Request::from_parts(parts, Body::from(body))).await;
         restore_response(response, vault).await
     })
@@ -263,8 +330,8 @@ pub fn attach_monitor(state: &AppState, vault: &Vault, owner: &str, session: Opt
     vault.set_operation_observer(Arc::new(move |operation| {
         use lr_monitor::{EventStatus, MonitorEventData, MonitorEventType};
         let Ok(mut events) = events.lock() else { return; };
-        if operation.action == "restore_warning" {
-            if let Some(id) = events.get("restore_warning") {
+        if matches!(operation.action, "restore_warning" | "protect_warning") {
+            if let Some(id) = events.get(operation.action) {
                 store.update(id, |event| {
                     if let MonitorEventData::SecretScan { text_preview, .. } = &mut event.data {
                         if !text_preview.contains(&operation.location) {
@@ -275,9 +342,9 @@ pub fn attach_monitor(state: &AppState, vault: &Vault, owner: &str, session: Opt
             } else {
                 let id = store.push(MonitorEventType::SecretScan, Some(owner.clone()), name.clone(), session.clone(),
                     MonitorEventData::SecretScan { text_preview: operation.location, rules_count:0,
-                      findings_count:Some(0), findings:None, action_taken:Some("restore_warning".into()), latency_ms:None },
+                      findings_count:Some(0), findings:None, action_taken:Some(operation.action.into()), latency_ms:None },
                     EventStatus::Error, None);
-                events.insert("restore_warning",id);
+                events.insert(operation.action,id);
             }
             return;
         }
@@ -352,7 +419,8 @@ fn install_followup_detector(
         let allowed = allowed_plaintext.clone();
         Box::pin(async move {
             let mut strings = Vec::new();
-            let (mut scan, _) = crate::documents::scan_projection(&body)?;
+            let (mut scan, _) =
+                crate::documents::scan_projection(&body).unwrap_or_else(|_| (body.clone(), true));
             lr_secret_scanner::placeholders::visit(
                 &mut scan,
                 &mut |text, _| {
@@ -381,7 +449,8 @@ fn install_followup_detector(
             .await
             {
                 crate::routes::pipeline::SecretScanOutcome::Deny(message) => {
-                    return Err(lr_types::AppError::InvalidParams(message))
+                    let _ = message;
+                    return Err(lr_types::AppError::SecretScanDenied);
                 }
                 crate::routes::pipeline::SecretScanOutcome::Redact(redaction) => {
                     crate::documents::redact_text_files(&mut body, &redaction)?;
@@ -440,12 +509,20 @@ async fn restore_response(
     response: Response,
     vault: Arc<Vault>,
 ) -> Result<Response, ApiErrorResponse> {
-    let context: Arc<dyn SecretContext> = vault.clone();
     let streaming = response
         .headers()
         .get("content-type")
         .is_some_and(|v| v.as_bytes().starts_with(b"text/event-stream"));
     let (mut parts, body) = response.into_parts();
+    if parts
+        .headers
+        .get("content-encoding")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v != "identity")
+    {
+        vault.diagnostic("Compressed response cannot be restored; original response delivered");
+        return Ok(Response::from_parts(parts, body));
+    }
     for header in [
         "content-length",
         "etag",
@@ -460,45 +537,23 @@ async fn restore_response(
         axum::http::header::CACHE_CONTROL,
         axum::http::HeaderValue::from_static("no-store"),
     );
-    if !streaming {
-        let bytes = to_bytes(body, LIMIT)
-            .await
-            .map_err(|_| ApiErrorResponse::internal_error("Protected response exceeds limit"))?;
-        let mut codec = ResponseRestorer::new(vault);
-        let encoded = if bytes.is_empty()
-            && matches!(
-                parts.status,
-                axum::http::StatusCode::NO_CONTENT | axum::http::StatusCode::NOT_MODIFIED
-            ) {
-            bytes.to_vec()
-        } else {
-            codec.json(&bytes).map_err(ApiErrorResponse::from)?
-        };
-        return Ok(Response::from_parts(parts, Body::from(encoded)));
-    }
-    let stream: std::pin::Pin<
-        Box<dyn futures::Stream<Item = Result<axum::body::Bytes, std::io::Error>> + Send>,
-    > = Box::pin(async_stream::try_stream! {
-        let mut body=body.into_data_stream();let mut pending=Vec::new();let mut scanned=0;let mut codec=ResponseRestorer::new(vault);
-        while let Some(chunk)=secret_context::scope(Some(context.clone()),body.next()).await {
-            let chunk=chunk.map_err(std::io::Error::other)?;pending.extend_from_slice(&chunk);
-            if pending.len()>LIMIT {Err(std::io::Error::other("Protected response frame exceeds limit"))?;}
-            while let Some((relative,separator))=frame_end(&pending[scanned..]){
-                let end=scanned+relative;scanned=0;
-                let frame=String::from_utf8(pending.drain(..end).collect()).map_err(std::io::Error::other)?;
-                pending.drain(..separator);
-                for event in codec.frame(&frame).map_err(std::io::Error::other)? {yield axum::body::Bytes::from(event);}
-            }
-            scanned=pending.len().saturating_sub(3);
-        }
-        if !pending.is_empty(){Err(std::io::Error::other("Incomplete protected response event"))?;}
-        for event in codec.finish().map_err(std::io::Error::other)? {yield axum::body::Bytes::from(event);}
-    });
+    let mode = if streaming {
+        lr_secret_scanner::wire::StreamMode::Sse
+    } else {
+        lr_secret_scanner::wire::StreamMode::Json
+    };
+    let stream = lr_secret_scanner::wire::restore_stream(
+        body.into_data_stream(),
+        vault,
+        mode,
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    );
     Ok(Response::from_parts(parts, Body::from_stream(stream)))
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::to_bytes;
     use lr_secret_scanner::wire::Events;
     use serde_json::json;
     fn fixture() -> (Arc<dyn SecretContext>, String, String) {
@@ -1494,3 +1549,7 @@ mod followup_attachment_tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "secret_availability_tests.rs"]
+mod availability_tests;

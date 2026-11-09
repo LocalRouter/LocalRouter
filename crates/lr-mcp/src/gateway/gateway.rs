@@ -2696,16 +2696,11 @@ impl McpGateway {
     ) -> AppResult<()> {
         if let Some(context) = lr_types::secret_context::current() {
             if let Some(result) = response.result.as_mut() {
-                context.prepare(result).await?;
+                lr_types::secret_context::prepare(context.as_ref(), result).await?;
             }
             // Upstream errors can also carry tool-returned credentials.
             if let Some(error) = response.error.as_mut() {
-                let mut value = serde_json::to_value(&*error)
-                    .map_err(|_| AppError::Internal("Could not protect tool error".into()))?;
-                context.prepare(&mut value).await?;
-                *error = serde_json::from_value(value).map_err(|_| {
-                    AppError::Internal("Could not encode protected tool error".into())
-                })?;
+                protect_tool_error(context.as_ref(), error).await?;
             }
         }
         Ok(())
@@ -5218,4 +5213,49 @@ fn spawn_capability_observation(
             }
         }
     });
+}
+
+/// Keep the original error envelope if masking cannot preserve its wire shape.
+async fn protect_tool_error(
+    context: &dyn lr_types::secret_context::SecretContext,
+    error: &mut JsonRpcError,
+) -> AppResult<()> {
+    let Ok(mut value) = serde_json::to_value(&*error) else {
+        context
+            .protection_diagnostic("Tool error could not be inspected; original error forwarded");
+        return Ok(());
+    };
+    lr_types::secret_context::prepare(context, &mut value).await?;
+    match serde_json::from_value(value) {
+        Ok(candidate) => *error = candidate,
+        Err(_) => context.protection_diagnostic(
+            "Masked tool error could not be represented; original error forwarded",
+        ),
+    }
+    Ok(())
+}
+#[cfg(test)]
+mod nonblocking_error_tests {
+    use super::*;
+    use lr_types::secret_context::SecretContext;
+    #[tokio::test]
+    async fn masking_an_error_field_name_cannot_abort_a_model_tool_iteration() {
+        let vault = lr_secret_scanner::placeholders::Vault::for_client(
+            Arc::new(lr_api_keys::MockKeychain::new()),
+            "tool-error-envelope",
+        );
+        vault.register("message").unwrap();
+        let warnings = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = warnings.clone();
+        vault.set_operation_observer(Arc::new(move |notice| {
+            if notice.action == "protect_warning" {
+                observed.store(true, std::sync::atomic::Ordering::Release);
+            }
+        }));
+        let mut error = JsonRpcError::internal_error("message");
+        let original = serde_json::to_value(&error).unwrap();
+        protect_tool_error(&vault, &mut error).await.unwrap();
+        assert_eq!(serde_json::to_value(error).unwrap(), original);
+        assert!(warnings.load(std::sync::atomic::Ordering::Acquire));
+    }
 }

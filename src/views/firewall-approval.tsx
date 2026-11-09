@@ -266,12 +266,13 @@ export function FirewallApproval() {
     return () => { disposed = true; unlisten?.() }
   }, [])
 
-  // Notify-only popups: dismiss the backend session when the window is
-  // closed via the title bar, so it doesn't linger in the pending list.
+  // Notifications and Secret Scan approvals release their backend session
+  // when dismissed through the title bar. Secret Scan cancellation proceeds
+  // with best-effort redaction rather than becoming an implicit denial.
   // Hold the close until the dismiss lands (a fire-and-forget invoke can be
   // dropped mid-teardown), then destroy — which skips this handler.
   useEffect(() => {
-    if (!details?.is_notify_only || inactive) return
+    if (!(details?.is_notify_only || details?.is_secret_scan_request) || inactive) return
     const win = getCurrentWebviewWindow()
     const unlistenPromise = win.onCloseRequested(async (event) => {
       if (submittingRef.current) return // Dismiss button already cleaned up

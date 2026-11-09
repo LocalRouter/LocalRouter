@@ -209,7 +209,8 @@ export function ClientSecretScanningTab({ client, onUpdate, onViewChange }: Secr
         <TabsContent value="overview"><Card><CardHeader><CardTitle className="text-base">Redaction and restoration for {client.name}</CardTitle></CardHeader><CardContent className="space-y-3 text-sm text-muted-foreground">
           <p><strong className="text-foreground">Secret Redacted:</strong> detected originals are stored locally and replaced before requests reach a provider.</p>
           <p><strong className="text-foreground">Secret Restored:</strong> references returned to this authenticated client are restored locally in replies and tool arguments.</p>
-          <p>Mappings survive restarts and expire after 14 days of client inactivity. Other clients cannot use them. Stored originals and remembered allow/redact rules are managed separately.</p>
+          <p>Mappings normally survive restarts and expire after 14 days of client inactivity. During storage outages, new mappings stay in memory for this app run. Other clients cannot use them. Stored originals and remembered allow/redact rules are managed separately.</p>
+          <p>Internal Secret Scan failures never reject requests. Incomplete protection is reported in Monitor; content that could not be masked may reach the provider.</p>
           <p>Unknown or unsupported references remain literal. A <strong className="text-foreground">Secret Not Restored</strong> diagnostic appears in Monitor without failing the response.</p>
         </CardContent></Card></TabsContent>
         <TabsContent value="store"><RedactedSecretsStore clientId={client.id} /></TabsContent>

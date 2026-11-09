@@ -558,6 +558,10 @@ pub struct ResponseRestorer {
     vault: Arc<Vault>,
     context: Arc<dyn SecretContext>,
     events: Events,
+    original: Vec<String>,
+    output: Vec<String>,
+    held_bytes: usize,
+    passthrough: bool,
 }
 impl ResponseRestorer {
     pub fn new(vault: Arc<Vault>) -> Self {
@@ -565,6 +569,10 @@ impl ResponseRestorer {
             context: vault.clone(),
             vault,
             events: Events::default(),
+            original: Vec::new(),
+            output: Vec::new(),
+            held_bytes: 0,
+            passthrough: false,
         }
     }
     fn bind(&self, value: &Value) -> lr_types::AppResult<()> {
@@ -600,66 +608,224 @@ impl ResponseRestorer {
         Ok(())
     }
     pub fn json(&mut self, bytes: &[u8]) -> lr_types::AppResult<Vec<u8>> {
-        let mut value: Value = match serde_json::from_slice(bytes) {
-            Ok(value) => value,
-            Err(_) => {
-                self.context
-                    .diagnostic("Provider response was not JSON; delivered unchanged");
+        if bytes.len() > LIMIT {
+            self.context
+                .diagnostic("Response exceeds restoration budget; original content delivered");
+            return Ok(bytes.to_vec());
+        }
+        let candidate = (|| -> lr_types::AppResult<Vec<u8>> {
+            let mut value: Value = serde_json::from_slice(bytes)?;
+            let original = value.clone();
+            self.bind(&value)?;
+            self.context.restore(&mut value, false)?;
+            self.context.validate_response(&value)?;
+            if value == original {
                 return Ok(bytes.to_vec());
             }
-        };
-        self.bind(&value)?;
-        self.context.restore(&mut value, false)?;
-        self.context.validate_response(&value)?;
-        let bytes = serde_json::to_vec(&value).map_err(|_| {
-            lr_types::AppError::Internal("Could not encode protected response".into())
-        })?;
-        if bytes.len() > LIMIT {
-            return Err(lr_types::AppError::InvalidParams(
-                "Restored response exceeds limit".into(),
-            ));
+            let encoded = serde_json::to_vec(&value)?;
+            if encoded.len() > LIMIT {
+                return Err(lr_types::AppError::InvalidParams(
+                    "Restored response exceeds budget".into(),
+                ));
+            }
+            Ok(encoded)
+        })();
+        match candidate {
+            Ok(value) => Ok(value),
+            Err(_) => {
+                self.context.diagnostic(
+                    "Response could not be restored safely; original content delivered",
+                );
+                Ok(bytes.to_vec())
+            }
         }
-        Ok(bytes)
     }
+    /// Release only outputs whose source frames no longer have buffered content.
+    /// If adaptation fails, none of these original frames has been emitted yet.
     pub fn frame(&mut self, frame: &str) -> lr_types::AppResult<Vec<String>> {
-        let data = frame
+        let original = if frame_end(frame.as_bytes()).is_some_and(|(at, n)| at + n == frame.len()) {
+            frame.to_owned()
+        } else {
+            format!("{frame}\n\n")
+        };
+        if self.passthrough {
+            return Ok(vec![original]);
+        }
+        self.held_bytes = self.held_bytes.saturating_add(original.len());
+        self.original.push(original);
+        if self.held_bytes > LIMIT {
+            return Ok(
+                self.abandon("Restoration buffering limit reached; original events delivered")
+            );
+        }
+        let parsed = frame
+            .strip_suffix("\r\n\r\n")
+            .or_else(|| frame.strip_suffix("\n\n"))
+            .unwrap_or(frame);
+        let data = parsed
             .lines()
             .filter_map(|l| l.strip_prefix("data:").map(str::trim_start))
             .collect::<Vec<_>>()
             .join("\n");
-        if let Ok(value) = serde_json::from_str::<Value>(&data) {
-            self.bind(&value)?;
+        let result = (|| {
+            if let Ok(value) = serde_json::from_str::<Value>(&data) {
+                self.bind(&value)?;
+            }
+            self.events.frame(parsed, &self.context)
+        })();
+        match result {
+            Ok(output) => {
+                self.held_bytes = self
+                    .held_bytes
+                    .saturating_add(output.iter().map(String::len).sum::<usize>());
+                self.output.extend(output);
+                if self.held_bytes > LIMIT {
+                    return Ok(
+                        self.abandon("Restoration output limit reached; original events delivered")
+                    );
+                }
+                let pending = self
+                    .events
+                    .arguments
+                    .values()
+                    .any(|(s, _, _)| !s.is_empty())
+                    || self
+                        .events
+                        .text
+                        .values()
+                        .any(|(s, _, _)| !s.pending.is_empty() || s.text.buffered_bytes() > 0);
+                if pending {
+                    Ok(Vec::new())
+                } else {
+                    self.original.clear();
+                    self.held_bytes = 0;
+                    Ok(std::mem::take(&mut self.output))
+                }
+            }
+            Err(_) => {
+                Ok(self.abandon("Response adaptation unavailable; original events delivered"))
+            }
         }
-        self.events.frame(frame, &self.context)
     }
-    /// WebSocket messages carry the same JSON events without the SSE envelope.
     pub fn message(&mut self, text: &str) -> lr_types::AppResult<Vec<String>> {
         self.frame(&format!("data: {text}"))?
             .into_iter()
-            .map(|frame| {
-                frame
-                    .lines()
-                    .find_map(|l| l.strip_prefix("data: "))
-                    .map(str::to_owned)
-                    .ok_or_else(|| {
-                        lr_types::AppError::InvalidParams(
-                            "Invalid protected WebSocket event".into(),
-                        )
-                    })
-            })
+            .map(|frame| Ok(message_data(&frame)))
             .collect()
     }
     pub fn done(&self) -> bool {
         self.events.done
     }
-    pub fn finish(&mut self) -> lr_types::AppResult<Vec<String>> {
-        if !self.events.done {
-            return Err(lr_types::AppError::InvalidParams(
-                "Protected stream ended without completion".into(),
-            ));
-        }
-        self.events.finish(&self.context)
+    pub fn abandon_messages(&mut self, reason: &str) -> Vec<String> {
+        self.abandon(reason)
+            .into_iter()
+            .map(|frame| message_data(&frame))
+            .collect()
     }
+    /// Switch to pass-through without losing or duplicating held original data.
+    pub fn abandon(&mut self, reason: &str) -> Vec<String> {
+        self.context.diagnostic(reason);
+        self.passthrough = true;
+        self.output.clear();
+        self.held_bytes = 0;
+        self.events = Events::default();
+        std::mem::take(&mut self.original)
+    }
+    pub fn finish(&mut self) -> lr_types::AppResult<Vec<String>> {
+        if self.passthrough {
+            return Ok(Vec::new());
+        }
+        if !self.events.done || !self.original.is_empty() {
+            return Ok(self.abandon("Provider stream ended with incomplete restoration state; original buffered content delivered"));
+        }
+        Ok(Vec::new())
+    }
+}
+
+fn message_data(frame: &str) -> String {
+    let payload = if let Some(payload) = frame.strip_prefix("data: ") {
+        payload
+    } else if let Some(at) = frame.find("\ndata: ") {
+        &frame[at + 7..]
+    } else {
+        frame
+    };
+    payload.strip_suffix("\n\n").unwrap_or(payload).to_owned()
+}
+
+#[derive(Clone, Copy)]
+pub enum StreamMode {
+    Json,
+    Sse,
+    Ndjson,
+}
+/// Bounded best-effort restoration. Only errors from the original transport
+/// propagate; adaptation failures release original bytes and stop rewriting.
+pub fn restore_stream<S, E>(
+    stream: S,
+    vault: Arc<Vault>,
+    mode: StreamMode,
+    completed: Arc<std::sync::atomic::AtomicBool>,
+) -> std::pin::Pin<Box<dyn futures::Stream<Item = Result<bytes::Bytes, E>> + Send>>
+where
+    S: futures::Stream<Item = Result<bytes::Bytes, E>> + Send + 'static,
+    E: Send + 'static,
+{
+    use bytes::Bytes;
+    use futures::StreamExt;
+    Box::pin(async_stream::stream! {
+        let mut stream=Box::pin(stream);
+        let mut codec=ResponseRestorer::new(vault.clone());
+        let mut pending=Vec::new();
+        let mut scanned=0;
+        let mut passthrough=false;
+        let encode = |frame: String| -> Bytes { if matches!(mode, StreamMode::Ndjson) { Bytes::from(format!("{}\n",message_data(&frame))) } else {Bytes::from(frame)} };
+        while let Some(chunk)=stream.next().await {
+            let chunk=match chunk {
+                Ok(chunk)=>chunk,
+                Err(error)=>{
+                    for frame in codec.abandon("Upstream transport ended; original buffered content released") { yield Ok(encode(frame)); }
+                    if !pending.is_empty() { yield Ok(Bytes::from(std::mem::take(&mut pending))); }
+                    yield Err(error); return;
+                }
+            };
+            if passthrough { yield Ok(chunk); continue; }
+            pending.extend_from_slice(&chunk);
+            if pending.len()>LIMIT {
+                for frame in codec.abandon("Restoration byte limit reached; original content delivered") { yield Ok(encode(frame)); }
+                yield Ok(Bytes::from(std::mem::take(&mut pending))); passthrough=true; continue;
+            }
+            if matches!(mode,StreamMode::Json) { continue; }
+            loop {
+                let boundary=if matches!(mode,StreamMode::Ndjson) { pending[scanned..].iter().position(|b|*b==b'\n').map(|i|(i+scanned,1)) } else {frame_end(&pending[scanned..]).map(|(i,n)|(i+scanned,n))};
+                let Some((end,sep))=boundary else { scanned=pending.len().saturating_sub(3); break; };
+                let Ok(frame)=std::str::from_utf8(&pending[..end+sep]) else {
+                    for frame in codec.abandon("Unsupported response bytes; original content delivered") { yield Ok(encode(frame)); }
+                    yield Ok(Bytes::from(std::mem::take(&mut pending))); passthrough=true; break;
+                };
+                let output=if matches!(mode,StreamMode::Ndjson) {
+                    if frame.trim().is_empty() { vec![frame.to_owned()] } else { codec.message(frame.strip_suffix('\n').unwrap_or(frame)).unwrap_or_else(|_|vec![frame.into()]).into_iter().map(|s|format!("{s}\n")).collect() }
+                } else { codec.frame(frame).unwrap_or_else(|_|vec![frame.into()]) };
+                pending.drain(..end+sep); scanned=0;
+                let last=output.len().saturating_sub(1);
+                for (i,output)in output.into_iter().enumerate() {
+                    if i==last && codec.done() { completed.store(true,std::sync::atomic::Ordering::Release); }
+                    yield Ok(Bytes::from(output));
+                }
+            }
+        }
+        if !passthrough {
+            if matches!(mode,StreamMode::Json) {
+                let result=codec.json(&pending).unwrap_or(pending);
+                completed.store(true,std::sync::atomic::Ordering::Release);
+                if !result.is_empty() {yield Ok(Bytes::from(result));}
+            } else {
+                for frame in codec.finish().unwrap_or_default() { yield Ok(encode(frame)); }
+                if !pending.is_empty() { vault.diagnostic("Incomplete response frame delivered unchanged"); yield Ok(Bytes::from(pending)); }
+            }
+        }
+        completed.store(true,std::sync::atomic::Ordering::Release);
+    })
 }
 
 #[cfg(test)]
@@ -913,6 +1079,7 @@ mod tests {
             .iter()
             .any(|s| serde_json::from_str::<Value>(s).unwrap()["delta"]
                 .as_str()
+                .filter(|s| !s.is_empty())
                 .is_some_and(|s| serde_json::from_str::<Value>(s).unwrap()["content"] == secret)));
     }
     #[test]
@@ -932,6 +1099,7 @@ mod tests {
                 .iter()
                 .any(|s| serde_json::from_str::<Value>(s).unwrap()["delta"]
                     .as_str()
+                    .filter(|s| !s.is_empty())
                     .is_some_and(|s| serde_json::from_str::<Value>(s).unwrap()[field] == secret)));
         }
     }
@@ -958,7 +1126,7 @@ mod tests {
         }
     }
     #[test]
-    fn metadata_and_scope_are_retained_and_incomplete_stream_fails() {
+    fn metadata_and_scope_are_retained_and_incomplete_stream_passes() {
         let (vault, tag, secret) = fixture();
         let mut codec = ResponseRestorer::new(vault.clone());
         let response = json!({"id":"resp_scope","object":"response","output":[{"type":"output_text","text":tag}]});
@@ -981,7 +1149,7 @@ mod tests {
             .join("");
         assert!(output.contains("id: event-12\nretry: 1000\n"));
         assert!(output.contains(": keepalive"));
-        assert!(codec.finish().is_err());
+        assert!(codec.finish().is_ok());
     }
 }
 
@@ -1001,6 +1169,6 @@ mod budget_tests {
         for index in 0..1024 {
             codec.message(&json!({"type":"response.output_item.added","item":{"id":format!("call-{index}"),"type":"function_call","name":"write","arguments":""}}).to_string()).unwrap();
         }
-        assert!(codec.message(&json!({"type":"response.output_item.added","item":{"id":"excess","type":"function_call","name":"write","arguments":""}}).to_string()).is_err());
+        assert!(codec.message(&json!({"type":"response.output_item.added","item":{"id":"excess","type":"function_call","name":"write","arguments":""}}).to_string()).is_ok());
     }
 }

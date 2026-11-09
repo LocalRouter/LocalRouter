@@ -5811,7 +5811,10 @@ name = "lr-secret-scanner"
 version = "0.0.180"
 dependencies = [
  "aho-corasick",
+ "async-stream",
  "base64 0.22.1",
+ "bytes",
+ "futures",
  "jsonschema",
  "lr-api-keys",
  "lr-types",

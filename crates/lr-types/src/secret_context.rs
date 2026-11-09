@@ -29,6 +29,9 @@ pub trait SecretContext: Send + Sync {
     }
     /// Metadata-only local diagnostic. Must never include original secret bytes.
     fn diagnostic(&self, _message: &str) {}
+    fn protection_diagnostic(&self, message: &str) {
+        self.diagnostic(message);
+    }
     fn active(&self) -> bool;
     fn validate_tool(&self, _name: Option<&str>, _arguments: &Value) -> AppResult<()> {
         Ok(())
@@ -56,4 +59,67 @@ pub fn current() -> Option<Arc<dyn SecretContext>> {
 }
 pub async fn scope<F: Future>(context: Option<Arc<dyn SecretContext>>, future: F) -> F::Output {
     CONTEXT.scope(context, future).await
+}
+
+/// Transactional request adapter. Only an explicit human denial is fatal.
+pub fn protect(context: &dyn SecretContext, value: &mut Value) -> AppResult<()> {
+    let mut candidate = value.clone();
+    match context.protect(&mut candidate) {
+        Ok(()) => *value = candidate,
+        Err(crate::AppError::SecretScanDenied) => return Err(crate::AppError::SecretScanDenied),
+        Err(_) => context
+            .protection_diagnostic("Secret masking could not complete; original content forwarded"),
+    }
+    Ok(())
+}
+pub async fn prepare(context: &dyn SecretContext, value: &mut Value) -> AppResult<()> {
+    let mut candidate = value.clone();
+    match context.prepare(&mut candidate).await {
+        Ok(()) => *value = candidate,
+        Err(crate::AppError::SecretScanDenied) => return Err(crate::AppError::SecretScanDenied),
+        Err(_) => context.protection_diagnostic(
+            "Secret Scan could not complete for follow-up content; original content forwarded",
+        ),
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod nonblocking_tests {
+    use super::*;
+    struct Failure(bool);
+    impl SecretContext for Failure {
+        fn register(&self, _: &str) -> AppResult<()> {
+            Ok(())
+        }
+        fn protect(&self, value: &mut Value) -> AppResult<()> {
+            *value = serde_json::json!({"partial":"must not leak"});
+            if self.0 {
+                Err(crate::AppError::SecretScanDenied)
+            } else {
+                Err(crate::AppError::Internal("fixture".into()))
+            }
+        }
+        fn restore(&self, _: &mut Value, _: bool) -> AppResult<()> {
+            Ok(())
+        }
+        fn restore_text(&self, s: &str, _: bool) -> AppResult<String> {
+            Ok(s.into())
+        }
+        fn active(&self) -> bool {
+            true
+        }
+    }
+    #[tokio::test]
+    async fn adapters_rollback_partial_mutations_and_only_propagate_human_denial() {
+        for deny in [false, true] {
+            let context = Failure(deny);
+            let mut request = serde_json::json!({"original":true});
+            let original = request.clone();
+            assert_eq!(protect(&context, &mut request).is_err(), deny);
+            assert_eq!(request, original);
+            assert_eq!(prepare(&context, &mut request).await.is_err(), deny);
+            assert_eq!(request, original);
+        }
+    }
 }

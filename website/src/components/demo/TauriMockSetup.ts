@@ -16,7 +16,7 @@
  * See AGENTS.md "Adding/Modifying Tauri Commands" for full checklist.
  */
 
-import type { RedactedSecretEntry, ListRedactedSecretsParams, RevealRedactedSecretParams, PurgeRedactedSecretsParams, SecretScanResult, TestSecretScanParams, DecodedSecretJwt, DiscoveredResourceIcon, LaunchResult } from '@app/types/tauri-commands'
+import type { RedactedSecretInventory, RedactedSecretEntry, ListRedactedSecretsParams, RevealRedactedSecretParams, PurgeRedactedSecretsParams, SecretScanResult, TestSecretScanParams, DecodedSecretJwt, DiscoveredResourceIcon, LaunchResult } from '@app/types/tauri-commands'
 
 import { mockIPC, mockWindows, clearMocks } from '@tauri-apps/api/mocks'
 import { emit } from '@tauri-apps/api/event'
@@ -5477,7 +5477,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // ============================================================================
   // Secret Scanning
   // ============================================================================
-  'list_redacted_secrets': (args?: ListRedactedSecretsParams): RedactedSecretEntry[] => storedDemoSecrets().filter(entry => !args?.clientId || entry.client_id === args.clientId),
+  'list_redacted_secrets': (args?: ListRedactedSecretsParams): RedactedSecretInventory => ({ entries: storedDemoSecrets().filter(entry => !args?.clientId || entry.client_id === args.clientId), persistence_warning: null }),
   'reveal_redacted_secret': (args?: RevealRedactedSecretParams): string => {
     const entry = storedDemoSecrets().find(entry => entry.client_id === args?.clientId && entry.reference_id === args.referenceId)
     const original = entry && demoSecretOriginals.get(entry.reference_id)

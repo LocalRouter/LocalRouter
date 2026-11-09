@@ -111,7 +111,7 @@ pub fn round_trip(
             if let Ok(mut ids) = restored_sink.lock() {
                 ids.insert(operation.reference_id);
             }
-        } else if operation.action == "restore_warning" {
+        } else if matches!(operation.action, "restore_warning" | "protect_warning") {
             if let Ok(mut warnings) = sink.lock() {
                 if !warnings.contains(&operation.location) {
                     warnings.push(operation.location);

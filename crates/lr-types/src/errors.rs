@@ -4,6 +4,8 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum AppError {
+    #[error("Request denied by your Secret Scan decision")]
+    SecretScanDenied,
     #[error("Configuration error: {0}")]
     Config(String),
 

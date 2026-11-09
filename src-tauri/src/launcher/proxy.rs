@@ -147,6 +147,75 @@ fn limit_exceeded(
 
 #[async_trait::async_trait]
 impl lr_proxy::active::Firewall for AppFirewall {
+    async fn evaluate_uninspectable(
+        &self,
+        req: &lr_proxy::active::FirewallRequest,
+        error: lr_proxy::request_body::DecodeError,
+    ) -> lr_proxy::interceptor::RequestAction {
+        use lr_config::PermissionState;
+        use lr_proxy::interceptor::RequestAction;
+        let config = self.config_manager.get();
+        let Some(client) = config
+            .clients
+            .iter()
+            .find(|client| client.id == req.client_id)
+        else {
+            return RequestAction::reject_json(403, "Client policy is no longer available");
+        };
+        if !client.enabled || !(client.llm_proxy_enabled() || client.llm_reverse_proxy_enabled()) {
+            return RequestAction::reject_json(403, "Proxy access is disabled for this client");
+        }
+        let Some(strategy) = config
+            .strategies
+            .iter()
+            .find(|strategy| strategy.id == client.strategy_id)
+        else {
+            return RequestAction::reject_json(403, "Client strategy is no longer available");
+        };
+        let restricted_models = strategy.model_permissions.resolve_provider(&req.provider)
+            != PermissionState::Allow
+            || strategy
+                .model_permissions
+                .models
+                .iter()
+                .any(|(name, permission)| {
+                    name.starts_with(&format!("{}__", req.provider))
+                        && *permission != PermissionState::Allow
+                });
+        let actions = lr_server::routes::pipeline::merge_guardrail_category_actions(
+            client.guardrails.category_actions.as_deref(),
+            &config.guardrails.category_actions,
+        );
+        let restricted_content = config.guardrails.scan_requests
+            && !actions.is_empty()
+            && !lr_server::routes::pipeline::guardrails_allow_everything(&actions)
+            && self
+                .state
+                .safety_engine
+                .read()
+                .as_ref()
+                .is_some_and(|engine| engine.has_models());
+        if restricted_models || restricted_content {
+            return RequestAction::reject_json(
+                error.status(),
+                "Configured model or GuardRails permissions require a readable request body",
+            );
+        }
+        lr_server::routes::pipeline::secret_scan_warning(&self.state,&req.client_id,req.session_id.as_deref(),"Request encoding could not be inspected; original request forwarded without Secret Scan coverage");
+        self.evaluate_policy(req).await
+    }
+    fn secret_inspection_warning(
+        &self,
+        exchange: &lr_proxy::interceptor::ObservedExchange,
+        message: &str,
+    ) {
+        lr_server::routes::pipeline::secret_scan_warning(
+            &self.state,
+            &exchange.client_id,
+            exchange.session_id.as_deref(),
+            message,
+        );
+    }
     fn protects_secrets(&self, client_id: &str) -> bool {
         let config = self.config_manager.get();
         let action = config
@@ -210,10 +279,9 @@ impl lr_proxy::active::Firewall for AppFirewall {
             }
         }
         if !req.body.is_object() && !retrieval {
-            if !masking {
-                return self.evaluate_policy(req).await;
-            }
-            return RequestAction::reject_json(400, "Invalid protected request JSON");
+            return self
+                .evaluate_uninspectable(req, lr_proxy::request_body::DecodeError::Invalid)
+                .await;
         }
         let storage = self.secret_storage.clone();
         let continuation = match Vault::find_client(
@@ -231,10 +299,8 @@ impl lr_proxy::active::Firewall for AppFirewall {
                 }
             }
             Err(_) => {
-                return RequestAction::reject_json(
-                    400,
-                    "Secret continuation could not be authorized using OS credential storage",
-                )
+                lr_server::routes::pipeline::secret_scan_warning(&self.state, &req.client_id, req.session_id.as_deref(), "Stored references could not be loaded; request proceeds with a fresh client map");
+                None
             }
         };
         if retrieval {
@@ -281,7 +347,7 @@ impl lr_proxy::active::Firewall for AppFirewall {
             );
             vault.set_restore_only();
             if vault.set_request_contract(&body).is_err() {
-                return RequestAction::reject_json(400, "Invalid response restoration contract");
+                vault.protection_diagnostic("Restoration contract unavailable; request forwarded");
             }
             return match if retrieval {
                 Ok(Vec::new())
@@ -292,7 +358,7 @@ impl lr_proxy::active::Firewall for AppFirewall {
                     body,
                     vault: Arc::new(vault),
                 },
-                Err(_) => RequestAction::reject_json(400, "Could not encode request"),
+                Err(_) => RequestAction::Forward,
             };
         }
         let vault = continuation.unwrap_or_else(|| Vault::for_client(storage, &req.client_id));
@@ -316,18 +382,13 @@ impl lr_proxy::active::Firewall for AppFirewall {
                 },
                 other => return other,
             };
-            if lr_server::documents::protect_text_files(&mut body, context.as_ref()).is_err()
-                || context.protect(&mut body).is_err()
-            {
-                return RequestAction::reject_json(
-                    403,
-                    "Could not protect request secrets in OS credential storage",
-                );
-            }
+            let _ = lr_server::documents::protect_text_files(&mut body, context.as_ref());
+            let _ = lr_types::secret_context::protect(context.as_ref(), &mut body);
             // Hosted tools receive masked inputs. The contract checks local
             // function schemas and compatibility with declared text grammars.
             if let Err(error) = vault.set_request_contract(&body) {
-                return RequestAction::reject_json(400, &error.to_string());
+                let _ = error;
+                vault.protection_diagnostic("Restoration contract unavailable; request forwarded");
             }
             if let Some(extensions) = body
                 .get_mut("extensions")
@@ -347,7 +408,7 @@ impl lr_proxy::active::Firewall for AppFirewall {
             };
             match encoded {
                 Ok(body) => RequestAction::Protect { body, vault },
-                Err(_) => RequestAction::reject_json(400, "Could not encode protected request"),
+                Err(_) => RequestAction::Forward,
             }
         })
         .await
@@ -411,10 +472,13 @@ impl AppFirewall {
         let (projection, _) = match lr_server::documents::scan_projection(&body) {
             Ok(projection) => projection,
             Err(_) => {
-                return RequestAction::reject_json(
-                    400,
-                    "Could not inspect protected request documents",
-                )
+                lr_server::routes::pipeline::secret_scan_warning(
+                    &self.state,
+                    &req.client_id,
+                    req.session_id.as_deref(),
+                    "Document inspection unavailable; original request inspected where possible",
+                );
+                (body.clone(), true)
             }
         };
         let redacted = match lr_server::routes::pipeline::scan_request_for_secrets_with_source(
@@ -427,12 +491,17 @@ impl AppFirewall {
         )
         .await
         {
-            lr_server::routes::pipeline::SecretScanOutcome::Deny(message) => {
-                return RequestAction::reject_json(403, &message)
+            lr_server::routes::pipeline::SecretScanOutcome::Deny(_) => {
+                return RequestAction::secret_scan_denied()
             }
             lr_server::routes::pipeline::SecretScanOutcome::Redact(redaction) => {
                 if lr_server::documents::redact_text_files(&mut body, &redaction).is_err() {
-                    return RequestAction::reject_json(403, "Could not redact document secrets");
+                    lr_server::routes::pipeline::secret_scan_warning(
+                        &self.state,
+                        &req.client_id,
+                        req.session_id.as_deref(),
+                        "Attachment redaction unavailable; original attachment forwarded",
+                    );
                 }
                 redaction.apply(&mut body);
                 Some(redaction)
@@ -441,11 +510,8 @@ impl AppFirewall {
         };
 
         if let Some(context) = lr_types::secret_context::current() {
-            if lr_server::documents::protect_text_files(&mut body, context.as_ref()).is_err()
-                || context.protect(&mut body).is_err()
-            {
-                return RequestAction::reject_json(403, "Could not protect outbound secrets");
-            }
+            let _ = lr_server::documents::protect_text_files(&mut body, context.as_ref());
+            let _ = lr_types::secret_context::protect(context.as_ref(), &mut body);
         }
 
         // GuardRails — same safety models, category actions, monitor events and
@@ -531,27 +597,19 @@ impl AppFirewall {
                                     )
                                     .is_err()
                                     {
-                                        return RequestAction::reject_json(
-                                            403,
-                                            "Could not redact edited document secrets",
-                                        );
+                                        lr_server::routes::pipeline::secret_scan_warning(&self.state, &req.client_id, req.session_id.as_deref(), "Edited document redaction unavailable; original attachment forwarded");
                                     }
                                     redaction.apply(&mut edited);
                                 }
                                 let (projection, _) =
                                     match lr_server::documents::scan_projection(&edited) {
                                         Ok(value) => value,
-                                        Err(_) => {
-                                            return RequestAction::reject_json(
-                                                400,
-                                                "Could not inspect edited request",
-                                            )
-                                        }
+                                        Err(_) => (edited.clone(), true),
                                     };
                                 match lr_server::routes::pipeline::scan_request_for_secrets_with_source(&self.state, &req.client_id, req.model.as_deref().unwrap_or_default(), &projection, Some(&req.provider), req.session_id.as_deref()).await {
-                                lr_server::routes::pipeline::SecretScanOutcome::Deny(message) => return RequestAction::reject_json(403, &message),
+                                lr_server::routes::pipeline::SecretScanOutcome::Deny(_) => return RequestAction::secret_scan_denied(),
                                 lr_server::routes::pipeline::SecretScanOutcome::Redact(redaction) => {
-                                    if lr_server::documents::redact_text_files(&mut edited, &redaction).is_err() { return RequestAction::reject_json(403, "Could not redact edited document secrets"); }
+                                    let _ = lr_server::documents::redact_text_files(&mut edited, &redaction);
                                     redaction.apply(&mut edited);
                                 },
                                 _ => {},
@@ -573,7 +631,7 @@ impl AppFirewall {
         if redacted.is_some() || body != req.body {
             match serde_json::to_vec(&body) {
                 Ok(bytes) => RequestAction::Replace(bytes),
-                Err(_) => RequestAction::reject_json(403, "Could not serialize redacted request"),
+                Err(_) => RequestAction::Forward,
             }
         } else {
             RequestAction::Forward
@@ -1092,6 +1150,45 @@ mod secret_policy_tests {
         );
     }
     #[tokio::test]
+    async fn unreadable_encoding_proceeds_when_only_secret_inspection_is_unavailable() {
+        let root = tempfile::tempdir().unwrap();
+        let (firewall, mut request) = fixture(
+            root.path(),
+            lr_config::LlmMode::Proxy,
+            Arc::new(lr_api_keys::MockKeychain::new()),
+        );
+        request.body = Value::Null;
+        request.model = None;
+        assert!(matches!(
+            firewall
+                .evaluate_uninspectable(&request, lr_proxy::request_body::DecodeError::Unsupported)
+                .await,
+            RequestAction::Forward
+        ));
+        firewall
+            .config_manager
+            .update(|config| {
+                config.strategies[0].model_permissions.models.insert(
+                    "openai__forbidden-model".into(),
+                    lr_config::PermissionState::Off,
+                );
+            })
+            .unwrap();
+        assert!(
+            matches!(
+                firewall
+                    .evaluate_uninspectable(
+                        &request,
+                        lr_proxy::request_body::DecodeError::Unsupported
+                    )
+                    .await,
+                RequestAction::Reject { .. }
+            ),
+            "separate model permissions must not be bypassed"
+        );
+    }
+
+    #[tokio::test]
     async fn off_and_cancellation_do_not_acquire_a_new_native_store_requirement() {
         struct Unavailable;
         impl lr_api_keys::KeychainStorage for Unavailable {
@@ -1135,9 +1232,9 @@ mod secret_policy_tests {
         assert!(
             matches!(
                 firewall.evaluate(&request).await,
-                RequestAction::Reject { .. }
+                RequestAction::Protect { .. }
             ),
-            "protected retrieval must report inaccessible secret storage"
+            "protected retrieval must proceed despite inaccessible secret storage"
         );
     }
     #[tokio::test]
@@ -1395,19 +1492,19 @@ mod secret_policy_tests {
         }
     }
     #[tokio::test]
-    async fn native_policy_blocks_unavailable_os_storage_or_scanner() {
+    async fn native_policy_continues_when_storage_or_scanner_is_unavailable() {
         let root =
             std::env::temp_dir().join(format!("lr-native-policy-failure-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let (firewall, request) = fixture(&root, lr_config::LlmMode::Proxy, Arc::new(Unavailable));
         assert!(matches!(
             firewall.evaluate(&request).await,
-            RequestAction::Reject { .. }
+            RequestAction::Protect { .. }
         ));
         *firewall.state.secret_scanner.write() = None;
         assert!(matches!(
             firewall.evaluate(&request).await,
-            RequestAction::Reject { .. }
+            RequestAction::Protect { .. }
         ));
         std::fs::remove_dir_all(root).unwrap();
     }

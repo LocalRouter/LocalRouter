@@ -36,6 +36,8 @@ pub enum FirewallApprovalAction {
     RedactOnce,
     /// Reuse an original through an OS-backed placeholder.
     ReplaceSecrets,
+    /// Approval infrastructure fallback; never an explicit human denial.
+    ContinueWithRedaction,
     /// Allow this tool for the rest of the session (MCP/Skills)
     AllowSession,
     /// Allow this for 1 minute (Models & guardrails: short time-based bypass)
@@ -682,13 +684,13 @@ impl FirewallManager {
             model_name,
             "Secret Scan".to_string(),
             arguments_preview,
-            None,  // no custom timeout — waits indefinitely (24h safety)
-            false, // not a model request
-            false, // not guardrail
-            false, // not free-tier fallback
-            false, // not auto-router
-            false, // not MCP via LLM
-            true,  // secret scan request
+            Some(self.default_timeout_secs.min(60)), // Secret Scan must not hold a call indefinitely
+            false,                                   // not a model request
+            false,                                   // not guardrail
+            false,                                   // not free-tier fallback
+            false,                                   // not auto-router
+            false,                                   // not MCP via LLM
+            true,                                    // secret scan request
             None,
             None,
             Some(secret_scan_details),
@@ -901,19 +903,27 @@ impl FirewallManager {
                 warn!("Firewall approval request {} was cancelled", request_id);
                 self.pending.remove(&request_id);
                 Ok(FirewallApprovalResponse {
-                    action: FirewallApprovalAction::Deny,
+                    action: if is_secret_scan_request {
+                        FirewallApprovalAction::ContinueWithRedaction
+                    } else {
+                        FirewallApprovalAction::Deny
+                    },
                     edited_arguments: None,
                 })
             }
             Err(_) => {
-                // Timeout — auto-deny
+                // Secret Scan proceeds with redaction; other firewall categories retain their policy.
                 warn!(
-                    "Firewall approval request {} timed out after {}s — auto-denying",
+                    "Firewall approval request {} timed out after {}s",
                     request_id, timeout
                 );
                 self.pending.remove(&request_id);
                 Ok(FirewallApprovalResponse {
-                    action: FirewallApprovalAction::Deny,
+                    action: if is_secret_scan_request {
+                        FirewallApprovalAction::ContinueWithRedaction
+                    } else {
+                        FirewallApprovalAction::Deny
+                    },
                     edited_arguments: None,
                 })
             }
@@ -2040,7 +2050,7 @@ mod cancellation_tests {
     }
 
     #[tokio::test]
-    async fn expired_secret_scan_retires_its_popup_and_denies() {
+    async fn expired_secret_scan_retires_its_popup_and_continues_with_redaction() {
         let (tx, mut rx) = tokio::sync::broadcast::channel(16);
         let manager = Arc::new(FirewallManager::new_with_broadcast(0, Arc::new(tx)));
         let worker = manager.clone();
@@ -2048,7 +2058,7 @@ mod cancellation_tests {
         let id = next_event(&mut rx, "firewall/approvalRequired").await;
         assert_eq!(
             task.await.unwrap().unwrap().action,
-            FirewallApprovalAction::Deny
+            FirewallApprovalAction::ContinueWithRedaction
         );
         assert_eq!(next_event(&mut rx, "firewall/approvalResolved").await, id);
         assert_eq!(manager.pending_count(), 0);
@@ -2085,5 +2095,53 @@ mod cancellation_tests {
         assert!(manager
             .submit_response(&id, FirewallApprovalAction::AllowOnce, None)
             .is_err());
+    }
+}
+
+#[cfg(test)]
+mod secret_scan_availability_tests {
+    use super::*;
+    #[tokio::test]
+    async fn secret_scan_dismissal_and_timeout_are_not_human_denials() {
+        for dismiss in [true, false] {
+            let manager = std::sync::Arc::new(FirewallManager::new(1));
+            let task_manager = manager.clone();
+            let task = tokio::spawn(async move {
+                task_manager
+                    .request_secret_scan_approval(
+                        "client".into(),
+                        "Client".into(),
+                        "model".into(),
+                        SecretScanApprovalDetails {
+                            findings: vec![],
+                            scan_duration_ms: 0,
+                            request_json: None,
+                            llm_source: None,
+                        },
+                        String::new(),
+                    )
+                    .await
+                    .unwrap()
+            });
+            let pending = tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    if let Some(p) = manager.list_pending().into_iter().next() {
+                        break p;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            if dismiss {
+                manager.cancel_request(&pending.request_id).unwrap();
+            }
+            let result = tokio::time::timeout(Duration::from_secs(3), task)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(result.action, FirewallApprovalAction::ContinueWithRedaction);
+            assert!(manager.list_pending().is_empty());
+        }
     }
 }

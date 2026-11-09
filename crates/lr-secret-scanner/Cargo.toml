@@ -8,6 +8,9 @@ repository.workspace = true
 description = "Regex + entropy based secret scanning for outbound LLM requests"
 
 [dependencies]
+bytes = "1"
+futures = { workspace = true }
+async-stream = { workspace = true }
 jsonschema = { workspace = true }
 lr-types = { workspace = true }
 lr-api-keys = { workspace = true }

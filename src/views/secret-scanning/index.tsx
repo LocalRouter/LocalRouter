@@ -29,8 +29,8 @@ interface SecretScanningViewProps {
 }
 
 const ACTION_LABELS: Record<SecretScanAction, { label: string; description: string }> = {
-  redact: { label: "Redact", description: "Replace secrets with restorable placeholders, held in OS credential storage" },
-  ask: { label: "Ask", description: "Block the request and show a popup for user decision" },
+  redact: { label: "Redact", description: "Best-effort secret replacement; internal failures never reject requests" },
+  ask: { label: "Ask", description: "Ask for a decision; only an explicit Deny rejects the request" },
   notify: { label: "Notify", description: "Allow the request but show a notification" },
   off: { label: "Off", description: "No scanning" },
 }
@@ -177,8 +177,9 @@ export function SecretScanningView({ activeSubTab, onTabChange }: SecretScanning
                   </div>
                   <InfoTooltip content={
                     <div className="space-y-1">
-                      <p><strong>Redact</strong> — Send restorable placeholders; originals stay in OS credential storage</p>
-                      <p><strong>Ask</strong> — Block the request and prompt for decision</p>
+                      <p>Secret Scan never rejects a call for an internal failure. Incomplete protection is reported in Monitor; original content may reach the provider. Only an explicit Deny in Ask mode stops a request.</p>
+                      <p><strong>Redact</strong> — Send restorable placeholders where possible; storage outages use memory for this run</p>
+                      <p><strong>Ask</strong> — Prompt for a decision; fall back to redaction if dismissed or unavailable</p>
                       <p><strong>Notify</strong> — Allow the request but show a warning</p>
                       <p><strong>Off</strong> — No scanning performed</p>
                     </div>
@@ -289,10 +290,11 @@ export function SecretScanningView({ activeSubTab, onTabChange }: SecretScanning
             <Card>
               <CardHeader><CardTitle className="text-base">Redact outbound. Restore locally.</CardTitle><CardDescription>One Secret Scan lifecycle, from detection to the client's response.</CardDescription></CardHeader>
               <CardContent className="space-y-3 text-sm">
-                <p><strong>Secret Redacted</strong> — Detected originals stay in the local credential store. Providers receive references.</p>
+                <p><strong>Secret Redacted</strong> — Supported content is replaced with references; originals stay in local credential storage or a temporary memory fallback.</p>
                 <p><strong>Secret Restored</strong> — Owned references returned in replies or tool arguments are replaced locally, preserving supported quoting and escaping.</p>
                 <p><strong>Secret Not Restored</strong> — Unknown or unsupported references stay unchanged. A diagnostic is recorded without failing the response.</p>
-                <p className="text-muted-foreground">Mappings belong to the authenticated client, survive restarts, and expire after 14 days of client inactivity. Conversation grouping does not grant access to another client's secrets.</p>
+                <p className="text-muted-foreground">Internal Secret Scan failures never reject requests. Incomplete protection is reported in Monitor; content that could not be masked may reach the provider. Only an explicit Deny stops a request.</p>
+                <p className="text-muted-foreground">Mappings belong to the authenticated client and expire after 14 days of client inactivity. Durable mappings survive restart; memory-only mappings do not. Conversation grouping does not grant access to another client's secrets.</p>
                 <div className="flex gap-3 text-xs"><button className="text-primary hover:underline" onClick={() => handleTabChange('try-it-out')}>Try the full round trip</button><button className="text-primary hover:underline" onClick={() => handleTabChange('redacted-secrets')}>Manage stored secrets</button></div>
               </CardContent>
             </Card>
