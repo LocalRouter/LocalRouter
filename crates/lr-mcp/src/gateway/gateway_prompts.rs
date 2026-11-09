@@ -46,9 +46,21 @@ impl McpGateway {
         drop(session_read);
 
         // Fetch from servers
-        let (prompts, failures) = self
+        let (mut prompts, failures) = self
             .fetch_and_merge_prompts(&allowed_servers, request.clone(), &transports)
             .await?;
+
+        {
+            let state = session.read().await;
+            self.remember_discovery(
+                &state,
+                &state.allowed_servers,
+                "prompts",
+                &mut prompts,
+                &failures,
+                |item| (&item.server_id, &item.original_name),
+            );
+        }
 
         // Update session mappings, cache, and failures
         {
@@ -88,11 +100,12 @@ impl McpGateway {
     ) -> AppResult<(Vec<NamespacedPrompt>, Vec<ServerFailure>)> {
         let timeout = Duration::from_secs(self.config.server_timeout_seconds);
         let max_retries = self.config.max_retry_attempts;
+        let deadline = tokio::time::Instant::now() + timeout;
 
         let results =
             broadcast_request(server_ids, request, transports, timeout, max_retries).await;
 
-        let (successes, failures) = separate_results(results);
+        let (successes, mut failures) = separate_results(results);
 
         // Even if every server failed, return an empty list plus failures:
         // virtual tools (skills, search, ...) are still served, and callers
@@ -108,10 +121,17 @@ impl McpGateway {
         let mut server_prompts: Vec<(String, Vec<McpPrompt>)> = Vec::new();
 
         for (server_id, value) in successes {
-            let mut all_items: Vec<McpPrompt> = value
+            let Some(mut all_items) = value
                 .get("prompts")
-                .and_then(|p| serde_json::from_value::<Vec<McpPrompt>>(p.clone()).ok())
-                .unwrap_or_default();
+                .and_then(|v| serde_json::from_value::<Vec<McpPrompt>>(v.clone()).ok())
+            else {
+                failures.push(ServerFailure {
+                    server_id,
+                    error: "Invalid prompts catalog response".into(),
+                });
+                continue;
+            };
+            let mut complete = true;
 
             // Exhaust pagination if the server returned a nextCursor
             let mut next_cursor = value
@@ -128,6 +148,7 @@ impl McpGateway {
                         MAX_PAGES,
                         server_id
                     );
+                    complete = false;
                     break;
                 }
 
@@ -137,13 +158,26 @@ impl McpGateway {
                     Some(json!({ "cursor": cursor })),
                 );
 
-                match tokio::time::timeout(
-                    timeout,
+                match tokio::time::timeout_at(
+                    deadline,
                     transports.send_request(&server_id, page_request),
                 )
                 .await
                 {
                     Ok(Ok(response)) => {
+                        if response.error.is_some()
+                            || response
+                                .result
+                                .as_ref()
+                                .and_then(|r| r.get("prompts"))
+                                .and_then(|v| {
+                                    serde_json::from_value::<Vec<McpPrompt>>(v.clone()).ok()
+                                })
+                                .is_none()
+                        {
+                            complete = false;
+                            break;
+                        }
                         if let Some(result) = &response.result {
                             if let Some(prompts) = result.get("prompts").and_then(|p| {
                                 serde_json::from_value::<Vec<McpPrompt>>(p.clone()).ok()
@@ -163,6 +197,7 @@ impl McpGateway {
                             page,
                             e
                         );
+                        complete = false;
                         break;
                     }
                     Err(_) => {
@@ -171,11 +206,20 @@ impl McpGateway {
                             server_id,
                             page
                         );
+                        complete = false;
                         break;
                     }
                 }
 
                 page += 1;
+            }
+
+            if !complete {
+                failures.push(ServerFailure {
+                    server_id,
+                    error: "Incomplete prompts catalog pagination".into(),
+                });
+                continue;
             }
 
             if !all_items.is_empty() {

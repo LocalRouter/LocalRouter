@@ -260,9 +260,21 @@ impl McpGateway {
             )
         };
 
-        let (tools, failures) = self
+        let (mut tools, failures) = self
             .fetch_and_merge_tools(&allowed_servers, request, &transports)
             .await?;
+
+        {
+            let state = session.read().await;
+            self.remember_discovery(
+                &state,
+                &state.allowed_servers,
+                "tools",
+                &mut tools,
+                &failures,
+                |item| (&item.server_id, &item.original_name),
+            );
+        }
 
         let mut session_write = session.write().await;
         session_write.update_tool_mappings(&tools, &failures);
@@ -283,11 +295,12 @@ impl McpGateway {
     ) -> AppResult<(Vec<NamespacedTool>, Vec<ServerFailure>)> {
         let timeout = Duration::from_secs(self.config.server_timeout_seconds);
         let max_retries = self.config.max_retry_attempts;
+        let deadline = tokio::time::Instant::now() + timeout;
 
         let results =
             broadcast_request(server_ids, request, transports, timeout, max_retries).await;
 
-        let (successes, failures) = separate_results(results);
+        let (successes, mut failures) = separate_results(results);
 
         // Even if every server failed, return an empty list plus failures:
         // virtual tools (skills, search, ...) are still served, and callers
@@ -303,10 +316,17 @@ impl McpGateway {
         let mut server_tools: Vec<(String, Vec<McpTool>)> = Vec::new();
 
         for (server_id, value) in successes {
-            let mut all_items: Vec<McpTool> = value
+            let Some(mut all_items) = value
                 .get("tools")
-                .and_then(|t| serde_json::from_value::<Vec<McpTool>>(t.clone()).ok())
-                .unwrap_or_default();
+                .and_then(|v| serde_json::from_value::<Vec<McpTool>>(v.clone()).ok())
+            else {
+                failures.push(ServerFailure {
+                    server_id,
+                    error: "Invalid tools catalog response".into(),
+                });
+                continue;
+            };
+            let mut complete = true;
 
             // Exhaust pagination if the server returned a nextCursor
             let mut next_cursor = value
@@ -323,6 +343,7 @@ impl McpGateway {
                         MAX_PAGES,
                         server_id
                     );
+                    complete = false;
                     break;
                 }
 
@@ -332,13 +353,26 @@ impl McpGateway {
                     Some(json!({ "cursor": cursor })),
                 );
 
-                match tokio::time::timeout(
-                    timeout,
+                match tokio::time::timeout_at(
+                    deadline,
                     transports.send_request(&server_id, page_request),
                 )
                 .await
                 {
                     Ok(Ok(response)) => {
+                        if response.error.is_some()
+                            || response
+                                .result
+                                .as_ref()
+                                .and_then(|r| r.get("tools"))
+                                .and_then(|v| {
+                                    serde_json::from_value::<Vec<McpTool>>(v.clone()).ok()
+                                })
+                                .is_none()
+                        {
+                            complete = false;
+                            break;
+                        }
                         if let Some(result) = &response.result {
                             if let Some(tools) = result.get("tools").and_then(|t| {
                                 serde_json::from_value::<Vec<McpTool>>(t.clone()).ok()
@@ -358,6 +392,7 @@ impl McpGateway {
                             page,
                             e
                         );
+                        complete = false;
                         break;
                     }
                     Err(_) => {
@@ -366,11 +401,20 @@ impl McpGateway {
                             server_id,
                             page
                         );
+                        complete = false;
                         break;
                     }
                 }
 
                 page += 1;
+            }
+
+            if !complete {
+                failures.push(ServerFailure {
+                    server_id,
+                    error: "Incomplete tools catalog pagination".into(),
+                });
+                continue;
             }
 
             if !all_items.is_empty() {
