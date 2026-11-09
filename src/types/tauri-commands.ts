@@ -2684,7 +2684,7 @@ export interface PendingApprovalInfo {
  * Firewall approval action.
  * Rust: crates/lr-mcp/src/gateway/firewall.rs - FirewallApprovalAction enum
  */
-export type FirewallApprovalAction = 'deny' | 'deny_session' | 'deny_always' | 'block_categories' | 'allow_once' | 'redact_once' | 'replace_secrets' | 'allow_session' | 'allow_1_minute' | 'allow_1_hour' | 'allow_permanent' | 'allow_categories' | 'deny_1_hour'
+export type FirewallApprovalAction = 'deny' | 'deny_session' | 'deny_always' | 'block_categories' | 'allow_once' | 'redact_once' | 'replace_secrets' | 'continue_with_redaction' | 'allow_session' | 'allow_1_minute' | 'allow_1_hour' | 'allow_permanent' | 'allow_categories' | 'deny_1_hour'
 
 // =============================================================================
 // Active Connections Types
@@ -3882,7 +3882,7 @@ export interface GetFirewallApprovalDetailsParams {
   requestId: string
 }
 
-/** Params for dismiss_firewall_notification (notify-only popups) */
+/** Params for dismiss_firewall_notification (notifications and Secret Scan dismissal) */
 export interface DismissFirewallNotificationParams {
   requestId: string
 }
@@ -5730,6 +5730,8 @@ export interface RedactedSecretEntry {
   expired: boolean
   revoked: boolean
 }
+/** Rust: ui/commands_secret_store.rs - RedactedSecretInventory. */
+export interface RedactedSecretInventory { entries: RedactedSecretEntry[]; persistence_warning: string | null }
 /** Params for list_redacted_secrets. */
 export interface ListRedactedSecretsParams { clientId: string | null }
 /** Params for reveal_redacted_secret. */

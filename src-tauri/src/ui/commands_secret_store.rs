@@ -14,6 +14,12 @@ pub struct RedactedSecretEntry {
     pub secret: StoredSecret,
 }
 
+#[derive(Serialize)]
+pub struct RedactedSecretInventory {
+    pub entries: Vec<RedactedSecretEntry>,
+    pub persistence_warning: Option<String>,
+}
+
 fn owners(
     storage: &dyn KeychainStorage,
     clients: &[(String, String)],
@@ -51,7 +57,7 @@ fn validate_reference(id: &str) -> Result<(), String> {
 pub async fn list_redacted_secrets(
     client_id: Option<String>,
     config_manager: State<'_, ConfigManager>,
-) -> Result<Vec<RedactedSecretEntry>, String> {
+) -> Result<RedactedSecretInventory, String> {
     let clients = clients(&config_manager);
     tokio::task::spawn_blocking(move || {
         let storage = redacted_secret_storage();
@@ -78,7 +84,7 @@ pub async fn list_redacted_secrets(
                 &b.secret.reference_id,
             ))
         });
-        Ok(entries)
+        Ok(RedactedSecretInventory { entries, persistence_warning: storage.persistence_warning().then(|| "Credential storage is unavailable. New mappings are kept only in memory for this run and will not survive restart. The inventory may exclude unreadable durable records.".into()) })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -131,10 +137,46 @@ pub async fn purge_redacted_secrets(
                     format!("Purge stopped: {e}. Already removed {removed} references.")
                 })?;
         }
-        Ok(removed)
+        confirm_purge(storage.as_ref(), removed)
     })
     .await
     .map_err(|e| e.to_string())?;
     let _ = app.emit("secret-store-changed", ());
     result
+}
+
+fn confirm_purge(storage: &dyn KeychainStorage, removed: usize) -> Result<usize, String> {
+    if storage.persistence_warning() {
+        return Err(format!("Removed {removed} in-memory references, but durable deletion cannot be confirmed while credential storage is unavailable. Restart LocalRouter after restoring storage access, then retry."));
+    }
+    Ok(removed)
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    struct Volatile;
+    impl KeychainStorage for Volatile {
+        fn persistence_warning(&self) -> bool {
+            true
+        }
+        fn get(&self, _: &str, _: &str) -> lr_types::AppResult<Option<String>> {
+            Ok(None)
+        }
+        fn store(&self, _: &str, _: &str, _: &str) -> lr_types::AppResult<()> {
+            Ok(())
+        }
+        fn delete(&self, _: &str, _: &str) -> lr_types::AppResult<()> {
+            Ok(())
+        }
+    }
+    #[test]
+    fn purge_does_not_claim_durable_success_during_a_storage_outage() {
+        assert!(confirm_purge(&Volatile, 2)
+            .unwrap_err()
+            .contains("durable deletion cannot be confirmed"));
+        assert_eq!(
+            confirm_purge(&lr_api_keys::MockKeychain::new(), 2).unwrap(),
+            2
+        );
+    }
 }

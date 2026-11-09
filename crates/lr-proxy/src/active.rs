@@ -42,6 +42,14 @@ pub struct FirewallRequest {
 #[async_trait]
 pub trait Firewall: Send + Sync {
     async fn evaluate(&self, req: &FirewallRequest) -> RequestAction;
+    async fn evaluate_uninspectable(
+        &self,
+        _req: &FirewallRequest,
+        error: crate::request_body::DecodeError,
+    ) -> RequestAction {
+        RequestAction::reject_json(error.status(), error.message())
+    }
+    fn secret_inspection_warning(&self, _exchange: &ObservedExchange, _message: &str) {}
     fn protects_secrets(&self, _client_id: &str) -> bool {
         false
     }
@@ -82,7 +90,7 @@ impl ProxyInterceptor for ActiveInterceptor {
         // else (auth preflights, etc.) passes through untouched.
         let Some(format) = wire::detect(&ex.path) else {
             let path = ex.path.split('?').next().unwrap_or(&ex.path);
-            let unsupported = [
+            let inference = [
                 "/audio",
                 "/images",
                 "/realtime",
@@ -100,19 +108,13 @@ impl ProxyInterceptor for ActiveInterceptor {
             .iter()
             .any(|part| path.contains(part));
             if self.firewall.protects_secrets(&ex.client_id)
-                && unsupported
+                && inference
                 && (ex.method == "POST" || path.contains("/realtime"))
             {
-                return RequestAction::reject_json(
-                    403,
-                    "This endpoint has no restorable text mapping",
-                );
+                self.firewall.secret_inspection_warning(ex,"Secret Scan has no inspection mapping for this endpoint; request forwarded unchanged");
             }
             return RequestAction::Forward;
         };
-        if let Some(error) = ex.request_body_error {
-            return RequestAction::reject_json(error.status(), error.message());
-        }
         let body: Value = ex
             .request_body
             .as_ref()
@@ -135,7 +137,11 @@ impl ProxyInterceptor for ActiveInterceptor {
             message_count: meta.message_count,
             body,
         };
-        self.firewall.evaluate(&req).await
+        if let Some(error) = ex.request_body_error {
+            self.firewall.evaluate_uninspectable(&req, error).await
+        } else {
+            self.firewall.evaluate(&req).await
+        }
     }
 
     fn begin(&self, ex: &ObservedExchange) -> Option<String> {
@@ -338,7 +344,7 @@ mod tests {
 #[cfg(test)]
 mod protected_endpoint_tests {
     use super::*;
-    struct Protected;
+    struct Protected(std::sync::atomic::AtomicUsize);
     #[async_trait]
     impl Firewall for Protected {
         async fn evaluate(&self, _: &FirewallRequest) -> RequestAction {
@@ -347,12 +353,16 @@ mod protected_endpoint_tests {
         fn protects_secrets(&self, _: &str) -> bool {
             true
         }
+        fn secret_inspection_warning(&self, _: &ObservedExchange, _: &str) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
     }
     #[tokio::test]
-    async fn unsupported_inference_cannot_bypass_redaction_while_auth_still_works() {
+    async fn unsupported_inference_passes_with_warnings_while_auth_remains_untouched() {
+        let firewall = Arc::new(Protected(Default::default()));
         let interceptor = ActiveInterceptor::new(
             PassiveInterceptor::new(Arc::new(lr_monitor::MonitorEventStore::new(4))),
-            Arc::new(Protected),
+            firewall.clone(),
         );
         for path in [
             "/v1/embeddings",
@@ -376,7 +386,7 @@ mod protected_endpoint_tests {
             };
             assert!(matches!(
                 interceptor.on_request(&exchange).await,
-                RequestAction::Reject { .. }
+                RequestAction::Forward
             ));
         }
         let auth = ObservedExchange {
@@ -388,6 +398,7 @@ mod protected_endpoint_tests {
             interceptor.on_request(&auth).await,
             RequestAction::Forward
         ));
+        assert_eq!(firewall.0.load(std::sync::atomic::Ordering::Relaxed), 8);
         assert_eq!(
             wire::detect("/backend-api/codex/responses/compact"),
             Some(crate::wire::WireFormat::OpenAiResponses)

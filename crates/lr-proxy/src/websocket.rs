@@ -303,6 +303,8 @@ struct Cycle {
     capture: String,
     started: Instant,
     restorer: Option<lr_secret_scanner::wire::ResponseRestorer>,
+    response_id: Option<String>,
+    item_ids: std::collections::BTreeSet<String>,
 }
 
 /// Firewall + monitor capture for one intercepted LLM websocket connection.
@@ -312,6 +314,8 @@ pub struct WsSession {
     /// Exchange template: client identity, host, path — cloned per cycle.
     base: ObservedExchange,
     cycle: parking_lot::Mutex<Option<Cycle>>,
+    released: parking_lot::Mutex<Vec<String>>,
+    previous: parking_lot::Mutex<Vec<Cycle>>,
     /// Reads `codex.rate_limits` events off the stream.
     usage: Option<Arc<lr_usage::UsageTracker>>,
 }
@@ -328,6 +332,8 @@ impl WsSession {
             format,
             base,
             cycle: parking_lot::Mutex::new(None),
+            released: parking_lot::Mutex::new(Vec::new()),
+            previous: parking_lot::Mutex::new(Vec::new()),
             usage: None,
         }
     }
@@ -343,26 +349,8 @@ impl WsSession {
     async fn on_client_message(&self, payload: &[u8]) -> ClientAction {
         if let Ok(Value::Object(message)) = serde_json::from_slice::<Value>(payload) {
             if message.get("type").and_then(Value::as_str) == Some("response.cancel") {
-                // Cancellation belongs to the current response; it must neither
-                // replace that response's capability nor start a new cycle.
-                if message.iter().all(|(key, value)| {
-                    matches!(key.as_str(), "type" | "response_id" | "event_id") && value.is_string()
-                }) {
-                    return ClientAction::Forward;
-                }
-                return ClientAction::Reject(reject_event(
-                    400,
-                    br#"{"error":{"message":"Invalid cancellation message"}}"#,
-                ));
+                return ClientAction::Forward;
             }
-        }
-        if self
-            .cycle
-            .lock()
-            .as_ref()
-            .is_some_and(|cycle| cycle.restorer.is_some())
-        {
-            return ClientAction::Reject(reject_event(409, br#"{"error":{"message":"Wait for the protected response to complete before starting another turn"}}"#));
         }
         let mut ex = self.base.clone();
         ex.session_id = Some(uuid::Uuid::new_v4().to_string());
@@ -399,95 +387,188 @@ impl WsSession {
         }
     }
 
-    /// Open a Pending monitor event for a new cycle (closing out any cycle the
-    /// server never terminated).
+    /// Each request retains independent restoration state. Response/item IDs
+    /// route identifiable events; ambiguous concurrent events are passed through.
     async fn begin_cycle(
         &self,
         ex: ObservedExchange,
         restorer: Option<lr_secret_scanner::wire::ResponseRestorer>,
     ) {
-        self.finish_cycle(None).await;
-        let request_body = ex.request_body.clone().unwrap_or_default();
         let event_id = self.interceptor.begin(&ex);
-        *self.cycle.lock() = Some(Cycle {
-            session_id: ex.session_id,
-            event_id,
-            request_body,
-            capture: String::new(),
-            started: Instant::now(),
-            restorer,
-        });
+        let overflow = {
+            let mut current = self.cycle.lock();
+            let mut previous = self.previous.lock();
+            if let Some(old) = current.take() {
+                previous.push(old);
+            }
+            *current = Some(Cycle {
+                session_id: ex.session_id,
+                event_id,
+                request_body: ex.request_body.clone().unwrap_or_default(),
+                capture: String::new(),
+                started: Instant::now(),
+                restorer,
+                response_id: None,
+                item_ids: Default::default(),
+            });
+            if previous.len() > 64 {
+                Some(previous.remove(0))
+            } else {
+                None
+            }
+        };
+        if let Some(mut old) = overflow {
+            if let Some(restorer) = &mut old.restorer {
+                self.released.lock().extend(restorer.abandon_messages(
+                    "Concurrent restoration limit reached; original content delivered",
+                ));
+            }
+            self.record_cycle(old,None,Some("Monitoring concurrency limit reached; request continues without restoration tracking".into())).await;
+        }
     }
-
-    /// Capture one server message; completes the open cycle when the message
-    /// is a terminal event for this wire format.
+    fn release_originals(&self, reason: &str) -> Vec<String> {
+        let mut current = self.cycle.lock();
+        let mut previous = self.previous.lock();
+        let mut released = std::mem::take(&mut *self.released.lock());
+        for cycle in previous.iter_mut().chain(current.iter_mut()) {
+            if let Some(restorer) = &mut cycle.restorer {
+                released.extend(restorer.abandon_messages(reason));
+            }
+        }
+        released
+    }
     async fn on_server_message(&self, text: &str) -> lr_types::AppResult<Vec<String>> {
         let json = serde_json::from_str::<Value>(text).ok();
-        if let (Some(usage), Some(j)) = (&self.usage, &json) {
-            // Rate-limit events can arrive outside a request cycle. They
-            // belong to the login that opened the connection.
+        if let (Some(usage), Some(value)) = (&self.usage, &json) {
             usage.observe_stream_event(
                 self.base.usage_account.as_ref(),
-                j,
+                value,
                 lr_usage::DataSource::ProxyHeaders,
             );
         }
         let terminal = json
             .as_ref()
-            .is_some_and(|j| wire::is_terminal_event(self.format, j));
-        let output;
-        {
-            let mut guard = self.cycle.lock();
-            let Some(cycle) = guard.as_mut() else {
-                return Ok(vec![text.to_owned()]);
-            };
-            // Capture before restoration so rejected provider events remain inspectable.
-            let restored = if let Some(restorer) = &mut cycle.restorer {
-                restorer.message(text)
-            } else {
-                Ok(vec![text.to_owned()])
-            };
-            // Framed as one SSE event: "data: " + payload + "\n\n".
-            let needed = text.len() + 8;
-            if cycle.capture.len() + needed > CAPTURE_CAP {
-                // Over the cap: drop deltas, but never the terminal event —
-                // it carries the whole response object (model, usage, output),
-                // so it wins the remaining room by dropping earlier deltas.
-                if !terminal {
-                    return restored;
+            .is_some_and(|value| wire::is_terminal_event(self.format, value));
+        let kind = json
+            .as_ref()
+            .and_then(|value| value["type"].as_str())
+            .unwrap_or("");
+        let response_id = json
+            .as_ref()
+            .and_then(|value| {
+                value
+                    .get("response_id")
+                    .or_else(|| value.pointer("/response/id"))
+            })
+            .and_then(Value::as_str);
+        let item_id = json
+            .as_ref()
+            .and_then(|value| value.get("item_id").or_else(|| value.pointer("/item/id")))
+            .and_then(Value::as_str);
+        let (output, finished) = {
+            let mut current = self.cycle.lock();
+            let mut previous = self.previous.lock();
+            let selected = {
+                let all: Vec<_> = previous.iter().chain(current.iter()).collect();
+                let responses: Vec<_> = all
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, cycle)| {
+                        response_id.is_some_and(|id| cycle.response_id.as_deref() == Some(id))
+                    })
+                    .map(|(i, _)| i)
+                    .collect();
+                let items: Vec<_> = all
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, cycle)| item_id.is_some_and(|id| cycle.item_ids.contains(id)))
+                    .map(|(i, _)| i)
+                    .collect();
+                if responses.len() == 1 {
+                    Some(responses[0])
+                } else if responses.len() > 1 {
+                    None
+                } else if items.len() == 1 {
+                    Some(items[0])
+                } else if items.len() > 1 {
+                    None
+                } else if kind == "response.created" {
+                    all.iter().position(|cycle| cycle.response_id.is_none())
+                } else if all.len() == 1 {
+                    Some(0)
+                } else {
+                    let known: Vec<_> = all
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, cycle)| cycle.response_id.is_some())
+                        .map(|(i, _)| i)
+                        .collect();
+                    (known.len() == 1).then(|| known[0])
                 }
+            };
+            let Some(index) = selected else {
+                if kind.starts_with("codex.") || kind.starts_with("responsesapi.") {
+                    return Ok(vec![text.into()]);
+                }
+                let mut output = Vec::new();
+                for cycle in previous.iter_mut().chain(current.iter_mut()) {
+                    if let Some(restorer) = &mut cycle.restorer {
+                        output.extend(restorer.abandon_messages(
+                            "Concurrent response identity is ambiguous; original content delivered",
+                        ));
+                    }
+                }
+                output.push(text.into());
+                return Ok(output);
+            };
+            let cycle = if index < previous.len() {
+                &mut previous[index]
+            } else {
+                current.as_mut().expect("selected current cycle")
+            };
+            if let Some(id) = response_id {
+                cycle.response_id = Some(id.into());
+            }
+            if let Some(id) = item_id {
+                cycle.item_ids.insert(id.into());
+            }
+            let output = if let Some(restorer) = &mut cycle.restorer {
+                restorer.message(text).unwrap_or_else(|_| vec![text.into()])
+            } else {
+                vec![text.into()]
+            };
+            let needed = text.len() + 8;
+            if cycle.capture.len() + needed > CAPTURE_CAP && terminal {
                 cycle.capture.clear();
                 cycle
                     .capture
                     .push_str("data: {\"type\":\"localrouter.truncated\"}\n\n");
             }
-            // The capture budget must never prevent delivery/completion of a
-            // terminal event, even when its full output exceeds the budget.
-            if needed <= CAPTURE_CAP {
+            if needed <= CAPTURE_CAP && cycle.capture.len() + needed <= CAPTURE_CAP {
                 cycle.capture.push_str("data: ");
                 cycle.capture.push_str(text);
                 cycle.capture.push_str("\n\n");
             }
-            output = restored?;
-        }
-        if terminal {
-            let status = json.map(|j| wire::terminal_status(self.format, &j));
-            self.finish_cycle(status).await;
+            let finished = if terminal {
+                if index < previous.len() {
+                    Some(previous.remove(index))
+                } else {
+                    current.take()
+                }
+            } else {
+                None
+            };
+            (output, finished)
+        };
+        if let Some(cycle) = finished {
+            let status = json
+                .as_ref()
+                .map(|value| wire::terminal_status(self.format, value));
+            self.record_cycle(cycle, status, None).await;
         }
         Ok(output)
     }
-
-    /// Complete the open cycle, if any. `status: None` marks it as ended
-    /// without a terminal event (disconnect) → recorded as an error with
-    /// whatever was salvaged, mirroring the SSE disconnect path.
-    async fn finish_cycle(&self, status: Option<u16>) {
-        self.finish_cycle_with_error(status, None).await;
-    }
-
-    async fn finish_cycle_with_error(&self, status: Option<u16>, error: Option<String>) {
-        let Some(cycle) = self.cycle.lock().take() else {
-            return;
-        };
+    async fn record_cycle(&self, cycle: Cycle, status: Option<u16>, error: Option<String>) {
         let mut ex = self.base.clone();
         ex.session_id = cycle.session_id;
         ex.event_id = cycle.event_id;
@@ -502,6 +583,23 @@ impl WsSession {
         ex.response_is_sse = true;
         ex.latency_ms = Some(cycle.started.elapsed().as_millis() as u64);
         self.interceptor.on_response(&ex).await;
+    }
+    async fn finish_cycle(&self, status: Option<u16>) {
+        self.finish_cycle_with_error(status, None).await;
+    }
+    async fn finish_cycle_with_error(&self, status: Option<u16>, error: Option<String>) {
+        let cycles = {
+            let mut current = self.cycle.lock();
+            let mut previous = self.previous.lock();
+            let mut cycles = std::mem::take(&mut *previous);
+            if let Some(cycle) = current.take() {
+                cycles.push(cycle);
+            }
+            cycles
+        };
+        for cycle in cycles {
+            self.record_cycle(cycle, status, error.clone()).await;
+        }
     }
 
     /// The connection ended: close out any cycle still open.
@@ -579,7 +677,20 @@ where
                             // Note: while the firewall deliberates (e.g. an
                             // Ask popup), later client frames simply wait —
                             // natural backpressure, same as the HTTP path.
-                            match session.on_client_message(msg.payload()).await {
+                            let action = session.on_client_message(msg.payload()).await;
+                            let released = std::mem::take(&mut *session.released.lock());
+                            for original in released {
+                                if client_wr
+                                    .lock()
+                                    .await
+                                    .write_all(&encode_frame(&WsMessage::Text(original), false))
+                                    .await
+                                    .is_err()
+                                {
+                                    break 'conn;
+                                }
+                            }
+                            match action {
                                 ClientAction::Forward => encode_frame(&msg, true),
                                 ClientAction::Replace(body) => {
                                     let replaced = match msg {
@@ -649,18 +760,35 @@ where
                     let messages = match messages {
                         Ok(messages) => messages,
                         Err(error) => {
-                            let message = format!("Protected WebSocket response failed: {error}");
-                            session
-                                .finish_cycle_with_error(Some(502), Some(message.clone()))
-                                .await;
-                            let body = serde_json::json!({"error":{"type":"localrouter_proxy","message":message}}).to_string();
-                            let reply = reject_event(502, body.as_bytes());
-                            let _ = client_wr
-                                .lock()
-                                .await
-                                .write_all(&encode_frame(&WsMessage::Text(reply), false))
-                                .await;
-                            break 'server;
+                            let _ = error;
+                            let mut original = session.release_originals(
+                                "WebSocket restoration unavailable; original content delivered",
+                            );
+                            match &msg {
+                                WsMessage::Text(text) => original.push(text.clone()),
+                                WsMessage::Binary(bytes) => {
+                                    for text in original {
+                                        let _ = client_wr
+                                            .lock()
+                                            .await
+                                            .write_all(&encode_frame(&WsMessage::Text(text), false))
+                                            .await;
+                                    }
+                                    if client_wr
+                                        .lock()
+                                        .await
+                                        .write_all(&encode_frame(&msg, false))
+                                        .await
+                                        .is_err()
+                                    {
+                                        break 'server;
+                                    }
+                                    let _ = bytes;
+                                    continue;
+                                }
+                                _ => {}
+                            }
+                            original
                         }
                     };
                     let mut writer = client_wr.lock().await;
@@ -687,6 +815,17 @@ where
                         "websocket upstream stream unparseable; closing intercepted connection"
                     );
                     break;
+                }
+            }
+            if let Some(session) = session.as_ref() {
+                for original in session.release_originals(
+                    "WebSocket ended; incomplete buffered response delivered unchanged",
+                ) {
+                    let _ = client_wr
+                        .lock()
+                        .await
+                        .write_all(&encode_frame(&WsMessage::Text(original), false))
+                        .await;
                 }
             }
             stop_client.notify_one();
@@ -1307,6 +1446,26 @@ mod protected_cancellation_tests {
         .await
         .unwrap();
         assert_eq!(reply, malformed);
+        let binary = vec![0xff, 0, 0xfe];
+        upstream
+            .write_all(&encode_frame(&WsMessage::Binary(binary.clone()), false))
+            .await
+            .unwrap();
+        let received = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let count = client.read(&mut buffer).await.unwrap();
+                assert!(
+                    count > 0,
+                    "unsupported binary content must not close the call"
+                );
+                if let Some(message) = decoder.push(&buffer[..count]).pop() {
+                    break message;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(received, WsMessage::Binary(binary));
         upstream
             .write_all(&encode_frame(
                 &WsMessage::Text(
@@ -1334,7 +1493,7 @@ mod protected_cancellation_tests {
     }
 
     #[tokio::test]
-    async fn cancellation_retains_capability_until_terminal_event_and_rejects_hidden_input() {
+    async fn cancellation_retains_capability_and_forwards_provider_specific_fields() {
         let session = WsSession::new(
             Arc::new(Protect),
             WireFormat::OpenAiResponses,
@@ -1355,9 +1514,9 @@ mod protected_cancellation_tests {
         assert!(session.cycle.lock().as_ref().unwrap().restorer.is_some());
         assert!(matches!(
             session
-                .on_client_message(br#"{"type":"response.cancel","input":"must not forward"}"#)
+                .on_client_message(br#"{"type":"response.cancel","input":"provider-specific"}"#)
                 .await,
-            ClientAction::Reject(_)
+            ClientAction::Forward
         ));
         session
             .on_server_message(r#"{"type":"response.incomplete","response":{"id":"resp_cancel"}}"#)
@@ -1371,5 +1530,123 @@ mod protected_cancellation_tests {
             ClientAction::Replace(_)
         ));
         session.on_close().await;
+    }
+}
+
+#[cfg(test)]
+mod concurrent_restoration_tests {
+    use super::*;
+    use lr_types::secret_context::SecretContext;
+    struct Protected;
+    #[async_trait::async_trait]
+    impl ProxyInterceptor for Protected {
+        fn on_connect(
+            &self,
+            _: &str,
+            _: &crate::interceptor::ClientCtx,
+        ) -> crate::interceptor::ConnectDecision {
+            crate::interceptor::ConnectDecision::Mitm
+        }
+        async fn on_request(&self, ex: &ObservedExchange) -> RequestAction {
+            let mut body: Value =
+                serde_json::from_slice(ex.request_body.as_ref().unwrap()).unwrap();
+            let vault = Arc::new(lr_secret_scanner::placeholders::Vault::for_client(
+                Arc::new(lr_api_keys::MockKeychain::new()),
+                "concurrent-client",
+            ));
+            vault.register(body["input"].as_str().unwrap()).unwrap();
+            vault.protect(&mut body).unwrap();
+            RequestAction::Protect {
+                body: body.to_string().into_bytes(),
+                vault,
+            }
+        }
+    }
+    async fn start(session: &WsSession, value: &str, id: &str) -> String {
+        let payload =
+            serde_json::json!({"type":"response.create","model":"test","input":value}).to_string();
+        let ClientAction::Replace(body) = session.on_client_message(payload.as_bytes()).await
+        else {
+            panic!("concurrent call was rejected")
+        };
+        let tag = serde_json::from_slice::<Value>(&body).unwrap()["input"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        session
+            .on_server_message(
+                &serde_json::json!({"type":"response.created","response":{"id":id}}).to_string(),
+            )
+            .await
+            .unwrap();
+        tag
+    }
+    fn deltas(output: Vec<String>) -> String {
+        output
+            .iter()
+            .filter_map(|s| {
+                serde_json::from_str::<Value>(s).unwrap()["delta"]
+                    .as_str()
+                    .map(str::to_owned)
+            })
+            .collect()
+    }
+    #[tokio::test]
+    async fn identifiable_concurrent_responses_restore_independently_and_never_return_409() {
+        let session = WsSession::new(
+            Arc::new(Protected),
+            WireFormat::OpenAiResponses,
+            ObservedExchange::default(),
+        );
+        let first = start(&session, "first-synthetic-original", "response-a").await;
+        let second = start(&session, "second-synthetic-original", "response-b").await;
+        let split = first.len() / 2;
+        assert!(session.on_server_message(&serde_json::json!({"type":"response.output_text.delta","response_id":"response-a","item_id":"a","delta":&first[..split]}).to_string()).await.unwrap().is_empty());
+        let output=session.on_server_message(&serde_json::json!({"type":"response.output_text.delta","response_id":"response-b","item_id":"b","delta":second}).to_string()).await.unwrap();
+        assert_eq!(deltas(output), "second-synthetic-original");
+        let output=session.on_server_message(&serde_json::json!({"type":"response.output_text.delta","item_id":"a","delta":&first[split..]}).to_string()).await.unwrap();
+        assert_eq!(deltas(output), "first-synthetic-original");
+        session
+            .on_server_message(r#"{"type":"response.completed","response":{"id":"response-b"}}"#)
+            .await
+            .unwrap();
+        assert!(session.cycle.lock().is_none());
+        assert_eq!(session.previous.lock().len(), 1);
+        session
+            .on_server_message(r#"{"type":"response.completed","response":{"id":"response-a"}}"#)
+            .await
+            .unwrap();
+        assert!(session.previous.lock().is_empty());
+        let third = start(&session, "third-synthetic-original", "response-c").await;
+        let output=session.on_server_message(&serde_json::json!({"type":"response.output_text.delta","item_id":"c","delta":third}).to_string()).await.unwrap();
+        assert_eq!(deltas(output), "third-synthetic-original");
+    }
+    #[tokio::test]
+    async fn ambiguous_concurrent_events_release_held_content_without_failing_or_disabling_future_turns(
+    ) {
+        let session = WsSession::new(
+            Arc::new(Protected),
+            WireFormat::OpenAiResponses,
+            ObservedExchange::default(),
+        );
+        let _ = start(&session, "first-synthetic-original", "response-a").await;
+        let _ = start(&session, "second-synthetic-original", "response-b").await;
+        let held=serde_json::json!({"type":"response.function_call_arguments.delta","response_id":"response-a","item_id":"a","delta":"{\"input\":\"partial"}).to_string();
+        assert!(session.on_server_message(&held).await.unwrap().is_empty());
+        let ambiguous=serde_json::json!({"type":"response.output_text.delta","item_id":"unassigned","delta":"unchanged"}).to_string();
+        let output = session.on_server_message(&ambiguous).await.unwrap();
+        assert_eq!(output, vec![held, ambiguous]);
+        for id in ["response-a", "response-b"] {
+            session
+                .on_server_message(
+                    &serde_json::json!({"type":"response.completed","response":{"id":id}})
+                        .to_string(),
+                )
+                .await
+                .unwrap();
+        }
+        let third = start(&session, "third-synthetic-original", "response-c").await;
+        let output=session.on_server_message(&serde_json::json!({"type":"response.output_text.delta","item_id":"c","delta":third}).to_string()).await.unwrap();
+        assert_eq!(deltas(output), "third-synthetic-original");
     }
 }

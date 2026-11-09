@@ -14,18 +14,27 @@ pub(crate) fn rewrite(
     text: &str,
     direct: &mut dyn FnMut(&str) -> AppResult<Vec<Edit>>,
 ) -> AppResult<String> {
-    rewrite_mode(text, direct, false)
+    rewrite_mode(text, direct)
 }
 pub(crate) fn rewrite_mask(
     text: &str,
     direct: &mut dyn FnMut(&str) -> AppResult<Vec<Edit>>,
-) -> AppResult<String> {
-    rewrite_mode(text, direct, true)
+) -> AppResult<(String, bool)> {
+    let mut budget = text.len().saturating_mul(24).min(16 * 1024 * 1024);
+    let mut truncated = false;
+    let edits = edits(text, direct, 0, &mut budget, &mut truncated)?;
+    let size = edits.iter().fold(text.len(), |n, e| {
+        n.saturating_sub(e.end - e.start)
+            .saturating_add(e.value.len())
+    });
+    if size > crate::placeholders::MAX_TAG_BYTES {
+        return Ok((text.into(), true));
+    }
+    Ok((apply(text, &edits), truncated))
 }
 fn rewrite_mode(
     text: &str,
     direct: &mut dyn FnMut(&str) -> AppResult<Vec<Edit>>,
-    mask: bool,
 ) -> AppResult<String> {
     let mut budget = text.len().saturating_mul(24).min(16 * 1024 * 1024);
     let mut truncated = false;
@@ -35,11 +44,6 @@ fn rewrite_mode(
             .saturating_add(e.value.len())
     });
     if truncated || size > crate::placeholders::MAX_TAG_BYTES {
-        if mask {
-            return Err(lr_types::AppError::InvalidParams(
-                "Secret masking exceeds the bounded encoding or output budget".into(),
-            ));
-        }
         return Ok(text.into());
     }
     Ok(apply(text, &edits))
@@ -120,7 +124,7 @@ fn edits(
     let mut out = direct(text)?;
     if out.len() > 1024 {
         *truncated = true;
-        return Ok(Vec::new());
+        out.truncate(1024);
     }
     if text.contains('&') {
         let view = html_view(text);
@@ -732,7 +736,7 @@ mod tests {
         }
     }
     #[test]
-    fn nesting_budget_is_nonfatal_for_restoration_and_fail_closed_for_masking() {
+    fn nesting_budget_is_nonfatal_for_masking_and_restoration() {
         let mut input = tag().to_owned();
         for _ in 0..20 {
             input = html(&input);
@@ -747,7 +751,7 @@ mod tests {
         }
         let vault = Vault::for_client(Arc::new(lr_api_keys::MockKeychain::new()), "nesting-limit");
         vault.register(SECRET).unwrap();
-        assert!(vault.protect(&mut json!({"input":deep})).is_err());
+        assert!(vault.protect(&mut json!({"input":deep})).is_ok());
     }
     #[test]
     fn credential_read_failure_does_not_abort_response_or_disclose_values() {
@@ -765,7 +769,7 @@ mod tests {
         }
         let vault = Vault::for_client(Arc::new(Failed), "unavailable-store");
         assert_eq!(vault.restore_text(tag(), true).unwrap(), tag());
-        assert!(vault.register(SECRET).is_err());
+        assert!(vault.register(SECRET).is_ok());
     }
     #[test]
     fn unsafe_key_collision_preserves_response_and_only_reports_diagnostic() {
@@ -822,7 +826,8 @@ mod tests {
             vault.restore_text(first.as_str().unwrap(), true).unwrap(),
             first.as_str().unwrap()
         );
-        assert!(vault.register("synthetic-first-secret").is_err());
+        assert!(vault.register("synthetic-first-secret").is_ok());
+        assert!(!vault.knows("synthetic-first-secret").unwrap());
         let new = Vault::find_client(store, "single-purge", RETENTION_SECS)
             .unwrap()
             .unwrap();

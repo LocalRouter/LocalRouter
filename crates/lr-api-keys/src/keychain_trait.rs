@@ -7,6 +7,7 @@
 //! repeated password prompts for the same service:account combination.
 
 use crate::chunked::{self, RawEntryStore};
+pub use crate::resilient::ResilientSecretStorage;
 use lr_types::errors::AppResult;
 use parking_lot::RwLock;
 use std::collections::HashMap;
@@ -17,6 +18,16 @@ use zeroize::Zeroizing;
 
 /// Trait for keychain operations
 pub trait KeychainStorage: Send + Sync {
+    /// True when this process can only retain mappings in memory.
+    fn persistence_warning(&self) -> bool {
+        false
+    }
+
+    /// Isolate unreadable redaction data without modifying durable records.
+    fn quarantine_unreadable(&self, _service: &str, _account: &str) -> bool {
+        false
+    }
+
     /// Store a key-value pair
     fn store(&self, service: &str, account: &str, secret: &str) -> AppResult<()>;
 
@@ -38,6 +49,32 @@ pub struct SystemKeychain;
 /// honors the same file/system choice as other debug credentials, using a
 /// separate file so independently cached client credentials cannot overwrite it.
 pub fn redacted_secret_storage() -> Arc<dyn KeychainStorage> {
+    type Stores = parking_lot::Mutex<HashMap<String, Arc<dyn KeychainStorage>>>;
+    static STORES: std::sync::OnceLock<Stores> = std::sync::OnceLock::new();
+    let path = lr_utils::paths::config_dir();
+    let namespace = path
+        .as_ref()
+        .ok()
+        .and_then(|p| fs::read_to_string(p.join("redacted-secrets.namespace")).ok());
+    let key = format!(
+        "{:?}|{:?}|{:?}",
+        path,
+        std::env::var("LOCALROUTER_KEYCHAIN"),
+        namespace
+    );
+    STORES
+        .get_or_init(Stores::default)
+        .lock()
+        .entry(key)
+        .or_insert_with(|| {
+            Arc::new(ResilientSecretStorage::new(
+                durable_redacted_secret_storage(),
+            ))
+        })
+        .clone()
+}
+
+fn durable_redacted_secret_storage() -> Arc<dyn KeychainStorage> {
     #[cfg(debug_assertions)]
     if std::env::var("LOCALROUTER_KEYCHAIN").as_deref() != Ok("system") {
         type DebugStores = Mutex<HashMap<std::path::PathBuf, Arc<dyn KeychainStorage>>>;

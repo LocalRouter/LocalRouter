@@ -72,6 +72,7 @@ impl From<&FirewallApprovalAction> for PushDecisionAction {
             FirewallApprovalAction::DenySession => Self::DenySession,
             FirewallApprovalAction::DenyAlways => Self::DenyAlways,
             FirewallApprovalAction::Deny
+            | FirewallApprovalAction::ContinueWithRedaction
             | FirewallApprovalAction::Deny1Hour
             | FirewallApprovalAction::BlockCategories
             | FirewallApprovalAction::DisableClient => Self::Deny,

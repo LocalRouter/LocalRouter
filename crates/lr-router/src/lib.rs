@@ -2601,11 +2601,19 @@ impl Router {
     ) -> AppResult<(CompletionResponse, Option<serde_json::Value>)> {
         let mut request = request;
         if let Some(context) = lr_types::secret_context::current() {
-            let mut value = serde_json::to_value(&request)
-                .map_err(|_| AppError::Internal("Could not protect model request".into()))?;
-            context.prepare(&mut value).await?;
-            request = serde_json::from_value(value)
-                .map_err(|_| AppError::Internal("Could not protect model request".into()))?;
+            if let Ok(mut value) = serde_json::to_value(&request) {
+                lr_types::secret_context::prepare(context.as_ref(), &mut value).await?;
+                match serde_json::from_value(value) {
+                    Ok(candidate) => request = candidate,
+                    Err(_) => context.protection_diagnostic(
+                        "Masked model request could not be represented; original request forwarded",
+                    ),
+                }
+            } else {
+                context.protection_diagnostic(
+                    "Model request could not be inspected; original request forwarded",
+                );
+            }
         }
         self.prepare_privacy_request(client_id, &mut request)?;
         self.prepare_upstream_tools(client_id, &mut request)?;
@@ -2726,11 +2734,19 @@ impl Router {
     )> {
         let mut request = request;
         if let Some(context) = lr_types::secret_context::current() {
-            let mut value = serde_json::to_value(&request)
-                .map_err(|_| AppError::Internal("Could not protect model request".into()))?;
-            context.prepare(&mut value).await?;
-            request = serde_json::from_value(value)
-                .map_err(|_| AppError::Internal("Could not protect model request".into()))?;
+            if let Ok(mut value) = serde_json::to_value(&request) {
+                lr_types::secret_context::prepare(context.as_ref(), &mut value).await?;
+                match serde_json::from_value(value) {
+                    Ok(candidate) => request = candidate,
+                    Err(_) => context.protection_diagnostic(
+                        "Masked model request could not be represented; original request forwarded",
+                    ),
+                }
+            } else {
+                context.protection_diagnostic(
+                    "Model request could not be inspected; original request forwarded",
+                );
+            }
         }
         self.prepare_privacy_request(client_id, &mut request)?;
         self.prepare_upstream_tools(client_id, &mut request)?;

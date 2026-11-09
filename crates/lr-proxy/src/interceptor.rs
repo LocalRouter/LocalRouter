@@ -57,6 +57,9 @@ pub enum RequestAction {
 }
 
 impl RequestAction {
+    pub fn secret_scan_denied() -> Self {
+        Self::Reject { status:403, content_type:"application/json".into(), body:serde_json::json!({"type":"error","error":{"type":"secret_scan_denied_by_user","code":"secret_scan_denied_by_user","message":"Request denied by your Secret Scan decision"}}).to_string().into_bytes() }
+    }
     /// A JSON error `Reject` in the OpenAI/Anthropic-ish error envelope.
     pub fn reject_json(status: u16, message: &str) -> Self {
         let body = serde_json::json!({

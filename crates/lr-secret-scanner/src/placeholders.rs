@@ -70,9 +70,7 @@ fn parse_index(raw: &str) -> AppResult<Value> {
     Ok(value)
 }
 fn storage_error() -> AppError {
-    AppError::Internal(
-        "OS credential storage for secret redaction is unavailable; request blocked".into(),
-    )
+    AppError::Internal("OS credential storage for secret redaction is unavailable".into())
 }
 fn key(owner: &str, scope: &str) -> String {
     let encoded = serde_json::to_vec(&(owner, scope)).expect("strings serialize");
@@ -432,6 +430,9 @@ pub struct Vault {
     epoch: Mutex<Option<u64>>,
     generation: Mutex<Option<u64>>,
     restored: AtomicBool,
+    protection_limited: AtomicBool,
+    signed_unmasked: AtomicBool,
+    identity_unmasked: AtomicBool,
     scanned: AtomicBool,
     restore_only: AtomicBool,
     detector: Mutex<Option<Arc<Detector>>>,
@@ -458,6 +459,9 @@ impl Vault {
             epoch: Mutex::new(None),
             generation: Mutex::new(None),
             restored: AtomicBool::new(false),
+            protection_limited: AtomicBool::new(false),
+            signed_unmasked: AtomicBool::new(false),
+            identity_unmasked: AtomicBool::new(false),
             scanned: AtomicBool::new(false),
             restore_only: AtomicBool::new(false),
             detector: Mutex::new(None),
@@ -473,6 +477,17 @@ impl Vault {
         *self.detector.lock().expect("detector lock") = Some(detector);
     }
     pub fn set_request_contract(&self, request: &Value) -> AppResult<()> {
+        if self.set_request_contract_inner(request).is_err() {
+            self.protection_diagnostic(
+                "Restoration contract unavailable; request forwarded without contract validation",
+            );
+            if let Ok(mut contract) = self.contract.lock() {
+                *contract = Default::default();
+            }
+        }
+        Ok(())
+    }
+    fn set_request_contract_inner(&self, request: &Value) -> AppResult<()> {
         // The provider sees masked schemas. Validate the eventual local values
         // against the original schema, including secret-valued enums and keys.
         let mut request = request.clone();
@@ -654,7 +669,17 @@ impl Vault {
             .get(SERVICE, &self.index_key())
             .map_err(|_| storage_error())?
         {
-            Some(raw) => parse_index(&raw),
+            Some(raw) => match parse_index(&raw) {
+                Ok(index) => Ok(index),
+                Err(_)
+                    if self
+                        .storage
+                        .quarantine_unreadable(SERVICE, &self.index_key()) =>
+                {
+                    Ok(serde_json::json!({"scopes":{},"responses":{},"revoked_scopes":{}}))
+                }
+                Err(error) => Err(error),
+            },
             None => Ok(serde_json::json!({"scopes":{},"responses":{},"revoked_scopes":{}})),
         }
     }
@@ -927,12 +952,15 @@ impl Vault {
     fn registered_owners(
         storage: &dyn KeychainStorage,
     ) -> AppResult<std::collections::BTreeSet<String>> {
-        storage
-            .get(SERVICE, OWNERS)
-            .map_err(|_| storage_error())?
-            .map(|raw| serde_json::from_str(&raw).map_err(|_| storage_error()))
-            .transpose()
-            .map(Option::unwrap_or_default)
+        let raw = storage.get(SERVICE, OWNERS).map_err(|_| storage_error())?;
+        match raw {
+            None => Ok(Default::default()),
+            Some(raw) => match serde_json::from_str(&raw) {
+                Ok(owners) => Ok(owners),
+                Err(_) if storage.quarantine_unreadable(SERVICE, OWNERS) => Ok(Default::default()),
+                Err(_) => Err(storage_error()),
+            },
+        }
     }
     pub fn stored_owners(
         storage: &dyn KeychainStorage,
@@ -1273,21 +1301,30 @@ impl Vault {
         else {
             return Ok(BTreeMap::new());
         };
-        let raw = Zeroizing::new(raw);
-        let data: Value = serde_json::from_str(&raw).map_err(|_| storage_error())?;
-        if data["owner"].as_str() != Some(&self.owner) {
-            return Err(storage_error());
+        let decoded = (|| -> AppResult<BTreeMap<String, Zeroizing<String>>> {
+            let raw = Zeroizing::new(raw);
+            let data: Value = serde_json::from_str(&raw).map_err(|_| storage_error())?;
+            if data["owner"].as_str() != Some(&self.owner) {
+                return Err(storage_error());
+            }
+            let entries = data["entries"].as_object().ok_or_else(storage_error)?;
+            entries
+                .iter()
+                .map(|(id, value)| {
+                    Ok((
+                        id.clone(),
+                        Zeroizing::new(value.as_str().ok_or_else(storage_error)?.to_owned()),
+                    ))
+                })
+                .collect()
+        })();
+        match decoded {
+            Ok(entries) => Ok(entries),
+            Err(_) if self.storage.quarantine_unreadable(SERVICE, account) => {
+                Ok(Default::default())
+            }
+            Err(error) => Err(error),
         }
-        let entries = data["entries"].as_object().ok_or_else(storage_error)?;
-        entries
-            .iter()
-            .map(|(id, value)| {
-                Ok((
-                    id.clone(),
-                    Zeroizing::new(value.as_str().ok_or_else(storage_error)?.to_owned()),
-                ))
-            })
-            .collect()
     }
     fn save(&self, entries: &BTreeMap<String, Zeroizing<String>>) -> AppResult<()> {
         let values: serde_json::Map<String, Value> = entries
@@ -1341,7 +1378,13 @@ impl Vault {
         if entries.is_empty() {
             return Ok(text.into());
         }
-        crate::encoding::rewrite_mask(text, &mut |source| self.transform_plain(source, entries))
+        let (masked, limited) = crate::encoding::rewrite_mask(text, &mut |source| {
+            self.transform_plain(source, entries)
+        })?;
+        if limited {
+            self.protection_limited.store(true, Ordering::Release);
+        }
+        Ok(masked)
     }
     fn transform_plain(
         &self,
@@ -1419,6 +1462,162 @@ impl Vault {
                 return Ok(id);
             }
         }
+    }
+}
+impl Vault {
+    fn protect_inner(&self, value: &mut Value) -> AppResult<()> {
+        if self.restore_only.load(Ordering::Acquire) {
+            return Ok(());
+        }
+
+        let detector = self.detector.lock().map_err(|_| storage_error())?.clone();
+        if let Some(detector) = detector {
+            for secret in detector(value)? {
+                self.register(&secret)?;
+            }
+        }
+        let _lock = STORE_LOCK.lock().map_err(|_| storage_error())?;
+        let mut entries = self.load()?;
+        let index = self.index()?;
+        for opaque in opaque_values(value) {
+            let binding = &index["opaque"][key("opaque", opaque)];
+            if binding["account"].as_str() == Some(&self.account) {
+                if let Some(ids) = binding["ids"].as_array() {
+                    self.allowed.lock().map_err(|_| storage_error())?.extend(
+                        ids.iter()
+                            .filter_map(Value::as_str)
+                            .filter(|id| entries.contains_key(*id))
+                            .map(str::to_owned),
+                    );
+                }
+            }
+        }
+        let count = entries.len();
+        let mut redacted = BTreeMap::new();
+        fn signed_secret(value: &Value, entries: &BTreeMap<String, Zeroizing<String>>) -> bool {
+            fn contains(value: &Value, entries: &BTreeMap<String, Zeroizing<String>>) -> bool {
+                match value {
+                    Value::String(text) => entries
+                        .values()
+                        .any(|secret| text.contains(secret.as_str())),
+                    Value::Object(map) => map.values().any(|v| contains(v, entries)),
+                    Value::Array(values) => values.iter().any(|v| contains(v, entries)),
+                    _ => false,
+                }
+            }
+            match value {
+                Value::Object(map) => {
+                    if ["signature", "thought_signature"].iter().any(|key| {
+                        map.get(*key)
+                            .and_then(Value::as_str)
+                            .is_some_and(|s| !s.is_empty())
+                    }) {
+                        contains(value, entries)
+                    } else {
+                        map.get("encrypted_content")
+                            .is_some_and(|v| contains(v, entries))
+                            || map.values().any(|v| signed_secret(v, entries))
+                    }
+                }
+                Value::Array(values) => values.iter().any(|v| signed_secret(v, entries)),
+                _ => false,
+            }
+        }
+        if signed_secret(value, &entries) {
+            self.signed_unmasked.store(true, Ordering::Release);
+        }
+        fn identity_contains_original(
+            value: &Value,
+            entries: &BTreeMap<String, Zeroizing<String>>,
+            opaque: bool,
+        ) -> bool {
+            if !opaque {
+                return false;
+            }
+            match value {
+                Value::Object(map) => {
+                    let request_input = map.get("model").and_then(Value::as_str).is_some()
+                        || map.get("type").and_then(Value::as_str) == Some("response.create");
+                    (is_protocol_object(map)
+                        && map.iter().any(|(key, value)| {
+                            entries.values().any(|secret| key.contains(secret.as_str()))
+                                || (is_protocol_identity(key)
+                                    && value.as_str().is_some_and(|value| {
+                                        entries
+                                            .values()
+                                            .any(|secret| value.contains(secret.as_str()))
+                                    }))
+                        }))
+                        || map.iter().any(|(key, value)| {
+                            identity_contains_original(
+                                value,
+                                entries,
+                                !matches!(key.as_str(), "arguments" | "partial_json")
+                                    && (key != "input" || request_input),
+                            )
+                        })
+                }
+                Value::Array(values) => values
+                    .iter()
+                    .any(|value| identity_contains_original(value, entries, true)),
+                _ => false,
+            }
+        }
+        if identity_contains_original(value, &entries, true) {
+            self.identity_unmasked.store(true, Ordering::Release);
+        }
+        visit_with_mode(
+            value,
+            &mut |text, _| {
+                // Existing references in the authenticated session history are capabilities
+                // for this request, too. Never authorize references from another record.
+                restore_text(text, false, |id| {
+                    if entries.contains_key(id) {
+                        self.allowed
+                            .lock()
+                            .map_err(|_| storage_error())?
+                            .insert(id.into());
+                    }
+                    Ok(None)
+                })?;
+                let masked = self.transform(text, &mut entries)?;
+                if masked != text {
+                    let before = reference_counts(text);
+                    for (id, count) in reference_counts(&masked) {
+                        let added =
+                            count.saturating_sub(before.get(&id).copied().unwrap_or_default());
+                        if added > 0 {
+                            *redacted.entry(id).or_default() += added;
+                        }
+                    }
+                }
+                Ok(masked)
+            },
+            false,
+            true,
+        )?;
+        if !entries.is_empty() && (entries.len() != count || self.active()) {
+            self.save(&entries)?;
+        }
+        drop(entries);
+        drop(_lock);
+        self.notify_operations("redact", "Outbound request", redacted);
+        Ok(())
+    }
+}
+impl Vault {
+    fn register_inner(&self, secret: &str) -> AppResult<()> {
+        if secret.is_empty() {
+            return Ok(());
+        }
+        let _lock = STORE_LOCK.lock().map_err(|_| storage_error())?;
+        let mut entries = self.load()?;
+        if !entries.values().any(|s| s.as_str() == secret) {
+            self.check_original(secret)?;
+            Self::insert(&mut entries, secret)?;
+            self.save(&entries)?;
+        }
+        Ok(())
     }
 }
 impl Drop for Vault {
@@ -1536,15 +1735,11 @@ impl SecretContext for Vault {
         Ok(())
     }
     fn register(&self, secret: &str) -> AppResult<()> {
-        if secret.is_empty() {
-            return Ok(());
+        if self.register_inner(secret).is_err() {
+            self.protection_diagnostic("A detected original could not be mapped; content will proceed without that replacement");
         }
-        let _lock = STORE_LOCK.lock().map_err(|_| storage_error())?;
-        let mut entries = self.load()?;
-        if !entries.values().any(|s| s.as_str() == secret) {
-            self.check_original(secret)?;
-            Self::insert(&mut entries, secret)?;
-            self.save(&entries)?;
+        if self.storage.persistence_warning() {
+            self.protection_diagnostic("Secret storage is unavailable; mappings are memory-only for this run and will not survive restart");
         }
         Ok(())
     }
@@ -1561,111 +1756,38 @@ impl SecretContext for Vault {
                 .map_err(|_| storage_error())?
                 .clone();
             if let Some(detector) = detector {
-                *value = detector(value.clone()).await?;
+                match detector(value.clone()).await {
+                    Ok(candidate) => *value = candidate,
+                    Err(AppError::SecretScanDenied) => return Err(AppError::SecretScanDenied),
+                    Err(_) => self.protection_diagnostic(
+                        "Follow-up Secret Scan unavailable; content forwarded",
+                    ),
+                }
             }
             self.protect(value)?;
             Ok(())
         })
     }
     fn protect(&self, value: &mut Value) -> AppResult<()> {
-        if self.restore_only.load(Ordering::Acquire) {
-            return Ok(());
+        let mut candidate = value.clone();
+        match self.protect_inner(&mut candidate) {
+            Ok(()) => *value = candidate,
+            Err(_) => self.protection_diagnostic(
+                "Secret masking could not safely complete; original content forwarded",
+            ),
         }
-
-        let detector = self.detector.lock().map_err(|_| storage_error())?.clone();
-        if let Some(detector) = detector {
-            for secret in detector(value)? {
-                self.register(&secret)?;
-            }
+        if self.protection_limited.swap(false, Ordering::AcqRel) {
+            self.protection_diagnostic("Secret masking reached its processing limit; coverage is incomplete and remaining content was forwarded");
         }
-        let _lock = STORE_LOCK.lock().map_err(|_| storage_error())?;
-        let mut entries = self.load()?;
-        let index = self.index()?;
-        for opaque in opaque_values(value) {
-            let binding = &index["opaque"][key("opaque", opaque)];
-            if binding["account"].as_str() == Some(&self.account) {
-                if let Some(ids) = binding["ids"].as_array() {
-                    self.allowed.lock().map_err(|_| storage_error())?.extend(
-                        ids.iter()
-                            .filter_map(Value::as_str)
-                            .filter(|id| entries.contains_key(*id))
-                            .map(str::to_owned),
-                    );
-                }
-            }
+        if self.signed_unmasked.swap(false, Ordering::AcqRel) {
+            self.protection_diagnostic("A known original occurs in signed or opaque provider content; that content was forwarded unchanged");
         }
-        let count = entries.len();
-        let mut redacted = BTreeMap::new();
-        fn signed_secret(value: &Value, entries: &BTreeMap<String, Zeroizing<String>>) -> bool {
-            fn contains(value: &Value, entries: &BTreeMap<String, Zeroizing<String>>) -> bool {
-                match value {
-                    Value::String(text) => entries
-                        .values()
-                        .any(|secret| text.contains(secret.as_str())),
-                    Value::Object(map) => map.values().any(|v| contains(v, entries)),
-                    Value::Array(values) => values.iter().any(|v| contains(v, entries)),
-                    _ => false,
-                }
-            }
-            match value {
-                Value::Object(map) => {
-                    if ["signature", "thought_signature"].iter().any(|key| {
-                        map.get(*key)
-                            .and_then(Value::as_str)
-                            .is_some_and(|s| !s.is_empty())
-                    }) {
-                        contains(value, entries)
-                    } else {
-                        map.get("encrypted_content")
-                            .is_some_and(|v| contains(v, entries))
-                            || map.values().any(|v| signed_secret(v, entries))
-                    }
-                }
-                Value::Array(values) => values.iter().any(|v| signed_secret(v, entries)),
-                _ => false,
-            }
+        if self.storage.persistence_warning() {
+            self.protection_diagnostic("Secret storage is unavailable; mappings are memory-only for this run and will not survive restart");
         }
-        if signed_secret(value, &entries) {
-            return Err(AppError::InvalidParams(
-                "A signed provider block contains a secret and cannot be safely redacted".into(),
-            ));
+        if self.identity_unmasked.swap(false, Ordering::AcqRel) {
+            self.protection_diagnostic("A known original overlaps provider protocol identities; those fields were forwarded unchanged to preserve the request");
         }
-        visit_with_mode(
-            value,
-            &mut |text, _| {
-                // Existing references in the authenticated session history are capabilities
-                // for this request, too. Never authorize references from another record.
-                restore_text(text, false, |id| {
-                    if entries.contains_key(id) {
-                        self.allowed
-                            .lock()
-                            .map_err(|_| storage_error())?
-                            .insert(id.into());
-                    }
-                    Ok(None)
-                })?;
-                let masked = self.transform(text, &mut entries)?;
-                if masked != text {
-                    let before = reference_counts(text);
-                    for (id, count) in reference_counts(&masked) {
-                        let added =
-                            count.saturating_sub(before.get(&id).copied().unwrap_or_default());
-                        if added > 0 {
-                            *redacted.entry(id).or_default() += added;
-                        }
-                    }
-                }
-                Ok(masked)
-            },
-            false,
-            true,
-        )?;
-        if !entries.is_empty() && (entries.len() != count || self.active()) {
-            self.save(&entries)?;
-        }
-        drop(entries);
-        drop(_lock);
-        self.notify_operations("redact", "Outbound request", redacted);
         Ok(())
     }
     fn restore_text(&self, text: &str, strict: bool) -> AppResult<String> {
@@ -1725,13 +1847,20 @@ impl SecretContext for Vault {
     fn diagnostic(&self, message: &str) {
         Vault::diagnostic(self, message);
     }
+    fn protection_diagnostic(&self, message: &str) {
+        self.notify_operations(
+            "protect_warning",
+            message,
+            BTreeMap::from([(String::new(), 1)]),
+        );
+    }
     fn validate_tool(&self, name: Option<&str>, arguments: &Value) -> AppResult<()> {
         if self.restored.load(Ordering::Acquire) {
             let result = self
                 .contract
                 .lock()
-                .map_err(|_| error())?
-                .tool(name, arguments);
+                .map_err(|_| error())
+                .and_then(|contract| contract.tool(name, arguments));
             if result.is_err() {
                 self.diagnostic(
                     "Restored tool schema could not be validated locally; response preserved",
@@ -1742,7 +1871,11 @@ impl SecretContext for Vault {
     }
     fn validate_output(&self, text: &str) -> AppResult<()> {
         if self.restored.load(Ordering::Acquire) {
-            let result = self.contract.lock().map_err(|_| error())?.output(text);
+            let result = self
+                .contract
+                .lock()
+                .map_err(|_| error())
+                .and_then(|contract| contract.output(text));
             if result.is_err() {
                 self.diagnostic(
                     "Restored output schema could not be validated locally; response preserved",
@@ -1753,7 +1886,11 @@ impl SecretContext for Vault {
     }
     fn validate_response(&self, value: &Value) -> AppResult<()> {
         if self.restored.load(Ordering::Acquire) {
-            let result = self.contract.lock().map_err(|_| error())?.response(value);
+            let result = self
+                .contract
+                .lock()
+                .map_err(|_| error())
+                .and_then(|contract| contract.response(value));
             if result.is_err() {
                 self.diagnostic(
                     "Restored response schema could not be validated locally; response preserved",
@@ -1776,6 +1913,49 @@ impl SecretContext for Vault {
     }
 }
 
+fn is_protocol_object(map: &serde_json::Map<String, Value>) -> bool {
+    (map.get("model").and_then(Value::as_str).is_some()
+        && (map.contains_key("messages")
+            || map.contains_key("input")
+            || map.contains_key("prompt")))
+        || (map.get("name").and_then(Value::as_str).is_some()
+            && (map.contains_key("parameters") || map.contains_key("input_schema")))
+        || map.get("choices").is_some_and(Value::is_array)
+        || map.get("role").is_some_and(Value::is_string)
+        || map.get("object").is_some_and(Value::is_string)
+        || map.get("type").and_then(Value::as_str).is_some_and(|kind| {
+            matches!(
+                kind,
+                "message"
+                    | "function_call"
+                    | "custom_tool_call"
+                    | "function"
+                    | "text"
+                    | "output_text"
+                    | "thinking"
+                    | "reasoning"
+                    | "compaction"
+                    | "compaction_summary"
+            ) || kind.starts_with("response.")
+                || kind.starts_with("content_block")
+        })
+        || (map.get("name").and_then(Value::as_str).is_some() && map.contains_key("arguments"))
+}
+fn is_protocol_identity(key: &str) -> bool {
+    matches!(
+        key,
+        "id" | "call_id"
+            | "item_id"
+            | "model"
+            | "type"
+            | "object"
+            | "role"
+            | "name"
+            | "status"
+            | "finish_reason"
+            | "stop_reason"
+    )
+}
 /// Walk content values without touching protocol identities or signed state.
 /// Arguments are JSON *inside* a JSON string and need their own parse/serialize.
 pub fn visit(
@@ -1799,7 +1979,7 @@ fn visit_with_mode(
             }
         }
         Value::Object(map) => {
-            if response
+            if (response || opaque)
                 && ["signature", "thought_signature"].iter().any(|key| {
                     map.get(*key)
                         .and_then(Value::as_str)
@@ -1808,26 +1988,9 @@ fn visit_with_mode(
             {
                 return Ok(());
             }
-            let protocol_object = map.contains_key("choices")
-                || map.contains_key("role")
-                || map.contains_key("object")
-                || map.get("type").and_then(Value::as_str).is_some_and(|kind| {
-                    matches!(
-                        kind,
-                        "message"
-                            | "function_call"
-                            | "custom_tool_call"
-                            | "function"
-                            | "text"
-                            | "output_text"
-                            | "thinking"
-                            | "reasoning"
-                            | "compaction"
-                            | "compaction_summary"
-                    ) || kind.starts_with("response.")
-                        || kind.starts_with("content_block")
-                })
-                || (map.contains_key("name") && map.contains_key("arguments"));
+            let protocol_object = is_protocol_object(map);
+            let request_input = map.get("model").and_then(Value::as_str).is_some()
+                || map.get("type").and_then(Value::as_str) == Some("response.create");
             let mut replaced = serde_json::Map::new();
             for (key, mut item) in std::mem::take(map) {
                 if opaque
@@ -1836,6 +1999,15 @@ fn visit_with_mode(
                         key.as_str(),
                         "encrypted_content" | "signature" | "thought_signature"
                     )
+                {
+                    replaced.insert(key, item);
+                    continue;
+                }
+                if opaque
+                    && !response
+                    && protocol_object
+                    && is_protocol_identity(&key)
+                    && item.is_string()
                 {
                     replaced.insert(key, item);
                     continue;
@@ -1861,8 +2033,10 @@ fn visit_with_mode(
                     replaced.insert(key, item);
                     continue;
                 }
-                let executable = matches!(key.as_str(), "arguments" | "partial_json" | "input");
-                let nested = executable || matches!(key.as_str(), "content" | "text" | "output");
+                let executable = matches!(key.as_str(), "arguments" | "partial_json")
+                    || (key == "input" && !request_input);
+                let nested =
+                    executable || matches!(key.as_str(), "content" | "text" | "output" | "input");
                 let mut decoded = false;
                 if nested {
                     if let Some(text) = item.as_str() {
@@ -1888,7 +2062,11 @@ fn visit_with_mode(
                         opaque && !executable,
                     )?;
                 }
-                let new_key = if response { key } else { f(&key, false)? };
+                let new_key = if response || (opaque && protocol_object) {
+                    key
+                } else {
+                    f(&key, false)?
+                };
                 if replaced.insert(new_key, item).is_some() {
                     return Err(AppError::InvalidParams(
                         "Secret restoration produced a duplicate JSON key".into(),
@@ -2120,7 +2298,7 @@ mod tests {
         );
     }
     #[test]
-    fn native_store_failure_blocks() {
+    fn native_store_failure_is_nonfatal() {
         struct Failed;
         impl KeychainStorage for Failed {
             fn store(&self, _: &str, _: &str, _: &str) -> AppResult<()> {
@@ -2134,7 +2312,7 @@ mod tests {
             }
         }
         let vault = Vault::new(Arc::new(Failed), "owner", "session", false);
-        assert!(vault.register("must not dispatch").is_err());
+        assert!(vault.register("must not dispatch").is_ok());
     }
     struct NativeProofStore(String);
     impl KeychainStorage for NativeProofStore {
@@ -2807,8 +2985,8 @@ mod store_management_tests {
             old_tags[0]
         );
         assert!(
-            active.register(SECRET).is_err(),
-            "old request must not recreate purged values"
+            active.register(SECRET).is_ok(),
+            "old request proceeds without recreating purged values"
         );
         let entries = Vault::list_client(storage.clone(), owner).unwrap();
         assert_eq!(entries.len(), 1);
@@ -2903,7 +3081,7 @@ mod store_management_tests {
         assert!(Vault::list_client(storage.clone(), "purge-failure-owner")
             .unwrap()
             .is_empty());
-        assert!(active.register(SECRET).is_err());
+        assert!(active.register(SECRET).is_ok());
         let fresh = Vault::for_client(storage, "purge-failure-owner");
         fresh.register(SECRET).unwrap();
         assert_eq!(
@@ -3067,5 +3245,49 @@ mod store_management_tests {
         vault.set_request_contract(&json!({"tools":[{"type":"function","name":"write","parameters":{"type":"object","properties":{"value":{"enum":[one]}}}}]})).unwrap();
         assert_eq!(notices.lock().unwrap().len(), before);
         assert!(!format!("{:?}", notices.lock().unwrap()).contains(SECRET));
+    }
+}
+
+#[cfg(test)]
+mod corrupt_storage_availability_tests {
+    use super::*;
+    #[test]
+    fn corrupt_or_foreign_records_are_quarantined_without_disclosure_or_durable_overwrite() {
+        for foreign in [false, true] {
+            let durable = Arc::new(lr_api_keys::MockKeychain::new());
+            let storage: Arc<dyn KeychainStorage> = Arc::new(
+                lr_api_keys::keychain_trait::ResilientSecretStorage::new(durable.clone()),
+            );
+            let owner = if foreign {
+                "foreign-record-client"
+            } else {
+                "corrupt-record-client"
+            };
+            let vault = Vault::for_client(storage.clone(), owner);
+            vault.register("old-owned-original").unwrap();
+            let bad = if foreign {
+                serde_json::json!({"owner":"another-client","entries":{"abc123":"foreign-original-must-not-be-revealed"}}).to_string()
+            } else {
+                "not valid record JSON".into()
+            };
+            durable.store(SERVICE, &vault.account, &bad).unwrap();
+            let fresh = Vault::find_client(storage.clone(), owner, RETENTION_SECS)
+                .unwrap()
+                .unwrap_or_else(|| Vault::for_client(storage.clone(), owner));
+            fresh.register("new-owned-original").unwrap();
+            let mut value = serde_json::json!({"content":"new-owned-original"});
+            fresh.protect(&mut value).unwrap();
+            assert_ne!(value["content"], "new-owned-original");
+            assert!(storage.persistence_warning());
+            assert_eq!(
+                fresh
+                    .restore_text(value["content"].as_str().unwrap(), true)
+                    .unwrap(),
+                "new-owned-original"
+            );
+            let foreign_tag = "<localrouter-secret id='abc123'/>";
+            assert_eq!(fresh.restore_text(foreign_tag, true).unwrap(), foreign_tag);
+            assert_eq!(durable.get(SERVICE, &vault.account).unwrap().unwrap(), bad);
+        }
     }
 }

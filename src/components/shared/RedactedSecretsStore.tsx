@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/Badge'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/Select'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog'
 import { listenSafe } from '@/hooks/useTauriListener'
-import type { ListRedactedSecretsParams, PurgeRedactedSecretsParams, RedactedSecretEntry, RevealRedactedSecretParams } from '@/types/tauri-commands'
+import type { ListRedactedSecretsParams, PurgeRedactedSecretsParams, RedactedSecretInventory, RedactedSecretEntry, RevealRedactedSecretParams } from '@/types/tauri-commands'
 
 const entryKey = (entry: RedactedSecretEntry) => `${entry.client_id}:${entry.reference_id}`
 const date = (seconds: number) => new Date(seconds * 1000).toLocaleString()
@@ -16,6 +16,7 @@ interface PurgeSelection { clientId: string | null; referenceId: string | null; 
 
 export function RedactedSecretsStore({ clientId }: { clientId?: string }) {
   const [entries, setEntries] = useState<RedactedSecretEntry[]>([])
+  const [persistenceWarning, setPersistenceWarning] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [filter, setFilter] = useState('all')
@@ -29,8 +30,8 @@ export function RedactedSecretsStore({ clientId }: { clientId?: string }) {
     const current = ++generation.current
     setLoading(true); setError(null); setRevealed({}); setRevealing(null)
     try {
-      const values = await invoke<RedactedSecretEntry[]>('list_redacted_secrets', { clientId: clientId ?? null } satisfies ListRedactedSecretsParams)
-      if (current === generation.current) { setEntries(values); setPage(0) }
+      const values = await invoke<RedactedSecretInventory>('list_redacted_secrets', { clientId: clientId ?? null } satisfies ListRedactedSecretsParams)
+      if (current === generation.current) { setEntries(values.entries); setPersistenceWarning(values.persistence_warning); setPage(0) }
     } catch (error) { if (current === generation.current) setError(String(error)) }
     finally { if (current === generation.current) setLoading(false) }
   }, [clientId])
@@ -80,8 +81,9 @@ export function RedactedSecretsStore({ clientId }: { clientId?: string }) {
       </CardHeader>
       <CardContent className="space-y-4">
         {!clientId && clients.length > 0 && <Select disabled={loading || purging} value={filter} onValueChange={value => { setFilter(value); setPage(0); setRevealed({}); setRevealing(null); generation.current++ }}><SelectTrigger className="w-full sm:w-72" aria-label="Filter stored secrets by client"><SelectValue placeholder="All clients" /></SelectTrigger><SelectContent><SelectItem value="all">All clients</SelectItem>{clients.map(([id, name]) => <SelectItem key={id} value={id}>{name}</SelectItem>)}</SelectContent></Select>}
+        {persistenceWarning && <p className="rounded-md border border-amber-500/40 p-3 text-sm" role="status">{persistenceWarning}</p>}
         {error && <div className="rounded-md border border-destructive/30 p-3 text-sm text-destructive" role="status">{error}</div>}
-        {loading ? <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />Loading stored secrets…</div> : !filtered.length ? <p className="text-sm text-muted-foreground">No redacted secrets are stored{selectedClient ? ' for this client' : ''}.</p> : <>
+        {loading ? <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />Loading stored secrets…</div> : !filtered.length ? <p className="text-sm text-muted-foreground">{persistenceWarning ? 'No in-memory or readable cached references are available' : 'No redacted secrets are stored'}{selectedClient ? ' for this client' : ''}.</p> : <>
           {visible.map(entry => {
             const key = entryKey(entry); const value = revealed[key]
             return <div key={key} className="space-y-3 rounded-lg border p-3">

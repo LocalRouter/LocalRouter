@@ -216,19 +216,35 @@ pub fn scan_projection(value: &Value) -> AppResult<(Value, bool)> {
                         ) {
                             continue;
                         }
-                        let file: FileInput = serde_json::from_value(
-                            if part["type"] == "input_file" {
-                                json!({"filename":part.get("filename"),"file_data":part.get("file_data")})
-                            } else {
-                                part.get("file").cloned().unwrap_or(Value::Null)
-                            },
-                        )?;
-                        let decoded = file.decode()?;
+                        let decoded = (|| -> AppResult<_> {
+                            let file: FileInput = serde_json::from_value(
+                                if part["type"] == "input_file" {
+                                    json!({"filename":part.get("filename"),"file_data":part.get("file_data")})
+                                } else {
+                                    part.get("file").cloned().unwrap_or(Value::Null)
+                                },
+                            )?;
+                            Ok((file.clone(), file.decode()?))
+                        })();
+                        let (file, decoded) = match decoded {
+                            Ok(value) => value,
+                            Err(_) => {
+                                opaque = true;
+                                inspection_warning();
+                                continue;
+                            }
+                        };
                         if decoded.mime == "application/pdf" {
                             opaque = true;
                             *part = json!({"type":"text","text":format!("[Opaque PDF attachment: {}]",file.filename.as_deref().unwrap_or("unnamed"))});
                         } else {
-                            *part = json!({"type":"text","text":String::from_utf8(decoded.bytes).map_err(|_|invalid("Invalid document UTF-8"))?});
+                            match String::from_utf8(decoded.bytes) {
+                                Ok(text) => *part = json!({"type":"text","text":text}),
+                                Err(_) => {
+                                    opaque = true;
+                                    inspection_warning();
+                                }
+                            }
                         }
                     }
                 }
@@ -240,6 +256,14 @@ pub fn scan_projection(value: &Value) -> AppResult<(Value, bool)> {
 
 /// Rewrite decoded text attachments too; replacing the scan projection alone
 /// would leave the original base64 secret in the forwarded document.
+fn inspection_warning() {
+    if let Some(context) = lr_types::secret_context::current() {
+        context.protection_diagnostic(
+            "Document content could not be inspected or rewritten; original attachment forwarded",
+        );
+    }
+}
+
 pub fn redact_text_files(
     value: &mut Value,
     redaction: &lr_secret_scanner::redaction::Redaction,
@@ -276,25 +300,34 @@ fn transform_text_files(
                             continue;
                         }
                         let responses = part["type"] == "input_file";
-                        let mut file: FileInput = serde_json::from_value(if responses {
-                            json!({"filename":part.get("filename"),"file_data":part.get("file_data")})
-                        } else {
-                            part.get("file")
-                                .cloned()
-                                .ok_or_else(|| invalid("Missing document"))?
-                        })?;
-                        let decoded = file.decode()?;
-                        if decoded.mime == "application/pdf" {
-                            continue;
-                        }
-                        let text = String::from_utf8(decoded.bytes)
-                            .map_err(|_| invalid("Invalid document UTF-8"))?;
-                        let redacted = transform(&text)?;
-                        file.file_data = format!(
-                            "data:{};base64,{}",
-                            decoded.mime,
-                            base64::engine::general_purpose::STANDARD.encode(redacted.as_bytes())
-                        );
+                        let transformed = (|| -> AppResult<FileInput> {
+                            let mut file: FileInput = serde_json::from_value(if responses {
+                                json!({"filename":part.get("filename"),"file_data":part.get("file_data")})
+                            } else {
+                                part.get("file").cloned().unwrap_or(Value::Null)
+                            })?;
+                            let decoded = file.decode()?;
+                            if decoded.mime == "application/pdf" {
+                                return Ok(file);
+                            }
+                            let text = String::from_utf8(decoded.bytes)
+                                .map_err(|_| invalid("Invalid document UTF-8"))?;
+                            let redacted = transform(&text)?;
+                            file.file_data = format!(
+                                "data:{};base64,{}",
+                                decoded.mime,
+                                base64::engine::general_purpose::STANDARD
+                                    .encode(redacted.as_bytes())
+                            );
+                            Ok(file)
+                        })();
+                        let file = match transformed {
+                            Ok(file) => file,
+                            Err(_) => {
+                                inspection_warning();
+                                continue;
+                            }
+                        };
                         if responses {
                             part["file_data"] = Value::String(file.file_data);
                         } else {
@@ -347,7 +380,15 @@ pub fn enforce_opaque_scan_policy(
             .read()
             .as_ref()
             .is_some_and(|engine| engine.has_models());
-    if secret_required || guardrails_required {
+    if secret_required {
+        crate::routes::pipeline::secret_scan_warning(
+            state,
+            client_id,
+            None,
+            "Opaque document content could not be inspected; original content forwarded",
+        );
+    }
+    if guardrails_required {
         return Err(crate::middleware::error::ApiErrorResponse::bad_request("Opaque documents cannot satisfy the configured content scans; supply extracted UTF-8 text first"));
     }
     Ok(())

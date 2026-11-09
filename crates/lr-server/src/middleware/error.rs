@@ -130,6 +130,10 @@ impl From<lr_mcp_via_llm::McpViaLlmError> for ApiErrorResponse {
 impl From<AppError> for ApiErrorResponse {
     fn from(err: AppError) -> Self {
         match err {
+            AppError::SecretScanDenied => {
+                ApiErrorResponse::forbidden("Request denied by your Secret Scan decision")
+                    .with_code("secret_scan_denied_by_user")
+            }
             AppError::McpSessionExpired => {
                 ApiErrorResponse::bad_gateway("Upstream MCP session expired; reconnect and retry")
             }

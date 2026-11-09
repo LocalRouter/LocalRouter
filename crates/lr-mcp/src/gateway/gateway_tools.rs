@@ -721,7 +721,7 @@ impl McpGateway {
             };
             if let Some(message) = message {
                 let mut value = Value::String(message.clone());
-                context.prepare(&mut value).await?;
+                lr_types::secret_context::prepare(context.as_ref(), &mut value).await?;
                 *message = value.as_str().unwrap_or_default().into();
             }
         }
@@ -1046,6 +1046,7 @@ impl McpGateway {
                     }
                     FirewallApprovalAction::DenyAlways
                     | FirewallApprovalAction::ReplaceSecrets
+                    | FirewallApprovalAction::ContinueWithRedaction
                     | FirewallApprovalAction::RedactOnce
                     | FirewallApprovalAction::BlockCategories
                     | FirewallApprovalAction::Deny1Hour
@@ -1332,11 +1333,11 @@ impl McpGateway {
             match &mut result {
                 VirtualToolCallResult::Success(response)
                 | VirtualToolCallResult::SuccessWithSideEffects { response, .. } => {
-                    context.prepare(response).await?
+                    lr_types::secret_context::prepare(context.as_ref(), response).await?
                 }
                 VirtualToolCallResult::ToolError(message) => {
                     let mut value = Value::String(message.clone());
-                    context.prepare(&mut value).await?;
+                    lr_types::secret_context::prepare(context.as_ref(), &mut value).await?;
                     *message = value.as_str().unwrap_or_default().into();
                 }
                 _ => {}
