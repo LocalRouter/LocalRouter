@@ -13,8 +13,8 @@
 - [x] Test Coverage Review: verify failures are nonfatal except an explicit Deny.
 - [x] Bug Hunt: review partial mutations, lost/duplicate bytes, cross-client isolation, purge resurrection, memory lifetime and stream state.
 - [x] Run stable full workspace tests, all-target Clippy, formatting, frontend unit/build/type and website checks.
-- [ ] Commit signed changes, merge --no-ff and push master after both real-client checks pass.
-- [ ] Run exact-source release CI, publish next release, monitor and independently verify assets, updater signatures, native startup, Docker and website delivery.
+- [x] Commit signed changes, merge --no-ff and push master after both real-client checks pass.
+- [x] Run exact-source release CI, publish next release, monitor and independently verify assets, updater signatures, native startup, Docker and website delivery.
 
 ## Implemented decisions and review
 
@@ -39,3 +39,16 @@ The final runtime build passed an additional Codex and Claude Code complex-refer
 Final call-site review also found typed MCP error serialization after masking. That conversion now commits only a representable envelope, otherwise preserving the original error plus a warning. A field-name-overlap regression covers the actual failure. Approval expiry/cancellation regressions assert popup retirement and nonblocking fallback; independent model approval remains denying on timeout.
 
 Final local validation passed on rustup stable: 5,089 Rust tests, 84 ignored, complete workspace/doc-tests, all-target Clippy with warnings denied, formatting, 149 frontend tests, TypeScript, desktop build and website checks. The last installed-client runs used the final runtime binary, including the MCP error rollback. All 50 LLM events in the validation window completed without errors.
+
+
+## Release evidence
+
+Implementation `f06c049e` and signed master merge `926ad1e3` contain the validated behavior. The merge tree is identical to the tested feature tree. Both installed clients were retested before this master push. Exact-source CI [42690506899](https://github.com/LocalRouter/LocalRouter/actions/runs/42690506899) passed, including the Linux real Codex conversation regression, all-target Clippy and formatting.
+
+[v0.0.181](https://github.com/LocalRouter/LocalRouter/releases/tag/v0.0.181) is published. Its tag `e20c09c3` descends directly from the validated source; parsed manifest and lockfile comparisons show version changes only. Release workflow [42696182336](https://github.com/LocalRouter/LocalRouter/actions/runs/42696182336) succeeded on all five platform builds, both Flatpak and Snap architectures, and the Nix pin. The optional package-manager publication job was skipped by the workflow.
+
+Independent public verification confirmed all 32 assets are present and nonempty, all five updater signatures match the configured public key, both macOS bundles pass strict code-signature and stapled-notarization validation, and the Apple Silicon executable reports `localrouter 0.0.181` in an isolated CLI startup. All eight stable download links return HTTP 200 with the expected version redirect and sizes.
+
+Docker delivery [42701523580](https://github.com/LocalRouter/LocalRouter/actions/runs/42701523580) passed native startup checks on amd64 and arm64. Public GHCR tags `0.0.181`, `v0.0.181` and `latest` resolve to the same multi-architecture digest; both platform configs identify version 0.0.181 and the expected source repository.
+
+Version/Nix metadata is integrated on master at `2ae75b46`. Website refresh [42701841489](https://github.com/LocalRouter/LocalRouter/actions/runs/42701841489) succeeded on that exact commit. Live documentation and research pages were fetched again and contain the current nonblocking, explicit-Deny and memory-fallback policy. All deployment/delivery runs were monitored to completion. Native Keychain smoke tests remain unrun to avoid additional permission dialogs; isolated file and injected-failure stores provide the recorded storage evidence.
