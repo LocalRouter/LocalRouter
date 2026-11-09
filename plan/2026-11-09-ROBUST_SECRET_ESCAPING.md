@@ -11,8 +11,8 @@
 - [x] Test Coverage Review: cover boundaries and failure handling.
 - [x] Bug Hunt: reread code for safety, resource limits, races, and corruption.
 - [x] Run required Rust and applicable frontend/website checks.
-- [ ] Commit signed changes, merge with --no-ff, and push master only after real-client success.
-- [ ] Validate exact master SHA in hosted CI; dispatch release, monitor all jobs, verify artifacts, signatures and delivery.
+- [x] Commit signed changes, merge with --no-ff, and push master only after real-client success.
+- [x] Validate exact master SHA in hosted CI; dispatch release, monitor all jobs, verify artifacts, signatures and delivery.
 
 ## Review and test notes
 - The release must include MCP discovery resilience (`99a0e3b5`, including `d8b94fab`), merged into this worktree before combined validation.
@@ -32,3 +32,12 @@
 - Direct firewall-policy regression verifies forwarded code bytes before Monitor masking contain no encoded known original. Monitor export is supplementary evidence, because it independently masks payloads.
 - Native OS credential-store smoke tests were deliberately not run after the prior permission dialogs. Real client tests use an isolated file store and never access production mappings.
 - Plan/coverage/bug review completed: bounded nested escaping, partial-stream boundaries, unknown/malformed references, lookup failure, transactional JSON-key collisions, advisory schemas, purge failure/retry and stale-vault resurrection are covered.
+
+## Release evidence
+- Published [v0.0.180](https://github.com/LocalRouter/LocalRouter/releases/tag/v0.0.180). Exact-source CI: [42657887406](https://github.com/LocalRouter/LocalRouter/actions/runs/42657887406), source `7c6d0a7c9646def527f9ebb533ce4801351def9f`. The tag's parent is that validated source, and parsed manifest/lockfile differences are version changes only.
+- [Release workflow 42662022502](https://github.com/LocalRouter/LocalRouter/actions/runs/42662022502) passed all five desktop platforms, both Flatpak architectures, both Snap architectures, and the Nix pin update. The tag includes the other session's MCP discovery resilience commit `d8b94fab`.
+- All 32 release assets are present and nonempty. All five updater signatures verified; both macOS bundles passed code-signature and stapled-notarization checks. Native Apple Silicon CLI reports `localrouter 0.0.180`. Eight stable download links return the expected files and sizes.
+- [Docker workflow 42667406633](https://github.com/LocalRouter/LocalRouter/actions/runs/42667406633) passed build/push and native amd64/arm64 startup checks. Public `0.0.180`, `v0.0.180` and `latest` resolve to the same multi-architecture manifest; both architecture configs identify this release.
+- [Website refresh 42669687063](https://github.com/LocalRouter/LocalRouter/actions/runs/42669687063) passed. Public documentation, research and demo bundles independently contain Secret Not Restored fallback, restoration stages and the stored-secrets UI.
+- Version and Nix metadata were merged with a signed merge commit and pushed to master. The isolated test app and task-only preview servers were stopped; the temporary Codex authentication copy and task-only dependency symlinks were removed. Production app and original client credentials were not modified.
+- Detailed local evidence is under `/tmp/localrouter-robustness-fix/`; release verification records are under `/tmp/localrouter-release-180/`. Native OS credential-store smoke tests remain unrun, as recorded above.
