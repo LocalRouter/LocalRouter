@@ -288,8 +288,13 @@ fn restore_text_depth(
             offset = end;
         } else if strict
             && text.get(start + 1..).is_some_and(|s| {
+                // Bare names in source strings are literal; use the same tag
+                // boundary as candidate() before treating this as malformed.
                 s.get(..TAG.len())
                     .is_some_and(|s| s.eq_ignore_ascii_case(TAG))
+                    && s.as_bytes()
+                        .get(TAG.len())
+                        .is_some_and(|b| b.is_ascii_whitespace() || matches!(b, b'/' | b'>'))
             })
         {
             return Err(error());
@@ -1984,6 +1989,50 @@ mod tests {
             vault.protect(&mut value).unwrap();
             vault.restore(&mut value, true).unwrap();
             assert_eq!(value, original);
+        }
+    }
+    #[test]
+    fn literal_tag_mentions_in_executable_content_are_preserved() {
+        for literal in [
+            "'<localrouter-redacted' in actual",
+            "\"<LOCALROUTER-REDACTED\" in actual",
+            "<localrouter-redacted",
+            "<localrouter-redactedness>",
+        ] {
+            for (text, expected) in [
+                (
+                    format!("{}; {literal}", marker("abc123")),
+                    format!("original; {literal}"),
+                ),
+                (
+                    format!("{literal}; {}", marker("abc123")),
+                    format!("{literal}; original"),
+                ),
+            ] {
+                let restored = restore_text(&text, true, |_| Ok(Some("original".into()))).unwrap();
+                assert_eq!(restored, expected);
+                let encoded = serde_json::json!({"code": text}).to_string();
+                let restored =
+                    restore_text(&encoded, true, |_| Ok(Some("original".into()))).unwrap();
+                assert_eq!(
+                    serde_json::from_str::<Value>(&restored).unwrap()["code"],
+                    expected
+                );
+            }
+        }
+        for malformed in [
+            "<localrouter-redacted>",
+            "<localrouter-redacted/>",
+            "<localrouter-redacted id=",
+            "<localrouter-redacted id='unknown'/>",
+        ] {
+            assert!(restore_text(malformed, true, |_| Ok(None)).is_err());
+            assert!(restore_text(
+                &format!("'<localrouter-redacted' in actual; {malformed}"),
+                true,
+                |_| Ok(None),
+            )
+            .is_err());
         }
     }
     #[test]

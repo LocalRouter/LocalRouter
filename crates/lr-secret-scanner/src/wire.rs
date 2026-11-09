@@ -695,6 +695,70 @@ mod tests {
         }
     }
     #[test]
+    fn websocket_code_tool_restores_secret_and_preserves_literal_tag_check() {
+        let vault = Arc::new(Vault::for_client(
+            Arc::new(lr_api_keys::MockKeychain::new()),
+            "code-literal-client",
+        ));
+        let secret = "synthetic-password-12345678";
+        vault.register(secret).unwrap();
+        let mut request = json!({"input": secret});
+        vault.protect(&mut request).unwrap();
+        let tag = request["input"].as_str().unwrap();
+        // Code Mode sends JavaScript containing JSON-encoded shell arguments.
+        let code = |value: &str| {
+            format!(
+                "tools.exec_command({});",
+                json!({"cmd": format!("expected = \"{value}\"\nassert '<localrouter-redacted' not in actual")})
+            )
+        };
+        let input = code(tag);
+        let expected = code(secret);
+        // Exercise every split point, including both tag names and JSON escapes.
+        for split in 0..=input.len() {
+            if !input.is_char_boundary(split) {
+                continue;
+            }
+            let mut restorer = ResponseRestorer::new(vault.clone());
+            let mut output = Vec::new();
+            for delta in [&input[..split], &input[split..]] {
+                output.extend(
+                    restorer
+                        .message(
+                            &json!({
+                                "type":"response.custom_tool_call_input.delta",
+                                "item_id":"tool-1", "output_index":0, "delta":delta
+                            })
+                            .to_string(),
+                        )
+                        .unwrap(),
+                );
+            }
+            output.extend(
+                restorer
+                    .message(
+                        &json!({
+                            "type":"response.custom_tool_call_input.done",
+                            "item_id":"tool-1", "output_index":0, "input":input
+                        })
+                        .to_string(),
+                    )
+                    .unwrap(),
+            );
+            let events: Vec<Value> = output
+                .iter()
+                .map(|s| serde_json::from_str(s).unwrap())
+                .collect();
+            let deltas: String = events
+                .iter()
+                .filter(|v| v["type"] == "response.custom_tool_call_input.delta")
+                .map(|v| v["delta"].as_str().unwrap())
+                .collect();
+            assert_eq!(deltas, expected, "split {split}");
+            assert_eq!(events.last().unwrap()["input"], expected);
+        }
+    }
+    #[test]
     fn binds_only_response_objects_across_http_sse_and_websocket() {
         let store = Arc::new(lr_api_keys::MockKeychain::new());
         let vault = Arc::new(Vault::new(store.clone(), "wire-binding", "scope", false));
