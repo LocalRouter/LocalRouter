@@ -41,6 +41,8 @@ test('type column follows enabled types, including empty and all selections', ()
 test('Secret Scan keeps redaction and restoration visible under one feature filter', () => {
   const redacted: MonitorEventSummary = { ...event, event_type: 'secret_scan', secret_action: 'redact', status: 'complete', summary: 'Secret redacted', answer: 'redact' }
   const restored: MonitorEventSummary = { ...redacted, id: 'restored', sequence: 2, secret_action: 'restore', summary: 'Secret restored', answer: 'restore' }
+  const warning: MonitorEventSummary = { ...restored, id: 'warning', sequence: 3, secret_action: 'restore_warning', status: 'error', summary: 'Secret Not Restored', answer: 'response delivered' }
+  expect(matchesFilter(warning, filter({ event_types: ['secret_scan'], status: 'error' }))).toBe(true)
   expect(showEventTypeColumn(['secret_scan'])).toBe(true)
   expect(mergeMonitorEvents([redacted], [restored], filter({ event_types: ['secret_scan'] }))).toEqual([restored, redacted])
   expect(matchesFilter(restored, filter({ event_types: ['llm_call'] }))).toBe(false)

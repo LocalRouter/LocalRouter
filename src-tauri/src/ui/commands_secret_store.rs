@@ -2,7 +2,6 @@
 use lr_api_keys::{keychain_trait::redacted_secret_storage, KeychainStorage};
 use lr_config::ConfigManager;
 use lr_secret_scanner::placeholders::{StoredSecret, Vault, RETENTION_SECS};
-use lr_types::secret_context::SecretContext;
 use serde::Serialize;
 use std::{collections::BTreeSet, sync::Arc};
 use tauri::{Emitter, State};
@@ -100,11 +99,9 @@ pub async fn reveal_redacted_secret(
             .map_err(|e| e.to_string())?
             .ok_or("Secret mapping has expired or was purged")?;
         vault
-            .restore_text(
-                &format!("<localrouter-redacted id='{reference_id}'/>"),
-                true,
-            )
-            .map_err(|e| e.to_string())
+            .reveal_reference(&reference_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "Secret mapping has expired or was purged".into())
     })
     .await
     .map_err(|e| e.to_string())?

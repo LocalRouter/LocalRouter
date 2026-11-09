@@ -4330,28 +4330,24 @@ pub async fn update_secret_scanning_config(
 pub async fn test_secret_scan(
     input: String,
     entropy_threshold: Option<f32>,
+    response_template: Option<String>,
+    response_encoding: Option<String>,
     config_manager: State<'_, ConfigManager>,
-) -> Result<serde_json::Value, String> {
+) -> Result<lr_secret_scanner::preview::SecretScanPreview, String> {
     let config = config_manager.get();
     let ss_config = &config.secret_scanning;
-
     let engine_config = lr_secret_scanner::SecretScanEngineConfig {
         entropy_threshold: entropy_threshold.unwrap_or(ss_config.entropy_threshold),
         allowlist: ss_config.allowlist.clone(),
-        scan_system_messages: true, // Always scan everything in test mode
+        scan_system_messages: true,
     };
-
-    let scanner = lr_secret_scanner::SecretScanEngine::new(&engine_config)
-        .map_err(|e| format!("Failed to build test scanner: {}", e))?;
-
-    let texts = vec![lr_secret_scanner::ExtractedText {
-        label: "test".to_string(),
-        text: input,
-        message_index: 0,
-    }];
-
-    let result = scanner.scan(&texts);
-    serde_json::to_value(&result).map_err(|e| e.to_string())
+    lr_secret_scanner::preview::round_trip(
+        &engine_config,
+        input,
+        response_template,
+        response_encoding,
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// List all compiled secret scanning patterns (builtin + custom)

@@ -27,3 +27,7 @@ pub mod placeholders;
 pub mod wire;
 
 pub mod schema;
+
+mod encoding;
+
+pub mod preview;

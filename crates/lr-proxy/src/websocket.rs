@@ -1243,7 +1243,7 @@ mod protected_cancellation_tests {
         }
     }
     #[tokio::test]
-    async fn restoration_failure_reaches_both_websocket_client_and_monitor() {
+    async fn unsupported_provider_event_passes_through_without_failing_the_call() {
         struct RecordedProtect(crate::passive::PassiveInterceptor);
         #[async_trait::async_trait]
         impl ProxyInterceptor for RecordedProtect {
@@ -1306,22 +1306,27 @@ mod protected_cancellation_tests {
         })
         .await
         .unwrap();
-        let reply: Value = serde_json::from_str(&reply).unwrap();
-        assert_eq!(reply["status"], 502);
-        assert!(reply["error"]["message"]
-            .as_str()
+        assert_eq!(reply, malformed);
+        upstream
+            .write_all(&encode_frame(
+                &WsMessage::Text(
+                    r#"{"type":"response.completed","response":{"id":"done","output":[]}}"#.into(),
+                ),
+                false,
+            ))
+            .await
+            .unwrap();
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), client.read(&mut buffer))
+            .await
             .unwrap()
-            .contains("Protected WebSocket response failed"));
+            .unwrap();
         drop(client);
         drop(upstream);
         task.await.unwrap();
         let summary = store.list(0, 10, None).events.pop().unwrap();
-        assert_eq!(summary.status, lr_monitor::EventStatus::Error);
+        assert_eq!(summary.status, lr_monitor::EventStatus::Complete);
         let event = serde_json::to_value(store.get(&summary.id).unwrap()).unwrap();
-        assert!(event["data"]["error"]
-            .as_str()
-            .unwrap()
-            .contains("Protected WebSocket response failed"));
+        assert!(event["data"]["error"].is_null());
         assert!(event["data"]["raw_response"]
             .as_str()
             .unwrap()

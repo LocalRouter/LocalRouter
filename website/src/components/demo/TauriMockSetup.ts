@@ -16,7 +16,7 @@
  * See AGENTS.md "Adding/Modifying Tauri Commands" for full checklist.
  */
 
-import type { DecodedSecretJwt, DiscoveredResourceIcon, LaunchResult } from '@app/types/tauri-commands'
+import type { RedactedSecretEntry, ListRedactedSecretsParams, RevealRedactedSecretParams, PurgeRedactedSecretsParams, SecretScanResult, TestSecretScanParams, DecodedSecretJwt, DiscoveredResourceIcon, LaunchResult } from '@app/types/tauri-commands'
 
 import { mockIPC, mockWindows, clearMocks } from '@tauri-apps/api/mocks'
 import { emit } from '@tauri-apps/api/event'
@@ -1413,6 +1413,22 @@ function mockMcpAccess(client: { mcp_permissions?: { global?: string; servers?: 
   const perms = client?.mcp_permissions
   const state = perms?.servers?.[serverId] ?? perms?.global ?? 'off'
   return state !== 'off'
+}
+
+let demoSecretStore: RedactedSecretEntry[] | null = null
+const demoSecretOriginals = new Map<string, string>()
+function storedDemoSecrets(): RedactedSecretEntry[] {
+  if (demoSecretStore) return demoSecretStore
+  const now = Math.floor(Date.now() / 1000)
+  demoSecretStore = mockData.clients.slice(0, 2).map((client, i) => {
+    const id = crypto.randomUUID().split('-').join('')
+    const original = `demo-only-original-${i + 1}-credential`
+    demoSecretOriginals.set(id, original)
+    return { client_id: client.id, client_name: client.name, reference_id: id,
+      placeholder: `<localrouter-redacted id='${id}' usage='Unmasked when returned verbatim'/>`,
+      masked_value: 'demo…tial', last_used_at: now - 3600, expires_at: now - 3600 + 14 * 86400, expired: false, revoked: false }
+  })
+  return demoSecretStore
 }
 
 const mockHandlers: Record<string, (args?: any) => unknown> = {
@@ -5461,9 +5477,24 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // ============================================================================
   // Secret Scanning
   // ============================================================================
-  'list_redacted_secrets': () => [],
-  'reveal_redacted_secret': () => 'demo-only-secret',
-  'purge_redacted_secrets': () => 0,
+  'list_redacted_secrets': (args?: ListRedactedSecretsParams): RedactedSecretEntry[] => storedDemoSecrets().filter(entry => !args?.clientId || entry.client_id === args.clientId),
+  'reveal_redacted_secret': (args?: RevealRedactedSecretParams): string => {
+    const entry = storedDemoSecrets().find(entry => entry.client_id === args?.clientId && entry.reference_id === args.referenceId)
+    const original = entry && demoSecretOriginals.get(entry.reference_id)
+    if (!original) throw new Error('Secret mapping has expired or was purged')
+    const now = Math.floor(Date.now() / 1000)
+    for (const owned of storedDemoSecrets().filter(item => item.client_id === entry.client_id)) { owned.last_used_at = now; owned.expires_at = now + 14 * 86400 }
+    return original
+  },
+  'purge_redacted_secrets': (args?: PurgeRedactedSecretsParams): number => {
+    const entries = storedDemoSecrets()
+    const removed = entries.filter(entry => (!args?.clientId || entry.client_id === args.clientId) && (!args?.referenceId || entry.reference_id === args.referenceId))
+    const ids = new Set(removed.map(entry => entry.reference_id))
+    demoSecretStore = entries.filter(entry => !ids.has(entry.reference_id))
+    for (const id of ids) demoSecretOriginals.delete(id)
+    void emit('secret-store-changed')
+    return removed.length
+  },
   'get_secret_scanning_config': () => ({
     action: 'off',
     entropy_threshold: 3.5,
@@ -5482,23 +5513,38 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     toast.success('Client secret scanning configuration saved (demo)')
     return null
   },
-  'test_secret_scan': (args?: { input?: string }) => ({
-    findings: /(?:aws[_-]?)?secret[_-]?access[_-]?key["']?\s*[=:]\s*["']?[A-Za-z0-9/+=]{40}(?:[^A-Za-z0-9/+=]|$)/i.test(args?.input ?? '') ? [
-      {
-        rule_id: 'aws-secret-access-key',
-        rule_description: 'AWS Secret Access Key',
-        category: 'Cloud Provider',
-        regex_pattern: '(?i)aws_secret_access_key\\s*[=:]\\s*([A-Za-z0-9/+=]{40})',
-        keywords: ['secret'],
-        rule_entropy_threshold: 4.0,
-        message_index: 0,
-        matched_text: '6nmCEa********************ldQr',
-        entropy: 4.8,
-      },
-    ] : [],
-    scan_duration_ms: 1,
-    rules_evaluated: 30,
-  }),
+  'test_secret_scan': (args?: TestSecretScanParams): SecretScanResult => {
+    const input = args?.input ?? ''
+    const found: Array<{ secret: string; rule: string; description: string; category: string }> = []
+    const add = (secret: string, rule: string, description: string, category: string) => {
+      if (!found.some(item => item.secret === secret)) found.push({ secret, rule, description, category })
+    }
+    for (const match of input.matchAll(/(?:aws[_-]?)?secret[_-]?access[_-]?key["']?\s*[=:]\s*["']?([A-Za-z0-9/+=]{40})(?:[^A-Za-z0-9/+=]|$)/gi)) add(match[1], 'aws-secret-access-key', 'AWS Secret Access Key', 'Cloud Provider')
+    for (const match of input.matchAll(/ghp_[A-Za-z0-9]{36}/g)) add(match[0], 'github-pat', 'GitHub Personal Access Token', 'Version Control')
+    for (const match of input.matchAll(/\bpassword\s*=\s*(['"])([^'"\n]{8,})\1/gi)) add(match[2], 'generic-password', 'Password assignment', 'Generic')
+    for (const match of input.matchAll(/postgres(?:ql)?:\/\/[^:\s]+:([^@\s]+)@/g)) add(match[1], 'database-password', 'Database password', 'Database')
+    let redacted = input
+    for (const finding of found) redacted = redacted.split(finding.secret).join(`<localrouter-redacted id='${crypto.randomUUID().split('-').join('')}' usage='Unmasked when returned verbatim'/>`)
+    const encode = (text: string) => {
+      switch (args?.responseEncoding) {
+        case 'json': return JSON.stringify(text)
+        case 'nested_json': return JSON.stringify(JSON.stringify(text))
+        case 'html': return text.split('&').join('&amp;').split('<').join('&lt;').split('>').join('&gt;').split('"').join('&quot;').split("'").join('&#39;').split('-').join('&#45;')
+        default: return text
+      }
+    }
+    const template = args?.responseTemplate ?? '{{redacted}}'
+    const response = template.split('{{redacted}}').join(encode(redacted))
+    const restored = template.split('{{redacted}}').join(encode(input))
+    return {
+      redacted_request: redacted, model_response: response, restored_response: restored, round_trip_matches: true, restored_references: template.includes('{{redacted}}') ? found.length : 0,
+      warnings: /localrouter-(?:redacted|secret)/i.test(template) ? ['Possible secret reference was not restored; content passed through unchanged'] : [],
+      findings: found.map(item => ({ rule_id: item.rule, rule_description: item.description, category: item.category,
+        regex_pattern: '', keywords: [], rule_entropy_threshold: 3.5, message_index: 0,
+        matched_text: `${item.secret.slice(0, 4)}…${item.secret.slice(-4)}`, entropy: 4.8 })),
+      scan_duration_ms: 1, rules_evaluated: 30,
+    }
+  },
   'get_secret_scanning_patterns': () => [
     { id: 'aws-secret-access-key', description: 'AWS Secret Access Key', regex: '(?i)aws_secret_access_key\\s*[=:]\\s*([A-Za-z0-9/+=]{40})', category: 'Cloud Provider', entropy_threshold: 4.0, keywords: ['secret'] },
     { id: 'github-pat', description: 'GitHub Personal Access Token', regex: 'ghp_[A-Za-z0-9]{36,}', category: 'Version Control', entropy_threshold: 3.5, keywords: ['ghp_'] },

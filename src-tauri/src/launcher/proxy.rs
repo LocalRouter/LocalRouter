@@ -973,6 +973,30 @@ mod secret_policy_tests {
         }
     }
     #[tokio::test]
+    async fn encoded_known_originals_are_absent_from_the_actual_forwarded_code_body() {
+        use lr_types::secret_context::SecretContext;
+        let root = tempfile::tempdir().unwrap();
+        let storage = Arc::new(lr_api_keys::MockKeychain::new());
+        let (firewall, mut request) =
+            fixture(root.path(), lr_config::LlmMode::Proxy, storage.clone());
+        let secret = "wire-proof-\"quoted\"-'apostrophe'-\\path\n<&>-🔐";
+        let vault = lr_secret_scanner::placeholders::Vault::for_client(storage, &request.client_id);
+        vault.register(secret).unwrap();
+        let code = format!(
+            "tools.exec_command({});",
+            json!({"cmd":format!("expected = {}",serde_json::to_string(secret).unwrap())})
+        );
+        request.body = json!({"model":"local-test","input":[{"type":"custom_tool_call","name":"exec","call_id":"call-1","input":code}]});
+        let RequestAction::Protect { body, vault } = firewall.evaluate(&request).await else {
+            panic!("known history must protect");
+        };
+        // These are the bytes returned to the transport, before Monitor's separate sanitization.
+        assert!(!String::from_utf8_lossy(&body).contains("wire-proof"));
+        let mut protected: Value = serde_json::from_slice(&body).unwrap();
+        vault.restore(&mut protected, true).unwrap();
+        assert_eq!(protected, request.body);
+    }
+    #[tokio::test]
     async fn owned_response_lifecycle_operations_accept_opaque_ids_and_empty_bodies() {
         use lr_types::secret_context::SecretContext;
         let root = tempfile::tempdir().unwrap();
@@ -1147,8 +1171,9 @@ mod secret_policy_tests {
         let RequestAction::Protect { vault, .. } = other.evaluate(&request).await else {
             panic!("untracked provider ID must not block request")
         };
-        assert!(
-            vault.restore_text(tag, true).is_err(),
+        assert_eq!(
+            vault.restore_text(tag, true).unwrap(),
+            tag,
             "foreign provider ID cannot grant a secret capability"
         );
         let mut text = Value::String(tag.into());

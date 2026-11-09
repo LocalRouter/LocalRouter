@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { BellOff, Trash2 } from "lucide-react"
+import { BellOff, Trash2, KeyRound, PlayCircle, Settings } from "lucide-react"
+import { SecretScanPlayground } from "@/components/shared/SecretScanPlayground"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { RedactedSecretsStore } from "@/components/shared/RedactedSecretsStore"
 import { FEATURES } from "@/constants/features"
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/Card"
@@ -197,15 +199,29 @@ export function ClientSecretScanningTab({ client, onUpdate, onViewChange }: Secr
         </CardHeader>
       </Card>
 
-      <RedactedSecretsStore clientId={client.id} />
-
-      {dismissed.length > 0 && (
+      <Tabs defaultValue="overview" className="space-y-4">
+        <TabsList className="flex flex-wrap h-auto w-fit">
+          <TabsTrigger value="overview"><Settings className="mr-1 h-3.5 w-3.5" />Overview</TabsTrigger>
+          <TabsTrigger value="store"><KeyRound className="mr-1 h-3.5 w-3.5" />Stored secrets</TabsTrigger>
+          <TabsTrigger value="try-it-out"><PlayCircle className="mr-1 h-3.5 w-3.5" />Try it out</TabsTrigger>
+          <TabsTrigger value="remembered"><BellOff className="mr-1 h-3.5 w-3.5" />Remembered rules</TabsTrigger>
+        </TabsList>
+        <TabsContent value="overview"><Card><CardHeader><CardTitle className="text-base">Redaction and restoration for {client.name}</CardTitle></CardHeader><CardContent className="space-y-3 text-sm text-muted-foreground">
+          <p><strong className="text-foreground">Secret Redacted:</strong> detected originals are stored locally and replaced before requests reach a provider.</p>
+          <p><strong className="text-foreground">Secret Restored:</strong> references returned to this authenticated client are restored locally in replies and tool arguments.</p>
+          <p>Mappings survive restarts and expire after 14 days of client inactivity. Other clients cannot use them. Stored originals and remembered allow/redact rules are managed separately.</p>
+          <p>Unknown or unsupported references remain literal. A <strong className="text-foreground">Secret Not Restored</strong> diagnostic appears in Monitor without failing the response.</p>
+        </CardContent></Card></TabsContent>
+        <TabsContent value="store"><RedactedSecretsStore clientId={client.id} /></TabsContent>
+        <TabsContent value="try-it-out"><SecretScanPlayground /></TabsContent>
+        <TabsContent value="remembered">
+      {dismissed.length > 0 ? (
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <BellOff className="h-5 w-5 text-muted-foreground" />
-                <CardTitle>Remembered Secrets ({dismissed.length})</CardTitle>
+                <CardTitle>Remembered rules ({dismissed.length})</CardTitle>
               </div>
               <AlertDialog>
                 <AlertDialogTrigger asChild>
@@ -275,7 +291,9 @@ export function ClientSecretScanningTab({ client, onUpdate, onViewChange }: Secr
             ))}
           </CardContent>
         </Card>
-      )}
+      ) : <Card><CardHeader><CardTitle className="text-base">No remembered rules</CardTitle><CardDescription>Choices to always allow or always redact a value will appear here. These rules store salted hashes, separately from the originals used for restoration.</CardDescription></CardHeader></Card>}
+        </TabsContent>
+      </Tabs>
     </div>
   )
 }

@@ -141,8 +141,13 @@ impl Events {
         if data.is_empty() {
             return Ok(vec![format!("{frame}\n\n")]);
         }
-        let mut value: Value = serde_json::from_str(&data)
-            .map_err(|_| lr_types::AppError::Internal("Invalid protected SSE event".into()))?;
+        let mut value: Value = match serde_json::from_str(&data) {
+            Ok(value) => value,
+            Err(_) => {
+                context.diagnostic("Provider event was not JSON; delivered unchanged");
+                return Ok(vec![format!("{frame}\n\n")]);
+            }
+        };
         self.record_tools(&value);
         self.check_budget()?;
         if value.get("done").is_some() {
@@ -372,9 +377,17 @@ impl Events {
             let restored = if key.contains("custom_tool_call_input") {
                 context.restore_text_at(&arguments, true, "Tool arguments")?
             } else {
-                let mut args: Value = serde_json::from_str(&arguments).map_err(|_| {
-                    lr_types::AppError::InvalidParams("Incomplete protected tool arguments".into())
-                })?;
+                let mut args: Value = match serde_json::from_str(&arguments) {
+                    Ok(args) => args,
+                    Err(_) => {
+                        context.diagnostic(
+                            "Tool arguments were not complete JSON; delivered unchanged",
+                        );
+                        *template.pointer_mut(&path).unwrap() = Value::String(arguments);
+                        out.push(encode(&template, template["type"].as_str().unwrap_or("")));
+                        continue;
+                    }
+                };
                 context.restore(&mut args, true)?;
                 let name = self
                     .tool_names
@@ -587,9 +600,14 @@ impl ResponseRestorer {
         Ok(())
     }
     pub fn json(&mut self, bytes: &[u8]) -> lr_types::AppResult<Vec<u8>> {
-        let mut value: Value = serde_json::from_slice(bytes).map_err(|_| {
-            lr_types::AppError::InvalidParams("Invalid protected response JSON".into())
-        })?;
+        let mut value: Value = match serde_json::from_slice(bytes) {
+            Ok(value) => value,
+            Err(_) => {
+                self.context
+                    .diagnostic("Provider response was not JSON; delivered unchanged");
+                return Ok(bytes.to_vec());
+            }
+        };
         self.bind(&value)?;
         self.context.restore(&mut value, false)?;
         self.context.validate_response(&value)?;
@@ -700,7 +718,7 @@ mod tests {
             Arc::new(lr_api_keys::MockKeychain::new()),
             "code-literal-client",
         ));
-        let secret = "synthetic-password-12345678";
+        let secret = "synthetic-\"quoted\"-'single'-\\path\n<&>";
         vault.register(secret).unwrap();
         let mut request = json!({"input": secret});
         vault.protect(&mut request).unwrap();
@@ -709,7 +727,7 @@ mod tests {
         let code = |value: &str| {
             format!(
                 "tools.exec_command({});",
-                json!({"cmd": format!("expected = \"{value}\"\nassert '<localrouter-redacted' not in actual")})
+                json!({"cmd": format!("expected = {}\nassert '<localrouter-redacted' not in actual", serde_json::to_string(value).unwrap())})
             )
         };
         let input = code(tag);

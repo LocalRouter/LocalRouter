@@ -1,7 +1,7 @@
-import { useState, useEffect, useCallback, useRef } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { toast } from "sonner"
-import { Loader2, ExternalLink, KeyRound } from "lucide-react"
+import { ExternalLink, KeyRound } from "lucide-react"
 import { FEATURES } from "@/constants/features"
 import { TAB_ICONS, TAB_ICON_CLASS } from "@/constants/tab-icons"
 import { Badge } from "@/components/ui/Badge"
@@ -12,12 +12,12 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
 import { listenSafe } from "@/hooks/useTauriListener"
 import { InfoTooltip } from "@/components/ui/info-tooltip"
+import { SecretScanPlayground } from "@/components/shared/SecretScanPlayground"
 import { RedactedSecretsStore } from "@/components/shared/RedactedSecretsStore"
 import { SamplePopupButton } from "@/components/shared/SamplePopupButton"
 import type {
   SecretScanningConfig,
   SecretScanAction,
-  SecretScanResult,
   SecretRuleMetadata,
   ClientFeatureStatus,
   GetFeatureClientsStatusParams,
@@ -42,26 +42,11 @@ const BUTTON_STYLES: Record<SecretScanAction, string> = {
   off: "bg-emerald-500 text-white",
 }
 
-const DEFAULT_TEST_INPUT = [
-  "AWS_SECRET_ACCESS_KEY=6nmCEa00cbNmH0B4zKPSYOPP5z1oYFR26doJldQr",
-  "Access key ID (should NOT match): AKIAZ7Q3VJ2M4XK9PLR6",
-  "GitHub token: ghp_q8Zr2LmX7vKp4NwT9sYb3HdJ6fGc1eRa0uVi",
-  "password = 'super_s3cret_P@ssw0rd!'",
-  "DATABASE_URL=postgres://app:Hq3vT8mZ2xLp9wKr@db:5432/main",
-  "Docs example (should NOT match): AKIAIOSFODNN7EXAMPLE",
-  "Placeholder (should NOT match): postgres://postgres:${POSTGRES_PASSWORD}@localhost/app",
-  "UUID (should NOT match): 6c2bffca-115a-44d4-a981-0d01a9e4ef08",
-].join("\n")
-
 export function SecretScanningView({ activeSubTab, onTabChange }: SecretScanningViewProps) {
   const [config, setConfig] = useState<SecretScanningConfig | null>(null)
   const [isLoading, setIsLoading] = useState(true)
-  const [testInput, setTestInput] = useState(DEFAULT_TEST_INPUT)
-  const [testResult, setTestResult] = useState<SecretScanResult | null>(null)
-  const [testLoading, setTestLoading] = useState(false)
   const [patterns, setPatterns] = useState<SecretRuleMetadata[]>([])
   const [clientStatuses, setClientStatuses] = useState<ClientFeatureStatus[]>([])
-  const [scanVersion, setScanVersion] = useState(0) // bumped on config save to trigger re-scan
 
   const tab = activeSubTab || "info"
 
@@ -119,7 +104,6 @@ export function SecretScanningView({ activeSubTab, onTabChange }: SecretScanning
     try {
       await invoke("update_secret_scanning_config", { configJson: JSON.stringify(newConfig) })
       setConfig(newConfig)
-      setScanVersion(v => v + 1)
       toast.success("Secret scanning configuration saved")
     } catch (err) {
       console.error("Failed to save secret scanning config:", err)
@@ -131,35 +115,6 @@ export function SecretScanningView({ activeSubTab, onTabChange }: SecretScanning
     if (!config) return
     saveConfig({ ...config, ...updates })
   }
-
-  // Debounced auto-scan: re-triggers on input change, tab switch, or config save
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  useEffect(() => {
-    if (tab !== "try-it-out" || !testInput.trim()) {
-      if (!testInput.trim()) setTestResult(null)
-      return
-    }
-    setTestLoading(true)
-    if (debounceRef.current) clearTimeout(debounceRef.current)
-    debounceRef.current = setTimeout(async () => {
-      try {
-        const result = await invoke<SecretScanResult>("test_secret_scan", {
-          input: testInput,
-        })
-        result.findings.sort((a, b) =>
-          a.category !== b.category
-            ? a.category.localeCompare(b.category)
-            : a.rule_id.localeCompare(b.rule_id)
-        )
-        setTestResult(result)
-      } catch {
-        // Silently ignore during typing
-      } finally {
-        setTestLoading(false)
-      }
-    }, 300)
-    return () => { if (debounceRef.current) clearTimeout(debounceRef.current) }
-  }, [testInput, tab, scanVersion])
 
   if (isLoading || !config) {
     return (
@@ -195,15 +150,15 @@ export function SecretScanningView({ activeSubTab, onTabChange }: SecretScanning
           </h1>
         </div>
         <p className="text-sm text-muted-foreground">
-          Detect potential secrets in outbound LLM requests before they reach providers
+          Redact secrets before provider requests and restore their references locally for the same client
         </p>
       </div>
 
       <Tabs value={tab} onValueChange={handleTabChange} className="flex flex-col flex-1 min-h-0">
         <TabsList className="flex-shrink-0 w-fit">
-          <TabsTrigger value="info"><TAB_ICONS.info className={TAB_ICON_CLASS} />Info</TabsTrigger>
+          <TabsTrigger value="info"><TAB_ICONS.info className={TAB_ICON_CLASS} />Overview</TabsTrigger>
           <TabsTrigger value="try-it-out"><TAB_ICONS.tryItOut className={TAB_ICON_CLASS} />Try It Out</TabsTrigger>
-          <TabsTrigger value="redacted-secrets"><KeyRound className={TAB_ICON_CLASS} />Redacted secrets</TabsTrigger>
+          <TabsTrigger value="redacted-secrets"><KeyRound className={TAB_ICON_CLASS} />Stored secrets</TabsTrigger>
           <TabsTrigger value="settings"><TAB_ICONS.settings className={TAB_ICON_CLASS} />Settings</TabsTrigger>
         </TabsList>
 
@@ -332,29 +287,34 @@ export function SecretScanningView({ activeSubTab, onTabChange }: SecretScanning
             </Card>
 
             <Card>
-              <CardHeader>
-                <CardTitle className="text-base">How It Works</CardTitle>
-              </CardHeader>
-              <CardContent className="text-sm text-muted-foreground space-y-2">
-                <p>
-                  Secret scanning runs <strong>before</strong> the request is sent to the LLM provider.
-                  It uses a multi-stage detection pipeline:
-                </p>
-                <ol className="list-decimal list-inside space-y-1 pl-2">
-                  <li><strong>Keyword pre-filter</strong> &mdash; Fast Aho-Corasick scan to identify candidate rules</li>
-                  <li><strong>Regex matching</strong> &mdash; {patterns.length} patterns for AWS, GCP, GitHub, Stripe, JWT, etc.</li>
-                  <li><strong>Entropy filtering</strong> &mdash; Shannon entropy check per-rule to discard placeholder values</li>
-                </ol>
+              <CardHeader><CardTitle className="text-base">Redact outbound. Restore locally.</CardTitle><CardDescription>One Secret Scan lifecycle, from detection to the client's response.</CardDescription></CardHeader>
+              <CardContent className="space-y-3 text-sm">
+                <p><strong>Secret Redacted</strong> — Detected originals stay in the local credential store. Providers receive references.</p>
+                <p><strong>Secret Restored</strong> — Owned references returned in replies or tool arguments are replaced locally, preserving supported quoting and escaping.</p>
+                <p><strong>Secret Not Restored</strong> — Unknown or unsupported references stay unchanged. A diagnostic is recorded without failing the response.</p>
+                <p className="text-muted-foreground">Mappings belong to the authenticated client, survive restarts, and expire after 14 days of client inactivity. Conversation grouping does not grant access to another client's secrets.</p>
+                <div className="flex gap-3 text-xs"><button className="text-primary hover:underline" onClick={() => handleTabChange('try-it-out')}>Try the full round trip</button><button className="text-primary hover:underline" onClick={() => handleTabChange('redacted-secrets')}>Manage stored secrets</button></div>
               </CardContent>
             </Card>
 
+          </div>
+        </TabsContent>
+
+        <TabsContent value="try-it-out" className="flex-1 min-h-0 mt-4 overflow-y-auto">
+          <SecretScanPlayground />
+          <div className="mt-4 flex items-center justify-between rounded-md border p-3"><div><p className="text-sm font-medium">Approval popup</p><p className="text-xs text-muted-foreground">Preview the decision shown for the Ask policy.</p></div><SamplePopupButton popupType="secret_scan" /></div>
+        </TabsContent>
+
+        {/* Settings Tab */}
+        <TabsContent value="settings" className="flex-1 min-h-0 mt-4 overflow-y-auto">
+          <div className="space-y-4 max-w-2xl">
             {/* Pattern List */}
             <Card>
               <CardHeader className="pb-2">
                 <CardTitle className="text-base">Detection Patterns ({patterns.length})</CardTitle>
                 <CardDescription>
                   Built-in patterns derived from common API key, token, and credential formats.
-                  Custom rules are added in the Settings tab.
+                  These patterns and their entropy thresholds determine what the scanner detects.
                 </CardDescription>
               </CardHeader>
               <CardContent className="pt-0">
@@ -383,84 +343,7 @@ export function SecretScanningView({ activeSubTab, onTabChange }: SecretScanning
                 </div>
               </CardContent>
             </Card>
-          </div>
-        </TabsContent>
 
-        {/* Try It Out Tab */}
-        <TabsContent value="try-it-out" className="flex-1 min-h-0 mt-4 overflow-y-auto">
-          <div className="flex items-center justify-between mb-4 pb-4 border-b">
-            <div>
-              <span className="text-sm font-medium">Approval Popup Preview</span>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                Preview the popup shown when secrets are detected with an &ldquo;Ask&rdquo; action
-              </p>
-            </div>
-            <SamplePopupButton popupType="secret_scan" />
-          </div>
-          <div className="space-y-4 max-w-2xl">
-            <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-base">Test Scanner</CardTitle>
-                <CardDescription>
-                  Paste text to test the secret scanner. Scans automatically as you type.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <textarea
-                  value={testInput}
-                  onChange={(e) => setTestInput(e.target.value)}
-                  placeholder="Paste text containing potential secrets..."
-                  className="w-full h-32 font-mono text-xs p-2 border rounded bg-background resize-y"
-                />
-                {testLoading && (
-                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                    <Loader2 className="h-3 w-3 animate-spin" />
-                    Scanning...
-                  </div>
-                )}
-                {testResult && (
-                  <div className="space-y-2">
-                    <div className="flex items-center gap-2 text-xs">
-                      <Badge variant={testResult.findings.length > 0 ? "destructive" : "success"}>
-                        {testResult.findings.length} finding(s)
-                      </Badge>
-                      <span className="text-muted-foreground">
-                        {testResult.rules_evaluated} rules in {testResult.scan_duration_ms}ms
-                      </span>
-                    </div>
-                    {testResult.findings.map((f, i) => (
-                      <div key={`${f.rule_id}-${i}`} className="bg-muted/50 rounded px-2 py-1.5 text-xs space-y-0.5">
-                        <div className="flex items-center justify-between">
-                          <span className="font-semibold">{f.rule_description}</span>
-                          <Badge variant="outline" className="text-[10px]">{f.category}</Badge>
-                        </div>
-                        <code className="text-[10px] block bg-background/50 rounded px-1 py-0.5 truncate">
-                          {f.matched_text}
-                        </code>
-                        <code className="text-[10px] block text-muted-foreground truncate" title={f.regex_pattern}>
-                          Pattern: {f.regex_pattern}
-                        </code>
-                        <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
-                          <span>Entropy: <span className="font-mono">{f.entropy.toFixed(2)}</span></span>
-                          {f.rule_entropy_threshold !== null && (
-                            <span>Threshold: <span className="font-mono">{f.rule_entropy_threshold}</span></span>
-                          )}
-                          {f.keywords.length > 0 && (
-                            <span className="ml-auto">Keywords: {f.keywords.join(", ")}</span>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          </div>
-        </TabsContent>
-
-        {/* Settings Tab */}
-        <TabsContent value="settings" className="flex-1 min-h-0 mt-4 overflow-y-auto">
-          <div className="space-y-4 max-w-2xl">
             {/* Scan Options */}
             <Card>
               <CardHeader className="pb-3">

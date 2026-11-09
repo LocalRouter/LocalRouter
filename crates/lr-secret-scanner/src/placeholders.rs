@@ -88,11 +88,14 @@ fn marker(id: &str) -> String {
 
 /// Scan a literal opening tag. This intentionally accepts XML-style markers,
 /// not XML documents. The returned range never includes surrounding content.
-fn candidate(text: &str, start: usize) -> Option<(usize, String)> {
+pub(crate) fn candidate(text: &str, start: usize) -> Option<(usize, String)> {
     let bytes = text.as_bytes();
-    let name_end = start.checked_add(1 + TAG.len())?;
-    if bytes.get(start) != Some(&b'<') || !text.get(start + 1..name_end)?.eq_ignore_ascii_case(TAG)
-    {
+    let name = [TAG, "localrouter-secret"].into_iter().find(|name| {
+        text.get(start + 1..start + 1 + name.len())
+            .is_some_and(|s| s.eq_ignore_ascii_case(name))
+    })?;
+    let name_end = start.checked_add(1 + name.len())?;
+    if bytes.get(start) != Some(&b'<') {
         return None;
     }
     if !bytes
@@ -225,14 +228,12 @@ pub fn restore_text(
 
 fn restore_text_depth(
     text: &str,
-    strict: bool,
+    _strict: bool,
     resolve: &mut dyn FnMut(&str) -> AppResult<Option<String>>,
     depth: usize,
 ) -> AppResult<String> {
     if depth > 32 {
-        return Err(AppError::InvalidParams(
-            "Secret reference JSON nesting exceeds limit".into(),
-        ));
+        return Ok(text.to_owned());
     }
     // Decode only complete JSON values, one layer at a time. Serialize the
     // modified value again so inserted quotes, control characters and slashes
@@ -244,7 +245,7 @@ fn restore_text_depth(
                 visit(
                     &mut value,
                     &mut |s, executable| {
-                        restore_text_depth(s, strict || executable, resolve, depth + 1)
+                        restore_text_depth(s, _strict || executable, resolve, depth + 1)
                     },
                     false,
                 )?;
@@ -255,84 +256,36 @@ fn restore_text_depth(
             }
         }
     }
-    let mut out = String::new();
-    let mut offset = 0;
-    for (start, _) in text.match_indices('<') {
-        if start < offset {
-            continue;
-        }
-        if let Some((end, id, escaped)) = reference(text, start) {
-            out.push_str(&text[offset..start]);
-            match resolve(&id)? {
-                Some(value) => {
-                    let encoded;
-                    let value = if escaped {
-                        encoded = serde_json::to_string(&value).map_err(|_| error())?;
-                        &encoded[1..encoded.len() - 1]
-                    } else {
-                        value.as_str()
-                    };
-                    if out.len().saturating_add(value.len()) > MAX_TAG_BYTES {
-                        return Err(AppError::InvalidParams(
-                            "Restored content exceeds the gateway response budget".into(),
-                        ));
-                    }
-                    out.push_str(value);
-                }
-                None if strict => return Err(error()),
-                None => {
-                    tracing::debug!("Unresolved secret reference left literal in non-executable response content");
-                    out.push_str(&text[start..end]);
-                }
+    crate::encoding::rewrite(text, &mut |source| {
+        let mut edits = Vec::new();
+        let mut offset = 0;
+        let mut size = source.len();
+        for (start, _) in source.match_indices('<') {
+            if start < offset {
+                continue;
             }
-            offset = end;
-        } else if strict
-            && text.get(start + 1..).is_some_and(|s| {
-                // Bare names in source strings are literal; use the same tag
-                // boundary as candidate() before treating this as malformed.
-                s.get(..TAG.len())
-                    .is_some_and(|s| s.eq_ignore_ascii_case(TAG))
-                    && s.as_bytes()
-                        .get(TAG.len())
-                        .is_some_and(|b| b.is_ascii_whitespace() || matches!(b, b'/' | b'>'))
-            })
-        {
-            return Err(error());
+            if let Some((end, id)) = candidate(source, start) {
+                if let Some(value) = resolve(&id)? {
+                    size = size.saturating_sub(end - start).saturating_add(value.len());
+                    if size > MAX_TAG_BYTES {
+                        return Ok(Vec::new());
+                    }
+                    edits.push(crate::encoding::Edit { start, end, value });
+                }
+                offset = end;
+            }
         }
-    }
-    out.push_str(&text[offset..]);
-    Ok(out)
+        Ok(edits)
+    })
 }
 
 /// Bounded streaming tag recognizer. UTF-8 and SSE frames are decoded by callers.
 #[derive(Default)]
 pub struct TextStream {
     pending: String,
-    quote: Option<char>,
-    json_depth: usize,
-    json_string: bool,
-    json_escape: bool,
-    tag_in_json_string: bool,
+    quote: bool,
 }
 impl TextStream {
-    fn observe(&mut self, ch: char) {
-        if self.json_string {
-            if self.json_escape {
-                self.json_escape = false;
-            } else if ch == '\\' {
-                self.json_escape = true;
-            } else if ch == '"' {
-                self.json_string = false;
-            }
-        } else if ch == '"' && self.json_depth > 0 {
-            self.json_string = true;
-        } else if matches!(ch, '{' | '[') {
-            self.json_depth = self.json_depth.saturating_add(1);
-        } else if matches!(ch, '}' | ']') {
-            self.json_depth = self.json_depth.saturating_sub(1);
-        }
-    }
-
     pub(crate) fn buffered_bytes(&self) -> usize {
         self.pending.len()
     }
@@ -344,78 +297,42 @@ impl TextStream {
     ) -> AppResult<String> {
         let mut ready = String::new();
         for ch in text.chars() {
+            if self.pending.is_empty() && !matches!(ch, '<' | '&' | '%' | '\\' | '\'' | '"') {
+                ready.push(ch);
+                continue;
+            }
             if self.pending.is_empty() {
-                if ch == '<' {
-                    self.tag_in_json_string = self.json_string;
-                    self.pending.push(ch);
-                } else {
-                    self.observe(ch);
-                    ready.push(ch);
-                }
-                continue;
-            }
-            let name_bytes = self.pending.len().saturating_sub(1);
-            if name_bytes < TAG.len() {
-                if ch.is_ascii() && ch.eq_ignore_ascii_case(&(TAG.as_bytes()[name_bytes] as char)) {
-                    self.pending.push(ch);
-                    continue;
-                }
-                ready.push_str(&std::mem::take(&mut self.pending));
-                if ch == '<' {
-                    self.tag_in_json_string = self.json_string;
-                    self.pending.push(ch);
-                } else {
-                    self.observe(ch);
-                    ready.push(ch);
-                }
-                continue;
-            }
-            if name_bytes == TAG.len() && !ch.is_ascii_whitespace() && ch != '/' && ch != '>' {
-                ready.push_str(&std::mem::take(&mut self.pending));
-                if ch == '<' {
-                    self.tag_in_json_string = self.json_string;
-                    self.pending.push(ch);
-                } else {
-                    self.observe(ch);
-                    ready.push(ch);
-                }
-                continue;
-            }
-            if ch == '<' {
-                // A nested opener cannot be part of a valid reference.
-                ready.push_str(&std::mem::take(&mut self.pending));
-                self.pending.push(ch);
-                self.quote = None;
-                continue;
+                self.quote = matches!(ch, '\'' | '"');
             }
             self.pending.push(ch);
-            match (self.quote, ch) {
-                (Some(q), c) if q == c => self.quote = None,
-                (None, '\'' | '"') => self.quote = Some(ch),
-                (None, '>') => {
-                    let mut restored = restore(&self.pending)?;
-                    if self.tag_in_json_string
-                        && restored != self.pending
-                        && reference(&self.pending, 0).is_some_and(|(_, _, escaped)| !escaped)
-                    {
-                        let encoded = serde_json::to_string(&restored).map_err(|_| error())?;
-                        restored = encoded[1..encoded.len() - 1].to_owned();
-                    }
-                    ready.push_str(&restored);
-                    self.pending.clear();
+            if self.quote {
+                if self.pending.len() >= MAX_TAG_BYTES {
+                    ready.push_str(&std::mem::take(&mut self.pending));
+                    self.quote = false;
+                    continue;
                 }
-                _ => {}
+                if matches!(ch, '\'' | '"') && crate::encoding::complete_quoted(&self.pending) {
+                    ready.push_str(&restore(&std::mem::take(&mut self.pending))?);
+                    self.quote = false;
+                }
+                continue;
             }
-            if self.pending.len() >= MAX_TAG_BYTES {
+            // Do not attempt a decode on every character of a long tag. All
+            // supported closing representations terminate with these bytes.
+            if matches!(ch, '>' | ';' | 'e' | 'E')
+                && crate::encoding::complete_marker(&self.pending)
+            {
+                ready.push_str(&restore(&std::mem::take(&mut self.pending))?);
+            } else if self.pending.len() >= MAX_TAG_BYTES
+                || (self.pending.len() > 512 && !crate::encoding::has_marker(&self.pending))
+            {
                 ready.push_str(&std::mem::take(&mut self.pending));
-                self.quote = None;
             }
         }
         if finish {
-            ready.push_str(&std::mem::take(&mut self.pending));
-            self.quote = None;
+            ready.push_str(&restore(&std::mem::take(&mut self.pending))?);
+            self.quote = false;
         }
-        // Complete tags above were already restored; do not rescan inserted originals.
         Ok(ready)
     }
 }
@@ -497,6 +414,13 @@ fn reference_counts(text: &str) -> BTreeMap<String, usize> {
     counts
 }
 
+struct RestoredText {
+    value: String,
+    counts: BTreeMap<String, usize>,
+    changed: bool,
+    unresolved: bool,
+}
+
 pub struct Vault {
     storage: Arc<dyn KeychainStorage>,
     account: String,
@@ -506,6 +430,8 @@ pub struct Vault {
     retention_pin: bool,
     observer: Mutex<Option<Arc<OperationObserver>>>,
     epoch: Mutex<Option<u64>>,
+    generation: Mutex<Option<u64>>,
+    restored: AtomicBool,
     scanned: AtomicBool,
     restore_only: AtomicBool,
     detector: Mutex<Option<Arc<Detector>>>,
@@ -530,6 +456,8 @@ impl Vault {
             retention_pin: true,
             observer: Mutex::new(None),
             epoch: Mutex::new(None),
+            generation: Mutex::new(None),
+            restored: AtomicBool::new(false),
             scanned: AtomicBool::new(false),
             restore_only: AtomicBool::new(false),
             detector: Mutex::new(None),
@@ -603,10 +531,7 @@ impl Vault {
             }
         }
         *self.contract.lock().map_err(|_| error())? =
-            crate::schema::ResponseContract::from_request(
-                &request,
-                self.active() && !self.restore_only.load(Ordering::Acquire),
-            )?;
+            crate::schema::ResponseContract::from_request(&request, false).unwrap_or_default();
         Ok(())
     }
     pub fn set_operation_observer(&self, observer: Arc<OperationObserver>) {
@@ -634,6 +559,38 @@ impl Vault {
             }
         }
     }
+    fn resolve_text(&self, text: &str, strict: bool) -> AppResult<RestoredText> {
+        if !crate::encoding::has_marker(text) {
+            return Ok(RestoredText {
+                value: text.into(),
+                counts: BTreeMap::new(),
+                changed: false,
+                unresolved: false,
+            });
+        }
+        let _lock = STORE_LOCK.lock().map_err(|_| storage_error())?;
+        let entries = self.load()?;
+        let allowed = self.allowed.lock().map_err(|_| storage_error())?;
+        let mut counts = BTreeMap::new();
+        let mut unresolved = false;
+        let value = restore_text(text, strict, |id| {
+            if let Some(secret) = entries.get(id).filter(|_| allowed.contains(id)) {
+                *counts.entry(id.to_owned()).or_default() += 1;
+                Ok(Some(secret.to_string()))
+            } else {
+                unresolved = true;
+                Ok(None)
+            }
+        })?;
+        let changed = value != text;
+        unresolved |= !changed;
+        Ok(RestoredText {
+            value,
+            counts,
+            changed,
+            unresolved,
+        })
+    }
     fn restore_text_impl(
         &self,
         text: &str,
@@ -641,33 +598,45 @@ impl Vault {
         location: &str,
         notify: bool,
     ) -> AppResult<String> {
-        if !text.to_ascii_lowercase().contains(TAG) && !text.contains("\\u") {
-            return Ok(text.into());
+        match self.resolve_text(text, strict) {
+            Ok(restored) => {
+                if notify {
+                    if restored.changed {
+                        self.restored.store(true, Ordering::Release);
+                        self.notify_operations("restore", location, restored.counts);
+                    }
+                    if restored.unresolved {
+                        self.diagnostic("Possible secret reference was not restored; content passed through unchanged");
+                    }
+                }
+                Ok(restored.value)
+            }
+            Err(_) => {
+                if notify {
+                    self.diagnostic("Possible secret could not be restored safely; content passed through unchanged");
+                }
+                Ok(text.into())
+            }
         }
-        let lock = STORE_LOCK.lock().map_err(|_| storage_error())?;
+    }
+    pub fn diagnostic(&self, message: &str) {
+        self.notify_operations(
+            "restore_warning",
+            message,
+            BTreeMap::from([(String::new(), 1)]),
+        );
+    }
+    /// Explicit local administration distinguishes a missing mapping from a
+    /// literal reference; response restoration itself always permits fallback.
+    pub fn reveal_reference(&self, id: &str) -> AppResult<Option<String>> {
+        let _lock = STORE_LOCK.lock().map_err(|_| storage_error())?;
         let entries = self.load()?;
+        let id = id.to_ascii_lowercase();
         let allowed = self.allowed.lock().map_err(|_| storage_error())?;
-        let mut counts = BTreeMap::new();
-        let restored = restore_text(
-            text,
-            strict && !self.restore_only.load(Ordering::Acquire),
-            |id| {
-                Ok(entries
-                    .get(id)
-                    .filter(|_| allowed.contains(id))
-                    .map(|secret| {
-                        *counts.entry(id.to_owned()).or_default() += 1;
-                        secret.to_string()
-                    }))
-            },
-        )?;
-        drop(allowed);
-        drop(entries);
-        drop(lock);
-        if notify {
-            self.notify_operations("restore", location, counts);
-        }
-        Ok(restored)
+        Ok(entries
+            .get(&id)
+            .filter(|_| allowed.contains(&id))
+            .map(|s| s.to_string()))
     }
     pub fn set_async_detector(&self, detector: Arc<AsyncDetector>) {
         *self.async_detector.lock().expect("async secret detector") = Some(detector);
@@ -1156,13 +1125,25 @@ impl Vault {
         if records.is_empty() {
             return Ok(0);
         }
-        let epoch = index["epoch"]
+        let generation = index["purge_generation"]
             .as_u64()
             .unwrap_or_default()
             .checked_add(1)
             .ok_or_else(storage_error)?;
-        index["epoch"] = epoch.into();
+        index["purge_generation"] = generation.into();
+        if let Some(target) = &target {
+            if !index["revoked_values"].is_object() {
+                index["revoked_values"] = serde_json::json!({});
+            }
+            index["revoked_values"][key(owner, target)] = generation.into();
+        }
         if reference_id.is_none() {
+            let epoch = index["epoch"]
+                .as_u64()
+                .unwrap_or_default()
+                .checked_add(1)
+                .ok_or_else(storage_error)?;
+            index["epoch"] = epoch.into();
             index["revoked"] = true.into();
         }
         for id in &removed {
@@ -1208,6 +1189,7 @@ impl Vault {
         if reference_id.is_none() {
             index["revoked"] = false.into();
             index["revoked_ids"] = serde_json::json!({});
+            index["revoked_values"] = serde_json::json!({});
             index["client_record"] = vault.account.clone().into();
         }
         vault.save_index(&index)?;
@@ -1250,6 +1232,27 @@ impl Vault {
             return Err(error());
         }
         *epoch = Some(current);
+        let mut generation = self.generation.lock().map_err(|_| storage_error())?;
+        if generation.is_none() {
+            *generation = Some(index["purge_generation"].as_u64().unwrap_or_default());
+        }
+        Ok(())
+    }
+    fn check_original(&self, secret: &str) -> AppResult<()> {
+        let index = self.index()?;
+        let snapshot = self
+            .generation
+            .lock()
+            .map_err(|_| storage_error())?
+            .unwrap_or_default();
+        if index["revoked_values"][key(&self.owner, secret)]
+            .as_u64()
+            .is_some_and(|g| g > snapshot)
+        {
+            return Err(AppError::InvalidParams(
+                "A purged secret cannot be re-created by an older request".into(),
+            ));
+        }
         Ok(())
     }
     fn load(&self) -> AppResult<BTreeMap<String, Zeroizing<String>>> {
@@ -1335,6 +1338,16 @@ impl Vault {
         text: &str,
         entries: &mut BTreeMap<String, Zeroizing<String>>,
     ) -> AppResult<String> {
+        if entries.is_empty() {
+            return Ok(text.into());
+        }
+        crate::encoding::rewrite_mask(text, &mut |source| self.transform_plain(source, entries))
+    }
+    fn transform_plain(
+        &self,
+        text: &str,
+        entries: &mut BTreeMap<String, Zeroizing<String>>,
+    ) -> AppResult<Vec<crate::encoding::Edit>> {
         let preserved: Vec<_> = text
             .match_indices('<')
             .filter_map(|(start, _)| {
@@ -1369,23 +1382,26 @@ impl Vault {
                 merged.push((a, b));
             }
         }
-        let mut out = String::new();
-        let mut offset = 0;
+        let mut out = Vec::new();
         for (a, b) in merged {
             let original = &text[a..b];
             let id = match entries.iter().find(|(_, s)| s.as_str() == original) {
                 Some((id, _)) => id.clone(),
-                None => Self::insert(entries, original)?,
+                None => {
+                    self.check_original(original)?;
+                    Self::insert(entries, original)?
+                }
             };
             self.allowed
                 .lock()
                 .map_err(|_| storage_error())?
                 .insert(id.clone());
-            out.push_str(&text[offset..a]);
-            out.push_str(&marker(&id));
-            offset = b;
+            out.push(crate::encoding::Edit {
+                start: a,
+                end: b,
+                value: marker(&id),
+            });
         }
-        out.push_str(&text[offset..]);
         Ok(out)
     }
     fn insert(
@@ -1526,6 +1542,7 @@ impl SecretContext for Vault {
         let _lock = STORE_LOCK.lock().map_err(|_| storage_error())?;
         let mut entries = self.load()?;
         if !entries.values().any(|s| s.as_str() == secret) {
+            self.check_original(secret)?;
             Self::insert(&mut entries, secret)?;
             self.save(&entries)?;
         }
@@ -1547,12 +1564,6 @@ impl SecretContext for Vault {
                 *value = detector(value.clone()).await?;
             }
             self.protect(value)?;
-            if self.active() {
-                self.contract
-                    .lock()
-                    .map_err(|_| error())?
-                    .check_placeholders()?;
-            }
             Ok(())
         })
     }
@@ -1664,34 +1675,92 @@ impl SecretContext for Vault {
         self.restore_text_impl(text, strict, location, true)
     }
     fn restore(&self, value: &mut Value, strict: bool) -> AppResult<()> {
-        visit(
-            value,
+        let mut restored = value.clone();
+        let mut operations = Vec::new();
+        let mut unresolved = false;
+        let result = visit(
+            &mut restored,
             &mut |text, executable| {
-                self.restore_text_at(
-                    text,
-                    strict || executable,
-                    if strict || executable {
-                        "Tool arguments"
-                    } else {
-                        "Response text"
-                    },
-                )
+                let location = if strict || executable {
+                    "Tool arguments"
+                } else {
+                    "Response text"
+                };
+                match self.resolve_text(text, strict || executable) {
+                    Ok(outcome) => {
+                        unresolved |= outcome.unresolved;
+                        if outcome.changed {
+                            operations.push((location, outcome.counts));
+                        }
+                        Ok(outcome.value)
+                    }
+                    Err(_) => {
+                        unresolved = true;
+                        Ok(text.into())
+                    }
+                }
             },
             !strict,
-        )?;
+        );
+        if result.is_err() {
+            self.diagnostic(
+                "Restoration would alter the response structure; original content preserved",
+            );
+            return Ok(());
+        }
+        *value = restored;
+        if !operations.is_empty() {
+            self.restored.store(true, Ordering::Release);
+        }
+        for (location, counts) in operations {
+            self.notify_operations("restore", location, counts);
+        }
+        if unresolved {
+            self.diagnostic(
+                "Possible secret reference was not restored; content passed through unchanged",
+            );
+        }
         Ok(())
     }
+    fn diagnostic(&self, message: &str) {
+        Vault::diagnostic(self, message);
+    }
     fn validate_tool(&self, name: Option<&str>, arguments: &Value) -> AppResult<()> {
-        self.contract
-            .lock()
-            .map_err(|_| error())?
-            .tool(name, arguments)
+        if self.restored.load(Ordering::Acquire) {
+            let result = self
+                .contract
+                .lock()
+                .map_err(|_| error())?
+                .tool(name, arguments);
+            if result.is_err() {
+                self.diagnostic(
+                    "Restored tool schema could not be validated locally; response preserved",
+                );
+            }
+        }
+        Ok(())
     }
     fn validate_output(&self, text: &str) -> AppResult<()> {
-        self.contract.lock().map_err(|_| error())?.output(text)
+        if self.restored.load(Ordering::Acquire) {
+            let result = self.contract.lock().map_err(|_| error())?.output(text);
+            if result.is_err() {
+                self.diagnostic(
+                    "Restored output schema could not be validated locally; response preserved",
+                );
+            }
+        }
+        Ok(())
     }
     fn validate_response(&self, value: &Value) -> AppResult<()> {
-        self.contract.lock().map_err(|_| error())?.response(value)
+        if self.restored.load(Ordering::Acquire) {
+            let result = self.contract.lock().map_err(|_| error())?.response(value);
+            if result.is_err() {
+                self.diagnostic(
+                    "Restored response schema could not be validated locally; response preserved",
+                );
+            }
+        }
+        Ok(())
     }
     fn structured_output(&self) -> bool {
         self.contract.lock().is_ok_and(|c| c.structured())
@@ -1873,7 +1942,6 @@ mod tests {
             "<localrouter-redacted usage='id=abc123'>",
             "<localrouter-redacted id=''>",
             "<localrouter-redacted id=abc123/",
-            "&lt;localrouter-redacted id=abc123&gt;",
             "<unrelated id=abc123>localrouter-redacted</unrelated>",
         ] {
             assert_eq!(restore_text(tag, false, resolve).unwrap(), tag, "{tag}");
@@ -1940,8 +2008,10 @@ mod tests {
         let canonical = protected.clone();
         drop(a);
         let recovered = Vault::new(store.clone(), "a", "same", false);
-        assert!(
-            recovered.restore(&mut protected.clone(), true).is_err(),
+        let mut unauthorized = protected.clone();
+        recovered.restore(&mut unauthorized, true).unwrap();
+        assert_eq!(
+            unauthorized, protected,
             "must not resolve references before request authorization"
         );
         recovered.protect(&mut protected).unwrap();
@@ -1951,10 +2021,14 @@ mod tests {
         for (owner, session) in [("b", "same"), ("a", "different")] {
             let other = Vault::new(store.clone(), owner, session, false);
             other.protect(&mut canonical.clone()).unwrap();
-            assert!(other.restore(&mut canonical.clone(), true).is_err());
+            let mut unchanged = canonical.clone();
+            other.restore(&mut unchanged, true).unwrap();
+            assert_eq!(unchanged, canonical);
         }
         recovered.forget().unwrap();
-        assert!(recovered.restore(&mut canonical.clone(), true).is_err());
+        let mut unchanged = canonical.clone();
+        recovered.restore(&mut unchanged, true).unwrap();
+        assert_eq!(unchanged, canonical);
     }
     #[test]
     fn stable_masking_json_and_overlap() {
@@ -2026,19 +2100,24 @@ mod tests {
             "<localrouter-redacted id=",
             "<localrouter-redacted id='unknown'/>",
         ] {
-            assert!(restore_text(malformed, true, |_| Ok(None)).is_err());
-            assert!(restore_text(
-                &format!("'<localrouter-redacted' in actual; {malformed}"),
-                true,
-                |_| Ok(None),
-            )
-            .is_err());
+            assert_eq!(
+                restore_text(malformed, true, |_| Ok(None)).unwrap(),
+                malformed
+            );
+            let mixed = format!("'<localrouter-redacted' in actual; {malformed}");
+            assert_eq!(restore_text(&mixed, true, |_| Ok(None)).unwrap(), mixed);
         }
     }
     #[test]
-    fn unknown_executable_tags_fail() {
-        assert!(restore_text("<LOCALROUTER-REDACTED id=unknown>", true, resolve).is_err());
-        assert!(restore_text("<localrouter-redacted id=abc123", true, resolve).is_err());
+    fn unknown_executable_tags_pass_through_without_revealing() {
+        assert_eq!(
+            restore_text("<LOCALROUTER-REDACTED id=unknown>", true, resolve).unwrap(),
+            "<LOCALROUTER-REDACTED id=unknown>"
+        );
+        assert_eq!(
+            restore_text("<localrouter-redacted id=abc123", true, resolve).unwrap(),
+            "<localrouter-redacted id=abc123"
+        );
     }
     #[test]
     fn native_store_failure_blocks() {
@@ -2268,7 +2347,7 @@ mod recovery_tests {
             .unwrap();
         assert!(vault
             .validate_tool(Some("write"), &serde_json::json!({"content":"wrong"}))
-            .is_err());
+            .is_ok());
     }
     #[test]
     fn unknown_expired_and_foreign_response_ids_grant_no_capability() {
@@ -2358,7 +2437,9 @@ mod recovery_tests {
         let other = Vault::new(store, "owner", "scope", false);
         other.protect(&mut value).unwrap();
         assert!(first.forget().is_err());
-        assert!(other.restore(&mut value, true).is_err());
+        let masked = value.clone();
+        other.restore(&mut value, true).unwrap();
+        assert_eq!(value, masked);
     }
 }
 
@@ -2472,12 +2553,12 @@ mod opaque_history_tests {
                 let other = Vault::new(storage.clone(), owner, scope, false);
                 let mut input = json!({"input":[{"type":kind,"encrypted_content":opaque}]});
                 other.protect(&mut input).unwrap();
-                assert!(other.restore_text(&tag, true).is_err());
+                assert_eq!(other.restore_text(&tag, true).unwrap(), tag);
             }
             resumed.forget().unwrap();
             let mut replay = json!({"input":response["output"]});
             resumed.protect(&mut replay).unwrap();
-            assert!(resumed.restore_text(&tag, true).is_err());
+            assert_eq!(resumed.restore_text(&tag, true).unwrap(), tag);
         }
     }
 }
@@ -2567,9 +2648,12 @@ mod monitor_mask_tests {
         let raw: Value =
             serde_json::from_str(data["data"]["raw_request"].as_str().unwrap()).unwrap();
         assert_eq!(raw["content"], data["data"]["request_body"]["content"]);
-        assert!(vault
-            .restore_text(raw["content"].as_str().unwrap(), true)
-            .is_err());
+        assert_eq!(
+            vault
+                .restore_text(raw["content"].as_str().unwrap(), true)
+                .unwrap(),
+            raw["content"].as_str().unwrap()
+        );
         vault.set_restore_only();
         let mut allowed = json!({"content":secret});
         vault.redact_monitor(&mut allowed).unwrap();
@@ -2613,7 +2697,7 @@ mod client_map_tests {
         }
         let foreign = Vault::for_client(storage.clone(), "foreign-client");
         for (tag, _) in &tags {
-            assert!(foreign.restore_text(tag, true).is_err());
+            assert_eq!(foreign.restore_text(tag, true).unwrap(), tag.as_str());
         }
         assert!(
             Vault::find_client(storage, "foreign-client", RETENTION_SECS)
@@ -2718,7 +2802,10 @@ mod store_management_tests {
             Vault::purge_client(storage.clone(), owner, Some(&id.to_ascii_uppercase())).unwrap(),
             2
         );
-        assert!(active.restore_text(&old_tags[0], true).is_err());
+        assert_eq!(
+            active.restore_text(&old_tags[0], true).unwrap(),
+            old_tags[0]
+        );
         assert!(
             active.register(SECRET).is_err(),
             "old request must not recreate purged values"
@@ -2733,7 +2820,7 @@ mod store_management_tests {
             .unwrap()
             .unwrap();
         for tag in &old_tags {
-            assert!(recovered.restore_text(tag, true).is_err());
+            assert_eq!(recovered.restore_text(tag, true).unwrap(), tag.as_str());
         }
         assert_eq!(
             recovered
@@ -2798,9 +2885,12 @@ mod store_management_tests {
         active.protect(&mut value).unwrap();
         storage.fail.store(true, Ordering::Relaxed);
         assert!(Vault::purge_client(storage.clone(), "purge-failure-owner", None).is_err());
-        assert!(active
-            .restore_text(value["content"].as_str().unwrap(), true)
-            .is_err());
+        assert_eq!(
+            active
+                .restore_text(value["content"].as_str().unwrap(), true)
+                .unwrap(),
+            value["content"].as_str().unwrap()
+        );
         assert!(
             Vault::find_client(storage.clone(), "purge-failure-owner", RETENTION_SECS).is_err()
         );
@@ -2816,9 +2906,12 @@ mod store_management_tests {
         assert!(active.register(SECRET).is_err());
         let fresh = Vault::for_client(storage, "purge-failure-owner");
         fresh.register(SECRET).unwrap();
-        assert!(fresh
-            .restore_text(value["content"].as_str().unwrap(), true)
-            .is_err());
+        assert_eq!(
+            fresh
+                .restore_text(value["content"].as_str().unwrap(), true)
+                .unwrap(),
+            value["content"].as_str().unwrap()
+        );
     }
     #[test]
     fn failed_single_secret_rewrite_revokes_the_original_and_preserves_other_entries() {
@@ -2878,7 +2971,10 @@ mod store_management_tests {
         );
         let current = Vault::for_client(storage.clone(), owner);
         current.allowed.lock().unwrap().insert(id.clone());
-        assert!(current.restore_text(&marker(&id), true).is_err());
+        assert_eq!(
+            current.restore_text(&marker(&id), true).unwrap(),
+            marker(&id)
+        );
         storage.fail.store(false, Ordering::Relaxed);
         assert_eq!(
             Vault::purge_client(storage.clone(), owner, Some(&id)).unwrap(),
@@ -2956,10 +3052,18 @@ mod store_management_tests {
         assert_eq!(notices.lock().unwrap()[1].action, "restore");
         assert_eq!(notices.lock().unwrap()[1].location, "Tool arguments");
         let before = notices.lock().unwrap().len();
-        assert!(vault
-            .restore_text(&format!("{one} <localrouter-redacted id='unknown'/>"), true)
-            .is_err());
-        assert_eq!(notices.lock().unwrap().len(), before);
+        assert_eq!(
+            vault
+                .restore_text(&format!("{one} <localrouter-redacted id='unknown'/>"), true)
+                .unwrap(),
+            format!("{SECRET} <localrouter-redacted id='unknown'/>")
+        );
+        assert_eq!(notices.lock().unwrap().len(), before + 2);
+        assert_eq!(
+            notices.lock().unwrap().last().unwrap().action,
+            "restore_warning"
+        );
+        let before = notices.lock().unwrap().len();
         vault.set_request_contract(&json!({"tools":[{"type":"function","name":"write","parameters":{"type":"object","properties":{"value":{"enum":[one]}}}}]})).unwrap();
         assert_eq!(notices.lock().unwrap().len(), before);
         assert!(!format!("{:?}", notices.lock().unwrap()).contains(SECRET));

@@ -70,7 +70,7 @@ export function RedactedSecretsStore({ clientId }: { clientId?: string }) {
     <Card>
       <CardHeader>
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <CardTitle>Redacted secrets</CardTitle>
+          <CardTitle>Stored secrets</CardTitle>
           <div className="flex gap-2">
             <Button variant="outline" size="sm" disabled={loading || purging} onClick={() => { void load() }}><RefreshCw className="mr-2 h-4 w-4" />Refresh</Button>
             <Button variant="outline" size="sm" className="text-destructive" disabled={loading || purging || (!filtered.length && !clientId)} onClick={() => setPurge({ clientId: selectedClient, referenceId: null, label: selectedClient ? `all redacted secrets for ${entries.find(entry => entry.client_id === selectedClient)?.client_name ?? 'this client'}` : 'all redacted secrets for every client' })}><Trash2 className="mr-2 h-4 w-4" />{selectedClient ? 'Purge client' : 'Purge all'}</Button>
@@ -111,7 +111,7 @@ export function RedactedSecretsStore({ clientId }: { clientId?: string }) {
     </Card>
     <AlertDialog open={purge !== null} onOpenChange={open => { if (!open && !purging) setPurge(null) }}>
       <AlertDialogContent>
-        <AlertDialogHeader><AlertDialogTitle>Purge stored secrets?</AlertDialogTitle><AlertDialogDescription>Remove {purge?.label} from local credential storage. Existing placeholders will stop resolving, and active requests for affected clients may fail. New requests can store fresh references.</AlertDialogDescription></AlertDialogHeader>
+        <AlertDialogHeader><AlertDialogTitle>Purge stored secrets?</AlertDialogTitle><AlertDialogDescription>Remove {purge?.label} from local credential storage. Existing references to removed originals will remain literal, with a diagnostic, rather than revealing a value. Purging one secret preserves unrelated in-flight references. New requests can store fresh references.</AlertDialogDescription></AlertDialogHeader>
         <AlertDialogFooter><AlertDialogCancel disabled={purging}>Cancel</AlertDialogCancel><AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" disabled={purging} onClick={event => { event.preventDefault(); void confirmPurge() }}>{purging && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}Purge</AlertDialogAction></AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
