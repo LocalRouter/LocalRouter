@@ -2243,3 +2243,338 @@ async fn recovery_discovery_stays_responsive_and_teardown_cancels_reconnect() {
         .running_server_ids()
         .is_empty());
 }
+
+#[tokio::test]
+async fn cached_discovery_survives_reload_and_refreshes_after_slow_connection() {
+    use std::time::Duration;
+    let (broadcast, mut receiver) = tokio::sync::broadcast::channel(64);
+    let (gateway, server) = setup_with_broadcast(Some(Arc::new(broadcast))).await;
+    initialize(&gateway, "cache-seed", &[ECHO_ID], &allow_all(), None).await;
+    let seeded = send(
+        &gateway,
+        "cache-seed",
+        &[ECHO_ID],
+        &allow_all(),
+        None,
+        "tools/list",
+        None,
+    )
+    .await;
+    assert!(tool_names(&seeded).contains(&"echo-server__echo".into()));
+    // Include prompts in the snapshot even if the client didn't explicitly list them.
+    gateway.terminate_session("cache-seed").await.unwrap();
+    server.reset().await;
+    Mock::given(http_method("POST")).and(JsonRpcMethod("initialize"))
+        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(4)).set_body_json(json!({
+            "jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25",
+            "capabilities":{"tools":{},"prompts":{}},"serverInfo":{"name":"echo","version":"2"}}
+        }))).mount(&server).await;
+    mock(&server, "notifications/initialized", Some(json!({}))).await;
+    mock(&server, "tools/list", Some(json!({"tools":[]}))).await;
+    mock(&server, "prompts/list", Some(json!({"prompts":[]}))).await;
+    initialize(&gateway, "cache-reload", &[ECHO_ID], &allow_all(), None).await;
+    let listed = tokio::time::timeout(
+        Duration::from_millis(300),
+        send(
+            &gateway,
+            "cache-reload",
+            &[ECHO_ID],
+            &allow_all(),
+            None,
+            "tools/list",
+            None,
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(tool_names(&listed).contains(&"echo-server__echo".into()));
+    assert_eq!(
+        listed.result.as_ref().unwrap()["tools"][0]["_meta"]["localrouter/loading"],
+        true
+    );
+    let prompts = send(
+        &gateway,
+        "cache-reload",
+        &[ECHO_ID],
+        &allow_all(),
+        None,
+        "prompts/list",
+        None,
+    )
+    .await;
+    assert_eq!(
+        prompts.result.unwrap()["prompts"].as_array().unwrap().len(),
+        2
+    );
+    let denied = McpPermissions {
+        global: PermissionState::Off,
+        ..Default::default()
+    };
+    let filtered = send(
+        &gateway,
+        "cache-reload",
+        &[ECHO_ID],
+        &denied,
+        None,
+        "tools/list",
+        None,
+    )
+    .await;
+    assert!(tool_names(&filtered).is_empty());
+    // Restore permission while the same warm-up continues.
+    send(
+        &gateway,
+        "cache-reload",
+        &[ECHO_ID],
+        &allow_all(),
+        None,
+        "ping",
+        None,
+    )
+    .await;
+    wait_for_recovery(&gateway, "cache-reload").await;
+    let refreshed = send(
+        &gateway,
+        "cache-reload",
+        &[ECHO_ID],
+        &allow_all(),
+        None,
+        "tools/list",
+        None,
+    )
+    .await;
+    assert!(
+        tool_names(&refreshed).is_empty(),
+        "successful empty catalogs remove stale tools"
+    );
+    let mut changed = false;
+    while let Ok((key, notification)) = receiver.try_recv() {
+        changed |= key == lr_mcp::gateway::types::session_notification_key("cache-reload")
+            && notification.method == "notifications/tools/list_changed";
+    }
+    assert!(changed, "completed warm-up must notify the client");
+    gateway.terminate_session("cache-reload").await.unwrap();
+}
+
+#[tokio::test]
+async fn idle_maintenance_recovers_failed_backend_without_client_requests() {
+    let recovering = MockServer::start().await;
+    mock(&recovering, "initialize", None).await;
+    let (gateway, _echo) = setup_full(
+        None,
+        vec![http_server("idle", "Idle", recovering.uri(), true)],
+    )
+    .await;
+    initialize(
+        &gateway,
+        "idle-recovery",
+        &[ECHO_ID, "idle"],
+        &allow_all(),
+        None,
+    )
+    .await;
+    wait_for_recovery(&gateway, "idle-recovery").await;
+    recovering.reset().await;
+    recovery_backend(&recovering).await;
+    gateway.recover_idle_backends().await;
+    wait_for_recovery(&gateway, "idle-recovery").await;
+    let session = gateway.get_session("idle-recovery").unwrap();
+    assert!(session.read().await.get_failed_servers().is_empty());
+    assert_eq!(method_count(&recovering, "initialize").await, 1);
+    assert_eq!(method_count(&recovering, "tools/call").await, 0);
+    gateway.terminate_session("idle-recovery").await.unwrap();
+}
+
+#[tokio::test]
+async fn discovery_snapshots_isolate_clients_and_working_directories() {
+    let (gateway, _server) = setup().await;
+    initialize(&gateway, "isolation", &[ECHO_ID], &allow_all(), None).await;
+    let session = gateway.get_session("isolation").unwrap();
+    session.write().await.initialization_pending = true;
+    let listed = send(
+        &gateway,
+        "isolation",
+        &[ECHO_ID],
+        &allow_all(),
+        None,
+        "tools/list",
+        None,
+    )
+    .await;
+    assert_eq!(tool_names(&listed).len(), 2);
+    session.write().await.client_cwd = Some("/different-workspace".into());
+    let different_cwd = send(
+        &gateway,
+        "isolation",
+        &[ECHO_ID],
+        &allow_all(),
+        None,
+        "tools/list",
+        None,
+    )
+    .await;
+    assert!(tool_names(&different_cwd).is_empty());
+    {
+        let mut state = session.write().await;
+        state.client_cwd = None;
+        state.client_id = "another-client".into();
+    }
+    let different_client = send(
+        &gateway,
+        "isolation",
+        &[ECHO_ID],
+        &allow_all(),
+        None,
+        "tools/list",
+        None,
+    )
+    .await;
+    assert!(tool_names(&different_client).is_empty());
+    session.write().await.initialization_pending = false;
+    gateway.terminate_session("isolation").await.unwrap();
+}
+
+#[tokio::test]
+async fn resource_and_template_snapshots_keep_routing_private_and_filter_permissions() {
+    let (gateway, server) = setup().await;
+    mock(
+        &server,
+        "resources/templates/list",
+        Some(json!({"resourceTemplates":[{"name":"record","uriTemplate":"db://{id}"}]})),
+    )
+    .await;
+    initialize(&gateway, "resource-cache", &[ECHO_ID], &allow_all(), None).await;
+    Mock::given(http_method("POST")).and(JsonRpcMethod("resources/list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"jsonrpc":"2.0","id":1,"result":{"resources":[{"name":"record","uri":"db://record"}]}})))
+        .with_priority(1).mount(&server).await;
+    gateway.invalidate_resources_cache("client-1");
+    let resources = send(
+        &gateway,
+        "resource-cache",
+        &[ECHO_ID],
+        &allow_all(),
+        None,
+        "resources/list",
+        None,
+    )
+    .await;
+    assert_eq!(
+        resources.result.unwrap()["resources"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let templates = send(
+        &gateway,
+        "resource-cache",
+        &[ECHO_ID],
+        &allow_all(),
+        None,
+        "resources/templates/list",
+        None,
+    )
+    .await;
+    assert_eq!(
+        templates.result.as_ref().unwrap()["resourceTemplates"][0]["name"],
+        "echo-id__record"
+    );
+    assert!(templates.result.unwrap()["resourceTemplates"][0]
+        .get("server_id")
+        .is_none());
+    let session = gateway.get_session("resource-cache").unwrap();
+    session.write().await.initialization_pending = true;
+    let cached_resources = send(
+        &gateway,
+        "resource-cache",
+        &[ECHO_ID],
+        &allow_all(),
+        None,
+        "resources/list",
+        None,
+    )
+    .await;
+    assert_eq!(
+        cached_resources.result.as_ref().unwrap()["resources"][0]["uri"],
+        "db://record"
+    );
+    assert!(cached_resources.result.unwrap()["resources"][0]
+        .get("server_id")
+        .is_none());
+    let cached = send(
+        &gateway,
+        "resource-cache",
+        &[ECHO_ID],
+        &allow_all(),
+        None,
+        "resources/templates/list",
+        None,
+    )
+    .await;
+    assert_eq!(
+        cached.result.as_ref().unwrap()["resourceTemplates"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(cached.result.unwrap()["resourceTemplates"][0]
+        .get("original_name")
+        .is_none());
+    let denied = McpPermissions {
+        global: PermissionState::Off,
+        ..Default::default()
+    };
+    let hidden = send(
+        &gateway,
+        "resource-cache",
+        &[ECHO_ID],
+        &denied,
+        None,
+        "resources/templates/list",
+        None,
+    )
+    .await;
+    assert!(hidden.result.unwrap()["resourceTemplates"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    session.write().await.initialization_pending = false;
+    gateway.terminate_session("resource-cache").await.unwrap();
+}
+
+#[tokio::test]
+async fn malformed_or_incomplete_refresh_preserves_last_good_catalog() {
+    let (gateway, server) = setup().await;
+    initialize(&gateway, "partial-cache", &[ECHO_ID], &allow_all(), None).await;
+    for broken in [
+        json!({"tools":"invalid"}),
+        json!({"tools":[],"nextCursor":"broken-page"}),
+    ] {
+        let guard = Mock::given(http_method("POST"))
+            .and(JsonRpcMethod("tools/list"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"jsonrpc":"2.0","id":1,"result":broken})),
+            )
+            .with_priority(1)
+            .mount_as_scoped(&server)
+            .await;
+        // A repeated cursor hits the bounded page limit, preserving the snapshot.
+        gateway.invalidate_tools_cache("client-1");
+        let refreshed = send(
+            &gateway,
+            "partial-cache",
+            &[ECHO_ID],
+            &allow_all(),
+            None,
+            "tools/list",
+            None,
+        )
+        .await;
+        assert_eq!(tool_names(&refreshed).len(), 2);
+        assert_eq!(refreshed.result.unwrap()["_meta"]["partial_failure"], true);
+        drop(guard);
+    }
+    gateway.terminate_session("partial-cache").await.unwrap();
+}

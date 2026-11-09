@@ -67,6 +67,8 @@ pub struct McpGateway {
     /// every new session; entries live for the gateway's lifetime.
     pub(crate) backend_revision_cache: Arc<DashMap<String, crate::protocol::ProtocolRevision>>,
 
+    pub(super) discovery_cache: Arc<DashMap<String, super::discovery_cache::DiscoverySnapshot>>,
+
     /// Gateway configuration
     pub(crate) config: GatewayConfig,
 
@@ -250,6 +252,7 @@ impl McpGateway {
             sessions: Arc::new(DashMap::new()),
             server_manager,
             backend_revision_cache: Arc::new(DashMap::new()),
+            discovery_cache: Arc::new(DashMap::new()),
             client_request_sender: Arc::new(parking_lot::RwLock::new(None)),
             live_sampling: Arc::new(parking_lot::RwLock::new(config.sampling.clone())),
             live_elicitation_mode: Arc::new(parking_lot::RwLock::new(
@@ -1486,7 +1489,8 @@ impl McpGateway {
             self.servers_awaiting_first_discovery(&state.client_id, &state.requested_servers)
         };
         if !awaiting_discovery.is_empty() {
-            let deadline = tokio::time::Instant::now() + *self.first_discovery_wait.read();
+            let deadline = tokio::time::Instant::now()
+                + (*self.first_discovery_wait.read()).min(Duration::from_secs(5));
             let needs_backends = {
                 let state = session.read().await;
                 state.transports.is_none() && !state.initialization_pending
@@ -1981,7 +1985,7 @@ impl McpGateway {
 
     /// Retry only relevant unavailable backends, under the existing initialization
     /// lock. Healthy tools and local virtual calls never wait for unrelated servers.
-    async fn recover_backends_for_request(
+    pub(super) async fn recover_backends_for_request(
         &self,
         session: &Arc<RwLock<GatewaySession>>,
         request: &JsonRpcRequest,
@@ -3003,7 +3007,8 @@ impl McpGateway {
         if outcome.is_err() && !awaiting_discovery.is_empty() {
             // A server never seen before (or reconfigured) gets longer: its
             // capabilities decide what this session can be offered.
-            let deadline = started + *self.first_discovery_wait.read();
+            let deadline =
+                started + (*self.first_discovery_wait.read()).min(Duration::from_secs(5));
             tokio::select! {
                 result = &mut receiver => outcome = Ok(result),
                 _ = self.wait_for_first_discovery(&session, &awaiting_discovery, deadline) => {}
@@ -3015,7 +3020,8 @@ impl McpGateway {
                 // capabilities are remembered (they are read in the
                 // background): wait for them within the same bound, then
                 // advertise what they allow.
-                let deadline = started + *self.first_discovery_wait.read();
+                let deadline =
+                    started + (*self.first_discovery_wait.read()).min(Duration::from_secs(5));
                 self.wait_for_first_discovery(&session, &awaiting_discovery, deadline)
                     .await;
                 if let Some(capabilities) = response
@@ -3116,7 +3122,62 @@ impl McpGateway {
             }
             _ => return None,
         };
-        let mut items = Vec::new();
+        let mut items = match key {
+            "tools" => serde_json::to_value(
+                state.visible_tools(
+                    &state
+                        .requested_servers
+                        .iter()
+                        .flat_map(|id| self.cached_discovery::<NamespacedTool>(&state, id, key))
+                        .collect::<Vec<_>>(),
+                ),
+            )
+            .unwrap_or_default(),
+            "resources" => serde_json::to_value(
+                state.visible_resources(
+                    &state
+                        .requested_servers
+                        .iter()
+                        .flat_map(|id| self.cached_discovery::<NamespacedResource>(&state, id, key))
+                        .collect::<Vec<_>>(),
+                ),
+            )
+            .unwrap_or_default(),
+            "prompts" => serde_json::to_value(
+                state.visible_prompts(
+                    &state
+                        .requested_servers
+                        .iter()
+                        .flat_map(|id| self.cached_discovery::<NamespacedPrompt>(&state, id, key))
+                        .collect::<Vec<_>>(),
+                ),
+            )
+            .unwrap_or_default(),
+            "resourceTemplates" => json!(self.visible_cached_templates(
+                &state,
+                state
+                    .requested_servers
+                    .iter()
+                    .flat_map(|id| self.cached_discovery::<Value>(&state, id, key))
+                    .collect()
+            )),
+            _ => json!([]),
+        }
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+        for item in &mut items {
+            item["_meta"] = json!({"localrouter/stale":true,"localrouter/loading":true});
+            if key == "tools" {
+                let description = item
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                item["description"] = json!(format!(
+                    "[Loading upstream connection; cached definition] {description}"
+                ));
+            }
+        }
         if key == "tools" {
             self.append_virtual_server_tools(&mut items, &state);
         }
@@ -3736,47 +3797,53 @@ impl McpGateway {
                 );
             }
         }
-        let (tools_result, resources_result, prompts_result) = tokio::join!(
+        let (tools_result, resources_result, prompts_result, templates_result) = tokio::join!(
             self.fetch_and_merge_tools(&tools_servers, tools_request, &transport_set),
             self.fetch_and_merge_resources(&resource_servers, resources_request, &transport_set),
             self.fetch_and_merge_prompts(&prompt_servers, prompts_request, &transport_set),
+            self.refresh_resource_templates(
+                session.clone(),
+                JsonRpcRequest::with_id(4, "resources/templates/list".into(), None),
+                resource_servers.clone()
+            ),
         );
+        if let Err(error) = templates_result {
+            tracing::warn!("MCP template catalog refresh failed: {error}");
+        }
         let (mut tools_catalog, tool_failures) = tools_result.unwrap_or_default();
         let (mut resources_catalog, resource_failures) = resources_result.unwrap_or_default();
         let (mut prompts_catalog, prompt_failures) = prompts_result.unwrap_or_default();
         {
+            let state = session.read().await;
+            self.remember_discovery(
+                &state,
+                &tools_servers,
+                "tools",
+                &mut tools_catalog,
+                &tool_failures,
+                |t| (&t.server_id, &t.original_name),
+            );
+            self.remember_discovery(
+                &state,
+                &resource_servers,
+                "resources",
+                &mut resources_catalog,
+                &resource_failures,
+                |r| (&r.server_id, &r.original_name),
+            );
+            self.remember_discovery(
+                &state,
+                &prompt_servers,
+                "prompts",
+                &mut prompts_catalog,
+                &prompt_failures,
+                |p| (&p.server_id, &p.original_name),
+            );
+        }
+        {
             let mut state = session.write().await;
-            // Preserve known catalogs for unrelated backends that fail a fresh
-            // probe during recovery, just as their routing mappings are kept.
-            if let Some(cache) = &state.cached_tools {
-                tools_catalog.extend(
-                    cache
-                        .data
-                        .iter()
-                        .filter(|t| tool_failures.iter().any(|f| f.server_id == t.server_id))
-                        .cloned(),
-                );
-            }
-            if let Some(cache) = &state.cached_resources {
-                resources_catalog.extend(
-                    cache
-                        .data
-                        .iter()
-                        .filter(|r| resource_failures.iter().any(|f| f.server_id == r.server_id))
-                        .cloned(),
-                );
-            }
-            if let Some(cache) = &state.cached_prompts {
-                prompts_catalog.extend(
-                    cache
-                        .data
-                        .iter()
-                        .filter(|p| prompt_failures.iter().any(|f| f.server_id == p.server_id))
-                        .cloned(),
-                );
-            }
-            // Initial startup leaves catalog fetch/caching to the normal list
-            // handlers. Recovery must replace existing mappings and caches now.
+            // The first explicit list remains a fresh fetch: some upstreams
+            // finish populating their catalogs after initialize completes.
             if !state.initialization_pending {
                 state.update_tool_mappings(&tools_catalog, &tool_failures);
                 state.update_resource_mappings(&resources_catalog, &resource_failures);
@@ -3796,6 +3863,9 @@ impl McpGateway {
                 state.last_broadcast_failures = tool_failures;
             }
         }
+
+        tracing::info!(client_id = %client_id_for_log, tools = tools_catalog.len(), resources = resources_catalog.len(), prompts = prompts_catalog.len(),
+            "MCP discovery catalogs refreshed");
 
         let server_infos = self.build_server_instruction_infos(
             &init_results_for_instructions,
@@ -4382,7 +4452,7 @@ impl McpGateway {
             (changes.prompts, "notifications/prompts/list_changed"),
         ] {
             if changed {
-                let _ = broadcast.send((
+                let delivered = broadcast.send((
                     key.to_string(),
                     JsonRpcNotification {
                         jsonrpc: "2.0".to_string(),
@@ -4390,6 +4460,7 @@ impl McpGateway {
                         params: None,
                     },
                 ));
+                tracing::info!(session = %key, method, receivers = delivered.unwrap_or(0), "MCP discovery change broadcast");
             }
         }
     }
