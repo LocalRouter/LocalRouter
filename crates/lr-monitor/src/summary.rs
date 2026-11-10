@@ -7,7 +7,11 @@ fn secret_action(data: &MonitorEventData) -> Option<&'static str> {
             findings,
             ..
         } => {
-            if action_taken.as_deref() == Some("protect_warning") {
+            if action_taken.as_deref() == Some("storage_warning") {
+                Some("storage_warning")
+            } else if action_taken.as_deref() == Some("storage_recovered") {
+                Some("storage_recovered")
+            } else if action_taken.as_deref() == Some("protect_warning") {
                 Some("protect_warning")
             } else if action_taken.as_deref() == Some("restore_warning") {
                 Some("restore_warning")
@@ -245,6 +249,8 @@ pub fn generate_summary(event: &MonitorEvent) -> String {
                 let count = findings_count.unwrap_or(0);
                 let action = action_taken.as_deref().unwrap_or("?");
                 let label = match secret_action(&event.data) {
+                    Some("storage_warning") => "Secret Storage Unavailable",
+                    Some("storage_recovered") => "Secret Storage Recovered",
                     Some("restore_warning") => "Secret Not Restored",
                     Some("protect_warning") => "Secret Scan Warning",
                     Some("restore") => "Secret Restored",

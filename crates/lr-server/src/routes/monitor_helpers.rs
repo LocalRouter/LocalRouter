@@ -796,6 +796,7 @@ pub fn record_secret_scan(
             findings: Some(findings),
             action_taken: Some(action_taken.to_string()),
             latency_ms: Some(latency_ms),
+            error: None,
         },
         EventStatus::Complete,
         Some(latency_ms),

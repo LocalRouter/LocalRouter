@@ -84,7 +84,16 @@ pub async fn list_redacted_secrets(
                 &b.secret.reference_id,
             ))
         });
-        Ok(RedactedSecretInventory { entries, persistence_warning: storage.persistence_warning().then(|| "Credential storage is unavailable. New mappings are kept only in memory for this run and will not survive restart. The inventory may exclude unreadable durable records.".into()) })
+        Ok(RedactedSecretInventory {
+            entries,
+            persistence_warning: storage.persistence_details().map(|notice| {
+                format!(
+                    "{} Pending records: {}. The inventory may exclude unreadable saved records.",
+                    notice.message(),
+                    notice.pending_entries
+                )
+            }),
+        })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -147,7 +156,11 @@ pub async fn purge_redacted_secrets(
 
 fn confirm_purge(storage: &dyn KeychainStorage, removed: usize) -> Result<usize, String> {
     if storage.persistence_warning() {
-        return Err(format!("Removed {removed} in-memory references, but durable deletion cannot be confirmed while credential storage is unavailable. Restart LocalRouter after restoring storage access, then retry."));
+        let cause = storage
+            .persistence_details()
+            .map(|notice| format!(" {}", notice.message()))
+            .unwrap_or_default();
+        return Err(format!("Removed {removed} in-memory references, but durable deletion cannot be confirmed while credential storage is unavailable. Keep LocalRouter running; automatic recovery will retry the pending deletion.{cause}"));
     }
     Ok(removed)
 }

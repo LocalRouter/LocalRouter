@@ -255,7 +255,7 @@ export function EventDetail({ event, loading, error, onRetry, toolbar, onReplay 
   const type = data.type as string
   const tabs = eventTabs(event)
   const active = tabs.find(t => t.id === tab) ?? tabs[0]
-  const secretTitle = data.action_taken === 'protect_warning' ? 'Secret Scan Warning' : data.action_taken === 'restore_warning' ? 'Secret Not Restored' : data.action_taken === 'restore' ? 'Secret Restored' : data.action_taken === 'redact' || (Array.isArray(data.findings) && data.findings.some((finding: MonitorSecretFinding) => finding.redacted)) ? 'Secret Redacted' : 'Secret Scan'
+  const secretTitle = data.action_taken === 'storage_warning' ? 'Secret Storage Unavailable' : data.action_taken === 'storage_recovered' ? 'Secret Storage Recovered' : data.action_taken === 'protect_warning' ? 'Secret Scan Warning' : data.action_taken === 'restore_warning' ? 'Secret Not Restored' : data.action_taken === 'restore' ? 'Secret Restored' : data.action_taken === 'redact' || (Array.isArray(data.findings) && data.findings.some((finding: MonitorSecretFinding) => finding.redacted)) ? 'Secret Redacted' : 'Secret Scan'
   const title = type === 'secret_scan' ? secretTitle : String(data.model || data.tool_name || data.prompt_name || data.uri || type.replace(/_/g, ' '))
 
   return (
@@ -691,9 +691,9 @@ function ExchangeGrid({ children }: { children: ReactNode }) {
   return <div className="grid grid-cols-1 gap-3 [@container(min-width:640px)]:grid-cols-2" data-testid="exchange-grid">{children}</div>
 }
 
-function ExchangeCard({ title, description, payload, children, error = false }: { title: 'Request' | 'Response' | 'Detected secrets' | 'Restored secrets' | 'Restoration diagnostic' | 'Protection diagnostic' | 'Matched context'; description?: ReactNode; payload?: unknown; children: ReactNode; error?: boolean }) {
+function ExchangeCard({ title, description, payload, children, error = false }: { title: 'Request' | 'Response' | 'Detected secrets' | 'Restored secrets' | 'Restoration diagnostic' | 'Protection diagnostic' | 'Storage unavailable' | 'Storage recovered' | 'Matched context'; description?: ReactNode; payload?: unknown; children: ReactNode; error?: boolean }) {
   const isRequest = title === 'Request' || title === 'Matched context'
-  const Icon = isRequest ? ArrowUpRight : ArrowDownLeft
+  const Icon = title.startsWith('Storage') ? error ? AlertTriangle : Check : isRequest ? ArrowUpRight : ArrowDownLeft
   return (
     <section aria-label={title} className={cn('min-w-0 rounded-lg border overflow-hidden self-start', error && 'border-destructive/40')}>
       <div className={cn('flex items-center gap-2 border-b px-3 py-1', isRequest ? 'bg-blue-500/5' : error ? 'bg-destructive/5' : 'bg-emerald-500/5')}>
@@ -1343,6 +1343,13 @@ function SecretScanFindingCard({ finding, index, eventId, action }: { finding: M
 }
 
 function SecretScanDetail({ data, eventId }: { data: EventData; eventId: string }) {
+  if (data.action_taken === 'storage_warning' || data.action_taken === 'storage_recovered') {
+    const failed = data.action_taken === 'storage_warning'
+    return <ExchangeGrid><ExchangeCard title={failed ? 'Storage unavailable' : 'Storage recovered'} error={failed}>
+      <SectionedText className="rounded bg-muted p-3 text-sm whitespace-pre-wrap" text={String(data.error ?? data.text_preview ?? 'Storage details were not retained')} />
+      <p className="text-xs text-muted-foreground">{failed ? 'The LLM request continued. Saved originals are preserved and pending changes remain usable in memory. LocalRouter retries automatically without password dialogs; pending mappings can be lost if the app exits before recovery.' : 'Recovery completed. Pending mappings and deletions are saved, and normal credential storage has resumed.'}</p>
+    </ExchangeCard></ExchangeGrid>
+  }
   const findings: MonitorSecretFinding[] = Array.isArray(data.findings) ? data.findings : []
   const restored = data.action_taken === 'restore'
   return <ExchangeGrid>

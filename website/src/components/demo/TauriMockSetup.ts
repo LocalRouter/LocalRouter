@@ -5746,7 +5746,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       events: matching.slice(args?.offset ?? 0, (args?.offset ?? 0) + (args?.limit ?? 100)).map(({ data, ...summary }) => {
         const llm = data as { client_api?: string; upstream_api?: string }
         const secret = data as { action_taken?: string; findings?: { redacted?: boolean }[] }
-        const secretAction = summary.event_type === 'secret_scan' ? secret.action_taken === 'restore' ? 'restore' : secret.action_taken === 'redact' || secret.findings?.some(f => f.redacted) ? 'redact' : null : null
+        const secretAction = summary.event_type === 'secret_scan' ? ['restore', 'protect_warning', 'restore_warning', 'storage_warning', 'storage_recovered'].includes(secret.action_taken ?? '') ? secret.action_taken : secret.action_taken === 'redact' || secret.findings?.some(f => f.redacted) ? 'redact' : null : null
         return { ...summary, secret_action: secretAction, client_api: llm.client_api ?? null, upstream_api: llm.upstream_api ?? null }
       }),
       total: matching.length,

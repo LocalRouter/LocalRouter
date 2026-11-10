@@ -256,8 +256,9 @@ fn data_size(data: &MonitorEventData) -> usize {
             text_preview,
             findings,
             action_taken,
+            error,
             ..
-        } => str_size(text_preview) + opt_json(findings) + opt_str(action_taken),
+        } => str_size(text_preview) + opt_json(findings) + opt_str(action_taken) + opt_str(error),
         MonitorEventData::RouteLlmClassify {
             original_model,
             selected_tier,

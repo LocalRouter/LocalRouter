@@ -53,8 +53,11 @@ fn error() -> AppError {
     )
 }
 fn parse_index(raw: &str) -> AppResult<Value> {
-    let mut value: Value = serde_json::from_str(raw).map_err(|_| storage_error())?;
-    let map = value.as_object_mut().ok_or_else(storage_error)?;
+    let mut value: Value = serde_json::from_str(raw)
+        .map_err(|error| AppError::Storage(format!("Invalid secret index JSON: {error}")))?;
+    let map = value
+        .as_object_mut()
+        .ok_or_else(|| AppError::Storage("Secret index must be a JSON object".into()))?;
     for name in [
         "scopes",
         "responses",
@@ -64,7 +67,9 @@ fn parse_index(raw: &str) -> AppResult<Value> {
     ] {
         let item = map.entry(name).or_insert_with(|| serde_json::json!({}));
         if !item.is_object() {
-            return Err(storage_error());
+            return Err(AppError::Storage(format!(
+                "Secret index field '{name}' must be an object"
+            )));
         }
     }
     Ok(value)
@@ -696,7 +701,41 @@ impl Vault {
         Ok(())
     }
     pub fn set_operation_observer(&self, observer: Arc<OperationObserver>) {
+        let persistence = observer.clone();
+        self.storage.observe_persistence(Arc::new(move |event| {
+            persistence(SecretOperation {
+                action: if event.recovered {
+                    "storage_recovered"
+                } else {
+                    "storage_warning"
+                },
+                reference_id: String::new(),
+                location: event.message(),
+                occurrences: 1,
+            });
+        }));
         *self.observer.lock().expect("secret operation observer") = Some(observer);
+        self.report_persistence_events();
+    }
+    fn report_persistence_events(&self) {
+        if !self
+            .observer
+            .lock()
+            .is_ok_and(|observer| observer.is_some())
+        {
+            return;
+        }
+        for event in self.storage.take_persistence_events() {
+            self.notify_operations(
+                if event.recovered {
+                    "storage_recovered"
+                } else {
+                    "storage_warning"
+                },
+                &event.message(),
+                BTreeMap::from([(String::new(), 1)]),
+            );
+        }
     }
     fn notify_operations(
         &self,
@@ -817,10 +856,12 @@ impl Vault {
         {
             Some(raw) => match parse_index(&raw) {
                 Ok(index) => Ok(index),
-                Err(_)
-                    if self
-                        .storage
-                        .quarantine_unreadable(SERVICE, &self.index_key()) =>
+                Err(error)
+                    if self.storage.quarantine_unreadable_with_reason(
+                        SERVICE,
+                        &self.index_key(),
+                        &error.to_string(),
+                    ) =>
                 {
                     Ok(serde_json::json!({"scopes":{},"responses":{},"revoked_scopes":{}}))
                 }
@@ -1103,7 +1144,15 @@ impl Vault {
             None => Ok(Default::default()),
             Some(raw) => match serde_json::from_str(&raw) {
                 Ok(owners) => Ok(owners),
-                Err(_) if storage.quarantine_unreadable(SERVICE, OWNERS) => Ok(Default::default()),
+                Err(error)
+                    if storage.quarantine_unreadable_with_reason(
+                        SERVICE,
+                        OWNERS,
+                        &format!("Invalid secret owner registry: {error}"),
+                    ) =>
+                {
+                    Ok(Default::default())
+                }
                 Err(_) => Err(storage_error()),
             },
         }
@@ -1449,24 +1498,43 @@ impl Vault {
         };
         let decoded = (|| -> AppResult<BTreeMap<String, Zeroizing<String>>> {
             let raw = Zeroizing::new(raw);
-            let data: Value = serde_json::from_str(&raw).map_err(|_| storage_error())?;
+            let data: Value = serde_json::from_str(&raw).map_err(|error| {
+                AppError::Storage(format!("Invalid stored secret record JSON: {error}"))
+            })?;
             if data["owner"].as_str() != Some(&self.owner) {
-                return Err(storage_error());
+                return Err(AppError::Storage(
+                    "Stored secret record belongs to a different authenticated client".into(),
+                ));
             }
-            let entries = data["entries"].as_object().ok_or_else(storage_error)?;
+            let entries = data["entries"].as_object().ok_or_else(|| {
+                AppError::Storage("Stored secret record has no entries object".into())
+            })?;
             entries
                 .iter()
                 .map(|(id, value)| {
                     Ok((
                         id.clone(),
-                        Zeroizing::new(value.as_str().ok_or_else(storage_error)?.to_owned()),
+                        Zeroizing::new(
+                            value
+                                .as_str()
+                                .ok_or_else(|| {
+                                    AppError::Storage("Stored secret entry must be a string".into())
+                                })?
+                                .to_owned(),
+                        ),
                     ))
                 })
                 .collect()
         })();
         match decoded {
             Ok(entries) => Ok(entries),
-            Err(_) if self.storage.quarantine_unreadable(SERVICE, account) => {
+            Err(error)
+                if self.storage.quarantine_unreadable_with_reason(
+                    SERVICE,
+                    account,
+                    &error.to_string(),
+                ) =>
+            {
                 Ok(Default::default())
             }
             Err(error) => Err(error),
@@ -1888,9 +1956,7 @@ impl SecretContext for Vault {
         if self.register_inner(secret).is_err() {
             self.protection_diagnostic("A detected original could not be mapped; content will proceed without that replacement");
         }
-        if self.storage.persistence_warning() {
-            self.protection_diagnostic("Secret storage is unavailable; mappings are memory-only for this run and will not survive restart");
-        }
+        self.report_persistence_events();
         Ok(())
     }
     fn prepare<'a>(
@@ -1932,9 +1998,7 @@ impl SecretContext for Vault {
         if self.signed_unmasked.swap(false, Ordering::AcqRel) {
             self.protection_diagnostic("A known original occurs in signed or opaque provider content; that content was forwarded unchanged");
         }
-        if self.storage.persistence_warning() {
-            self.protection_diagnostic("Secret storage is unavailable; mappings are memory-only for this run and will not survive restart");
-        }
+        self.report_persistence_events();
         if self.identity_unmasked.swap(false, Ordering::AcqRel) {
             self.protection_diagnostic("A known original overlaps provider protocol identities; those fields were forwarded unchanged to preserve the request");
         }

@@ -5380,7 +5380,7 @@ export interface MonitorConversation {
 
 /** Rust: crates/lr-monitor/src/types.rs - MonitorEventSummary */
 export interface MonitorEventSummary {
-  secret_action?: "redact" | "restore" | null
+  secret_action?: "redact" | "restore" | "protect_warning" | "restore_warning" | "storage_warning" | "storage_recovered" | null
   conversation?: MonitorConversation | null
   payload_redacted?: boolean
   id: string

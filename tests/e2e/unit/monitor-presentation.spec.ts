@@ -122,3 +122,12 @@ test('bounded excerpts remain useful without a complete raw capture', () => {
   expect(capturedExcerpt(undefined, 'answer')).toBe('')
   expect(capturedExcerpt({ output_text: 'Complete body' }, 'answer')).toBe('')
 })
+
+
+test('storage outage causes and recovery stay searchable under Secret Scan', () => {
+  const outage: MonitorEventSummary = { ...event, event_type: 'secret_scan', secret_action: 'storage_warning', status: 'error', question: 'Secret storage write failed: No space left on device (os error 28)', summary: 'Secret Storage Unavailable', answer: 'storage_warning' }
+  const recovered: MonitorEventSummary = { ...outage, id: 'recovered', sequence: 2, status: 'complete', secret_action: 'storage_recovered', question: 'Pending mappings and deletions are durable', summary: 'Secret Storage Recovered', answer: 'storage_recovered' }
+  expect(matchesFilter(outage, filter({ event_types: ['secret_scan'], search: 'os error 28', status: 'error' }))).toBe(true)
+  expect(mergeMonitorEvents([outage], [recovered], filter({ event_types: ['secret_scan'] }))).toEqual([recovered, outage])
+  expect(matchesFilter(recovered, filter({ status: 'error' }))).toBe(false)
+})

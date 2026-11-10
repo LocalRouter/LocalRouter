@@ -7,7 +7,7 @@
 //! repeated password prompts for the same service:account combination.
 
 use crate::chunked::{self, RawEntryStore};
-pub use crate::resilient::ResilientSecretStorage;
+pub use crate::resilient::{PersistenceNotice, PersistenceObserver, ResilientSecretStorage};
 use lr_types::errors::AppResult;
 use parking_lot::RwLock;
 use std::collections::HashMap;
@@ -21,6 +21,24 @@ pub trait KeychainStorage: Send + Sync {
     /// True when this process can only retain mappings in memory.
     fn persistence_warning(&self) -> bool {
         false
+    }
+
+    /// Metadata-only outage state and transitions. Defaults preserve ordinary stores.
+    fn persistence_details(&self) -> Option<PersistenceNotice> {
+        None
+    }
+    fn take_persistence_events(&self) -> Vec<PersistenceNotice> {
+        Vec::new()
+    }
+    fn retry_persistence(&self) {}
+    fn observe_persistence(&self, _observer: Arc<PersistenceObserver>) {}
+    fn quarantine_unreadable_with_reason(
+        &self,
+        service: &str,
+        account: &str,
+        _reason: &str,
+    ) -> bool {
+        self.quarantine_unreadable(service, account)
     }
 
     /// Isolate unreadable redaction data without modifying durable records.
@@ -67,41 +85,62 @@ pub fn redacted_secret_storage() -> Arc<dyn KeychainStorage> {
         .lock()
         .entry(key)
         .or_insert_with(|| {
-            Arc::new(ResilientSecretStorage::new(
-                durable_redacted_secret_storage(),
-            ))
+            ResilientSecretStorage::with_background_recovery(Arc::new(LazySecretStorage {
+                backend: parking_lot::Mutex::new(None),
+                factory: Box::new(durable_redacted_secret_storage),
+            }))
         })
         .clone()
 }
 
-fn durable_redacted_secret_storage() -> Arc<dyn KeychainStorage> {
+/// Initialization errors are retried rather than cached as a permanently unavailable backend.
+struct LazySecretStorage {
+    backend: parking_lot::Mutex<Option<Arc<dyn KeychainStorage>>>,
+    factory: Box<dyn Fn() -> AppResult<Arc<dyn KeychainStorage>> + Send + Sync>,
+}
+impl LazySecretStorage {
+    fn backend(&self) -> AppResult<Arc<dyn KeychainStorage>> {
+        let mut backend = self.backend.lock();
+        if let Some(backend) = backend.as_ref() {
+            return Ok(backend.clone());
+        }
+        let initialized = (self.factory)()?;
+        *backend = Some(initialized.clone());
+        Ok(initialized)
+    }
+}
+impl KeychainStorage for LazySecretStorage {
+    fn store(&self, s: &str, a: &str, v: &str) -> AppResult<()> {
+        self.backend()?.store(s, a, v)
+    }
+    fn get(&self, s: &str, a: &str) -> AppResult<Option<String>> {
+        self.backend()?.get(s, a)
+    }
+    fn delete(&self, s: &str, a: &str) -> AppResult<()> {
+        self.backend()?.delete(s, a)
+    }
+}
+fn durable_redacted_secret_storage() -> AppResult<Arc<dyn KeychainStorage>> {
     #[cfg(debug_assertions)]
     if std::env::var("LOCALROUTER_KEYCHAIN").as_deref() != Ok("system") {
         type DebugStores = Mutex<HashMap<std::path::PathBuf, Arc<dyn KeychainStorage>>>;
         static STORES: std::sync::OnceLock<DebugStores> = std::sync::OnceLock::new();
-        let path = match lr_utils::paths::config_dir() {
-            Ok(path) => path.join("redacted-secrets.debug.json"),
-            Err(error) => return Arc::new(UnavailableSecretStorage(error.to_string())),
-        };
+        let path = lr_utils::paths::config_dir()?.join("redacted-secrets.debug.json");
         let mut stores = STORES
             .get_or_init(Mutex::default)
             .lock()
             .expect("debug credential stores");
-        return stores
-            .entry(path.clone())
-            .or_insert_with(|| match FileKeychain::new(path) {
-                Ok(storage) => Arc::new(storage),
-                Err(error) => Arc::new(UnavailableSecretStorage(error.to_string())),
-            })
-            .clone();
+        if let Some(storage) = stores.get(&path) {
+            return Ok(storage.clone());
+        }
+        let storage: Arc<dyn KeychainStorage> = Arc::new(FileKeychain::new(path.clone())?);
+        stores.insert(path, storage.clone());
+        return Ok(storage);
     }
-    let reset_namespace = match lr_utils::paths::config_dir()
+    let reset_namespace = lr_utils::paths::config_dir()
         .map_err(|error| error.to_string())
         .and_then(|path| read_redaction_namespace(&path.join("redacted-secrets.namespace")))
-    {
-        Ok(namespace) => namespace,
-        Err(error) => return Arc::new(UnavailableSecretStorage(error)),
-    };
+        .map_err(lr_types::AppError::Config)?;
     #[cfg(debug_assertions)]
     let namespace = Some(format!(
         "debug-{}{}",
@@ -112,13 +151,13 @@ fn durable_redacted_secret_storage() -> Arc<dyn KeychainStorage> {
     ));
     #[cfg(not(debug_assertions))]
     let namespace = reset_namespace;
-    match namespace {
+    Ok(match namespace {
         Some(namespace) => Arc::new(NamespacedSecretStorage {
-            backend: Arc::new(SystemKeychain),
+            backend: Arc::new(NonInteractiveSystemKeychain),
             namespace,
         }),
-        None => Arc::new(SystemKeychain),
-    }
+        None => Arc::new(NonInteractiveSystemKeychain),
+    })
 }
 
 /// A local reset selects a fresh native service without accessing stale entries
@@ -154,28 +193,6 @@ impl KeychainStorage for NamespacedSecretStorage {
     }
     fn delete(&self, service: &str, account: &str) -> AppResult<()> {
         self.backend.delete(&self.service(service), account)
-    }
-}
-
-struct UnavailableSecretStorage(String);
-impl KeychainStorage for UnavailableSecretStorage {
-    fn store(&self, _: &str, _: &str, _: &str) -> AppResult<()> {
-        Err(lr_types::AppError::Config(format!(
-            "Secret storage unavailable: {}",
-            self.0
-        )))
-    }
-    fn get(&self, _: &str, _: &str) -> AppResult<Option<String>> {
-        Err(lr_types::AppError::Config(format!(
-            "Secret storage unavailable: {}",
-            self.0
-        )))
-    }
-    fn delete(&self, _: &str, _: &str) -> AppResult<()> {
-        Err(lr_types::AppError::Config(format!(
-            "Secret storage unavailable: {}",
-            self.0
-        )))
     }
 }
 
@@ -264,6 +281,74 @@ impl KeychainStorage for SystemKeychain {
         chunked::delete(&KeyringEntries, service, account)?;
         debug!("SystemKeychain: deleted {}:{}", service, account);
         Ok(())
+    }
+}
+
+/// Secret scanning and automatic recovery must never request interactive access.
+/// The shared native lock covers the temporary process-wide interaction setting.
+struct NonInteractiveSystemKeychain;
+#[cfg(target_os = "macos")]
+mod keychain_interaction {
+    #[link(name = "Security", kind = "framework")]
+    unsafe extern "C" {
+        fn SecKeychainGetUserInteractionAllowed(state: *mut u8) -> i32;
+        fn SecKeychainSetUserInteractionAllowed(state: u8) -> i32;
+    }
+    pub(super) struct Guard(u8);
+    impl Guard {
+        pub(super) fn new() -> lr_types::AppResult<Self> {
+            let mut previous = 0;
+            // SAFETY: the SDK's Boolean is an unsigned byte. The caller owns the
+            // process-wide native credential lock until this guard is dropped.
+            let status = unsafe { SecKeychainGetUserInteractionAllowed(&mut previous) };
+            if status != 0 {
+                return Err(lr_types::AppError::Storage(format!(
+                    "Cannot inspect noninteractive Keychain access: OSStatus {status}"
+                )));
+            }
+            let status = unsafe { SecKeychainSetUserInteractionAllowed(0) };
+            if status != 0 {
+                return Err(lr_types::AppError::Storage(format!(
+                    "Cannot disable Keychain dialogs: OSStatus {status}"
+                )));
+            }
+            Ok(Self(previous))
+        }
+    }
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            // SAFETY: same shared native lock remains held during restoration.
+            let status = unsafe { SecKeychainSetUserInteractionAllowed(self.0) };
+            if status != 0 {
+                tracing::error!(status, "Could not restore Keychain interaction setting");
+            }
+        }
+    }
+}
+impl KeychainStorage for NonInteractiveSystemKeychain {
+    fn store(&self, service: &str, account: &str, value: &str) -> AppResult<()> {
+        let _lock = SYSTEM_KEYRING_LOCK.write();
+        #[cfg(target_os = "macos")]
+        let _interaction = keychain_interaction::Guard::new()?;
+        chunked::store(
+            &KeyringEntries,
+            chunked::PLATFORM_LIMIT,
+            service,
+            account,
+            value,
+        )
+    }
+    fn get(&self, service: &str, account: &str) -> AppResult<Option<String>> {
+        let _lock = SYSTEM_KEYRING_LOCK.write();
+        #[cfg(target_os = "macos")]
+        let _interaction = keychain_interaction::Guard::new()?;
+        chunked::load(&KeyringEntries, service, account)
+    }
+    fn delete(&self, service: &str, account: &str) -> AppResult<()> {
+        let _lock = SYSTEM_KEYRING_LOCK.write();
+        #[cfg(target_os = "macos")]
+        let _interaction = keychain_interaction::Guard::new()?;
+        chunked::delete(&KeyringEntries, service, account)
     }
 }
 
@@ -1119,6 +1204,49 @@ mod debug_secret_namespace_tests {
                 .unwrap()
                 .as_deref(),
             Some("production")
+        );
+    }
+}
+
+#[cfg(test)]
+mod lazy_recovery_tests {
+    use super::*;
+    #[test]
+    fn failed_initialization_is_retried_and_durable_records_are_reconciled() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("secrets.json");
+        std::fs::write(&path, "not valid JSON").unwrap();
+        let location = path.clone();
+        let backend = Arc::new(LazySecretStorage {
+            backend: parking_lot::Mutex::new(None),
+            factory: Box::new(move || {
+                Ok(Arc::new(FileKeychain::new(location.clone())?) as Arc<dyn KeychainStorage>)
+            }),
+        });
+        let storage = ResilientSecretStorage::new(backend);
+        storage
+            .store(
+                "s",
+                "a",
+                r#"{"owner":"client","entries":{"new":"pending-secret"}}"#,
+            )
+            .unwrap();
+        assert!(storage.persistence_warning());
+        assert!(storage
+            .persistence_details()
+            .unwrap()
+            .cause
+            .contains("parse secrets file"));
+        let old = serde_json::json!({"s:a":serde_json::json!({"owner":"client","entries":{"old":"saved-secret"}}).to_string()});
+        std::fs::write(&path, old.to_string()).unwrap();
+        storage.retry_persistence();
+        assert!(!storage.persistence_warning());
+        let fresh = FileKeychain::new(path).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_str(&fresh.get("s", "a").unwrap().unwrap()).unwrap();
+        assert_eq!(
+            value["entries"],
+            serde_json::json!({"old":"saved-secret","new":"pending-secret"})
         );
     }
 }

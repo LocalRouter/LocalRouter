@@ -528,6 +528,9 @@ pub enum MonitorEventData {
         action_taken: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         latency_ms: Option<u64>,
+        /// Underlying diagnostic cause, without original credential values.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
     },
 
     // ---- Routing (combined: request + response) ----
