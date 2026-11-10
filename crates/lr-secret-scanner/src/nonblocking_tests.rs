@@ -517,3 +517,140 @@ async fn transport_errors_preserve_a_staged_backtick_frame() {
         .collect();
     assert_eq!(actual, first.as_bytes());
 }
+
+#[test]
+fn recovered_storage_preserves_old_and_outage_references_across_restart_and_purge() {
+    struct Disk {
+        inner: Arc<lr_api_keys::MockKeychain>,
+        fail: AtomicBool,
+    }
+    impl KeychainStorage for Disk {
+        fn get(&self, s: &str, a: &str) -> AppResult<Option<String>> {
+            if self.fail.load(Ordering::SeqCst) {
+                Err(AppError::Storage(
+                    "No space left on device (os error 28)".into(),
+                ))
+            } else {
+                self.inner.get(s, a)
+            }
+        }
+        fn store(&self, s: &str, a: &str, v: &str) -> AppResult<()> {
+            if self.fail.load(Ordering::SeqCst) {
+                Err(AppError::Storage(
+                    "No space left on device (os error 28)".into(),
+                ))
+            } else {
+                self.inner.store(s, a, v)
+            }
+        }
+        fn delete(&self, s: &str, a: &str) -> AppResult<()> {
+            if self.fail.load(Ordering::SeqCst) {
+                Err(AppError::Storage(
+                    "No space left on device (os error 28)".into(),
+                ))
+            } else {
+                self.inner.delete(s, a)
+            }
+        }
+    }
+    let durable = Arc::new(lr_api_keys::MockKeychain::new());
+    let first = Arc::new(Vault::for_client(durable.clone(), "recovery-owner"));
+    first.register("synthetic-durable-original").unwrap();
+    let mut old = json!({"content":"synthetic-durable-original"});
+    first.protect(&mut old).unwrap();
+    let disk = Arc::new(Disk {
+        inner: durable.clone(),
+        fail: AtomicBool::new(true),
+    });
+    let storage = Arc::new(ResilientSecretStorage::new(disk.clone()));
+    let vault = Arc::new(Vault::for_client(storage.clone(), "recovery-owner"));
+    let notices = Arc::new(Mutex::new(Vec::new()));
+    let sink = notices.clone();
+    vault.set_operation_observer(Arc::new(move |notice| sink.lock().unwrap().push(notice)));
+    vault.register("synthetic-outage-original").unwrap();
+    let mut new = json!({"content":"synthetic-outage-original"});
+    for _ in 0..10 {
+        vault.protect(&mut new).unwrap();
+    }
+    assert_eq!(
+        vault
+            .restore_text(new["content"].as_str().unwrap(), true)
+            .unwrap(),
+        "synthetic-outage-original"
+    );
+    assert_eq!(
+        notices
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|n| n.action == "storage_warning")
+            .count(),
+        1
+    );
+    assert!(notices
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|n| n.location.contains("os error 28")));
+    disk.fail.store(false, Ordering::SeqCst);
+    storage.retry_persistence();
+    assert!(!storage.persistence_warning());
+    vault.protect(&mut json!({"content":"ordinary"})).unwrap();
+    assert_eq!(
+        notices
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|n| n.action == "storage_recovered")
+            .count(),
+        1
+    );
+    let fresh = Vault::find_client(
+        durable.clone(),
+        "recovery-owner",
+        crate::placeholders::RETENTION_SECS,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        fresh
+            .restore_text(old["content"].as_str().unwrap(), true)
+            .unwrap(),
+        "synthetic-durable-original"
+    );
+    assert_eq!(
+        fresh
+            .restore_text(new["content"].as_str().unwrap(), true)
+            .unwrap(),
+        "synthetic-outage-original"
+    );
+    let foreign = Vault::for_client(durable.clone(), "other-owner");
+    assert_eq!(
+        foreign
+            .restore_text(new["content"].as_str().unwrap(), true)
+            .unwrap(),
+        new["content"].as_str().unwrap()
+    );
+    disk.fail.store(true, Ordering::SeqCst);
+    Vault::purge_client(storage.clone(), "recovery-owner", None).unwrap();
+    assert!(storage.persistence_warning());
+    disk.fail.store(false, Ordering::SeqCst);
+    storage.retry_persistence();
+    assert!(!storage.persistence_warning());
+    assert!(Vault::list_client(durable.clone(), "recovery-owner")
+        .unwrap()
+        .is_empty());
+    let fresh = Vault::for_client(durable, "recovery-owner");
+    assert_eq!(
+        fresh
+            .restore_text(old["content"].as_str().unwrap(), true)
+            .unwrap(),
+        old["content"].as_str().unwrap()
+    );
+    assert_eq!(
+        fresh
+            .restore_text(new["content"].as_str().unwrap(), true)
+            .unwrap(),
+        new["content"].as_str().unwrap()
+    );
+}

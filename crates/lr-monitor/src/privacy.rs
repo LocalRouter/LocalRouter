@@ -120,6 +120,7 @@ mod tests {
                     findings: Some(serde_json::json!({"secret":"sensitive-payload"})),
                     action_taken: None,
                     latency_ms: Some(10),
+                    error: Some("sensitive-payload".into()),
                 },
             ),
             (

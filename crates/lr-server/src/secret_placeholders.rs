@@ -330,6 +330,13 @@ pub fn attach_monitor(state: &AppState, vault: &Vault, owner: &str, session: Opt
     vault.set_operation_observer(Arc::new(move |operation| {
         use lr_monitor::{EventStatus, MonitorEventData, MonitorEventType};
         let Ok(mut events) = events.lock() else { return; };
+        if matches!(operation.action, "storage_warning" | "storage_recovered") {
+            let failed=operation.action=="storage_warning";
+            store.push(MonitorEventType::SecretScan,Some(owner.clone()),name.clone(),session.clone(),
+                MonitorEventData::SecretScan {text_preview:operation.location.clone(),rules_count:0,findings_count:Some(0),findings:None,action_taken:Some(operation.action.into()),latency_ms:None, error: if failed {Some(operation.location.clone())} else {None}, },
+                if failed {EventStatus::Error} else {EventStatus::Complete},None);
+            return;
+        }
         if matches!(operation.action, "restore_warning" | "protect_warning") {
             if let Some(id) = events.get(operation.action) {
                 store.update(id, |event| {
@@ -342,7 +349,7 @@ pub fn attach_monitor(state: &AppState, vault: &Vault, owner: &str, session: Opt
             } else {
                 let id = store.push(MonitorEventType::SecretScan, Some(owner.clone()), name.clone(), session.clone(),
                     MonitorEventData::SecretScan { text_preview: operation.location, rules_count:0,
-                      findings_count:Some(0), findings:None, action_taken:Some(operation.action.into()), latency_ms:None },
+                      findings_count:Some(0), findings:None, action_taken:Some(operation.action.into()), latency_ms:None, error: None, },
                     EventStatus::Error, None);
                 events.insert(operation.action,id);
             }
@@ -373,7 +380,7 @@ pub fn attach_monitor(state: &AppState, vault: &Vault, owner: &str, session: Opt
         }));
         let id = if updated { existing.expect("updated event").id } else {
             store.push(MonitorEventType::SecretScan, Some(owner.clone()), name.clone(), session.clone(),
-                MonitorEventData::SecretScan { text_preview:tag, rules_count:0, findings_count:Some(count), findings:Some(findings), action_taken:Some(operation.action.into()), latency_ms:None }, EventStatus::Complete, None)
+                MonitorEventData::SecretScan { text_preview:tag, rules_count:0, findings_count:Some(count), findings:Some(findings), action_taken:Some(operation.action.into()), latency_ms:None, error: None, }, EventStatus::Complete, None)
         };
         events.insert(operation.action, id);
     }));
@@ -1554,3 +1561,93 @@ mod followup_attachment_tests {
 #[cfg(test)]
 #[path = "secret_availability_tests.rs"]
 mod availability_tests;
+
+#[cfg(test)]
+mod storage_event_tests {
+    use super::*;
+    use lr_api_keys::{keychain_trait::ResilientSecretStorage, KeychainStorage};
+    use lr_types::{secret_context::SecretContext, AppError, AppResult};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    struct Disk {
+        inner: lr_api_keys::MockKeychain,
+        fail: AtomicBool,
+    }
+    impl KeychainStorage for Disk {
+        fn get(&self, s: &str, a: &str) -> AppResult<Option<String>> {
+            if self.fail.load(Ordering::SeqCst) {
+                Err(AppError::Storage(
+                    "No space left on device (os error 28)".into(),
+                ))
+            } else {
+                self.inner.get(s, a)
+            }
+        }
+        fn store(&self, s: &str, a: &str, v: &str) -> AppResult<()> {
+            if self.fail.load(Ordering::SeqCst) {
+                Err(AppError::Storage(
+                    "No space left on device (os error 28)".into(),
+                ))
+            } else {
+                self.inner.store(s, a, v)
+            }
+        }
+        fn delete(&self, s: &str, a: &str) -> AppResult<()> {
+            if self.fail.load(Ordering::SeqCst) {
+                Err(AppError::Storage(
+                    "No space left on device (os error 28)".into(),
+                ))
+            } else {
+                self.inner.delete(s, a)
+            }
+        }
+    }
+    #[tokio::test]
+    async fn storage_events_export_the_actual_error_once_and_record_recovery() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = super::boundary_tests::state(directory.path());
+        let owner = state.config_manager.get().clients[0].id.clone();
+        let disk = Arc::new(Disk {
+            inner: lr_api_keys::MockKeychain::new(),
+            fail: AtomicBool::new(true),
+        });
+        let storage = Arc::new(ResilientSecretStorage::new(disk.clone()));
+        let vault = Vault::for_client(storage.clone(), &owner);
+        attach_monitor(&state, &vault, &owner, Some("storage-outage-request"));
+        vault.register("synthetic-outage-credential").unwrap();
+        for _ in 0..10 {
+            vault
+                .protect(&mut serde_json::json!({"content":"synthetic-outage-credential"}))
+                .unwrap();
+        }
+        let events = || {
+            state
+                .monitor_store
+                .list(0, 100, None)
+                .events
+                .into_iter()
+                .filter_map(|summary| state.monitor_store.get(&summary.id))
+                .collect::<Vec<_>>()
+        };
+        let warnings:Vec<_>=events().into_iter().filter(|e|matches!(&e.data,lr_monitor::MonitorEventData::SecretScan{action_taken:Some(action),..}if action=="storage_warning")).collect();
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].status, lr_monitor::EventStatus::Error);
+        assert!(
+            matches!(&warnings[0].data,lr_monitor::MonitorEventData::SecretScan{error:Some(error),..} if error.contains("os error 28"))
+        );
+        assert!(serde_json::to_string(&warnings[0])
+            .unwrap()
+            .contains("No space left on device"));
+        assert!(!serde_json::to_string(&warnings[0])
+            .unwrap()
+            .contains("synthetic-outage-credential"));
+        disk.fail.store(false, Ordering::SeqCst);
+        storage.retry_persistence();
+        let recovered:Vec<_>=events().into_iter().filter(|e|matches!(&e.data,lr_monitor::MonitorEventData::SecretScan{action_taken:Some(action),..}if action=="storage_recovered")).collect();
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].status, lr_monitor::EventStatus::Complete);
+        assert!(matches!(
+            &recovered[0].data,
+            lr_monitor::MonitorEventData::SecretScan { error: None, .. }
+        ));
+    }
+}

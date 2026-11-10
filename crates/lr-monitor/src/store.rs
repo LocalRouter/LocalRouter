@@ -1118,6 +1118,7 @@ mod tests {
                 findings: None,
                 action_taken: None,
                 latency_ms: None,
+                error: None,
             },
             EventStatus::Pending,
             None,

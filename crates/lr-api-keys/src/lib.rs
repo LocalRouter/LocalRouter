@@ -9,4 +9,5 @@ pub mod keychain_trait;
 
 pub use keychain_trait::{CachedKeychain, KeychainStorage, MockKeychain};
 
+mod recovery_merge;
 mod resilient;

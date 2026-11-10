@@ -65,6 +65,8 @@ function getCategory(type: MonitorEventType): string {
 
 function getTypeLabel(type: MonitorEventType, secretAction?: string | null): string {
   if (type === 'secret_scan' && secretAction === 'redact') return 'Secret Redacted'
+  if (type === 'secret_scan' && secretAction === 'storage_warning') return 'Secret Storage Unavailable'
+  if (type === 'secret_scan' && secretAction === 'storage_recovered') return 'Secret Storage Recovered'
   if (type === 'secret_scan' && secretAction === 'protect_warning') return 'Secret Scan Warning'
   if (type === 'secret_scan' && secretAction === 'restore_warning') return 'Secret Not Restored'
   if (type === 'secret_scan' && secretAction === 'restore') return 'Secret Restored'
