@@ -404,8 +404,19 @@ impl FileKeychain {
         let data: HashMap<String, String> = if contents.trim().is_empty() {
             HashMap::new()
         } else {
-            serde_json::from_str(&contents).map_err(|e| {
-                lr_types::AppError::Internal(format!("Failed to parse secrets file: {}", e))
+            serde_json::from_str(&contents).map_err(|error| {
+                // Data errors can quote an entire credential as the unexpected
+                // JSON value. Retain the shape/position without echoing that value.
+                let detail = if error.classify() == serde_json::error::Category::Data {
+                    format!(
+                        "expected a JSON object containing string values at line {} column {}",
+                        error.line(),
+                        error.column()
+                    )
+                } else {
+                    error.to_string()
+                };
+                lr_types::AppError::Internal(format!("Failed to parse secrets file: {detail}"))
             })?
         };
 
@@ -1248,5 +1259,31 @@ mod lazy_recovery_tests {
             value["entries"],
             serde_json::json!({"old":"saved-secret","new":"pending-secret"})
         );
+    }
+}
+
+#[cfg(test)]
+mod credential_file_error_privacy_tests {
+    use super::*;
+    #[test]
+    fn initial_file_shape_errors_retain_the_cause_without_echoing_credentials() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("secrets.json");
+        let secret = "synthetic-private-credential-in-invalid-file";
+        std::fs::write(&path, serde_json::to_string(secret).unwrap()).unwrap();
+        let location = path.clone();
+        let storage = ResilientSecretStorage::new(Arc::new(LazySecretStorage {
+            backend: parking_lot::Mutex::new(None),
+            factory: Box::new(move || {
+                Ok(Arc::new(FileKeychain::new(location.clone())?) as Arc<dyn KeychainStorage>)
+            }),
+        }));
+        assert_eq!(storage.get("s", "a").unwrap(), None);
+        let notice = storage.take_persistence_events().pop().unwrap();
+        assert!(!notice.cause.contains(secret));
+        assert!(notice
+            .cause
+            .contains("JSON object containing string values"));
+        assert!(notice.cause.contains("line 1 column"));
     }
 }
