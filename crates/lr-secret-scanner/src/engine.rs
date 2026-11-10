@@ -58,17 +58,12 @@ impl SecretScanEngine {
         let start = Instant::now();
 
         // Filter out system messages if configured to skip them
-        let filtered: Vec<&ExtractedText> = if self.scan_system_messages {
-            texts.iter().collect()
-        } else {
+        let findings = self.regex_engine.scan_refs(
             texts
                 .iter()
-                .filter(|t| !t.label.starts_with("system"))
-                .collect()
-        };
-
-        let owned: Vec<ExtractedText> = filtered.into_iter().cloned().collect();
-        let findings = self.regex_engine.scan(&owned, None);
+                .filter(|t| self.scan_system_messages || !t.label.starts_with("system")),
+            None,
+        );
         let duration = start.elapsed();
 
         debug!(

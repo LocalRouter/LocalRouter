@@ -600,11 +600,14 @@ async fn proxy_request(
         .clone()
         .filter(|_| (200..300).contains(&status))
         .zip(lr_usage::usage_endpoint(&host, &path));
-    let is_sse = rparts
+    let content_type = rparts
         .headers
         .get(hyper::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
-        .is_some_and(|ct| ct.contains("text/event-stream"));
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let is_sse = content_type.contains("text/event-stream");
+    let is_ndjson = content_type.contains("ndjson") || content_type.contains("jsonl");
 
     // On stream end, record the full exchange to the interceptor.
     let interceptor = ctx.interceptor.clone();
@@ -612,6 +615,7 @@ async fn proxy_request(
     recorded.event_id = event_id;
     recorded.status = Some(status);
     recorded.response_is_sse = is_sse;
+    recorded.response_is_ndjson = is_ndjson;
     let on_end: Box<dyn FnOnce(crate::tap::Capture) + Send> = Box::new(move |capture| {
         let bytes = capture.bytes;
         if let Some((tracker, endpoint)) = usage_body {
@@ -633,7 +637,7 @@ async fn proxy_request(
 
     let response = if let Some(vault) = secret_vault {
         match crate::protected_response::restore_recorded(
-            rparts, rbody, vault, is_sse, false, on_end,
+            rparts, rbody, vault, is_sse, is_ndjson, on_end,
         )
         .await
         {

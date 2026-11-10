@@ -1,7 +1,7 @@
 //! Bounded, local transformations through quoted strings and HTML entities.
 //! Edits are mapped back to source spans; unrelated bytes are never normalized.
 use lr_types::AppResult;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 #[derive(Clone, Debug)]
 pub(crate) struct Edit {
@@ -16,13 +16,92 @@ pub(crate) fn rewrite(
 ) -> AppResult<String> {
     rewrite_mode(text, direct)
 }
+/// Walk multiline request values in overlapping source windows. Commit only
+/// at source boundaries outside quoted strings and outside any matched secret;
+/// a credential crossing a cut is carried into the next window in full.
 pub(crate) fn rewrite_mask(
+    text: &str,
+    longest_secret: usize,
+    direct: &mut dyn FnMut(&str) -> AppResult<Vec<Edit>>,
+) -> AppResult<(String, bool)> {
+    const STEP: usize = 64 * 1024;
+    let lookahead = longest_secret
+        .saturating_mul(4096)
+        .clamp(STEP, crate::placeholders::MAX_TAG_BYTES);
+    let mut at = 0;
+    let mut output = String::new();
+    let mut limited = false;
+    while text.len() - at > STEP + lookahead {
+        let mut end = at + STEP + lookahead;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        let window = &text[at..end];
+        let mut boundaries = Vec::new();
+        let mut recognizer = crate::placeholders::TextStream::default();
+        let mut consumed = 0;
+        for line in window.split_inclusive('\n') {
+            if consumed + line.len() > STEP {
+                break;
+            }
+            let _ = recognizer.push(line, false, |s| Ok(s.into()))?;
+            consumed += line.len();
+            if line.ends_with('\n') && recognizer.at_boundary() {
+                boundaries.push(consumed);
+            }
+        }
+        let Some(mut cut) = boundaries.last().copied() else {
+            break;
+        };
+        let mut budget = window.len().saturating_mul(24).min(16 * 1024 * 1024);
+        let mut truncated = false;
+        let all = edits(
+            window,
+            direct,
+            0,
+            &mut budget,
+            &mut truncated,
+            &mut HashMap::new(),
+        )?;
+        // Never apply an edit to only part of a source credential.
+        while let Some(edit) = all.iter().find(|e| e.start < cut && e.end > cut) {
+            let Some(previous) = boundaries.iter().rev().copied().find(|b| *b <= edit.start) else {
+                cut = 0;
+                break;
+            };
+            cut = previous;
+        }
+        if cut == 0 {
+            break;
+        }
+        let selected: Vec<_> = all.into_iter().filter(|edit| edit.end <= cut).collect();
+        output.push_str(&apply(&window[..cut], &selected));
+        limited |= truncated;
+        at += cut;
+    }
+    let (tail, truncated) = rewrite_mask_window(&text[at..], direct)?;
+    output.push_str(&tail);
+    limited |= truncated;
+    if output.len() > crate::placeholders::MAX_TAG_BYTES {
+        return Ok((text.into(), true));
+    }
+    Ok((output, limited))
+}
+
+fn rewrite_mask_window(
     text: &str,
     direct: &mut dyn FnMut(&str) -> AppResult<Vec<Edit>>,
 ) -> AppResult<(String, bool)> {
     let mut budget = text.len().saturating_mul(24).min(16 * 1024 * 1024);
     let mut truncated = false;
-    let edits = edits(text, direct, 0, &mut budget, &mut truncated)?;
+    let edits = edits(
+        text,
+        direct,
+        0,
+        &mut budget,
+        &mut truncated,
+        &mut HashMap::new(),
+    )?;
     let size = edits.iter().fold(text.len(), |n, e| {
         n.saturating_sub(e.end - e.start)
             .saturating_add(e.value.len())
@@ -38,7 +117,14 @@ fn rewrite_mode(
 ) -> AppResult<String> {
     let mut budget = text.len().saturating_mul(24).min(16 * 1024 * 1024);
     let mut truncated = false;
-    let edits = edits(text, direct, 0, &mut budget, &mut truncated)?;
+    let edits = edits(
+        text,
+        direct,
+        0,
+        &mut budget,
+        &mut truncated,
+        &mut HashMap::new(),
+    )?;
     let size = edits.iter().fold(text.len(), |n, e| {
         n.saturating_sub(e.end - e.start)
             .saturating_add(e.value.len())
@@ -61,17 +147,16 @@ fn apply(text: &str, edits: &[Edit]) -> String {
     out
 }
 fn overlay(edits: &mut Vec<Edit>, edit: Edit) {
-    // An enclosing transform owns all nested edits. Partial overlaps cannot be
-    // interpreted safely and retain the earlier, complete match instead.
-    if edits.iter().any(|e| {
-        e.start < edit.end && edit.start < e.end && !(edit.start <= e.start && edit.end >= e.end)
-    }) {
+    // Source edits are sorted and disjoint. Replace only wholly enclosed edits;
+    // binary searches avoid repeatedly scanning/sorting a large source file.
+    let first = edits.partition_point(|e| e.end <= edit.start);
+    let last = edits.partition_point(|e| e.start < edit.end);
+    if first < last && (edits[first].start < edit.start || edits[last - 1].end > edit.end) {
         return;
     }
-    edits.retain(|e| e.end <= edit.start || e.start >= edit.end);
-    edits.push(edit);
-    edits.sort_by_key(|e| e.start);
+    edits.splice(first..last, std::iter::once(edit));
 }
+
 struct View {
     text: String,
     spans: Vec<(u32, u32, u32, u32)>,
@@ -109,27 +194,50 @@ impl View {
         ))
     }
 }
+pub(crate) fn apostrophe_starts_quote(word: &str) -> bool {
+    // An apostrophe inside a word is punctuation. Language literal prefixes
+    // still introduce quoted strings (r'...', b'...', L'...', and similar).
+    word.is_empty()
+        || matches!(
+            word.to_ascii_lowercase().as_str(),
+            "r" | "b" | "f" | "u" | "l" | "u8" | "br" | "rb" | "fr" | "rf"
+        )
+}
+fn quote_can_start(text: &str, at: usize, quote: char) -> bool {
+    quote != '\''
+        || apostrophe_starts_quote(
+            text[..at]
+                .rsplit(|ch: char| !(ch.is_alphanumeric() || ch == '_'))
+                .next()
+                .unwrap_or_default(),
+        )
+}
+
 fn edits(
     text: &str,
     direct: &mut dyn FnMut(&str) -> AppResult<Vec<Edit>>,
     depth: usize,
     budget: &mut usize,
     truncated: &mut bool,
+    cache: &mut HashMap<String, Vec<Edit>>,
 ) -> AppResult<Vec<Edit>> {
+    if let Some(edits) = cache.get(text) {
+        return Ok(edits.clone());
+    }
     if depth > 12 || text.len() > *budget {
         *truncated = true;
         return Ok(Vec::new());
     }
     *budget -= text.len();
     let mut out = direct(text)?;
-    if out.len() > 1024 {
+    if out.len() > 8192 {
         *truncated = true;
-        out.truncate(1024);
+        out.truncate(8192);
     }
     if text.contains('&') {
         let view = html_view(text);
         if view.text != text {
-            for edit in edits(&view.text, direct, depth + 1, budget, truncated)? {
+            for edit in edits(&view.text, direct, depth + 1, budget, truncated, cache)? {
                 if let Some((start, end)) = view.range(edit.start, edit.end) {
                     let value = html_encode(&edit.value, &view.escaped);
                     overlay(&mut out, Edit { start, end, value });
@@ -140,7 +248,7 @@ fn edits(
     if text.contains('\\') {
         let view = backslash_view(text);
         if view.text != text {
-            for edit in edits(&view.text, direct, depth + 1, budget, truncated)? {
+            for edit in edits(&view.text, direct, depth + 1, budget, truncated, cache)? {
                 if let Some((start, end)) = view.range(edit.start, edit.end) {
                     let value = quote_encode(&edit.value, '"', &view.escaped);
                     overlay(&mut out, Edit { start, end, value });
@@ -151,7 +259,7 @@ fn edits(
     if text.contains('%') {
         let view = percent_view(text);
         if view.text != text {
-            for edit in edits(&view.text, direct, depth + 1, budget, truncated)? {
+            for edit in edits(&view.text, direct, depth + 1, budget, truncated, cache)? {
                 if let Some((start, end)) = view.range(edit.start, edit.end) {
                     let value = percent_encode(&edit.value, &view.escaped);
                     overlay(&mut out, Edit { start, end, value });
@@ -168,7 +276,14 @@ fn edits(
             if let Some(line) = text[pos..].find('\n') {
                 let start = pos + line + 1;
                 let end = text[start..].find("```").map_or(text.len(), |n| start + n);
-                for mut edit in edits(&text[start..end], direct, depth + 1, budget, truncated)? {
+                for mut edit in edits(
+                    &text[start..end],
+                    direct,
+                    depth + 1,
+                    budget,
+                    truncated,
+                    cache,
+                )? {
                     edit.start += start;
                     edit.end += start;
                     overlay(&mut out, edit);
@@ -185,9 +300,9 @@ fn edits(
             }
         }
         let ch = text[pos..].chars().next().unwrap();
-        if matches!(ch, '\'' | '"' | '`') {
+        if matches!(ch, '\'' | '"' | '`') && quote_can_start(text, pos, ch) {
             if let Some((end, view)) = quoted_view(text, pos, ch) {
-                let inner = edits(&view.text, direct, depth + 1, budget, truncated)?;
+                let inner = edits(&view.text, direct, depth + 1, budget, truncated, cache)?;
                 for edit in inner {
                     if let Some((start, finish)) = view.range(edit.start, edit.end) {
                         let value = quote_encode(&edit.value, ch, &view.escaped);
@@ -211,9 +326,12 @@ fn edits(
         n.saturating_sub(e.end - e.start)
             .saturating_add(e.value.len())
     });
-    if size > crate::placeholders::MAX_TAG_BYTES || out.len() > 1024 {
+    if size > crate::placeholders::MAX_TAG_BYTES || out.len() > 8192 {
         *truncated = true;
         out.clear();
+    }
+    if !*truncated {
+        cache.insert(text.to_owned(), out.clone());
     }
     Ok(out)
 }
@@ -285,6 +403,116 @@ fn html_encode(text: &str, styles: &BTreeMap<char, String>) -> String {
     }
     out
 }
+fn literal_marker_header(text: &str) -> bool {
+    ["<localrouter-redacted", "<localrouter-secret"]
+        .iter()
+        .any(|name| {
+            text.get(..name.len())
+                .is_some_and(|s| s.eq_ignore_ascii_case(name))
+                && text
+                    .as_bytes()
+                    .get(name.len())
+                    .is_none_or(|b| b.is_ascii_whitespace() || matches!(b, b'/' | b'>'))
+        })
+}
+fn unfinished_marker(text: &str) -> bool {
+    if !literal_marker_header(text) {
+        return false;
+    }
+    let mut i = ["<localrouter-redacted", "<localrouter-secret"]
+        .iter()
+        .find(|name| {
+            text.get(..name.len())
+                .is_some_and(|s| s.eq_ignore_ascii_case(name))
+        })
+        .map_or(0, |name| name.len());
+    let bytes = text.as_bytes();
+    loop {
+        while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+            i += 1;
+        }
+        let Some(&ch) = bytes.get(i) else {
+            return true;
+        };
+        if ch == b'>' {
+            return false;
+        }
+        if ch == b'/' {
+            return i + 1 == bytes.len();
+        }
+        let start = i;
+        while bytes
+            .get(i)
+            .is_some_and(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b':'))
+        {
+            i += 1;
+        }
+        if i == start {
+            return false;
+        }
+        while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+            i += 1;
+        }
+        let Some(&ch) = bytes.get(i) else {
+            return true;
+        };
+        if ch != b'=' {
+            return false;
+        }
+        i += 1;
+        while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+            i += 1;
+        }
+        let Some(&quote) = bytes.get(i) else {
+            return true;
+        };
+        if matches!(quote, b'\'' | b'"') {
+            i += 1;
+            while let Some(&ch) = bytes.get(i) {
+                if ch == quote {
+                    break;
+                }
+                if ch == b'<' {
+                    return false;
+                }
+                i += 1;
+            }
+            if i == bytes.len() {
+                return true;
+            }
+            i += 1;
+        } else {
+            let start = i;
+            while bytes.get(i).is_some_and(u8::is_ascii_alphanumeric) {
+                i += 1;
+            }
+            if i == start {
+                return false;
+            }
+        }
+        if bytes
+            .get(i)
+            .is_some_and(|b| !b.is_ascii_whitespace() && !matches!(b, b'/' | b'>'))
+        {
+            return false;
+        }
+    }
+}
+
+fn unclosed_marker(text: &str) -> bool {
+    let mut source = text.to_owned();
+    for _ in 0..12 {
+        let decoded = decode_layer(&source);
+        if decoded == source {
+            break;
+        }
+        source = decoded;
+    }
+    source
+        .match_indices('<')
+        .any(|(at, _)| unfinished_marker(&source[at..]))
+}
+
 fn quoted_view(text: &str, start: usize, quote: char) -> Option<(usize, View)> {
     let mut view = View::new();
     let mut pos = start + 1;
@@ -303,6 +531,9 @@ fn quoted_view(text: &str, start: usize, quote: char) -> Option<(usize, View)> {
                 }
                 pos = end;
                 continue;
+            }
+            if unfinished_marker(&text[begin..]) {
+                return None;
             }
         }
         if ch != '\\' {
@@ -375,21 +606,162 @@ fn quote_encode(text: &str, quote: char, styles: &BTreeMap<char, String>) -> Str
     out
 }
 
-pub(crate) fn has_marker(text: &str) -> bool {
-    if !text.to_ascii_lowercase().contains("localrouter")
-        && !text.contains('&')
-        && !text.contains('\\')
-        && !text.contains('%')
-    {
-        return false;
+// Marker recognition needs decoded characters, not edit/source-span trees.
+// Keep this prefilter linear so plain source code is not recursively explored.
+fn decode_layer(source: &str) -> String {
+    let mut decoded = String::with_capacity(source.len());
+    let mut at = 0;
+    while at < source.len() {
+        let tail = &source[at..];
+        if tail.starts_with('&') {
+            if let Some(end) = tail.as_bytes().iter().take(32).position(|b| *b == b';') {
+                if let Some(ch) = entity(&tail[..end + 1]) {
+                    decoded.push(ch);
+                    at += end + 1;
+                    continue;
+                }
+            }
+        }
+        if tail.starts_with('%') {
+            if let Some(ch) = tail
+                .get(1..3)
+                .and_then(|s| u8::from_str_radix(s, 16).ok())
+                .filter(u8::is_ascii)
+            {
+                decoded.push(ch as char);
+                at += 3;
+                continue;
+            }
+        }
+        if tail.starts_with('\\') {
+            let kind = tail.as_bytes().get(1).copied();
+            let length = match kind {
+                Some(b'u') => 4,
+                Some(b'x') => 2,
+                _ => 0,
+            };
+            if length > 0 {
+                if let Some(ch) = tail
+                    .get(2..2 + length)
+                    .and_then(|s| u32::from_str_radix(s, 16).ok())
+                    .and_then(char::from_u32)
+                {
+                    decoded.push(ch);
+                    at += length + 2;
+                    continue;
+                }
+            } else if let Some(ch) = match kind {
+                Some(b'\\') => Some('\\'),
+                Some(b'"') => Some('"'),
+                Some(b'\'') => Some('\''),
+                Some(b'/') => Some('/'),
+                Some(b'`') => Some('`'),
+                _ => None,
+            } {
+                decoded.push(ch);
+                at += 2;
+                continue;
+            }
+        }
+        let ch = tail.chars().next().expect("remaining character");
+        decoded.push(ch);
+        at += ch.len_utf8();
     }
-    let mut found = false;
-    let _ = rewrite(text, &mut |s| {
+    decoded
+}
+#[derive(Clone, Copy)]
+pub(crate) enum Prefix {
+    Ordinary,
+    Partial,
+    Marker,
+    Quoted,
+}
+fn incomplete_escape(source: &str) -> bool {
+    source == "\\"
+        || source == "%"
+        || (source.len() == 2
+            && source.starts_with('%')
+            && source.as_bytes()[1].is_ascii_hexdigit())
+        || ["&lt;", "&amp;", "&quot;", "&apos;"]
+            .iter()
+            .any(|s| s.starts_with(source))
+        || (source.starts_with("&#") && source.len() < 32 && !source.contains(';'))
+        || source
+            .strip_prefix("\\u")
+            .is_some_and(|s| s.len() < 4 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+        || source
+            .strip_prefix("\\x")
+            .is_some_and(|s| s.len() < 2 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+pub(crate) fn marker_prefix(text: &str) -> Prefix {
+    let mut source = text.to_owned();
+    for _ in 0..=12 {
+        if source.starts_with(['\'', '"', '`']) {
+            return Prefix::Quoted;
+        }
+        let lower = source.to_ascii_lowercase();
+        for name in ["<localrouter-redacted", "<localrouter-secret"] {
+            if name.starts_with(&lower) {
+                return Prefix::Partial;
+            }
+            if lower.starts_with(name)
+                && lower
+                    .as_bytes()
+                    .get(name.len())
+                    .is_some_and(|b| b.is_ascii_whitespace() || matches!(b, b'/' | b'>'))
+            {
+                return Prefix::Marker;
+            }
+        }
+        let decoded = decode_layer(&source);
+        if decoded == source {
+            if let Some(at) = source.rfind(['&', '%', '\\']) {
+                let before = source[..at].to_ascii_lowercase();
+                if ["<localrouter-redacted", "<localrouter-secret"]
+                    .iter()
+                    .any(|name| name.starts_with(&before))
+                    && incomplete_escape(&source[at..])
+                {
+                    return Prefix::Partial;
+                }
+            }
+            return if incomplete_escape(&source) {
+                Prefix::Partial
+            } else {
+                Prefix::Ordinary
+            };
+        }
+        source = decoded;
+    }
+    Prefix::Ordinary
+}
+fn decoded_any(text: &str, predicate: impl Fn(&str) -> bool) -> bool {
+    let mut source = text.to_owned();
+    for _ in 0..=12 {
+        if predicate(&source) {
+            return true;
+        }
+        let decoded = decode_layer(&source);
+        if decoded == source {
+            return false;
+        }
+        source = decoded;
+    }
+    false
+}
+pub(crate) fn has_marker_name(text: &str) -> bool {
+    decoded_any(text, |s| {
         let lower = s.to_ascii_lowercase();
-        found |= lower.contains("localrouter-redacted") || lower.contains("localrouter-secret");
-        Ok(Vec::new())
-    });
-    found
+        lower.contains("localrouter-redacted") || lower.contains("localrouter-secret")
+    })
+}
+pub(crate) fn has_marker(text: &str) -> bool {
+    decoded_any(text, |s| {
+        s.match_indices('<').any(|(at, _)| {
+            crate::placeholders::candidate(s, at)
+                .is_some_and(|(_, id)| id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit()))
+        })
+    })
 }
 
 fn backslash_view(text: &str) -> View {
@@ -425,24 +797,52 @@ fn backslash_view(text: &str) -> View {
 }
 
 pub(crate) fn complete_marker(text: &str) -> bool {
-    let mut found = false;
-    let _ = rewrite(text, &mut |s| {
-        found |= s
-            .match_indices('<')
-            .any(|(at, _)| crate::placeholders::candidate(s, at).is_some());
-        Ok(Vec::new())
-    });
-    found
+    decoded_any(text, |s| crate::placeholders::candidate(s, 0).is_some())
+}
+
+pub(crate) fn complete_nonreference_markup(text: &str) -> bool {
+    decoded_any(text, |s| {
+        if !s.starts_with('<')
+            || !s.ends_with('>')
+            || s.matches('<').count() != 1
+            || crate::placeholders::candidate(s, 0).is_some()
+        {
+            return false;
+        }
+        let mut quote = None;
+        for ch in s.chars() {
+            if let Some(q) = quote {
+                if ch == q {
+                    quote = None;
+                }
+            } else if matches!(ch, '\'' | '"') {
+                quote = Some(ch);
+            }
+        }
+        quote.is_none()
+    })
 }
 
 pub(crate) fn complete_quoted(text: &str) -> bool {
-    let Some(quote) = text.chars().next() else {
-        return false;
-    };
-    if has_marker(text) && !complete_marker(text) {
+    if unclosed_marker(text) {
         return false;
     }
-    quoted_view(text, 0, quote).is_some_and(|(end, _)| end == text.len())
+    let mut source = text.to_owned();
+    for _ in 0..=12 {
+        if let Some(quote) = source
+            .chars()
+            .next()
+            .filter(|ch| matches!(ch, '\'' | '"' | '`'))
+        {
+            return quoted_view(&source, 0, quote).is_some_and(|(end, _)| end == source.len());
+        }
+        let decoded = decode_layer(&source);
+        if decoded == source {
+            return false;
+        }
+        source = decoded;
+    }
+    false
 }
 
 fn percent_view(text: &str) -> View {
@@ -634,10 +1034,35 @@ mod tests {
         use crate::placeholders::TextStream;
         for input in [
             tag().to_string(),
+            format!("```js\nconst value = `{}`;\n```", tag()),
+            html(&format!("`{}`", tag())),
+            percent_encode(&format!("`{}`", tag()), &BTreeMap::new()),
+            format!("const value = `{}`;", tag()),
+            format!("```json\n{}\n```", json!({"content":tag()})),
+            format!("````json\n{}\n````", json!({"content":tag()})),
+            format!(
+                "check = '<localrouter-redacted '; value = {}",
+                json_string(tag())
+            ),
+            format!(
+                "I can't tell. I haven't checked. I didn't change this value:\n{}",
+                tag()
+            ),
+            format!("'{}'", tag()),
+            html(&format!("'{}'", tag())),
             html(tag()),
             html(&html(tag())),
             json_string(tag()),
             json_string(&json_string(tag())),
+            html(&json_string(tag())),
+            percent_encode(&json_string(tag()), &BTreeMap::new()),
+            format!("cat <<'EOF'\ntoken = {}\nEOF", json_string(tag())),
+            format!("&amp; token = {}", json_string(tag())),
+            format!("%41 token = {}", json_string(tag())),
+            format!(
+                "example <localrouter-secret unfinished token = {}",
+                json_string(tag())
+            ),
             percent_encode(tag(), &BTreeMap::new()),
             r"\u003clocalrouter\u002dsecret id='abc123'/\u003e".into(),
         ] {
@@ -685,7 +1110,8 @@ mod tests {
         vault
             .validate_tool(Some("test"), &json!({"uuid":"harmless"}))
             .unwrap();
-        for input in [tag().to_string(), html(tag()), code(tag())] {
+        let missing = "<localrouter-secret id='00112233445566778899aabbccddeeff'/>";
+        for input in [missing.to_string(), html(missing), code(missing)] {
             assert_eq!(vault.restore_text(&input, true).unwrap(), input);
         }
         assert!(seen
@@ -835,5 +1261,41 @@ mod tests {
         let mut renewed = json!("synthetic-first-secret");
         new.protect(&mut renewed).unwrap();
         assert_ne!(renewed, first);
+    }
+}
+
+#[cfg(test)]
+mod prose_quote_tests {
+    #[test]
+    fn contractions_do_not_escape_plaintext_originals() {
+        let tag = "<localrouter-secret id='abc123'/>";
+        let secret = "original-'apostrophe'-\"quote\"-\\path\nline";
+        let input = format!("I didn't change {tag}; here's the value.");
+        let expected = input.replace(tag, secret);
+        assert_eq!(
+            crate::placeholders::restore_text(&input, false, |_| Ok(Some(secret.into()))).unwrap(),
+            expected
+        );
+        for size in [1, 2, 7] {
+            let mut stream = crate::placeholders::TextStream::default();
+            let mut actual = String::new();
+            for fragment in input.as_bytes().chunks(size) {
+                actual.push_str(
+                    &stream
+                        .push(std::str::from_utf8(fragment).unwrap(), false, |s| {
+                            crate::placeholders::restore_text(s, false, |_| Ok(Some(secret.into())))
+                        })
+                        .unwrap(),
+                );
+            }
+            actual.push_str(
+                &stream
+                    .push("", true, |s| {
+                        crate::placeholders::restore_text(s, false, |_| Ok(Some(secret.into())))
+                    })
+                    .unwrap(),
+            );
+            assert_eq!(actual, expected);
+        }
     }
 }

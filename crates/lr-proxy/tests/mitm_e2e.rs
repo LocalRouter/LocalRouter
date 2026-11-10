@@ -945,6 +945,14 @@ impl ProxyInterceptor for ProtectingMitm {
 }
 
 async fn protected_roundtrip(sse: bool, compact: bool, encoding: Option<&'static str>) {
+    protected_roundtrip_content_type(sse, compact, encoding, None).await;
+}
+async fn protected_roundtrip_content_type(
+    sse: bool,
+    compact: bool,
+    encoding: Option<&'static str>,
+    content_type: Option<&'static str>,
+) {
     use serde_json::{json, Value};
     tls::ensure_crypto_provider();
     let up_ca = make_ca();
@@ -1024,11 +1032,11 @@ async fn protected_roundtrip(sse: bool, compact: bool, encoding: Option<&'static
             let response = Response::builder()
                 .header(
                     "content-type",
-                    if sse {
+                    content_type.unwrap_or(if sse {
                         "text/event-stream"
                     } else {
                         "application/json"
-                    },
+                    }),
                 )
                 .body(http_body_util::StreamBody::new(futures::stream::iter(
                     chunks,
@@ -1199,6 +1207,24 @@ async fn protected_roundtrip(sse: bool, compact: bool, encoding: Option<&'static
         }
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
+    let summary = store
+        .list(0, 10, None)
+        .events
+        .into_iter()
+        .find(|e| e.event_type == lr_monitor::MonitorEventType::LlmCall)
+        .unwrap();
+    let detail = store.get(&summary.id).unwrap();
+    let response_body = match detail.data {
+        lr_monitor::MonitorEventData::LlmCall {
+            response_body: Some(body),
+            ..
+        } => body,
+        _ => panic!("response was not reconstructed"),
+    };
+    assert_eq!(
+        response_body.get("id").and_then(Value::as_str),
+        Some("resp_native")
+    );
     let recorded = serde_json::to_string(&store.list(0, 10, None)).unwrap();
     assert!(!recorded.contains(SYNTHETIC_KEY));
     assert!(recorded.contains("localrouter-redacted"));
@@ -1239,4 +1265,20 @@ async fn gzip_and_nested_encoded_requests_are_scanned_before_forwarding() {
     })
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn codex_sse_with_incorrect_or_uppercase_media_type_is_restored_and_recorded() {
+    for content_type in [
+        "application/json",
+        "Text/Event-Stream; charset=UTF-8",
+        "application/octet-stream",
+    ] {
+        protected_roundtrip_content_type(true, false, None, Some(content_type)).await;
+    }
+}
+
+#[tokio::test]
+async fn codex_json_with_incorrect_sse_media_type_is_restored_and_recorded() {
+    protected_roundtrip_content_type(false, false, None, Some("text/event-stream")).await;
 }

@@ -135,7 +135,7 @@ where
                         bytes: Vec::new(),
                         error: None,
                     });
-            let dropped = "Response body was dropped before completion";
+            let dropped = "Response delivery interrupted before completion: downstream body closed";
             let terminal_delivered = completed.load(std::sync::atomic::Ordering::Acquire);
             if terminal_delivered && wire.error.as_deref() == Some(dropped) {
                 wire.error = None;
@@ -251,6 +251,36 @@ mod tests {
         assert!(capture.error.is_none());
     }
 
+    #[tokio::test]
+    async fn json_completion_is_recorded_before_a_consumer_closes_without_polling_eof() {
+        for wire in ["{\"content\":\"complete\"}", "{\"content\":\"partial"] {
+            let (vault, _, _) = vault();
+            let source = futures::stream::iter(vec![Ok::<_, std::io::Error>(
+                http_body::Frame::data(Bytes::from_static(wire.as_bytes())),
+            )])
+            .chain(futures::stream::pending());
+            let response = http::Response::new(StreamBody::new(source));
+            let (parts, body) = response.into_parts();
+            let captured = Arc::new(std::sync::Mutex::new(None));
+            let sink = captured.clone();
+            let mut restored = restore_recorded(
+                parts,
+                body,
+                vault,
+                false,
+                false,
+                Box::new(move |v| *sink.lock().unwrap() = Some(v)),
+            )
+            .await
+            .unwrap()
+            .into_body();
+            assert!(restored.frame().await.unwrap().is_ok());
+            drop(restored);
+            let result = captured.lock().unwrap().take().unwrap();
+            assert_eq!(result.error.is_none(), wire.ends_with('}'));
+            assert_eq!(result.bytes, wire.as_bytes());
+        }
+    }
     #[tokio::test]
     async fn empty_resource_responses_preserve_status_without_accepting_invalid_json() {
         for status in [204, 304, 200] {
