@@ -152,6 +152,13 @@ impl RegexEngine {
         texts: &[ExtractedText],
         force_entropy_threshold: Option<f32>,
     ) -> Vec<SecretFinding> {
+        self.scan_refs(texts.iter(), force_entropy_threshold)
+    }
+    pub(crate) fn scan_refs<'a>(
+        &self,
+        texts: impl IntoIterator<Item = &'a ExtractedText>,
+        force_entropy_threshold: Option<f32>,
+    ) -> Vec<SecretFinding> {
         let mut findings: Vec<SecretFinding> = Vec::new();
         // Priority (rule index) of the rule behind each finding.
         let mut ranks: Vec<usize> = Vec::new();

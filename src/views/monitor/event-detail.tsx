@@ -717,7 +717,7 @@ function ResponseState({ status }: { status: EventStatus }) {
 function ResponseError({ error }: { error: unknown }) {
   if (error == null) return null
   return <div className="rounded-md border border-destructive/20 bg-destructive/5 p-3 text-red-600 dark:text-red-400 whitespace-pre-wrap break-words" role="note">
-    <div className="font-medium flex items-center gap-1.5 mb-1"><AlertTriangle className="h-3.5 w-3.5" />Request failed</div>
+    <div className="font-medium flex items-center gap-1.5 mb-1"><AlertTriangle className="h-3.5 w-3.5" />{typeof error === 'string' && error.startsWith('Response delivery interrupted') ? 'Response interrupted' : 'Request failed'}</div>
     {typeof error === 'string' ? error : JSON.stringify(error, null, 2)}
   </div>
 }

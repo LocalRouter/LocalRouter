@@ -129,7 +129,9 @@ impl<B> Drop for TappedBody<B> {
         // Drop nested taps first so their captured wire data is available to
         // the outer completion callback, including on client cancellation.
         drop(self.inner.take());
-        self.fire((!self.finished).then(|| "Response body was dropped before completion".into()));
+        self.fire((!self.finished).then(|| {
+            "Response delivery interrupted before completion: downstream body closed".into()
+        }));
     }
 }
 

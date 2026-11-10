@@ -512,7 +512,8 @@ async fn restore_response(
     let streaming = response
         .headers()
         .get("content-type")
-        .is_some_and(|v| v.as_bytes().starts_with(b"text/event-stream"));
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.to_ascii_lowercase().contains("text/event-stream"));
     let (mut parts, body) = response.into_parts();
     if parts
         .headers

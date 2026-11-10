@@ -31,6 +31,31 @@ pub fn response_id(path: &str) -> Option<String> {
     (!decoded.is_empty() && !decoded.chars().any(char::is_control)).then(|| decoded.into_owned())
 }
 
+/// Recognize SSE from a short prefix even if the media type is absent or wrong.
+/// None means a prefix such as `ev` is still incomplete, not JSON.
+pub fn detect_sse(bytes: &[u8]) -> Option<bool> {
+    if !bytes.is_empty() && bytes.len() < 3 && [0xef, 0xbb, 0xbf].starts_with(bytes) {
+        return None;
+    }
+    let bytes = bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(bytes);
+    let bytes = bytes
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .map_or(&[][..], |at| &bytes[at..]);
+    if bytes.is_empty() {
+        return None;
+    }
+    for prefix in [b"data:".as_slice(), b"event:", b"id:", b"retry:", b":"] {
+        if bytes.starts_with(prefix) {
+            return Some(true);
+        }
+        if prefix.starts_with(bytes) {
+            return None;
+        }
+    }
+    Some(false)
+}
+
 pub fn frame_end(bytes: &[u8]) -> Option<(usize, usize)> {
     let lf = bytes.windows(2).position(|w| w == b"\n\n").map(|i| (i, 2));
     let crlf = bytes
@@ -42,62 +67,71 @@ pub fn frame_end(bytes: &[u8]) -> Option<(usize, usize)> {
         (a, b) => a.or(b),
     }
 }
-/// Structured JSON must be parsed before restoring values and keys; textual
-/// channels remain incremental. JSON buffering is bounded by the body budget.
+/// Each channel retains only a partial reference or JSON escape, rather than
+/// the complete generated JSON document or function arguments.
 #[derive(Default)]
 struct ContentStream {
     text: TextStream,
+    json: crate::json_stream::JsonStream,
     pending: String,
     structured: Option<bool>,
+    location: Option<&'static str>,
+    validation: String,
+    validation_truncated: bool,
 }
 impl ContentStream {
+    fn buffered_bytes(&self) -> usize {
+        self.pending.len() + self.text.buffered_bytes() + self.json.buffered_bytes()
+    }
+    fn retained_bytes(&self) -> usize {
+        self.buffered_bytes() + self.validation.len()
+    }
     fn push(
         &mut self,
         text: &str,
         finish: bool,
         context: &Arc<dyn SecretContext>,
     ) -> lr_types::AppResult<String> {
-        if self.structured == Some(false) {
-            return self
-                .text
-                .push(text, finish, |s| context.restore_text(s, false));
-        }
         self.pending.push_str(text);
-        if self.pending.len() > LIMIT {
-            return Err(lr_types::AppError::InvalidParams(
-                "Protected content exceeds limit".into(),
-            ));
-        }
         if self.structured.is_none() {
-            if let Some(ch) = self.pending.chars().find(|ch| !ch.is_whitespace()) {
-                self.structured = Some(context.structured_output() || matches!(ch, '{' | '['));
+            self.structured = self
+                .pending
+                .chars()
+                .find(|ch| !ch.is_whitespace())
+                .map(|ch| context.structured_output() || matches!(ch, '{' | '['));
+            if self.structured.is_none() && self.pending.len() < 1024 && !finish {
+                return Ok(String::new());
             }
         }
-        if self.structured == Some(false) {
-            return self
-                .text
-                .push(&std::mem::take(&mut self.pending), finish, |s| {
-                    context.restore_text(s, false)
-                });
+        let pending = std::mem::take(&mut self.pending);
+        let output = if self.structured == Some(true) {
+            self.json.push(&pending, finish, context)?
+        } else {
+            let output = self.text.push(&pending, finish, |s| {
+                context.restore_text_at(s, false, self.location.unwrap_or("Response text"))
+            })?;
+            if self.text.take_limited() {
+                context.diagnostic("Quoted reference exceeds rolling restoration window; original fragment delivered");
+            }
+            output
+        };
+        if (self.location.is_some() || self.structured == Some(true)) && !self.validation_truncated
+        {
+            if self.validation.len().saturating_add(output.len()) <= 64 * 1024 {
+                self.validation.push_str(&output);
+            } else {
+                self.validation.clear();
+                self.validation_truncated = true;
+            }
         }
-        if !finish {
-            return Ok(String::new());
-        }
-        let mut content = Value::String(std::mem::take(&mut self.pending));
-        // Use the content adapter so JSON-encoded keys and values are restored.
-        let mut wrapped = serde_json::json!({"content":content});
-        context.restore(&mut wrapped, false)?;
-        content = wrapped["content"].take();
-        let text = content.as_str().unwrap_or_default();
-        context.validate_output(text)?;
-        Ok(text.to_owned())
+        Ok(output)
     }
 }
 #[derive(Default)]
 pub struct Events {
     pub done: bool,
     text: BTreeMap<String, (ContentStream, Value, String)>,
-    arguments: BTreeMap<String, (String, Value, String)>,
+    arguments: BTreeMap<String, (ContentStream, Value, String)>,
     tool_names: BTreeMap<String, String>,
     template_cost: BTreeMap<String, usize>,
 }
@@ -224,17 +258,16 @@ impl Events {
                     .insert(channel.clone(), template.to_string().len());
             }
             if arguments {
-                let entry = self
-                    .arguments
-                    .entry(channel)
-                    .or_insert_with(|| (String::new(), template, path.clone()));
-                entry.0.push_str(&text);
-                if entry.0.len() > LIMIT {
-                    return Err(lr_types::AppError::Internal(
-                        "Protected tool arguments exceed limit".into(),
-                    ));
-                }
-                *value.pointer_mut(&path).unwrap() = Value::String(String::new());
+                let entry = self.arguments.entry(channel).or_insert_with(|| {
+                    let stream = ContentStream {
+                        location: Some("Tool arguments"),
+                        json: crate::json_stream::JsonStream::for_arguments(),
+                        ..Default::default()
+                    };
+                    (stream, template, path.clone())
+                });
+                let restored = entry.0.push(&text, false, context)?;
+                *value.pointer_mut(&path).unwrap() = Value::String(restored);
             } else {
                 let entry = self
                     .text
@@ -270,12 +303,12 @@ impl Events {
         let buffers = self
             .text
             .values()
-            .map(|(stream, _, _)| stream.pending.len() + stream.text.buffered_bytes())
+            .map(|(stream, _, _)| stream.retained_bytes())
             .sum::<usize>()
             .saturating_add(
                 self.arguments
                     .values()
-                    .map(|(text, _, _)| text.len())
+                    .map(|(stream, _, _)| stream.retained_bytes())
                     .sum::<usize>(),
             );
         let metadata = self
@@ -357,6 +390,12 @@ impl Events {
             let (mut stream, mut template, path) =
                 self.text.remove(&key).expect("selected channel");
             let text = stream.push("", true, context)?;
+            if stream.structured == Some(true)
+                && !stream.validation_truncated
+                && context.validate_output(&stream.validation).is_err()
+            {
+                context.diagnostic("Output validation unavailable; streamed content preserved");
+            }
             if !text.is_empty() {
                 *template.pointer_mut(&path).unwrap() = Value::String(text);
                 out.push(encode(&template, template["type"].as_str().unwrap_or("")));
@@ -370,35 +409,28 @@ impl Events {
             .collect();
         for key in keys {
             self.template_cost.remove(&key);
-            let (arguments, mut template, path) = self
+            let (mut stream, mut template, path) = self
                 .arguments
                 .remove(&key)
                 .expect("selected argument channel");
-            let restored = if key.contains("custom_tool_call_input") {
-                context.restore_text_at(&arguments, true, "Tool arguments")?
-            } else {
-                let mut args: Value = match serde_json::from_str(&arguments) {
-                    Ok(args) => args,
-                    Err(_) => {
+            let restored = stream.push("", true, context)?;
+            if !key.contains("custom_tool_call_input") && !stream.validation_truncated {
+                if let Ok(arguments) = serde_json::from_str::<Value>(&stream.validation) {
+                    let name = self
+                        .tool_names
+                        .iter()
+                        .find(|(prefix, _)| key.starts_with(prefix.as_str()))
+                        .map(|(_, name)| name.as_str());
+                    if context.validate_tool(name, &arguments).is_err() {
                         context.diagnostic(
-                            "Tool arguments were not complete JSON; delivered unchanged",
+                            "Tool validation unavailable; streamed arguments preserved",
                         );
-                        *template.pointer_mut(&path).unwrap() = Value::String(arguments);
-                        out.push(encode(&template, template["type"].as_str().unwrap_or("")));
-                        continue;
                     }
-                };
-                context.restore(&mut args, true)?;
-                let name = self
-                    .tool_names
-                    .iter()
-                    .find(|(prefix, _)| key.starts_with(prefix.as_str()))
-                    .map(|(_, name)| name.as_str());
-                context.validate_tool(name, &args)?;
-                serde_json::to_string(&args).map_err(|_| {
-                    lr_types::AppError::Internal("Could not restore tool arguments".into())
-                })?
-            };
+                }
+            }
+            if restored.is_empty() {
+                continue;
+            }
             *template.pointer_mut(&path).unwrap() = Value::String(restored);
             out.push(encode(&template, template["type"].as_str().unwrap_or("")));
         }
@@ -688,12 +720,12 @@ impl ResponseRestorer {
                     .events
                     .arguments
                     .values()
-                    .any(|(s, _, _)| !s.is_empty())
+                    .any(|(s, _, _)| s.buffered_bytes() > 0)
                     || self
                         .events
                         .text
                         .values()
-                        .any(|(s, _, _)| !s.pending.is_empty() || s.text.buffered_bytes() > 0);
+                        .any(|(s, _, _)| s.buffered_bytes() > 0);
                 if pending {
                     Ok(Vec::new())
                 } else {
@@ -724,7 +756,13 @@ impl ResponseRestorer {
     }
     /// Switch to pass-through without losing or duplicating held original data.
     pub fn abandon(&mut self, reason: &str) -> Vec<String> {
-        self.context.diagnostic(reason);
+        if self
+            .original
+            .iter()
+            .any(|frame| crate::encoding::has_marker(frame))
+        {
+            self.context.diagnostic(reason);
+        }
         self.passthrough = true;
         self.output.clear();
         self.held_bytes = 0;
@@ -779,12 +817,17 @@ where
         let mut pending=Vec::new();
         let mut scanned=0;
         let mut passthrough=false;
-        let encode = |frame: String| -> Bytes { if matches!(mode, StreamMode::Ndjson) { Bytes::from(format!("{}\n",message_data(&frame))) } else {Bytes::from(frame)} };
+        let mut effective_mode = None;
+        let mut json = crate::json_stream::JsonStream::for_response();
+        let context: Arc<dyn SecretContext> = vault.clone();
+        let encode = |frame: String, mode: StreamMode| -> Bytes { if matches!(mode, StreamMode::Ndjson) { Bytes::from(format!("{}\n",message_data(&frame))) } else {Bytes::from(frame)} };
         while let Some(chunk)=stream.next().await {
             let chunk=match chunk {
                 Ok(chunk)=>chunk,
                 Err(error)=>{
-                    for frame in codec.abandon("Upstream transport ended; original buffered content released") { yield Ok(encode(frame)); }
+                    for frame in codec.abandon("Upstream transport ended; original buffered content released") { yield Ok(encode(frame, effective_mode.unwrap_or(mode))); }
+                    let held = json.abandon_raw();
+                    if !held.is_empty() { yield Ok(Bytes::from(held)); }
                     if !pending.is_empty() { yield Ok(Bytes::from(std::mem::take(&mut pending))); }
                     yield Err(error); return;
                 }
@@ -792,15 +835,50 @@ where
             if passthrough { yield Ok(chunk); continue; }
             pending.extend_from_slice(&chunk);
             if pending.len()>LIMIT {
-                for frame in codec.abandon("Restoration byte limit reached; original content delivered") { yield Ok(encode(frame)); }
+                for frame in codec.abandon("Restoration byte limit reached; original content delivered") { yield Ok(encode(frame, effective_mode.unwrap_or(mode))); }
+                let held = json.abandon_raw();
+                if !held.is_empty() { yield Ok(Bytes::from(held)); }
                 yield Ok(Bytes::from(std::mem::take(&mut pending))); passthrough=true; continue;
             }
-            if matches!(mode,StreamMode::Json) { continue; }
+            if effective_mode.is_none() {
+                effective_mode = match detect_sse(&pending) {
+                    Some(true) => Some(StreamMode::Sse),
+                    Some(false) => Some(if matches!(mode, StreamMode::Ndjson) { StreamMode::Ndjson } else { StreamMode::Json }),
+                    None if pending.len() < 1024 => { continue; },
+                    None => { yield Ok(Bytes::from(std::mem::take(&mut pending))); continue; },
+                };
+            }
+            let mode = effective_mode.unwrap_or(mode);
+            if matches!(mode,StreamMode::Json) {
+                // Decode only complete UTF-8; at most three source bytes remain
+                // between chunks. String/escape carry is bounded separately.
+                let valid = match std::str::from_utf8(&pending) {
+                    Ok(_) => pending.len(),
+                    Err(error) if error.error_len().is_none() => error.valid_up_to(),
+                    Err(_) => {
+                        vault.diagnostic("Unsupported response bytes; original content delivered");
+                        let held = json.abandon_raw();
+                        if !held.is_empty() { yield Ok(Bytes::from(held)); }
+                        yield Ok(Bytes::from(std::mem::take(&mut pending))); passthrough=true; continue;
+                    }
+                };
+                if valid > 0 {
+                    let text = std::str::from_utf8(&pending[..valid]).expect("validated prefix");
+                    let output = match json.push(text, false, &context) {
+                        Ok(output) => output,
+                        Err(_) => { let mut original = json.abandon_raw(); original.push_str(text); passthrough = true; vault.diagnostic("JSON string adaptation unavailable; original content delivered"); original }
+                    };
+                    pending.drain(..valid);
+                    if json.complete { completed.store(true,std::sync::atomic::Ordering::Release); }
+                    if !output.is_empty() { yield Ok(Bytes::from(output)); }
+                }
+                continue;
+            }
             loop {
                 let boundary=if matches!(mode,StreamMode::Ndjson) { pending[scanned..].iter().position(|b|*b==b'\n').map(|i|(i+scanned,1)) } else {frame_end(&pending[scanned..]).map(|(i,n)|(i+scanned,n))};
                 let Some((end,sep))=boundary else { scanned=pending.len().saturating_sub(3); break; };
                 let Ok(frame)=std::str::from_utf8(&pending[..end+sep]) else {
-                    for frame in codec.abandon("Unsupported response bytes; original content delivered") { yield Ok(encode(frame)); }
+                    for frame in codec.abandon("Unsupported response bytes; original content delivered") { yield Ok(encode(frame, effective_mode.unwrap_or(mode))); }
                     yield Ok(Bytes::from(std::mem::take(&mut pending))); passthrough=true; break;
                 };
                 let output=if matches!(mode,StreamMode::Ndjson) {
@@ -815,13 +893,14 @@ where
             }
         }
         if !passthrough {
-            if matches!(mode,StreamMode::Json) {
-                let result=codec.json(&pending).unwrap_or(pending);
+            if matches!(effective_mode.unwrap_or(mode),StreamMode::Json) {
+                let mut result = json.push("", true, &context).unwrap_or_else(|_| json.abandon_raw()).into_bytes();
+                result.extend_from_slice(&pending);
                 completed.store(true,std::sync::atomic::Ordering::Release);
                 if !result.is_empty() {yield Ok(Bytes::from(result));}
             } else {
-                for frame in codec.finish().unwrap_or_default() { yield Ok(encode(frame)); }
-                if !pending.is_empty() { vault.diagnostic("Incomplete response frame delivered unchanged"); yield Ok(Bytes::from(pending)); }
+                for frame in codec.finish().unwrap_or_default() { yield Ok(encode(frame, effective_mode.unwrap_or(mode))); }
+                if !pending.is_empty() { if !pending.iter().all(u8::is_ascii_whitespace) { vault.diagnostic("Incomplete response frame delivered unchanged"); } yield Ok(Bytes::from(pending)); }
             }
         }
         completed.store(true,std::sync::atomic::Ordering::Release);
@@ -1065,22 +1144,99 @@ mod tests {
         );
     }
     #[test]
-    fn tool_schema_is_checked_after_fragmented_restoration() {
+    fn anthropic_shell_heredoc_preserves_python_quote_escaping() {
+        let (vault, tag, secret) = fixture();
+        let command = format!("cat <<'PYEOF' > /tmp/script.py\nimport io\n\ntoken = \"{tag}\"\nprint(token)\nPYEOF\npython3 /tmp/script.py");
+        let arguments = json!({"command":command}).to_string();
+        let expected = command.replace(
+            &tag,
+            &serde_json::to_string(&secret).unwrap()
+                [1..serde_json::to_string(&secret).unwrap().len() - 1],
+        );
+        for size in [1, 2, 3, 7, 31, 1000] {
+            let mut restorer = ResponseRestorer::new(vault.clone());
+            let mut output = Vec::new();
+            for fragment in arguments.as_bytes().chunks(size) {
+                output.extend(restorer.message(&json!({"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":std::str::from_utf8(fragment).unwrap()}}).to_string()).unwrap());
+            }
+            output.extend(
+                restorer
+                    .message(&json!({"type":"content_block_stop","index":1}).to_string())
+                    .unwrap(),
+            );
+            let actual: String = output
+                .iter()
+                .filter_map(|s| serde_json::from_str::<Value>(s).ok())
+                .filter_map(|v| {
+                    v.pointer("/delta/partial_json")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                })
+                .collect();
+            let actual: Value = serde_json::from_str(&actual).unwrap();
+            assert_eq!(actual["command"], expected, "fragment size {size}");
+        }
+    }
+    #[test]
+    fn advisory_tool_validation_does_not_hold_back_streamed_arguments() {
+        let (vault, tag, secret) = fixture();
+        vault.set_request_contract(&json!({"tools":[{"type":"function","name":"write_file","parameters":{"type":"object","properties":{"content":{"const":"different-value"}},"required":["content"]}}]})).unwrap();
+        let notices = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = notices.clone();
+        vault.set_operation_observer(Arc::new(move |event| {
+            if event.action.ends_with("warning") {
+                sink.lock().unwrap().push(event.location);
+            }
+        }));
+        let mut restorer = ResponseRestorer::new(vault);
+        restorer.message(&json!({"type":"response.output_item.added","item":{"id":"call","type":"function_call","name":"write_file","arguments":""}}).to_string()).unwrap();
+        let output = restorer.message(&json!({"type":"response.function_call_arguments.delta","item_id":"call","delta":json!({"content":tag}).to_string()}).to_string()).unwrap();
+        assert!(
+            !output.is_empty(),
+            "validation must not wait for the terminal event to release arguments"
+        );
+        let actual: String = output
+            .iter()
+            .filter_map(|s| serde_json::from_str::<Value>(s).ok())
+            .filter_map(|v| v["delta"].as_str().map(str::to_owned))
+            .collect();
+        assert_eq!(
+            serde_json::from_str::<Value>(&actual).unwrap()["content"],
+            secret
+        );
+        restorer
+            .message(
+                &json!({"type":"response.function_call_arguments.done","item_id":"call"})
+                    .to_string(),
+            )
+            .unwrap();
+        assert!(notices
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|message| message.contains("tool schema")));
+    }
+    #[test]
+    fn fragmented_tool_arguments_restore_incrementally() {
         let (vault, tag, secret) = fixture();
         vault.set_request_contract(&json!({"tools":[{"type":"function","function":{"name":"write_file","parameters":{"type":"object","properties":{"content":{"const":secret}},"required":["content"],"additionalProperties":false}}}]})).unwrap();
         let mut restorer = ResponseRestorer::new(vault);
         restorer.message(&json!({"type":"response.output_item.added","item":{"id":"call","type":"function_call","name":"write_file","arguments":""}}).to_string()).unwrap();
         let args = json!({"content":tag}).to_string();
+        let mut output = Vec::new();
         for fragment in args.as_bytes().chunks(1) {
-            restorer.message(&json!({"type":"response.function_call_arguments.delta","item_id":"call","delta":std::str::from_utf8(fragment).unwrap()}).to_string()).unwrap();
+            output.extend(restorer.message(&json!({"type":"response.function_call_arguments.delta","item_id":"call","delta":std::str::from_utf8(fragment).unwrap()}).to_string()).unwrap());
         }
-        let output = restorer.message(&json!({"type":"response.function_call_arguments.done","item_id":"call","arguments":args}).to_string()).unwrap();
-        assert!(output
+        output.extend(restorer.message(&json!({"type":"response.function_call_arguments.done","item_id":"call","arguments":args}).to_string()).unwrap());
+        let assembled: String = output
             .iter()
-            .any(|s| serde_json::from_str::<Value>(s).unwrap()["delta"]
-                .as_str()
-                .filter(|s| !s.is_empty())
-                .is_some_and(|s| serde_json::from_str::<Value>(s).unwrap()["content"] == secret)));
+            .filter_map(|s| serde_json::from_str::<Value>(s).ok())
+            .filter_map(|v| v["delta"].as_str().map(str::to_owned))
+            .collect();
+        assert_eq!(
+            serde_json::from_str::<Value>(&assembled).unwrap()["content"],
+            secret
+        );
     }
     #[test]
     fn namespaced_streamed_tools_keep_schema_identity() {
@@ -1093,14 +1249,17 @@ mod tests {
         for (ns, field) in [("alpha", "content"), ("beta", "path")] {
             restorer.message(&json!({"type":"response.output_item.added","item":{"id":ns,"type":"function_call","namespace":ns,"name":"write","arguments":""}}).to_string()).unwrap();
             let arguments = json!({field:tag}).to_string();
-            restorer.message(&json!({"type":"response.function_call_arguments.delta","item_id":ns,"delta":arguments}).to_string()).unwrap();
-            let output=restorer.message(&json!({"type":"response.function_call_arguments.done","item_id":ns,"arguments":arguments}).to_string()).unwrap();
-            assert!(output
+            let mut output = restorer.message(&json!({"type":"response.function_call_arguments.delta","item_id":ns,"delta":arguments}).to_string()).unwrap();
+            output.extend(restorer.message(&json!({"type":"response.function_call_arguments.done","item_id":ns,"arguments":arguments}).to_string()).unwrap());
+            let assembled: String = output
                 .iter()
-                .any(|s| serde_json::from_str::<Value>(s).unwrap()["delta"]
-                    .as_str()
-                    .filter(|s| !s.is_empty())
-                    .is_some_and(|s| serde_json::from_str::<Value>(s).unwrap()[field] == secret)));
+                .filter_map(|s| serde_json::from_str::<Value>(s).ok())
+                .filter_map(|v| v["delta"].as_str().map(str::to_owned))
+                .collect();
+            assert_eq!(
+                serde_json::from_str::<Value>(&assembled).unwrap()[field],
+                secret
+            );
         }
     }
 

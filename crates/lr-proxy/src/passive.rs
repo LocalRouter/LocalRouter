@@ -118,7 +118,9 @@ impl PassiveInterceptor {
         // For SSE we reconstruct a full message body so it's captured like a
         // plain one.
         let (resp_meta, response_json) = match &ex.response_body {
-            Some(bytes) if ex.response_is_sse => {
+            Some(bytes)
+                if lr_secret_scanner::wire::detect_sse(bytes).unwrap_or(ex.response_is_sse) =>
+            {
                 let raw = String::from_utf8_lossy(bytes);
                 let (meta, body) = wire::reconstruct_sse(format, &raw);
                 (meta, Some(body))

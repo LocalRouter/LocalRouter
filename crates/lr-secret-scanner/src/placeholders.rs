@@ -278,14 +278,34 @@ fn restore_text_depth(
 }
 
 /// Bounded streaming tag recognizer. UTF-8 and SSE frames are decoded by callers.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct TextStream {
     pending: String,
     quote: bool,
+    bypass: Option<(char, bool)>,
+    limited: bool,
+    marker_name: bool,
+    encoded_quote: bool,
+    bypass_all: bool,
+    context_lost: bool,
+    backticks: u8,
+    fence_run: bool,
+    word: String,
 }
 impl TextStream {
     pub(crate) fn buffered_bytes(&self) -> usize {
-        self.pending.len()
+        self.pending.len() + usize::from(self.backticks)
+    }
+    pub(crate) fn at_boundary(&self) -> bool {
+        self.pending.is_empty()
+            && !self.quote
+            && self.bypass.is_none()
+            && !self.bypass_all
+            && !self.context_lost
+            && self.backticks == 0
+    }
+    pub(crate) fn take_limited(&mut self) -> bool {
+        std::mem::take(&mut self.limited)
     }
     pub fn push(
         &mut self,
@@ -295,23 +315,129 @@ impl TextStream {
     ) -> AppResult<String> {
         let mut ready = String::new();
         for ch in text.chars() {
-            if self.pending.is_empty() && !matches!(ch, '<' | '&' | '%' | '\\' | '\'' | '"') {
+            let quote_allowed = ch != '\'' || crate::encoding::apostrophe_starts_quote(&self.word);
+            if ch.is_alphanumeric() || ch == '_' {
+                if self.word.len() < 16 {
+                    self.word.push(ch);
+                }
+            } else {
+                self.word.clear();
+            }
+            if self.bypass_all {
+                ready.push(ch);
+                continue;
+            }
+            if let Some((quote, escaped)) = self.bypass.as_mut() {
+                ready.push(ch);
+                if *escaped {
+                    *escaped = false;
+                } else if ch == '\\' {
+                    *escaped = true;
+                } else if ch == *quote {
+                    self.bypass = None;
+                }
+                continue;
+            }
+            if self.pending.is_empty() && !self.quote && ch == '\'' && !quote_allowed {
+                ready.push(ch);
+                continue;
+            }
+            if self.pending.is_empty() && !self.quote {
+                if ch == '`' {
+                    if self.fence_run {
+                        ready.push(ch);
+                        continue;
+                    }
+                    self.backticks += 1;
+                    if self.backticks == 3 {
+                        ready.push_str("```");
+                        self.backticks = 0;
+                        self.fence_run = true;
+                    }
+                    continue;
+                }
+                self.fence_run = false;
+                if self.backticks == 1 {
+                    self.pending.push('`');
+                    self.quote = true;
+                } else if self.backticks == 2 {
+                    ready.push_str("``");
+                }
+                self.backticks = 0;
+            }
+            if self.pending.is_empty() && !matches!(ch, '<' | '&' | '%' | '\\' | '\'' | '"' | '`') {
                 ready.push(ch);
                 continue;
             }
             if self.pending.is_empty() {
-                self.quote = matches!(ch, '\'' | '"');
+                self.quote = matches!(ch, '\'' | '"' | '`');
             }
             self.pending.push(ch);
+            if !self.quote && !self.marker_name {
+                match crate::encoding::marker_prefix(&self.pending) {
+                    crate::encoding::Prefix::Ordinary => {
+                        let mut prefix = std::mem::take(&mut self.pending);
+                        prefix.pop();
+                        ready.push_str(&prefix);
+                        if ch == '\'' && !quote_allowed {
+                            ready.push(ch);
+                        } else if matches!(ch, '<' | '&' | '%' | '\\' | '\'' | '"' | '`') {
+                            if ch == '`' {
+                                self.backticks = 1;
+                                continue;
+                            }
+                            self.pending.push(ch);
+                            self.quote = matches!(ch, '\'' | '"' | '`');
+                        } else {
+                            ready.push(ch);
+                        }
+                        continue;
+                    }
+                    crate::encoding::Prefix::Quoted => {
+                        self.quote = true;
+                        self.encoded_quote = !self.pending.starts_with(['\'', '"', '`']);
+                    }
+                    crate::encoding::Prefix::Marker => self.marker_name = true,
+                    crate::encoding::Prefix::Partial => {}
+                }
+            }
             if self.quote {
-                if self.pending.len() >= MAX_TAG_BYTES {
+                if self.pending.len() >= 64 * 1024 {
+                    self.context_lost = true;
+                    self.limited = crate::encoding::has_marker(&self.pending);
+                    self.bypass_all = self.encoded_quote;
+                    self.marker_name = false;
+                    self.encoded_quote = false;
+                    self.bypass = self
+                        .pending
+                        .chars()
+                        .next()
+                        .map(|quote| (quote, self.pending.ends_with('\\')));
                     ready.push_str(&std::mem::take(&mut self.pending));
                     self.quote = false;
                     continue;
                 }
-                if matches!(ch, '\'' | '"') && crate::encoding::complete_quoted(&self.pending) {
+                let closes_quote = matches!(ch, '\'' | '"' | '`')
+                    && self.pending.starts_with(ch)
+                    && self.pending.as_bytes()[..self.pending.len() - 1]
+                        .iter()
+                        .rev()
+                        .take_while(|b| **b == b'\\')
+                        .count()
+                        % 2
+                        == 0;
+                if (closes_quote
+                    || (self.encoded_quote
+                        && (matches!(ch, ';' | '\'' | '"' | '`')
+                            || self.pending.ends_with("22")
+                            || self.pending.ends_with("27")
+                            || self.pending.ends_with("60"))))
+                    && crate::encoding::complete_quoted(&self.pending)
+                {
                     ready.push_str(&restore(&std::mem::take(&mut self.pending))?);
                     self.quote = false;
+                    self.encoded_quote = false;
+                    self.marker_name = false;
                 }
                 continue;
             }
@@ -321,15 +447,35 @@ impl TextStream {
                 && crate::encoding::complete_marker(&self.pending)
             {
                 ready.push_str(&restore(&std::mem::take(&mut self.pending))?);
-            } else if self.pending.len() >= MAX_TAG_BYTES
-                || (self.pending.len() > 512 && !crate::encoding::has_marker(&self.pending))
+                self.marker_name = false;
+            } else if matches!(ch, '>' | ';' | 'e' | 'E')
+                && crate::encoding::complete_nonreference_markup(&self.pending)
             {
                 ready.push_str(&std::mem::take(&mut self.pending));
+                self.marker_name = false;
+            } else if self.pending.len() >= 64 * 1024
+                || (self.pending.len() > 512 && !crate::encoding::has_marker_name(&self.pending))
+            {
+                self.context_lost |= self.pending.len() >= 64 * 1024;
+                ready.push_str(&std::mem::take(&mut self.pending));
+                self.marker_name = false;
+                self.encoded_quote = false;
             }
         }
         if finish {
+            for _ in 0..self.backticks {
+                ready.push('`');
+            }
+            self.backticks = 0;
+            self.fence_run = false;
             ready.push_str(&restore(&std::mem::take(&mut self.pending))?);
             self.quote = false;
+            self.bypass = None;
+            self.marker_name = false;
+            self.encoded_quote = false;
+            self.bypass_all = false;
+            self.context_lost = false;
+            self.word.clear();
         }
         Ok(ready)
     }
@@ -1378,9 +1524,11 @@ impl Vault {
         if entries.is_empty() {
             return Ok(text.into());
         }
-        let (masked, limited) = crate::encoding::rewrite_mask(text, &mut |source| {
-            self.transform_plain(source, entries)
-        })?;
+        let (masked, limited) = crate::encoding::rewrite_mask(
+            text,
+            entries.values().map(|s| s.len()).max().unwrap_or(0),
+            &mut |source| self.transform_plain(source, entries),
+        )?;
         if limited {
             self.protection_limited.store(true, Ordering::Release);
         }
@@ -1571,15 +1719,17 @@ impl Vault {
             &mut |text, _| {
                 // Existing references in the authenticated session history are capabilities
                 // for this request, too. Never authorize references from another record.
-                restore_text(text, false, |id| {
-                    if entries.contains_key(id) {
-                        self.allowed
-                            .lock()
-                            .map_err(|_| storage_error())?
-                            .insert(id.into());
-                    }
-                    Ok(None)
-                })?;
+                if crate::encoding::has_marker_name(text) {
+                    restore_text(text, false, |id| {
+                        if entries.contains_key(id) {
+                            self.allowed
+                                .lock()
+                                .map_err(|_| storage_error())?
+                                .insert(id.into());
+                        }
+                        Ok(None)
+                    })?;
+                }
                 let masked = self.transform(text, &mut entries)?;
                 if masked != text {
                     let before = reference_counts(text);

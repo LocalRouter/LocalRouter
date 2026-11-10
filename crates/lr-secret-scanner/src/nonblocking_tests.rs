@@ -57,7 +57,7 @@ fn ordinary_mixed_code_with_a_saved_mapping_never_rejects_an_unrelated_request()
     let original = request.clone();
     vault.protect(&mut request).unwrap();
     assert_eq!(request, original);
-    assert!(!notices.lock().unwrap().is_empty());
+    assert!(notices.lock().unwrap().is_empty());
 }
 #[test]
 fn storage_outage_uses_a_shared_owned_memory_map_without_durable_writes() {
@@ -212,4 +212,308 @@ fn schema_properties_named_like_protocol_fields_are_still_masked() {
             secret
         );
     }
+}
+
+#[test]
+fn marker_documentation_is_not_a_missing_secret() {
+    let vault = vault("marker-docs");
+    let notices = warnings(&vault);
+    for text in [
+        "localrouter-secret",
+        "<localrouter-secret",
+        "<localrouter-redacted id='example'/>",
+        "&lt;localrouter-secret id='abc123'/&gt;",
+        "Discuss \\u006cocalrouter-secret and escaping",
+    ] {
+        assert_eq!(vault.restore_text(text, false).unwrap(), text);
+    }
+    assert!(notices.lock().unwrap().is_empty());
+    let tag = "<localrouter-secret id='00112233445566778899aabbccddeeff'/>";
+    assert_eq!(vault.restore_text(tag, false).unwrap(), tag);
+    assert_eq!(notices.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn large_history_does_not_spend_the_decode_budget_on_duplicate_views() {
+    let vault = vault("large-mixed-history");
+    let secret = "synthetic-large-history-value-873514";
+    vault.register(secret).unwrap();
+    let notices = warnings(&vault);
+    let example =
+        r#"Example: {"code":"print(\"hello\\nworld\")", "html":"&amp;", "percent":"%41"}"#;
+    let mut request = json!({"input":(0..900).map(|i|json!({"role":"user","content":format!("{i} {} {secret}", example.repeat(30))})).collect::<Vec<_>>()});
+    vault.protect(&mut request).unwrap();
+    for item in request["input"].as_array().unwrap() {
+        assert!(!item["content"].as_str().unwrap().contains(secret));
+    }
+    assert!(
+        notices.lock().unwrap().is_empty(),
+        "{:?}",
+        notices.lock().unwrap()
+    );
+}
+
+#[tokio::test]
+async fn incorrectly_labeled_sse_delivers_first_frame_before_eof() {
+    use futures::FutureExt;
+    let vault = vault("sniff-stream");
+    let notices = warnings(&vault);
+    for prefix in [
+        "event: response.created\ndata: {\"type\":\"response.created\"}\n\n",
+        ": ping\n\n",
+    ] {
+        let source =
+            futures::stream::once(
+                async move { Ok::<_, std::io::Error>(bytes::Bytes::from(prefix)) },
+            )
+            .chain(futures::stream::pending());
+        let mut output = restore_stream(
+            source,
+            vault.clone(),
+            StreamMode::Json,
+            Arc::new(AtomicBool::new(false)),
+        );
+        assert!(
+            output.next().now_or_never().is_some(),
+            "response was buffered until EOF"
+        );
+    }
+    assert!(notices.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn plain_json_starts_before_eof_and_restores_at_every_utf8_boundary() {
+    use futures::FutureExt;
+    let vault = vault("json-stream-progress");
+    let secret = "synthetic-json-\"quote\"\\path\n🔑";
+    vault.register(secret).unwrap();
+    let mut request = json!({"content":secret});
+    vault.protect(&mut request).unwrap();
+    let wire = request.to_string();
+    for size in [1, 2, 3, 7, 31, 1000] {
+        let source = futures::stream::iter(
+            wire.as_bytes()
+                .chunks(size)
+                .map(|chunk| Ok::<_, std::io::Error>(bytes::Bytes::copy_from_slice(chunk)))
+                .collect::<Vec<_>>(),
+        );
+        let result = restore_stream(
+            source,
+            vault.clone(),
+            StreamMode::Json,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .collect::<Vec<_>>()
+        .await;
+        let output = result
+            .into_iter()
+            .flat_map(|c| c.unwrap().to_vec())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&output).unwrap()["content"],
+            secret
+        );
+    }
+    let source = futures::stream::once(async {
+        Ok::<_, std::io::Error>(bytes::Bytes::from_static(b"{\"content\":\"hello"))
+    })
+    .chain(futures::stream::pending());
+    let mut output = restore_stream(
+        source,
+        vault,
+        StreamMode::Json,
+        Arc::new(AtomicBool::new(false)),
+    );
+    assert!(output.next().now_or_never().is_some());
+}
+
+#[tokio::test]
+async fn json_transport_errors_release_held_original_bytes_once() {
+    let wire = b"{\"content\":\"prefix <localrouter-secret id='0011";
+    let source = futures::stream::iter(vec![
+        Ok(bytes::Bytes::from_static(wire)),
+        Err(std::io::Error::other("fixture disconnect")),
+    ]);
+    let output = restore_stream(
+        source,
+        vault("interrupted-json"),
+        StreamMode::Json,
+        Arc::new(AtomicBool::new(false)),
+    )
+    .collect::<Vec<_>>()
+    .await;
+    assert!(output.last().unwrap().is_err());
+    let actual: Vec<u8> = output
+        .into_iter()
+        .filter_map(Result::ok)
+        .flat_map(|c| c.to_vec())
+        .collect();
+    assert_eq!(actual, wire);
+}
+
+#[tokio::test]
+async fn json_invalid_utf8_releases_held_original_bytes_once() {
+    let first = b"{\"content\":\"prefix <localrouter-secret id='0011";
+    let source = futures::stream::iter(vec![
+        Ok::<_, std::io::Error>(bytes::Bytes::from_static(first)),
+        Ok(bytes::Bytes::from_static(b"\xffsuffix")),
+    ]);
+    let output = restore_stream(
+        source,
+        vault("invalid-json-utf8"),
+        StreamMode::Json,
+        Arc::new(AtomicBool::new(false)),
+    )
+    .collect::<Vec<_>>()
+    .await;
+    let actual: Vec<u8> = output
+        .into_iter()
+        .flat_map(|c| c.unwrap().to_vec())
+        .collect();
+    assert_eq!(
+        actual,
+        [first.as_slice(), b"\xffsuffix".as_slice()].concat()
+    );
+}
+
+#[tokio::test]
+async fn json_unrelated_escapes_remain_byte_exact() {
+    let wire = br#"{"text":"plain\n\u0061\ud83d\udd11 \/", "nested":{"value":"unchanged"}}"#;
+    assert_eq!(
+        restored(
+            wire.chunks(1).map(|c| c.to_vec()).collect(),
+            StreamMode::Json
+        )
+        .await,
+        wire
+    );
+}
+
+#[tokio::test]
+async fn oversized_chunk_releases_preceding_json_carry_before_passthrough() {
+    let first = b"{\"content\":\"prefix <localrouter-secret id='0011";
+    let second = vec![b'x'; LIMIT + 1];
+    let expected = [first.as_slice(), second.as_slice()].concat();
+    let actual = restored(vec![first.to_vec(), second], StreamMode::Json).await;
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn multiline_request_values_are_masked_across_rolling_window_boundaries() {
+    let vault = vault("rolling-request-value");
+    let secret = "synthetic-rolling-original-374159";
+    vault.register(secret).unwrap();
+    let notices = warnings(&vault);
+    let mut content = String::new();
+    for i in 0..6000 {
+        content.push_str(&format!("line {i}: {{\"html\":\"&amp;\",\"percent\":\"%41\",\"code\":\"hello\\nworld\"}} {secret}\n"));
+    }
+    let mut value = json!({"content":content});
+    vault.protect(&mut value).unwrap();
+    assert!(!value["content"].as_str().unwrap().contains(secret));
+    assert!(notices.lock().unwrap().is_empty());
+    let recovered: String = value["content"]
+        .as_str()
+        .unwrap()
+        .split_inclusive('\n')
+        .map(|line| vault.restore_text(line, false).unwrap())
+        .collect();
+    assert_eq!(recovered, content);
+}
+
+#[test]
+fn rolling_request_cuts_do_not_split_owned_multiline_markers() {
+    let vault = vault("rolling-owned-marker");
+    vault.register("original-to-mask").unwrap();
+    vault.register("Unmasked").unwrap();
+    let mut seed = json!({"content":"original-to-mask"});
+    vault.protect(&mut seed).unwrap();
+    let tag = seed["content"]
+        .as_str()
+        .unwrap()
+        .replace(" id=", "\nid=")
+        .replace(" usage=", "\nusage=");
+    let source = format!(
+        "{}{tag}\n{}original-to-mask",
+        "x\n".repeat(32750),
+        "x\n".repeat(70000)
+    );
+    let mut request = json!({"content":source});
+    vault.protect(&mut request).unwrap();
+    let result = request["content"].as_str().unwrap();
+    assert!(
+        result.contains(&tag),
+        "owned marker was changed by a window cut"
+    );
+    assert!(!result.contains("original-to-mask"));
+}
+
+#[tokio::test]
+async fn long_whitespace_prefix_does_not_lock_in_an_incorrect_sse_hint() {
+    use futures::FutureExt;
+    let vault = vault("whitespace-sniff");
+    let done = Arc::new(AtomicBool::new(false));
+    let source = futures::stream::iter(vec![
+        Ok::<_, std::io::Error>(bytes::Bytes::from(vec![b' '; 2048])),
+        Ok(bytes::Bytes::from_static(b"{\"content\":\"complete\"}")),
+    ])
+    .chain(futures::stream::pending());
+    let mut output = restore_stream(source, vault, StreamMode::Sse, done.clone());
+    assert_eq!(output.next().await.unwrap().unwrap().len(), 2048);
+    let second = output
+        .next()
+        .now_or_never()
+        .expect("JSON was buffered until EOF")
+        .unwrap()
+        .unwrap();
+    assert_eq!(second.as_ref(), b"{\"content\":\"complete\"}");
+    assert!(done.load(Ordering::Acquire));
+}
+
+#[tokio::test]
+async fn unrelated_code_is_byte_exact_through_fragmented_json_streams() {
+    for content in [
+        "const x = `value`;",
+        "```js\nconst x = `hello`;\n```",
+        "````json\n{\"x\":1}\n````",
+        "can't haven't didn't <localrouter-secret",
+        "&amp; %41 \\n",
+    ] {
+        let wire = json!({"content":content}).to_string().into_bytes();
+        for size in [1, 2, 7] {
+            let actual = restored(
+                wire.chunks(size).map(|c| c.to_vec()).collect(),
+                StreamMode::Json,
+            )
+            .await;
+            assert_eq!(actual, wire);
+        }
+    }
+}
+
+#[tokio::test]
+async fn transport_errors_preserve_a_staged_backtick_frame() {
+    let first = format!(
+        "data: {}\n\n",
+        json!({"type":"response.output_text.delta","item_id":"text","delta":"`"})
+    );
+    let source = futures::stream::iter(vec![
+        Ok(bytes::Bytes::from(first.clone())),
+        Err(std::io::Error::other("fixture disconnect")),
+    ]);
+    let output = restore_stream(
+        source,
+        vault("staged-backtick"),
+        StreamMode::Sse,
+        Arc::new(AtomicBool::new(false)),
+    )
+    .collect::<Vec<_>>()
+    .await;
+    assert!(output.last().unwrap().is_err());
+    let actual: Vec<u8> = output
+        .into_iter()
+        .filter_map(Result::ok)
+        .flat_map(|c| c.to_vec())
+        .collect();
+    assert_eq!(actual, first.as_bytes());
 }

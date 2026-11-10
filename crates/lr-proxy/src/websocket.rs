@@ -1631,7 +1631,7 @@ mod concurrent_restoration_tests {
         );
         let _ = start(&session, "first-synthetic-original", "response-a").await;
         let _ = start(&session, "second-synthetic-original", "response-b").await;
-        let held=serde_json::json!({"type":"response.function_call_arguments.delta","response_id":"response-a","item_id":"a","delta":"{\"input\":\"partial"}).to_string();
+        let held=serde_json::json!({"type":"response.function_call_arguments.delta","response_id":"response-a","item_id":"a","delta":"{\"input\":\"<localrouter-redacted"}).to_string();
         assert!(session.on_server_message(&held).await.unwrap().is_empty());
         let ambiguous=serde_json::json!({"type":"response.output_text.delta","item_id":"unassigned","delta":"unchanged"}).to_string();
         let output = session.on_server_message(&ambiguous).await.unwrap();
