@@ -111,7 +111,14 @@ impl ProxyInterceptor for ActiveInterceptor {
                 && inference
                 && (ex.method == "POST" || path.contains("/realtime"))
             {
-                self.firewall.secret_inspection_warning(ex,"Secret Scan has no inspection mapping for this endpoint; request forwarded unchanged");
+                let path = path.split('#').next().unwrap_or(path);
+                self.firewall.secret_inspection_warning(
+                    ex,
+                    &format!(
+                        "Unsupported endpoint for secret scanning: {} {}{}. LocalRouter does not know how to scan this request. The request was sent without scanning for secrets.",
+                        ex.method, ex.host, path
+                    ),
+                );
             }
             return RequestAction::Forward;
         };
@@ -344,7 +351,7 @@ mod tests {
 #[cfg(test)]
 mod protected_endpoint_tests {
     use super::*;
-    struct Protected(std::sync::atomic::AtomicUsize);
+    struct Protected(std::sync::Mutex<Vec<String>>);
     #[async_trait]
     impl Firewall for Protected {
         async fn evaluate(&self, _: &FirewallRequest) -> RequestAction {
@@ -353,8 +360,8 @@ mod protected_endpoint_tests {
         fn protects_secrets(&self, _: &str) -> bool {
             true
         }
-        fn secret_inspection_warning(&self, _: &ObservedExchange, _: &str) {
-            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        fn secret_inspection_warning(&self, _: &ObservedExchange, message: &str) {
+            self.0.lock().unwrap().push(message.into());
         }
     }
     #[tokio::test]
@@ -398,10 +405,39 @@ mod protected_endpoint_tests {
             interceptor.on_request(&auth).await,
             RequestAction::Forward
         ));
-        assert_eq!(firewall.0.load(std::sync::atomic::Ordering::Relaxed), 8);
+        assert_eq!(firewall.0.lock().unwrap().len(), 8);
         assert_eq!(
             wire::detect("/backend-api/codex/responses/compact"),
             Some(crate::wire::WireFormat::OpenAiResponses)
         );
+    }
+
+    #[tokio::test]
+    async fn unsupported_endpoint_warning_identifies_request_without_query_or_fragment() {
+        let firewall = Arc::new(Protected(Default::default()));
+        let interceptor = ActiveInterceptor::new(
+            PassiveInterceptor::new(Arc::new(lr_monitor::MonitorEventStore::new(4))),
+            firewall.clone(),
+        );
+        for path in [
+            "/backend-api/conversation?token=private-query#private-fragment",
+            "/backend-api/conversation#private-fragment",
+        ] {
+            let exchange = ObservedExchange {
+                method: "POST".into(),
+                host: "chatgpt.com".into(),
+                path: path.into(),
+                ..Default::default()
+            };
+            assert!(matches!(
+                interceptor.on_request(&exchange).await,
+                RequestAction::Forward
+            ));
+        }
+        let messages = firewall.0.lock().unwrap();
+        assert_eq!(messages.len(), 2);
+        for message in messages.iter() {
+            assert_eq!(message, "Unsupported endpoint for secret scanning: POST chatgpt.com/backend-api/conversation. LocalRouter does not know how to scan this request. The request was sent without scanning for secrets.");
+        }
     }
 }

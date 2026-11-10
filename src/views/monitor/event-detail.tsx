@@ -1343,6 +1343,13 @@ function SecretScanFindingCard({ finding, index, eventId, action }: { finding: M
 }
 
 function SecretScanDetail({ data, eventId }: { data: EventData; eventId: string }) {
+  if (data.action_taken === 'protect_warning' || data.action_taken === 'restore_warning') {
+    const outbound = data.action_taken === 'protect_warning'
+    return <ExchangeGrid><ExchangeCard title={outbound ? 'Protection diagnostic' : 'Restoration diagnostic'}>
+      <SectionedText className="rounded bg-muted p-3 text-sm whitespace-pre-wrap" text={String(data.error ?? data.text_preview ?? 'Warning details were not retained.')} />
+      <p className="text-xs text-muted-foreground">{outbound ? 'The request continued. Secret scanning was skipped or incomplete; this is not a successful scan result.' : 'The response was delivered. A possible secret reference could not be restored; its original content was preserved.'}</p>
+    </ExchangeCard></ExchangeGrid>
+  }
   if (data.action_taken === 'storage_warning' || data.action_taken === 'storage_recovered') {
     const failed = data.action_taken === 'storage_warning'
     return <ExchangeGrid><ExchangeCard title={failed ? 'Storage unavailable' : 'Storage recovered'} error={failed}>
@@ -1353,9 +1360,7 @@ function SecretScanDetail({ data, eventId }: { data: EventData; eventId: string 
   const findings: MonitorSecretFinding[] = Array.isArray(data.findings) ? data.findings : []
   const restored = data.action_taken === 'restore'
   return <ExchangeGrid>
-    <ExchangeCard title={data.action_taken === 'protect_warning' ? 'Protection diagnostic' : data.action_taken === 'restore_warning' ? 'Restoration diagnostic' : restored ? 'Restored secrets' : 'Detected secrets'}>
-      {data.action_taken === 'protect_warning' && <p className="text-xs text-muted-foreground">The request continued with incomplete protection. Content that could not be inspected or masked may have reached the provider.</p>}
-      {data.action_taken === 'restore_warning' && <p className="text-xs text-muted-foreground">The response was delivered. A possible reference or local validation issue is recorded below; original values are never included in this diagnostic.</p>}
+    <ExchangeCard title={restored ? 'Restored secrets' : 'Detected secrets'}>
       <div className="grid grid-cols-3 gap-2 text-xs">
         <Field label={restored ? 'References restored' : 'Findings'} value={String(data.findings_count ?? findings.length)} />
         {data.rules_count > 0 && <Field label="Rules checked" value={String(data.rules_count)} />}
