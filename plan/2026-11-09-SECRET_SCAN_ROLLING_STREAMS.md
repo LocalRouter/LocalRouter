@@ -7,8 +7,8 @@
 - [x] Test coverage review: exercise new branches and error/fallback paths.
 - [x] Bug hunt: independently reread implementation for corruption, leakage, races, cancellation, and progress bugs.
 - [x] Run stable workspace tests, all-target Clippy, formatting, frontend/shared website checks as applicable; rerun installed Codex and Claude Code through isolated file-mode debug app before master push.
-- [ ] Commit and push own validated changes with signed user identity; integrate current master with merge commits, preserving concurrent work.
-- [ ] Dispatch exact-commit release validation, publish next release, monitor all delivery workflows and verify assets/signatures/downloads.
+- [x] Commit and push own validated changes with signed user identity; integrate current master with merge commits, preserving concurrent work.
+- [x] Dispatch exact-commit release validation, publish next release, monitor all delivery workflows and verify assets/signatures/downloads.
 
 Production v0.0.181 inspection found duplicate decoder work exhausts the budget on ordinary code, SSE can be classified as JSON and buffered to EOF, generic restoration warnings obscure causes, and cancelled streams are labeled as failed without cause. No production configuration, secret, or Keychain changes are authorized or needed for development. Use isolated mock/file storage for tests; never run native Keychain smoke tests.
 
@@ -43,3 +43,12 @@ An overlapping workspace run hit the existing router test adaptive::stream_tests
 
 
 Final local checks: stable workspace tests passed 5,112 tests (84 explicitly ignored), all-target Clippy passed with -D warnings, formatting passed, and the debug build passed. Root TypeScript, 149 frontend unit tests, desktop production build, and website build/prerender/link checks passed. The Rust runner's strict whole-source snapshot flagged the documentation sentence corrected during its run; comparison proves that only the research Markdown changed, with all Rust/frontend source and the live-tested binary unchanged. That documentation was rebuilt separately and passed all 34 route checks. Full evidence is in /tmp/localrouter-streaming-fix/final-validation-evidence.json. No failed or source-changing run is represented as an unchanged-source success.
+
+
+Release completed: feature commit ce76017d is merged into master at a3e287dc. Exact-source hosted CI 42726047873 passed (5,104 Linux tests, 84 explicitly ignored, real Codex conversation regression, Clippy and formatting). v0.0.182 release workflow 42730537835 completed successfully. The release tag 0c01d79c descends directly from the validated source; all intervening manifest/lockfile changes are version-only. Version and Nix metadata are merged back into master with 4db7b965.
+
+Public delivery evidence: all 32 expected assets are present and nonempty; all five updater signatures verify; both macOS bundles pass strict code-signature and stapled-notarization validation; the native Apple Silicon executable reports localrouter 0.0.182; all eight stable download links return the expected files. Docker workflow 42735399631 passed native amd64 and arm64 startup/version checks. Public GHCR tags 0.0.182, v0.0.182 and latest share the verified multi-architecture manifest digest, with both architecture configs identifying version 0.0.182. Both Flatpak and both Snap bundles are attached. The optional external package-manager publication job is skipped by existing repository configuration; this task does not claim those stores were published.
+
+Website deployment 42726026467 initially timed out in GitHub Pages syncing_files; retrying the failed deployment succeeded. Both updated documentation pages were verified live. The release-version refresh 42735768971 also passed. Deployment failure was reported in-session and is resolved. Detailed verification JSON/logs remain under /tmp/localrouter-release-182.
+
+Cleanup: task-owned debug app and Vite server stopped, copied test Codex authentication removed, temporary dependency symlinks removed. Production application/configuration and native Keychain were not mutated. Native Keychain smoke tests remain intentionally unrun. Input permission/approval gates still complete request JSON before provider dispatch; rolling inspection reduces scanner work, while response and tool-argument transformation is incremental.
