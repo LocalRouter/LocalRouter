@@ -69,6 +69,24 @@ macro_rules! uri_regex {
     };
 }
 
+// One grammar for standalone keys and JSON service-account keys. Preserve
+// the complete armor, accept escaped line breaks/slashes, and allow legacy
+// encryption metadata. Base64 lines cannot run into adjacent prose.
+macro_rules! private_key_regex {
+    ($prefix:literal, $label:literal, $suffix:literal) => {
+        concat!(
+            $prefix,
+            "-----BEGIN ", $label, "-----",
+            r"(?:\\+[nr]|[ \t\r\n])*",
+            r"(?:(?:Proc-Type|DEK-Info|Version|Comment):[^\r\n\\]+(?:\\+[nr]|[\r\n])+[ \t]*)*",
+            r"(?P<pem_body>(?:[A-Za-z0-9+/=]|\\+/){32,}(?:[ \t]*(?:\\+[nr]|[\r\n])+[ \t]*(?:[A-Za-z0-9+/=]|\\+/){16,})*)",
+            r"(?:(?:[ \t]*(?:\\+[nr]|[\r\n])+[ \t]*(?P<pem_tail>(?:[A-Za-z0-9+/=]|\\+/){1,15}))?",
+            r"(?:\\+[nr]|[ \t\r\n])*-----END ", $label, "-----)?",
+            $suffix
+        )
+    };
+}
+
 /// All built-in secret detection patterns
 pub fn builtin_patterns() -> Vec<PatternDef> {
     vec![
@@ -99,16 +117,20 @@ pub fn builtin_patterns() -> Vec<PatternDef> {
         PatternDef {
             id: "gcp-service-account",
             description: "Google Cloud Service Account Key",
-            regex: r#""private_key\\?"\s*:\s*\\?"(-----BEGIN (?:RSA )?PRIVATE KEY-----[^"]+?)\\?""#,
+            regex: private_key_regex!(
+                r#""private_key\\?"\s*:\s*\\?"("#,
+                r"(?:RSA )?PRIVATE KEY",
+                r#"(?:\\+[nr]|[ \t\r\n])*)\\?""#
+            ),
             secret_group: 1,
-            entropy: Some(4.0),
+            entropy_group: Some(2),
+            entropy: Some(0.0),
             keywords: &["private_key"],
             category: SecretCategory::CloudProvider,
             // Real keys contain runs like `AAAAA`; the material check below
             // rejects `-----BEGIN PRIVATE KEY-----\n...` stand-ins instead.
             placeholder: PlaceholderPolicy::Off,
             validate: Some(filters::pem_body_has_key_material),
-            ..BASE
         },
         PatternDef {
             id: "gcp-api-key",
@@ -360,12 +382,11 @@ pub fn builtin_patterns() -> Vec<PatternDef> {
         PatternDef {
             id: "private-key-pem",
             description: "Private Key (PEM format)",
-            // Header plus the key material that follows it (raw or with
-            // JSON-escaped newlines). A header quoted on its own in docs is
-            // not a key.
-            regex: r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----((?:\\[nr]|[A-Za-z0-9+/=\s])+)",
+            // Complete armor when present, or a truncated private block with
+            // enough material. A header quoted on its own is not a key.
+            regex: private_key_regex!("", r"(?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?", ""),
             entropy_group: Some(1),
-            entropy: Some(4.0),
+            entropy: Some(0.0),
             keywords: &["PRIVATE KEY"],
             category: SecretCategory::Generic,
             placeholder: PlaceholderPolicy::Off,
@@ -387,7 +408,7 @@ pub fn builtin_patterns() -> Vec<PatternDef> {
         PatternDef {
             id: "generic-api-key-assignment",
             description: "Generic API Key Assignment",
-            regex: r#"(?i)([A-Za-z0-9_.-]*(?:api[_-]?key|apikey|api[_-]?secret|api[_-]?token))\\?['"]?\s*[=:]\s*\\?['"]([A-Za-z0-9_\-/.+=~]{20,256})\\?['"]"#,
+            regex: r#"(?i)([A-Za-z0-9_.-]*(?:api[_-]?key|apikey|api[_-]?secret|api[_-]?token))\\?['"]?\s*[=:]\s*\\?['"]([A-Za-z0-9_\-/.+=~]{20,})\\?['"]"#,
             secret_group: 2,
             entropy: Some(3.5),
             keywords: &[
@@ -409,7 +430,7 @@ pub fn builtin_patterns() -> Vec<PatternDef> {
         PatternDef {
             id: "generic-password-assignment",
             description: "Generic Password Assignment",
-            regex: r#"(?i)([A-Za-z0-9_.-]*(?:password|passwd|passphrase|pwd))\\?['"]?\s*[=:]\s*\\?['"]([^\s'"\\`]{8,256})\\?['"]"#,
+            regex: r#"(?i)([A-Za-z0-9_.-]*(?:password|passwd|passphrase|pwd))\\?['"]?\s*[=:]\s*\\?['"]([^\s'"\\`]{8,})\\?['"]"#,
             secret_group: 2,
             entropy: Some(3.0),
             keywords: &["password", "passwd", "passphrase", "pwd"],
@@ -421,7 +442,7 @@ pub fn builtin_patterns() -> Vec<PatternDef> {
         PatternDef {
             id: "generic-secret-assignment",
             description: "Generic Secret Assignment",
-            regex: r#"(?i)([A-Za-z0-9_.-]*(?:secret|token|credential))\\?['"]?\s*[=:]\s*\\?['"]([A-Za-z0-9_\-/.+=~]{20,256})\\?['"]"#,
+            regex: r#"(?i)([A-Za-z0-9_.-]*(?:secret|token|credential))\\?['"]?\s*[=:]\s*\\?['"]([A-Za-z0-9_\-/.+=~]{20,})\\?['"]"#,
             secret_group: 2,
             entropy: Some(3.5),
             keywords: &["secret", "token", "credential"],
@@ -435,7 +456,7 @@ pub fn builtin_patterns() -> Vec<PatternDef> {
         PatternDef {
             id: "generic-api-key-unquoted",
             description: "Generic API Key Assignment (unquoted)",
-            regex: r#"(?i)\b([A-Za-z0-9_.-]*(?:api[_-]?key|apikey|api[_-]?secret|api[_-]?token))\s*[=:]\s*([A-Za-z0-9_\-/.+=~]{20,256})(?:[\s,;}\]&]|$)"#,
+            regex: r#"(?i)\b([A-Za-z0-9_.-]*(?:api[_-]?key|apikey|api[_-]?secret|api[_-]?token))\s*[=:]\s*([A-Za-z0-9_\-/.+=~]{20,})(?:[\s,;}\]&]|$)"#,
             secret_group: 2,
             entropy: Some(3.5),
             keywords: &[
@@ -456,7 +477,7 @@ pub fn builtin_patterns() -> Vec<PatternDef> {
         PatternDef {
             id: "generic-password-unquoted",
             description: "Generic Password Assignment (unquoted)",
-            regex: r#"(?i)\b([A-Za-z0-9_.-]*(?:password|passwd|passphrase|pwd))\s*[=:]\s*([^\s'"\\`$<>{}\[\],;&]{8,256})(?:[\s,;}\]&]|$)"#,
+            regex: r#"(?i)\b([A-Za-z0-9_.-]*(?:password|passwd|passphrase|pwd))\s*[=:]\s*([^\s'"\\`$<>{}\[\],;&]{8,})(?:[\s,;}\]&]|$)"#,
             secret_group: 2,
             entropy: Some(3.0),
             keywords: &["password", "passwd", "passphrase", "pwd"],
@@ -467,7 +488,7 @@ pub fn builtin_patterns() -> Vec<PatternDef> {
         PatternDef {
             id: "generic-secret-unquoted",
             description: "Generic Secret Assignment (unquoted)",
-            regex: r#"(?i)\b([A-Za-z0-9_.-]*(?:secret|token|credential))\s*[=:]\s*([A-Za-z0-9_\-/.+=~]{20,256})(?:[\s,;}\]&]|$)"#,
+            regex: r#"(?i)\b([A-Za-z0-9_.-]*(?:secret|token|credential))\s*[=:]\s*([A-Za-z0-9_\-/.+=~]{20,})(?:[\s,;}\]&]|$)"#,
             secret_group: 2,
             entropy: Some(3.5),
             keywords: &["secret", "token", "credential"],

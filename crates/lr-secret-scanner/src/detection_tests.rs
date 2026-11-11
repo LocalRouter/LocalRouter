@@ -601,3 +601,176 @@ fn vendor_rule_detection_matrix() {
         assert!(token.contains(&findings[0].raw_text));
     }
 }
+
+/// Structured encodings include zero runs; the armor/material grammar, rather
+/// than generic token entropy, determines whether this is private material.
+#[test]
+fn private_keys_include_complete_armor_and_work_through_nested_escaping() {
+    use base64::Engine as _;
+    let body = base64::engine::general_purpose::STANDARD
+        .encode([b"openssh-key-v1\0".as_slice(), &[0; 384]].concat());
+    for label in [
+        "OPENSSH PRIVATE KEY",
+        "RSA PRIVATE KEY",
+        "EC PRIVATE KEY",
+        "DSA PRIVATE KEY",
+        "PRIVATE KEY",
+        "ENCRYPTED PRIVATE KEY",
+        "PGP PRIVATE KEY BLOCK",
+    ] {
+        let wrapped = body
+            .as_bytes()
+            .chunks(64)
+            .map(|line| std::str::from_utf8(line).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let key = format!("-----BEGIN {label}-----\n{wrapped}\n-----END {label}-----");
+        let mut variant = key.clone();
+        for _ in 0..4 {
+            let finding = assert_single(
+                &format!("before [{variant}] after"),
+                "private-key-pem",
+                &variant,
+            );
+            let mut redaction = crate::redaction::Redaction::default();
+            redaction.add(&finding.raw_text);
+            assert_eq!(
+                redaction.apply_text(&format!("before [{variant}] after")),
+                format!("before [{}] after", crate::redaction::REDACTION_MESSAGE)
+            );
+            variant = serde_json::to_string(&variant).unwrap();
+            variant = variant[1..variant.len() - 1].to_owned();
+        }
+    }
+}
+
+#[test]
+fn private_key_slashes_legacy_headers_and_crlf_do_not_leave_material_behind() {
+    for metadata in [
+        "",
+        "Proc-Type: 4,ENCRYPTED\nDEK-Info: AES-256-CBC,92D726FA032CE10A\n\n",
+    ] {
+        let key = format!(
+            "-----BEGIN RSA PRIVATE KEY-----\n{metadata}{PEM_BODY}\n-----END RSA PRIVATE KEY-----"
+        );
+        for variant in [
+            key.clone(),
+            key.replace('\n', "\r\n"),
+            key.replace('/', "\\/"),
+            key.replace('\n', "\\n").replace('/', "\\/"),
+        ] {
+            assert_single(&variant, "private-key-pem", &variant);
+        }
+    }
+}
+
+#[test]
+fn private_key_documentation_and_public_material_are_not_secrets() {
+    for text in [
+        format!("-----BEGIN PUBLIC KEY-----\n{PEM_BODY}\n-----END PUBLIC KEY-----"),
+        format!("-----BEGIN CERTIFICATE-----\n{PEM_BODY}\n-----END CERTIFICATE-----"),
+        format!("ssh-ed25519 {PEM_BODY} workstation"),
+        format!("-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----", "A".repeat(160)),
+        "-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----".into(),
+        "Look for -----BEGIN OPENSSH PRIVATE KEY----- and then inspect the following lines containing the encoded private key material that the program reads".into(),
+    ] { assert_clean(&text); }
+}
+
+#[test]
+fn descriptive_camel_case_identifiers_are_not_generic_credentials() {
+    for name in [
+        "campaignSetupAndManagementContacts",
+        "CampaignSetupAndManagementContacts",
+        "customerBillingAndContactPreferences",
+        "getAccountSecurityConfiguration",
+    ] {
+        for key in ["password", "api_key", "client_secret", "token"] {
+            assert_clean(&format!("{key}=\"{name}\""));
+            assert_clean(&format!("{key}={name}"));
+        }
+    }
+    // Structured vendor prefixes are positive evidence even with word-like tails.
+    let token = format!("ghp_{}", "AccountBillingContactPreferenceManagement");
+    assert_single(&token, "github-pat", &token);
+}
+
+#[test]
+fn incidental_repetition_and_sequences_do_not_hide_real_credentials() {
+    for middle in ["AAAAA", "123456", "abcdef"] {
+        let value = format!("{RANDOM_24}{middle}{RANDOM_24}");
+        assert_single(
+            &format!("client_secret=\"{value}\""),
+            "generic-secret-assignment",
+            &value,
+        );
+        let token = format!("ghp_{value}");
+        assert_single(&token, "github-pat", &token);
+    }
+}
+
+#[test]
+fn long_named_credentials_are_never_silently_dropped_or_truncated() {
+    let value = RANDOM_24.repeat(100);
+    for (name, quoted_rule, bare_rule) in [
+        (
+            "api_key",
+            "generic-api-key-assignment",
+            "generic-api-key-unquoted",
+        ),
+        (
+            "client_secret",
+            "generic-secret-assignment",
+            "generic-secret-unquoted",
+        ),
+        (
+            "password",
+            "generic-password-assignment",
+            "generic-password-unquoted",
+        ),
+    ] {
+        assert_single(&format!("{name}=\"{value}\""), quoted_rule, &value);
+        assert_single(&format!("{name}={value}"), bare_rule, &value);
+    }
+}
+
+#[test]
+fn descriptive_identifier_filter_keeps_passwords_with_random_or_symbolic_material() {
+    for password in [
+        "CorrectHorseBatteryStaple7!",
+        "qZmXpRaLkJnYtBvWsDgHcF",
+        "r8VnQk9pWd2mYz7tLs4b",
+    ] {
+        assert_single(
+            &format!("password='{password}'"),
+            "generic-password-assignment",
+            password,
+        );
+    }
+}
+
+#[test]
+fn truncated_private_blocks_are_masked_without_absorbing_adjacent_prose() {
+    let partial = format!("-----BEGIN OPENSSH PRIVATE KEY-----\n{PEM_BODY}");
+    assert_single(
+        &format!("{partial}\nThis is unrelated prose about the tool result."),
+        "private-key-pem",
+        &partial,
+    );
+    let openssh = format!(
+        "-----BEGIN OPENSSH PRIVATE KEY-----\n{PEM_BODY}\n-----END OPENSSH PRIVATE KEY-----"
+    );
+    assert_single(
+        &serde_json::json!({"private_key": openssh}).to_string(),
+        "private-key-pem",
+        &openssh.replace('\n', "\\n"),
+    );
+    for label in ["PRIVATE KEY", "RSA PRIVATE KEY"] {
+        let private_key = format!("-----BEGIN {label}-----\n{PEM_BODY}\n-----END {label}-----\n");
+        let source = serde_json::json!({"private_key":private_key}).to_string();
+        assert_single(
+            &source,
+            "gcp-service-account",
+            &private_key.replace('\n', "\\n"),
+        );
+    }
+}

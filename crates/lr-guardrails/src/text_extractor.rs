@@ -68,12 +68,13 @@ pub fn extract_request_text(body: &serde_json::Value) -> Vec<ExtractedText> {
                                 // Tool-result arrays may also hold images. Only
                                 // text blocks are inspectable; skip binary data.
                                 match value {
-                                    serde_json::Value::String(text) => text.clone(),
+                                    serde_json::Value::String(text) => inspectable_tool_text(text),
                                     serde_json::Value::Array(blocks) => blocks
                                         .iter()
                                         .filter_map(|block| {
                                             block.get("text").and_then(|t| t.as_str())
                                         })
+                                        .map(inspectable_tool_text)
                                         .collect::<Vec<_>>()
                                         .join("\n"),
                                     _ => String::new(),
@@ -178,7 +179,7 @@ pub fn extract_request_text(body: &serde_json::Value) -> Vec<ExtractedText> {
     match body.get("input") {
         Some(serde_json::Value::String(s)) if !s.is_empty() => {
             texts.push(ExtractedText {
-                text: s.clone(),
+                text: inspectable_tool_text(s),
                 message_index: None,
                 label: "user input".to_string(),
                 role: "user".to_string(),
@@ -931,6 +932,29 @@ mod codex_search_tests {
                 &json!({"id":"metadata","model":"test","commands":commands})
             )
             .is_empty());
+        }
+    }
+}
+
+#[cfg(test)]
+mod encoded_mcp_result_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn tool_result_strings_and_parts_expose_originals_at_the_same_layer_as_masking() {
+        let key = "-----BEGIN OPENSSH PRIVATE KEY-----\nsynthetic-key-material\n-----END OPENSSH PRIVATE KEY-----";
+        let mcp =
+            json!({"content":[{"type":"text","text":json!({"private_key":key}).to_string()}]})
+                .to_string();
+        for request in [
+            json!({"model":"test","input":mcp}),
+            json!({"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"call-1","content":mcp}]}]}),
+            json!({"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"call-1","content":[{"type":"text","text":mcp},{"type":"image","source":{"type":"base64","data":"opaque-image"}}]}]}]}),
+        ] {
+            let texts = extract_request_text(&request);
+            assert!(texts.iter().any(|text| text.text.contains(key)));
+            assert!(texts.iter().all(|text| !text.text.contains("opaque-image")));
         }
     }
 }
