@@ -192,6 +192,18 @@ pub fn extract_request_text(body: &serde_json::Value) -> Vec<ExtractedText> {
         _ => {}
     }
 
+    // Codex standalone search uses the same optional input but also sends
+    // plaintext queries, find patterns and URLs in a commands object.
+    if body.get("model").is_some_and(serde_json::Value::is_string) {
+        if let Some(commands) = body.get("commands").filter(|v| v.is_object()) {
+            push_text(
+                inspectable_tool_input(commands),
+                "search commands",
+                &mut texts,
+            );
+        }
+    }
+
     // System One decisions (`/v1/systemone`): the `state` being evaluated
     // plus each question's instructions and option/level descriptions.
     if let Some(questions) = body.get("questions").and_then(|q| q.as_object()) {
@@ -863,5 +875,62 @@ mod continuation_content_tests {
             .iter()
             .filter(|t| t.label.contains("definitions") || t.label.contains("format"))
             .all(|t| t.label.starts_with("system") && t.role == "system"));
+    }
+}
+
+#[cfg(test)]
+mod codex_search_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn extracts_commands_only_searches_and_optional_input_without_escaping_originals() {
+        let secret = "synthetic\"quote\\path\n🔎";
+        let commands = json!({
+            "search_query":[{"q":format!("password={secret}"),"domains":["example.com"]}],
+            "find":[{"ref_id":"turn0search0","pattern":secret}],
+            "open":[{"ref_id":"https://example.com/?token=synthetic-url-value"}],
+            "future_operation":[{"text":"future-search-text"}]
+        });
+        for input in [
+            None,
+            Some(json!("conversation context")),
+            Some(json!([
+                {"type":"message","role":"user","content":[{"type":"input_text","text":"conversation context"}]},
+                {"type":"web_search_call","encrypted_content":"opaque-ciphertext"}
+            ])),
+        ] {
+            let mut request = json!({"id":"search-session","model":"test","commands":commands});
+            if let Some(input) = input {
+                request["input"] = input;
+            }
+            let texts = extract_request_text(&request);
+            let query = texts.iter().find(|t| t.label == "search commands").unwrap();
+            assert!(query.text.contains(secret));
+            assert!(query.text.contains("synthetic-url-value"));
+            assert!(query.text.contains("future-search-text"));
+            assert_eq!(query.role, "user");
+            assert!(!texts.iter().any(|t| t.text.contains("opaque-ciphertext")));
+            if request.get("input").is_some() {
+                assert!(texts
+                    .iter()
+                    .any(|t| t.text.contains("conversation context")));
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_commands_are_tolerated_and_metadata_is_not_scanned() {
+        for commands in [
+            json!(null),
+            json!(42),
+            json!([]),
+            json!("not a command object"),
+        ] {
+            assert!(extract_request_text(
+                &json!({"id":"metadata","model":"test","commands":commands})
+            )
+            .is_empty());
+        }
     }
 }

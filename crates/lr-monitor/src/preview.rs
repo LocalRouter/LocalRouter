@@ -122,6 +122,11 @@ pub(crate) fn request(body: &Value) -> String {
             .map(single_line)
             .unwrap_or_default();
     }
+    if body.get("model").is_some_and(Value::is_string) {
+        if let Some(commands) = body.get("commands").filter(|v| v.is_object()) {
+            return single_line(&commands.to_string());
+        }
+    }
     if let Some(questions) = body.get("questions").and_then(Value::as_object) {
         return single_line(
             &questions
@@ -543,6 +548,22 @@ mod tests {
         assert_eq!(
             response(&serde_json::json!({"error":{"message":"Failed"}})),
             "Failed"
+        );
+    }
+}
+
+#[cfg(test)]
+mod standalone_search_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn displays_search_commands_instead_of_conversation_or_opaque_state() {
+        let body = json!({"model":"test","commands":{"search_query":[{"q":"actual search question"}]},"input":[{"role":"user","content":"old conversation"}]});
+        assert!(request(&body).contains("actual search question"));
+        assert!(!request(&body).contains("old conversation"));
+        assert_eq!(
+            response(&json!({"output":"Search answer","encrypted_output":"opaque bytes"})),
+            "Search answer"
         );
     }
 }

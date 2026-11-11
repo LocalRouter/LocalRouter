@@ -654,3 +654,127 @@ fn recovered_storage_preserves_old_and_outage_references_across_restart_and_purg
         new["content"].as_str().unwrap()
     );
 }
+
+#[test]
+fn search_json_restores_plaintext_without_rewriting_encrypted_output_or_protocol_ids() {
+    let vault = vault("search-json-state");
+    let secret = "synthetic\"quoted\\value\n🔎";
+    vault.register(secret).unwrap();
+    let mut request = json!({"id":secret,"model":"test","commands":{"search_query":[{"q":secret}]},"input":[{"type":"web_search_call","encrypted_content":secret}]});
+    vault.protect(&mut request).unwrap();
+    let tag = request["commands"]["search_query"][0]["q"]
+        .as_str()
+        .unwrap();
+    assert_ne!(tag, secret);
+    assert_eq!(request["id"], secret);
+    assert_eq!(request["input"][0]["encrypted_content"], secret);
+    let encrypted = format!("cipher:{tag}\\u0041");
+    let response = json!({"encrypted_output":encrypted,"output":format!("Found {tag}"),"results":[{"type":"text_result","ref_id":"turn0search0","url":"https://example.com/","snippet":tag}],"future_field":{"flag":true}});
+    let bytes = crate::wire::ResponseRestorer::new(vault.clone())
+        .json(&serde_json::to_vec(&response).unwrap())
+        .unwrap();
+    let restored: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(restored["output"], format!("Found {secret}"));
+    assert_eq!(restored["results"][0]["snippet"], secret);
+    assert_eq!(restored["encrypted_output"], encrypted);
+    assert_eq!(restored["results"][0]["ref_id"], "turn0search0");
+    assert_eq!(restored["future_field"], response["future_field"]);
+    let mut arguments = json!({"encrypted_output":tag});
+    vault.restore(&mut arguments, true).unwrap();
+    assert_eq!(
+        arguments["encrypted_output"], secret,
+        "application tool arguments are not provider state"
+    );
+}
+
+#[tokio::test]
+async fn fragmented_search_restoration_preserves_opaque_wire_and_client_isolation() {
+    let vault = vault("search-fragment-owner");
+    let secret = "synthetic\"quote\\path\n🔎";
+    vault.register(secret).unwrap();
+    let mut request = json!({"model":"test","commands":{"search_query":[{"q":secret}]}});
+    vault.protect(&mut request).unwrap();
+    let tag = request["commands"]["search_query"][0]["q"]
+        .as_str()
+        .unwrap();
+    let opaque = format!("cipher:{tag}");
+    let wire = json!({"encrypted_output":opaque,"output":tag,"results":[{"type":"text_result","ref_id":"turn0search0","snippet":tag}]}).to_string().replace("cipher:", "\\u0063ipher:");
+    for chunk_size in [1, 3, 7, 29] {
+        let source = futures::stream::iter(
+            wire.as_bytes()
+                .chunks(chunk_size)
+                .map(|c| Ok::<_, std::io::Error>(bytes::Bytes::copy_from_slice(c)))
+                .collect::<Vec<_>>(),
+        );
+        let output = restore_stream(
+            source,
+            vault.clone(),
+            StreamMode::Json,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+        let output: Vec<u8> = output.into_iter().flat_map(|c| c.to_vec()).collect();
+        let raw = String::from_utf8(output.clone()).unwrap();
+        assert!(
+            raw.contains("\\u0063ipher:"),
+            "opaque JSON escapes must be forwarded verbatim"
+        );
+        let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(value["output"], secret);
+        assert_eq!(value["results"][0]["snippet"], secret);
+        assert_eq!(value["encrypted_output"], opaque);
+    }
+    let foreign = super::nonblocking_tests::vault("search-fragment-foreign");
+    let source = futures::stream::iter(vec![Ok::<_, std::io::Error>(bytes::Bytes::from(
+        wire.clone(),
+    ))]);
+    let chunks = restore_stream(
+        source,
+        foreign,
+        StreamMode::Json,
+        Arc::new(AtomicBool::new(false)),
+    )
+    .collect::<Vec<_>>()
+    .await;
+    let output: Vec<u8> = chunks
+        .into_iter()
+        .flat_map(|c| c.unwrap().to_vec())
+        .collect();
+    assert_eq!(output, wire.as_bytes());
+}
+
+#[tokio::test]
+async fn search_json_starts_delivery_before_the_provider_finishes_its_body() {
+    let vault = vault("search-rolling-delivery");
+    let (send, receive) = tokio::sync::oneshot::channel::<()>();
+    let source = async_stream::stream! {
+        yield Ok::<_,std::io::Error>(bytes::Bytes::from_static(b"{\"encrypted_output\":\"opaque\",\"output\":\"Search prefix "));
+        receive.await.unwrap();
+        yield Ok(bytes::Bytes::from_static(b"tail\"}"));
+    };
+    let mut restored = restore_stream(
+        source,
+        vault,
+        StreamMode::Json,
+        Arc::new(AtomicBool::new(false)),
+    );
+    let first = tokio::time::timeout(std::time::Duration::from_secs(1), restored.next())
+        .await
+        .expect("the entire JSON response must not be buffered")
+        .unwrap()
+        .unwrap();
+    assert!(!first.is_empty());
+    send.send(()).unwrap();
+    let mut body = first.to_vec();
+    while let Some(chunk) = restored.next().await {
+        body.extend_from_slice(&chunk.unwrap());
+    }
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap()["output"],
+        "Search prefix tail"
+    );
+}

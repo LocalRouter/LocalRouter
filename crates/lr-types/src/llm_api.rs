@@ -27,7 +27,7 @@ pub enum LlmApi {
     Decisions,
     /// Embeddings (`/embeddings`).
     Embeddings,
-    /// Ranked retrieval, without a generated answer.
+    /// Search/retrieval, including Codex standalone web search.
     Search,
     /// Explicit page-bounded document extraction.
     Ocr,

@@ -49,6 +49,7 @@ flate2 = "1"
 brotli = "8"
 
 [dev-dependencies]
+lr-guardrails = { workspace = true }
 codex-client = { git = "https://github.com/openai/codex.git", tag = "rust-v0.124.0" }
 lr-api-keys = { workspace = true }
 tokio = { workspace = true }

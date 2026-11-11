@@ -34,6 +34,7 @@
 pub mod active;
 pub mod anthropic;
 pub mod cert;
+pub mod codex_search;
 pub mod decisions;
 pub mod error;
 pub mod interceptor;

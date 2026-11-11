@@ -1730,8 +1730,9 @@ impl Vault {
                     }) {
                         contains(value, entries)
                     } else {
-                        map.get("encrypted_content")
-                            .is_some_and(|v| contains(v, entries))
+                        ["encrypted_content", "encrypted_output"]
+                            .iter()
+                            .any(|key| map.get(*key).is_some_and(|v| contains(v, entries)))
                             || map.values().any(|v| signed_secret(v, entries))
                     }
                 }
@@ -2131,7 +2132,12 @@ fn is_protocol_object(map: &serde_json::Map<String, Value>) -> bool {
     (map.get("model").and_then(Value::as_str).is_some()
         && (map.contains_key("messages")
             || map.contains_key("input")
-            || map.contains_key("prompt")))
+            || map.contains_key("prompt")
+            || map.get("commands").is_some_and(Value::is_object)))
+        || (map.get("encrypted_output").is_some_and(Value::is_string)
+            && map.get("output").is_some_and(Value::is_string))
+        || (map.get("encrypted_content").is_some_and(Value::is_string)
+            && map.get("type").is_some_and(Value::is_string))
         || (map.get("name").and_then(Value::as_str).is_some()
             && (map.contains_key("parameters") || map.contains_key("input_schema")))
         || map.get("choices").is_some_and(Value::is_array)
@@ -2211,7 +2217,10 @@ fn visit_with_mode(
                     && protocol_object
                     && matches!(
                         key.as_str(),
-                        "encrypted_content" | "signature" | "thought_signature"
+                        "encrypted_content"
+                            | "encrypted_output"
+                            | "signature"
+                            | "thought_signature"
                     )
                 {
                     replaced.insert(key, item);
@@ -2238,6 +2247,7 @@ fn visit_with_mode(
                             | "role"
                             | "signature"
                             | "encrypted_content"
+                            | "encrypted_output"
                             | "finish_reason"
                             | "stop_reason"
                             | "status"

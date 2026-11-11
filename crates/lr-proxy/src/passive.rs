@@ -672,7 +672,9 @@ fn duplicate_label(ex: &ObservedExchange) -> Option<Vec<String>> {
 fn protocol_for(format: WireFormat) -> LlmProtocol {
     match format {
         WireFormat::AnthropicMessages => LlmProtocol::Anthropic,
-        WireFormat::OpenAiChat | WireFormat::OpenAiResponses => LlmProtocol::Openai,
+        WireFormat::OpenAiChat | WireFormat::OpenAiResponses | WireFormat::CodexSearch => {
+            LlmProtocol::Openai
+        }
         // Ollama's native dialect is closest to the OpenAI shape for the
         // monitor's purposes (messages + content + token counts).
         WireFormat::Ollama(_) => LlmProtocol::Openai,
@@ -687,6 +689,7 @@ fn api_for(format: WireFormat) -> LlmApi {
         WireFormat::AnthropicMessages => LlmApi::AnthropicMessages,
         WireFormat::OpenAiChat => LlmApi::ChatCompletions,
         WireFormat::OpenAiResponses => LlmApi::Responses,
+        WireFormat::CodexSearch => LlmApi::Search,
         WireFormat::Ollama(_) => LlmApi::OllamaChat,
         WireFormat::SystemOne => LlmApi::SystemOne,
         WireFormat::Decisions => LlmApi::Decisions,

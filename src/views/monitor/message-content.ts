@@ -10,6 +10,10 @@ export function contentText(content: unknown): string {
 
 export function requestMessages(body: Record<string, unknown> | undefined): Record<string, unknown>[] {
   if (!body) return []
+  if (typeof body.model === 'string' && isRecord(body.commands)) {
+    const { commands, ...context } = body
+    return [...requestMessages(context), { role: 'user', content: `Search commands:\n${JSON.stringify(commands, null, 2)}` }]
+  }
   if (Array.isArray(body.messages)) return body.messages.filter(isRecord)
   if (Array.isArray(body.input) && body.input.some(item => isRecord(item) && item.role)) {
     return body.input.filter(isRecord)
@@ -46,7 +50,7 @@ export function responseMessages(body: Record<string, unknown> | undefined): Rec
       tool_calls: calls.map(block => ({ id: block.id, function: { name: block.name, arguments: block.input } })),
     }]
   }
-  const text = body.output_text ?? body.text
+  const text = body.output_text ?? body.text ?? body.output
   return typeof text === 'string' ? [{ role: 'assistant', content: text }] : []
 }
 

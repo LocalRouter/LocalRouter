@@ -19,6 +19,8 @@ pub enum WireFormat {
     OpenAiChat,
     /// OpenAI Responses API (`POST .../responses`) — Codex CLI.
     OpenAiResponses,
+    /// Codex standalone web search (`POST .../alpha/search`), plain JSON.
+    CodexSearch,
     /// Ollama's native API (`POST /api/chat`, `POST /api/generate`), seen by
     /// the reverse proxy when it wraps a local Ollama. Streams NDJSON, not SSE.
     Ollama(ollama::OllamaEndpoint),
@@ -61,7 +63,9 @@ pub struct ResponseMeta {
 /// an LLM call we record (auth, telemetry, model listings, … pass untouched).
 pub fn detect(path: &str) -> Option<WireFormat> {
     let path = path.split('?').next().unwrap_or(path);
-    if anthropic::is_messages_path(path) {
+    if crate::codex_search::is_search_path(path) {
+        Some(WireFormat::CodexSearch)
+    } else if anthropic::is_messages_path(path) {
         Some(WireFormat::AnthropicMessages)
     } else if path.ends_with("/completions") {
         Some(WireFormat::OpenAiChat)
@@ -179,6 +183,7 @@ pub fn is_terminal_event(format: WireFormat, event: &Value) -> bool {
         // connection end instead. Neither does Ollama's native API — the
         // reverse proxy sees plain HTTP request/response pairs.
         WireFormat::OpenAiChat
+        | WireFormat::CodexSearch
         | WireFormat::Ollama(_)
         | WireFormat::SystemOne
         | WireFormat::Decisions => false,
@@ -210,6 +215,7 @@ pub fn parse_request(format: WireFormat, body: &Value) -> RequestMeta {
         WireFormat::AnthropicMessages => anthropic::parse_request(body),
         WireFormat::OpenAiChat => openai::parse_chat_request(body),
         WireFormat::OpenAiResponses => openai::parse_responses_request(body),
+        WireFormat::CodexSearch => crate::codex_search::parse_request(body),
         WireFormat::Ollama(endpoint) => ollama::parse_request(endpoint, body),
         WireFormat::SystemOne => systemone::parse_request(body),
         WireFormat::Decisions => crate::decisions::parse_request(body),
@@ -222,6 +228,7 @@ pub fn parse_response(format: WireFormat, body: &Value) -> ResponseMeta {
         WireFormat::AnthropicMessages => anthropic::parse_response(body),
         WireFormat::OpenAiChat => openai::parse_chat_response(body),
         WireFormat::OpenAiResponses => openai::parse_responses_response(body),
+        WireFormat::CodexSearch => crate::codex_search::parse_response(body),
         WireFormat::Ollama(endpoint) => ollama::parse_response(endpoint, body),
         WireFormat::SystemOne => systemone::parse_response(body),
         WireFormat::Decisions => crate::decisions::parse_response(body),
@@ -241,6 +248,10 @@ pub fn reconstruct_sse(format: WireFormat, raw: &str) -> (ResponseMeta, Value) {
         // it as the single JSON object it is.
         WireFormat::Decisions => match serde_json::from_str::<Value>(raw.trim()) {
             Ok(body) => (crate::decisions::parse_response(&body), body),
+            Err(_) => (ResponseMeta::default(), Value::Null),
+        },
+        WireFormat::CodexSearch => match serde_json::from_str::<Value>(raw.trim()) {
+            Ok(body) => (crate::codex_search::parse_response(&body), body),
             Err(_) => (ResponseMeta::default(), Value::Null),
         },
         WireFormat::SystemOne => match serde_json::from_str::<Value>(raw.trim()) {

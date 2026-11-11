@@ -5717,6 +5717,7 @@ dependencies = [
  "hyper-util",
  "lr-api-keys",
  "lr-config",
+ "lr-guardrails",
  "lr-monitor",
  "lr-monitoring",
  "lr-secret-scanner",
