@@ -101,6 +101,8 @@ struct Evidence {
     lite_seen: bool,
     custom_output_seen: bool,
     plaintext_after_disable: bool,
+    search_requests: Vec<Value>,
+    search_output_seen: bool,
 }
 struct Provider {
     evidence: Mutex<Evidence>,
@@ -108,6 +110,7 @@ struct Provider {
     transition: bool,
     websockets: bool,
     disable_after_first: bool,
+    search: bool,
 }
 
 fn find_marker(value: &Value) -> Option<String> {
@@ -172,6 +175,11 @@ impl Provider {
         let mut state = self.evidence.lock().unwrap();
         let warmup = request["generate"] == false;
         let stage = state.stages;
+        let tool_stage = if self.search {
+            stage.saturating_sub(1)
+        } else {
+            stage
+        };
         let protected = self.firewall.config_manager.get().secret_scanning.action
             == lr_config::SecretScanAction::Redact;
         state.plaintext_after_disable |=
@@ -195,6 +203,7 @@ impl Provider {
             state.marker = Some(marker);
         }
         state.custom_output_seen |= request.to_string().contains("custom_tool_call_output");
+        state.search_output_seen |= request.to_string().contains("Standalone search result:");
         if request.to_string().contains("function_call_output")
             || request.to_string().contains("custom_tool_call_output")
         {
@@ -228,8 +237,18 @@ impl Provider {
         let mut completed_output = Vec::new();
         if !warmup {
             let marker = state.marker.clone().unwrap_or_else(|| KEY.into());
-            let mut item = if stage < 2 {
-                let command = if stage == 0 {
+            let mut item = if self.search && stage == 0 {
+                let (_, namespace) = custom_exec(&effective, None)
+                    .expect("standalone search fixture requires the actual Code Mode tool");
+                let args =
+                    json!({"search_query":[{"q":format!("aws_secret_access_key={marker}")}]});
+                let mut item = json!({"type":"custom_tool_call","call_id":"call_search","name":"exec","input":format!("text(await tools.web__run({args}));")});
+                if let Some(namespace) = namespace {
+                    item["namespace"] = json!(namespace);
+                }
+                item
+            } else if tool_stage < 2 {
+                let command = if tool_stage == 0 {
                     format!("printf '%s' 'aws_secret_access_key={marker}'")
                 } else {
                     format!("printf '%s' '{marker}' > restored.env")
@@ -405,6 +424,40 @@ async fn provider_request(
             .body(Full::new(Bytes::from(json!({"models":[]}).to_string())))
             .unwrap());
     }
+    if path.ends_with("/alpha/search") {
+        assert!(
+            provider.search,
+            "standalone search must use the search fixture"
+        );
+        let compressed = req
+            .headers()
+            .get("content-encoding")
+            .is_some_and(|v| v == "zstd");
+        let bytes = req.into_body().collect().await.unwrap().to_bytes();
+        let bytes = if compressed {
+            zstd::stream::decode_all(bytes.as_ref()).unwrap()
+        } else {
+            bytes.to_vec()
+        };
+        let request: Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(
+            !request.to_string().contains(KEY),
+            "standalone search must not send the original to its provider"
+        );
+        let tag = find_marker(&request["commands"])
+            .expect("real standalone-search command must contain a masked reference");
+        provider
+            .evidence
+            .lock()
+            .unwrap()
+            .search_requests
+            .push(request);
+        let body = json!({"encrypted_output":format!("search-cipher:{tag}"),"output":format!("Standalone search result: {tag}"),"results":[]});
+        return Ok(Response::builder()
+            .header("content-type", "application/json")
+            .body(Full::new(Bytes::from(body.to_string())))
+            .unwrap());
+    }
     if !path.ends_with("/responses") {
         // ChatGPT Apps' optional MCP bootstrap is independent of inference.
         // Supply an empty synthetic server; no external tool is contacted.
@@ -545,6 +598,15 @@ async fn start_proxy(
 }
 
 async fn run_installed_codex(transition: bool, websockets: bool, disable_after_first: bool) {
+    run_installed_codex_with_search(transition, websockets, disable_after_first, false).await;
+}
+
+async fn run_installed_codex_with_search(
+    transition: bool,
+    websockets: bool,
+    disable_after_first: bool,
+    search: bool,
+) {
     let binary = std::env::var("LOCALROUTER_TEST_CODEX")
         .expect("set LOCALROUTER_TEST_CODEX to installed Codex CLI");
     // Codex deliberately refuses to create its helper aliases beneath /tmp
@@ -576,6 +638,7 @@ async fn run_installed_codex(transition: bool, websockets: bool, disable_after_f
         transition,
         websockets,
         disable_after_first,
+        search,
     });
     let (provider_port, roots, upstream) = start_provider(provider.clone()).await;
     let running = start_proxy(root.path(), firewall, &request.client_id, roots).await;
@@ -636,6 +699,9 @@ async fn run_installed_codex(transition: bool, websockets: bool, disable_after_f
             .arg(&workspace)
             .current_dir(&workspace)
             .kill_on_drop(true);
+        if search {
+            command.args(["-c", "web_search=\"live\""]);
+        }
         if resume {
             command
                 .args(["resume", "--last"])
@@ -708,9 +774,21 @@ async fn run_installed_codex(transition: bool, websockets: bool, disable_after_f
         "real CLI must send tool output back"
     );
     assert_eq!(
-        state.stages, 4,
+        state.stages,
+        4 + usize::from(search),
         "two executed tools, final assistant response, and resumed conversation"
     );
+    if search {
+        assert_eq!(
+            state.search_requests.len(),
+            1,
+            "the real CLI must call alpha/search once"
+        );
+        assert!(
+            state.search_output_seen,
+            "the real CLI must receive and return the search result to the model"
+        );
+    }
     assert!(state.marker.is_some(), "provider must see a placeholder");
     assert!(
         state.lite_seen,
@@ -754,6 +832,11 @@ async fn installed_codex_redact_http_lifecycle() {
     run_installed_codex(false, false, false).await;
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires installed Codex; local-only TLS provider and mock credential storage supported"]
+async fn installed_codex_standalone_search_redaction() {
+    run_installed_codex_with_search(false, false, false, true).await;
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires installed Codex and native OS credential storage; local TLS provider only"]
 async fn installed_codex_off_to_redact_websocket_lifecycle() {
     run_installed_codex(true, true, false).await;
@@ -777,6 +860,7 @@ async fn real_firewall_http_continuation_survives_mode_change_and_reconnect() {
         transition: true,
         websockets: false,
         disable_after_first: false,
+        search: false,
     });
     let (provider_port, roots, upstream) = start_provider(provider.clone()).await;
     let mut running = start_proxy(

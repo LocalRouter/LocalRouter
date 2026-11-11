@@ -1150,6 +1150,65 @@ mod secret_policy_tests {
         );
     }
     #[tokio::test]
+    async fn standalone_search_detects_new_query_secrets_with_optional_conversation_input() {
+        use lr_types::secret_context::SecretContext;
+        let secret = "Z9v4qW8rT2yU6iO0pA5sD1fG3hJ7kL9zX2cV4bNQ";
+        for context in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let (firewall, mut request) = fixture(
+                root.path(),
+                lr_config::LlmMode::Proxy,
+                Arc::new(lr_api_keys::MockKeychain::new()),
+            );
+            request.path = "/backend-api/codex/alpha/search".into();
+            request.body = json!({"id":"search-session","model":"local-test","commands":{"search_query":[{"q":format!("aws_secret_access_key={secret}")}],"open":[{"ref_id":"turn0search0"}]},"settings":{"external_web_access":true}});
+            if context {
+                request.body["input"] = json!([{"type":"message","role":"user","content":[{"type":"input_text","text":format!("aws_secret_access_key={secret}")}]}]);
+            }
+            let RequestAction::Protect { body, vault } = firewall.evaluate(&request).await else {
+                panic!("search must be protected without rejection")
+            };
+            let masked: Value = serde_json::from_slice(&body).unwrap();
+            assert!(!String::from_utf8_lossy(&body).contains(secret));
+            assert_eq!(masked["id"], "search-session");
+            assert_eq!(masked["commands"]["open"][0]["ref_id"], "turn0search0");
+            let tag = masked["commands"]["search_query"][0]["q"]
+                .as_str()
+                .unwrap()
+                .strip_prefix("aws_secret_access_key=")
+                .unwrap();
+            let mut response = json!({"encrypted_output":tag,"output":tag,"results":[]});
+            vault.restore(&mut response, false).unwrap();
+            assert_eq!(response["output"], secret);
+            assert_eq!(response["encrypted_output"], tag);
+        }
+    }
+    #[tokio::test]
+    async fn standalone_search_scanner_unavailable_and_invalid_bodies_do_not_block() {
+        let root = tempfile::tempdir().unwrap();
+        let (firewall, mut request) = fixture(
+            root.path(),
+            lr_config::LlmMode::Proxy,
+            Arc::new(lr_api_keys::MockKeychain::new()),
+        );
+        request.path = "/backend-api/codex/alpha/search".into();
+        *firewall.state.secret_scanner.write() = None;
+        for body in [
+            Value::Null,
+            json!({"model":"local-test","commands":[]}),
+            json!({"model":"local-test","commands":{"search_query":[{"q":"password=generated-unavailable-test-value"}]}}),
+        ] {
+            request.body = body.clone();
+            match firewall.evaluate(&request).await {
+                RequestAction::Forward => {}
+                RequestAction::Protect { body: bytes, .. } => {
+                    assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), body)
+                }
+                _ => panic!("an internal Secret Scan failure must not reject a search"),
+            }
+        }
+    }
+    #[tokio::test]
     async fn unreadable_encoding_proceeds_when_only_secret_inspection_is_unavailable() {
         let root = tempfile::tempdir().unwrap();
         let (firewall, mut request) = fixture(

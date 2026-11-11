@@ -131,3 +131,17 @@ test('storage outage causes and recovery stay searchable under Secret Scan', () 
   expect(mergeMonitorEvents([outage], [recovered], filter({ event_types: ['secret_scan'] }))).toEqual([recovered, outage])
   expect(matchesFilter(recovered, filter({ status: 'error' }))).toBe(false)
 })
+
+test('standalone Codex search displays commands alongside optional conversation input', () => {
+  const commands = { search_query: [{ q: 'synthetic query' }], find: [{ ref_id: 'turn0search0', pattern: 'example' }] }
+  for (const input of [undefined, 'conversation context', [{ type: 'message', role: 'user', content: 'conversation context' }]]) {
+    const body = { id: 'search-session', model: 'test', commands, input }
+    const original = JSON.stringify(body)
+    const messages = requestMessages(body)
+    expect(contentText(messages[messages.length - 1].content)).toContain('synthetic query')
+    expect(contentText(messages[messages.length - 1].content)).toContain('turn0search0')
+    if (input) expect(contentText(messages[0].content)).toBe('conversation context')
+    expect(JSON.stringify(body)).toBe(original)
+  }
+  expect(contentText(responseMessages({ encrypted_output: 'opaque-state', output: 'Search answer' })[0].content)).toBe('Search answer')
+})

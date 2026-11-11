@@ -202,7 +202,10 @@ impl JsonStream {
                             && !self.is_key
                             && matches!(
                                 self.key.as_str(),
-                                "signature" | "thought_signature" | "encrypted_content"
+                                "signature"
+                                    | "thought_signature"
+                                    | "encrypted_content"
+                                    | "encrypted_output"
                             );
                         if self.is_key {
                             self.key.clear();
