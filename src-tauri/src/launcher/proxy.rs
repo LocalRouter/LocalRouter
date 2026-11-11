@@ -1031,6 +1031,83 @@ mod secret_policy_tests {
         }
     }
     #[tokio::test]
+    async fn mcp_result_private_keys_are_protected_before_any_llm_transport() {
+        use lr_types::secret_context::SecretContext;
+        let material = "whtWShJK3py2Nh1bWey7TsPWCMmmPRsRIs0cg240wR5nPxMgnPFkNj6Dl0IbSfxxVikEf/GcBB/TEZ5PhCH5a2Px9L8ihbSWxS+T2qPjUrE3Xtt5QSqydTGneV72XJxG";
+        let key = format!(
+            "-----BEGIN OPENSSH PRIVATE KEY-----\n{material}\n-----END OPENSSH PRIVATE KEY-----"
+        );
+        let mcp = json!({"content":[{"type":"text","text":json!({"private_key":key}).to_string()}],"isError":false}).to_string();
+        for (path, provider, body) in [
+            (
+                "/backend-api/codex/responses",
+                "openai",
+                json!({"model":"local-test","input":[{"type":"function_call_output","call_id":"mcp-1","output":mcp}]}),
+            ),
+            (
+                "/v1/chat/completions",
+                "openai",
+                json!({"model":"local-test","messages":[{"role":"tool","tool_call_id":"mcp-1","content":mcp}]}),
+            ),
+            (
+                "/v1/messages",
+                "anthropic",
+                json!({"model":"local-test","messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"mcp-1","content":[{"type":"text","text":mcp}]}]}]}),
+            ),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let (firewall, mut request) = fixture(
+                root.path(),
+                lr_config::LlmMode::Proxy,
+                Arc::new(lr_api_keys::MockKeychain::new()),
+            );
+            request.path = path.into();
+            request.provider = provider.into();
+            request.body = body.clone();
+            let RequestAction::Protect {
+                body: protected,
+                vault,
+            } = firewall.evaluate(&request).await
+            else {
+                panic!("MCP result must proceed with protection on {path}")
+            };
+            assert!(
+                !String::from_utf8_lossy(&protected).contains(material),
+                "no private material may remain in forwarded MCP results on {path}"
+            );
+            assert!(String::from_utf8_lossy(&protected).contains("localrouter-redacted"));
+            let mut restored: Value = serde_json::from_slice(&protected).unwrap();
+            vault.restore(&mut restored, false).unwrap();
+            assert_eq!(
+                restored, body,
+                "MCP result structure and escaping must round-trip"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn descriptive_names_do_not_create_secret_mappings() {
+        let root = tempfile::tempdir().unwrap();
+        let storage = Arc::new(lr_api_keys::MockKeychain::new());
+        let (firewall, mut request) =
+            fixture(root.path(), lr_config::LlmMode::Proxy, storage.clone());
+        let name = "campaignSetupAndManagementContacts";
+        request.body = json!({"model":"local-test","input":[{"role":"user","content":format!("token='{name}'")} ]});
+        let RequestAction::Protect { body, .. } = firewall.evaluate(&request).await else {
+            panic!("descriptive name must proceed")
+        };
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).unwrap(),
+            request.body
+        );
+        assert!(
+            lr_secret_scanner::placeholders::Vault::list_client(storage, &request.client_id)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
     async fn encoded_known_originals_are_absent_from_the_actual_forwarded_code_body() {
         use lr_types::secret_context::SecretContext;
         let root = tempfile::tempdir().unwrap();

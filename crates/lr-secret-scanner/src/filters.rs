@@ -144,13 +144,17 @@ fn is_strict_placeholder(value: &str) -> bool {
     if is_explicit_placeholder(value) {
         return true;
     }
-    // xxxxx / 00000 / AAAAA filler.
-    if longest_repeat_run(value) >= 5 {
+    // Filler dominates a stand-in. A short repeated run inside an otherwise
+    // random credential is insufficient evidence to discard it.
+    let size = value.chars().count();
+    let repeated = longest_repeat_run(value);
+    if repeated >= 5 && repeated * 2 >= size {
         return true;
     }
     // abcdef / 123456, or a whole value built from counting sequences such as
     // A1b2C3d4E5f6 (the letters and the digits each count upward).
-    longest_sequential_run(value) >= 6 || is_counting_pattern(value)
+    let sequential = longest_sequential_run(value);
+    (sequential >= 6 && sequential * 2 >= size) || is_counting_pattern(value)
 }
 
 fn is_generic_placeholder(value: &str) -> bool {
@@ -182,21 +186,42 @@ fn is_generic_placeholder(value: &str) -> bool {
             }) || matches!(c, '-' | '_' | '.')
         })
     };
-    if wordy(false) || wordy(true) {
+    if wordy(false) || wordy(true) || is_descriptive_identifier(value) {
         return true;
     }
     // References to an environment variable: sk-...-API_KEY, MY_SERVICE_TOKEN.
     if ends_with_env_suffix(value) || has_upper_snake_identifier(value) {
         return true;
     }
-    // Counting sequences: short human-chosen values (secret-123, student123,
-    // shots-123456) or long values with an obvious run.
+    // Counting sequences dominate short fixture values. Long random values
+    // can contain a brief sequence without becoming documentation placeholders.
     let digit_run = longest_digit_sequence(value);
     if value.chars().count() <= 16 {
         digit_run >= 3
     } else {
-        digit_run >= 5 || longest_sequential_run(value) >= 5
+        let sequence = digit_run.max(longest_sequential_run(value));
+        sequence >= 5 && sequence * 3 >= value.chars().count()
     }
+}
+
+/// Several ordinary camel/Pascal-case words form a descriptive code identifier.
+/// This deliberately applies only to generic rules, never vendor-prefixed keys.
+fn is_descriptive_identifier(value: &str) -> bool {
+    if !value.bytes().all(|b| b.is_ascii_alphabetic()) {
+        return false;
+    }
+    let mut words = Vec::new();
+    let mut start = 0;
+    for (at, byte) in value.bytes().enumerate().skip(1) {
+        if byte.is_ascii_uppercase() {
+            words.push(&value[start..at]);
+            start = at;
+        }
+    }
+    words.push(&value[start..]);
+    words.len() >= 4
+        && words.iter().all(|word| word.len() >= 2)
+        && words.iter().filter(|word| word.len() >= 4).count() >= 3
 }
 
 /// Longest run of one repeated character.
@@ -392,18 +417,41 @@ pub fn jwt_header_is_valid(caps: &regex::Captures<'_>) -> bool {
     serde_json::from_slice::<serde_json::Value>(&decoded).is_ok_and(|v| v.get("alg").is_some())
 }
 
-/// Validator for PEM private keys: the body must hold a real amount of key
-/// material, not just a header quoted in documentation. Capture group 1 = the
-/// key text (body, optionally with its header; 64+ base64 characters needed).
+/// Armor plus at least 64 base64 characters distinguishes private material
+/// from a header or a prose example. Encoded zero runs are valid key structure;
+/// entropy and generic placeholder heuristics must not reject them.
 pub fn pem_body_has_key_material(caps: &regex::Captures<'_>) -> bool {
-    let Some(body) = caps.get(1).map(|m| m.as_str()) else {
+    let Some(body) = caps.name("pem_body").map(|m| m.as_str()) else {
         return false;
     };
-    let body = body.replace("\\n", "").replace("\\r", "");
-    body.chars()
-        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '='))
-        .count()
-        >= 64
+    let mut material = 0;
+    let mut alphabet = [false; 128];
+    let tail = caps.name("pem_tail").map_or("", |m| m.as_str());
+    let mut bytes = body.bytes().chain(tail.bytes()).peekable();
+    while let Some(byte) = bytes.next() {
+        match byte {
+            b'\\' => {
+                while bytes.peek() == Some(&b'\\') {
+                    bytes.next();
+                }
+                match bytes.next() {
+                    Some(b'n' | b'r') => {}
+                    Some(b'/') => {
+                        material += 1;
+                        alphabet[b'/' as usize] = true;
+                    }
+                    _ => return false,
+                }
+            }
+            b if b.is_ascii_whitespace() => {}
+            b if b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=') => {
+                material += 1;
+                alphabet[b as usize] = true;
+            }
+            _ => return false,
+        }
+    }
+    material >= 64 && alphabet.into_iter().filter(|used| *used).count() >= 4
 }
 
 /// Words in an assignment key that mark its value as opaque but not secret:
