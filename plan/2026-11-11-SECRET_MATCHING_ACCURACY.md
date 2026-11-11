@@ -6,7 +6,7 @@
 - [x] Test coverage review: cover changed paths and errors.
 - [x] Bug hunt: re-read detection, overlap handling, encoding and performance behavior.
 - [x] Run stable Rust workspace tests, all-target Clippy and formatting, plus applicable UI checks.
-- [ ] Commit signed changes and push the validated branch, preserving concurrent work.
+- [x] Commit signed changes and push the validated branch, preserving concurrent work.
 
 Use only synthetic credentials, mock/file credential storage and isolated build artifacts. Never print private material from user logs or credential stores. Do not restart production or cut a release without a new request.
 
@@ -21,3 +21,5 @@ Final classification review: the Google service-account rule retains its PKCS#8/
 Manual generated-key validation passed all 16 combinations of Ed25519/RSA/ECDSA OpenSSH and encrypted traditional PEM keys with raw, JSON, nested JSON and escaped-slash forms, asserting a single exact complete-key span. Generated credentials are isolated fixtures, never read from the production store. Evidence: /tmp/localrouter-matching-evidence/generated-key-validation.log. No frontend, command schema, endpoint or UI changes are included, so frontend builds and hosted CI/release dispatches are not needed for this change.
 
 Final validation passed on unchanged source: 5,156 workspace tests, zero failures, 86 ignored; focused scanner/extractor tests; explicit installed Codex standalone-search lifecycle regression; all-target Clippy with warnings denied; and formatting. The production firewall tests include exact MCP result masking/restoration for Codex Responses, Chat and Anthropic Messages. Matching changes affect model-bound content; this task does not add a new scanner on the raw local MCP response transport or remove existing stored mappings. Final evidence: /tmp/localrouter-matching-evidence/final/results.json and generated-key-validation.log. No native Keychain access, external model calls, frontend changes, hosted CI dispatch or release dispatch.
+
+Signed implementation commit 54ae3820 merged with a merge commit and pushed to master as e620e09d. Remote master was unchanged during integration. Removed task-only build artifacts and generated key files after validation; free disk space is about 38.1 GiB. Logs and non-content verification evidence remain in /tmp/localrouter-matching-evidence/.
