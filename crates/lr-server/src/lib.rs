@@ -11,6 +11,7 @@ pub mod openapi;
 pub mod privacy;
 pub mod realtime;
 pub mod routes;
+pub mod secret_policies;
 pub mod state;
 pub mod types;
 pub mod upstream_tools;

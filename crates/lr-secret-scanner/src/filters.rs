@@ -81,16 +81,22 @@ const GENERIC_WORDS: &[&str] = &[
     "getenv",
 ];
 
-/// AWS access key IDs identify a credential but do not authenticate requests.
-/// Keep them out of generic rules as well as the built-in rule list.
-pub fn is_aws_access_key_id(value: &str) -> bool {
-    value.len() == 20
+/// Public credential identifiers and validation keys do not authenticate alone.
+/// Apply this to generic assignments too, so an API-key label cannot reclassify them.
+pub fn is_public_credential_identifier(value: &str) -> bool {
+    (value.len() == 20
         && ["AKIA", "ASIA", "ABIA", "ACCA"]
             .iter()
             .any(|p| value.starts_with(p))
         && value[4..]
             .bytes()
-            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit()))
+        || value
+            .strip_prefix("SK")
+            .is_some_and(|tail| tail.len() == 32 && tail.bytes().all(|b| b.is_ascii_hexdigit()))
+        || value
+            .strip_prefix("pubkey-")
+            .is_some_and(|tail| tail.len() == 32 && tail.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
 /// Whether `value` is a placeholder rather than a real secret.
@@ -519,6 +525,80 @@ pub fn assignment_key_is_secret(caps: &regex::Captures<'_>) -> bool {
     !key_words(key.as_str())
         .iter()
         .any(|w| NON_SECRET_KEY_WORDS.contains(&w.as_str()))
+}
+
+/// Encoded JWT rules capture the entire credential, not header-classification groups.
+pub fn base64_jwt_is_secret(caps: &regex::Captures<'_>) -> bool {
+    let Some(encoded) = caps.get(0).map(|m| m.as_str()) else {
+        return false;
+    };
+    let Ok(bytes) = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .or_else(|_| base64::engine::general_purpose::STANDARD_NO_PAD.decode(encoded))
+    else {
+        return false;
+    };
+    let Ok(token) = std::str::from_utf8(&bytes) else {
+        return false;
+    };
+    let parts: Vec<_> = token.split('.').collect();
+    if parts.len() != 3 || parts[2].len() < 16 || crate::entropy::shannon_entropy(parts[2]) < 3.5 {
+        return false;
+    }
+    let Ok(header) =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(parts[0].trim_end_matches('='))
+    else {
+        return false;
+    };
+    serde_json::from_slice::<serde_json::Value>(&header).is_ok_and(|header| {
+        header
+            .get("alg")
+            .and_then(|a| a.as_str())
+            .is_some_and(|alg| !alg.eq_ignore_ascii_case("none"))
+    })
+}
+
+pub fn curl_user_has_secret(caps: &regex::Captures<'_>) -> bool {
+    let Some(value) = caps
+        .iter()
+        .skip(1)
+        .flatten()
+        .find(|m| !m.as_str().is_empty())
+        .map(|m| m.as_str().trim_matches(['\'', '"']))
+    else {
+        return false;
+    };
+    value.split_once(':').is_some_and(|(_, password)| {
+        password.len() >= 8
+            && crate::entropy::shannon_entropy(password) >= 3.0
+            && !is_placeholder(password, PlaceholderPolicy::Generic)
+    })
+}
+
+pub fn curl_header_has_secret(caps: &regex::Captures<'_>) -> bool {
+    // Basic alternatives are captures 1 and 5; apply the same decoded-value
+    // check as standalone Authorization headers rather than flagging examples.
+    for group in [1, 5] {
+        if let Some(value) = caps.get(group).filter(|m| !m.as_str().is_empty()) {
+            let Ok(bytes) = base64::engine::general_purpose::STANDARD
+                .decode(value.as_str())
+                .or_else(|_| {
+                    base64::engine::general_purpose::STANDARD_NO_PAD.decode(value.as_str())
+                })
+            else {
+                return false;
+            };
+            let Ok(value) = std::str::from_utf8(&bytes) else {
+                return false;
+            };
+            return value.split_once(':').is_some_and(|(_, password)| {
+                password.len() >= 8
+                    && crate::entropy::shannon_entropy(password) >= 3.0
+                    && !is_placeholder(password, PlaceholderPolicy::Generic)
+            });
+        }
+    }
+    true
 }
 
 #[cfg(test)]

@@ -229,6 +229,16 @@ impl ConfigManager {
             .unwrap_or_default()
     }
 
+    /// Read one client's remembered secret decisions without copying provider credentials.
+    pub fn client_secret_scanning(&self, client_id: &str) -> Option<ClientSecretScanningConfig> {
+        self.config
+            .read()
+            .clients
+            .iter()
+            .find(|client| client.id == client_id)
+            .map(|client| client.secret_scanning.clone())
+    }
+
     /// Update configuration with a function
     ///
     /// Updates the in-memory configuration and validates it.

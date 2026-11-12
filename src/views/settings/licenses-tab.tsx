@@ -2,6 +2,8 @@ import { open } from "@tauri-apps/plugin-shell"
 import { Heart } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card"
 
+import gitleaksLicense from "../../../crates/lr-secret-scanner/data/gitleaks/LICENSE?raw"
+
 interface Credit {
   name: string
   license?: string
@@ -10,6 +12,7 @@ interface Credit {
 
 const credits: Credit[] = [
   // Inspirations & runtime resources
+  { name: "Gitleaks detection rules", license: "MIT", url: "https://github.com/gitleaks/gitleaks" },
   { name: "Microsoft MCP Gateway", license: "MIT", url: "https://github.com/microsoft/mcp-gateway" },
   { name: "Microsoft Presidio", license: "MIT", url: "https://github.com/microsoft/presidio" },
   { name: "LLM Guard (ProtectAI)", license: "MIT", url: "https://github.com/protectai/llm-guard" },
@@ -90,6 +93,11 @@ export function LicensesTab() {
           ))}
         </CardContent>
       </Card>
+
+      <details className="rounded border p-3 text-xs">
+        <summary className="cursor-pointer font-medium">Gitleaks detection rules — MIT license</summary>
+        <pre className="mt-3 whitespace-pre-wrap text-muted-foreground">{gitleaksLicense}</pre>
+      </details>
 
       <div className="pt-4 border-t">
         <p className="text-xs text-muted-foreground text-center">

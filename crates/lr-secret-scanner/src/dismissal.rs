@@ -76,6 +76,8 @@ pub fn verify_secret(secret: &str, salt_b64: &str, iterations: u32, expected_b64
 pub struct DismissedDigest<'a> {
     pub hash: &'a str,
     pub iterations: u32,
+    /// Existing masked preview, used only to avoid KDF work for clear mismatches.
+    pub hint: Option<&'a str>,
 }
 
 /// Memoizes dismissal verdicts.
@@ -106,6 +108,30 @@ fn sha256(bytes: &[u8]) -> [u8; DIGEST_LEN] {
     out
 }
 
+// Hints never authorize a value: only a verified salted digest can do that.
+// Recognize our masked-preview formats; unknown/legacy hints always fall back
+// to verification. This keeps an exception for one value from requiring a slow
+// password KDF for every unrelated stored original on each cold request.
+fn hint_may_match(secret: &str, hint: Option<&str>) -> bool {
+    let Some(hint) = hint else {
+        return true;
+    };
+    let chars: Vec<_> = hint.chars().collect();
+    if chars.len() <= 10 {
+        return true;
+    }
+    let middle: String = chars[6..chars.len() - 4].iter().collect();
+    if middle != "…"
+        && !middle.chars().all(|c| c == '*')
+        && !(middle.starts_with("...(") && middle.ends_with(" chars)..."))
+    {
+        return true;
+    }
+    let prefix: String = chars[..6].iter().collect();
+    let suffix: String = chars[chars.len() - 4..].iter().collect();
+    secret.starts_with(&prefix) && secret.ends_with(&suffix)
+}
+
 impl DismissalCache {
     pub fn new() -> Self {
         Self::default()
@@ -128,6 +154,8 @@ impl DismissalCache {
             for e in entries {
                 material.extend_from_slice(e.hash.as_bytes());
                 material.extend_from_slice(&e.iterations.to_le_bytes());
+                material.extend_from_slice(e.hint.unwrap_or_default().as_bytes());
+                material.push(0);
             }
             sha256(&material)
         };
@@ -144,9 +172,9 @@ impl DismissalCache {
             }
         }
 
-        let verdict = entries
-            .iter()
-            .any(|e| verify_secret(secret, salt, e.iterations, e.hash));
+        let verdict = entries.iter().any(|e| {
+            hint_may_match(secret, e.hint) && verify_secret(secret, salt, e.iterations, e.hash)
+        });
 
         if let Ok(mut clients) = self.clients.lock() {
             let cached = clients.entry(client_id.to_string()).or_default();
@@ -217,6 +245,7 @@ mod tests {
             .map(|h| DismissedDigest {
                 hash: h,
                 iterations: 10,
+                hint: None,
             })
             .collect()
     }
@@ -291,5 +320,43 @@ mod tests {
         assert!(!verify_secret("hunter2", &salt, 10, "not base64!!"));
         assert!(!verify_secret("hunter2", &salt, 0, &hash));
         assert!(!verify_secret("hunter2", &salt, 10, ""));
+    }
+}
+
+#[cfg(test)]
+mod hint_tests {
+    use super::*;
+    #[test]
+    fn masked_preview_filters_never_replace_digest_verification() {
+        let salt = new_salt().unwrap();
+        let original = "prefix-r8nW4mQ2t7S9-suffix";
+        let hash = hash_secret(original, &salt, 10).unwrap();
+        let cache = DismissalCache::new();
+        for hint in [
+            "prefix…ffix",
+            "prefix**********ffix",
+            "prefix...(24 chars)...ffix",
+            "legacy hint",
+            "********",
+        ] {
+            let entries = [DismissedDigest {
+                hash: &hash,
+                iterations: 10,
+                hint: Some(hint),
+            }];
+            assert!(cache.is_dismissed("client", Some(&salt), &entries, original));
+            assert!(!cache.is_dismissed(
+                "client",
+                Some(&salt),
+                &entries,
+                "prefix-different-content-suffix"
+            ));
+            assert!(!cache.is_dismissed(
+                "client",
+                Some(&salt),
+                &entries,
+                "unrelated-credential-r7nQ"
+            ));
+        }
     }
 }

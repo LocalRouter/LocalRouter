@@ -1810,6 +1810,7 @@ pub async fn scan_request_for_secrets_fresh(
         .map(|e| lr_secret_scanner::dismissal::DismissedDigest {
             hash: &e.hash,
             iterations: e.iterations,
+            hint: Some(&e.hint),
         })
         .collect();
     let ignore_digests: Vec<_> = entries
@@ -1818,6 +1819,7 @@ pub async fn scan_request_for_secrets_fresh(
         .map(|e| lr_secret_scanner::dismissal::DismissedDigest {
             hash: &e.hash,
             iterations: e.iterations,
+            hint: Some(&e.hint),
         })
         .collect();
     let mut dismissed_count = 0;
@@ -3242,6 +3244,7 @@ mod tests {
             .map(|h| lr_secret_scanner::dismissal::DismissedDigest {
                 hash: h,
                 iterations: 10,
+                hint: None,
             })
             .collect();
 

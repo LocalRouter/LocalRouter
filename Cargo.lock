@@ -5888,6 +5888,7 @@ dependencies = [
  "utoipa",
  "utoipa-scalar",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]

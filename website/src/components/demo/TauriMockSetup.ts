@@ -16,7 +16,7 @@
  * See AGENTS.md "Adding/Modifying Tauri Commands" for full checklist.
  */
 
-import type { RedactedSecretInventory, RedactedSecretEntry, ListRedactedSecretsParams, RevealRedactedSecretParams, PurgeRedactedSecretsParams, SecretScanResult, TestSecretScanParams, DecodedSecretJwt, DiscoveredResourceIcon, LaunchResult } from '@app/types/tauri-commands'
+import type { DismissedSecret, SecretRuleMetadata, MarkRedactedSecretNotSecretParams, RedactedSecretInventory, RedactedSecretEntry, ListRedactedSecretsParams, RevealRedactedSecretParams, PurgeRedactedSecretsParams, SecretScanResult, TestSecretScanParams, DecodedSecretJwt, DiscoveredResourceIcon, LaunchResult } from '@app/types/tauri-commands'
 
 import { mockIPC, mockWindows, clearMocks } from '@tauri-apps/api/mocks'
 import { emit } from '@tauri-apps/api/event'
@@ -1417,6 +1417,7 @@ function mockMcpAccess(client: { mcp_permissions?: { global?: string; servers?: 
 
 let demoSecretStore: RedactedSecretEntry[] | null = null
 const demoSecretOriginals = new Map<string, string>()
+const demoSecretDecisions = new Map<string, { clientId: string; referenceId: string; decision: DismissedSecret }>()
 function storedDemoSecrets(): RedactedSecretEntry[] {
   if (demoSecretStore) return demoSecretStore
   const now = Math.floor(Date.now() / 1000)
@@ -1426,7 +1427,7 @@ function storedDemoSecrets(): RedactedSecretEntry[] {
     demoSecretOriginals.set(id, original)
     return { client_id: client.id, client_name: client.name, reference_id: id,
       placeholder: `<localrouter-redacted id='${id}' usage='Unmasked when returned verbatim'/>`,
-      masked_value: 'demo…tial', last_used_at: now - 3600, expires_at: now - 3600 + 14 * 86400, expired: false, revoked: false }
+      masked_value: 'demo…tial', last_used_at: now - 3600, expires_at: now - 3600 + 14 * 86400, expired: false, revoked: false, ignored: false }
   })
   return demoSecretStore
 }
@@ -5486,6 +5487,17 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     for (const owned of storedDemoSecrets().filter(item => item.client_id === entry.client_id)) { owned.last_used_at = now; owned.expires_at = now + 14 * 86400 }
     return original
   },
+  'mark_redacted_secret_not_secret': (args?: MarkRedactedSecretNotSecretParams): null => {
+    const entry = storedDemoSecrets().find(entry => entry.client_id === args?.clientId && entry.reference_id === args.referenceId)
+    if (!entry || entry.revoked || entry.expired) throw new Error('Secret mapping has expired or was purged')
+    entry.ignored = true
+    const id = `demo-allow-${entry.client_id}-${entry.reference_id}`
+    demoSecretDecisions.set(id, { clientId: entry.client_id, referenceId: entry.reference_id,
+      decision: { id, redact: false, hash: 'demo-only-digest', iterations: 600000,
+        rule_id: 'stored-secret-reference', rule_description: 'Marked as not a secret', hint: entry.masked_value, dismissed_at: new Date().toISOString() } })
+    void emit('secret-store-changed')
+    return null
+  },
   'purge_redacted_secrets': (args?: PurgeRedactedSecretsParams): number => {
     const entries = storedDemoSecrets()
     const removed = entries.filter(entry => (!args?.clientId || entry.client_id === args.clientId) && (!args?.referenceId || entry.reference_id === args.referenceId))
@@ -5521,6 +5533,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     }
     for (const match of input.matchAll(/(?:aws[_-]?)?secret[_-]?access[_-]?key["']?\s*[=:]\s*["']?([A-Za-z0-9/+=]{40})(?:[^A-Za-z0-9/+=]|$)/gi)) add(match[1], 'aws-secret-access-key', 'AWS Secret Access Key', 'Cloud Provider')
     for (const match of input.matchAll(/ghp_[A-Za-z0-9]{36}/g)) add(match[0], 'github-pat', 'GitHub Personal Access Token', 'Version Control')
+    for (const match of input.matchAll(/\bnpm_[A-Za-z0-9]{36}\b/g)) add(match[0], 'npm-access-token', 'npm access token', 'Generic')
     for (const match of input.matchAll(/\bpassword\s*=\s*(['"])([^'"\n]{8,})\1/gi)) add(match[2], 'generic-password', 'Password assignment', 'Generic')
     for (const match of input.matchAll(/postgres(?:ql)?:\/\/[^:\s]+:([^@\s]+)@/g)) add(match[1], 'database-password', 'Database password', 'Database')
     let redacted = input
@@ -5545,9 +5558,10 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       scan_duration_ms: 1, rules_evaluated: 30,
     }
   },
-  'get_secret_scanning_patterns': () => [
-    { id: 'aws-secret-access-key', description: 'AWS Secret Access Key', regex: '(?i)aws_secret_access_key\\s*[=:]\\s*([A-Za-z0-9/+=]{40})', category: 'Cloud Provider', entropy_threshold: 4.0, keywords: ['secret'] },
-    { id: 'github-pat', description: 'GitHub Personal Access Token', regex: 'ghp_[A-Za-z0-9]{36,}', category: 'Version Control', entropy_threshold: 3.5, keywords: ['ghp_'] },
+  'get_secret_scanning_patterns': (): SecretRuleMetadata[] => [
+    { id: 'aws-secret-access-key', description: 'AWS Secret Access Key', regex: '(?i)aws_secret_access_key\\s*[=:]\\s*([A-Za-z0-9/+=]{40})', category: 'Cloud Provider', entropy_threshold: 4.0, keywords: ['secret'], source: 'LocalRouter', source_version: null },
+    { id: 'github-pat', description: 'GitHub Personal Access Token', regex: 'ghp_[A-Za-z0-9]{36,}', category: 'Version Control', entropy_threshold: 3.5, keywords: ['ghp_'], source: 'LocalRouter', source_version: null },
+    { id: 'npm-access-token', description: 'npm access token', regex: 'npm_[A-Za-z0-9]{36}', category: 'Generic', entropy_threshold: 2, keywords: ['npm_'], source: 'Gitleaks', source_version: 'v8.30.1' },
   ],
 
   // ============================================================================
@@ -5674,18 +5688,18 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'reveal_monitor_secret': () => 'synthetic-demo-secret',
   'ignore_secret_permanently': () => null,
   'redact_secret_permanently': () => null,
-  'list_client_dismissed_secrets': () => [
-    {
-      id: 'demo-dismissed-1',
-      hash: 'ZGVtby1kaWdlc3Q=',
-      iterations: 600000,
-      rule_id: 'generic-password-assignment',
-      rule_description: 'Generic Password Assignment',
-      hint: 'your_m*********word',
-      dismissed_at: '2026-07-30T12:00:00Z',
-    },
-  ],
-  'remove_client_dismissed_secret': () => null,
+  'list_client_dismissed_secrets': (args?: { clientId: string }): DismissedSecret[] => [...demoSecretDecisions.values()].filter(item => item.clientId === args?.clientId).map(item => item.decision),
+  'remove_client_dismissed_secret': (args?: { clientId: string; entryId: string | null }): null => {
+    for (const [id, item] of demoSecretDecisions) {
+      if (item.clientId === args?.clientId && (!args.entryId || args.entryId === id)) {
+        demoSecretDecisions.delete(id)
+        const entry = storedDemoSecrets().find(entry => entry.client_id === item.clientId && entry.reference_id === item.referenceId)
+        if (entry) entry.ignored = false
+      }
+    }
+    void emit('secret-store-changed')
+    return null
+  },
   'debug_trigger_firewall_popup': (args: Record<string, unknown>) => {
     const count = args?.sendMultiple ? 3 : 1
     toast.info(`Firewall popup triggered (demo, ${count} popup${count > 1 ? 's' : ''})`)

@@ -1,6 +1,9 @@
 //! Regex-based secret detection engine with keyword pre-filtering
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{Arc, OnceLock},
+};
 
 use aho_corasick::AhoCorasick;
 use tracing::warn;
@@ -19,82 +22,102 @@ pub struct RuleMetadata {
     pub category: String,
     pub entropy_threshold: Option<f32>,
     pub keywords: Vec<String>,
+    pub source: String,
+    pub source_version: Option<String>,
 }
 
 /// Compiled regex engine with keyword pre-filtering
 pub struct RegexEngine {
     /// All compiled rules
-    rules: Vec<SecretRule>,
+    rules: Arc<Vec<SecretRule>>,
     /// Aho-Corasick automaton for keyword pre-filtering
     /// Maps keyword index -> list of rule indices that use that keyword
-    keyword_automaton: Option<AhoCorasick>,
-    keyword_to_rules: Vec<Vec<usize>>,
+    keyword_automaton: Option<Arc<AhoCorasick>>,
+    keyword_to_rules: Arc<Vec<Vec<usize>>>,
     /// Global entropy threshold
     entropy_threshold: f32,
     /// Compiled allowlist patterns
     allowlist: Vec<regex::Regex>,
 }
 
-impl RegexEngine {
-    /// Build a new regex engine from builtin patterns
-    pub fn new(entropy_threshold: f32, allowlist: &[String]) -> Result<Self, String> {
-        let mut rules = Vec::new();
-        let mut all_keywords: Vec<String> = Vec::new();
-        let mut keyword_to_rules: Vec<Vec<usize>> = Vec::new();
+struct CompiledRules {
+    rules: Arc<Vec<SecretRule>>,
+    automaton: Option<Arc<AhoCorasick>>,
+    keyword_to_rules: Arc<Vec<Vec<usize>>>,
+}
+static COMPILED: OnceLock<Result<CompiledRules, String>> = OnceLock::new();
 
-        // Compile builtin patterns
-        for pattern in builtin_patterns() {
-            match Self::compile_pattern_def(&pattern) {
-                Ok(rule) => {
-                    let rule_idx = rules.len();
-                    for kw in pattern.keywords {
-                        let kw_lower = (*kw).to_lowercase();
-                        if let Some(pos) = all_keywords.iter().position(|k| k == &kw_lower) {
-                            keyword_to_rules[pos].push(rule_idx);
+impl RegexEngine {
+    /// Build a scanner using shared compiled local and upstream patterns.
+    pub fn new(entropy_threshold: f32, allowlist: &[String]) -> Result<Self, String> {
+        let catalog = COMPILED
+            .get_or_init(|| {
+                let mut specific = Vec::new();
+                let mut generic = Vec::new();
+                for pattern in builtin_patterns() {
+                    let rule = Self::compile_pattern_def(&pattern)?;
+                    if rule.id.starts_with("generic-")
+                        || rule.id.ends_with("-uri")
+                        || rule.id == "uri-credentials"
+                    {
+                        generic.push(rule);
+                    } else {
+                        specific.push(rule);
+                    }
+                }
+                specific.extend(crate::patterns::gitleaks::rules()?);
+                specific.extend(generic);
+                let mut all_keywords: Vec<String> = Vec::new();
+                let mut keyword_to_rules: Vec<Vec<usize>> = Vec::new();
+                for (index, rule) in specific.iter().enumerate() {
+                    for kw in &rule.keywords {
+                        let kw = kw.to_ascii_lowercase();
+                        if let Some(at) = all_keywords.iter().position(|k| k == &kw) {
+                            keyword_to_rules[at].push(index);
                         } else {
-                            all_keywords.push(kw_lower);
-                            keyword_to_rules.push(vec![rule_idx]);
+                            all_keywords.push(kw);
+                            keyword_to_rules.push(vec![index]);
                         }
                     }
-                    rules.push(rule);
                 }
-                Err(e) => {
-                    warn!("Failed to compile builtin pattern '{}': {}", pattern.id, e);
-                }
-            }
-        }
-
-        // Build Aho-Corasick automaton for keyword pre-filtering
-        let keyword_automaton = if all_keywords.is_empty() {
-            None
-        } else {
-            match AhoCorasick::builder()
-                .ascii_case_insensitive(true)
-                .build(&all_keywords)
-            {
-                Ok(ac) => Some(ac),
-                Err(e) => {
-                    warn!("Failed to build keyword automaton: {}", e);
+                let automaton = if all_keywords.is_empty() {
                     None
-                }
-            }
-        };
+                } else {
+                    match AhoCorasick::builder()
+                        .ascii_case_insensitive(true)
+                        .build(&all_keywords)
+                    {
+                        Ok(ac) => Some(Arc::new(ac)),
+                        Err(error) => {
+                            warn!("Keyword acceleration unavailable: {error}");
+                            None
+                        }
+                    }
+                };
+                Ok(CompiledRules {
+                    rules: Arc::new(specific),
+                    automaton,
+                    keyword_to_rules: Arc::new(keyword_to_rules),
+                })
+            })
+            .as_ref()
+            .map_err(Clone::clone)?;
 
         // Compile allowlist patterns
         let mut compiled_allowlist = Vec::new();
         for pattern in allowlist {
             match regex::Regex::new(pattern) {
                 Ok(r) => compiled_allowlist.push(r),
-                Err(e) => {
-                    warn!("Failed to compile allowlist pattern '{}': {}", pattern, e);
+                Err(_) => {
+                    warn!("An invalid Secret Scan allowlist pattern was ignored");
                 }
             }
         }
 
         Ok(Self {
-            rules,
-            keyword_automaton,
-            keyword_to_rules,
+            rules: catalog.rules.clone(),
+            keyword_automaton: catalog.automaton.clone(),
+            keyword_to_rules: catalog.keyword_to_rules.clone(),
             entropy_threshold,
             allowlist: compiled_allowlist,
         })
@@ -115,6 +138,7 @@ impl RegexEngine {
             category: pattern.category.clone(),
             placeholder: pattern.placeholder,
             validate: pattern.validate,
+            upstream: None,
         })
     }
 
@@ -134,6 +158,13 @@ impl RegexEngine {
                 category: r.category.to_string(),
                 entropy_threshold: r.entropy_threshold,
                 keywords: r.keywords.clone(),
+                source: if r.upstream.is_some() {
+                    "Gitleaks"
+                } else {
+                    "LocalRouter"
+                }
+                .into(),
+                source_version: r.upstream.as_ref().map(|u| u.version.clone()),
             })
             .collect()
     }
@@ -232,7 +263,17 @@ impl RegexEngine {
             // trailing delimiter can also begin the next assignment.
             let mut offset = 0;
             while let Some(captures) = rule.compiled_regex.captures_at(&text.text, offset) {
-                let Some(secret) = captures.get(rule.secret_group) else {
+                let selected = if rule.upstream.as_ref().is_some_and(|u| u.first_capture) {
+                    captures
+                        .iter()
+                        .skip(1)
+                        .flatten()
+                        .find(|m| !m.as_str().is_empty())
+                        .or_else(|| captures.get(0))
+                } else {
+                    captures.get(rule.secret_group)
+                };
+                let Some(secret) = selected else {
                     break;
                 };
                 if secret.as_str().is_empty() {
@@ -289,9 +330,10 @@ impl RegexEngine {
             return None;
         }
 
-        // AWS identifiers are public identifiers even in api_key/token
-        // assignments. Their secret access key is detected contextually.
-        if crate::filters::is_aws_access_key_id(secret) || is_placeholder(secret, rule.placeholder)
+        // Public identifiers remain public even in api_key/token assignments.
+        // Authentication secrets are detected separately from their IDs.
+        if crate::filters::is_public_credential_identifier(secret)
+            || is_placeholder(secret, rule.placeholder)
         {
             return None;
         }
@@ -299,7 +341,12 @@ impl RegexEngine {
             return None;
         }
 
-        if self.is_allowlisted(secret) {
+        if rule
+            .upstream
+            .as_ref()
+            .is_some_and(|upstream| upstream.is_allowed(secret, captures, &text.text))
+            || self.is_allowlisted(secret)
+        {
             return None;
         }
 

@@ -4934,6 +4934,8 @@ export interface SecretRuleMetadata {
   category: string
   entropy_threshold: number | null
   keywords: string[]
+  source: string
+  source_version: string | null
 }
 
 /** Params for get_secret_scanning_config - no params needed */
@@ -5722,6 +5724,7 @@ export interface MonitorSecretFinding {
 export interface RedactedSecretEntry {
   client_id: string
   client_name: string
+  ignored: boolean
   reference_id: string
   placeholder: string
   masked_value: string
@@ -5738,3 +5741,6 @@ export interface ListRedactedSecretsParams { clientId: string | null }
 export interface RevealRedactedSecretParams { clientId: string; referenceId: string }
 /** Params for purge_redacted_secrets; null client selects all clients. */
 export interface PurgeRedactedSecretsParams { clientId: string | null; referenceId: string | null }
+
+/** Params for mark_redacted_secret_not_secret; retain issued references for restoration. */
+export interface MarkRedactedSecretNotSecretParams { clientId: string; referenceId: string }

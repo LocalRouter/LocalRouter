@@ -315,8 +315,7 @@ export function SecretScanningView({ activeSubTab, onTabChange }: SecretScanning
               <CardHeader className="pb-2">
                 <CardTitle className="text-base">Detection Patterns ({patterns.length})</CardTitle>
                 <CardDescription>
-                  Built-in patterns derived from common API key, token, and credential formats.
-                  These patterns and their entropy thresholds determine what the scanner detects.
+                  Bundled Gitleaks {patterns.find(pattern => pattern.source === 'Gitleaks')?.source_version ?? ''} content rules plus LocalRouter’s format and false-positive checks. Scanning runs entirely on this device.
                 </CardDescription>
               </CardHeader>
               <CardContent className="pt-0">
@@ -328,7 +327,7 @@ export function SecretScanningView({ activeSubTab, onTabChange }: SecretScanning
                         {rules.map(rule => (
                           <div key={rule.id} className="bg-muted/50 rounded px-2 py-1 text-[11px]">
                             <div className="flex items-center justify-between">
-                              <span className="font-medium">{rule.description}</span>
+                              <span className="font-medium">{rule.description} <span className="text-muted-foreground font-normal">· {rule.source}</span></span>
                               {rule.entropy_threshold !== null && (
                                 <span className="text-muted-foreground">entropy &ge; {rule.entropy_threshold}</span>
                               )}

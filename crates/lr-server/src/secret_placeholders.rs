@@ -308,6 +308,7 @@ async fn run_scoped(
 /// Request-local lifecycle events use metadata only. Vault callbacks run after
 /// releasing credential locks, so Monitor sanitization can safely read the map.
 pub fn attach_monitor(state: &AppState, vault: &Vault, owner: &str, session: Option<&str>) {
+    crate::secret_policies::attach(state, vault, owner);
     let store = state.monitor_store.clone();
     let after_sequence = store
         .list(0, 1, None)

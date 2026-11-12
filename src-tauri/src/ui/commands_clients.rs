@@ -3067,81 +3067,21 @@ async fn store_secret_policy(
         .secret_finding_at(&request_id, finding_index)
         .ok_or_else(|| "This secret is no longer available".to_string())?;
 
-    // Settle the salt in its own atomic step, before hashing. Two popups can
-    // be open at once; if both minted a salt and wrote it with their digest,
-    // the second would invalidate the first's entry. Nothing rotates the salt
-    // once set, so after this the value is stable for the append below.
-    let fresh_salt = lr_secret_scanner::new_salt()?;
-    let mut salt = None;
-    config_manager
-        .update(|cfg| {
-            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
-                let s = client
-                    .secret_scanning
-                    .dismiss_salt
-                    .get_or_insert_with(|| fresh_salt.clone());
-                salt = Some(s.clone());
-            }
-        })
-        .map_err(|e| e.to_string())?;
-    let salt = salt.ok_or_else(|| format!("Client not found: {}", client_id))?;
-
-    // The KDF is intentionally slow — keep it off the async runtime's threads.
-    let iterations = lr_secret_scanner::DEFAULT_ITERATIONS;
-    let hash = {
-        let salt = salt.clone();
-        let secret = finding.raw_text.clone();
-        tokio::task::spawn_blocking(move || {
-            lr_secret_scanner::hash_secret(&secret, &salt, iterations)
-        })
-        .await
-        .map_err(|e| format!("Hashing failed: {e}"))??
-    };
-
-    let entry = lr_config::DismissedSecret {
+    lr_server::secret_policies::remember(
+        config_manager,
+        &state.secret_dismissal_cache,
+        &client_id,
+        lr_server::secret_policies::RememberedValue::new(
+            finding.raw_text,
+            finding.rule_id,
+            finding.rule_description,
+            finding.matched_text,
+        ),
         redact,
-        id: uuid::Uuid::new_v4().to_string(),
-        hash,
-        iterations,
-        rule_id: finding.rule_id.clone(),
-        rule_description: finding.rule_description.clone(),
-        hint: finding.matched_text.clone(),
-        dismissed_at: chrono::Utc::now().to_rfc3339(),
-    };
-
-    let mut found = false;
-    config_manager
-        .update(|cfg| {
-            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
-                found = true;
-                // Same salt + same value = same digest, so this also dedupes
-                // repeat dismissals of one secret.
-                if let Some(existing) = client
-                    .secret_scanning
-                    .dismissed_secrets
-                    .iter_mut()
-                    .find(|d| d.hash == entry.hash)
-                {
-                    existing.redact = redact;
-                } else {
-                    client.secret_scanning.dismissed_secrets.push(entry.clone());
-                }
-            }
-        })
-        .map_err(|e| e.to_string())?;
-
-    if !found {
-        return Err(format!("Client not found: {}", client_id));
-    }
-    config_manager.save().await.map_err(|e| e.to_string())?;
-    state.secret_dismissal_cache.invalidate(&client_id);
-
-    tracing::info!(
-        "Secret scan: saved value policy for a {} match for client {}",
-        finding.rule_id,
-        client_id
-    );
+    )
+    .await?;
     let _ = app.emit("clients-changed", ());
+    let _ = app.emit("secret-store-changed", ());
     Ok(())
 }
 
@@ -3191,7 +3131,10 @@ pub async fn remove_client_dismissed_secret(
     }
     config_manager.save().await.map_err(|e| e.to_string())?;
     state.secret_dismissal_cache.invalidate(&client_id);
-
+    state
+        .secret_dismissal_cache
+        .invalidate(&format!("redact:{client_id}"));
+    let _ = app.emit("secret-store-changed", ());
     let _ = app.emit("clients-changed", ());
     Ok(())
 }

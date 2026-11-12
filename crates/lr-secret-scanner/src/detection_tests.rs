@@ -774,3 +774,82 @@ fn truncated_private_blocks_are_masked_without_absorbing_adjacent_prose() {
         );
     }
 }
+
+#[test]
+fn embedded_gitleaks_vendor_formats_detect_full_values_in_realistic_contexts() {
+    let hex = "f3a9c1d7e5b2408697a1c3e5f7092b4d";
+    for (rule, token) in [
+        ("npm-access-token", format!("npm_{}", &RANDOM_40[..36])),
+        ("digitalocean-pat", format!("dop_v1_{}", hex.repeat(2))),
+        (
+            "digitalocean-access-token",
+            format!("doo_v1_{}", hex.repeat(2)),
+        ),
+        (
+            "sendgrid-api-token",
+            format!("SG.{}", &RANDOM_40.repeat(2)[..66]),
+        ),
+        ("shopify-access-token", format!("shpat_{hex}")),
+        ("shopify-shared-secret", format!("shpss_{hex}")),
+        (
+            "age-secret-key",
+            format!(
+                "AGE-SECRET-KEY-1{}",
+                &"QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L".repeat(2)[..58]
+            ),
+        ),
+    ] {
+        for text in [
+            token.clone(),
+            format!("credential='{token}'"),
+            serde_json::json!({"content":token}).to_string(),
+            format!("配置：{token}"),
+        ] {
+            assert_single(&text, rule, &token);
+        }
+    }
+}
+
+#[test]
+fn upstream_rules_keep_public_identifiers_and_documentation_unredacted() {
+    for text in [
+        "A new API token is generated from the account settings.",
+        "npn_some_random_package_name",
+        "npm_your_token_here_000000000000000000000000",
+        "AGE-SECRET-KEY-1QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ",
+        "curl -u user:password https://example.com",
+        "curl -u 'deploy:${PASSWORD}' https://example.com",
+        "curl -H 'Authorization: Basic dXNlcjpwYXNzd29yZA==' https://example.com",
+        "curl -H 'Authorization: Bearer local-token-for-research' https://example.com",
+    ] {
+        assert_clean(text);
+    }
+    let hex = "f3a9c1d7e5b2408697a1c3e5f7092b4d";
+    assert_clean(&format!("api_key='SK{hex}'"));
+    assert_clean(&format!("MAILGUN_PUBLIC_KEY='pubkey-{hex}'"));
+}
+
+#[test]
+fn upstream_alternation_captures_and_encoded_jwts_select_credentials_not_headers() {
+    use base64::Engine as _;
+    let token = format!("{JWT_HEAD_AND_CLAIMS}.{RANDOM_SIG}");
+    let encoded = base64::engine::general_purpose::STANDARD.encode(token);
+    assert_single(&encoded, "jwt-base64", &encoded);
+    let invalid = base64::engine::general_purpose::STANDARD
+        .encode(format!("{JWT_HEAD_AND_CLAIMS}.signature"));
+    assert_clean(&invalid);
+    let value = format!("deploy:{RANDOM_24}");
+    let finding = scan(&[&format!("curl -u '{value}' https://api.internal")]);
+    assert_eq!(finding.len(), 1);
+    assert_eq!(finding[0].rule_id, "curl-auth-user");
+    assert!(finding[0].raw_text.contains(RANDOM_24));
+}
+
+#[test]
+fn upstream_boolean_placeholders_do_not_hide_substrings_of_real_tokens() {
+    for word in ["true", "false", "null"] {
+        let tail = format!("{}{}{}", &RANDOM_24[..16], word, RANDOM_24);
+        let token = format!("npm_{}", &tail[..36]);
+        assert_single(&token, "npm-access-token", &token);
+    }
+}
