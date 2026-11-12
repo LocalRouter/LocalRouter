@@ -6,6 +6,38 @@ licenses of third-party dependencies used in this project.
 All third-party dependencies use permissive or weak-copyleft licenses that are compatible
 with AGPL-3.0-or-later distribution.
 
+## Bundled Gitleaks Detection Rules
+
+LocalRouter embeds content rules adapted from Gitleaks v8.30.1, commit
+`83d9cd684c87d95d656c1458ef04895a7f1cbd8e`, under the MIT license.
+Source: https://github.com/gitleaks/gitleaks
+The pinned source, checksums and conversion policy are in
+`crates/lr-secret-scanner/data/gitleaks/`.
+
+```text
+MIT License
+
+Copyright (c) 2019 Zachary Rice
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 ## License Categories
 
 | License | Type | Count |

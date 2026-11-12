@@ -62,6 +62,7 @@ pub struct SecretRule {
     pub placeholder: crate::filters::PlaceholderPolicy,
     /// Extra structural check on the match (None = none)
     pub validate: Option<crate::patterns::builtin::Validator>,
+    pub upstream: Option<crate::patterns::gitleaks::RuleChecks>,
 }
 
 /// A single secret match found during scanning

@@ -1,0 +1,7 @@
+{
+  "version": "v8.30.1",
+  "commit": "83d9cd684c87d95d656c1458ef04895a7f1cbd8e",
+  "repository": "https://github.com/gitleaks/gitleaks",
+  "config_sha256": "e163e53b9e7e8a8511e77271e2b323ed057759542a6d988258afe3a1fa329caf",
+  "license_sha256": "e3884b252b3bfc045e55be43a34d1e80da070bc6f804ac95bf4660e97d62ebc6"
+}

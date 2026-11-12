@@ -547,6 +547,8 @@ pub struct SecretOperation {
     pub occurrences: usize,
 }
 type OperationObserver = dyn Fn(SecretOperation) + Send + Sync;
+/// True means the original is explicitly allowed and must not be newly masked.
+type MaskExemptions = dyn Fn(&[&str]) -> Vec<bool> + Send + Sync;
 
 fn reference_counts(text: &str) -> BTreeMap<String, usize> {
     let mut counts = BTreeMap::new();
@@ -578,6 +580,7 @@ pub struct Vault {
     ephemeral: bool,
     retention_pin: bool,
     observer: Mutex<Option<Arc<OperationObserver>>>,
+    mask_exemptions: Mutex<Option<Arc<MaskExemptions>>>,
     epoch: Mutex<Option<u64>>,
     generation: Mutex<Option<u64>>,
     restored: AtomicBool,
@@ -607,6 +610,7 @@ impl Vault {
             ephemeral,
             retention_pin: true,
             observer: Mutex::new(None),
+            mask_exemptions: Mutex::new(None),
             epoch: Mutex::new(None),
             generation: Mutex::new(None),
             restored: AtomicBool::new(false),
@@ -700,6 +704,40 @@ impl Vault {
             crate::schema::ResponseContract::from_request(&request, false).unwrap_or_default();
         Ok(())
     }
+    pub fn set_mask_exemptions(&self, exemptions: Arc<MaskExemptions>) {
+        *self.mask_exemptions.lock().expect("secret mask exemptions") = Some(exemptions);
+    }
+    fn exemption_ids(&self, entries: &BTreeMap<String, Zeroizing<String>>) -> HashSet<String> {
+        let policy = self
+            .mask_exemptions
+            .lock()
+            .ok()
+            .and_then(|policy| policy.clone());
+        let Some(policy) = policy else {
+            return HashSet::new();
+        };
+        let decisions = policy(
+            &entries
+                .values()
+                .map(|value| value.as_str())
+                .collect::<Vec<_>>(),
+        );
+        if decisions.len() != entries.len() {
+            return HashSet::new();
+        }
+        entries
+            .keys()
+            .zip(decisions)
+            .filter(|(_, exempt)| *exempt)
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+    /// Read policy status without touching activity timestamps or removing capabilities.
+    pub fn mask_exempt_references(&self) -> AppResult<HashSet<String>> {
+        let _lock = STORE_LOCK.lock().map_err(|_| storage_error())?;
+        Ok(self.exemption_ids(&self.load()?))
+    }
+
     pub fn set_operation_observer(&self, observer: Arc<OperationObserver>) {
         let persistence = observer.clone();
         self.storage.observe_persistence(Arc::new(move |event| {
@@ -1709,6 +1747,12 @@ impl Vault {
             }
         }
         let count = entries.len();
+        let exempt = self.exemption_ids(&entries);
+        let mut masking_entries: BTreeMap<_, _> = entries
+            .iter()
+            .filter(|(id, _)| !exempt.contains(*id))
+            .map(|(id, value)| (id.clone(), value.clone()))
+            .collect();
         let mut redacted = BTreeMap::new();
         fn signed_secret(value: &Value, entries: &BTreeMap<String, Zeroizing<String>>) -> bool {
             fn contains(value: &Value, entries: &BTreeMap<String, Zeroizing<String>>) -> bool {
@@ -1740,7 +1784,7 @@ impl Vault {
                 _ => false,
             }
         }
-        if signed_secret(value, &entries) {
+        if signed_secret(value, &masking_entries) {
             self.signed_unmasked.store(true, Ordering::Release);
         }
         fn identity_contains_original(
@@ -1780,7 +1824,7 @@ impl Vault {
                 _ => false,
             }
         }
-        if identity_contains_original(value, &entries, true) {
+        if identity_contains_original(value, &masking_entries, true) {
             self.identity_unmasked.store(true, Ordering::Release);
         }
         visit_with_mode(
@@ -1799,7 +1843,7 @@ impl Vault {
                         Ok(None)
                     })?;
                 }
-                let masked = self.transform(text, &mut entries)?;
+                let masked = self.transform(text, &mut masking_entries)?;
                 if masked != text {
                     let before = reference_counts(text);
                     for (id, count) in reference_counts(&masked) {
@@ -1815,6 +1859,7 @@ impl Vault {
             false,
             true,
         )?;
+        entries.extend(masking_entries);
         if !entries.is_empty() && (entries.len() != count || self.active()) {
             self.save(&entries)?;
         }
@@ -1857,6 +1902,14 @@ impl SecretContext for Vault {
         unpin(&context.account);
         context.account = self.account.clone();
         context.retention_pin = false;
+        *context
+            .mask_exemptions
+            .lock()
+            .expect("diagnostic mask exemptions") = self
+            .mask_exemptions
+            .lock()
+            .expect("secret mask exemptions")
+            .clone();
         let epoch = *self.epoch.lock().expect("secret owner epoch");
         *context.epoch.lock().expect("diagnostic owner epoch") = epoch;
         if self.restore_only.load(Ordering::Acquire) {
@@ -1870,8 +1923,12 @@ impl SecretContext for Vault {
         }
         let _lock = STORE_LOCK.lock().map_err(|_| storage_error())?;
         let entries = self.load()?;
+        let exempt = self.exemption_ids(&entries);
         let mut replacements = Vec::new();
         for (id, secret) in &entries {
+            if exempt.contains(id) {
+                continue;
+            }
             let tag = marker(id);
             let encoded = serde_json::to_string(secret.as_str()).map_err(|_| storage_error())?;
             let escaped = &encoded[1..encoded.len() - 1];

@@ -2885,6 +2885,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::rebuild_secret_scanner,
             ui::commands_secret_store::list_redacted_secrets,
             ui::commands_secret_store::reveal_redacted_secret,
+            ui::commands_secret_store::mark_redacted_secret_not_secret,
             ui::commands_secret_store::purge_redacted_secrets,
             ui::commands::get_secret_scanning_config,
             ui::commands::update_secret_scanning_config,

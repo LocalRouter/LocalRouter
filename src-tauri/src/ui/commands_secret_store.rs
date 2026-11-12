@@ -10,6 +10,7 @@ use tauri::{Emitter, State};
 pub struct RedactedSecretEntry {
     pub client_id: String,
     pub client_name: String,
+    pub ignored: bool,
     #[serde(flatten)]
     pub secret: StoredSecret,
 }
@@ -57,8 +58,10 @@ fn validate_reference(id: &str) -> Result<(), String> {
 pub async fn list_redacted_secrets(
     client_id: Option<String>,
     config_manager: State<'_, ConfigManager>,
+    state: State<'_, Arc<lr_server::state::AppState>>,
 ) -> Result<RedactedSecretInventory, String> {
     let clients = clients(&config_manager);
+    let state = state.inner().clone();
     tokio::task::spawn_blocking(move || {
         let storage = redacted_secret_storage();
         let owners = owners(storage.as_ref(), &clients, client_id)?;
@@ -69,10 +72,14 @@ pub async fn list_redacted_secrets(
                 .find(|(id, _)| id == &owner)
                 .map(|(_, name)| name.clone())
                 .unwrap_or_else(|| "Removed client".into());
+            let vault = Vault::for_client(storage.clone(), &owner);
+            lr_server::secret_policies::attach(&state, &vault, &owner);
+            let ignored = vault.mask_exempt_references().map_err(|e| e.to_string())?;
             for secret in Vault::list_client(storage.clone(), &owner).map_err(|e| e.to_string())? {
                 entries.push(RedactedSecretEntry {
                     client_id: owner.clone(),
                     client_name: name.clone(),
+                    ignored: ignored.contains(&secret.reference_id),
                     secret,
                 });
             }
@@ -120,6 +127,56 @@ pub async fn reveal_redacted_secret(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Persist an allow decision while retaining every issued restoration reference.
+#[tauri::command]
+pub async fn mark_redacted_secret_not_secret(
+    client_id: String,
+    reference_id: String,
+    config_manager: State<'_, ConfigManager>,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    validate_reference(&reference_id)?;
+    if config_manager.client_secret_scanning(&client_id).is_none() {
+        return Err("Client not found".into());
+    }
+    let owner = client_id.clone();
+    let finding = tokio::task::spawn_blocking(move || {
+        let storage = redacted_secret_storage();
+        let vault = Vault::find_client(storage.clone(), &owner, RETENTION_SECS)
+            .map_err(|e| e.to_string())?
+            .ok_or("Secret mapping has expired or was purged")?;
+        let entry = Vault::list_client(storage, &owner)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|entry| entry.reference_id == reference_id && !entry.expired && !entry.revoked)
+            .ok_or("Secret mapping has expired or was purged")?;
+        let original = vault
+            .reveal_reference(&reference_id)
+            .map_err(|e| e.to_string())?
+            .ok_or("Secret mapping has expired or was purged")?;
+        Ok::<_, String>(lr_server::secret_policies::RememberedValue::new(
+            original,
+            "stored-secret-reference".into(),
+            "Marked as not a secret".into(),
+            entry.masked_value,
+        ))
+    })
+    .await
+    .map_err(|_| "Could not read the stored value".to_string())??;
+    lr_server::secret_policies::remember(
+        &config_manager,
+        &state.secret_dismissal_cache,
+        &client_id,
+        finding,
+        false,
+    )
+    .await?;
+    let _ = app.emit("clients-changed", ());
+    let _ = app.emit("secret-store-changed", ());
+    Ok(())
 }
 
 #[tauri::command]
