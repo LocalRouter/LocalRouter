@@ -1,7 +1,7 @@
 {
-  "version": "0.0.184",
+  "version": "0.0.185",
   "sha256": {
-    "x86_64-linux": "0480bbdd3d957a7a6b6007c06f3bab1a89f4dc71118a6ad5ebec0d9cbd6e0b48",
-    "aarch64-linux": "784bb42da2130d9fdbba0eed478b678e9b7d0cfe529f4114505546eadeec6cbc"
+    "x86_64-linux": "d53bd4c25dfbbcdf5c7674aaf76aaccc4d75941de808616a82eb2e91f1b13a42",
+    "aarch64-linux": "19f38d96d1a0e458ee4ae3f2a2466cd060dd058425454ba8be42832e9b187916"
   }
 }
