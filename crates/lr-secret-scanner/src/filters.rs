@@ -136,14 +136,10 @@ fn is_explicit_placeholder(value: &str) -> bool {
         return true;
     }
     let lower = value.to_ascii_lowercase();
-    if matches!(
+    matches!(
         lower.as_str(),
         "akiaiosfodnn7example" | "wjalrxutnfemi/k7mdeng/bpxrficyexamplekey"
     ) || contains_placeholder_word(&lower, STRICT_WORDS)
-    {
-        return true;
-    }
-    false
 }
 
 fn is_strict_placeholder(value: &str) -> bool {
