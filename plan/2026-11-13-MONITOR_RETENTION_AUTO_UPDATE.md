@@ -22,7 +22,8 @@
 - [x] Tests: store trimming/eviction order, idle tracking, migration,
       auto-install decision logic.
 - [x] Plan review, test coverage review, bug hunt.
-- [ ] Commit, merge to master (`--no-ff`), push, cut a release.
+- [x] Commit, merge to master (`--no-ff`), push.
+- [ ] Cut release v0.0.186 (blocked on Apple notarization agreement, see below).
 
 ## Validation
 
@@ -30,3 +31,13 @@
 - `cargo test -p lr-monitor -p lr-config -p lr-server -p lr-proxy` and `cargo test -p localrouter --lib updater`: 662 passed, 0 failed.
 - `npx tsc --noEmit`, `npm run test:unit` (151 passed), `npm run build`, `npm --prefix website run build:check`: pass.
 - Not exercised: a real idle auto-install/restart against a published release (needs the release itself).
+
+## Release v0.0.186 status
+
+- Exact-source CI on master `200f1a32` passes (run 43729897995). An earlier CI run failed on a new
+  Rust 1.100 `needless_bool` lint in pre-existing `lr-secret-scanner` code, fixed in `89ed415e`.
+- Release run 43733036429: version bump `cfc8712d` and tag `v0.0.186` pushed; Windows and both Linux
+  builds pass; both macOS builds fail at notarization with Apple HTTP 403 "A required agreement is
+  missing or has expired". No GitHub release was created, so updaters still see v0.0.185.
+- Resume: after the Apple Developer agreement is accepted, `gh run rerun 43733036429 --failed`
+  (re-dispatching 0.0.186 would fail because the tag already exists).
