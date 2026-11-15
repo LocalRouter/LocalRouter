@@ -194,6 +194,11 @@ pub fn migrate_config(mut config: AppConfig) -> AppResult<AppConfig> {
         config = migrate_to_v33(config)?;
     }
 
+    // Migrate to v34: idle auto-install is on for new installs only
+    if config.version < 34 {
+        config = migrate_to_v34(config)?;
+    }
+
     // Update version to current
     config.version = CONFIG_VERSION;
 
@@ -1065,9 +1070,40 @@ fn migrate_to_v33(mut config: AppConfig) -> AppResult<AppConfig> {
     Ok(config)
 }
 
+/// Migrate to version 34: keep idle auto-install off for existing installs.
+///
+/// New configurations enable it; existing users opt in from Settings → Updates
+/// rather than having the app start restarting itself after an upgrade.
+fn migrate_to_v34(mut config: AppConfig) -> AppResult<AppConfig> {
+    info!("Migrating to version 34: idle auto-install stays off for existing installs");
+    config.update.auto_install = false;
+    config.version = 34;
+    Ok(config)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_auto_install_on_for_new_configs_off_for_migrated_ones() {
+        assert!(AppConfig::default().update.auto_install);
+
+        let existing = AppConfig {
+            version: 33,
+            ..Default::default()
+        };
+        let migrated = migrate_config(existing).unwrap();
+        assert!(!migrated.update.auto_install);
+        assert_eq!(migrated.version, CONFIG_VERSION);
+    }
+
+    #[test]
+    fn test_auto_install_defaults_off_when_absent_from_yaml() {
+        let update: crate::UpdateConfig =
+            serde_yaml::from_str("mode: automatic\ncheck_interval_days: 7\n").unwrap();
+        assert!(!update.auto_install);
+    }
 
     #[test]
     fn test_migrate_current_version() {

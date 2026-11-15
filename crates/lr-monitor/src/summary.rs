@@ -467,6 +467,7 @@ pub fn to_summary(event: &MonitorEvent) -> MonitorEventSummary {
     MonitorEventSummary {
         secret_action: secret_action(&event.data).map(str::to_owned),
         payload_redacted: event.payload_redacted,
+        payload_trimmed: event.payload_trimmed,
         id: event.id.clone(),
         sequence: event.sequence,
         timestamp: event.timestamp,

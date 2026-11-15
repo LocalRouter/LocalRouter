@@ -261,6 +261,7 @@ export function EventDetail({ event, loading, error, onRetry, toolbar, onReplay 
   return (
     <div className="flex h-full flex-col min-h-0">
       {error && <div className="flex items-center gap-3 px-4 py-2 text-sm text-destructive" role="status">{error}<Button variant="outline" size="sm" onClick={onRetry}>Retry</Button></div>}
+      {event.payload_trimmed && <div className="shrink-0 border-b px-4 py-1.5 text-xs text-muted-foreground" role="note">Large payloads in this older event were shortened to keep it listed within the monitor&apos;s memory budget.</div>}
       <div className="shrink-0 border-b bg-muted/20">
         <div className="flex flex-wrap items-center gap-2 px-3 pt-2 pb-1.5">
           <StatusPill status={event.status} />

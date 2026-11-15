@@ -2042,6 +2042,7 @@ async fn recovery_monitor_marks_tool_errors_inside_successful_http_responses() {
                 id.clone(),
                 lr_monitor::MonitorEvent {
                     payload_redacted: false,
+                    payload_trimmed: false,
                     id: id.clone(),
                     sequence: 0,
                     timestamp: Utc::now(),

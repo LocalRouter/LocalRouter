@@ -4783,9 +4783,9 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     upgrade_command: null,
   }),
   'update_update_config': (args) => {
-    if (args?.updates) {
-      Object.assign(mockData.updateConfig, args.updates)
-    }
+    if (args?.mode) mockData.updateConfig.mode = args.mode
+    if (typeof args?.checkIntervalDays === 'number') mockData.updateConfig.check_interval_days = args.checkIntervalDays
+    if (typeof args?.autoInstall === 'boolean') mockData.updateConfig.auto_install = args.autoInstall
     return null
   },
   'set_update_notification': () => null,

@@ -2399,6 +2399,8 @@ export interface UpdateConfig {
   check_interval_days: number
   last_check?: string | null
   skipped_version?: string | null
+  /** Install updates and restart after 5 hours without client requests. */
+  auto_install: boolean
 }
 
 // =============================================================================
@@ -3772,6 +3774,8 @@ export interface UpdateServerConfigParams {
 export interface UpdateUpdateConfigParams {
   mode: UpdateMode
   checkIntervalDays: number
+  /** Omit to leave the setting unchanged. */
+  autoInstall?: boolean | null
 }
 
 /** Params for skip_update_version */
@@ -5385,6 +5389,8 @@ export interface MonitorEventSummary {
   secret_action?: "redact" | "restore" | "protect_warning" | "restore_warning" | "storage_warning" | "storage_recovered" | null
   conversation?: MonitorConversation | null
   payload_redacted?: boolean
+  /** Large payloads were shortened to keep the event within the monitor memory budget. */
+  payload_trimmed?: boolean
   id: string
   sequence: number
   timestamp: string
@@ -5414,6 +5420,8 @@ export interface MonitorEventSummary {
 export interface MonitorEvent {
   conversation?: MonitorConversation | null
   payload_redacted?: boolean
+  /** Large payloads were shortened to keep the event within the monitor memory budget. */
+  payload_trimmed?: boolean
   id: string
   sequence: number
   timestamp: string

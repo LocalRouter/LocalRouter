@@ -408,6 +408,7 @@ mod tests {
         MonitorEvent {
             conversation: None,
             payload_redacted: false,
+            payload_trimmed: false,
             id: "mon-1".to_string(),
             sequence: 1,
             timestamp: chrono::Utc::now(),
@@ -511,6 +512,7 @@ mod tests {
         let event = MonitorEvent {
             conversation: None,
             payload_redacted: false,
+            payload_trimmed: false,
             id: "mon-2".to_string(),
             sequence: 2,
             timestamp: chrono::Utc::now(),
