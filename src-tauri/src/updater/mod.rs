@@ -5,13 +5,14 @@
 
 #![allow(dead_code)]
 
-use chrono::Utc;
-use lr_config::{ConfigManager, UpdateMode};
+use chrono::{DateTime, Utc};
+use lr_config::{ConfigManager, UpdateConfig, UpdateMode};
 use lr_utils::install_source::InstallSource;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter};
-use tracing::{debug, error, info};
+use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_updater::UpdaterExt;
+use tracing::{debug, error, info, warn};
 
 /// Update information returned to the frontend
 /// This matches the structure from @tauri-apps/plugin-updater
@@ -172,10 +173,270 @@ pub async fn start_update_timer(app: AppHandle, config_manager: Arc<ConfigManage
     }
 }
 
+/// How long LocalRouter must serve no client requests before an available
+/// update is installed automatically.
+pub const AUTO_INSTALL_IDLE: std::time::Duration = std::time::Duration::from_secs(5 * 60 * 60);
+
+/// How often the idle auto-install loop re-evaluates.
+const AUTO_INSTALL_POLL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// After an installed update, how long the app must stay quiet before it
+/// restarts, should a request have arrived during the download.
+const RESTART_QUIET: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Whether the idle auto-install should run now.
+#[derive(Debug, PartialEq)]
+pub enum AutoInstallDecision {
+    Install,
+    /// Auto-install or automatic checks are off.
+    Disabled,
+    ManagedExternally(InstallSource),
+    /// Requests are in progress or the user is in the app window.
+    Busy,
+    /// A client request was served within [`AUTO_INSTALL_IDLE`].
+    NotIdle,
+    /// An attempt was made within [`AUTO_INSTALL_IDLE`]; idle stretches
+    /// longer than that check again only once per period.
+    RecentlyAttempted,
+}
+
+/// Pure decision logic for [`start_auto_install_timer`].
+#[allow(clippy::too_many_arguments)]
+pub fn auto_install_decision(
+    update: &UpdateConfig,
+    install_source: InstallSource,
+    now: DateTime<Utc>,
+    last_request_at: DateTime<Utc>,
+    pending_requests: usize,
+    window_focused: bool,
+    last_attempt: Option<DateTime<Utc>>,
+) -> AutoInstallDecision {
+    if !install_source.is_self_updatable() {
+        return AutoInstallDecision::ManagedExternally(install_source);
+    }
+    if !update.auto_install || update.mode != UpdateMode::Automatic {
+        return AutoInstallDecision::Disabled;
+    }
+    if pending_requests > 0 || window_focused {
+        return AutoInstallDecision::Busy;
+    }
+    let idle = chrono::Duration::from_std(AUTO_INSTALL_IDLE).expect("constant fits");
+    if now - last_request_at < idle {
+        return AutoInstallDecision::NotIdle;
+    }
+    if last_attempt.is_some_and(|attempt| now - attempt < idle) {
+        return AutoInstallDecision::RecentlyAttempted;
+    }
+    AutoInstallDecision::Install
+}
+
+/// Install updates automatically once LocalRouter has been idle.
+///
+/// Every [`AUTO_INSTALL_POLL`], if auto-install is enabled and no client
+/// request (LLM call or MCP request) has started or finished for
+/// [`AUTO_INSTALL_IDLE`], none is in progress and the app window is not
+/// focused, this checks for an update; an available, non-skipped update is
+/// downloaded, installed and the app restarted.
+pub async fn start_auto_install_timer(app: AppHandle, config_manager: Arc<ConfigManager>) {
+    let install_source = lr_utils::install_source::current();
+    if !install_source.is_self_updatable() {
+        return;
+    }
+    info!("Starting idle auto-install timer");
+
+    let mut last_attempt: Option<DateTime<Utc>> = None;
+    loop {
+        tokio::time::sleep(AUTO_INSTALL_POLL).await;
+
+        let Some(store) = app
+            .try_state::<Arc<lr_server::ServerManager>>()
+            .and_then(|manager| manager.monitor_store())
+        else {
+            continue;
+        };
+        let window_focused = app
+            .get_webview_window("main")
+            .and_then(|window| window.is_focused().ok())
+            .unwrap_or(false);
+        let config = config_manager.get();
+        let now = Utc::now();
+        let decision = auto_install_decision(
+            &config.update,
+            install_source,
+            now,
+            store.last_request_at(),
+            store.pending_requests(),
+            window_focused,
+            last_attempt,
+        );
+        if decision != AutoInstallDecision::Install {
+            debug!("Idle auto-install: {:?}", decision);
+            continue;
+        }
+
+        last_attempt = Some(now);
+        if let Err(e) = install_available_update(
+            &app,
+            &config_manager,
+            config.update.skipped_version.as_deref(),
+            &store,
+        )
+        .await
+        {
+            warn!("Idle auto-install failed: {}", e);
+        }
+    }
+}
+
+/// Check for an update and, if one is available and not skipped, install it
+/// and restart. Returns only when nothing was installed or installation failed.
+async fn install_available_update(
+    app: &AppHandle,
+    config_manager: &ConfigManager,
+    skipped_version: Option<&str>,
+    store: &lr_monitor::MonitorEventStore,
+) -> Result<(), String> {
+    let update = app
+        .updater()
+        .map_err(|e| e.to_string())?
+        .check()
+        .await
+        .map_err(|e| e.to_string())?;
+    if let Err(e) = save_last_check_timestamp(config_manager).await {
+        warn!("Failed to save update check timestamp: {}", e);
+    }
+    let Some(update) = update else {
+        debug!("Idle auto-install: already up to date");
+        return Ok(());
+    };
+    if skipped_version == Some(update.version.as_str()) {
+        info!(
+            "Idle auto-install: version {} was skipped by the user",
+            update.version
+        );
+        return Ok(());
+    }
+
+    info!(
+        "Idle auto-install: installing {} after {} hours without requests",
+        update.version,
+        AUTO_INSTALL_IDLE.as_secs() / 3600
+    );
+    update
+        .download_and_install(|_, _| {}, || {})
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // A request may have arrived during the download; let it finish.
+    loop {
+        let quiet = Utc::now() - store.last_request_at();
+        if store.pending_requests() == 0
+            && quiet >= chrono::Duration::from_std(RESTART_QUIET).expect("constant fits")
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+    }
+
+    info!("Idle auto-install: restarting into {}", update.version);
+    app.restart();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::Duration;
+
+    fn auto_config() -> UpdateConfig {
+        UpdateConfig {
+            auto_install: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn auto_install_runs_after_five_idle_hours() {
+        let now = Utc::now();
+        let decide = |last_request: DateTime<Utc>, last_attempt| {
+            auto_install_decision(
+                &auto_config(),
+                InstallSource::Direct,
+                now,
+                last_request,
+                0,
+                false,
+                last_attempt,
+            )
+        };
+        assert_eq!(
+            decide(now - Duration::hours(4) - Duration::minutes(59), None),
+            AutoInstallDecision::NotIdle
+        );
+        assert_eq!(
+            decide(now - Duration::hours(5), None),
+            AutoInstallDecision::Install
+        );
+        assert_eq!(
+            decide(now - Duration::hours(9), Some(now - Duration::hours(1))),
+            AutoInstallDecision::RecentlyAttempted
+        );
+        assert_eq!(
+            decide(now - Duration::hours(11), Some(now - Duration::hours(5))),
+            AutoInstallDecision::Install
+        );
+    }
+
+    #[test]
+    fn auto_install_waits_for_requests_and_the_focused_window() {
+        let now = Utc::now();
+        let idle = now - Duration::hours(6);
+        for (pending, focused) in [(1, false), (0, true)] {
+            assert_eq!(
+                auto_install_decision(
+                    &auto_config(),
+                    InstallSource::Direct,
+                    now,
+                    idle,
+                    pending,
+                    focused,
+                    None
+                ),
+                AutoInstallDecision::Busy
+            );
+        }
+    }
+
+    #[test]
+    fn auto_install_respects_settings_and_install_source() {
+        let now = Utc::now();
+        let idle = now - Duration::hours(6);
+        let off = UpdateConfig {
+            auto_install: false,
+            ..Default::default()
+        };
+        let manual = UpdateConfig {
+            mode: UpdateMode::Manual,
+            ..auto_config()
+        };
+        for config in [off, manual] {
+            assert_eq!(
+                auto_install_decision(&config, InstallSource::Direct, now, idle, 0, false, None),
+                AutoInstallDecision::Disabled
+            );
+        }
+        assert_eq!(
+            auto_install_decision(
+                &auto_config(),
+                InstallSource::Homebrew,
+                now,
+                idle,
+                0,
+                false,
+                None
+            ),
+            AutoInstallDecision::ManagedExternally(InstallSource::Homebrew)
+        );
+    }
 
     #[test]
     fn large_intervals_and_future_timestamps_do_not_trigger_updates() {

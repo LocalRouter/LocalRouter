@@ -2576,9 +2576,18 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             info!("Starting background update checker...");
             let app_handle_for_updater = app.handle().clone();
             let config_manager_for_updater = Arc::new(config_manager.clone());
+            let app_handle_for_auto_install = app.handle().clone();
+            let config_manager_for_auto_install = config_manager_for_updater.clone();
             tokio::spawn(async move {
                 updater::start_update_timer(app_handle_for_updater, config_manager_for_updater)
                     .await;
+            });
+            tokio::spawn(async move {
+                updater::start_auto_install_timer(
+                    app_handle_for_auto_install,
+                    config_manager_for_auto_install,
+                )
+                .await;
             });
             info!("Background update checker started");
 

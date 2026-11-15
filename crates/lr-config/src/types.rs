@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use uuid::Uuid;
 
-pub(crate) const CONFIG_VERSION: u32 = 33;
+pub(crate) const CONFIG_VERSION: u32 = 34;
 
 /// Keyring service name for provider API keys
 pub const PROVIDER_KEYRING_SERVICE: &str = "LocalRouter-Providers";
@@ -1146,6 +1146,13 @@ pub struct UpdateConfig {
     /// Version that user explicitly skipped (won't notify about this version)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skipped_version: Option<String>,
+
+    /// Install available updates and restart once LocalRouter has served no
+    /// client requests for several hours. Requires automatic update checks.
+    /// On for new installations; configs from before this option existed
+    /// keep it off (see config migration v34).
+    #[serde(default)]
+    pub auto_install: bool,
 }
 
 fn default_update_mode() -> UpdateMode {
@@ -4993,6 +5000,7 @@ impl Default for UpdateConfig {
             check_interval_days: default_check_interval(),
             last_check: None,
             skipped_version: None,
+            auto_install: true,
         }
     }
 }

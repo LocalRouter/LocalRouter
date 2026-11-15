@@ -1654,6 +1654,7 @@ pub async fn get_update_config(
 pub async fn update_update_config(
     mode: lr_config::UpdateMode,
     check_interval_days: u64,
+    auto_install: Option<bool>,
     config_manager: State<'_, ConfigManager>,
 ) -> Result<(), String> {
     // Validate parameters
@@ -1666,6 +1667,9 @@ pub async fn update_update_config(
         .update(|config| {
             config.update.mode = mode;
             config.update.check_interval_days = check_interval_days;
+            if let Some(auto_install) = auto_install {
+                config.update.auto_install = auto_install;
+            }
         })
         .map_err(|e| e.to_string())?;
 

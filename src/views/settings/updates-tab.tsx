@@ -19,21 +19,14 @@ import {
 } from "@/components/ui/Select"
 import ReactMarkdown from "react-markdown"
 import { markdownLinkComponents } from "@/components/shared/MarkdownLink"
-import type { InstallSourceInfo } from "@/types/tauri-commands"
-
-
-interface UpdateConfig {
-  mode: "manual" | "automatic"
-  check_interval_days: number
-  last_check?: string
-  skipped_version?: string
-}
+import type { InstallSourceInfo, UpdateConfig, UpdateUpdateConfigParams } from "@/types/tauri-commands"
 
 export function UpdatesTab() {
   const [currentVersion, setCurrentVersion] = useState<string>("")
   const [updateConfig, setUpdateConfig] = useState<UpdateConfig>({
     mode: "automatic",
     check_interval_days: 7,
+    auto_install: false,
   })
   const [isChecking, setIsChecking] = useState(false)
   const [checkError, setCheckError] = useState<string | null>(null)
@@ -249,7 +242,8 @@ export function UpdatesTab() {
       await invoke("update_update_config", {
         mode: newConfig.mode,
         checkIntervalDays: newConfig.check_interval_days,
-      })
+        autoInstall: newConfig.auto_install,
+      } satisfies UpdateUpdateConfigParams)
       setUpdateConfig(newConfig)
       toast.success("Settings saved")
     } catch (err: any) {
@@ -492,6 +486,24 @@ export function UpdatesTab() {
                   <SelectItem value="30">Every 30 days</SelectItem>
                 </SelectContent>
               </Select>
+            </div>
+          )}
+
+          {updateConfig.mode === "automatic" && (
+            <div className="flex items-center justify-between">
+              <div className="space-y-0.5">
+                <Label>Install updates when idle</Label>
+                <p className="text-xs text-muted-foreground">
+                  Install new versions and restart after 5 hours without any
+                  client requests
+                </p>
+              </div>
+              <Switch
+                checked={updateConfig.auto_install}
+                onCheckedChange={(checked) =>
+                  handleUpdateConfig({ auto_install: checked })
+                }
+              />
             </div>
           )}
         </CardContent>

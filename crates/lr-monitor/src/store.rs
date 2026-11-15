@@ -1,8 +1,8 @@
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
 use uuid::Uuid;
 
@@ -22,9 +22,21 @@ pub type PendingListener = Arc<dyn Fn(usize) + Send + Sync>;
 ///
 /// Events keep whole request and response bodies, so the event count alone does
 /// not bound memory: a long-context coding-agent exchange is megabytes, and a
-/// few hundred of them run to gigabytes. Whichever limit is reached first —
-/// this budget or the event count — evicts the oldest events.
+/// few hundred of them run to gigabytes. Over this budget the store first trims
+/// the payloads of its oldest events (see [`crate::trim`]) and only evicts
+/// events when that is not enough. The event count is a hard limit.
 pub const DEFAULT_MAX_BYTES: usize = 128 * 1024 * 1024;
+
+/// Events smaller than this are not worth trimming.
+const MIN_TRIM_BYTES: usize = 8 * 1024;
+
+/// List text computed before an event's payload was trimmed, so the list keeps
+/// showing the full previews.
+struct TrimmedText {
+    summary: String,
+    question: String,
+    answer: String,
+}
 
 /// One stored event plus the approximate heap cost charged for it, kept
 /// alongside so eviction never has to re-walk a body it is about to drop.
@@ -33,6 +45,41 @@ struct Stored {
     size: usize,
     correlation: Option<crate::conversation::Correlation>,
     secret_context: Option<Arc<dyn lr_types::secret_context::SecretContext>>,
+    /// Trimming was tried (successfully or not); not retried until the
+    /// payload changes.
+    trim_attempted: bool,
+    trimmed_text: Option<TrimmedText>,
+}
+
+impl Stored {
+    fn new(
+        event: MonitorEvent,
+        size: usize,
+        secret_context: Option<Arc<dyn lr_types::secret_context::SecretContext>>,
+    ) -> Self {
+        Self {
+            event,
+            size,
+            correlation: None,
+            secret_context,
+            trim_attempted: false,
+            trimmed_text: None,
+        }
+    }
+
+    fn charged_size(&self) -> usize {
+        event_size(&self.event) + self.correlation.as_ref().map_or(0, |c| c.size())
+    }
+
+    fn summary(&self) -> MonitorEventSummary {
+        let mut summary = to_summary(&self.event);
+        if let Some(text) = &self.trimmed_text {
+            summary.summary.clone_from(&text.summary);
+            summary.question.clone_from(&text.question);
+            summary.answer.clone_from(&text.answer);
+        }
+        summary
+    }
 }
 
 /// The buffer and its running totals, under one lock so they cannot drift.
@@ -50,9 +97,14 @@ struct Events {
 /// a request an earlier LocalRouter hop already handled — is not counted
 /// twice. Mirrors the dashboard's `isRequest`.
 pub fn is_pending_request(event: &MonitorEvent) -> bool {
-    if event.status != EventStatus::Pending {
-        return false;
-    }
+    event.status == EventStatus::Pending && is_client_request(event)
+}
+
+/// A client request (LLM call or MCP request), in progress or finished.
+///
+/// Internal steps (routing, scans, …) and background events are not client
+/// requests, and a duplicate hop is not counted twice.
+pub fn is_client_request(event: &MonitorEvent) -> bool {
     match &event.data {
         MonitorEventData::LlmCall { duplicate_hop, .. } => {
             !duplicate_hop.is_some_and(|hop| hop >= 2)
@@ -74,6 +126,9 @@ pub struct MonitorEventStore {
     events: RwLock<Events>,
     max_capacity: AtomicUsize,
     max_bytes: AtomicUsize,
+    /// Unix milliseconds of the last client request start or finish, or of
+    /// the store's creation when none has been seen.
+    last_request_ms: AtomicI64,
     next_sequence: AtomicU64,
     payload_policy: RwLock<Option<PayloadPolicy>>,
     emitter: RwLock<Option<EventEmitter>>,
@@ -96,6 +151,7 @@ impl MonitorEventStore {
             }),
             max_capacity: AtomicUsize::new(max_capacity.max(1)),
             max_bytes: AtomicUsize::new(max_bytes.max(1)),
+            last_request_ms: AtomicI64::new(Utc::now().timestamp_millis()),
             next_sequence: AtomicU64::new(1),
             payload_policy: RwLock::new(None),
             emitter: RwLock::new(None),
@@ -103,28 +159,88 @@ impl MonitorEventStore {
         }
     }
 
-    /// Drop the oldest events until the buffer fits both limits.
+    /// Bring the buffer within both limits.
     ///
-    /// The newest event is always kept, even when it alone exceeds the budget:
-    /// evicting it would make a single oversized exchange impossible to inspect,
-    /// which is exactly the traffic a user opens the monitor to look at.
+    /// Over the event count, the oldest events are dropped. Over the memory
+    /// budget, the payloads of the oldest finished events are trimmed first so
+    /// they stay listed; events are dropped only if trimming is not enough.
+    ///
+    /// The newest event is always kept whole, even when it alone exceeds the
+    /// budget: shortening or evicting it would make a single oversized exchange
+    /// impossible to inspect, which is exactly the traffic a user opens the
+    /// monitor to look at.
     fn evict(&self, events: &mut Events) {
         let max_capacity = self.max_capacity.load(Ordering::Relaxed);
         let max_bytes = self.max_bytes.load(Ordering::Relaxed);
 
-        while events.queue.len() > max_capacity
-            || (events.total_bytes > max_bytes && events.queue.len() > 1)
-        {
-            match events.queue.pop_front() {
-                Some(evicted) => {
-                    events.total_bytes = events.total_bytes.saturating_sub(evicted.size);
-                    if is_pending_request(&evicted.event) {
-                        events.pending_requests = events.pending_requests.saturating_sub(1);
-                    }
-                }
-                None => break,
+        while events.queue.len() > max_capacity {
+            Self::pop_oldest(events);
+        }
+        if events.total_bytes > max_bytes {
+            Self::trim_oldest(events, max_bytes);
+        }
+        while events.total_bytes > max_bytes && events.queue.len() > 1 {
+            Self::pop_oldest(events);
+        }
+    }
+
+    fn pop_oldest(events: &mut Events) {
+        if let Some(evicted) = events.queue.pop_front() {
+            events.total_bytes = events.total_bytes.saturating_sub(evicted.size);
+            if is_pending_request(&evicted.event) {
+                events.pending_requests = events.pending_requests.saturating_sub(1);
             }
         }
+    }
+
+    /// Trim payloads oldest-first until the buffer fits `max_bytes`.
+    ///
+    /// In-progress events are skipped (their response is still arriving), as
+    /// are secret-scan records, which later redaction restores read back.
+    fn trim_oldest(events: &mut Events, max_bytes: usize) {
+        let newest = events.queue.len().saturating_sub(1);
+        for index in 0..newest {
+            if events.total_bytes <= max_bytes {
+                break;
+            }
+            let stored = &mut events.queue[index];
+            if stored.trim_attempted
+                || stored.size < MIN_TRIM_BYTES
+                || stored.event.status == EventStatus::Pending
+                || stored.event.payload_redacted
+                || stored.event.event_type == MonitorEventType::SecretScan
+            {
+                continue;
+            }
+            stored.trim_attempted = true;
+            let before = to_summary(&stored.event);
+            if !crate::trim::trim_payload(&mut stored.event) {
+                continue;
+            }
+            stored.trimmed_text = Some(TrimmedText {
+                summary: before.summary,
+                question: before.question,
+                answer: before.answer,
+            });
+            let old_size = stored.size;
+            stored.size = stored.charged_size();
+            events.total_bytes = events.total_bytes + stored.size - old_size;
+        }
+    }
+
+    /// Record client-request activity for [`Self::last_request_at`].
+    fn note_activity(&self, event: &MonitorEvent) {
+        if is_client_request(event) {
+            self.last_request_ms
+                .fetch_max(Utc::now().timestamp_millis(), Ordering::Relaxed);
+        }
+    }
+
+    /// When a client request (LLM call or MCP request) last started or
+    /// finished; the store's creation time if none has been seen.
+    pub fn last_request_at(&self) -> DateTime<Utc> {
+        DateTime::from_timestamp_millis(self.last_request_ms.load(Ordering::Relaxed))
+            .unwrap_or_else(Utc::now)
     }
 
     /// Applies to new events only. Existing captures are untouched; callers
@@ -193,6 +309,7 @@ impl MonitorEventStore {
         let mut event = MonitorEvent {
             conversation: None,
             payload_redacted: false,
+            payload_trimmed: false,
             id: id.clone(),
             sequence,
             timestamp: Utc::now(),
@@ -227,12 +344,10 @@ impl MonitorEventStore {
                 events.pending_requests += 1;
             }
             events.total_bytes += size;
-            events.queue.push_back(Stored {
-                event,
-                size,
-                correlation: None,
-                secret_context,
-            });
+            self.note_activity(&event);
+            events
+                .queue
+                .push_back(Stored::new(event, size, secret_context));
             self.evict(&mut events);
             self.notify_pending(&events, before);
         }
@@ -356,10 +471,9 @@ impl MonitorEventStore {
             stored.event.conversation = Some(conversation.clone());
             crate::privacy::mask_secrets(&mut stored.event, stored.secret_context.as_deref());
             removed += stored.size;
-            stored.size =
-                event_size(&stored.event) + stored.correlation.as_ref().map_or(0, |c| c.size());
+            stored.size = stored.charged_size();
             added += stored.size;
-            summaries.push(to_summary(&stored.event));
+            summaries.push(stored.summary());
         }
         events.total_bytes = events.total_bytes + added - removed;
         let before = events.pending_requests;
@@ -429,13 +543,19 @@ impl MonitorEventStore {
                 crate::privacy::redact(&mut stored.event);
             }
             let is_pending = is_pending_request(&stored.event);
+            // New payload may arrive after a trim; the list previews follow
+            // the new data, and the event may be trimmed again.
+            stored.trimmed_text = None;
+            stored.trim_attempted = false;
+            if is_pending != was_pending {
+                self.note_activity(&stored.event);
+            }
             let updated_summary = to_summary(&stored.event);
 
             // The response half is usually where the bulk of an LLM event
             // arrives, so re-charge the entry and re-check the budget.
             let old_size = stored.size;
-            let new_size =
-                event_size(&stored.event) + stored.correlation.as_ref().map_or(0, |c| c.size());
+            let new_size = stored.charged_size();
             stored.size = new_size;
             events.total_bytes = events.total_bytes + new_size - old_size;
             match (was_pending, is_pending) {
@@ -471,12 +591,11 @@ impl MonitorEventStore {
     ) -> MonitorEventListResponse {
         let events = self.events.read();
 
-        let filtered: Vec<&MonitorEvent> = events
+        let filtered: Vec<&Stored> = events
             .queue
             .iter()
             .rev() // newest first
-            .map(|s| &s.event)
-            .filter(|e| match_filter(e, filter))
+            .filter(|s| match_filter(&s.event, filter))
             .collect();
 
         let total = filtered.len();
@@ -484,7 +603,7 @@ impl MonitorEventStore {
             .into_iter()
             .skip(offset)
             .take(limit)
-            .map(to_summary)
+            .map(Stored::summary)
             .collect();
 
         MonitorEventListResponse {
@@ -1215,6 +1334,119 @@ mod tests {
         assert!(stats.total_events < 20, "byte budget should have evicted");
         assert!(stats.total_bytes <= stats.max_bytes);
         assert_eq!(stats.max_bytes, 50_000);
+    }
+
+    fn push_finished_bulky(store: &MonitorEventStore, body_bytes: usize) -> String {
+        let id = push_bulky(store, body_bytes);
+        store.update(&id, |e| {
+            e.status = EventStatus::Complete;
+            if let MonitorEventData::LlmCall { response_body, .. } = &mut e.data {
+                *response_body = Some(serde_json::json!({"text": "y".repeat(body_bytes)}));
+            }
+        });
+        id
+    }
+
+    #[test]
+    fn test_byte_budget_trims_finished_events_instead_of_dropping_them() {
+        // Room for 100 events by count; their whole bodies would only fit a few.
+        let store = MonitorEventStore::with_limits(100, 200_000);
+        let ids: Vec<String> = (0..40)
+            .map(|_| push_finished_bulky(&store, 20_000))
+            .collect();
+
+        let stats = store.stats();
+        assert_eq!(stats.total_events, 40, "no event should be dropped");
+        assert!(stats.total_bytes <= stats.max_bytes);
+
+        let oldest = store.get(&ids[0]).unwrap();
+        assert!(oldest.payload_trimmed);
+        let MonitorEventData::LlmCall { request_body, .. } = &oldest.data else {
+            panic!("expected an LLM call");
+        };
+        assert!(request_body["prompt"].as_str().unwrap().len() < 1_000);
+
+        // The newest event is kept whole.
+        let newest = store.get(ids.last().unwrap()).unwrap();
+        assert!(!newest.payload_trimmed);
+
+        // List previews were captured before the trim.
+        let listed = store.list(0, 100, None);
+        let summary = listed.events.iter().find(|e| e.id == ids[0]).unwrap();
+        assert!(summary.payload_trimmed);
+        let untrimmed = to_summary(&newest);
+        assert_eq!(summary.question.len(), untrimmed.question.len());
+    }
+
+    #[test]
+    fn test_count_limit_still_drops_trimmed_events() {
+        let store = MonitorEventStore::with_limits(5, 100_000);
+        let first = push_finished_bulky(&store, 20_000);
+        for _ in 0..5 {
+            push_finished_bulky(&store, 20_000);
+        }
+        assert_eq!(store.stats().total_events, 5);
+        assert!(store.get(&first).is_none());
+    }
+
+    #[test]
+    fn test_in_progress_events_are_not_trimmed() {
+        let store = MonitorEventStore::with_limits(100, 30_000);
+        let pending = push_bulky(&store, 20_000);
+        let finished = push_finished_bulky(&store, 20_000);
+        // The pending event cannot be trimmed, so it is the one evicted.
+        assert!(store.get(&pending).is_none());
+        assert!(store.get(&finished).is_some());
+    }
+
+    #[test]
+    fn test_update_after_trim_refreshes_previews() {
+        let store = MonitorEventStore::with_limits(100, 60_000);
+        let old = push_finished_bulky(&store, 20_000);
+        push_finished_bulky(&store, 20_000);
+        assert!(store.get(&old).unwrap().payload_trimmed);
+
+        store.update(&old, |e| {
+            if let MonitorEventData::LlmCall {
+                content_preview, ..
+            } = &mut e.data
+            {
+                *content_preview = Some("updated".into());
+            }
+        });
+        let summary = store.list(0, 10, None);
+        assert!(summary.events.iter().any(|e| e.id == old));
+    }
+
+    #[test]
+    fn test_last_request_at_tracks_client_requests_only() {
+        let store = make_store(10);
+        let created = store.last_request_at();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        store.push(
+            MonitorEventType::McpServerEvent,
+            None,
+            None,
+            None,
+            MonitorEventData::McpServerEvent {
+                server_id: "s".into(),
+                server_name: None,
+                action: "health_changed".into(),
+                message: "ok".into(),
+            },
+            EventStatus::Complete,
+            None,
+        );
+        assert_eq!(store.last_request_at(), created);
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let id = push_bulky(&store, 10);
+        let started = store.last_request_at();
+        assert!(started > created);
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        store.update(&id, |e| e.status = EventStatus::Complete);
+        assert!(store.last_request_at() > started);
     }
 
     #[test]

@@ -1362,6 +1362,7 @@ export const mockData = {
     check_interval_days: 1,
     last_check: new Date(Date.now() - 3600000).toISOString(),
     skipped_version: null,
+    auto_install: true,
   },
 
   // MarketplaceConfig - matches src/types/tauri-commands.ts

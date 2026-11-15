@@ -24,6 +24,10 @@ pub enum ConversationSource {
 pub struct MonitorEvent {
     #[serde(default, skip_serializing_if = "is_false")]
     pub payload_redacted: bool,
+    /// Large payloads were shortened to keep the event listed within the
+    /// store's memory budget; metadata and list previews are intact.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub payload_trimmed: bool,
     /// Unique event ID (e.g., "mon-<uuid>")
     pub id: String,
 
@@ -69,6 +73,8 @@ pub struct MonitorEventSummary {
     pub secret_action: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub payload_redacted: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub payload_trimmed: bool,
     pub id: String,
     pub sequence: u64,
     pub timestamp: DateTime<Utc>,

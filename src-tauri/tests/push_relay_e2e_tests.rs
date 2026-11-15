@@ -244,6 +244,7 @@ fn harness(servers: Vec<McpServerConfig>, limits: PushRelayLimits) -> Harness {
             let id = format!("mon-{}", uuid::Uuid::new_v4());
             log.lock().push(lr_monitor::MonitorEvent {
                 payload_redacted: false,
+                payload_trimmed: false,
                 id: id.clone(),
                 sequence: 0,
                 timestamp: Utc::now(),
