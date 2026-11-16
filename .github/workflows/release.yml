@@ -95,10 +95,13 @@ jobs:
       fail-fast: false
       matrix:
         settings:
-          - platform: macos-latest
+          # Both macOS targets build on the Intel pool: hosted arm64 macOS
+          # runners have been failing to pick up jobs ("not acquired by
+          # Runner") under capacity constraints. aarch64 cross-compiles.
+          - platform: macos-15-intel
             target: x86_64-apple-darwin
             bundles: app,dmg
-          - platform: macos-latest
+          - platform: macos-15-intel
             target: aarch64-apple-darwin
             bundles: app,dmg
           # rpm feeds the self-hosted YUM repository (packaging/linux-repo).
@@ -162,7 +165,7 @@ jobs:
         run: npm ci
 
       - name: Install Apple certificate (macOS)
-        if: matrix.settings.platform == 'macos-latest'
+        if: startsWith(matrix.settings.platform, 'macos')
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -213,7 +216,7 @@ jobs:
              "target/${{ matrix.settings.target }}/release/bundle/portable/LocalRouter.exe"
 
       - name: Cleanup keychain (macOS)
-        if: always() && matrix.settings.platform == 'macos-latest'
+        if: always() && startsWith(matrix.settings.platform, 'macos')
         run: |
           KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
           if [ -f "$KEYCHAIN_PATH" ]; then
