@@ -6,7 +6,10 @@ use std::io::{Cursor, Read};
 use bytes::Bytes;
 use http::HeaderMap;
 
-const LIMIT: usize = lr_secret_scanner::wire::LIMIT;
+/// Decoded request bodies may be as large as the proxy buffers them: Codex
+/// compresses its HTTPS fallback requests, and a long session resends its whole
+/// conversation (tens of MiB) once its websocket is gone.
+const LIMIT: usize = crate::websocket::MAX_MESSAGE;
 const MAX_ENCODINGS: usize = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -187,6 +190,22 @@ mod tests {
             }
             _ => unreachable!(),
         }
+    }
+
+    #[tokio::test]
+    async fn compressed_codex_requests_above_sixteen_mib_are_decoded() {
+        let text = "x".repeat(20 * 1024 * 1024);
+        let body = format!(r#"{{"model":"m","input":"{text}"}}"#);
+        let mut headers = HeaderMap::new();
+        headers.insert(http::header::CONTENT_ENCODING, "zstd".parse().unwrap());
+        let decoded = inspect(
+            "/backend-api/codex/responses",
+            &headers,
+            Bytes::from(encoded("zstd", body.as_bytes())),
+        )
+        .await
+        .unwrap();
+        assert_eq!(decoded.len(), body.len());
     }
 
     #[test]

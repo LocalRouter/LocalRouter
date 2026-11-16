@@ -426,10 +426,18 @@ impl WsSession {
             // call of their own, so no firewall decision and no new cycle.
             // (A cycle here would never see a terminal event, and it would
             // make the in-flight response's events ambiguous.)
-            if matches!(
-                message.get("type").and_then(Value::as_str),
-                Some("response.cancel" | "response.interrupt")
-            ) {
+            // An interrupt is forwarded only in Codex's content-free shape,
+            // so the bypass cannot carry text past secret scanning.
+            let control = match message.get("type").and_then(Value::as_str) {
+                Some("response.cancel") => true,
+                Some("response.interrupt") => message.iter().all(|(key, value)| {
+                    matches!(key.as_str(), "type" | "response_id" | "mode" | "event_id")
+                        && !value.is_object()
+                        && !value.is_array()
+                }),
+                _ => false,
+            };
+            if control {
                 return ClientAction::Forward;
             }
         }
@@ -2127,6 +2135,25 @@ mod codex_disconnect_tests {
         let events = store.list(0, 10, None);
         assert_eq!(events.events.len(), 1, "no event for the interrupt itself");
         assert_eq!(events.events[0].status, EventStatus::Complete);
+    }
+
+    /// An interrupt with fields beyond Codex's control shape is not trusted
+    /// as content-free: it goes through the firewall like any request.
+    #[tokio::test]
+    async fn interrupt_with_extra_fields_is_inspected() {
+        let store = Arc::new(MonitorEventStore::new(16));
+        let interceptor = counting(&store);
+        let session = WsSession::new(
+            interceptor.clone(),
+            WireFormat::OpenAiResponses,
+            base_exchange(),
+        );
+        session
+            .on_client_message(
+                br#"{"type":"response.interrupt","response_id":"resp_1","input":"api_key=x"}"#,
+            )
+            .await;
+        assert_eq!(interceptor.requests.load(Ordering::SeqCst), 1);
     }
 
     async fn abandoned_cycle_error(client_closes: bool) -> String {
