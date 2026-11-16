@@ -853,3 +853,23 @@ fn upstream_boolean_placeholders_do_not_hide_substrings_of_real_tokens() {
         assert_single(&token, "npm-access-token", &token);
     }
 }
+
+#[test]
+fn type_annotations_after_secret_keywords_are_not_flagged() {
+    for text in [
+        "async function login(password: string): Promise<void> {",
+        "function setToken(token: string|undefined): void {",
+        "let password: string;",
+        "struct Creds { secret: Option<String>, password: SecretString }",
+        "def connect(password: str) -> None:",
+        "fn auth(password: &str) -> Result<()>",
+    ] {
+        assert_clean(text);
+    }
+    // A real password containing a type word is still a secret.
+    assert_single(
+        "password: string9Kq2!x7Lw",
+        "generic-password-unquoted",
+        "string9Kq2!x7Lw",
+    );
+}
