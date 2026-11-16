@@ -23,7 +23,7 @@
       auto-install decision logic.
 - [x] Plan review, test coverage review, bug hunt.
 - [x] Commit, merge to master (`--no-ff`), push.
-- [ ] Cut release v0.0.186 (blocked on Apple notarization agreement, see below).
+- [x] Cut release v0.0.186.
 
 ## Validation
 
@@ -41,3 +41,6 @@
   missing or has expired". No GitHub release was created, so updaters still see v0.0.185.
 - Resume: after the Apple Developer agreement is accepted, `gh run rerun 43733036429 --failed`
   (re-dispatching 0.0.186 would fail because the tag already exists).
+- Agreement accepted; `gh run rerun 43733036429 --failed` (attempt 2) passes: all five builds, GitHub
+  release, Nix pin, Snap and Flatpak. Publish to Package Managers is skipped as before. v0.0.186 is the
+  latest release with 32 non-empty assets; Docker run 43780126229 succeeds; `latest.json` serves 0.0.186.
