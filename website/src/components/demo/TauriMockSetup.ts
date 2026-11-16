@@ -16,7 +16,7 @@
  * See AGENTS.md "Adding/Modifying Tauri Commands" for full checklist.
  */
 
-import type { DismissedSecret, SecretRuleMetadata, MarkRedactedSecretNotSecretParams, RedactedSecretInventory, RedactedSecretEntry, ListRedactedSecretsParams, RevealRedactedSecretParams, PurgeRedactedSecretsParams, SecretScanResult, TestSecretScanParams, DecodedSecretJwt, DiscoveredResourceIcon, LaunchResult } from '@app/types/tauri-commands'
+import type { DismissedSecret, SecretRuleMetadata, MarkRedactedSecretNotSecretParams, UnmarkRedactedSecretNotSecretParams, RedactedSecretIsNotSecretParams, RedactedSecretInventory, RedactedSecretEntry, ListRedactedSecretsParams, RevealRedactedSecretParams, PurgeRedactedSecretsParams, SecretScanResult, TestSecretScanParams, DecodedSecretJwt, DiscoveredResourceIcon, LaunchResult } from '@app/types/tauri-commands'
 
 import { mockIPC, mockWindows, clearMocks } from '@tauri-apps/api/mocks'
 import { emit } from '@tauri-apps/api/event'
@@ -5478,7 +5478,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // ============================================================================
   // Secret Scanning
   // ============================================================================
-  'list_redacted_secrets': (args?: ListRedactedSecretsParams): RedactedSecretInventory => ({ entries: storedDemoSecrets().filter(entry => !args?.clientId || entry.client_id === args.clientId), persistence_warning: null }),
+  'list_redacted_secrets': (args?: ListRedactedSecretsParams): RedactedSecretInventory => ({ entries: storedDemoSecrets().filter(entry => !args?.clientId || entry.client_id === args.clientId).sort((a, b) => b.last_used_at - a.last_used_at), persistence_warning: null }),
   'reveal_redacted_secret': (args?: RevealRedactedSecretParams): string => {
     const entry = storedDemoSecrets().find(entry => entry.client_id === args?.clientId && entry.reference_id === args.referenceId)
     const original = entry && demoSecretOriginals.get(entry.reference_id)
@@ -5497,6 +5497,19 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
         rule_id: 'stored-secret-reference', rule_description: 'Marked as not a secret', hint: entry.masked_value, dismissed_at: new Date().toISOString() } })
     void emit('secret-store-changed')
     return null
+  },
+  'unmark_redacted_secret_not_secret': (args?: UnmarkRedactedSecretNotSecretParams): null => {
+    const entry = storedDemoSecrets().find(entry => entry.client_id === args?.clientId && entry.reference_id === args.referenceId)
+    if (!entry || entry.revoked || entry.expired) throw new Error('Secret mapping has expired or was purged')
+    entry.ignored = false
+    demoSecretDecisions.delete(`demo-allow-${entry.client_id}-${entry.reference_id}`)
+    void emit('secret-store-changed')
+    return null
+  },
+  'redacted_secret_is_not_secret': (args?: RedactedSecretIsNotSecretParams): boolean => {
+    const entry = storedDemoSecrets().find(entry => entry.client_id === args?.clientId && entry.reference_id === args.referenceId)
+    if (!entry || entry.revoked || entry.expired) throw new Error('Secret mapping has expired or was purged')
+    return entry.ignored
   },
   'purge_redacted_secrets': (args?: PurgeRedactedSecretsParams): number => {
     const entries = storedDemoSecrets()

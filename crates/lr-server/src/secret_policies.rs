@@ -184,6 +184,70 @@ pub async fn remember(
     Ok(())
 }
 
+/// Remove the client's "not a secret" decisions for `value`, so it is detected
+/// and redacted normally again. Returns whether any decision was removed.
+/// "Always redact" decisions for the value are kept.
+pub async fn forget(
+    config: &ConfigManager,
+    cache: &DismissalCache,
+    owner: &str,
+    value: Zeroizing<String>,
+) -> Result<bool, String> {
+    let policy = config
+        .client_secret_scanning(owner)
+        .ok_or("Client not found")?;
+    let Some(salt) = policy.dismiss_salt.clone() else {
+        return Ok(false);
+    };
+    let candidates: Vec<_> = policy
+        .dismissed_secrets
+        .into_iter()
+        .filter(|entry| !entry.redact)
+        .map(|entry| (entry.id, entry.hash, entry.iterations))
+        .collect();
+    let matched: Vec<String> = tokio::task::spawn_blocking(move || {
+        candidates
+            .into_iter()
+            .filter(|(_, hash, iterations)| {
+                lr_secret_scanner::verify_secret(&value, &salt, *iterations, hash)
+            })
+            .map(|(id, ..)| id)
+            .collect()
+    })
+    .await
+    .map_err(|_| "Could not check remembered decisions".to_string())?;
+    if matched.is_empty() {
+        return Ok(false);
+    }
+    let mut removed = Vec::new();
+    config
+        .update(|cfg| {
+            if let Some(client) = cfg.clients.iter_mut().find(|client| client.id == owner) {
+                client.secret_scanning.dismissed_secrets.retain(|entry| {
+                    let keep = !matched.contains(&entry.id);
+                    if !keep {
+                        removed.push(entry.clone());
+                    }
+                    keep
+                });
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    if let Err(error) = config.save().await {
+        let _ = config.update(|cfg| {
+            if let Some(client) = cfg.clients.iter_mut().find(|client| client.id == owner) {
+                client.secret_scanning.dismissed_secrets.extend(removed);
+            }
+        });
+        cache.invalidate(owner);
+        cache.invalidate(&format!("redact:{owner}"));
+        return Err(format!("Could not save the decision; try again: {error}"));
+    }
+    cache.invalidate(owner);
+    cache.invalidate(&format!("redact:{owner}"));
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,6 +292,41 @@ mod tests {
             "Synthetic rule".into(),
             "synthe…nS6".into(),
         )
+    }
+
+    #[tokio::test]
+    async fn forgetting_not_secret_restores_masking_and_keeps_redact_decisions() {
+        let root = tempfile::tempdir().unwrap();
+        let (config, a, _, cache) = fixture(&root.path().join("settings.yaml"));
+        let storage: Arc<dyn KeychainStorage> = Arc::new(MockKeychain::new());
+        let vault = Vault::for_client(storage, &a);
+        attach_test(config.clone(), cache.clone(), &vault, &a);
+        vault.register(VALUE).unwrap();
+        remember(&config, &cache, &a, decision(), false)
+            .await
+            .unwrap();
+        assert_eq!(exemptions(&config, &cache, &a, &[VALUE]), vec![true]);
+
+        let value = || Zeroizing::new(VALUE.to_string());
+        assert!(forget(&config, &cache, &a, value()).await.unwrap());
+        assert_eq!(exemptions(&config, &cache, &a, &[VALUE]), vec![false]);
+        let mut next = json!({"input":VALUE});
+        vault.protect(&mut next).unwrap();
+        assert_ne!(next["input"], VALUE);
+        assert!(!forget(&config, &cache, &a, value()).await.unwrap());
+
+        remember(&config, &cache, &a, decision(), true)
+            .await
+            .unwrap();
+        assert!(!forget(&config, &cache, &a, value()).await.unwrap());
+        assert_eq!(
+            config
+                .client_secret_scanning(&a)
+                .unwrap()
+                .dismissed_secrets
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]

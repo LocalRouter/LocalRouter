@@ -37,6 +37,7 @@ pub mod cert;
 pub mod codex_search;
 pub mod decisions;
 pub mod error;
+pub mod images;
 pub mod interceptor;
 pub mod manager;
 pub mod ollama;

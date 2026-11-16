@@ -4770,7 +4770,7 @@ pub async fn update_client_secret_scanning_config(
     }
 
     config_manager.save().await.map_err(|e| e.to_string())?;
-    super::commands::rebuild_secret_scanner(config_manager, state).await?;
+    state.rebuild_secret_scanner()?;
 
     if let Err(e) = app.emit("clients-changed", ()) {
         tracing::error!("Failed to emit clients-changed event: {}", e);

@@ -84,12 +84,14 @@ pub async fn list_redacted_secrets(
                 });
             }
         }
+        // Most recently used first; ties keep a stable order.
         entries.sort_by(|a, b| {
-            (&a.client_name, &a.client_id, &a.secret.reference_id).cmp(&(
-                &b.client_name,
-                &b.client_id,
-                &b.secret.reference_id,
-            ))
+            b.secret
+                .last_used_at
+                .cmp(&a.secret.last_used_at)
+                .then_with(|| a.client_name.cmp(&b.client_name))
+                .then_with(|| a.client_id.cmp(&b.client_id))
+                .then_with(|| a.secret.reference_id.cmp(&b.secret.reference_id))
         });
         Ok(RedactedSecretInventory {
             entries,
@@ -129,21 +131,18 @@ pub async fn reveal_redacted_secret(
     .map_err(|e| e.to_string())?
 }
 
-/// Persist an allow decision while retaining every issued restoration reference.
-#[tauri::command]
-pub async fn mark_redacted_secret_not_secret(
-    client_id: String,
+/// The original value and its masked hint for a live stored reference.
+async fn stored_original(
+    client_id: &str,
     reference_id: String,
-    config_manager: State<'_, ConfigManager>,
-    state: State<'_, Arc<lr_server::state::AppState>>,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
+    config_manager: &ConfigManager,
+) -> Result<(zeroize::Zeroizing<String>, String), String> {
     validate_reference(&reference_id)?;
-    if config_manager.client_secret_scanning(&client_id).is_none() {
+    if config_manager.client_secret_scanning(client_id).is_none() {
         return Err("Client not found".into());
     }
-    let owner = client_id.clone();
-    let finding = tokio::task::spawn_blocking(move || {
+    let owner = client_id.to_owned();
+    tokio::task::spawn_blocking(move || {
         let storage = redacted_secret_storage();
         let vault = Vault::find_client(storage.clone(), &owner, RETENTION_SECS)
             .map_err(|e| e.to_string())?
@@ -157,15 +156,71 @@ pub async fn mark_redacted_secret_not_secret(
             .reveal_reference(&reference_id)
             .map_err(|e| e.to_string())?
             .ok_or("Secret mapping has expired or was purged")?;
-        Ok::<_, String>(lr_server::secret_policies::RememberedValue::new(
-            original,
-            "stored-secret-reference".into(),
-            "Marked as not a secret".into(),
-            entry.masked_value,
-        ))
+        Ok::<_, String>((zeroize::Zeroizing::new(original), entry.masked_value))
     })
     .await
-    .map_err(|_| "Could not read the stored value".to_string())??;
+    .map_err(|_| "Could not read the stored value".to_string())?
+}
+
+/// Whether the client has marked this stored value as not a secret.
+#[tauri::command]
+pub async fn redacted_secret_is_not_secret(
+    client_id: String,
+    reference_id: String,
+    config_manager: State<'_, ConfigManager>,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+) -> Result<bool, String> {
+    let (original, _) = stored_original(&client_id, reference_id, &config_manager).await?;
+    let config = config_manager.inner().clone();
+    let cache = state.secret_dismissal_cache.clone();
+    tokio::task::spawn_blocking(move || {
+        lr_server::secret_policies::exemptions(&config, &cache, &client_id, &[original.as_str()])
+            .first()
+            .copied()
+            .unwrap_or(false)
+    })
+    .await
+    .map_err(|_| "Could not check the decision".to_string())
+}
+
+/// Undo "Not a secret": the value is detected and redacted again.
+#[tauri::command]
+pub async fn unmark_redacted_secret_not_secret(
+    client_id: String,
+    reference_id: String,
+    config_manager: State<'_, ConfigManager>,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let (original, _) = stored_original(&client_id, reference_id, &config_manager).await?;
+    lr_server::secret_policies::forget(
+        &config_manager,
+        &state.secret_dismissal_cache,
+        &client_id,
+        original,
+    )
+    .await?;
+    let _ = app.emit("clients-changed", ());
+    let _ = app.emit("secret-store-changed", ());
+    Ok(())
+}
+
+/// Persist an allow decision while retaining every issued restoration reference.
+#[tauri::command]
+pub async fn mark_redacted_secret_not_secret(
+    client_id: String,
+    reference_id: String,
+    config_manager: State<'_, ConfigManager>,
+    state: State<'_, Arc<lr_server::state::AppState>>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let (original, masked) = stored_original(&client_id, reference_id, &config_manager).await?;
+    let finding = lr_server::secret_policies::RememberedValue {
+        value: original,
+        rule_id: "stored-secret-reference".into(),
+        rule_description: "Marked as not a secret".into(),
+        hint: masked,
+    };
     lr_server::secret_policies::remember(
         &config_manager,
         &state.secret_dismissal_cache,

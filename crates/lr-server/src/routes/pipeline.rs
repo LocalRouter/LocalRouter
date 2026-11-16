@@ -1730,7 +1730,10 @@ pub async fn scan_request_for_secrets_fresh(
                 state,
                 client_id,
                 Some(session_id),
-                "Secret scanner unavailable; request forwarded without new detection",
+                &format!(
+                    "{}; request forwarded without new detection",
+                    state.secret_scanner_unavailable_reason()
+                ),
             );
         }
         return SecretScanOutcome::Allow;

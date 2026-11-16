@@ -96,9 +96,10 @@ export function ClientsView({ activeSubTab, onTabChange }: ClientsViewProps) {
     }
   }, [])
 
+  // Refreshes keep the current view mounted; only the first load (whose
+  // `loading` starts true) shows the spinner.
   const loadClients = async () => {
     try {
-      setLoading(true)
       const clientList = await invoke<Client[]>("list_clients")
       setClients(clientList)
     } catch (error) {

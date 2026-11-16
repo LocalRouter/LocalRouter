@@ -209,3 +209,29 @@ async fn only_an_explicit_user_denial_returns_the_specific_403() {
         }
     }
 }
+
+#[test]
+fn scanner_is_installed_when_the_state_is_built() {
+    // The server serves the state as soon as it is built, so the scanner
+    // must already be there; nothing later in startup installs it.
+    let root = tempfile::tempdir().unwrap();
+    let state = super::boundary_tests::built_state(root.path());
+    assert!(state.secret_scanner.read().is_some());
+    assert!(state.secret_scanner_error.read().is_none());
+}
+
+#[test]
+fn unavailable_scanner_warning_carries_the_build_error() {
+    let root = tempfile::tempdir().unwrap();
+    let state = super::boundary_tests::state(root.path());
+    *state.secret_scanner.write() = None;
+    assert_eq!(
+        state.secret_scanner_unavailable_reason(),
+        "Secret scanner is not initialized"
+    );
+    *state.secret_scanner_error.write() = Some("bad allowlist pattern".into());
+    assert_eq!(
+        state.secret_scanner_unavailable_reason(),
+        "Secret scanner failed to initialize (bad allowlist pattern)"
+    );
+}

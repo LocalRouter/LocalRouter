@@ -88,7 +88,18 @@ impl ProxyInterceptor for ActiveInterceptor {
         }
         // Only recognized LLM API calls are subject to the firewall; anything
         // else (auth preflights, etc.) passes through untouched.
-        let Some(format) = wire::detect(&ex.path) else {
+        let format = wire::detect(&ex.path);
+        // Image edits may be multipart (OpenAI's public API); only the JSON
+        // shape has a prompt we can scan, so treat the rest as unsupported.
+        let format = format.filter(|format| {
+            *format != wire::WireFormat::Images
+                || ex
+                    .request_body
+                    .as_ref()
+                    .and_then(|b| serde_json::from_slice::<Value>(b).ok())
+                    .is_some_and(|body| crate::images::is_json_request(&body))
+        });
+        let Some(format) = format else {
             let path = ex.path.split('?').next().unwrap_or(&ex.path);
             let inference = [
                 "/audio",

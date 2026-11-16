@@ -889,6 +889,10 @@ pub struct AppState {
     /// Secret scanning engine (swappable at runtime)
     pub secret_scanner: Arc<RwLock<Option<Arc<lr_secret_scanner::SecretScanEngine>>>>,
 
+    /// Why the last scanner build failed, so requests forwarded without
+    /// scanning can say so. `None` after a successful build.
+    pub secret_scanner_error: Arc<RwLock<Option<String>>>,
+
     /// Memoized "has the user permanently ignored this secret?" verdicts.
     /// The digest KDF is deliberately slow, and a dismissed secret recurs on
     /// every later request carrying it, so verdicts must not be recomputed
@@ -925,6 +929,47 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Build the secret scanner from the current config, or clear it when
+    /// secret scanning is off for every client. A build failure is recorded
+    /// in [`Self::secret_scanner_error`] and leaves no scanner installed.
+    pub fn rebuild_secret_scanner(&self) -> Result<(), String> {
+        let config = self.config_manager.get();
+        let ss_config = &config.secret_scanning;
+        if !ss_config.enabled_for_any_client(&config.clients) {
+            *self.secret_scanner.write() = None;
+            *self.secret_scanner_error.write() = None;
+            tracing::info!("Secret scanning disabled");
+            return Ok(());
+        }
+        let engine_config = lr_secret_scanner::SecretScanEngineConfig {
+            entropy_threshold: ss_config.entropy_threshold,
+            allowlist: ss_config.allowlist.clone(),
+            scan_system_messages: ss_config.scan_system_messages,
+        };
+        match lr_secret_scanner::SecretScanEngine::new(&engine_config) {
+            Ok(engine) => {
+                *self.secret_scanner.write() = Some(Arc::new(engine));
+                *self.secret_scanner_error.write() = None;
+                tracing::info!("Secret scanner initialized");
+                Ok(())
+            }
+            Err(e) => {
+                tracing::error!("Failed to initialize secret scanner: {}", e);
+                *self.secret_scanner.write() = None;
+                *self.secret_scanner_error.write() = Some(e.to_string());
+                Err(format!("Failed to initialize secret scanner: {}", e))
+            }
+        }
+    }
+
+    /// Why no scanner is installed, for warnings on unscanned requests.
+    pub fn secret_scanner_unavailable_reason(&self) -> String {
+        match self.secret_scanner_error.read().as_deref() {
+            Some(error) => format!("Secret scanner failed to initialize ({error})"),
+            None => "Secret scanner is not initialized".to_string(),
+        }
+    }
+
     pub fn new(
         router: Arc<Router>,
         rate_limiter: Arc<RateLimiterManager>,
@@ -1018,6 +1063,7 @@ impl AppState {
             auto_router_approval_tracker: Arc::new(AutoRouterApprovalTracker::new()),
             secret_scan_approval_tracker: Arc::new(SecretScanApprovalTracker::new()),
             secret_scanner: Arc::new(RwLock::new(None)),
+            secret_scanner_error: Arc::new(RwLock::new(None)),
             secret_dismissal_cache: Arc::new(lr_secret_scanner::dismissal::DismissalCache::new()),
             safety_engine: Arc::new(RwLock::new(None)),
             compression_service: Arc::new(RwLock::new(None)),
@@ -1041,6 +1087,10 @@ impl AppState {
             monitor_store: Arc::new(lr_monitor::MonitorEventStore::new(1000)),
             push_relay: None,
         };
+
+        // Before the server accepts requests: a request arriving while the
+        // scanner is missing is forwarded without secret detection.
+        let _ = result.rebuild_secret_scanner();
 
         let capture_config = result.config_manager.clone();
         result.monitor_store.set_payload_policy(move |client| {

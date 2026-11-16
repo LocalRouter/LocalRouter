@@ -5752,3 +5752,7 @@ export interface PurgeRedactedSecretsParams { clientId: string | null; reference
 
 /** Params for mark_redacted_secret_not_secret; retain issued references for restoration. */
 export interface MarkRedactedSecretNotSecretParams { clientId: string; referenceId: string }
+/** Params for unmark_redacted_secret_not_secret (undo "Not a secret") */
+export interface UnmarkRedactedSecretNotSecretParams { clientId: string; referenceId: string }
+/** Params for redacted_secret_is_not_secret; returns boolean */
+export interface RedactedSecretIsNotSecretParams { clientId: string; referenceId: string }
