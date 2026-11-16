@@ -19,7 +19,7 @@
 //! `Sec-WebSocket-Extensions` before forwarding the upgrade, so no
 //! compression is ever negotiated and every frame payload stays plaintext.
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -30,10 +30,22 @@ use crate::interceptor::{ObservedExchange, ProxyInterceptor, RequestAction};
 use crate::wire::{self, WireFormat};
 
 /// Hard cap on a single decoded websocket message (and the decoder's internal
-/// buffer). Far above any real LLM payload; exceeding it poisons the decoder
-/// and the relay shuts the connection down rather than ferrying traffic the
-/// firewall could not inspect.
-const MAX_MESSAGE: usize = 64 * 1024 * 1024;
+/// buffer). Codex resends a whole conversation as one `response.create` after
+/// it opens a fresh connection, and long sessions with screenshots exceed
+/// 64 MiB. Exceeding the cap poisons the decoder; the relay then closes the
+/// client with 1009 (Message Too Big) rather than ferrying traffic the
+/// firewall could not inspect, and Codex retries the request over HTTPS.
+pub(crate) const MAX_MESSAGE: usize = 256 * 1024 * 1024;
+
+/// Largest frame payload the relay writes. Data messages above it are sent as
+/// a fragmented message, the way Codex frames large requests: the upstream
+/// accepts large messages only in bounded frames.
+const MAX_FRAME: usize = 1024 * 1024;
+
+/// Close code for a message above [`MAX_MESSAGE`] (RFC 6455 §7.4.1).
+const CLOSE_TOO_BIG: u16 = 1009;
+/// Close code for a stream the decoder cannot parse.
+const CLOSE_PROTOCOL_ERROR: u16 = 1002;
 
 /// Cap on the SSE-shaped capture buffer per request/response cycle. Matches
 /// the HTTP path's per-body capture cap.
@@ -88,7 +100,36 @@ pub struct FrameDecoder {
     buf: Vec<u8>,
     frag_opcode: Option<u8>,
     frag: Vec<u8>,
-    poisoned: bool,
+    poisoned: Option<Poison>,
+}
+
+/// Why a decoder stopped parsing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Poison {
+    /// A frame or reassembled message exceeds [`MAX_MESSAGE`].
+    TooBig,
+    /// The stream violates RFC 6455 in a way the relay cannot re-frame.
+    Protocol,
+}
+
+impl Poison {
+    /// The close code that tells the peer why the relay closed.
+    pub fn close_code(self) -> u16 {
+        match self {
+            Poison::TooBig => CLOSE_TOO_BIG,
+            Poison::Protocol => CLOSE_PROTOCOL_ERROR,
+        }
+    }
+
+    fn reason(self) -> String {
+        match self {
+            Poison::TooBig => format!(
+                "WebSocket message exceeds LocalRouter's {} MiB limit",
+                MAX_MESSAGE / (1024 * 1024)
+            ),
+            Poison::Protocol => "WebSocket stream could not be parsed".into(),
+        }
+    }
 }
 
 enum Step {
@@ -96,7 +137,7 @@ enum Step {
     /// Consumed a non-final fragment; nothing to deliver yet.
     Consumed,
     Incomplete,
-    Poison,
+    Poison(Poison),
 }
 
 impl FrameDecoder {
@@ -105,13 +146,18 @@ impl FrameDecoder {
     }
 
     pub fn is_poisoned(&self) -> bool {
+        self.poisoned.is_some()
+    }
+
+    /// Why the decoder stopped, once it has.
+    pub fn poison(&self) -> Option<Poison> {
         self.poisoned
     }
 
     /// Feed raw bytes; returns every message completed by them, in order.
     pub fn push(&mut self, bytes: &[u8]) -> Vec<WsMessage> {
         let mut out = Vec::new();
-        if self.poisoned {
+        if self.poisoned.is_some() {
             return out;
         }
         self.buf.extend_from_slice(bytes);
@@ -120,8 +166,8 @@ impl FrameDecoder {
                 Step::Message(m) => out.push(m),
                 Step::Consumed => {}
                 Step::Incomplete => break,
-                Step::Poison => {
-                    self.poisoned = true;
+                Step::Poison(reason) => {
+                    self.poisoned = Some(reason);
                     self.buf.clear();
                     self.frag.clear();
                     break;
@@ -142,7 +188,7 @@ impl FrameDecoder {
             // RSV bits imply an extension (e.g. permessage-deflate) — the
             // transport refuses extension negotiation, so this is a protocol
             // violation we cannot parse through.
-            return Step::Poison;
+            return Step::Poison(Poison::Protocol);
         }
         let fin = b0 & 0x80 != 0;
         let opcode = b0 & 0x0F;
@@ -166,7 +212,7 @@ impl FrameDecoder {
             n => (u64::from(n), 0),
         };
         if payload_len > MAX_MESSAGE as u64 {
-            return Step::Poison;
+            return Step::Poison(Poison::TooBig);
         }
         let payload_len = payload_len as usize;
         let header = 2 + len_bytes + if masked { 4 } else { 0 };
@@ -193,14 +239,14 @@ impl FrameDecoder {
         // Rejecting oversized/fragmented ones matters because the relay
         // re-encodes each control frame as a single FIN frame.
         if (0x8..=0xA).contains(&opcode) && (!fin || payload_len > 125) {
-            return Step::Poison;
+            return Step::Poison(Poison::Protocol);
         }
         match opcode {
             0x8 => return Step::Message(WsMessage::Close(payload)),
             0x9 => return Step::Message(WsMessage::Ping(payload)),
             0xA => return Step::Message(WsMessage::Pong(payload)),
             0x0..=0x2 => {}
-            _ => return Step::Poison,
+            _ => return Step::Poison(Poison::Protocol),
         }
 
         // Data frames, possibly fragmented.
@@ -208,7 +254,7 @@ impl FrameDecoder {
             // Unfragmented message.
             (0x1 | 0x2, None) if fin => match Self::assemble(opcode, payload) {
                 Some(msg) => Step::Message(msg),
-                None => Step::Poison,
+                None => Step::Poison(Poison::Protocol),
             },
             // First fragment.
             (0x1 | 0x2, None) => {
@@ -219,21 +265,21 @@ impl FrameDecoder {
             // Continuation.
             (0x0, Some(op)) => {
                 if self.frag.len() + payload.len() > MAX_MESSAGE {
-                    return Step::Poison;
+                    return Step::Poison(Poison::TooBig);
                 }
                 self.frag.extend_from_slice(&payload);
                 if fin {
                     self.frag_opcode = None;
                     match Self::assemble(op, std::mem::take(&mut self.frag)) {
                         Some(msg) => Step::Message(msg),
-                        None => Step::Poison,
+                        None => Step::Poison(Poison::Protocol),
                     }
                 } else {
                     Step::Consumed
                 }
             }
             // Continuation without a start, or a new message mid-fragmentation.
-            _ => Step::Poison,
+            _ => Step::Poison(Poison::Protocol),
         }
     }
 
@@ -252,10 +298,34 @@ impl FrameDecoder {
 /// Encode one message as a single frame. Client→server frames must be masked
 /// (RFC 6455 §5.3); any key is protocol-valid, so a cheap rolling key is fine.
 pub fn encode_frame(msg: &WsMessage, mask: bool) -> Vec<u8> {
-    static KEY_SEED: AtomicU32 = AtomicU32::new(0x9E37_79B9);
+    let mut out = Vec::with_capacity(msg.payload().len() + 14);
+    push_frame(&mut out, true, msg.opcode(), msg.payload(), mask);
+    out
+}
+
+/// Encode one message for the wire. Data messages above [`MAX_FRAME`] become
+/// a fragmented message (first frame with the data opcode, continuations,
+/// FIN on the last), so a large message the client sent in bounded frames
+/// reaches the peer in bounded frames too. Text may split inside a UTF-8
+/// sequence: RFC 6455 validates text per message, not per frame.
+pub fn encode_message(msg: &WsMessage, mask: bool) -> Vec<u8> {
     let payload = msg.payload();
-    let mut out = Vec::with_capacity(payload.len() + 14);
-    out.push(0x80 | msg.opcode());
+    let data = matches!(msg, WsMessage::Text(_) | WsMessage::Binary(_));
+    if !data || payload.len() <= MAX_FRAME {
+        return encode_frame(msg, mask);
+    }
+    let frames = payload.len().div_ceil(MAX_FRAME);
+    let mut out = Vec::with_capacity(payload.len() + frames * 14);
+    for (index, chunk) in payload.chunks(MAX_FRAME).enumerate() {
+        let opcode = if index == 0 { msg.opcode() } else { 0x0 };
+        push_frame(&mut out, index + 1 == frames, opcode, chunk, mask);
+    }
+    out
+}
+
+fn push_frame(out: &mut Vec<u8>, fin: bool, opcode: u8, payload: &[u8], mask: bool) {
+    static KEY_SEED: AtomicU32 = AtomicU32::new(0x9E37_79B9);
+    out.push(if fin { 0x80 } else { 0x00 } | opcode);
     let mask_bit = if mask { 0x80 } else { 0x00 };
     match payload.len() {
         n if n < 126 => out.push(mask_bit | n as u8),
@@ -277,7 +347,11 @@ pub fn encode_frame(msg: &WsMessage, mask: bool) -> Vec<u8> {
     } else {
         out.extend_from_slice(payload);
     }
-    out
+}
+
+/// A close frame carrying `code` (RFC 6455 §5.5.1).
+fn close_frame(code: u16, mask: bool) -> Vec<u8> {
+    encode_frame(&WsMessage::Close(code.to_be_bytes().to_vec()), mask)
 }
 
 // ---------------------------------------------------------------------------
@@ -348,7 +422,22 @@ impl WsSession {
     /// cycle for it when it is allowed through.
     async fn on_client_message(&self, payload: &[u8]) -> ClientAction {
         if let Ok(Value::Object(message)) = serde_json::from_slice::<Value>(payload) {
-            if message.get("type").and_then(Value::as_str) == Some("response.cancel") {
+            // Control messages for a response already in flight: no model
+            // call of their own, so no firewall decision and no new cycle.
+            // (A cycle here would never see a terminal event, and it would
+            // make the in-flight response's events ambiguous.)
+            // An interrupt is forwarded only in Codex's content-free shape,
+            // so the bypass cannot carry text past secret scanning.
+            let control = match message.get("type").and_then(Value::as_str) {
+                Some("response.cancel") => true,
+                Some("response.interrupt") => message.iter().all(|(key, value)| {
+                    matches!(key.as_str(), "type" | "response_id" | "mode" | "event_id")
+                        && !value.is_object()
+                        && !value.is_array()
+                }),
+                _ => false,
+            };
+            if control {
                 return ClientAction::Forward;
             }
         }
@@ -606,6 +695,65 @@ impl WsSession {
     pub async fn on_close(&self) {
         self.finish_cycle(None).await;
     }
+
+    /// Record a client message the relay refused before it could open a cycle
+    /// (one above the message size cap), so the failure is visible.
+    pub(crate) async fn record_refused(&self, status: u16, error: String) {
+        let mut ex = self.base.clone();
+        ex.session_id = Some(uuid::Uuid::new_v4().to_string());
+        ex.status = Some(status);
+        ex.error = Some(error);
+        ex.latency_ms = Some(0);
+        self.interceptor.on_response(&ex).await;
+    }
+}
+
+/// Which side ended a relayed connection first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+enum EndedBy {
+    Open = 0,
+    Client = 1,
+    Upstream = 2,
+    /// The relay closed it (an unparseable or oversized message).
+    Relay = 3,
+}
+
+impl EndedBy {
+    fn from_u8(value: u8) -> Self {
+        match value {
+            1 => EndedBy::Client,
+            2 => EndedBy::Upstream,
+            3 => EndedBy::Relay,
+            _ => EndedBy::Open,
+        }
+    }
+
+    /// Error for a cycle still open when the connection ended.
+    fn cycle_error(self, relay_reason: Option<String>) -> String {
+        match self {
+            EndedBy::Client => "Client closed the WebSocket before a terminal response event \
+                 (the client abandoned the request)"
+                .into(),
+            EndedBy::Upstream => {
+                "Upstream closed the WebSocket before a terminal response event".into()
+            }
+            EndedBy::Relay => relay_reason.unwrap_or_else(|| {
+                "WebSocket disconnected before a terminal response event".into()
+            }),
+            EndedBy::Open => "WebSocket disconnected before a terminal response event".into(),
+        }
+    }
+}
+
+/// Record the first side to end the connection; later ends are consequences.
+fn mark_ended(ended: &AtomicU8, by: EndedBy) {
+    let _ = ended.compare_exchange(
+        EndedBy::Open as u8,
+        by as u8,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    );
 }
 
 /// Shape a firewall `Reject` as the wrapped error event websocket clients
@@ -638,9 +786,11 @@ fn reject_event(status: u16, body: &[u8]) -> String {
 /// before delivery and captured in their masked form. Without one (any other websocket on a
 /// MITM'd host), both directions are a blind byte copy.
 ///
-/// If either decoder poisons (protocol violation / oversized frame), the
-/// relay shuts the connection down: we never ferry LLM traffic the firewall
-/// could not inspect. Clients fall back to their HTTPS transport.
+/// If either decoder poisons (protocol violation / oversized message), the
+/// relay closes the client with a close code saying why (1009 for a message
+/// above [`MAX_MESSAGE`], 1002 otherwise) and shuts the connection down: we
+/// never ferry LLM traffic the firewall could not inspect. Codex answers an
+/// early 1009 by retrying the request over HTTPS.
 pub async fn relay<C, U>(client: C, upstream: U, session: Option<Arc<WsSession>>)
 where
     C: AsyncRead + AsyncWrite + Send,
@@ -651,18 +801,25 @@ where
     // Shared because rejections are answered from the client→upstream task.
     let client_wr = Arc::new(tokio::sync::Mutex::new(client_wr));
     let stop_client = Arc::new(tokio::sync::Notify::new());
+    let ended = Arc::new(AtomicU8::new(EndedBy::Open as u8));
+    let relay_reason = Arc::new(parking_lot::Mutex::new(None::<String>));
 
     let c2u = {
         let session = session.clone();
         let client_wr = client_wr.clone();
         let stop_client = stop_client.clone();
+        let ended = ended.clone();
+        let relay_reason = relay_reason.clone();
         async move {
             let mut decoder = FrameDecoder::new();
             let mut buf = vec![0u8; 16 * 1024];
             'conn: loop {
                 let read = tokio::select! { read = client_rd.read(&mut buf) => read, _ = stop_client.notified() => break };
                 let n = match read {
-                    Ok(0) | Err(_) => break,
+                    Ok(0) | Err(_) => {
+                        mark_ended(&ended, EndedBy::Client);
+                        break;
+                    }
                     Ok(n) => n,
                 };
                 let Some(session) = session.as_ref() else {
@@ -683,7 +840,7 @@ where
                                 if client_wr
                                     .lock()
                                     .await
-                                    .write_all(&encode_frame(&WsMessage::Text(original), false))
+                                    .write_all(&encode_message(&WsMessage::Text(original), false))
                                     .await
                                     .is_err()
                                 {
@@ -691,7 +848,7 @@ where
                                 }
                             }
                             match action {
-                                ClientAction::Forward => encode_frame(&msg, true),
+                                ClientAction::Forward => encode_message(&msg, true),
                                 ClientAction::Replace(body) => {
                                     let replaced = match msg {
                                         WsMessage::Text(_) => WsMessage::Text(
@@ -699,12 +856,12 @@ where
                                         ),
                                         _ => WsMessage::Binary(body),
                                     };
-                                    encode_frame(&replaced, true)
+                                    encode_message(&replaced, true)
                                 }
                                 ClientAction::Reject(reply) => {
                                     // Answer the client directly; the upstream
                                     // never sees the request.
-                                    let frame = encode_frame(&WsMessage::Text(reply), false);
+                                    let frame = encode_message(&WsMessage::Text(reply), false);
                                     if client_wr.lock().await.write_all(&frame).await.is_err() {
                                         break 'conn;
                                     }
@@ -712,16 +869,39 @@ where
                                 }
                             }
                         }
-                        control => encode_frame(&control, true),
+                        control => {
+                            if matches!(control, WsMessage::Close(_)) {
+                                mark_ended(&ended, EndedBy::Client);
+                            }
+                            encode_frame(&control, true)
+                        }
                     };
                     if upstream_wr.write_all(&forwarded).await.is_err() {
                         break 'conn;
                     }
                 }
-                if decoder.is_poisoned() {
-                    tracing::warn!(
-                        "websocket client stream unparseable; closing intercepted connection"
+                if let Some(poison) = decoder.poison() {
+                    let reason = poison.reason();
+                    tracing::warn!("websocket client message refused ({reason}); closing intercepted connection");
+                    mark_ended(&ended, EndedBy::Relay);
+                    let error = format!(
+                        "{reason}; connection closed with code {}",
+                        poison.close_code()
                     );
+                    *relay_reason.lock() = Some(error.clone());
+                    let status = match poison {
+                        Poison::TooBig => 413,
+                        Poison::Protocol => 400,
+                    };
+                    session.record_refused(status, error).await;
+                    // Tell the client why instead of dropping the socket.
+                    let _ = client_wr
+                        .lock()
+                        .await
+                        .write_all(&close_frame(poison.close_code(), false))
+                        .await;
+                    // 1001: the proxy is going away from this connection.
+                    let _ = upstream_wr.write_all(&close_frame(1001, true)).await;
                     break;
                 }
             }
@@ -732,12 +912,17 @@ where
     let u2c = {
         let session = session.clone();
         let client_wr = client_wr.clone();
+        let ended = ended.clone();
+        let relay_reason = relay_reason.clone();
         async move {
             let mut decoder = FrameDecoder::new();
             let mut buf = vec![0u8; 16 * 1024];
             'server: loop {
                 let n = match upstream_rd.read(&mut buf).await {
-                    Ok(0) | Err(_) => break,
+                    Ok(0) | Err(_) => {
+                        mark_ended(&ended, EndedBy::Upstream);
+                        break;
+                    }
                     Ok(n) => n,
                 };
                 let Some(session) = session.as_ref() else {
@@ -747,6 +932,9 @@ where
                     continue;
                 };
                 for msg in decoder.push(&buf[..n]) {
+                    if matches!(msg, WsMessage::Close(_)) {
+                        mark_ended(&ended, EndedBy::Upstream);
+                    }
                     let messages = match &msg {
                         WsMessage::Text(text) => session.on_server_message(text).await,
                         WsMessage::Binary(bytes) => match std::str::from_utf8(bytes) {
@@ -771,13 +959,16 @@ where
                                         let _ = client_wr
                                             .lock()
                                             .await
-                                            .write_all(&encode_frame(&WsMessage::Text(text), false))
+                                            .write_all(&encode_message(
+                                                &WsMessage::Text(text),
+                                                false,
+                                            ))
                                             .await;
                                     }
                                     if client_wr
                                         .lock()
                                         .await
-                                        .write_all(&encode_frame(&msg, false))
+                                        .write_all(&encode_message(&msg, false))
                                         .await
                                         .is_err()
                                     {
@@ -799,7 +990,7 @@ where
                                 _ => WsMessage::Text(text),
                             };
                             if writer
-                                .write_all(&encode_frame(&output, false))
+                                .write_all(&encode_message(&output, false))
                                 .await
                                 .is_err()
                             {
@@ -810,10 +1001,19 @@ where
                         break 'server;
                     }
                 }
-                if decoder.is_poisoned() {
-                    tracing::warn!(
-                        "websocket upstream stream unparseable; closing intercepted connection"
-                    );
+                if let Some(poison) = decoder.poison() {
+                    let reason = poison.reason();
+                    tracing::warn!("websocket upstream message refused ({reason}); closing intercepted connection");
+                    mark_ended(&ended, EndedBy::Relay);
+                    *relay_reason.lock() = Some(format!(
+                        "Upstream sent an unrelayable message ({reason}); connection closed with code {}",
+                        poison.close_code()
+                    ));
+                    let _ = client_wr
+                        .lock()
+                        .await
+                        .write_all(&close_frame(poison.close_code(), false))
+                        .await;
                     break;
                 }
             }
@@ -824,7 +1024,7 @@ where
                     let _ = client_wr
                         .lock()
                         .await
-                        .write_all(&encode_frame(&WsMessage::Text(original), false))
+                        .write_all(&encode_message(&WsMessage::Text(original), false))
                         .await;
                 }
             }
@@ -835,7 +1035,9 @@ where
 
     tokio::join!(c2u, u2c);
     if let Some(session) = session {
-        session.on_close().await;
+        let ended_by = EndedBy::from_u8(ended.load(Ordering::Acquire));
+        let error = ended_by.cycle_error(relay_reason.lock().take());
+        session.finish_cycle_with_error(None, Some(error)).await;
     }
 }
 
@@ -1648,5 +1850,368 @@ mod concurrent_restoration_tests {
         let third = start(&session, "third-synthetic-original", "response-c").await;
         let output=session.on_server_message(&serde_json::json!({"type":"response.output_text.delta","item_id":"c","delta":third}).to_string()).await.unwrap();
         assert_eq!(deltas(output), "third-synthetic-original");
+    }
+}
+
+#[cfg(test)]
+mod codex_disconnect_tests {
+    //! Regressions for Codex sessions failing behind the proxy: a large
+    //! conversation resent on a fresh websocket, steering interrupts, and the
+    //! monitor's account of who ended a connection.
+    use super::*;
+    use crate::passive::PassiveInterceptor;
+    use lr_monitor::{EventStatus, MonitorEventStore};
+    use serde_json::json;
+    use std::sync::atomic::AtomicUsize;
+
+    fn base_exchange() -> ObservedExchange {
+        ObservedExchange {
+            client_id: "client-1".into(),
+            host: "chatgpt.com".into(),
+            method: "GET".into(),
+            path: "/backend-api/codex/responses".into(),
+            ..Default::default()
+        }
+    }
+
+    /// Records to the monitor and counts firewall decisions.
+    struct Counting {
+        recorder: PassiveInterceptor,
+        requests: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl ProxyInterceptor for Counting {
+        fn on_connect(
+            &self,
+            _: &str,
+            _: &crate::interceptor::ClientCtx,
+        ) -> crate::interceptor::ConnectDecision {
+            crate::interceptor::ConnectDecision::Mitm
+        }
+        async fn on_request(&self, _: &ObservedExchange) -> RequestAction {
+            self.requests.fetch_add(1, Ordering::SeqCst);
+            RequestAction::Forward
+        }
+        fn begin(&self, ex: &ObservedExchange) -> Option<String> {
+            self.recorder.begin(ex)
+        }
+        async fn on_response(&self, ex: &ObservedExchange) {
+            self.recorder.on_response(ex).await
+        }
+    }
+
+    fn counting(store: &Arc<MonitorEventStore>) -> Arc<Counting> {
+        Arc::new(Counting {
+            recorder: PassiveInterceptor::new(store.clone()),
+            requests: AtomicUsize::new(0),
+        })
+    }
+
+    /// (FIN, opcode, payload length) of each frame in an encoded stream.
+    fn frame_lengths(mut wire: &[u8]) -> Vec<(bool, u8, usize)> {
+        let mut frames = Vec::new();
+        while wire.len() >= 2 {
+            let fin = wire[0] & 0x80 != 0;
+            let opcode = wire[0] & 0x0F;
+            let masked = wire[1] & 0x80 != 0;
+            let (len, header) = match wire[1] & 0x7F {
+                126 => (u16::from_be_bytes([wire[2], wire[3]]) as usize, 4),
+                127 => {
+                    let mut be = [0u8; 8];
+                    be.copy_from_slice(&wire[2..10]);
+                    (u64::from_be_bytes(be) as usize, 10)
+                }
+                n => (n as usize, 2),
+            };
+            let header = header + if masked { 4 } else { 0 };
+            frames.push((fin, opcode, len));
+            wire = &wire[header + len..];
+        }
+        frames
+    }
+
+    fn event_json(store: &MonitorEventStore, id: &str) -> Value {
+        serde_json::to_value(store.get(id).expect("event exists")).unwrap()
+    }
+
+    /// Read until one whole message arrives; `raw` collects the bytes read.
+    async fn read_message<R: AsyncRead + Unpin>(rd: &mut R, raw: &mut Vec<u8>) -> WsMessage {
+        let mut decoder = FrameDecoder::new();
+        let mut buf = vec![0u8; 64 * 1024];
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let n = rd.read(&mut buf).await.unwrap();
+                assert!(n > 0, "connection closed before a whole message arrived");
+                raw.extend_from_slice(&buf[..n]);
+                if let Some(message) = decoder.push(&buf[..n]).into_iter().next() {
+                    return message;
+                }
+            }
+        })
+        .await
+        .expect("message arrives")
+    }
+
+    #[test]
+    fn large_messages_are_encoded_as_bounded_fragments() {
+        // A two-byte UTF-8 character straddles the first frame boundary.
+        let text = format!(
+            "{}é{}",
+            "a".repeat(MAX_FRAME - 1),
+            "b".repeat(MAX_FRAME + 7)
+        );
+        let message = WsMessage::Text(text);
+        for mask in [true, false] {
+            let wire = encode_message(&message, mask);
+            assert_eq!(FrameDecoder::new().push(&wire), vec![message.clone()]);
+            assert_eq!(
+                frame_lengths(&wire),
+                vec![
+                    (false, 0x1, MAX_FRAME),
+                    (false, 0x0, MAX_FRAME),
+                    (true, 0x0, 8),
+                ]
+            );
+        }
+        let small = WsMessage::Text("hi".into());
+        assert_eq!(
+            frame_lengths(&encode_message(&small, false)),
+            vec![(true, 0x1, 2)]
+        );
+    }
+
+    /// Codex sends a request above 1 MiB as 1 MiB fragments. The relay used to
+    /// coalesce it into a single frame carrying the whole message; it must
+    /// keep the upstream's frames bounded.
+    #[tokio::test]
+    async fn relay_forwards_a_fragmented_codex_request_in_bounded_frames() {
+        let store = Arc::new(MonitorEventStore::new(16));
+        let session = Arc::new(WsSession::new(
+            counting(&store),
+            WireFormat::OpenAiResponses,
+            base_exchange(),
+        ));
+        let (client_side, proxy_client) = tokio::io::duplex(64 * 1024);
+        let (upstream_side, proxy_upstream) = tokio::io::duplex(64 * 1024);
+        let relay_task = tokio::spawn(relay(proxy_client, proxy_upstream, Some(session)));
+        let (mut client_rd, mut client_wr) = tokio::io::split(client_side);
+        let (mut upstream_rd, mut upstream_wr) = tokio::io::split(upstream_side);
+
+        let request = json!({
+            "type": "response.create",
+            "model": "gpt-5.5",
+            "input": [{"role": "user", "content": [{"type": "input_text",
+                "text": "z".repeat(3 * MAX_FRAME)}]}],
+        })
+        .to_string();
+        let wire = encode_message(&WsMessage::Text(request.clone()), true);
+        assert!(frame_lengths(&wire).len() > 1, "the client fragments");
+        let writer = tokio::spawn(async move {
+            client_wr.write_all(&wire).await.unwrap();
+            client_wr
+        });
+
+        let mut raw = Vec::new();
+        let forwarded = read_message(&mut upstream_rd, &mut raw).await;
+        assert_eq!(forwarded, WsMessage::Text(request));
+        let frames = frame_lengths(&raw);
+        assert!(frames.len() > 1);
+        assert!(frames.iter().all(|(_, _, len)| *len <= MAX_FRAME));
+
+        upstream_wr
+            .write_all(&encode_frame(
+                &WsMessage::Text(
+                    json!({"type": "response.completed", "response": {"id": "resp_1",
+                        "output": [], "usage": {"input_tokens": 1, "output_tokens": 1}}})
+                    .to_string(),
+                ),
+                false,
+            ))
+            .await
+            .unwrap();
+        let mut ignored = Vec::new();
+        read_message(&mut client_rd, &mut ignored).await;
+
+        drop(writer.await.unwrap());
+        drop(client_rd);
+        drop(upstream_wr);
+        drop(upstream_rd);
+        relay_task.await.unwrap();
+        let events = store.list(0, 10, None);
+        assert_eq!(events.events.len(), 1);
+        assert_eq!(events.events[0].status, EventStatus::Complete);
+    }
+
+    /// A message above the cap used to end in a bare TCP close, which Codex
+    /// reports as "Connection reset without closing handshake" and retries on
+    /// a new websocket five times. The relay answers 1009 instead, so Codex
+    /// switches to HTTPS at once, and records why.
+    #[tokio::test]
+    async fn oversized_client_message_is_closed_with_1009_and_recorded() {
+        let store = Arc::new(MonitorEventStore::new(16));
+        let session = Arc::new(WsSession::new(
+            counting(&store),
+            WireFormat::OpenAiResponses,
+            base_exchange(),
+        ));
+        let (client_side, proxy_client) = tokio::io::duplex(64 * 1024);
+        let (upstream_side, proxy_upstream) = tokio::io::duplex(64 * 1024);
+        let relay_task = tokio::spawn(relay(proxy_client, proxy_upstream, Some(session)));
+        let (mut client_rd, mut client_wr) = tokio::io::split(client_side);
+        let (mut upstream_rd, upstream_wr) = tokio::io::split(upstream_side);
+
+        // A masked text frame header announcing more than MAX_MESSAGE bytes.
+        let mut header = vec![0x81, 0x80 | 127];
+        header.extend_from_slice(&(MAX_MESSAGE as u64 + 1).to_be_bytes());
+        header.extend_from_slice(&[1, 2, 3, 4]);
+        client_wr.write_all(&header).await.unwrap();
+
+        let mut raw = Vec::new();
+        let close = read_message(&mut client_rd, &mut raw).await;
+        assert_eq!(close, WsMessage::Close(1009u16.to_be_bytes().to_vec()));
+
+        let mut upstream_bytes = Vec::new();
+        upstream_rd.read_to_end(&mut upstream_bytes).await.unwrap();
+        assert_eq!(
+            FrameDecoder::new().push(&upstream_bytes),
+            vec![WsMessage::Close(1001u16.to_be_bytes().to_vec())],
+            "nothing but a close reaches the upstream"
+        );
+        drop(upstream_wr);
+        drop(upstream_rd);
+        drop(client_wr);
+        drop(client_rd);
+        relay_task.await.unwrap();
+
+        let events = store.list(0, 10, None);
+        assert_eq!(events.events.len(), 1);
+        assert_eq!(events.events[0].status, EventStatus::Error);
+        let event = event_json(&store, &events.events[0].id);
+        assert_eq!(event["data"]["status_code"], 413);
+        assert!(event["data"]["error"].as_str().unwrap().contains("1009"));
+    }
+
+    /// Codex 0.169 steers a running response with `response.interrupt`. It is
+    /// a control message: no firewall decision and no cycle of its own.
+    #[tokio::test]
+    async fn interrupt_is_forwarded_without_opening_a_cycle() {
+        let store = Arc::new(MonitorEventStore::new(16));
+        let interceptor = counting(&store);
+        let session = WsSession::new(
+            interceptor.clone(),
+            WireFormat::OpenAiResponses,
+            base_exchange(),
+        );
+        session
+            .on_client_message(br#"{"type":"response.create","model":"gpt-5.5","input":"go"}"#)
+            .await;
+        session
+            .on_server_message(r#"{"type":"response.created","response":{"id":"resp_1"}}"#)
+            .await
+            .unwrap();
+        assert!(matches!(
+            session
+                .on_client_message(
+                    br#"{"type":"response.interrupt","response_id":"resp_1","mode":"discard_partial_items"}"#
+                )
+                .await,
+            ClientAction::Forward
+        ));
+        assert_eq!(interceptor.requests.load(Ordering::SeqCst), 1);
+        assert!(session.previous.lock().is_empty());
+        session
+            .on_server_message(r#"{"type":"response.interrupt.accepted","response_id":"resp_1"}"#)
+            .await
+            .unwrap();
+        session
+            .on_server_message(
+                r#"{"type":"response.incomplete","response":{"id":"resp_1","output":[]}}"#,
+            )
+            .await
+            .unwrap();
+        session.on_close().await;
+
+        let events = store.list(0, 10, None);
+        assert_eq!(events.events.len(), 1, "no event for the interrupt itself");
+        assert_eq!(events.events[0].status, EventStatus::Complete);
+    }
+
+    /// An interrupt with fields beyond Codex's control shape is not trusted
+    /// as content-free: it goes through the firewall like any request.
+    #[tokio::test]
+    async fn interrupt_with_extra_fields_is_inspected() {
+        let store = Arc::new(MonitorEventStore::new(16));
+        let interceptor = counting(&store);
+        let session = WsSession::new(
+            interceptor.clone(),
+            WireFormat::OpenAiResponses,
+            base_exchange(),
+        );
+        session
+            .on_client_message(
+                br#"{"type":"response.interrupt","response_id":"resp_1","input":"api_key=x"}"#,
+            )
+            .await;
+        assert_eq!(interceptor.requests.load(Ordering::SeqCst), 1);
+    }
+
+    async fn abandoned_cycle_error(client_closes: bool) -> String {
+        let store = Arc::new(MonitorEventStore::new(16));
+        let session = Arc::new(WsSession::new(
+            counting(&store),
+            WireFormat::OpenAiResponses,
+            base_exchange(),
+        ));
+        let (client_side, proxy_client) = tokio::io::duplex(64 * 1024);
+        let (upstream_side, proxy_upstream) = tokio::io::duplex(64 * 1024);
+        let relay_task = tokio::spawn(relay(proxy_client, proxy_upstream, Some(session)));
+        let (mut client_rd, mut client_wr) = tokio::io::split(client_side);
+        let (mut upstream_rd, upstream_wr) = tokio::io::split(upstream_side);
+        client_wr
+            .write_all(&encode_frame(
+                &WsMessage::Text(r#"{"type":"response.create","model":"gpt-5.5"}"#.into()),
+                true,
+            ))
+            .await
+            .unwrap();
+        let mut raw = Vec::new();
+        read_message(&mut upstream_rd, &mut raw).await;
+        let mut rest = Vec::new();
+        if client_closes {
+            drop(client_wr);
+            drop(client_rd);
+            upstream_rd.read_to_end(&mut rest).await.unwrap();
+            drop(upstream_wr);
+            drop(upstream_rd);
+        } else {
+            drop(upstream_wr);
+            drop(upstream_rd);
+            client_rd.read_to_end(&mut rest).await.unwrap();
+            drop(client_wr);
+            drop(client_rd);
+        }
+        relay_task.await.unwrap();
+        let events = store.list(0, 10, None);
+        assert_eq!(events.events.len(), 1);
+        assert_eq!(events.events[0].status, EventStatus::Error);
+        event_json(&store, &events.events[0].id)["data"]["error"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    }
+
+    #[tokio::test]
+    async fn abandoned_cycle_names_the_side_that_closed() {
+        let client = abandoned_cycle_error(true).await;
+        assert!(
+            client.starts_with("Client closed the WebSocket"),
+            "{client}"
+        );
+        let upstream = abandoned_cycle_error(false).await;
+        assert!(
+            upstream.starts_with("Upstream closed the WebSocket"),
+            "{upstream}"
+        );
     }
 }
