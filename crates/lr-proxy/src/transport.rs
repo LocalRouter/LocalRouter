@@ -37,6 +37,10 @@ use crate::{websocket, wire};
 const MAX_CAPTURE: usize = 1024 * 1024;
 /// Cap on the CONNECT header block, to bound a misbehaving client.
 const MAX_CONNECT_HEADER: usize = 16 * 1024;
+/// Cap on a buffered request body. Matches the websocket message cap: when
+/// Codex's websocket refuses a request it resends the same body over HTTPS,
+/// and long Codex sessions send whole conversations of tens of MiB.
+const MAX_REQUEST_BODY: usize = websocket::MAX_MESSAGE;
 
 /// Shared collaborators for handling proxied connections.
 pub struct ProxyContext {
@@ -333,14 +337,51 @@ async fn proxy_request(
         });
     let client_upgrade = is_ws_upgrade.then(|| hyper::upgrade::on(&mut req));
 
-    // Buffer the (small) request body so we can both forward and inspect it.
+    // Buffer the request body so we can both forward and inspect it. Bodies
+    // above the inspection limit are still forwarded; `request_body::inspect`
+    // and the firewall decide how to treat what they cannot fully inspect.
     let (mut parts, body) = req.into_parts();
-    let req_bytes = match http_body_util::Limited::new(body, lr_secret_scanner::wire::LIMIT)
+    let req_bytes = match http_body_util::Limited::new(body, MAX_REQUEST_BODY)
         .collect()
         .await
     {
         Ok(c) => c.to_bytes(),
-        Err(_) => return bad_gateway("failed reading request body"),
+        Err(e) => {
+            let too_large = e.is::<http_body_util::LengthLimitError>();
+            let (status, error) = if too_large {
+                (
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    format!(
+                        "request body exceeds LocalRouter's {} MiB proxy limit",
+                        MAX_REQUEST_BODY / (1024 * 1024)
+                    ),
+                )
+            } else {
+                (
+                    StatusCode::BAD_REQUEST,
+                    format!("failed reading request body: {e}"),
+                )
+            };
+            tracing::warn!("proxy {}: {error}", status.as_u16());
+            let failed = ObservedExchange {
+                client_id: (*client_id).clone(),
+                session_id: Some(uuid::Uuid::new_v4().to_string()),
+                strategy_id: (*strategy_id).clone(),
+                host: (*host).clone(),
+                port,
+                method,
+                path,
+                status: Some(status.as_u16()),
+                error: Some(error.clone()),
+                latency_ms: Some(started.elapsed().as_millis() as u64),
+                ..Default::default()
+            };
+            let interceptor = ctx.interceptor.clone();
+            tokio::spawn(async move {
+                interceptor.on_response(&failed).await;
+            });
+            return proxy_error(status, &error);
+        }
     };
 
     // An absent Accept-Encoding permits any coding. Explicitly request
@@ -473,6 +514,11 @@ async fn proxy_request(
     let pending_base = base.clone();
     let pending_id = event_id.clone();
     let mut pending = crate::tap::CancellationGuard::new(move || {
+        // Only a pending event needs closing; a cancelled request without one
+        // (a websocket upgrade) is not an upstream failure.
+        if pending_id.is_none() {
+            return;
+        }
         fail_pending(
             &pending_ctx,
             &pending_base,
@@ -569,6 +615,14 @@ async fn proxy_request(
                 Ok(pair) => pair,
                 Err(e) => {
                     tracing::warn!("websocket upgrade failed: {e}");
+                    if let Some(session) = &session {
+                        session
+                            .record_refused(
+                                StatusCode::BAD_GATEWAY.as_u16(),
+                                format!("websocket upgrade failed: {e}"),
+                            )
+                            .await;
+                    }
                     if let Some((event_id, mut pt)) = passthrough {
                         pt.error = Some(format!("websocket upgrade failed: {e}"));
                         pt.latency_ms = Some(started.elapsed().as_millis() as u64);
@@ -587,6 +641,7 @@ async fn proxy_request(
         let empty = Full::new(Bytes::new())
             .map_err(|e: Infallible| match e {})
             .boxed_unsync();
+        pending.disarm();
         return Response::from_parts(rparts, empty);
     }
 
@@ -668,9 +723,10 @@ async fn connect_upstream(
         .map_err(|e| ProxyError::Tls(format!("upstream TLS: {e}")))
 }
 
-/// Close out a pending monitor event as an upstream failure, so a `begin()`ed
-/// event never stays stuck in Pending when the upstream call errors before any
-/// response arrives. No-op when there was no pending event.
+/// Record an upstream failure before any response arrived: completes the
+/// `begin()`ed pending event, or — for requests without one, such as websocket
+/// upgrades — records the failure as its own event, so the cause the client
+/// only sees as a 502 is visible in the monitor.
 fn fail_pending(
     ctx: &Arc<ProxyContext>,
     base: &ObservedExchange,
@@ -678,10 +734,9 @@ fn fail_pending(
     started: std::time::Instant,
     error: &str,
 ) {
-    let Some(id) = event_id else { return };
     let interceptor = ctx.interceptor.clone();
     let mut ex = base.clone();
-    ex.event_id = Some(id);
+    ex.event_id = event_id;
     ex.status = Some(StatusCode::BAD_GATEWAY.as_u16());
     ex.error = Some(error.to_owned());
     ex.latency_ms = Some(started.elapsed().as_millis() as u64);
@@ -692,13 +747,20 @@ fn fail_pending(
 
 fn bad_gateway(msg: &str) -> Response<BoxedBody> {
     tracing::warn!("proxy 502: {msg}");
-    let body = Full::new(Bytes::from("upstream error"))
+    proxy_error(StatusCode::BAD_GATEWAY, msg)
+}
+
+/// A proxy-generated error response. The body names the cause, because
+/// clients such as Codex show it to the user verbatim.
+fn proxy_error(status: StatusCode, msg: &str) -> Response<BoxedBody> {
+    let body = Full::new(Bytes::from(format!("LocalRouter proxy error: {msg}")))
         .map_err(|e: Infallible| match e {})
         .boxed_unsync();
     Response::builder()
-        .status(StatusCode::BAD_GATEWAY)
+        .status(status)
+        .header(hyper::header::CONTENT_TYPE, "text/plain; charset=utf-8")
         .body(body)
-        .expect("static 502 response")
+        .expect("static proxy error response")
 }
 
 /// A locally-synthesized response returned to the client (firewall deny), never

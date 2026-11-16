@@ -237,6 +237,10 @@ async fn spawn_upstream(
                             .map(|v| v.to_str().unwrap_or("").to_string()),
                     );
                     async move {
+                        // Read the whole request first, as a real upstream does,
+                        // so large uploads complete before the response.
+                        let received = req.into_body().collect().await.map(|b| b.to_bytes().len());
+                        assert!(received.is_ok(), "upstream failed reading the request body");
                         let resp = if sse {
                             let body = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":11}}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"Hi\"}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":4}}\n\n";
                             Response::builder()
@@ -288,6 +292,16 @@ async fn read_connect_response(stream: &mut TcpStream) -> String {
 }
 
 async fn run_case(sse: bool) -> (u16, Vec<u8>, usize) {
+    run_case_with_body(
+        sse,
+        Bytes::from(
+            r#"{"model":"claude-sonnet-4-20250514","messages":[{"role":"user","content":"ping"}]}"#,
+        ),
+    )
+    .await
+}
+
+async fn run_case_with_body(sse: bool, request_body: Bytes) -> (u16, Vec<u8>, usize) {
     tls::ensure_crypto_provider();
 
     // --- test upstream (stands in for api.anthropic.com) ---
@@ -365,9 +379,7 @@ async fn run_case(sse: bool) -> (u16, Vec<u8>, usize) {
         // The client asks for compression; the proxy must strip it so it can
         // read (and we can assert on) an uncompressed upstream response.
         .header("accept-encoding", "gzip, br")
-        .body(Full::new(Bytes::from(
-            r#"{"model":"claude-sonnet-4-20250514","messages":[{"role":"user","content":"ping"}]}"#,
-        )))
+        .body(Full::new(request_body))
         .unwrap();
     let response = sender.send_request(req).await.unwrap();
     let status = response.status().as_u16();
@@ -409,6 +421,24 @@ async fn non_streaming_exchange_is_faithful_and_recorded() {
     assert_eq!(json["usage"]["input_tokens"], 7);
     // And the proxy recorded exactly one monitor event.
     assert_eq!(recorded, 1, "expected the exchange to be recorded once");
+}
+
+/// Codex resends a whole conversation when it retries over HTTPS; long
+/// sessions exceed the 16 MiB secret-scan inspection limit. The proxy forwards
+/// such a request instead of answering 502 without contacting the upstream.
+#[tokio::test]
+async fn request_body_above_the_inspection_limit_is_forwarded() {
+    let padding = "x".repeat(lr_secret_scanner::wire::LIMIT + 1024 * 1024);
+    let body = serde_json::json!({
+        "model": "claude-sonnet-4-20250514",
+        "messages": [{"role": "user", "content": padding}],
+    })
+    .to_string();
+    let (status, body, recorded) = run_case_with_body(false, Bytes::from(body)).await;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["content"][0]["text"], "pong");
+    assert_eq!(recorded, 1);
 }
 
 /// Spawn a TLS upstream that accepts a websocket upgrade on any path, reads
