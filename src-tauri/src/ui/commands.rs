@@ -4259,39 +4259,12 @@ pub async fn rebuild_safety_engine(
 }
 
 /// Rebuild the secret scanner engine from current config.
-/// Called on startup and when secret scanning settings change.
+/// Called when secret scanning settings change; startup builds it in `AppState::new`.
 #[tauri::command]
 pub async fn rebuild_secret_scanner(
-    config_manager: State<'_, ConfigManager>,
     state: State<'_, Arc<lr_server::state::AppState>>,
 ) -> Result<(), String> {
-    let config = config_manager.get();
-    let ss_config = &config.secret_scanning;
-
-    if !ss_config.enabled_for_any_client(&config.clients) {
-        // Clear the scanner when scanning is disabled
-        *state.secret_scanner.write() = None;
-        tracing::info!("Secret scanner cleared (scanning is off)");
-        return Ok(());
-    }
-
-    let engine_config = lr_secret_scanner::SecretScanEngineConfig {
-        entropy_threshold: ss_config.entropy_threshold,
-        allowlist: ss_config.allowlist.clone(),
-        scan_system_messages: ss_config.scan_system_messages,
-    };
-
-    match lr_secret_scanner::SecretScanEngine::new(&engine_config) {
-        Ok(engine) => {
-            *state.secret_scanner.write() = Some(Arc::new(engine));
-            tracing::info!("Secret scanner rebuilt successfully");
-            Ok(())
-        }
-        Err(e) => {
-            tracing::error!("Failed to rebuild secret scanner: {}", e);
-            Err(format!("Failed to rebuild secret scanner: {}", e))
-        }
-    }
+    state.rebuild_secret_scanner()
 }
 
 /// Get secret scanning global configuration
@@ -4322,7 +4295,7 @@ pub async fn update_secret_scanning_config(
     config_manager.save().await.map_err(|e| e.to_string())?;
 
     // Rebuild the scanner with new config
-    rebuild_secret_scanner(config_manager, state).await?;
+    state.rebuild_secret_scanner()?;
 
     Ok(())
 }

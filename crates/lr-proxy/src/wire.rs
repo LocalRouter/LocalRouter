@@ -21,6 +21,9 @@ pub enum WireFormat {
     OpenAiResponses,
     /// Codex standalone web search (`POST .../alpha/search`), plain JSON.
     CodexSearch,
+    /// Image generation and edits (`POST .../images/{generations,edits}`),
+    /// JSON from Codex's image tool.
+    Images,
     /// Ollama's native API (`POST /api/chat`, `POST /api/generate`), seen by
     /// the reverse proxy when it wraps a local Ollama. Streams NDJSON, not SSE.
     Ollama(ollama::OllamaEndpoint),
@@ -65,6 +68,8 @@ pub fn detect(path: &str) -> Option<WireFormat> {
     let path = path.split('?').next().unwrap_or(path);
     if crate::codex_search::is_search_path(path) {
         Some(WireFormat::CodexSearch)
+    } else if crate::images::is_images_path(path) {
+        Some(WireFormat::Images)
     } else if anthropic::is_messages_path(path) {
         Some(WireFormat::AnthropicMessages)
     } else if path.ends_with("/completions") {
@@ -184,6 +189,7 @@ pub fn is_terminal_event(format: WireFormat, event: &Value) -> bool {
         // reverse proxy sees plain HTTP request/response pairs.
         WireFormat::OpenAiChat
         | WireFormat::CodexSearch
+        | WireFormat::Images
         | WireFormat::Ollama(_)
         | WireFormat::SystemOne
         | WireFormat::Decisions => false,
@@ -216,6 +222,7 @@ pub fn parse_request(format: WireFormat, body: &Value) -> RequestMeta {
         WireFormat::OpenAiChat => openai::parse_chat_request(body),
         WireFormat::OpenAiResponses => openai::parse_responses_request(body),
         WireFormat::CodexSearch => crate::codex_search::parse_request(body),
+        WireFormat::Images => crate::images::parse_request(body),
         WireFormat::Ollama(endpoint) => ollama::parse_request(endpoint, body),
         WireFormat::SystemOne => systemone::parse_request(body),
         WireFormat::Decisions => crate::decisions::parse_request(body),
@@ -229,6 +236,7 @@ pub fn parse_response(format: WireFormat, body: &Value) -> ResponseMeta {
         WireFormat::OpenAiChat => openai::parse_chat_response(body),
         WireFormat::OpenAiResponses => openai::parse_responses_response(body),
         WireFormat::CodexSearch => crate::codex_search::parse_response(body),
+        WireFormat::Images => crate::images::parse_response(body),
         WireFormat::Ollama(endpoint) => ollama::parse_response(endpoint, body),
         WireFormat::SystemOne => systemone::parse_response(body),
         WireFormat::Decisions => crate::decisions::parse_response(body),
@@ -252,6 +260,10 @@ pub fn reconstruct_sse(format: WireFormat, raw: &str) -> (ResponseMeta, Value) {
         },
         WireFormat::CodexSearch => match serde_json::from_str::<Value>(raw.trim()) {
             Ok(body) => (crate::codex_search::parse_response(&body), body),
+            Err(_) => (ResponseMeta::default(), Value::Null),
+        },
+        WireFormat::Images => match serde_json::from_str::<Value>(raw.trim()) {
+            Ok(body) => (crate::images::parse_response(&body), body),
             Err(_) => (ResponseMeta::default(), Value::Null),
         },
         WireFormat::SystemOne => match serde_json::from_str::<Value>(raw.trim()) {

@@ -848,6 +848,19 @@ mod boundary_tests {
     use tower::ServiceExt;
     const SYNTHETIC: &str = "6nmCEa00cbNmH0B4zKPSYOPP5z1oYFR26doJldQr";
     pub(super) fn state(root: &std::path::Path) -> AppState {
+        let state = built_state(root);
+        *state.secret_scanner.write() = Some(Arc::new(
+            lr_secret_scanner::SecretScanEngine::new(&lr_secret_scanner::SecretScanEngineConfig {
+                entropy_threshold: 3.0,
+                allowlist: vec![],
+                scan_system_messages: false,
+            })
+            .unwrap(),
+        ));
+        state
+    }
+    /// The state exactly as `AppState::new` leaves it.
+    pub(super) fn built_state(root: &std::path::Path) -> AppState {
         let mut config = AppConfig::default();
         config.secret_scanning.action = lr_config::SecretScanAction::Redact;
         let client =
@@ -873,7 +886,7 @@ mod boundary_tests {
             vec![client],
             Arc::new(lr_api_keys::MockKeychain::new()),
         ));
-        let state = AppState::new(
+        AppState::new(
             router,
             limits,
             providers,
@@ -882,16 +895,7 @@ mod boundary_tests {
             Arc::new(lr_clients::TokenStore::new()),
             metrics,
             None,
-        );
-        *state.secret_scanner.write() = Some(Arc::new(
-            lr_secret_scanner::SecretScanEngine::new(&lr_secret_scanner::SecretScanEngineConfig {
-                entropy_threshold: 3.0,
-                allowlist: vec![],
-                scan_system_messages: false,
-            })
-            .unwrap(),
-        ));
-        state
+        )
     }
     #[tokio::test]
     async fn gateway_redaction_and_restoration_events_share_requests_without_merging_turns() {

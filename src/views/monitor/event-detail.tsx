@@ -7,9 +7,9 @@ import { Button } from '@/components/ui/Button'
 import { McpToolDisplay, type McpToolDisplayItem } from '@/components/shared/McpToolDisplay'
 import { JsonTree } from '@/components/shared/JsonTree'
 import { cn } from '@/lib/utils'
-import { User, Server, Copy, Check, FileText, AlertTriangle, ChevronRight, ArrowRight, ArrowUpRight, ArrowDownLeft, Loader2, Shuffle, Eye, EyeOff } from 'lucide-react'
+import { User, Server, Copy, Check, FileText, AlertTriangle, ChevronRight, ArrowRight, ArrowUpRight, ArrowDownLeft, Loader2, Shuffle, Eye, EyeOff, ShieldCheck, ShieldOff } from 'lucide-react'
 import { EventDuration } from './event-duration'
-import { useState, useCallback, useRef, type ReactNode, type KeyboardEvent } from 'react'
+import { useState, useCallback, useEffect, useRef, type ReactNode, type KeyboardEvent } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import ReactMarkdown from 'react-markdown'
 import { markdownLinkComponents } from '@/components/shared/MarkdownLink'
@@ -17,7 +17,7 @@ import remarkGfm from 'remark-gfm'
 import { capturedExcerpt, capturedRequestBody, capturedResponseMessages, contentText, requestMessages } from './message-content'
 import { LLM_API_LABELS, llmApiFlow, type ApiFlow } from './llm-api'
 import { PUSH_EGRESS_LABELS, PUSH_INGRESS_LABELS, normalizePushDecision, pushDecisionDelivered, pushDecisionLabel, pushPayloadEdited } from './push-event'
-import type { EventStatus, LlmProtocol, MonitorEvent, ReadMemoryArchiveFileParams, MonitorSecretFinding, RevealMonitorSecretParams } from '@/types/tauri-commands'
+import type { EventStatus, LlmProtocol, MonitorEvent, ReadMemoryArchiveFileParams, MonitorSecretFinding, RevealMonitorSecretParams, MarkRedactedSecretNotSecretParams, UnmarkRedactedSecretNotSecretParams, RedactedSecretIsNotSecretParams } from '@/types/tauri-commands'
 import { decisionAnswersForView, decisionQuestionsForView } from '@/utils/decisions'
 import type { SystemOneAnswer, SystemOneQuestion } from '@/types/systemone'
 import { SystemOneAnswerView, SystemOneQuestionView } from '@/components/shared/SystemOneAnswers'
@@ -337,13 +337,13 @@ function eventTabs(event: MonitorEvent): DetailTab[] {
     ? { id: 'exchange', label: type === 'secret_scan' ? data.action_taken === 'restore' ? 'Restoration' : 'Scan results' : 'Request & response' }
     : { id: 'overview', label: 'Overview' }
   return [
-    { ...primary, content: <TypeDetail data={data} status={event.status} eventId={event.id} /> },
+    { ...primary, content: <TypeDetail data={data} status={event.status} eventId={event.id} clientId={event.client_id ?? null} /> },
     { id: 'details', label: 'Details', content: <EventMetadata event={event} /> },
     { id: 'raw', label: 'Raw', content: <RawSection title="Full event"><JsonTree data={event} label="event" /></RawSection> },
   ]
 }
 
-function TypeDetail({ data, status, eventId }: { data: EventData; status: EventStatus; eventId: string }) {
+function TypeDetail({ data, status, eventId, clientId }: { data: EventData; status: EventStatus; eventId: string; clientId: string | null }) {
   switch (data.type as string) {
     case 'mcp_tool_call': return <McpToolCallDetail data={data} />
     case 'mcp_resource_read': return <McpResourceReadDetail data={data} />
@@ -352,7 +352,7 @@ function TypeDetail({ data, status, eventId }: { data: EventData; status: EventS
     case 'mcp_sampling': return <McpSamplingDetail data={data} />
     case 'guardrail_scan':
     case 'guardrail_response_scan': return <GuardrailDetail data={data} />
-    case 'secret_scan': return <SecretScanDetail data={data} eventId={eventId} />
+    case 'secret_scan': return <SecretScanDetail data={data} eventId={eventId} clientId={clientId} />
     case 'route_llm_classify':
     case 'routing_decision': return <RoutingDetail data={data} />
     case 'auth_error':
@@ -1303,7 +1303,48 @@ function GuardrailDetail({ data }: { data: EventData }) {
 
 // ---- Secret Scan Detail ----
 
-function SecretScanFindingCard({ finding, index, eventId, action }: { finding: MonitorSecretFinding; index: number; eventId: string; action?: string }) {
+/** The stored-original reference behind a redacted finding, if recorded. */
+function findingReferenceId(finding: MonitorSecretFinding): string | null {
+  if (finding.reference_id && /^[0-9a-f]{32}$/i.test(finding.reference_id)) return finding.reference_id
+  return finding.replacement?.match(/<localrouter-redacted\s+id='([0-9a-f]{32})'/i)?.[1] ?? null
+}
+
+/** Toggle the client's "Not a secret" decision for a redacted finding's value. */
+function NotSecretToggle({ clientId, referenceId }: { clientId: string; referenceId: string }) {
+  // null: unknown or the stored original is gone (expired or purged).
+  const [ignored, setIgnored] = useState<boolean | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  useEffect(() => {
+    let active = true
+    setIgnored(null); setError(null)
+    invoke<boolean>('redacted_secret_is_not_secret', { clientId, referenceId } satisfies RedactedSecretIsNotSecretParams)
+      .then(value => { if (active) setIgnored(value) })
+      .catch(error => { if (active) setError(String(error)) })
+    return () => { active = false }
+  }, [clientId, referenceId])
+  if (ignored === null) return error ? <p className="text-xs text-muted-foreground" role="status">Not a secret: {error}</p> : null
+  const toggle = async () => {
+    const next = !ignored
+    setIgnored(next); setSaving(true); setError(null)
+    try {
+      const params = { clientId, referenceId }
+      if (next) await invoke<void>('mark_redacted_secret_not_secret', params satisfies MarkRedactedSecretNotSecretParams)
+      else await invoke<void>('unmark_redacted_secret_not_secret', params satisfies UnmarkRedactedSecretNotSecretParams)
+    } catch (error) { setIgnored(!next); setError(String(error)) }
+    finally { setSaving(false) }
+  }
+  return <div className="flex flex-wrap items-center gap-2">
+    <Button variant={ignored ? 'secondary' : 'outline'} size="sm" className="h-7 text-xs" disabled={saving} onClick={() => { void toggle() }} aria-pressed={ignored} title={ignored ? 'Click to treat as a secret again' : 'Stop redacting this value for this client'}>
+      {saving ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : ignored ? <ShieldOff className="mr-1 h-3 w-3" /> : <ShieldCheck className="mr-1 h-3 w-3" />}
+      {ignored ? 'Not a secret' : 'Mark not a secret'}
+    </Button>
+    <span className="text-xs text-muted-foreground">{ignored ? 'Future requests send this value unchanged. Click to redact it again.' : 'Redacted as a secret.'}</span>
+    {error && <span className="text-xs text-destructive" role="status">{error}</span>}
+  </div>
+}
+
+function SecretScanFindingCard({ finding, index, eventId, clientId, action }: { finding: MonitorSecretFinding; index: number; eventId: string; clientId: string | null; action?: string }) {
   const [revealed, setRevealed] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -1336,6 +1377,7 @@ function SecretScanFindingCard({ finding, index, eventId, action }: { finding: M
       <code className="block rounded bg-muted p-2 text-xs break-all whitespace-pre-wrap">{revealed ?? (redacted ? finding.matched_text : finding.value ?? finding.matched_text)}</code>
       {error && <p className="mt-1 text-xs text-destructive" role="status">{error}</p>}
     </div>
+    {redacted && clientId && findingReferenceId(finding) && <NotSecretToggle clientId={clientId} referenceId={findingReferenceId(finding)!} />}
     {redacted && <div className="space-y-1">
       <p className="text-xs text-muted-foreground">{restored ? 'Reference unmasked locally' : 'Replacement sent to the model'}</p>
       {finding.replacement ? <RawBlock text={finding.replacement} label={restored ? 'reference' : 'replacement'} /> : <p className="text-xs text-muted-foreground">Replacement was not recorded for this older event.</p>}
@@ -1343,7 +1385,7 @@ function SecretScanFindingCard({ finding, index, eventId, action }: { finding: M
   </div>
 }
 
-function SecretScanDetail({ data, eventId }: { data: EventData; eventId: string }) {
+function SecretScanDetail({ data, eventId, clientId }: { data: EventData; eventId: string; clientId: string | null }) {
   if (data.action_taken === 'protect_warning' || data.action_taken === 'restore_warning') {
     const outbound = data.action_taken === 'protect_warning'
     return <ExchangeGrid><ExchangeCard title={outbound ? 'Protection diagnostic' : 'Restoration diagnostic'}>
@@ -1368,7 +1410,7 @@ function SecretScanDetail({ data, eventId }: { data: EventData; eventId: string 
         {data.latency_ms != null && <Field label="Scan time" value={`${data.latency_ms}ms`} />}
       </div>
       {restored && <p className="text-xs text-muted-foreground">Original values were restored locally. Monitor keeps the references masked.</p>}
-      {findings.map((finding, index) => <SecretScanFindingCard key={`${eventId}:${index}`} finding={finding} index={index} eventId={eventId} action={data.action_taken} />)}
+      {findings.map((finding, index) => <SecretScanFindingCard key={`${eventId}:${index}`} finding={finding} index={index} eventId={eventId} clientId={clientId} action={data.action_taken} />)}
       {findings.length === 0 && <p className="text-xs text-muted-foreground">{data.findings_count ? 'Finding details were not retained.' : 'No secrets detected.'}</p>}
     </ExchangeCard>
     <ExchangeCard title="Matched context">

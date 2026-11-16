@@ -1261,6 +1261,29 @@ mod secret_policy_tests {
         }
     }
     #[tokio::test]
+    async fn codex_image_prompts_are_scanned_and_redacted() {
+        for path in [
+            "/backend-api/codex/images/edits",
+            "/backend-api/codex/images/generations",
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let (firewall, mut request) = fixture(
+                root.path(),
+                lr_config::LlmMode::Proxy,
+                Arc::new(lr_api_keys::MockKeychain::new()),
+            );
+            request.path = path.into();
+            request.body = json!({"images":[{"image_url":"data:image/png;base64,Zm9v"},{"file_id":"file-image"}],"prompt":format!("draw a sign reading aws_secret_access_key={KEY}"),"model":"gpt-image-1.5"});
+            let RequestAction::Protect { body, .. } = firewall.evaluate(&request).await else {
+                panic!("{path}: image prompt with a secret must be protected")
+            };
+            let masked: Value = serde_json::from_slice(&body).unwrap();
+            assert!(!String::from_utf8_lossy(&body).contains(KEY), "{path}");
+            assert_eq!(masked["images"][1]["file_id"], "file-image");
+            assert_eq!(masked["model"], "gpt-image-1.5");
+        }
+    }
+    #[tokio::test]
     async fn standalone_search_scanner_unavailable_and_invalid_bodies_do_not_block() {
         let root = tempfile::tempdir().unwrap();
         let (firewall, mut request) = fixture(

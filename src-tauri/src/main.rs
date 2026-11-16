@@ -1441,30 +1441,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                     }
                 }
 
-                // Initialize secret scanner if scanning is enabled
-                {
-                    let app_config = config_manager.get();
-                    let ss_config = &app_config.secret_scanning;
-                    if ss_config.enabled_for_any_client(&app_config.clients) {
-                        let engine_config = lr_secret_scanner::SecretScanEngineConfig {
-                            entropy_threshold: ss_config.entropy_threshold,
-                            allowlist: ss_config.allowlist.clone(),
-                            scan_system_messages: ss_config.scan_system_messages,
-                        };
-
-                        match lr_secret_scanner::SecretScanEngine::new(&engine_config) {
-                            Ok(engine) => {
-                                *app_state.secret_scanner.write() = Some(Arc::new(engine));
-                                info!("Secret scanner initialized");
-                            }
-                            Err(e) => {
-                                error!("Failed to initialize secret scanner: {}", e);
-                            }
-                        }
-                    } else {
-                        info!("Secret scanning disabled");
-                    }
-                }
+                // The secret scanner is built in AppState::new, before the
+                // server accepts requests.
 
                 // Set app handle on AppState for event emission
                 app_state.set_app_handle(app.handle().clone());
@@ -2895,6 +2873,8 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands_secret_store::list_redacted_secrets,
             ui::commands_secret_store::reveal_redacted_secret,
             ui::commands_secret_store::mark_redacted_secret_not_secret,
+            ui::commands_secret_store::unmark_redacted_secret_not_secret,
+            ui::commands_secret_store::redacted_secret_is_not_secret,
             ui::commands_secret_store::purge_redacted_secrets,
             ui::commands::get_secret_scanning_config,
             ui::commands::update_secret_scanning_config,

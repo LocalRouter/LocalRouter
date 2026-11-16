@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { Copy, Eye, EyeOff, ShieldCheck, Loader2, RefreshCw, Trash2 } from 'lucide-react'
+import { Copy, Eye, EyeOff, ShieldCheck, ShieldOff, Loader2, RefreshCw, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/Button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card'
@@ -8,10 +8,11 @@ import { Badge } from '@/components/ui/Badge'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/Select'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog'
 import { listenSafe } from '@/hooks/useTauriListener'
-import type { ListRedactedSecretsParams, MarkRedactedSecretNotSecretParams, PurgeRedactedSecretsParams, RedactedSecretInventory, RedactedSecretEntry, RevealRedactedSecretParams } from '@/types/tauri-commands'
+import type { ListRedactedSecretsParams, MarkRedactedSecretNotSecretParams, PurgeRedactedSecretsParams, RedactedSecretInventory, RedactedSecretEntry, RevealRedactedSecretParams, UnmarkRedactedSecretNotSecretParams } from '@/types/tauri-commands'
 
 const entryKey = (entry: RedactedSecretEntry) => `${entry.client_id}:${entry.reference_id}`
 const date = (seconds: number) => new Date(seconds * 1000).toLocaleString()
+const byRecentUse = (a: RedactedSecretEntry, b: RedactedSecretEntry) => b.last_used_at - a.last_used_at
 interface PurgeSelection { clientId: string | null; referenceId: string | null; label: string }
 
 export function RedactedSecretsStore({ clientId }: { clientId?: string }) {
@@ -25,22 +26,27 @@ export function RedactedSecretsStore({ clientId }: { clientId?: string }) {
   const [revealing, setRevealing] = useState<string | null>(null)
   const [purge, setPurge] = useState<PurgeSelection | null>(null)
   const [purging, setPurging] = useState(false)
-  const [notSecret, setNotSecret] = useState<RedactedSecretEntry | null>(null)
-  const [remembering, setRemembering] = useState(false)
-  const busy = purging || remembering
+  // Entries whose "Not a secret" decision is being saved.
+  const [deciding, setDeciding] = useState<Record<string, boolean>>({})
+  const busy = purging
   const generation = useRef(0)
-  const load = useCallback(async () => {
+  // A full load resets the view; a quiet refresh (store changes, decisions)
+  // keeps the page, revealed values and scroll position.
+  const load = useCallback(async (quiet = false) => {
     const current = ++generation.current
-    setLoading(true); setError(null); setRevealed({}); setRevealing(null)
+    if (!quiet) { setLoading(true); setError(null); setRevealed({}); setRevealing(null) }
     try {
       const values = await invoke<RedactedSecretInventory>('list_redacted_secrets', { clientId: clientId ?? null } satisfies ListRedactedSecretsParams)
-      if (current === generation.current) { setEntries(values.entries); setPersistenceWarning(values.persistence_warning); setPage(0) }
+      if (current === generation.current) {
+        setEntries([...values.entries].sort(byRecentUse)); setPersistenceWarning(values.persistence_warning)
+        if (!quiet) setPage(0)
+      }
     } catch (error) { if (current === generation.current) setError(String(error)) }
-    finally { if (current === generation.current) setLoading(false) }
+    finally { if (current === generation.current && !quiet) setLoading(false) }
   }, [clientId])
   useEffect(() => {
     setFilter('all'); void load()
-    const listener = listenSafe('secret-store-changed', () => { void load() })
+    const listener = listenSafe('secret-store-changed', () => { void load(true) })
     return () => { generation.current++; listener.cleanup() }
   }, [load])
   const selectedClient = clientId ?? (filter === 'all' ? null : filter)
@@ -70,15 +76,18 @@ export function RedactedSecretsStore({ clientId }: { clientId?: string }) {
     } catch (error) { failure = String(error) }
     finally { setPurging(false); setPurge(null); await load(); if (failure) setError(failure) }
   }
-  const confirmNotSecret = async () => {
-    if (!notSecret) return
-    setRemembering(true); generation.current++; setRevealed({}); setRevealing(null)
-    let failure: string | null = null
+  const toggleNotSecret = async (entry: RedactedSecretEntry) => {
+    const key = entryKey(entry)
+    if (deciding[key]) return
+    const ignored = !entry.ignored
+    const flip = (value: boolean) => setEntries(current => current.map(item => entryKey(item) === key ? { ...item, ignored: value } : item))
+    flip(ignored); setDeciding(current => ({ ...current, [key]: true })); setError(null)
     try {
-      await invoke<void>('mark_redacted_secret_not_secret', { clientId: notSecret.client_id, referenceId: notSecret.reference_id } satisfies MarkRedactedSecretNotSecretParams)
-      toast.success('Marked as not a secret for this client')
-    } catch (error) { failure = String(error) }
-    finally { setRemembering(false); setNotSecret(null); await load(); if (failure) setError(failure) }
+      const params = { clientId: entry.client_id, referenceId: entry.reference_id }
+      if (ignored) await invoke<void>('mark_redacted_secret_not_secret', params satisfies MarkRedactedSecretNotSecretParams)
+      else await invoke<void>('unmark_redacted_secret_not_secret', params satisfies UnmarkRedactedSecretNotSecretParams)
+    } catch (error) { flip(!ignored); setError(String(error)) }
+    finally { setDeciding(current => { const next = { ...current }; delete next[key]; return next }) }
   }
   return <>
     <Card>
@@ -90,7 +99,7 @@ export function RedactedSecretsStore({ clientId }: { clientId?: string }) {
             <Button variant="outline" size="sm" className="text-destructive" disabled={loading || busy || (!filtered.length && !clientId)} onClick={() => setPurge({ clientId: selectedClient, referenceId: null, label: selectedClient ? `all redacted secrets for ${entries.find(entry => entry.client_id === selectedClient)?.client_name ?? 'this client'}` : 'all redacted secrets for every client' })}><Trash2 className="mr-2 h-4 w-4" />{selectedClient ? 'Purge client' : 'Purge all'}</Button>
           </div>
         </div>
-        <CardDescription>Originals are kept locally for 14 days of client inactivity. Browsing this list does not extend retention. Mark a false positive as Not a secret to remember an exception for that client. Existing references stay restorable until their normal expiry.</CardDescription>
+        <CardDescription>Originals are kept locally for 14 days of client inactivity. Browsing this list does not extend retention. Mark a false positive as Not a secret to stop redacting that exact value for its client; click again to undo. Existing references stay restorable until their normal expiry. Most recently used first.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         {!clientId && clients.length > 0 && <Select disabled={loading || busy} value={filter} onValueChange={value => { setFilter(value); setPage(0); setRevealed({}); setRevealing(null); generation.current++ }}><SelectTrigger className="w-full sm:w-72" aria-label="Filter stored secrets by client"><SelectValue placeholder="All clients" /></SelectTrigger><SelectContent><SelectItem value="all">All clients</SelectItem>{clients.map(([id, name]) => <SelectItem key={id} value={id}>{name}</SelectItem>)}</SelectContent></Select>}
@@ -106,12 +115,11 @@ export function RedactedSecretsStore({ clientId }: { clientId?: string }) {
                   <code className="block break-all text-xs text-muted-foreground">{entry.reference_id}</code>
                 </div>
                 <div className="flex flex-wrap items-center justify-end gap-1">
-                  {entry.ignored && <Badge variant="outline">Not a secret</Badge>}
                   {entry.revoked && <Badge variant="destructive">Purge pending</Badge>}
                   {entry.expired && <Badge variant="outline">Expired</Badge>}
                   <Button variant="ghost" size="sm" disabled={entry.expired || entry.revoked || busy || revealing !== null} onClick={() => { void reveal(entry) }} aria-label={value === undefined ? 'Reveal stored secret' : 'Hide stored secret'}>{revealing === key ? <Loader2 className="h-4 w-4 animate-spin" /> : value === undefined ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}<span className="ml-2">{value === undefined ? 'Reveal' : 'Hide'}</span></Button>
                   <Button variant="ghost" size="sm" disabled={busy} onClick={() => { void navigator.clipboard.writeText(entry.placeholder).then(() => toast.success('Reference copied')).catch(error => setError(String(error))) }} aria-label="Copy secret reference"><Copy className="h-4 w-4" /></Button>
-                  <Button variant="outline" size="sm" disabled={entry.ignored || entry.expired || entry.revoked || busy} onClick={() => setNotSecret(entry)} aria-label="Mark stored value as not a secret"><ShieldCheck className="mr-2 h-4 w-4" />Not a secret</Button>
+                  <Button variant={entry.ignored ? 'secondary' : 'outline'} size="sm" disabled={entry.expired || entry.revoked || busy || deciding[key]} onClick={() => { void toggleNotSecret(entry) }} aria-pressed={entry.ignored} aria-label={entry.ignored ? 'Marked not a secret; click to treat as a secret again' : 'Mark stored value as not a secret'} title={entry.ignored ? 'Click to treat as a secret again' : 'Stop redacting this value for this client'}>{deciding[key] ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : entry.ignored ? <ShieldOff className="mr-2 h-4 w-4" /> : <ShieldCheck className="mr-2 h-4 w-4" />}{entry.ignored ? 'Not a secret' : 'Mark not a secret'}</Button>
                   <Button variant="ghost" size="sm" className="text-destructive" disabled={busy} onClick={() => setPurge({ clientId: entry.client_id, referenceId: entry.reference_id, label: `the redacted secret for ${entry.client_name} and all its references (${entry.reference_id})` })} aria-label="Purge stored secret"><Trash2 className="h-4 w-4" /></Button>
                 </div>
               </div>
@@ -126,12 +134,6 @@ export function RedactedSecretsStore({ clientId }: { clientId?: string }) {
         </>}
       </CardContent>
     </Card>
-    <AlertDialog open={notSecret !== null} onOpenChange={open => { if (!open && !remembering) setNotSecret(null) }}>
-      <AlertDialogContent>
-        <AlertDialogHeader><AlertDialogTitle>Mark as not a secret?</AlertDialogTitle><AlertDialogDescription>Never redact this exact value for {notSecret?.client_name}. This decision does not expire. Existing references remain available to restore in-flight replies. Other clients keep their own decisions. You can remove this exception in the client’s Secret Scan → Remembered rules tab.</AlertDialogDescription></AlertDialogHeader>
-        <AlertDialogFooter><AlertDialogCancel disabled={remembering}>Cancel</AlertDialogCancel><AlertDialogAction disabled={remembering} onClick={event => { event.preventDefault(); void confirmNotSecret() }}>{remembering && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}Not a secret</AlertDialogAction></AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
     <AlertDialog open={purge !== null} onOpenChange={open => { if (!open && !purging) setPurge(null) }}>
       <AlertDialogContent>
         <AlertDialogHeader><AlertDialogTitle>Purge stored secrets?</AlertDialogTitle><AlertDialogDescription>Remove {purge?.label} from local credential storage. Existing references to removed originals will remain literal, with a diagnostic, rather than revealing a value. Purging one secret preserves unrelated in-flight references. New requests can store fresh references.</AlertDialogDescription></AlertDialogHeader>
