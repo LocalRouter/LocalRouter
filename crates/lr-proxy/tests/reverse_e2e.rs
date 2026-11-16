@@ -618,7 +618,8 @@ async fn active_decode_failures_do_not_contact_upstream() {
         ("gzip", b"invalid".to_vec(), 400),
         (
             "zstd",
-            zstd::stream::encode_all(vec![b'x'; 16 * 1024 * 1024 + 1].as_slice(), 3).unwrap(),
+            // Just over the decoded-body limit (the proxy's 256 MiB body cap).
+            zstd::stream::encode_all(vec![b'x'; 256 * 1024 * 1024 + 1].as_slice(), 3).unwrap(),
             413,
         ),
     ] {
