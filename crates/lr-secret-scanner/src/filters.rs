@@ -513,8 +513,62 @@ fn key_words(key: &str) -> Vec<String> {
     words
 }
 
-/// Validator for keyword assignment rules whose key is capture group 1.
+/// Type names that appear after `password:` / `token:` in code signatures,
+/// e.g. TypeScript `(password: string): Promise<…>` or Rust
+/// `secret: Option<String>,`.
+const TYPE_WORDS: &[&str] = &[
+    "string",
+    "str",
+    "number",
+    "int",
+    "integer",
+    "float",
+    "double",
+    "bool",
+    "boolean",
+    "any",
+    "unknown",
+    "object",
+    "null",
+    "undefined",
+    "void",
+    "never",
+    "bytes",
+    "byte",
+    "char",
+    "option",
+    "optional",
+    "secretstring",
+    "secretbox",
+    "vec",
+    "array",
+    "list",
+    "u8",
+    "promise",
+    "readonly",
+    "nullable",
+];
+
+/// Whether an assigned value is a type annotation rather than data: every
+/// word in it is a type name and the rest is code punctuation.
+fn is_type_annotation(value: &str) -> bool {
+    let mut words = value
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .peekable();
+    words.peek().is_some()
+        && words.all(|word| TYPE_WORDS.contains(&word.to_ascii_lowercase().as_str()))
+}
+
+/// Validator for keyword assignment rules whose key is capture group 1 and
+/// value is capture group 2.
 pub fn assignment_key_is_secret(caps: &regex::Captures<'_>) -> bool {
+    if caps
+        .get(2)
+        .is_some_and(|value| is_type_annotation(value.as_str()))
+    {
+        return false;
+    }
     let Some(key) = caps.get(1) else {
         return true;
     };

@@ -1374,7 +1374,9 @@ function SecretScanFindingCard({ finding, index, eventId, clientId, action }: { 
           <span className="ml-1">{revealed === null ? 'Reveal' : 'Hide'}</span>
         </Button>}
       </div>
-      <code className="block rounded bg-muted p-2 text-xs break-all whitespace-pre-wrap">{revealed ?? (redacted ? finding.matched_text : finding.value ?? finding.matched_text)}</code>
+      {revealed === null && finding.rule_id === 'stored-secret-reference'
+        ? <p className="rounded bg-muted p-2 text-xs text-muted-foreground">Original value is held locally and not shown. Click Reveal to display it.</p>
+        : <code className="block rounded bg-muted p-2 text-xs break-all whitespace-pre-wrap">{revealed ?? (redacted ? finding.matched_text : finding.value ?? finding.matched_text)}</code>}
       {error && <p className="mt-1 text-xs text-destructive" role="status">{error}</p>}
     </div>
     {redacted && clientId && findingReferenceId(finding) && <NotSecretToggle clientId={clientId} referenceId={findingReferenceId(finding)!} />}
