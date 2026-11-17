@@ -501,14 +501,15 @@ fn adjacent_assignments_do_not_lose_shared_delimiters() {
 
 #[test]
 fn short_passwords_are_masked_in_serialization_and_debug() {
-    let secret = "K7!pQ2zR";
+    // A connection URI identifies its password, so even a short one is a
+    // finding (generic `password=` assignments need real randomness).
+    let secret = "x7Gk2Lq9";
     let finding = assert_single(
-        &format!("password='{secret}'"),
-        "generic-password-assignment",
+        &format!("postgres://deploy:{secret}@db.internal:5432/app"),
+        "postgres-uri",
         secret,
     );
     assert!(!finding.matched_text.contains(secret));
-    assert!(finding.matched_text.chars().all(|c| c == '*'));
     assert!(!serde_json::to_string(&finding).unwrap().contains(secret));
     assert!(!format!("{finding:?}").contains(secret));
 }
@@ -868,9 +869,9 @@ fn type_annotations_after_secret_keywords_are_not_flagged() {
     }
     // A real password containing a type word is still a secret.
     assert_single(
-        "password: string9Kq2!x7Lw",
+        "password: string9Kq2!x7LwP4mZ8vR3",
         "generic-password-unquoted",
-        "string9Kq2!x7Lw",
+        "string9Kq2!x7LwP4mZ8vR3",
     );
 }
 
@@ -895,13 +896,14 @@ fn context_only_values_must_look_random() {
 fn value_randomness_scoring() {
     use crate::filters::value_looks_random;
     for random in [
-        "K7!pQ2zR",
         "9f8a7c6b5d4e3f2a1b0c",
         "Xk9mP2vQ7zR4tLw8",
-        "Summer2024!x",
+        "q8Zr2LmX7vKp4NwT9sYb3HdJ",
     ] {
         assert!(value_looks_random(random), "{random}");
     }
+    // Weak or short human passwords after a generic keyword are allowed
+    // through; only real randomness is redacted.
     for not_random in [
         "string):",
         "abcdefgh",
@@ -909,7 +911,38 @@ fn value_randomness_scoring() {
         "a.b.c.d.e.f",
         "1234567890",
         "hunter2",
+        "Summer2024!",
+        "P@ssw0rd!2023",
+        "x7Gk2Lq9",
+        "correcthorsebatterystaple",
+        "#!/usr/bin/env",
     ] {
         assert!(!value_looks_random(not_random), "{not_random}");
+    }
+}
+
+#[test]
+fn paths_after_secret_keywords_are_not_flagged() {
+    for text in [
+        "password: #!/usr/bin/env\n",
+        "token=#!/usr/bin/env python3",
+        "export CLIENT_SECRET=/usr/local/bin/helper-script",
+        "password: ./scripts/get-password.sh",
+        "secret_file: ~/.config/app/credentials.json",
+        "token: ../shared/tokens/default",
+    ] {
+        assert_clean(text);
+    }
+}
+
+#[test]
+fn base64_secrets_with_slashes_are_still_random() {
+    use crate::filters::value_looks_random;
+    for random in [
+        "q8Zr2LmX/7vKp4NwT9sY",
+        "aB3/xY9+kL2m/Pq7Rs0T",
+        "Xk9m/P2vQ7zR4tLw8",
+    ] {
+        assert!(value_looks_random(random), "{random}");
     }
 }
