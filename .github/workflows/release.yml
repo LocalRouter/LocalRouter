@@ -112,7 +112,9 @@ jobs:
             target: x86_64-pc-windows-msvc
             bundles: msi,nsis
     runs-on: ${{ matrix.settings.platform }}
-    timeout-minutes: 60
+    # A cold cache (all ~900 crates) plus fat LTO takes ~47 min on the
+    # Apple Silicon runner, and notarization has taken over 10 min.
+    timeout-minutes: 120
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
