@@ -8,6 +8,7 @@ repository.workspace = true
 description = "Regex + entropy based secret scanning for outbound LLM requests"
 
 [dependencies]
+zxcvbn = { version = "3.1", default-features = false }
 bytes = "1"
 futures = { workspace = true }
 async-stream = { workspace = true }

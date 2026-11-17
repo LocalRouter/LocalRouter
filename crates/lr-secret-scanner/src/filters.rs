@@ -371,7 +371,7 @@ pub fn uri_password_is_real(caps: &regex::Captures<'_>) -> bool {
     let database = caps.get(4).map_or("", |m| m.as_str());
 
     let lower = password.to_ascii_lowercase();
-    if URI_DEFAULT_PASSWORDS.contains(&lower.as_str()) || !value_looks_random(password) {
+    if URI_DEFAULT_PASSWORDS.contains(&lower.as_str()) {
         return false;
     }
     if lower == user.to_ascii_lowercase() || (!database.is_empty() && password == database) {
@@ -398,7 +398,9 @@ pub fn basic_auth_has_secret_password(caps: &regex::Captures<'_>) -> bool {
         return false;
     };
     decoded.split_once(':').is_some_and(|(_, password)| {
-        value_looks_random(password) && !is_placeholder(password, PlaceholderPolicy::Generic)
+        password.chars().count() >= 8
+            && crate::entropy::shannon_entropy(password) >= 3.0
+            && !is_placeholder(password, PlaceholderPolicy::Generic)
     })
 }
 
@@ -558,55 +560,70 @@ fn is_type_annotation(value: &str) -> bool {
         && words.all(|word| TYPE_WORDS.contains(&word.to_ascii_lowercase().as_str()))
 }
 
-/// Minimum total information in a keyword-context value with two character
-/// classes, in bits (Shannon entropy per character times length): a
-/// 12-character hex or base64 token clears it, words and code do not.
-const MIN_CONTEXT_BITS: f32 = 40.0;
+/// Real randomness a value found only by a generic keyword (`password=`,
+/// `secret:`, `token=`, `api_key=`) must have, in bits, estimated by zxcvbn
+/// as log2 of the guesses an attacker needs: a random 16-character token
+/// (~53 bits) clears it; words, `Summer2024!` (~25), `#!/usr/bin/env` (~47)
+/// and random passwords under ~15 characters do not. Weak human passwords
+/// after a generic keyword pass unredacted by design; strong contexts such as
+/// an `Authorization` header or a connection URI do not use this check.
+const MIN_GUESS_BITS: f64 = 50.0;
 
-/// Per-character entropy a short complex value needs: 8 characters with at
-/// most one repeated.
-const MIN_SHORT_ENTROPY: f32 = 2.75;
+/// zxcvbn's matching is superlinear in length; longer prefixes add nothing
+/// once a value is clearly random.
+const GUESS_SAMPLE_CHARS: usize = 64;
 
 /// Sequences that only occur in code, never in a generated credential.
 const CODE_MARKERS: &[&str] = &[
     "()", "):", ");", "),", ")=", "=>", "->", "::", "${", "{{", "}}", "](", ").", "?.",
 ];
 
-/// Whether a value found only by its context (`password=…`, `secret: …`, a
-/// URI or Basic-auth password) is random enough to be a credential. Values
-/// with a recognizable credential format are matched by their own rules and
-/// never pass through this check.
+/// Whether a value found only by a generic keyword is random enough to be a
+/// credential. Values with a recognizable credential format, and values in a
+/// context that itself identifies a credential (an `Authorization` header, a
+/// connection URI), are matched by their own rules and never reach this check.
 ///
-/// Rejects code fragments, type annotations, identifiers and words, and
-/// requires both character variety and enough total randomness for the
-/// length: Shannon entropy alone is maximal for any short string of distinct
-/// characters, so `string):` would otherwise pass a 3.0-bit threshold.
+/// Code fragments, type annotations, identifiers and paths are rejected
+/// outright; everything else needs [`MIN_GUESS_BITS`] of estimated
+/// guessability. Shannon entropy is not used here: it measures character
+/// variety, so `#!/usr/bin/env` scores like random noise of the same length.
 pub fn value_looks_random(value: &str) -> bool {
     if is_type_annotation(value) || CODE_MARKERS.iter().any(|marker| value.contains(marker)) {
         return false;
     }
-    if is_identifier_like(value) {
+    if is_identifier_like(value) || is_path_like(value) {
         return false;
     }
-    let classes = [
-        value.bytes().any(|b| b.is_ascii_lowercase()),
-        value.bytes().any(|b| b.is_ascii_uppercase()),
-        value.bytes().any(|b| b.is_ascii_digit()),
-        value.bytes().any(|b| !b.is_ascii_alphanumeric()),
-    ]
-    .into_iter()
-    .filter(|present| *present)
-    .count();
-    let length = value.chars().count();
-    if length < 8 {
-        return false;
-    }
-    let entropy = crate::entropy::shannon_entropy(value);
-    // Short values must show complexity: three character classes and almost
-    // no repetition, as a generated password does. Longer values (hex and
-    // base64 tokens) need two classes and enough total information.
-    (classes >= 3 && entropy >= MIN_SHORT_ENTROPY)
-        || (classes >= 2 && entropy * length as f32 >= MIN_CONTEXT_BITS)
+    guess_bits(value) >= MIN_GUESS_BITS
+}
+
+/// Estimated bits of guessing work for `value` (zxcvbn), capped at 64.
+pub fn guess_bits(value: &str) -> f64 {
+    let sample: String = value.chars().take(GUESS_SAMPLE_CHARS).collect();
+    zxcvbn::zxcvbn(&sample, &[]).guesses_log10() * std::f64::consts::LOG2_10
+}
+
+/// File paths and shebangs: `#!/usr/bin/env`, `/usr/local/bin/helper`,
+/// `./scripts/run.sh`, `~/.config/app/credentials.json`. Every segment
+/// between separators is a word (optionally with trailing digits, like
+/// `lib64` or `python3`), unlike base64 material, whose segments mix case
+/// and digits at random.
+fn is_path_like(value: &str) -> bool {
+    let rest = value.strip_prefix("#!").unwrap_or(value);
+    let anchored = ["/", "./", "../", "~/"]
+        .iter()
+        .any(|prefix| rest.starts_with(prefix));
+    let segments: Vec<&str> = rest
+        .split(['/', '\\'])
+        .map(|segment| segment.trim_start_matches(['~', '.']))
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    (anchored || segments.len() >= 3)
+        && !segments.is_empty()
+        && segments.iter().all(|segment| {
+            let stem = segment.trim_end_matches(|c: char| c.is_ascii_digit());
+            !stem.is_empty() && is_identifier_like(stem)
+        })
 }
 
 /// Names rather than data: letters joined by `_`, `.`, `-` or camelCase,
