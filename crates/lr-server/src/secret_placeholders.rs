@@ -371,8 +371,17 @@ pub fn attach_monitor(state: &AppState, vault: &Vault, owner: &str, session: Opt
             finding["occurrences"] = serde_json::json!(count.saturating_add(operation.occurrences as u64));
             finding["reference_id"] = operation.reference_id.clone().into();
             finding["operation_location"] = operation.location.clone().into();
+            if finding["context_excerpt"].as_str().is_none() {
+                if let Some(excerpt) = &operation.excerpt {
+                    finding["context_excerpt"] = excerpt.clone().into();
+                }
+            }
         } else {
-            findings.push(serde_json::json!({"rule_id":"stored-secret-reference", "rule_description":"Stored secret", "category":"Secret Scan", "matched_text":"Secret held locally", "message_index":0, "value":tag, "redacted":true, "replacement":tag, "reference_id":operation.reference_id, "action":if operation.action == "restore" { "restored" } else { "redacted" }, "location":operation.location, "operation_location":operation.location, "occurrences":operation.occurrences}));
+            let mut finding = serde_json::json!({"rule_id":"stored-secret-reference", "rule_description":"Stored secret", "category":"Secret Scan", "matched_text":"Secret held locally", "message_index":0, "value":tag, "redacted":true, "replacement":tag, "reference_id":operation.reference_id, "action":if operation.action == "restore" { "restored" } else { "redacted" }, "location":operation.location, "operation_location":operation.location, "occurrences":operation.occurrences});
+            if let Some(excerpt) = &operation.excerpt {
+                finding["context_excerpt"] = excerpt.clone().into();
+            }
+            findings.push(finding);
         }
         let count = findings.len();
         let findings = serde_json::Value::Array(findings);
