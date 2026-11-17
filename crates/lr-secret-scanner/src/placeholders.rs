@@ -545,6 +545,46 @@ pub struct SecretOperation {
     pub reference_id: String,
     pub location: String,
     pub occurrences: usize,
+    /// Text around the reference's first occurrence, taken from the side of
+    /// the exchange that carries the reference tag, never the original.
+    pub excerpt: Option<String>,
+}
+
+/// Characters of surrounding text kept on each side of a reference.
+const EXCERPT_CONTEXT: usize = 120;
+
+/// Text around the first occurrence of each reference tag in `text`.
+fn reference_excerpts(text: &str) -> BTreeMap<String, String> {
+    let mut excerpts = BTreeMap::new();
+    let mut offset = 0;
+    for (start, _) in text.match_indices('<') {
+        if start < offset {
+            continue;
+        }
+        if let Some((end, id, _)) = reference(text, start) {
+            excerpts.entry(id).or_insert_with(|| {
+                let mut from = start.saturating_sub(EXCERPT_CONTEXT);
+                while !text.is_char_boundary(from) {
+                    from += 1;
+                }
+                let mut to = (end + EXCERPT_CONTEXT).min(text.len());
+                while !text.is_char_boundary(to) {
+                    to -= 1;
+                }
+                let mut excerpt = String::new();
+                if from > 0 {
+                    excerpt.push('…');
+                }
+                excerpt.push_str(&text[from..to]);
+                if to < text.len() {
+                    excerpt.push('…');
+                }
+                excerpt
+            });
+            offset = end;
+        }
+    }
+    excerpts
 }
 type OperationObserver = dyn Fn(SecretOperation) + Send + Sync;
 /// True means the original is explicitly allowed and must not be newly masked.
@@ -568,6 +608,7 @@ fn reference_counts(text: &str) -> BTreeMap<String, usize> {
 struct RestoredText {
     value: String,
     counts: BTreeMap<String, usize>,
+    excerpts: BTreeMap<String, String>,
     changed: bool,
     unresolved: bool,
 }
@@ -748,6 +789,7 @@ impl Vault {
                     "storage_warning"
                 },
                 reference_id: String::new(),
+                excerpt: None,
                 location: event.message(),
                 occurrences: 1,
             });
@@ -781,6 +823,15 @@ impl Vault {
         location: &str,
         counts: BTreeMap<String, usize>,
     ) {
+        self.notify_operations_with(action, location, counts, BTreeMap::new());
+    }
+    fn notify_operations_with(
+        &self,
+        action: &'static str,
+        location: &str,
+        counts: BTreeMap<String, usize>,
+        mut excerpts: BTreeMap<String, String>,
+    ) {
         let observer = self
             .observer
             .lock()
@@ -790,6 +841,7 @@ impl Vault {
             for (reference_id, occurrences) in counts {
                 observer(SecretOperation {
                     action,
+                    excerpt: excerpts.remove(&reference_id),
                     reference_id,
                     location: location.into(),
                     occurrences,
@@ -802,6 +854,7 @@ impl Vault {
             return Ok(RestoredText {
                 value: text.into(),
                 counts: BTreeMap::new(),
+                excerpts: BTreeMap::new(),
                 changed: false,
                 unresolved: false,
             });
@@ -822,9 +875,18 @@ impl Vault {
         })?;
         let changed = value != text;
         unresolved |= !changed;
+        // Context comes from the incoming text, which carries the tags.
+        let excerpts = if changed {
+            let mut excerpts = reference_excerpts(text);
+            excerpts.retain(|id, _| counts.contains_key(id));
+            excerpts
+        } else {
+            BTreeMap::new()
+        };
         Ok(RestoredText {
             value,
             counts,
+            excerpts,
             changed,
             unresolved,
         })
@@ -841,7 +903,12 @@ impl Vault {
                 if notify {
                     if restored.changed {
                         self.restored.store(true, Ordering::Release);
-                        self.notify_operations("restore", location, restored.counts);
+                        self.notify_operations_with(
+                            "restore",
+                            location,
+                            restored.counts,
+                            restored.excerpts,
+                        );
                     }
                     if restored.unresolved {
                         self.diagnostic("Possible secret reference was not restored; content passed through unchanged");
@@ -1754,6 +1821,7 @@ impl Vault {
             .map(|(id, value)| (id.clone(), value.clone()))
             .collect();
         let mut redacted = BTreeMap::new();
+        let mut redacted_excerpts = BTreeMap::new();
         fn signed_secret(value: &Value, entries: &BTreeMap<String, Zeroizing<String>>) -> bool {
             fn contains(value: &Value, entries: &BTreeMap<String, Zeroizing<String>>) -> bool {
                 match value {
@@ -1846,10 +1914,14 @@ impl Vault {
                 let masked = self.transform(text, &mut masking_entries)?;
                 if masked != text {
                     let before = reference_counts(text);
+                    let mut excerpts = reference_excerpts(&masked);
                     for (id, count) in reference_counts(&masked) {
                         let added =
                             count.saturating_sub(before.get(&id).copied().unwrap_or_default());
                         if added > 0 {
+                            if let Some(excerpt) = excerpts.remove(&id) {
+                                redacted_excerpts.entry(id.clone()).or_insert(excerpt);
+                            }
                             *redacted.entry(id).or_default() += added;
                         }
                     }
@@ -1865,7 +1937,7 @@ impl Vault {
         }
         drop(entries);
         drop(_lock);
-        self.notify_operations("redact", "Outbound request", redacted);
+        self.notify_operations_with("redact", "Outbound request", redacted, redacted_excerpts);
         Ok(())
     }
 }
@@ -2084,7 +2156,7 @@ impl SecretContext for Vault {
                     Ok(outcome) => {
                         unresolved |= outcome.unresolved;
                         if outcome.changed {
-                            operations.push((location, outcome.counts));
+                            operations.push((location, outcome.counts, outcome.excerpts));
                         }
                         Ok(outcome.value)
                     }
@@ -2106,8 +2178,8 @@ impl SecretContext for Vault {
         if !operations.is_empty() {
             self.restored.store(true, Ordering::Release);
         }
-        for (location, counts) in operations {
-            self.notify_operations("restore", location, counts);
+        for (location, counts, excerpts) in operations {
+            self.notify_operations_with("restore", location, counts, excerpts);
         }
         if unresolved {
             self.diagnostic(
@@ -3482,6 +3554,51 @@ mod store_management_tests {
         );
         assert!(!std::fs::read_to_string(path).unwrap().contains(SECRET));
     }
+    #[test]
+    fn operations_carry_surrounding_context_without_the_original() {
+        let storage = Arc::new(lr_api_keys::MockKeychain::new());
+        let vault = Vault::for_client(storage, "operation-excerpt-owner");
+        vault.register(SECRET).unwrap();
+        let notices = Arc::new(Mutex::new(Vec::new()));
+        let captured = notices.clone();
+        vault.set_operation_observer(Arc::new(move |notice| {
+            captured.lock().unwrap().push(notice);
+        }));
+        let mut value =
+            json!({"content": format!("deploy with key {SECRET} then restart the worker")});
+        vault.protect(&mut value).unwrap();
+        let redact = notices.lock().unwrap()[0].clone();
+        let excerpt = redact.excerpt.clone().unwrap();
+        assert!(excerpt.contains("deploy with key"));
+        assert!(excerpt.contains("then restart the worker"));
+        assert!(excerpt.contains(&redact.reference_id));
+        assert!(!excerpt.contains(SECRET));
+
+        let reply = format!("I used {} as requested.", marker(&redact.reference_id));
+        assert_eq!(
+            vault
+                .restore_text_at(&reply, false, "Response text")
+                .unwrap(),
+            format!("I used {SECRET} as requested.")
+        );
+        let restore = notices.lock().unwrap().last().unwrap().clone();
+        assert_eq!(restore.action, "restore");
+        let excerpt = restore.excerpt.unwrap();
+        assert!(excerpt.contains("I used") && excerpt.contains("as requested."));
+        assert!(!excerpt.contains(SECRET));
+    }
+
+    #[test]
+    fn excerpts_are_bounded_and_marked_when_cut() {
+        let tag = marker("0123456789abcdef0123456789abcdef");
+        let text = format!("{}{tag}{}", "a".repeat(500), "b".repeat(500));
+        let excerpt = reference_excerpts(&text)
+            .remove("0123456789abcdef0123456789abcdef")
+            .unwrap();
+        assert!(excerpt.starts_with('…') && excerpt.ends_with('…'));
+        assert!(excerpt.len() <= tag.len() + 2 * EXCERPT_CONTEXT + 2 * '…'.len_utf8());
+    }
+
     #[test]
     fn operation_observers_report_only_committed_owned_substitutions_after_releasing_locks() {
         let storage = Arc::new(lr_api_keys::MockKeychain::new());

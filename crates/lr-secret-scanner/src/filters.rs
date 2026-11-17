@@ -371,7 +371,7 @@ pub fn uri_password_is_real(caps: &regex::Captures<'_>) -> bool {
     let database = caps.get(4).map_or("", |m| m.as_str());
 
     let lower = password.to_ascii_lowercase();
-    if URI_DEFAULT_PASSWORDS.contains(&lower.as_str()) {
+    if URI_DEFAULT_PASSWORDS.contains(&lower.as_str()) || !value_looks_random(password) {
         return false;
     }
     if lower == user.to_ascii_lowercase() || (!database.is_empty() && password == database) {
@@ -398,9 +398,7 @@ pub fn basic_auth_has_secret_password(caps: &regex::Captures<'_>) -> bool {
         return false;
     };
     decoded.split_once(':').is_some_and(|(_, password)| {
-        password.chars().count() >= 8
-            && crate::entropy::shannon_entropy(password) >= 3.0
-            && !is_placeholder(password, PlaceholderPolicy::Generic)
+        value_looks_random(password) && !is_placeholder(password, PlaceholderPolicy::Generic)
     })
 }
 
@@ -560,12 +558,77 @@ fn is_type_annotation(value: &str) -> bool {
         && words.all(|word| TYPE_WORDS.contains(&word.to_ascii_lowercase().as_str()))
 }
 
+/// Minimum total information in a keyword-context value with two character
+/// classes, in bits (Shannon entropy per character times length): a
+/// 12-character hex or base64 token clears it, words and code do not.
+const MIN_CONTEXT_BITS: f32 = 40.0;
+
+/// Per-character entropy a short complex value needs: 8 characters with at
+/// most one repeated.
+const MIN_SHORT_ENTROPY: f32 = 2.75;
+
+/// Sequences that only occur in code, never in a generated credential.
+const CODE_MARKERS: &[&str] = &[
+    "()", "):", ");", "),", ")=", "=>", "->", "::", "${", "{{", "}}", "](", ").", "?.",
+];
+
+/// Whether a value found only by its context (`password=…`, `secret: …`, a
+/// URI or Basic-auth password) is random enough to be a credential. Values
+/// with a recognizable credential format are matched by their own rules and
+/// never pass through this check.
+///
+/// Rejects code fragments, type annotations, identifiers and words, and
+/// requires both character variety and enough total randomness for the
+/// length: Shannon entropy alone is maximal for any short string of distinct
+/// characters, so `string):` would otherwise pass a 3.0-bit threshold.
+pub fn value_looks_random(value: &str) -> bool {
+    if is_type_annotation(value) || CODE_MARKERS.iter().any(|marker| value.contains(marker)) {
+        return false;
+    }
+    if is_identifier_like(value) {
+        return false;
+    }
+    let classes = [
+        value.bytes().any(|b| b.is_ascii_lowercase()),
+        value.bytes().any(|b| b.is_ascii_uppercase()),
+        value.bytes().any(|b| b.is_ascii_digit()),
+        value.bytes().any(|b| !b.is_ascii_alphanumeric()),
+    ]
+    .into_iter()
+    .filter(|present| *present)
+    .count();
+    let length = value.chars().count();
+    if length < 8 {
+        return false;
+    }
+    let entropy = crate::entropy::shannon_entropy(value);
+    // Short values must show complexity: three character classes and almost
+    // no repetition, as a generated password does. Longer values (hex and
+    // base64 tokens) need two classes and enough total information.
+    (classes >= 3 && entropy >= MIN_SHORT_ENTROPY)
+        || (classes >= 2 && entropy * length as f32 >= MIN_CONTEXT_BITS)
+}
+
+/// Names rather than data: letters joined by `_`, `.`, `-` or camelCase,
+/// with every word at least three letters and no digits, such as
+/// `process.env.DB_PASSWORD`, `getUserToken` or `my-secret-value`.
+fn is_identifier_like(value: &str) -> bool {
+    if !value
+        .bytes()
+        .all(|b| b.is_ascii_alphabetic() || matches!(b, b'_' | b'.' | b'-'))
+    {
+        return false;
+    }
+    let words = key_words(value);
+    !words.is_empty() && words.iter().all(|word| word.len() >= 3)
+}
+
 /// Validator for keyword assignment rules whose key is capture group 1 and
 /// value is capture group 2.
 pub fn assignment_key_is_secret(caps: &regex::Captures<'_>) -> bool {
     if caps
         .get(2)
-        .is_some_and(|value| is_type_annotation(value.as_str()))
+        .is_some_and(|value| !value_looks_random(value.as_str()))
     {
         return false;
     }

@@ -873,3 +873,43 @@ fn type_annotations_after_secret_keywords_are_not_flagged() {
         "string9Kq2!x7Lw",
     );
 }
+
+#[test]
+fn context_only_values_must_look_random() {
+    for text in [
+        // Code and identifiers after a keyword.
+        "password: string):",
+        "const token = getToken();",
+        "secret = process.env.CLIENT_SECRET_VALUE",
+        "password=thisisnotarealpassword",
+        "token: Option<String>,",
+        "password = self.password_hash(user)",
+        // Words with a digit or two: not random enough.
+        "password=password1234",
+    ] {
+        assert_clean(text);
+    }
+}
+
+#[test]
+fn value_randomness_scoring() {
+    use crate::filters::value_looks_random;
+    for random in [
+        "K7!pQ2zR",
+        "9f8a7c6b5d4e3f2a1b0c",
+        "Xk9mP2vQ7zR4tLw8",
+        "Summer2024!x",
+    ] {
+        assert!(value_looks_random(random), "{random}");
+    }
+    for not_random in [
+        "string):",
+        "abcdefgh",
+        "getUserToken",
+        "a.b.c.d.e.f",
+        "1234567890",
+        "hunter2",
+    ] {
+        assert!(!value_looks_random(not_random), "{not_random}");
+    }
+}
