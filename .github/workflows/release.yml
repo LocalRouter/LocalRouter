@@ -197,7 +197,20 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: npm run tauri build -- --target ${{ matrix.settings.target }} --bundles ${{ matrix.settings.bundles }}
+        # Retry transient failures (Apple notarization 5xx, network). A retry
+        # reuses the compiled target dir, so it only re-bundles and re-signs.
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if npm run tauri build -- --target ${{ matrix.settings.target }} --bundles ${{ matrix.settings.bundles }}; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "::warning::tauri build attempt $attempt failed; retrying in 60s"
+              sleep 60
+            fi
+          done
+          exit 1
 
       # The Scoop bucket installs a portable executable rather than driving the
       # NSIS installer, which keeps Scoop's own install/uninstall semantics
@@ -876,6 +889,39 @@ jobs:
             --repo ${{ github.repository }} \
             -f version=${{ needs.version-bump.outputs.version }}
           echo "Triggered docker.yml for v${{ needs.version-bump.outputs.version }}"
+
+      # Each release saves a new Rust cache per target (the version bump changes
+      # the lockfile hash in the key), ~1.3-1.9 GB each, while the previous set
+      # remains. Over the repository's 10 GB limit GitHub evicts the oldest
+      # caches, including the CI cache, forcing full rebuilds. Keep only the
+      # newest cache of each family.
+      - name: Prune superseded caches
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh api --paginate "repos/$REPO/actions/caches?per_page=100" \
+            --jq '.actions_caches[] | [.id, .key, .created_at] | @tsv' > caches.tsv
+          python3 - <<'PY'
+          import collections, subprocess, os
+          groups = collections.defaultdict(list)
+          for line in open("caches.tsv"):
+              cache_id, key, created = line.rstrip("\n").split("\t")
+              if key.startswith("v0-rust-"):
+                  family = key.rsplit("-", 1)[0]
+              elif key.startswith("catalog-"):
+                  family = "catalog"
+              else:
+                  continue
+              groups[family].append((created, cache_id, key))
+          for family, entries in groups.items():
+              entries.sort(reverse=True)
+              for _, cache_id, key in entries[1:]:
+                  print(f"Deleting superseded cache {key}")
+                  subprocess.run(["gh", "api", "-X", "DELETE",
+                                  f"repos/{os.environ['REPO']}/actions/caches/{cache_id}"],
+                                 check=False)
+          PY
 
       - name: Summary
         run: |

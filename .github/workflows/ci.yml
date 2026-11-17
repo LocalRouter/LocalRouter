@@ -118,8 +118,55 @@ jobs:
         timeout-minutes: 10
         run: scripts/test-codex-secret-lifecycle.sh
 
-      - name: Run Clippy
-        run: cargo clippy --workspace -- -D warnings
+  # Lint runs in parallel with the test job instead of after it. Clippy
+  # checks (no codegen) are fast once its own cache is warm.
+  lint:
+    name: Lint
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
 
       - name: Check formatting
         run: cargo fmt --all -- --check
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-lint
+
+      - name: Cache model catalog
+        uses: actions/cache@v4
+        with:
+          path: crates/lr-catalog/catalog/
+          key: catalog-${{ github.run_id }}-lint
+          restore-keys: catalog-
+
+      - name: Install Linux dependencies
+        timeout-minutes: 15
+        run: |
+          scripts/ci-apt-config.sh
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            libssl-dev
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
