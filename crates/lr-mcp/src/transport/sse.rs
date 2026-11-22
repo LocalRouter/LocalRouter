@@ -197,10 +197,29 @@ fn mcp_request_headers(
         .and_then(|p| p.get("name").or_else(|| p.get("uri")))
         .and_then(|v| v.as_str())
     {
-        headers.push(("Mcp-Name", name.to_string()));
+        headers.push(("Mcp-Name", mcp_header_value(name)));
     }
 
     headers
+}
+
+/// A body value as an MCP header value: as is when it is visible ASCII
+/// without surrounding whitespace, otherwise the `=?base64?…?=` sentinel
+/// 2026-07-28 servers decode (an event or tool name may be any string, and
+/// an HTTP header cannot carry most of them verbatim).
+fn mcp_header_value(value: &str) -> String {
+    use base64::Engine;
+    let plain = value.bytes().all(|b| (0x20..0x7f).contains(&b))
+        && value.trim() == value
+        && !value.starts_with("=?base64?");
+    if plain {
+        value.to_string()
+    } else {
+        format!(
+            "=?base64?{}?=",
+            base64::engine::general_purpose::STANDARD.encode(value)
+        )
+    }
 }
 
 impl SseTransport {
@@ -1799,6 +1818,38 @@ impl Transport for SseTransport {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mcp_name_header_uses_the_base64_sentinel_when_needed() {
+        use base64::Engine;
+        let request = |name: &str| {
+            crate::protocol::JsonRpcRequest::new(
+                Some(serde_json::json!(1)),
+                "events/stream".into(),
+                Some(serde_json::json!({"name": name})),
+            )
+        };
+        let name_header = |name: &str| {
+            super::mcp_request_headers(&request(name), Some("2026-07-28"))
+                .into_iter()
+                .find(|(k, _)| *k == "Mcp-Name")
+                .map(|(_, v)| v)
+                .unwrap()
+        };
+        assert_eq!(name_header("message.received"), "message.received");
+        for name in ["zpráva.přijata", " padded", "=?base64?x?="] {
+            let header = name_header(name);
+            let encoded = header
+                .strip_prefix("=?base64?")
+                .and_then(|h| h.strip_suffix("?="))
+                .unwrap_or_else(|| panic!("{name:?} sent as {header:?}"));
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .unwrap();
+            assert_eq!(String::from_utf8(decoded).unwrap(), name);
+            assert!(reqwest::header::HeaderValue::from_str(&header).is_ok());
+        }
+    }
+
     #[tokio::test]
     async fn connection_reports_http_rejection_without_leaking_secrets() {
         use axum::{http::StatusCode, routing::get, Router};
