@@ -50,6 +50,7 @@ pub async fn run_agentic_loop_streaming(
     monitor_emit: Option<crate::manager::MonitorEmitFn>,
     monitor_update: Option<crate::manager::MonitorUpdateFn>,
     llm_call_event_id: Option<String>,
+    withhold_tool_call_deltas: bool,
 ) -> Result<Pin<Box<dyn futures::Stream<Item = AppResult<CompletionChunk>> + Send>>, McpViaLlmError>
 {
     let turn = router.auto_turn_budget(&client.id, &request);
@@ -72,6 +73,7 @@ pub async fn run_agentic_loop_streaming(
         monitor_emit,
         monitor_update,
         llm_call_event_id,
+        withhold_tool_call_deltas,
     ));
     if let Some(turn) = turn {
         orchestrator::run_with_turn_budget(turn, fallback.unwrap(), future).await
@@ -96,6 +98,7 @@ async fn run_agentic_loop_stream_inner(
     monitor_emit: Option<crate::manager::MonitorEmitFn>,
     monitor_update: Option<crate::manager::MonitorUpdateFn>,
     llm_call_event_id: Option<String>,
+    withhold_tool_call_deltas: bool,
 ) -> Result<Pin<Box<dyn futures::Stream<Item = AppResult<CompletionChunk>> + Send>>, McpViaLlmError>
 {
     let started_at = Instant::now();
@@ -265,6 +268,7 @@ async fn run_agentic_loop_stream_inner(
             monitor_update,
             llm_call_event_id,
             monitor_session_id,
+            withhold_tool_call_deltas,
         ));
         let result = if let Some(turn) = turn_context {
             orchestrator::run_with_turn_budget(turn, turn_fallback.unwrap(), future).await
@@ -313,6 +317,7 @@ async fn streaming_loop(
     monitor_update: Option<crate::manager::MonitorUpdateFn>,
     llm_call_event_id: Option<String>,
     monitor_session_id: Option<String>,
+    withhold_tool_call_deltas: bool,
 ) -> Result<(), McpViaLlmError> {
     let mut iteration: u32 = 0;
     loop {
@@ -482,7 +487,13 @@ async fn streaming_loop(
                             }
                         }
                     } else {
-                        // Forward non-finish chunks to the client
+                        // Forward non-finish chunks to the client. Tool-call
+                        // deltas stay behind when withheld: which calls the
+                        // client may see is only known once they are classified.
+                        let mut chunk = chunk;
+                        if withhold_tool_call_deltas && strip_tool_call_deltas(&mut chunk) {
+                            continue;
+                        }
                         if tx.send(Ok(chunk)).await.is_err() {
                             return Ok(()); // Client disconnected
                         }
@@ -1173,6 +1184,24 @@ fn accumulate_tool_call_deltas(
     }
 }
 
+/// Remove tool-call deltas from a chunk. Returns `true` when nothing else is
+/// left in it, so the caller can drop the chunk instead of forwarding it.
+fn strip_tool_call_deltas(chunk: &mut CompletionChunk) -> bool {
+    let mut stripped = false;
+    for choice in &mut chunk.choices {
+        stripped |= choice.delta.tool_calls.take().is_some();
+    }
+    stripped
+        && chunk.usage.is_none()
+        && chunk.extensions.is_none()
+        && chunk.choices.iter().all(|choice| {
+            choice.delta.role.is_none()
+                && choice.delta.content.is_none()
+                && choice.delta.reasoning_content.is_none()
+                && choice.delta.annotations.is_none()
+        })
+}
+
 /// Build a finish chunk containing only the specified tool calls
 fn build_finish_chunk_with_tools(tool_calls: &[&ToolCall], finish_reason: &str) -> CompletionChunk {
     let tool_call_deltas: Vec<ToolCallDelta> = tool_calls
@@ -1627,4 +1656,82 @@ async fn execute_prompt_get_background(
     }
 
     Ok(orchestrator::content_to_string(&result))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn chunk(delta: ChunkDelta) -> CompletionChunk {
+        CompletionChunk {
+            id: "c".into(),
+            object: "chat.completion.chunk".into(),
+            created: 0,
+            model: "m".into(),
+            choices: vec![ChunkChoice {
+                index: 0,
+                delta,
+                finish_reason: None,
+            }],
+            extensions: None,
+            usage: None,
+            provider: None,
+        }
+    }
+
+    fn tool_delta() -> Vec<ToolCallDelta> {
+        vec![ToolCallDelta {
+            index: 0,
+            id: Some("call-1".into()),
+            tool_type: Some("function".into()),
+            function: Some(FunctionCallDelta {
+                name: Some("fs__read".into()),
+                arguments: Some("{}".into()),
+            }),
+        }]
+    }
+
+    fn delta(content: Option<&str>, tool_calls: Option<Vec<ToolCallDelta>>) -> ChunkDelta {
+        ChunkDelta {
+            annotations: None,
+            role: None,
+            content: content.map(str::to_string),
+            tool_calls,
+            reasoning_content: None,
+        }
+    }
+
+    #[test]
+    fn a_chunk_holding_only_tool_call_deltas_is_dropped() {
+        let mut c = chunk(delta(None, Some(tool_delta())));
+        assert!(strip_tool_call_deltas(&mut c));
+        assert!(c.choices[0].delta.tool_calls.is_none());
+    }
+
+    #[test]
+    fn text_next_to_a_tool_call_delta_is_still_forwarded() {
+        let mut c = chunk(delta(Some("thinking"), Some(tool_delta())));
+        assert!(!strip_tool_call_deltas(&mut c));
+        assert!(c.choices[0].delta.tool_calls.is_none());
+        assert_eq!(c.choices[0].delta.content.as_deref(), Some("thinking"));
+
+        let mut role_only = chunk(ChunkDelta {
+            role: Some("assistant".into()),
+            ..delta(None, Some(tool_delta()))
+        });
+        assert!(!strip_tool_call_deltas(&mut role_only));
+        assert!(role_only.choices[0].delta.tool_calls.is_none());
+    }
+
+    #[test]
+    fn a_chunk_without_tool_call_deltas_is_left_alone() {
+        // An empty keep-alive style chunk must not be mistaken for one that
+        // was emptied by the strip.
+        let mut empty = chunk(delta(None, None));
+        assert!(!strip_tool_call_deltas(&mut empty));
+
+        let mut text = chunk(delta(Some("hi"), None));
+        assert!(!strip_tool_call_deltas(&mut text));
+        assert_eq!(text.choices[0].delta.content.as_deref(), Some("hi"));
+    }
 }

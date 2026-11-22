@@ -16,4 +16,4 @@ mod integration_tests;
 #[cfg(test)]
 mod tests;
 
-pub use manager::{GuardrailGate, McpViaLlmError, McpViaLlmManager};
+pub use manager::{GuardrailGate, McpViaLlmError, McpViaLlmManager, TurnOptions};

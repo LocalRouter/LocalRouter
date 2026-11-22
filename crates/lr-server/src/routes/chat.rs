@@ -345,7 +345,7 @@ async fn handle_mcp_via_llm(
     auth: AuthContext,
     client_auth: Option<Extension<ClientAuthContext>>,
     mut request: ChatCompletionRequest,
-    provider_request: ProviderCompletionRequest,
+    mut provider_request: ProviderCompletionRequest,
     guardrail_handle: GuardrailHandle,
     _compression_tokens_saved: u64,
     llm_event_id: String,
@@ -420,46 +420,18 @@ async fn handle_mcp_via_llm(
         .mcp_permissions
         .allowed_server_ids(&state.config_manager.get().mcp_servers);
 
-    // Run model firewall with augmented request (MCP tools visible in popup)
-    if request.model != "localrouter/auto" {
-        // Pre-fetch MCP tool definitions so the firewall popup shows the full augmented request
-        // Always wrap in Some so the is_mcp_via_llm flag is set even if pre-fetch fails
-        let mcp_tools_json = Some(
-            match state
-                .mcp_via_llm_manager
-                .list_tools_for_preview(state.mcp_gateway.clone(), &client, allowed_servers.clone())
-                .await
-            {
-                Ok(tools) => tools,
-                Err(e) => {
-                    tracing::warn!(
-                        "MCP via LLM: failed to pre-fetch tools for firewall popup: {}",
-                        e
-                    );
-                    serde_json::json!([])
-                }
-            },
-        );
-
-        let mcp_strategy_permission = mcp_via_llm_strategy
-            .auto_config
-            .as_ref()
-            .map(|ac| ac.permission.clone());
-
-        let firewall_edits = super::pipeline::check_model_firewall_permission(
-            &state,
-            client_auth.as_ref().map(|e| &e.0),
-            &request,
-            mcp_tools_json,
-            mcp_strategy_permission,
-            &session_id,
-        )
-        .await?;
-
-        if let Some(edits) = firewall_edits {
-            super::pipeline::apply_firewall_request_edits(&mut request, &edits);
-        }
-    }
+    // Model firewall with the augmented request (MCP tools visible in the popup)
+    super::pipeline::check_mcp_via_llm_model_firewall(
+        &state,
+        client_auth.as_ref().map(|e| &e.0),
+        &client,
+        &mcp_via_llm_strategy,
+        &allowed_servers,
+        &mut request,
+        &mut provider_request,
+        &session_id,
+    )
+    .await?;
 
     // Streaming: use multi-segment streaming orchestrator
     if request.stream {
@@ -484,7 +456,7 @@ async fn handle_mcp_via_llm(
                 guardrail_gate,
                 Some(llm_event_id.clone()),
                 Some(session_id.clone()),
-                None,
+                lr_mcp_via_llm::TurnOptions::default(),
             )
             .await
             .map_err(|e| {
@@ -675,7 +647,7 @@ async fn handle_mcp_via_llm(
             guardrail_gate,
             Some(llm_event_id.clone()),
             Some(session_id.clone()),
-            None,
+            lr_mcp_via_llm::TurnOptions::default(),
         )
         .await
         .map_err(|e| ApiErrorResponse::bad_gateway(format!("MCP via LLM error: {}", e)))?;

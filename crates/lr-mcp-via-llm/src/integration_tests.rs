@@ -2104,3 +2104,109 @@ mod session_tests {
         assert!(session.read().gateway_initialized);
     }
 }
+
+// ── Deterministic session keys (Responses API) ─────────────────────────────
+
+#[cfg(test)]
+mod session_key_tests {
+    use super::helpers::*;
+    use crate::manager::{McpViaLlmManager, TurnOptions};
+    use std::collections::HashMap;
+
+    /// A turn is found by the id of the response before it and re-keyed to
+    /// the id of the response it produces, so a chain of turns stays on one
+    /// session even when the visible history no longer hash-matches.
+    #[tokio::test]
+    async fn a_chain_of_response_ids_stays_on_one_session() {
+        let env = setup_test_env(
+            vec![
+                make_response(None, Some(vec![make_tool_call("c1", "fs__read", "{}")])),
+                make_response(Some("first answer"), None),
+                make_response(Some("second answer"), None),
+                make_response(Some("third answer"), None),
+            ],
+            vec![make_mcp_tool("fs__read", "Read a file")],
+            HashMap::new(),
+        )
+        .await;
+        let manager = McpViaLlmManager::new(make_config());
+        let turn = |text: &str, resume: Option<&str>, key: &str| {
+            let options = TurnOptions {
+                resume_session_key: resume.map(str::to_string),
+                session_key: Some(key.to_string()),
+                withhold_tool_call_deltas: false,
+            };
+            manager.handle_request(
+                env.gateway.clone(),
+                &env.router,
+                &env.client,
+                make_request(text),
+                vec![],
+                None,
+                None,
+                None,
+                options,
+            )
+        };
+
+        turn("first question", None, "resp_1").await.unwrap();
+        // Unrelated visible history each time: only the key can match.
+        turn("second question", Some("resp_1"), "resp_2")
+            .await
+            .unwrap();
+        turn("third question", Some("resp_2"), "resp_3")
+            .await
+            .unwrap();
+
+        let sessions = manager.sessions_by_client.get(&env.client.id).unwrap();
+        assert_eq!(sessions.len(), 1, "every turn resumed the first session");
+        assert_eq!(sessions[0].read().explicit_key.as_deref(), Some("resp_3"));
+    }
+
+    /// Without a key to resume by, unrelated history starts a new session.
+    #[tokio::test]
+    async fn an_unknown_response_id_starts_a_new_session() {
+        let env = setup_test_env(
+            vec![
+                make_response(Some("first answer"), None),
+                make_response(Some("second answer"), None),
+            ],
+            vec![make_mcp_tool("fs__read", "Read a file")],
+            HashMap::new(),
+        )
+        .await;
+        let manager = McpViaLlmManager::new(make_config());
+        for (text, resume, key) in [
+            ("first question", None, "resp_1"),
+            ("second question", Some("resp_gone"), "resp_2"),
+        ] {
+            manager
+                .handle_request(
+                    env.gateway.clone(),
+                    &env.router,
+                    &env.client,
+                    make_request(text),
+                    vec![],
+                    None,
+                    None,
+                    None,
+                    TurnOptions {
+                        resume_session_key: resume.map(str::to_string),
+                        session_key: Some(key.to_string()),
+                        withhold_tool_call_deltas: false,
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        let sessions = manager.sessions_by_client.get(&env.client.id).unwrap();
+        let keys: Vec<Option<String>> = sessions
+            .iter()
+            .map(|s| s.read().explicit_key.clone())
+            .collect();
+        assert_eq!(
+            keys,
+            [Some("resp_1".to_string()), Some("resp_2".to_string())]
+        );
+    }
+}

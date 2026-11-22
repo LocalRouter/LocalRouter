@@ -93,11 +93,12 @@ pub struct McpViaLlmSession {
     /// Hashes of client-visible messages from the last request (before any injection).
     /// Used for session matching on subsequent requests.
     pub client_message_hashes: Vec<u64>,
-    /// Client-supplied deterministic session key (e.g. the Responses
-    /// API's `previous_response_id`). When present, session lookup
-    /// prefers an exact match on this key over the probabilistic
-    /// hash-based matching. `None` for sessions created from chat
-    /// completions (legacy / hash-only path).
+    /// Deterministic session key: the id of the last response this
+    /// session produced (`TurnOptions::session_key`), which the next
+    /// Responses API turn names as `previous_response_id`. When present,
+    /// session lookup prefers an exact match on this key over the
+    /// probabilistic hash-based matching. `None` for sessions created
+    /// from chat completions (hash-only path).
     pub explicit_key: Option<String>,
 }
 
@@ -269,10 +270,12 @@ pub fn reconstruct_history(
         result.retain(|m| !(m.role == "system" && m.content.as_text() == instructions));
     }
 
-    // Use client's current system message (handles changes between turns)
+    // Use client's current system message (handles changes between turns,
+    // including a client that only starts sending one on a later turn)
     if let Some(client_sys) = incoming.first().filter(|m| m.role == "system") {
-        if let Some(first_sys) = result.iter_mut().find(|m| m.role == "system") {
-            *first_sys = client_sys.clone();
+        match result.iter_mut().find(|m| m.role == "system") {
+            Some(first_sys) => *first_sys = client_sys.clone(),
+            None => result.insert(0, client_sys.clone()),
         }
     }
 

@@ -26,15 +26,41 @@
 //! early, feed the shared helpers, then convert to the provider
 //! shape via `convert_to_provider_request`.
 //!
-//! Known gaps (follow-ups):
-//! - MCP-via-LLM orchestration and firewall approval popups for
-//!   `localrouter/auto` are still chat-specific. Responses currently
-//!   goes through `state.router` directly; adding those requires
-//!   hoisting more of the chat.rs orchestrator.
-//! - Only `input` arrays with `message` / `function_call` /
-//!   `function_call_output` items are handled; reasoning items and
-//!   custom tools pass through untouched but aren't actively
-//!   interpreted.
+//! ## Approvals and MCP-via-LLM
+//!
+//! Every firewall approval the chat route raises is raised here by the
+//! same code: the auto-router popup, the per-model permission popup,
+//! Secret Scan and guardrail approvals run inside `run_turn_pipeline`;
+//! the model popup for MCP-via-LLM clients (which shows the request
+//! with the gateway's tools injected) is
+//! `pipeline::check_mcp_via_llm_model_firewall`; the free-tier
+//! paid-fallback approval is `chat::check_free_tier_fallback`; MCP tool
+//! approvals are raised by the gateway while the orchestrator runs.
+//!
+//! MCP-via-LLM clients are handed to the same orchestrator
+//! (`lr-mcp-via-llm`) as on the chat route. Tool calls the gateway
+//! executes itself never reach the client: they are absent from the
+//! streamed events, from the response object's `output`, and from the
+//! history stored for `previous_response_id`. Calls to the client's own
+//! tools are emitted as `function_call` items, and the client answers
+//! them with `function_call_output` items on the next turn. The
+//! orchestrator session — which holds the hidden tool calls and results
+//! — is keyed by response id, so a turn naming `previous_response_id`
+//! resumes it without relying on message-hash matching.
+//!
+//! Known gaps:
+//! - Only `input` items of type `message`, `function_call` and
+//!   `function_call_output` are translated. Reasoning items and custom
+//!   (non-function) tool calls in `input` are dropped. Output from a
+//!   native Responses backend is passed through verbatim, reasoning
+//!   items included, but is not interpreted.
+//! - The hidden tool history of an MCP-via-LLM turn lives in the
+//!   in-memory orchestrator session, not in the session database. Once
+//!   that session has expired (or the app restarted), a continuation
+//!   replays only the client-visible history.
+//! - Text the model writes before a gateway-executed tool call and its
+//!   final answer are streamed as one `message` item.
+//! - `instructions` of an earlier turn stay in the stored history.
 
 use super::gateway_json::GatewayJson;
 use std::convert::Infallible;
@@ -269,11 +295,58 @@ pub async fn create_response(
     )
     .await?;
     let super::pipeline::TurnContext {
-        chat_req,
-        provider_request,
+        mut chat_req,
+        mut provider_request,
         compression_tokens_saved,
+        is_duplicate,
         ..
     } = turn;
+
+    // Decide routing backend: the MCP-via-LLM orchestrator produces
+    // chat-completions-shape responses just like the router does, so
+    // we branch here and the Responses-emitter stays oblivious. A
+    // duplicate hop is forwarded as-is: the first hop already ran the
+    // orchestrator for it.
+    let mcp_via_llm = super::helpers::get_client_with_strategy(&state, &auth.api_key_id)
+        .ok()
+        .filter(|(client, _)| {
+            client.is_mcp_via_llm()
+                && !is_duplicate
+                && !lr_providers::replay::tools_disabled(chat_req.extensions.as_ref())
+        })
+        .map(|(client, strategy)| {
+            let allowed_servers = compute_allowed_mcp_servers(&state, &client);
+            (client, strategy, allowed_servers)
+        });
+
+    // The pipeline leaves the per-model firewall of an MCP-via-LLM
+    // client to this pass, which shows the request with the gateway's
+    // tools injected.
+    if let Some((client, strategy, allowed_servers)) = mcp_via_llm.as_ref() {
+        super::pipeline::check_mcp_via_llm_model_firewall(
+            &state,
+            client_auth.as_ref().map(|e| &e.0),
+            client,
+            strategy,
+            allowed_servers,
+            &mut chat_req,
+            &mut provider_request,
+            &session_id,
+        )
+        .await
+        .map_err(|e| llm_guard.capture_err(e))?;
+    }
+    let turn_options = lr_mcp_via_llm::TurnOptions {
+        // The orchestrator session that produced the turn named by
+        // `previous_response_id` carries that id as its key; it is
+        // re-keyed to this response so the next turn finds it again.
+        resume_session_key: req.previous_response_id.clone(),
+        session_key: Some(response_id.clone()),
+        // A forwarded tool call becomes a `function_call` item the
+        // client must answer, so calls the gateway executes itself
+        // must not be forwarded.
+        withhold_tool_call_deltas: true,
+    };
 
     // Merged history the session row will capture on success (server
     // -> provider conversion drops the `name` field etc., but the
@@ -282,26 +355,9 @@ pub async fn create_response(
     let merged_messages = provider_request.messages.clone();
     let merged_tools = provider_request.tools.clone();
 
-    // Decide routing backend: the MCP-via-LLM orchestrator produces
-    // chat-completions-shape responses just like the router does, so
-    // we branch here and the Responses-emitter stays oblivious.
-    let client_for_routing =
-        super::helpers::get_client_with_strategy(&state, &auth.api_key_id).ok();
-    let use_mcp_via_llm = client_for_routing
-        .as_ref()
-        .map(|(c, _)| {
-            c.is_mcp_via_llm() && !lr_providers::replay::tools_disabled(req.extensions.as_ref())
-        })
-        .unwrap_or(false);
-
     let native_documents = provider_request.has_file_inputs();
     if req.stream {
-        let (stream, routing_metadata) = if use_mcp_via_llm {
-            let (client, _strategy) = client_for_routing
-                .as_ref()
-                .cloned()
-                .expect("client presence already verified above");
-            let allowed_servers = compute_allowed_mcp_servers(&state, &client);
+        let (stream, routing_metadata) = if let Some((client, _, allowed_servers)) = mcp_via_llm {
             match state
                 .mcp_via_llm_manager
                 .handle_streaming_request(
@@ -313,10 +369,7 @@ pub async fn create_response(
                     None,
                     Some(llm_guard.event_id().to_string()),
                     Some(session_id.clone()),
-                    // Deterministic session key: reuses the orchestrator
-                    // session that produced the turn named by
-                    // `previous_response_id`, bypassing hash-matching.
-                    req.previous_response_id.clone(),
+                    turn_options,
                 )
                 .await
             {
@@ -328,16 +381,10 @@ pub async fn create_response(
                 }
             }
         } else {
-            match state
-                .router
-                .stream_complete(&auth.api_key_id, provider_request)
-                .await
-            {
-                Ok((s, routing_meta)) => (s, routing_meta),
+            match route_stream(&state, &auth.api_key_id, provider_request).await {
+                Ok(routed) => routed,
                 Err(e) => {
-                    return Err(llm_guard.capture_err(
-                        ApiErrorResponse::from(e).without_retry_if(native_documents),
-                    ));
+                    return Err(llm_guard.capture_err(e.without_retry_if(native_documents)));
                 }
             }
         };
@@ -383,12 +430,7 @@ pub async fn create_response(
     // Non-streaming path: same MCP-via-LLM vs router branch as above.
     // We also capture the router's routing metadata (if any) so the
     // finalize step can attach it to the monitor event.
-    let (completion, routing_metadata) = if use_mcp_via_llm {
-        let (client, _strategy) = client_for_routing
-            .as_ref()
-            .cloned()
-            .expect("client presence already verified above");
-        let allowed_servers = compute_allowed_mcp_servers(&state, &client);
+    let (completion, routing_metadata) = if let Some((client, _, allowed_servers)) = mcp_via_llm {
         let c = state
             .mcp_via_llm_manager
             .handle_request(
@@ -400,9 +442,7 @@ pub async fn create_response(
                 None,
                 Some(llm_guard.event_id().to_string()),
                 Some(session_id.clone()),
-                // See streaming variant above — deterministic
-                // session key via `previous_response_id`.
-                req.previous_response_id.clone(),
+                turn_options,
             )
             .await
             .map_err(|e| {
@@ -410,14 +450,9 @@ pub async fn create_response(
             })?;
         (c, None)
     } else {
-        let (completion, routing_meta) = state
-            .router
-            .complete(&auth.api_key_id, provider_request)
+        route_complete(&state, &auth.api_key_id, provider_request)
             .await
-            .map_err(|e| {
-                llm_guard.capture_err(ApiErrorResponse::from(e).without_retry_if(native_documents))
-            })?;
-        (completion, routing_meta)
+            .map_err(|e| llm_guard.capture_err(e.without_retry_if(native_documents)))?
     };
 
     let mut completion = completion;
@@ -518,10 +553,74 @@ pub async fn create_response(
     Ok(JsonResponse(response_object).into_response())
 }
 
+/// Non-streaming router dispatch. When the free tier is exhausted and the
+/// strategy offers a paid fallback, the chat route's approval decides
+/// (`check_free_tier_fallback`: allow, deny, or ask the user) before the
+/// request is retried on paid models.
+async fn route_complete(
+    state: &AppState,
+    client_id: &str,
+    request: lr_providers::CompletionRequest,
+) -> ApiResult<(lr_providers::CompletionResponse, Option<Value>)> {
+    let paid_fallback = request.clone();
+    match state.router.complete(client_id, request).await {
+        Err(lr_types::AppError::FreeTierFallbackAvailable {
+            retry_after_secs,
+            exhausted_models,
+        }) => {
+            super::chat::check_free_tier_fallback(
+                state,
+                client_id,
+                &exhausted_models,
+                retry_after_secs,
+            )
+            .await?;
+            state
+                .router
+                .complete_with_paid_fallback(client_id, paid_fallback)
+                .await
+                .map_err(ApiErrorResponse::from)
+        }
+        other => other.map_err(ApiErrorResponse::from),
+    }
+}
+
+/// Streaming counterpart of [`route_complete`].
+async fn route_stream(
+    state: &AppState,
+    client_id: &str,
+    request: lr_providers::CompletionRequest,
+) -> ApiResult<(ChunkStream, Option<Value>)> {
+    let paid_fallback = request.clone();
+    match state.router.stream_complete(client_id, request).await {
+        Err(lr_types::AppError::FreeTierFallbackAvailable {
+            retry_after_secs,
+            exhausted_models,
+        }) => {
+            super::chat::check_free_tier_fallback(
+                state,
+                client_id,
+                &exhausted_models,
+                retry_after_secs,
+            )
+            .await?;
+            state
+                .router
+                .stream_complete_with_paid_fallback(client_id, paid_fallback)
+                .await
+                .map_err(ApiErrorResponse::from)
+        }
+        other => other.map_err(ApiErrorResponse::from),
+    }
+}
+
+/// Chat-completions chunks from the router or the MCP-via-LLM orchestrator.
+type ChunkStream = std::pin::Pin<
+    Box<dyn futures::Stream<Item = lr_types::AppResult<lr_providers::CompletionChunk>> + Send>,
+>;
+
 /// Resolve the MCP servers this client is allowed to invoke via the
-/// orchestrator. Mirrors the equivalent block in chat.rs's
-/// `handle_mcp_via_llm`; kept inline here to avoid another helper
-/// extraction.
+/// orchestrator, as chat.rs's `handle_mcp_via_llm` does.
 fn compute_allowed_mcp_servers(state: &AppState, client: &lr_config::Client) -> Vec<String> {
     client
         .mcp_permissions
@@ -929,9 +1028,7 @@ fn build_stream_response(
     state: AppState,
     auth: AuthContext,
     session_store: Option<ResponsesSessionStore>,
-    upstream: std::pin::Pin<
-        Box<dyn futures::Stream<Item = lr_types::AppResult<lr_providers::CompletionChunk>> + Send>,
-    >,
+    upstream: ChunkStream,
     ctx: StreamWrapperCtx,
 ) -> Response {
     let StreamWrapperCtx {
@@ -1287,10 +1384,7 @@ fn responses_session_store(state: &AppState) -> Option<ResponsesSessionStore> {
     static STORE: OnceLock<Option<ResponsesSessionStore>> = OnceLock::new();
     STORE
         .get_or_init(|| {
-            let path = dirs::home_dir()?
-                .join(".localrouter")
-                .join("responses-sessions")
-                .join("sessions.db");
+            let path = responses_sessions_db_path()?;
             match ResponsesSessionStore::open(&path) {
                 Ok(s) => {
                     // Periodic retention sweep: every hour, drop rows
@@ -1330,6 +1424,26 @@ fn responses_session_store(state: &AppState) -> Option<ResponsesSessionStore> {
             }
         })
         .clone()
+}
+
+#[cfg(not(test))]
+fn responses_sessions_db_path() -> Option<std::path::PathBuf> {
+    Some(
+        dirs::home_dir()?
+            .join(".localrouter")
+            .join("responses-sessions")
+            .join("sessions.db"),
+    )
+}
+
+/// Tests keep their sessions out of the user's data directory.
+#[cfg(test)]
+fn responses_sessions_db_path() -> Option<std::path::PathBuf> {
+    Some(
+        std::env::temp_dir()
+            .join(format!("lr-responses-sessions-test-{}", Uuid::new_v4()))
+            .join("sessions.db"),
+    )
 }
 
 // ============================================================================
@@ -1416,6 +1530,10 @@ fn select_wire_body(
     }
     body
 }
+
+#[cfg(test)]
+#[path = "responses_tests.rs"]
+mod route_tests;
 
 #[cfg(test)]
 mod tests {

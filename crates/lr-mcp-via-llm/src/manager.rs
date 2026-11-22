@@ -409,14 +409,17 @@ impl McpViaLlmManager {
         guardrail_gate: Option<GuardrailGate>,
         llm_call_event_id: Option<String>,
         monitor_session_id: Option<String>,
-        explicit_session_key: Option<String>,
+        options: TurnOptions,
     ) -> Result<lr_providers::CompletionResponse, McpViaLlmError> {
         let config = self.config();
         let session = self.get_or_create_session(
             &client.id,
             Some(&request.messages),
-            explicit_session_key.as_deref(),
+            options.resume_session_key.as_deref(),
         );
+        if let Some(key) = options.session_key {
+            session.write().explicit_key = Some(key);
+        }
         let memory_svc = self.memory_service();
 
         // Store client message hashes for future session matching (BEFORE reconstruction)
@@ -614,7 +617,7 @@ impl McpViaLlmManager {
         guardrail_gate: Option<GuardrailGate>,
         llm_call_event_id: Option<String>,
         monitor_session_id: Option<String>,
-        explicit_session_key: Option<String>,
+        options: TurnOptions,
     ) -> Result<
         std::pin::Pin<
             Box<
@@ -628,8 +631,11 @@ impl McpViaLlmManager {
         let session = self.get_or_create_session(
             &client.id,
             Some(&request.messages),
-            explicit_session_key.as_deref(),
+            options.resume_session_key.as_deref(),
         );
+        if let Some(key) = options.session_key {
+            session.write().explicit_key = Some(key);
+        }
         let memory_svc = self.memory_service();
 
         // Store client message hashes for future session matching (BEFORE reconstruction)
@@ -779,6 +785,7 @@ impl McpViaLlmManager {
             monitor_emit,
             monitor_update,
             llm_call_event_id,
+            options.withhold_tool_call_deltas,
         )
         .await
     }
@@ -853,6 +860,27 @@ fn response_to_chunk(response: &lr_providers::CompletionResponse) -> lr_provider
         usage: None,
         provider: None,
     }
+}
+
+/// Per-turn options an endpoint adapter passes to the orchestrator.
+///
+/// The default is what `/v1/chat/completions` uses: sessions are matched by
+/// message hashes and streamed chunks are forwarded as they arrive.
+#[derive(Debug, Clone, Default)]
+pub struct TurnOptions {
+    /// Deterministic key to find the session by, ahead of hash matching. The
+    /// Responses API passes `previous_response_id`.
+    pub resume_session_key: Option<String>,
+    /// Key the session carries once this turn has started, so the next turn
+    /// can name it in `resume_session_key`. The Responses API passes the id
+    /// of the response being produced.
+    pub session_key: Option<String>,
+    /// Streaming only. Hold tool-call deltas back until the calls have been
+    /// classified: calls the gateway executes are never sent, and calls the
+    /// client owns are sent once, complete, with the finish reason. For wire
+    /// formats where every forwarded tool call becomes an item the client is
+    /// expected to answer.
+    pub withhold_tool_call_deltas: bool,
 }
 
 /// A gate that must resolve before the orchestrator may execute tools or return a response.

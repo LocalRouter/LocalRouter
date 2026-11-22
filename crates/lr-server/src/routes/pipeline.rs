@@ -277,6 +277,7 @@ pub(crate) async fn apply_model_access_checks(
     request: &mut ChatCompletionRequest,
     llm_guard: &mut super::monitor_helpers::LlmCallGuard,
     is_duplicate: bool,
+    endpoint: &str,
 ) -> ApiResult<()> {
     // Normalize auto model name: bare "auto" or custom model_name →
     // "localrouter/auto" so all downstream hardcoded checks work
@@ -356,7 +357,7 @@ pub(crate) async fn apply_model_access_checks(
                         auto_config,
                         request_json,
                         is_mcp_via_llm,
-                        "/v1/chat/completions",
+                        endpoint,
                         llm_guard,
                     )
                     .await?
@@ -405,8 +406,9 @@ pub(crate) async fn apply_model_access_checks(
     }
 
     // Per-model firewall permission (skipped for auto-routing and
-    // for MCP-via-LLM clients — those get their own firewall pass
-    // once MCP tools are injected into the augmented request).
+    // for MCP-via-LLM clients — those get their own firewall pass,
+    // `check_mcp_via_llm_model_firewall`, which shows the request with
+    // the MCP tools injected).
     if request.model != "localrouter/auto" {
         let is_mcp_via_llm_client = client_auth
             .as_ref()
@@ -564,6 +566,73 @@ pub(crate) async fn check_model_firewall_permission(
         session_id,
     )
     .await
+}
+
+/// Model firewall pass for an MCP-via-LLM turn, shared by every endpoint that
+/// hands a turn to the orchestrator.
+///
+/// `apply_model_access_checks` skips the per-model check for these clients so
+/// that the approval popup can show the request as the model will receive it:
+/// with the gateway's MCP tools injected. Edits the user makes in the popup
+/// are applied to `request`, and `provider_request` is rebuilt from it so the
+/// edits reach the provider. A no-op for `localrouter/auto`, whose approval
+/// is the auto-router popup.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn check_mcp_via_llm_model_firewall(
+    state: &AppState,
+    client_context: Option<&ClientAuthContext>,
+    client: &lr_config::Client,
+    strategy: &lr_config::Strategy,
+    allowed_servers: &[String],
+    request: &mut ChatCompletionRequest,
+    provider_request: &mut ProviderCompletionRequest,
+    session_id: &str,
+) -> ApiResult<()> {
+    if request.model == "localrouter/auto" {
+        return Ok(());
+    }
+
+    // Always `Some`, so the popup is marked as MCP-via-LLM even when the
+    // tool pre-fetch fails.
+    let mcp_tools_json = Some(
+        match state
+            .mcp_via_llm_manager
+            .list_tools_for_preview(state.mcp_gateway.clone(), client, allowed_servers.to_vec())
+            .await
+        {
+            Ok(tools) => tools,
+            Err(e) => {
+                tracing::warn!(
+                    "MCP via LLM: failed to pre-fetch tools for firewall popup: {}",
+                    e
+                );
+                serde_json::json!([])
+            }
+        },
+    );
+
+    let strategy_permission = strategy
+        .auto_config
+        .as_ref()
+        .map(|ac| ac.permission.clone());
+
+    let edits = check_model_firewall_permission(
+        state,
+        client_context,
+        request,
+        mcp_tools_json,
+        strategy_permission,
+        session_id,
+    )
+    .await?;
+
+    if let Some(edits) = edits {
+        apply_firewall_request_edits(request, &edits);
+        let mut rebuilt = convert_to_provider_request(request)?;
+        rebuilt.pre_computed_routing = provider_request.pre_computed_routing.take();
+        *provider_request = rebuilt;
+    }
+    Ok(())
 }
 
 /// Per-model firewall check for any request shape.
@@ -2724,6 +2793,7 @@ pub(crate) async fn run_turn_pipeline(
         &mut chat_req,
         llm_guard,
         is_duplicate,
+        endpoint,
     )
     .await?;
 
