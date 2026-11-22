@@ -9,7 +9,6 @@ use crate::bodies;
 use crate::types::UsageReport;
 
 const CLAUDE_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
-const CLAUDE_PROFILE_URL: &str = "https://api.anthropic.com/api/oauth/profile";
 const CODEX_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
 const COPILOT_USER_URL: &str = "https://api.github.com/copilot_internal/user";
 
@@ -111,22 +110,6 @@ pub async fn fetch_claude_usage(
     )
     .await?;
     bodies::parse_claude_usage(&body).ok_or(FetchError::Unrecognized)
-}
-
-/// Claude plan tier (`/api/oauth/profile`).
-pub async fn fetch_claude_plan(
-    client: &reqwest::Client,
-    token: &str,
-) -> Result<Option<String>, FetchError> {
-    let body = get_json(
-        client
-            .get(CLAUDE_PROFILE_URL)
-            .bearer_auth(token)
-            .header("anthropic-beta", "oauth-2025-04-20")
-            .header("Accept", "application/json"),
-    )
-    .await?;
-    Ok(bodies::parse_claude_profile(&body))
 }
 
 /// ChatGPT subscription usage (`/backend-api/wham/usage`).
