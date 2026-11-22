@@ -5,12 +5,13 @@
  * Sources: VocalCord (MCP Events, push + poll, one webhook-only type),
  * NetGet (Claude Channels and events), a billing server that offers only
  * webhooks (shown as not supported), Home Assistant (poll only), Build Alerts
- * (push), and the existing demo servers, which offer no push or are not known yet.
+ * (push), Filesystem (classic resource subscriptions, the `resource.updated` event type),
+ * and the existing demo servers, which offer no push or are not known yet.
  *
  * Live status (`get_mcp_server_push_status`, `mockPushStatusFor`): VocalCord is
  * listening via push stream with events received, Home Assistant is polling with
  * no events yet, NetGet's stream is reconnecting after an error, and Build Alerts
- * is not listened to (no client is consuming it).
+ * is not listened to (no client is consuming it). Filesystem holds one resource subscription.
  */
 import type {
   ClientPushSettings,
@@ -113,7 +114,7 @@ export const mockPushSources: PushSourceInfo[] = [
     ],
   },
   { server_id: 'mcp-github', server_name: 'GitHub', enabled: true, snapshot_status: 'current', protocol_version: '2025-06-18', observed_at: minutesAgo(600), channels: false, resource_subscribe: false, has_consumable_push: false, receiving_clients: 0, events: [] },
-  { server_id: 'mcp-filesystem', server_name: 'Filesystem', enabled: true, snapshot_status: 'current', protocol_version: '2025-03-26', observed_at: minutesAgo(900), channels: false, resource_subscribe: true, has_consumable_push: false, receiving_clients: 0, events: [] },
+  { server_id: 'mcp-filesystem', server_name: 'Filesystem', enabled: true, snapshot_status: 'current', protocol_version: '2025-03-26', observed_at: minutesAgo(900), channels: false, resource_subscribe: true, has_consumable_push: true, receiving_clients: 0, events: [] },
   { server_id: 'mcp-slack', server_name: 'Slack', enabled: true, snapshot_status: 'none', protocol_version: null, observed_at: null, channels: false, resource_subscribe: false, has_consumable_push: false, receiving_clients: 0, events: [] },
   { server_id: 'mcp-postgres', server_name: 'PostgreSQL', enabled: false, snapshot_status: 'none', protocol_version: null, observed_at: null, channels: false, resource_subscribe: false, has_consumable_push: false, receiving_clients: 0, events: [] },
   { server_id: 'mcp-browser', server_name: 'Browser Control', enabled: true, snapshot_status: 'current', protocol_version: '2025-06-18', observed_at: minutesAgo(75), channels: false, resource_subscribe: false, has_consumable_push: false, receiving_clients: 0, events: [] },
@@ -156,11 +157,12 @@ export function mockEffectivePush(permissions: PushPermissions, serverId: string
 
 /**
  * The sources with `receiving_clients` counted the way the Rust command does: clients with
- * MCP access and a permission other than Off for a supported event type or channel messages.
+ * MCP access and a permission other than Off for a supported event type, channel messages or
+ * resource updates.
  */
 export function mockPushSourcesFor(clients: { id: string; mcpAccess: (serverId: string) => boolean }[]): PushSourceInfo[] {
   return mockPushSources.map((s) => {
-    const names = [...s.events.filter((e) => e.supported).map((e) => e.name), ...(s.channels ? ['channel.message'] : [])]
+    const names = [...s.events.filter((e) => e.supported).map((e) => e.name), ...(s.channels ? ['channel.message'] : []), ...(s.resource_subscribe ? ['resource.updated'] : [])]
     const receiving_clients = !s.enabled || names.length === 0 ? 0 : clients.filter((c) =>
       c.mcpAccess(s.server_id)
       && names.some((n) => mockEffectivePush(clientPush(c.id).permissions, s.server_id, n) !== 'off'),
@@ -273,6 +275,13 @@ export function mockPushStatusFor(serverId: string, receivingClients: number): M
         ? {
             ...base, consuming_clients: 1, consuming_sessions: 1,
             event_types: [{ event: 'intercept.parked', ingress_mode: 'push', state: 'reconnecting', last_error: 'upstream stream ended', subscriptions: 1, events_received: 0, last_event_at: null }],
+          }
+        : base
+    case 'mcp-filesystem':
+      return live
+        ? {
+            ...base, listening: true, consuming_clients: 1, consuming_sessions: 1,
+            event_types: [{ event: 'resource.updated', ingress_mode: 'resource', state: 'listening', last_error: null, subscriptions: 1, events_received: 0, last_event_at: null }],
           }
         : base
     default:

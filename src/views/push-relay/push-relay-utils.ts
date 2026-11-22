@@ -74,6 +74,7 @@ const INGRESS_LABELS: Record<NonNullable<PushEventIngressStatus["ingress_mode"]>
   push: "push stream",
   poll: "polling",
   channel: "Claude Code channel",
+  resource: "resource subscription",
 }
 
 function plural(n: number, word: string): string {

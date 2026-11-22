@@ -45,6 +45,7 @@ function sourceSummary(source: PushSourceInfo): string {
   const supported = source.events.filter((e) => e.supported).length
   if (supported > 0) parts.push(`${supported} event type${supported === 1 ? "" : "s"}`)
   if (source.channels) parts.push("Claude Channels")
+  if (source.resource_subscribe) parts.push("resource updates")
   return parts.join(" · ")
 }
 
@@ -174,7 +175,7 @@ export function PushPermissionTree({ clientId, sources, settings, onUpdate, disa
       )}
       disabled={saving || disabled}
       globalLabel="All push sources"
-      emptyMessage="No upstream MCP server offers push yet. Servers appear here once LocalRouter has seen them offer events or Claude Channels."
+      emptyMessage="No upstream MCP server offers push yet. Servers appear here once LocalRouter has seen them offer events, Claude Channels or resource subscriptions."
       defaultExpanded
       searchable={nodes.length > 5}
       searchPlaceholder="Search servers and event types..."

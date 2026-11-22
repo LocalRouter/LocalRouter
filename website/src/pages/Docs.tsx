@@ -201,6 +201,7 @@ export const sections: DocSection[] = [
       { id: 'push-relay-fallback-tools', title: 'Fallback Tools' },
       { id: 'push-relay-client-setup', title: 'Per-Client Setup', children: [
         { id: 'push-relay-claude-code', title: 'Claude Code (STDIO Bridge + Channels)' },
+        { id: 'push-relay-permission-relay', title: 'Claude Code Permission Prompts' },
         { id: 'push-relay-openclaw', title: 'OpenClaw (Webhook)' },
         { id: 'push-relay-other-clients', title: 'Codex, Cursor and Others' },
       ]},

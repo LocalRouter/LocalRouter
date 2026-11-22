@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test'
 import type { McpServerPushStatus, PushEventDecision, PushEventIngressStatus, PushSourceInfo } from '../../../src/types/tauri-commands'
-import { PUSH_DECISION_LABELS, pushDecisionDelivered, pushDecisionLabel, pushPayloadEdited } from '../../../src/views/monitor/push-event'
+import { PUSH_DECISION_LABELS, PUSH_EGRESS_LABELS, PUSH_INGRESS_LABELS, pushDecisionDelivered, pushDecisionLabel, pushPayloadEdited } from '../../../src/views/monitor/push-event'
 import { formatRelativeTime } from '../../../src/views/push-relay/format'
 import {
   capabilitiesFooter,
@@ -76,6 +76,12 @@ test('the live status line is green only while LocalRouter actually listens', ()
     event_types: [ingress({ ingress_mode: 'poll', state: 'listening', subscriptions: 1 })],
   }), 'allow', now)).toEqual({ tone: 'listening', text: 'Listening via polling · no events yet · 1 client' })
 
+  // A resource update is listened to through a held resources/subscribe
+  expect(pushLiveLine(pushing, status({
+    listening: true, consuming_clients: 1,
+    event_types: [ingress({ event: 'resource.updated', ingress_mode: 'resource', state: 'listening', subscriptions: 1 })],
+  }), 'allow', now)).toEqual({ tone: 'listening', text: 'Listening via resource subscription · no events yet · 1 client' })
+
   const reconnecting = status({
     event_types: [ingress({ ingress_mode: 'push', state: 'reconnecting', last_error: 'upstream stream ended', subscriptions: 1 })],
   })
@@ -124,6 +130,11 @@ test('Monitor push records label every decision and detect edits structurally', 
   expect(pushPayloadEdited({ a: 1, b: 2 }, { b: 2, a: 1 })).toBe(false)
   expect(pushPayloadEdited({ text: 'x' }, { text: 'y' })).toBe(true)
   expect(pushPayloadEdited({ text: 'x' }, undefined)).toBe(false)
+  // Every ingress and egress the relay records has a label: resource updates,
+  // and a Claude Code permission prompt relayed from the client
+  for (const mode of ['push', 'poll', 'channel', 'resource', 'client', 'test']) expect(PUSH_INGRESS_LABELS[mode]).toBeTruthy()
+  for (const mode of ['stream', 'poll', 'channel', 'webhook', 'tools', 'resource']) expect(PUSH_EGRESS_LABELS[mode]).toBeTruthy()
+  expect(PUSH_INGRESS_LABELS.client).toBe('Claude Code permission prompt')
 })
 
 test('relative times read naturally in both directions', () => {
