@@ -9,11 +9,13 @@ and WS caps to 256 MiB after a ~67 MB Codex conversation failed against 16 MiB /
 ## Task checklist
 
 - [ ] 0. Save this plan (copy-plan.sh) and keep this checklist current.
-- [ ] 1.1 Phase-1 prerequisites: fixtures + verification spikes (chunked upstream acceptance,
+- [x] 1.1 Phase-1 prerequisites: fixtures + verification spikes (chunked upstream acceptance,
       real key order of Codex/Claude Code requests, hyper size_hint → Content-Length behaviour).
-- [ ] 1.2 Phase 1a: header-time BodyPolicy; pass-through streaming for uninspected requests
+      Done with limits, see "Step 1.1 results": chunked acceptance shown at the edge only;
+      Codex order from public source only; Claude Code order unverified; no captured fixtures.
+- [x] 1.2 Phase 1a: header-time BodyPolicy; pass-through streaming for uninspected requests
       (MITM non-LLM paths, duplicate hops when not protecting, passive interceptor, reverse-proxy
-      non-LLM paths); bounded monitor capture for them.
+      non-LLM paths); bounded monitor capture for them. See "Step 1.2 as built".
 - [ ] 1.3 Phase 1b: incremental JSON lexer + metadata sniffer (order-independent).
 - [ ] 1.4 Phase 1b: streaming content-decoding (zstd/gzip/deflate/br) with decoded-byte budget.
 - [ ] 1.5 Phase 1b: two-cursor lag-window pipeline (head detect, tail mask/emit), gates.
@@ -23,7 +25,7 @@ and WS caps to 256 MiB after a ~67 MB Codex conversation failed against 16 MiB /
 - [ ] 1.8 Phase 1b: Off/Notify/Redact wiring in AppFirewall via a new streaming policy API;
       Ask / model-Ask / guardrails / late-model-restricted keep the buffered path.
 - [ ] 1.9 Phase 1b: monitor: bounded capture, sniffer metadata, streaming Correlation hasher;
-      remove repeated full parses; fix stale interceptor.rs doc.
+      remove repeated full parses; fix stale interceptor.rs doc (doc fixed in 1.2).
 - [ ] 1.10 Phase 1 tests (unit, parity, security invariants, TLS e2e, memory bound).
 - [ ] 2. Phase 2: WebSocket per-message streaming (frame-level decoder, incremental re-fragmenting),
       optional zstd re-encode of HTTP upstream body.
@@ -684,9 +686,105 @@ secret_placeholders.rs and gateway_json.rs, and make the unreachable fail-open b
   bodies`), a normal push to the configured upstream, preserving unrelated changes and including
   automatic `modelsdev_raw.json` updates.
 
+## Step 1.1 results (2026-11-21)
+
+**Chunked request bodies.** Probed each upstream directly (not through LocalRouter) over
+HTTP/1.1 with an unauthenticated, content-free `POST`: body `{}` with `Content-Length`, the same
+with `Transfer-Encoding: chunked`, and a 200 KB whitespace-padded `{ }` sent chunked.
+
+| Upstream | Content-Length | chunked `{}` | chunked 200 KB |
+|---|---|---|---|
+| `api.openai.com/v1/responses` | 401 | 401 | 401 |
+| `chatgpt.com/backend-api/codex/responses` | 401 | 401 | 401 |
+| `api.anthropic.com/v1/messages` | 401 | 401 | 401 |
+
+Re-run on 2026-11-21 for the `{}` cases (direct, `--noproxy`, generic User-Agent, no
+credentials): same six 401s.
+
+All nine answered with the ordinary authentication error and no 411/400 about length, and the
+chunked 200 KB bodies were accepted in full before the answer. This shows the edge of each host
+accepts chunked HTTP/1.1 requests. It does **not** show that the authenticated path does: the 401
+is produced before the request is routed to the model backend, which may impose its own framing
+rules, and no body near the sizes that matter (tens of MiB) was sent. Treat chunked acceptance as
+likely, not proven; the per-host "length-required" fallback of §3.9 stays in the design until a
+transformed request has gone through with real credentials (step 1.10 live run).
+
+**hyper and Content-Length.** Confirmed by test
+(`tap::tests::hyper_keeps_content_length_for_an_exact_size_hint`): hyper's HTTP/1.1 client sends
+`Content-Length` for a body whose `size_hint` is exact and `Transfer-Encoding: chunked` for one
+whose hint is unknown. `Incoming` reports an exact hint for a request that had a Content-Length,
+so pass-through keeps the client's framing in both cases (asserted end to end over TLS).
+
+**Key order.**
+- Codex, from its public source at `rust-v0.124.0` (`codex-api/src/common.rs`):
+  `ResponsesApiRequest` declares `model, instructions, input, tools, tool_choice,
+  parallel_tool_calls, reasoning, store, stream, include, service_tier, prompt_cache_key, text,
+  client_metadata`; the websocket `ResponseCreateWsRequest` adds `previous_response_id` after
+  `instructions` and `generate` before `client_metadata`, under a `type` tag. Both transports
+  serialize through `serde_json::to_value` first (`endpoint/responses.rs:82`,
+  `endpoint/responses_websocket.rs:226`). The wire order therefore equals the declaration order
+  only when `serde_json/preserve_order` is enabled in the build — `codex-tui` enables it, and the
+  shipped `codex` binary links it. A build without it emits keys alphabetically, which puts
+  `model` **after** `input` and `instructions`. So `model` first and `stream` after `input` is
+  the expected order for the installed CLI, not a guarantee. Not verified against captured
+  traffic, nor for Codex releases newer than the pinned tag.
+- Claude Code: **still unverified.** The repository holds no captured request, and the client's
+  request construction is not public. The model gate must keep working for `model` in any
+  position.
+
+The synthetic generators (`crates/lr-proxy/tests/support/mod.rs`) write Responses bodies in the
+Codex declaration order and can move `model` last.
+
+## Step 1.2 as built
+
+Types in `crates/lr-proxy/src/interceptor.rs`: `RequestHead<'a>`, `BodyPolicy`
+(`PassThrough`, `Reject(u16, String)`, `Stream(StreamPolicy)`, `Buffered`), `StreamPolicy`,
+`StreamMasking`, `BoundedCapture`, `ObservedExchange::request_capture`.
+`ProxyInterceptor::body_policy`, `ReverseRecorder::body_policy` and `Firewall::body_policy` all
+default to `Buffered`. Both transports treat `Stream` as `Buffered`.
+
+- **Who passes through.** `ActiveInterceptor::body_policy` mirrors the two early returns of its
+  `on_request`: a duplicate hop when secrets are not protected, and a path `wire::detect` does not
+  recognize. Image paths stay `Buffered` (whether they are inspected depends on the body), and a
+  `PassThrough` from the firewall for a recognized LLM path is downgraded to `Buffered`, because
+  the firewall still evaluates every such request. `PassiveInterceptor` and `NoopRecorder` pass
+  everything through. Websocket upgrades never consult the policy.
+- **Duplicate hops** cannot occur on the wire today: `stamp_trace` resets every inbound hop claim
+  to 1. That pass-through case is implemented and unit-tested, and unreachable until a trusted
+  hand-off exists.
+- **Header-time rejects** in `AppFirewall::body_policy`: unknown client, disabled client or one
+  outside a proxy mode, missing strategy, an undecodable `Content-Encoding` while a model or
+  GuardRails restriction needs the body (415), LLM access Off, and an exceeded rate limit. Two
+  cases the buffered path does not refuse are deliberately left `Buffered`: deleting or cancelling
+  a stored response while access is Off, and any retrieval while rate limited. A request refused
+  for two reasons can get a different status than before (a rate-limited request for a model that
+  is not allowed answers 429, not 403); it is refused either way.
+- **A refused upload is drained**, not reset: the body is read and discarded (bounded head kept
+  for the monitor, at most the transport's request limit read) so the client can read the
+  refusal, which clients such as Codex show verbatim. A client that sent `Expect: 100-continue`
+  is answered at once.
+- **`on_request` is still called for pass-through**, with `request_body: None` and
+  `request_capture: Some(empty)`, so path-only side effects (the unsupported-endpoint warning)
+  keep working. Only `Forward` and `Reject` are honored; a rewrite answers 500 and nothing is
+  forwarded. If the policy changed between the two calls so that the firewall would now judge the
+  request, `ActiveInterceptor` answers 503 instead of evaluating a body it never read.
+- **Monitor.** Content is captured only on recognized LLM paths (head ≤ 256 KiB, `RAW_CAP`);
+  other paths record the forwarded length as `bytes_sent` on their passthrough event and no
+  content. The pending event of a pass-through LLM request opens without a request half;
+  `PassiveInterceptor::complete` fills it in (and correlates the conversation) from the capture
+  when it holds the whole identity-encoded body. A truncated capture is shown as raw text with
+  the truncation marker and is not parsed; a content-encoded one is described by length only.
+  Decoding and metadata for those arrive with steps 1.4 and 1.9. Until then a passive-mode LLM
+  request above 256 KiB (or content-encoded) shows no requested model, message count or tools,
+  and is not correlated into a conversation; the response half is recorded as before.
+- **Limits.** Pass-through has no size limit on either proxy. Buffered requests keep theirs
+  (256 MiB MITM, 16 MiB reverse proxy).
+
 ## Open questions / uncertainties
-1. Do api.openai.com, chatgpt.com and api.anthropic.com accept chunked request bodies? (step 1.1)
-2. What key order do Codex and Claude Code actually use? It affects hold sizes, not correctness.
+1. Do api.openai.com, chatgpt.com and api.anthropic.com accept chunked request bodies on the
+   authenticated path, at large sizes? The edge accepts them (step 1.1 results above).
+2. What key order does Claude Code use, and does the installed Codex match its source order?
+   It affects hold sizes, not correctness.
 3. Do all scanner rules have a bounded match span? (step 1.6 audit)
 4. Does the secret popup UI tolerate `request_json: None`?
 5. Is the S1 terminal-usage loss for responses > 1 MiB real in practice? Is the R1 Ollama blob 413
