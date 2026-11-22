@@ -1099,6 +1099,41 @@ mod session_matching_tests {
     }
 
     #[test]
+    fn reconstruct_keeps_a_system_message_first_sent_on_a_later_turn() {
+        // Turn 1 had no system message; the only one in the history is the
+        // gateway's injected instructions, which are stripped.
+        let full = vec![
+            msg("system", "gateway instructions"),
+            msg("user", "list files"),
+            msg("assistant", "calling a tool"),
+            msg("tool", "a.txt"),
+            msg("assistant", "a.txt"),
+        ];
+        let incoming = vec![
+            msg("system", "Be brief"),
+            msg("user", "list files"),
+            msg("assistant", "a.txt"),
+            msg("user", "and now?"),
+        ];
+
+        let result = reconstruct_history(&full, &incoming, Some("gateway instructions"));
+
+        let texts: Vec<String> = result.iter().map(|m| m.content.as_text()).collect();
+        assert_eq!(
+            texts,
+            [
+                "Be brief",
+                "list files",
+                "calling a tool",
+                "a.txt",
+                "a.txt",
+                "and now?"
+            ]
+        );
+        assert_eq!(result[0].role, "system");
+    }
+
+    #[test]
     fn reconstruct_injects_hidden_mcp_messages() {
         // Turn 1 full history: [sys, user1, asst_tools, tool_result, asst_final]
         let full = vec![
