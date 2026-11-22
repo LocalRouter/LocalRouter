@@ -2,28 +2,11 @@ import { SectionedText } from "@/components/shared/SectionedText"
 import { PagedItems } from "@/components/shared/PagedItems"
 import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import type { ShowApprovalPopupParams, ShowApprovalPopupResult } from "@/types/tauri-commands"
+import type { GetSamplingApprovalDetailsParams, SamplingApprovalDetails, ShowApprovalPopupParams, ShowApprovalPopupResult, SubmitSamplingApprovalParams } from "@/types/tauri-commands"
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow"
 import { LogicalSize } from "@tauri-apps/api/dpi"
 import { Button } from "@/components/ui/Button"
 import { ProvidersIcon } from "@/components/icons/category-icons"
-
-interface SamplingMessagePreview {
-  role: string
-  content: string
-}
-
-interface SamplingApprovalDetails {
-  request_id: string
-  server_id: string
-  message_count: number
-  system_prompt: string | null
-  messages_preview: SamplingMessagePreview[]
-  model_preferences: unknown | null
-  max_tokens: number | null
-  timeout_seconds: number
-  created_at_secs_ago: number
-}
 
 export function SamplingApproval() {
   const [details, setDetails] = useState<SamplingApprovalDetails | null>(null)
@@ -41,7 +24,7 @@ export function SamplingApproval() {
 
         const result = await invoke<SamplingApprovalDetails>("get_sampling_approval_details", {
           requestId,
-        })
+        } satisfies GetSamplingApprovalDetailsParams)
         setDetails(result)
 
         // Resize and show window
@@ -92,7 +75,7 @@ export function SamplingApproval() {
       await invoke("submit_sampling_approval", {
         requestId: details.request_id,
         action,
-      })
+      } satisfies SubmitSamplingApprovalParams)
       await getCurrentWebviewWindow().close()
     } catch (err) {
       console.error("Failed to submit sampling approval:", err)
