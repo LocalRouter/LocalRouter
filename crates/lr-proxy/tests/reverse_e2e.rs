@@ -650,3 +650,204 @@ async fn passive_forwarding_preserves_encoded_bytes_and_integrity_headers() {
 async fn active_unchanged_compressed_json_is_inspected_and_forwarded_exactly() {
     unchanged_forwarding(true).await;
 }
+
+mod support;
+
+/// A provider that reads each request body without keeping it and reports
+/// the headers and the length it saw.
+async fn start_counting_upstream() -> (u16, tokio::sync::mpsc::Receiver<(hyper::HeaderMap, u64)>) {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = tokio::sync::mpsc::channel(4);
+    tokio::spawn(async move {
+        loop {
+            let Ok((tcp, _)) = listener.accept().await else {
+                break;
+            };
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let service = service_fn(move |req: Request<hyper::body::Incoming>| {
+                    let tx = tx.clone();
+                    async move {
+                        let headers = req.headers().clone();
+                        let mut body = req.into_body();
+                        let mut len = 0u64;
+                        while let Some(frame) = body.frame().await {
+                            if let Ok(data) = frame.unwrap().into_data() {
+                                len += data.len() as u64;
+                            }
+                        }
+                        tx.send((headers, len)).await.unwrap();
+                        Ok::<_, Infallible>(
+                            Response::builder()
+                                .status(201)
+                                .body(Full::new(Bytes::new()))
+                                .unwrap(),
+                        )
+                    }
+                });
+                hyper::server::conn::http1::Builder::new()
+                    .serve_connection(TokioIo::new(tcp), service)
+                    .await
+                    .ok();
+            });
+        }
+    });
+    (port, rx)
+}
+
+/// Send one request with an arbitrary body; returns status and body text.
+async fn request_body<B>(port: u16, path: &str, body: B) -> (u16, String)
+where
+    B: hyper::body::Body<Data = Bytes> + Send + 'static,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+    let request = Request::builder()
+        .method("POST")
+        .uri(path)
+        .header("host", "127.0.0.1")
+        .body(body)
+        .unwrap();
+    let response = sender.send_request(request).await.unwrap();
+    let status = response.status().as_u16();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (status, String::from_utf8_lossy(&bytes).to_string())
+}
+
+/// The app's recorder shape: an active interceptor over a firewall with a
+/// fixed header-time answer, which must never be handed a body it did not ask
+/// to buffer.
+struct HeadPolicy(lr_proxy::interceptor::BodyPolicy);
+
+#[async_trait::async_trait]
+impl lr_proxy::active::Firewall for HeadPolicy {
+    fn body_policy(
+        &self,
+        _: &lr_proxy::interceptor::RequestHead<'_>,
+    ) -> lr_proxy::interceptor::BodyPolicy {
+        self.0.clone()
+    }
+    async fn evaluate(
+        &self,
+        _: &lr_proxy::active::FirewallRequest,
+    ) -> lr_proxy::interceptor::RequestAction {
+        assert_eq!(
+            self.0,
+            lr_proxy::interceptor::BodyPolicy::Buffered,
+            "only buffered requests are evaluated"
+        );
+        lr_proxy::interceptor::RequestAction::Forward
+    }
+}
+
+fn active_recorder(policy: lr_proxy::interceptor::BodyPolicy) -> Arc<dyn ReverseRecorder> {
+    Arc::new(lr_proxy::active::ActiveInterceptor::new(
+        lr_proxy::passive::PassiveInterceptor::new(Arc::new(lr_monitor::MonitorEventStore::new(
+            16,
+        ))),
+        Arc::new(HeadPolicy(policy)),
+    ))
+}
+
+const BLOB_PATH: &str =
+    "/api/blobs/sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+
+/// `ollama create` uploads model blobs through the wrapped port. They are not
+/// LLM calls, so they are forwarded as they arrive, whatever their size —
+/// here four times the limit a buffered request has.
+#[tokio::test]
+async fn blob_uploads_are_forwarded_without_buffering() {
+    const TOTAL: u64 = 64 * 1024 * 1024;
+    let (upstream_port, mut seen) = start_counting_upstream().await;
+    // A firewall that would refuse every LLM call is never asked about a blob.
+    let (port, _shutdown) = start_reverse(
+        upstream_port,
+        active_recorder(lr_proxy::interceptor::BodyPolicy::Reject(403, "no".into())),
+    )
+    .await;
+    let (status, _) = request_body(
+        port,
+        BLOB_PATH,
+        support::SizedBody::new(support::filler(TOTAL, 64 * 1024), TOTAL),
+    )
+    .await;
+    assert_eq!(status, 201);
+    let (headers, len) = seen.recv().await.unwrap();
+    assert_eq!(len, TOTAL);
+    assert_eq!(headers["content-length"], TOTAL.to_string().as_str());
+    assert!(headers.get("transfer-encoding").is_none());
+
+    // A chunked upload stays chunked.
+    let chunks = support::filler(3 * 1024 * 1024, 64 * 1024)
+        .map(|chunk| Ok::<_, Infallible>(Frame::data(chunk)));
+    let (status, _) = request_body(
+        port,
+        BLOB_PATH,
+        StreamBody::new(futures::stream::iter(chunks)),
+    )
+    .await;
+    assert_eq!(status, 201);
+    let (headers, len) = seen.recv().await.unwrap();
+    assert_eq!(len, 3 * 1024 * 1024);
+    assert_eq!(headers["transfer-encoding"], "chunked");
+    assert!(headers.get("content-length").is_none());
+}
+
+/// LLM paths are inspected, so they are still buffered and still limited.
+#[tokio::test]
+async fn inspected_reverse_paths_keep_the_buffered_limit() {
+    const TOTAL: u64 = 17 * 1024 * 1024;
+    let upstream = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let upstream_port = upstream.local_addr().unwrap().port();
+    let (port, _shutdown) = start_reverse(
+        upstream_port,
+        active_recorder(lr_proxy::interceptor::BodyPolicy::Buffered),
+    )
+    .await;
+    let (status, body) = request_body(
+        port,
+        "/api/chat",
+        support::SizedBody::new(support::filler(TOTAL, 64 * 1024), TOTAL),
+    )
+    .await;
+    assert_eq!(status, 413, "{body}");
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(50), upstream.accept())
+            .await
+            .is_err()
+    );
+}
+
+/// A refusal decided from the head answers the caller after its upload,
+/// without the provider seeing anything.
+#[tokio::test]
+async fn reverse_header_time_rejects_do_not_contact_the_provider() {
+    let upstream = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let upstream_port = upstream.local_addr().unwrap().port();
+    let (port, _shutdown) = start_reverse(
+        upstream_port,
+        active_recorder(lr_proxy::interceptor::BodyPolicy::Reject(
+            429,
+            "Rate limit exceeded (requests)".into(),
+        )),
+    )
+    .await;
+    let conversation = support::SyntheticConversation::messages(1024 * 1024);
+    let (status, body) = request_body(port, "/api/chat", conversation.body()).await;
+    assert_eq!(status, 429, "{body}");
+    let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(body["error"]["type"], "localrouter_firewall");
+    assert_eq!(body["error"]["message"], "Rate limit exceeded (requests)");
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(50), upstream.accept())
+            .await
+            .is_err()
+    );
+}
