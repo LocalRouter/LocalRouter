@@ -14,8 +14,8 @@ and WS caps to 256 MiB after a ~67 MB Codex conversation failed against 16 MiB /
 - [ ] 1.2 Phase 1a: header-time BodyPolicy; pass-through streaming for uninspected requests
       (MITM non-LLM paths, duplicate hops when not protecting, passive interceptor, reverse-proxy
       non-LLM paths); bounded monitor capture for them.
-- [ ] 1.3 Phase 1b: incremental JSON lexer + metadata sniffer (order-independent).
-- [ ] 1.4 Phase 1b: streaming content-decoding (zstd/gzip/deflate/br) with decoded-byte budget.
+- [x] 1.3 Phase 1b: incremental JSON lexer + metadata sniffer (order-independent).
+- [x] 1.4 Phase 1b: streaming content-decoding (zstd/gzip/deflate/br) with decoded-byte budget.
 - [ ] 1.5 Phase 1b: two-cursor lag-window pipeline (head detect, tail mask/emit), gates.
 - [ ] 1.6 Phase 1b: streaming detection with parity to extract_request_text + scanner.
 - [ ] 1.7 Phase 1b: streaming known-original masking (reuse encoding::rewrite_mask windows,
@@ -691,3 +691,57 @@ secret_placeholders.rs and gateway_json.rs, and make the unreachable fail-open b
 4. Does the secret popup UI tolerate `request_json: None`?
 5. Is the S1 terminal-usage loss for responses > 1 MiB real in practice? Is the R1 Ollama blob 413
    real?
+
+## API produced by steps 1.3 and 1.4 (input to 1.5–1.9)
+
+### 1.3 `lr_secret_scanner::request_stream` (crates/lr-secret-scanner/src/request_stream/)
+- `Lexer::new()` / `with_limits(LexerLimits { max_depth: 127, max_key_bytes: 4096,
+  max_scalar_bytes: 4096 })`; `push(&[u8], FnMut(&Path, Span, Event<'_>)) -> Result<(), LexError>`;
+  `finish(sink)`; `bytes_fed()`, `settled()`, `path()`, `is_complete()`, `error()`. `Clone`.
+  It keeps no body content; a failed lexer keeps returning its error.
+- `Event`: `ObjectStart`, `ObjectEnd { len }`, `ArrayStart`, `ArrayEnd { len }`,
+  `Key { text, truncated }`, `StringStart`, `StringChunk { text }`, `StringEnd`,
+  `Scalar { raw, truncated }`, `Opaque { last }` (a container nested deeper than `max_depth`:
+  raw spans only, no inner events).
+- `Span { start, end }` are absolute byte offsets. Spans are ordered and never overlap; the bytes
+  between two spans are only whitespace, `,` and `:`. A `StringChunk` is either verbatim text
+  (`text.len() == span.len()`) or exactly one escape sequence (a surrogate pair counts as one).
+  Two lexers over the same bytes report the same events and spans whatever the chunking, except
+  that runs of verbatim `StringChunk`s and `Opaque` pieces may be cut at different points, so
+  the tail cursor can copy `held[a..b]` by offset. `settled()` is the offset below which every byte is already
+  covered by a delivered event (a pending key, scalar, escape or split UTF-8 character starts
+  there), i.e. what the tail may release or copy after a `push`.
+- `Path`: `depth()`, `segment(i)`, `last()`, `segments()`, `pointer()` (RFC 6901),
+  `matches(&[Step])`, `starts_with(&[Step])` with `Step::{Key, Index, AnyIndex, AnyKey}`. A
+  container's start/end events carry the container's own path; `Key` carries the member's path.
+- `LexError::{InvalidUtf8, Syntax, Truncated} { offset }`. Accepts what `serde_json` parses into
+  a `Value`, except: nesting beyond `max_depth` becomes `Opaque` instead of an error, and number
+  magnitude is not checked.
+- `MetadataSniffer::new()` / `with_limit(bytes)`; `observe(&Path, &Event)`; `metadata()` at any
+  time; `sniff(&[u8])` for a held body. `RequestMetadata`: `model`, `stream`, `kind` (`type`),
+  `previous_response_id`, `client_metadata` and `extensions` (compact JSON text),
+  `metadata_user_id`, `metadata_session_id` as `Sniffed::{Absent, Pending, Value, Mismatch,
+  Overflow}`; `messages` / `input` / `tools` as `Option<Shape>`; `duplicate_keys`; `complete`.
+  Each capture is bounded at 64 KiB. **A repeated key replaces the earlier value** (as in batch
+  parsing) and sets `duplicate_keys`: a model gate that opened on the first `model` must re-check
+  or fail closed when the flag is set.
+- lr-proxy `wire::request_meta_from_sniffed(format, &RequestMetadata) -> Option<RequestMeta>`
+  (Anthropic, Chat, Responses; parity-tested against `wire::parse_request`) and
+  `wire::conversation_id_from_sniffed`.
+- `json_stream::JsonStream` (response side) is unchanged and not rebuilt on the lexer: it
+  interleaves restoration with lexing and its lenient passthrough-on-error contract differs.
+
+### 1.4 `lr_proxy::request_body::StreamDecoder`
+- `StreamDecoder::new(&HeaderMap)` / `with_limits(&HeaderMap, DecodeLimits { max_decoded: 1 GiB,
+  max_ratio: 1024, ratio_floor: 64 MiB })` → `Err(Unsupported)` for the same headers the batch
+  path rejects. `push(&[u8], FnMut(&[u8]) -> ControlFlow<()>)` delivers decoded pieces of at most
+  `DECODED_BLOCK` (64 KiB); `finish(self) -> Result<u64, _>`; `is_identity()`, `encoded_bytes()`,
+  `decoded_bytes()`. Synchronous and `Send` (use `spawn_blocking` for large chunks).
+- `StreamDecodeError::{Unsupported, Corrupt, Truncated, BudgetExceeded, ExpansionRatio, Aborted}`
+  with `status()`, `message()` and `as_batch() -> Option<DecodeError>`.
+- The byte budget applies to every stage of a stack and to the encoded input. The ratio guard
+  compares each stage's output with the encoded bytes received so far and only above
+  `ratio_floor`; it is the one place where streaming rejects a body the batch path accepts.
+- Bytes after the end of a brotli stream are ignored, because the batch decoder ignores them.
+- Fixed in the batch path: `deflate` bodies decoding to more than 8 KiB were rejected as invalid
+  (a first `FlushDecompress::Finish` call is one-shot in miniz_oxide).

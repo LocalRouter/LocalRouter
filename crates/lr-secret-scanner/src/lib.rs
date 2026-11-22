@@ -36,3 +36,5 @@ pub mod preview;
 mod nonblocking_tests;
 
 mod json_stream;
+
+pub mod request_stream;
