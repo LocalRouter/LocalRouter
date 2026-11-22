@@ -66,13 +66,16 @@ impl crate::Router {
                 "Token counting requires explicit provider/model".into(),
             ));
         }
-        if !privileged {
+        // Held until the count has been charged below.
+        let _admission = if privileged {
+            None
+        } else {
             let (_, strategy) = self.validate_client_and_strategy(client_id)?;
             if !strategy.is_model_allowed(&provider, &model) {
                 return Err(AppError::Unauthorized);
             }
-            self.check_client_rate_limits(client_id).await?;
-        }
+            Some(self.check_client_rate_limits(client_id).await?)
+        };
         self.require_enabled_model(&provider, &model)?;
         self.check_provider_privacy(client_id, &provider, false)?;
         let instance = self

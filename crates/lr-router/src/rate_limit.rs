@@ -6,18 +6,25 @@
 //! - Cost rate limits (USD per time window)
 //!
 //! Supports per-API-key and per-router rate limiting.
+//!
+//! Usage is recorded when a request completes, so a check against recorded
+//! usage alone lets every concurrent request through. Admission therefore
+//! reserves: [`RateLimiterManager::reserve_api_key`] checks and holds a
+//! request's estimate in one step, and the returned [`AdmissionReservation`]
+//! counts as used until it is dropped. Native batches reserve in the durable
+//! `lr_batches` ledger; both kinds and recorded usage add up in one check.
 
 #![allow(dead_code)]
 
 use chrono::{DateTime, Duration, Utc};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::fs;
-use tokio::sync::RwLock;
 use tokio::time::{interval, Duration as TokioDuration};
 use tracing::{debug, error, warn};
 
@@ -137,6 +144,83 @@ impl RateLimiterState {
     }
 }
 
+type SharedState = Arc<parking_lot::Mutex<RateLimiterState>>;
+
+/// What one admitted request holds while it is in flight. The unit is the
+/// one native batches reserve in, so ordinary and batch admissions are summed
+/// through the same [`lr_batches::BatchMetric`] projection.
+pub type ReservedUsage = lr_batches::BatchUsage;
+
+/// In-flight reservations of one scope (a client or a strategy), by id. The
+/// lock also serialises admission for the scope: check and reserve happen
+/// under it.
+type Scope = Arc<parking_lot::Mutex<HashMap<u64, ReservedUsage>>>;
+
+fn in_flight_total(held: &HashMap<u64, ReservedUsage>) -> ReservedUsage {
+    let mut total = ReservedUsage::default();
+    let mut cost = 0.0;
+    for usage in held.values() {
+        total.requests = total.requests.saturating_add(usage.requests);
+        total.input_tokens = total.input_tokens.saturating_add(usage.input_tokens);
+        total.output_tokens = total.output_tokens.saturating_add(usage.output_tokens);
+        cost += usage.cost_usd.unwrap_or(0.0);
+    }
+    total.cost_usd = Some(cost);
+    total
+}
+
+/// An admitted request's share of its limits while it is in flight.
+///
+/// Admission counts it as used, so concurrent requests cannot all pass a
+/// check that only sees completed usage. Dropping it releases the share:
+/// hold it until the request's actual usage has been recorded (or the request
+/// failed or was cancelled) and then let it go.
+#[must_use = "dropping an admission releases its reservation"]
+#[derive(Debug, Default)]
+pub struct AdmissionReservation {
+    holds: Vec<(Scope, u64)>,
+}
+
+impl AdmissionReservation {
+    /// An admission that holds nothing: no limit applies to the request.
+    pub fn unreserved() -> Self {
+        Self::default()
+    }
+
+    /// Whether anything is held.
+    pub fn is_reserved(&self) -> bool {
+        !self.holds.is_empty()
+    }
+
+    /// Carry another admission of the same request (its strategy's, next to
+    /// its client's) so both are released together.
+    pub fn absorb(&mut self, mut other: AdmissionReservation) {
+        self.holds.append(&mut other.holds);
+    }
+}
+
+impl Drop for AdmissionReservation {
+    fn drop(&mut self) {
+        for (scope, id) in self.holds.drain(..) {
+            scope.lock().remove(&id);
+        }
+    }
+}
+
+/// One configured window of a metric, as reported by
+/// [`RateLimiterManager::get_api_key_usage_windows`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct WindowUsage {
+    /// Completed usage recorded in the window.
+    pub current_usage: f64,
+    /// In-flight reservations, which admission counts on top of
+    /// `current_usage`.
+    pub reserved: f64,
+    pub limit: f64,
+    pub window_secs: i64,
+    pub window_start: DateTime<Utc>,
+}
+
 /// Key for identifying a rate limiter (API key or router + limit type)
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum RateLimiterKey {
@@ -233,10 +317,14 @@ pub struct RateLimiterManager {
     /// Rate limiter configurations (per router)
     router_limiters: Arc<DashMap<String, Vec<RateLimiter>>>,
     /// Current state of all rate limiters
-    states: Arc<DashMap<String, Arc<RwLock<RateLimiterState>>>>,
+    states: Arc<DashMap<String, SharedState>>,
     /// Path for persisting state
     persist_path: Option<PathBuf>,
     batch_store: parking_lot::RwLock<Option<Arc<lr_batches::BatchStore>>>,
+    /// In-flight reservations per scope. Never persisted: a request does not
+    /// survive a restart.
+    in_flight: DashMap<String, Scope>,
+    next_reservation: AtomicU64,
 }
 
 impl RateLimiterManager {
@@ -248,7 +336,78 @@ impl RateLimiterManager {
             states: Arc::new(DashMap::new()),
             persist_path,
             batch_store: parking_lot::RwLock::new(None),
+            in_flight: DashMap::new(),
+            next_reservation: AtomicU64::new(1),
         }
+    }
+
+    fn api_key_scope(&self, key_id: &str) -> Scope {
+        self.scope(format!("apikey:{key_id}"))
+    }
+
+    fn scope(&self, name: String) -> Scope {
+        self.in_flight.entry(name).or_default().value().clone()
+    }
+
+    fn in_flight_of(&self, name: &str) -> ReservedUsage {
+        // Clone the scope out so no map shard stays locked behind its mutex.
+        let scope = self.in_flight.get(name).map(|scope| scope.value().clone());
+        scope.map_or_else(ReservedUsage::default, |scope| {
+            in_flight_total(&scope.lock())
+        })
+    }
+
+    fn hold(
+        &self,
+        scope: &Scope,
+        held: &mut HashMap<u64, ReservedUsage>,
+        usage: ReservedUsage,
+    ) -> AdmissionReservation {
+        let id = self.next_reservation.fetch_add(1, Ordering::Relaxed);
+        held.insert(id, usage);
+        AdmissionReservation {
+            holds: vec![(scope.clone(), id)],
+        }
+    }
+
+    /// What a client's admitted requests currently hold.
+    pub fn api_key_in_flight(&self, key_id: &str) -> ReservedUsage {
+        self.in_flight_of(&format!("apikey:{key_id}"))
+    }
+
+    /// What a strategy's admitted requests currently hold.
+    pub fn strategy_in_flight(&self, strategy_id: &str) -> ReservedUsage {
+        if lr_types::is_duplicate_hop() {
+            // The first hop of this request holds the reservation.
+            return ReservedUsage::default();
+        }
+        self.in_flight_of(&format!("strategy:{strategy_id}"))
+    }
+
+    /// Atomic check-and-reserve for limits whose completed usage lives
+    /// elsewhere (a strategy's limits are checked against recorded metrics).
+    ///
+    /// `admit` sees what the strategy's in-flight requests hold and decides
+    /// with it; when it accepts, `estimate` is held until the returned
+    /// reservation is dropped. Both happen under the strategy's lock, so
+    /// concurrent callers are admitted one at a time.
+    pub fn reserve_strategy<E>(
+        &self,
+        strategy_id: &str,
+        estimate: ReservedUsage,
+        admit: impl FnOnce(&ReservedUsage) -> Result<(), E>,
+    ) -> Result<AdmissionReservation, E> {
+        let scope = self.scope(format!("strategy:{strategy_id}"));
+        let mut held = scope.lock();
+        // A duplicate hop passes through a request whose first hop already
+        // holds the reservation: it is neither blocked by that reservation
+        // nor holds one of its own.
+        if lr_types::is_duplicate_hop() {
+            admit(&ReservedUsage::default())?;
+            return Ok(AdmissionReservation::unreserved());
+        }
+        admit(&in_flight_total(&held))?;
+        Ok(self.hold(&scope, &mut held, estimate))
     }
 
     /// Attach the same durable ledger used by native batch submission.
@@ -304,6 +463,7 @@ impl RateLimiterManager {
             return Ok(Vec::new());
         };
         let now = Utc::now();
+        let in_flight = self.api_key_in_flight(key_id);
         let mut budgets = Vec::new();
         for limiter in &limiters {
             let key = RateLimiterKey::ApiKey {
@@ -313,10 +473,16 @@ impl RateLimiterManager {
             .to_string();
             let start = now - limiter.time_window();
             let state = self.states.get(&key).map(|v| v.value().clone());
-            let ordinary_usage = match state {
-                Some(state) => state.read().await.current_usage(start),
+            let recorded = match state {
+                Some(state) => state.lock().current_usage(start),
                 None => 0.0,
             };
+            // Admitted requests that have not finished are ordinary usage
+            // too: a batch must not reserve the room they were promised.
+            let ordinary_usage = recorded
+                + batch_metric(limiter.limit_type)
+                    .amount(&in_flight)
+                    .unwrap_or(0.0);
             budgets.push(lr_batches::BatchBudget {
                 metric: batch_metric(limiter.limit_type),
                 window_start: start.timestamp(),
@@ -342,7 +508,8 @@ impl RateLimiterManager {
                                         .events
                                         .make_contiguous()
                                         .sort_by_key(|event| event.timestamp);
-                                    self.states.insert(key_str, Arc::new(RwLock::new(state)));
+                                    self.states
+                                        .insert(key_str, Arc::new(parking_lot::Mutex::new(state)));
                                 }
                                 debug!("Loaded rate limiter state from disk");
                             }
@@ -373,7 +540,7 @@ impl RateLimiterManager {
                 .map(|entry| (entry.key().clone(), entry.value().clone()))
                 .collect();
             for (key, state) in states {
-                let state = state.read().await.clone();
+                let state = state.lock().clone();
                 states_vec.push((key, state));
             }
 
@@ -426,7 +593,7 @@ impl RateLimiterManager {
     }
 
     /// Check if a request is allowed for a specific limiter
-    async fn check_limiter(
+    fn check_limiter(
         &self,
         key: &RateLimiterKey,
         limiter: &RateLimiter,
@@ -440,11 +607,11 @@ impl RateLimiterManager {
         let state_lock = self
             .states
             .entry(key_str)
-            .or_insert_with(|| Arc::new(RwLock::new(RateLimiterState::new())))
+            .or_insert_with(|| Arc::new(parking_lot::Mutex::new(RateLimiterState::new())))
             .value()
             .clone();
 
-        let mut state = state_lock.write().await;
+        let mut state = state_lock.lock();
 
         // Clean up old events
         // Several windows for one metric share the same event history. A
@@ -483,27 +650,86 @@ impl RateLimiterManager {
         }
     }
 
-    /// Check all rate limits for an API key before making a request
+    /// Check all rate limits for an API key before making a request.
+    ///
+    /// Counts what admitted requests hold in flight but reserves nothing: use
+    /// [`Self::reserve_api_key`] to admit a request.
     pub async fn check_api_key(
         &self,
         key_id: &str,
         _usage_estimate: &UsageInfo,
     ) -> AppResult<RateLimitCheckResult> {
+        Ok(match self.admit_api_key(key_id, None).await? {
+            Ok(_) => RateLimitCheckResult {
+                allowed: true,
+                retry_after_secs: None,
+                current_usage: 0.0,
+                limit: f64::MAX,
+            },
+            Err(denied) => denied,
+        })
+    }
+
+    /// Admit a request: check every limit of the API key and, when all have
+    /// room, reserve the request's estimate in one step.
+    ///
+    /// A limit has room while completed usage, in-flight reservations and
+    /// native batch reservations together are below it, so of N concurrent
+    /// requests against a limit of K requests exactly K are admitted. The
+    /// request itself counts immediately; tokens and cost are held at
+    /// `estimate` and can only be as exact as it is.
+    ///
+    /// Record the request's actual usage with
+    /// [`Self::record_api_key_usage`] and then drop the reservation. Dropping
+    /// it without recording (failure, cancellation) gives the room back.
+    pub async fn reserve_api_key(
+        &self,
+        key_id: &str,
+        estimate: &UsageInfo,
+    ) -> AppResult<Result<AdmissionReservation, RateLimitCheckResult>> {
+        self.admit_api_key(key_id, Some(estimate)).await
+    }
+
+    async fn admit_api_key(
+        &self,
+        key_id: &str,
+        reserve: Option<&UsageInfo>,
+    ) -> AppResult<Result<AdmissionReservation, RateLimitCheckResult>> {
         // Get limiters for this API key
         let limiters = match self.api_key_limiters.get(key_id) {
             Some(l) => l.clone(),
-            None => {
-                return Ok(RateLimitCheckResult {
-                    allowed: true,
-                    retry_after_secs: None,
-                    current_usage: 0.0,
-                    limit: f64::MAX,
-                })
-            }
+            None => return Ok(Ok(AdmissionReservation::unreserved())),
+        };
+
+        // The durable batch ledger is read off the async runtime, before the
+        // synchronous check-and-reserve below.
+        let now = Utc::now();
+        let mut batch_amounts = Vec::with_capacity(limiters.len());
+        for limiter in &limiters {
+            let pending = self
+                .pending_batch_usage(key_id, (now - limiter.time_window()).timestamp())
+                .await?;
+            batch_amounts.push(
+                batch_metric(limiter.limit_type)
+                    .amount(&pending)
+                    .ok_or(AppError::RateLimitExceeded)?,
+            );
+        }
+
+        // A duplicate hop passes through a request whose first hop holds the
+        // reservation: it must not be blocked by that reservation, and holds
+        // none of its own (it is never charged either).
+        let duplicate_hop = lr_types::is_duplicate_hop();
+        let scope = self.api_key_scope(key_id);
+        let mut held = scope.lock();
+        let in_flight = if duplicate_hop {
+            ReservedUsage::default()
+        } else {
+            in_flight_total(&held)
         };
 
         // Check each limiter
-        for limiter in &limiters {
+        for (limiter, batch_amount) in limiters.iter().zip(batch_amounts) {
             let key = RateLimiterKey::ApiKey {
                 key_id: key_id.to_string(),
                 limit_type: limiter.limit_type,
@@ -511,35 +737,45 @@ impl RateLimiterManager {
 
             // Final usage is unknown, but an already exhausted token/cost
             // budget must block the next request just like a request limit.
-            let mut result = self
-                .check_limiter(
-                    &key,
-                    limiter,
-                    retention_window(&limiters, limiter.limit_type),
-                )
-                .await;
-            let pending = self
-                .pending_batch_usage(key_id, (Utc::now() - limiter.time_window()).timestamp())
-                .await?;
-            let batch_amount = batch_metric(limiter.limit_type)
-                .amount(&pending)
-                .ok_or(AppError::RateLimitExceeded)?;
-            result.current_usage += batch_amount;
+            let mut result = self.check_limiter(
+                &key,
+                limiter,
+                retention_window(&limiters, limiter.limit_type),
+            );
+            let in_flight_amount = batch_metric(limiter.limit_type)
+                .amount(&in_flight)
+                .unwrap_or(0.0);
+            result.current_usage += in_flight_amount + batch_amount;
             result.allowed = result.current_usage < limiter.value;
             if !result.allowed {
                 if batch_amount > 0.0 {
                     result.retry_after_secs = None;
+                } else if result.retry_after_secs.is_none() {
+                    // Only in-flight requests stand in the way; room returns
+                    // as they finish.
+                    result.retry_after_secs = Some(1);
                 }
-                return Ok(result);
+                return Ok(Err(result));
             }
         }
 
-        Ok(RateLimitCheckResult {
-            allowed: true,
-            retry_after_secs: None,
-            current_usage: 0.0,
-            limit: f64::MAX,
-        })
+        Ok(Ok(match reserve {
+            Some(estimate) if !duplicate_hop => self.hold(
+                &scope,
+                &mut held,
+                ReservedUsage {
+                    requests: 1,
+                    input_tokens: estimate.input_tokens,
+                    output_tokens: estimate.output_tokens,
+                    cost_usd: Some(if estimate.cost_usd.is_finite() {
+                        estimate.cost_usd.max(0.0)
+                    } else {
+                        0.0
+                    }),
+                },
+            ),
+            _ => AdmissionReservation::unreserved(),
+        }))
     }
 
     /// Check all rate limits for a router before making a request
@@ -568,13 +804,11 @@ impl RateLimiterManager {
                 limit_type: limiter.limit_type,
             };
 
-            let result = self
-                .check_limiter(
-                    &key,
-                    limiter,
-                    retention_window(&limiters, limiter.limit_type),
-                )
-                .await;
+            let result = self.check_limiter(
+                &key,
+                limiter,
+                retention_window(&limiters, limiter.limit_type),
+            );
             if !result.allowed {
                 return Ok(result);
             }
@@ -595,9 +829,17 @@ impl RateLimiterManager {
         if lr_types::is_duplicate_hop() {
             return Ok(());
         }
+        self.charge_api_key(key_id, usage);
+        Ok(())
+    }
+
+    /// Record usage for an API key from a synchronous context (a stream being
+    /// dropped). The caller decides whether the request is charged at all:
+    /// this does not look at the request trace.
+    pub fn charge_api_key(&self, key_id: &str, usage: &UsageInfo) {
         let limiters = match self.api_key_limiters.get(key_id) {
             Some(l) => l.clone(),
-            None => return Ok(()),
+            None => return,
         };
 
         let now = Utc::now();
@@ -625,16 +867,14 @@ impl RateLimiterManager {
             let state_lock = self
                 .states
                 .entry(key_str)
-                .or_insert_with(|| Arc::new(RwLock::new(RateLimiterState::new())))
+                .or_insert_with(|| Arc::new(parking_lot::Mutex::new(RateLimiterState::new())))
                 .value()
                 .clone();
 
-            let mut state = state_lock.write().await;
+            let mut state = state_lock.lock();
             state.cleanup(now - retention_window(&limiters, limiter.limit_type));
             state.record(now, value);
         }
-
-        Ok(())
     }
 
     /// Record usage for a router after a request completes
@@ -669,11 +909,11 @@ impl RateLimiterManager {
             let state_lock = self
                 .states
                 .entry(key_str)
-                .or_insert_with(|| Arc::new(RwLock::new(RateLimiterState::new())))
+                .or_insert_with(|| Arc::new(parking_lot::Mutex::new(RateLimiterState::new())))
                 .value()
                 .clone();
 
-            let mut state = state_lock.write().await;
+            let mut state = state_lock.lock();
             state.cleanup(now - retention_window(&limiters, limiter.limit_type));
             state.record(now, value);
         }
@@ -681,58 +921,120 @@ impl RateLimiterManager {
         Ok(())
     }
 
-    /// Get current usage statistics for an API key
+    /// Every configured window of one metric, in configuration order.
+    fn usage_windows(
+        &self,
+        key: &RateLimiterKey,
+        limiters: &[RateLimiter],
+        limit_type: RateLimitType,
+        in_flight: &ReservedUsage,
+    ) -> Vec<WindowUsage> {
+        let now = Utc::now();
+        let state_lock = self.states.get(&key.to_string()).map(|s| s.value().clone());
+        let reserved = batch_metric(limit_type).amount(in_flight).unwrap_or(0.0);
+        let mut state = state_lock.as_ref().map(|state| state.lock());
+        if let Some(state) = state.as_mut() {
+            state.cleanup(now - retention_window(limiters, limit_type));
+        }
+        limiters
+            .iter()
+            .filter(|limiter| limiter.limit_type == limit_type)
+            .map(|limiter| {
+                let window_start = now - limiter.time_window();
+                WindowUsage {
+                    current_usage: state
+                        .as_ref()
+                        .map_or(0.0, |state| state.current_usage(window_start)),
+                    reserved,
+                    limit: limiter.value,
+                    window_secs: limiter.time_window_secs,
+                    window_start,
+                }
+            })
+            .collect()
+    }
+
+    /// Usage of an API key in every configured window of a metric, in
+    /// configuration order. Empty when the key has no limit of that type.
+    pub async fn get_api_key_usage_windows(
+        &self,
+        key_id: &str,
+        limit_type: RateLimitType,
+    ) -> Vec<WindowUsage> {
+        let Some(limiters) = self.api_key_limiters.get(key_id).map(|l| l.clone()) else {
+            return Vec::new();
+        };
+        let key = RateLimiterKey::ApiKey {
+            key_id: key_id.to_string(),
+            limit_type,
+        };
+        self.usage_windows(&key, &limiters, limit_type, &self.api_key_in_flight(key_id))
+    }
+
+    /// Usage of a router in every configured window of a metric, in
+    /// configuration order. Empty when the router has no limit of that type.
+    pub async fn get_router_usage_windows(
+        &self,
+        router_name: &str,
+        limit_type: RateLimitType,
+    ) -> Vec<WindowUsage> {
+        let Some(limiters) = self.router_limiters.get(router_name).map(|l| l.clone()) else {
+            return Vec::new();
+        };
+        let key = RateLimiterKey::Router {
+            router_name: router_name.to_string(),
+            limit_type,
+        };
+        self.usage_windows(&key, &limiters, limit_type, &ReservedUsage::default())
+    }
+
+    /// Completed usage, limit and window start of the first configured window
+    /// of a metric, once usage has been recorded for the API key.
+    ///
+    /// A metric can have several windows; this reports one. Use
+    /// [`Self::get_api_key_usage_windows`] for all of them.
     pub async fn get_api_key_usage(
         &self,
         key_id: &str,
         limit_type: RateLimitType,
     ) -> Option<(f64, f64, DateTime<Utc>)> {
-        let limiters = self.api_key_limiters.get(key_id)?.clone();
-        let limiter = limiters.iter().find(|l| l.limit_type == limit_type)?;
-
         let key = RateLimiterKey::ApiKey {
             key_id: key_id.to_string(),
             limit_type,
         };
-
-        let now = Utc::now();
-        let window_start = now - limiter.time_window();
-        let key_str = key.to_string();
-
-        let state_lock = self.states.get(&key_str)?.value().clone();
-        let mut state = state_lock.write().await;
-
-        state.cleanup(now - retention_window(&limiters, limit_type));
-        let current_usage = state.current_usage(window_start);
-
-        Some((current_usage, limiter.value, window_start))
+        if !self.states.contains_key(&key.to_string()) {
+            return None;
+        }
+        let window = self
+            .get_api_key_usage_windows(key_id, limit_type)
+            .await
+            .into_iter()
+            .next()?;
+        Some((window.current_usage, window.limit, window.window_start))
     }
 
-    /// Get current usage statistics for a router
+    /// Completed usage, limit and window start of the first configured window
+    /// of a metric, once usage has been recorded for the router.
+    ///
+    /// Use [`Self::get_router_usage_windows`] for every window.
     pub async fn get_router_usage(
         &self,
         router_name: &str,
         limit_type: RateLimitType,
     ) -> Option<(f64, f64, DateTime<Utc>)> {
-        let limiters = self.router_limiters.get(router_name)?.clone();
-        let limiter = limiters.iter().find(|l| l.limit_type == limit_type)?;
-
         let key = RateLimiterKey::Router {
             router_name: router_name.to_string(),
             limit_type,
         };
-
-        let now = Utc::now();
-        let window_start = now - limiter.time_window();
-        let key_str = key.to_string();
-
-        let state_lock = self.states.get(&key_str)?.value().clone();
-        let mut state = state_lock.write().await;
-
-        state.cleanup(now - retention_window(&limiters, limit_type));
-        let current_usage = state.current_usage(window_start);
-
-        Some((current_usage, limiter.value, window_start))
+        if !self.states.contains_key(&key.to_string()) {
+            return None;
+        }
+        let window = self
+            .get_router_usage_windows(router_name, limit_type)
+            .await
+            .into_iter()
+            .next()?;
+        Some((window.current_usage, window.limit, window.window_start))
     }
 }
 
@@ -820,7 +1122,7 @@ mod tests {
         .to_string();
         let state = manager.states.get(&key).unwrap().value().clone();
         {
-            let mut state = state.write().await;
+            let mut state = state.lock();
             assert_eq!(state.events.len(), 1, "one request must be counted once");
             state.record(Utc::now() - Duration::minutes(30), 1.0);
         }
@@ -836,7 +1138,7 @@ mod tests {
         let result = manager.check_api_key("client", &usage).await.unwrap();
         assert!(!result.allowed, "the hourly budget is exhausted");
         assert_eq!(result.current_usage, 2.0);
-        assert_eq!(state.read().await.events.len(), 2);
+        assert_eq!(state.lock().events.len(), 2);
     }
 
     #[test]
@@ -1316,5 +1618,436 @@ mod tests {
                 .allowed
         );
         assert!(!root.exists());
+    }
+
+    fn estimate(input_tokens: u64, output_tokens: u64, cost_usd: f64) -> UsageInfo {
+        UsageInfo {
+            input_tokens,
+            output_tokens,
+            cost_usd,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_reservations_admit_exactly_the_request_limit() {
+        let manager = Arc::new(RateLimiterManager::new(None));
+        manager.add_api_key_limiters(
+            "client".into(),
+            vec![
+                RateLimiter::new(RateLimitType::Requests, 5.0, 60),
+                RateLimiter::new(RateLimitType::Requests, 100.0, 3600),
+            ],
+        );
+        let start = Arc::new(tokio::sync::Barrier::new(40));
+        let mut tasks = Vec::new();
+        for _ in 0..40 {
+            let manager = manager.clone();
+            let start = start.clone();
+            tasks.push(tokio::spawn(async move {
+                start.wait().await;
+                manager
+                    .reserve_api_key("client", &estimate(0, 0, 0.0))
+                    .await
+                    .unwrap()
+            }));
+        }
+        let mut admitted = Vec::new();
+        let mut denied = 0;
+        for task in tasks {
+            match task.await.unwrap() {
+                Ok(reservation) => admitted.push(reservation),
+                Err(check) => {
+                    assert!(!check.allowed);
+                    assert_eq!(check.limit, 5.0);
+                    assert_eq!(check.current_usage, 5.0);
+                    // Nothing has completed: room returns as requests finish.
+                    assert_eq!(check.retry_after_secs, Some(1));
+                    denied += 1;
+                }
+            }
+        }
+        assert_eq!(
+            admitted.len(),
+            5,
+            "nothing completed, yet only K are admitted"
+        );
+        assert_eq!(denied, 35);
+        assert_eq!(manager.api_key_in_flight("client").requests, 5);
+
+        // One request finishes: its slot is taken by its recorded usage.
+        manager
+            .record_api_key_usage("client", &estimate(0, 0, 0.0))
+            .await
+            .unwrap();
+        admitted.pop();
+        assert!(manager
+            .reserve_api_key("client", &estimate(0, 0, 0.0))
+            .await
+            .unwrap()
+            .is_err());
+
+        // One request fails: its slot is free again, for one request.
+        admitted.pop();
+        let retry = manager
+            .reserve_api_key("client", &estimate(0, 0, 0.0))
+            .await
+            .unwrap()
+            .expect("a released slot is available");
+        assert!(manager
+            .reserve_api_key("client", &estimate(0, 0, 0.0))
+            .await
+            .unwrap()
+            .is_err());
+        drop(retry);
+    }
+
+    #[tokio::test]
+    async fn reservation_holds_the_estimate_and_is_replaced_by_actual_usage() {
+        let manager = RateLimiterManager::new(None);
+        manager.add_api_key_limiters(
+            "client".into(),
+            vec![
+                RateLimiter::new(RateLimitType::InputTokens, 1_000.0, 60),
+                RateLimiter::new(RateLimitType::OutputTokens, 1_000.0, 60),
+                RateLimiter::new(RateLimitType::TotalTokens, 1_500.0, 60),
+                RateLimiter::new(RateLimitType::Cost, 1.0, 60),
+            ],
+        );
+
+        let first = manager
+            .reserve_api_key("client", &estimate(400, 600, 0.6))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(first.is_reserved());
+        let held = manager.api_key_in_flight("client");
+        assert_eq!(
+            (held.requests, held.input_tokens, held.output_tokens),
+            (1, 400, 600)
+        );
+        assert_eq!(held.cost_usd, Some(0.6));
+        let window = &manager
+            .get_api_key_usage_windows("client", RateLimitType::TotalTokens)
+            .await[0];
+        assert_eq!((window.current_usage, window.reserved), (0.0, 1_000.0));
+
+        // A second request fits every budget that still has room.
+        let second = manager
+            .reserve_api_key("client", &estimate(400, 600, 0.6))
+            .await
+            .unwrap()
+            .unwrap();
+        // Output tokens (1200 of 1000), total tokens (2000 of 1500) and cost
+        // (1.2 of 1.0) are now spoken for, with nothing completed.
+        let denied = manager
+            .reserve_api_key("client", &estimate(1, 1, 0.0))
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(denied.limit, 1_000.0, "the output token budget");
+        assert_eq!(denied.current_usage, 1_200.0);
+        assert!(
+            !manager
+                .check_api_key("client", &estimate(0, 0, 0.0))
+                .await
+                .unwrap()
+                .allowed,
+            "the non-reserving check counts in-flight requests too"
+        );
+
+        // Both finish well under their estimates.
+        for reservation in [first, second] {
+            manager
+                .record_api_key_usage("client", &estimate(50, 20, 0.01))
+                .await
+                .unwrap();
+            drop(reservation);
+        }
+        let held = manager.api_key_in_flight("client");
+        assert_eq!(
+            (held.requests, held.input_tokens, held.output_tokens),
+            (0, 0, 0)
+        );
+        let window = &manager
+            .get_api_key_usage_windows("client", RateLimitType::OutputTokens)
+            .await[0];
+        assert_eq!((window.current_usage, window.reserved), (40.0, 0.0));
+        assert!(manager
+            .reserve_api_key("client", &estimate(400, 600, 0.6))
+            .await
+            .unwrap()
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn checking_reserves_nothing_and_unlimited_keys_hold_nothing() {
+        let manager = RateLimiterManager::new(None);
+        manager.add_api_key_limiters(
+            "client".into(),
+            vec![RateLimiter::new(RateLimitType::Requests, 1.0, 60)],
+        );
+        for _ in 0..3 {
+            assert!(
+                manager
+                    .check_api_key("client", &estimate(10, 10, 0.0))
+                    .await
+                    .unwrap()
+                    .allowed
+            );
+        }
+        assert_eq!(manager.api_key_in_flight("client").requests, 0);
+
+        let unlimited = manager
+            .reserve_api_key("no-limits", &estimate(10, 10, 0.0))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!unlimited.is_reserved());
+        assert_eq!(manager.api_key_in_flight("no-limits").requests, 0);
+    }
+
+    #[tokio::test]
+    async fn duplicate_hop_is_neither_blocked_by_nor_added_to_in_flight_requests() {
+        let manager = RateLimiterManager::new(None);
+        manager.add_api_key_limiters(
+            "client".into(),
+            vec![RateLimiter::new(RateLimitType::Requests, 1.0, 60)],
+        );
+        // The first hop holds the only slot while it forwards the request.
+        let first_hop = manager
+            .reserve_api_key("client", &estimate(0, 0, 0.0))
+            .await
+            .unwrap()
+            .unwrap();
+        let one_request = || ReservedUsage {
+            requests: 1,
+            ..ReservedUsage::default()
+        };
+        let first_hop_strategy = manager
+            .reserve_strategy("strategy", one_request(), |_| Ok::<(), ()>(()))
+            .unwrap();
+
+        let duplicate = lr_types::RequestTrace::parse("abc;hop=2").unwrap();
+        lr_types::with_outbound_trace(Some(duplicate), async {
+            let second_hop = manager
+                .reserve_api_key("client", &estimate(0, 0, 0.0))
+                .await
+                .unwrap()
+                .expect("the pass-through hop of an admitted request is let through");
+            assert!(!second_hop.is_reserved());
+            // A strategy limit of one request: the first hop's share must
+            // not count against its own pass-through hop.
+            let strategy = manager
+                .reserve_strategy("strategy", one_request(), |in_flight| {
+                    if in_flight.requests >= 1 {
+                        Err(())
+                    } else {
+                        Ok(())
+                    }
+                })
+                .expect("the pass-through hop is not blocked by its first hop");
+            assert!(!strategy.is_reserved());
+            assert_eq!(manager.strategy_in_flight("strategy").requests, 0);
+        })
+        .await;
+
+        assert_eq!(manager.api_key_in_flight("client").requests, 1);
+        assert_eq!(manager.strategy_in_flight("strategy").requests, 1);
+        drop(first_hop);
+        drop(first_hop_strategy);
+        assert_eq!(manager.api_key_in_flight("client").requests, 0);
+        assert_eq!(manager.strategy_in_flight("strategy").requests, 0);
+    }
+
+    #[tokio::test]
+    async fn every_configured_window_is_reported() {
+        let manager = RateLimiterManager::new(None);
+        manager.add_api_key_limiters(
+            "client".into(),
+            vec![
+                RateLimiter::new(RateLimitType::Requests, 10.0, 60),
+                RateLimiter::new(RateLimitType::Cost, 5.0, 86_400),
+                RateLimiter::new(RateLimitType::Requests, 100.0, 3_600),
+            ],
+        );
+        manager.add_router_limiters(
+            "router".into(),
+            vec![
+                RateLimiter::new(RateLimitType::Requests, 10.0, 60),
+                RateLimiter::new(RateLimitType::Requests, 100.0, 3_600),
+            ],
+        );
+        // Before any usage: every window, empty.
+        let windows = manager
+            .get_api_key_usage_windows("client", RateLimitType::Requests)
+            .await;
+        assert_eq!(windows.len(), 2);
+        assert!(windows.iter().all(|window| window.current_usage == 0.0));
+        assert!(manager
+            .get_api_key_usage("client", RateLimitType::Requests)
+            .await
+            .is_none());
+
+        let usage = estimate(0, 0, 0.5);
+        manager
+            .record_api_key_usage("client", &usage)
+            .await
+            .unwrap();
+        manager.record_router_usage("router", &usage).await.unwrap();
+        for scope in ["apikey:client:Requests", "router:router:Requests"] {
+            let state = manager.states.get(scope).unwrap().value().clone();
+            state.lock().record(Utc::now() - Duration::minutes(30), 1.0);
+        }
+        let _in_flight = manager
+            .reserve_api_key("client", &usage)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let windows = manager
+            .get_api_key_usage_windows("client", RateLimitType::Requests)
+            .await;
+        assert_eq!(
+            windows
+                .iter()
+                .map(|window| (
+                    window.window_secs,
+                    window.limit,
+                    window.current_usage,
+                    window.reserved
+                ))
+                .collect::<Vec<_>>(),
+            [(60, 10.0, 1.0, 1.0), (3_600, 100.0, 2.0, 1.0)],
+            "the hourly window sees the older request the minute window does not"
+        );
+        assert!(windows[0].window_start > windows[1].window_start);
+        let router = manager
+            .get_router_usage_windows("router", RateLimitType::Requests)
+            .await;
+        assert_eq!(
+            router
+                .iter()
+                .map(|window| (window.window_secs, window.current_usage))
+                .collect::<Vec<_>>(),
+            [(60, 1.0), (3_600, 2.0)]
+        );
+        // The single-window accessors report the first configured window.
+        let (used, limit, _) = manager
+            .get_api_key_usage("client", RateLimitType::Requests)
+            .await
+            .unwrap();
+        assert_eq!((used, limit), (1.0, 10.0));
+        assert!(manager
+            .get_api_key_usage_windows("client", RateLimitType::InputTokens)
+            .await
+            .is_empty());
+        assert!(manager
+            .get_api_key_usage_windows("unknown", RateLimitType::Requests)
+            .await
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn strategy_reservation_checks_and_holds_in_one_step() {
+        let manager = RateLimiterManager::new(None);
+        let one_request = || ReservedUsage {
+            requests: 1,
+            input_tokens: 250,
+            output_tokens: 0,
+            cost_usd: Some(0.25),
+        };
+        // A limit of two requests, with nothing completed.
+        let admit = |in_flight: &ReservedUsage| {
+            if in_flight.requests + 1 > 2 {
+                Err(in_flight.clone())
+            } else {
+                Ok(())
+            }
+        };
+
+        let first = manager
+            .reserve_strategy("strategy", one_request(), admit)
+            .unwrap();
+        let second = manager
+            .reserve_strategy("strategy", one_request(), admit)
+            .unwrap();
+        let seen = manager
+            .reserve_strategy("strategy", one_request(), admit)
+            .unwrap_err();
+        assert_eq!((seen.requests, seen.input_tokens), (2, 500));
+        assert_eq!(seen.cost_usd, Some(0.5));
+        assert_eq!(
+            manager.strategy_in_flight("strategy").requests,
+            2,
+            "a rejected request holds nothing"
+        );
+        assert_eq!(manager.strategy_in_flight("other").requests, 0);
+
+        // One admission can carry another; both are released together.
+        let mut both = first;
+        both.absorb(second);
+        drop(both);
+        assert_eq!(manager.strategy_in_flight("strategy").requests, 0);
+        manager
+            .reserve_strategy("strategy", one_request(), admit)
+            .map(drop)
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn in_flight_requests_and_native_batches_share_one_budget() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(lr_batches::BatchStore::new(
+            directory.path().join("batches"),
+        ));
+        let manager = RateLimiterManager::new(None);
+        manager.set_batch_store(store.clone());
+        manager.add_api_key_limiters(
+            "client".into(),
+            vec![RateLimiter::new(RateLimitType::Requests, 3.0, 60)],
+        );
+
+        // Two ordinary requests are in flight; a two-row batch does not fit
+        // beside them, although nothing has been recorded.
+        let first = manager
+            .reserve_api_key("client", &estimate(0, 0, 0.0))
+            .await
+            .unwrap()
+            .unwrap();
+        let second = manager
+            .reserve_api_key("client", &estimate(0, 0, 0.0))
+            .await
+            .unwrap()
+            .unwrap();
+        let budgets = manager.batch_budget_snapshot("client").await.unwrap();
+        assert_eq!(budgets[0].ordinary_usage, 2.0);
+        let job = batch_job_fixture(&store);
+        let batch = lr_batches::BatchUsage {
+            requests: 2,
+            input_tokens: 0,
+            output_tokens: 0,
+            cost_usd: Some(0.0),
+        };
+        assert!(matches!(
+            store.reserve_batch("client", &job.id, batch.clone(), &budgets),
+            Err(lr_batches::StoreError::Quota)
+        ));
+
+        // One of them fails: the batch fits, and then leaves no room for a
+        // second ordinary request.
+        drop(second);
+        let budgets = manager.batch_budget_snapshot("client").await.unwrap();
+        assert_eq!(budgets[0].ordinary_usage, 1.0);
+        store
+            .reserve_batch("client", &job.id, batch, &budgets)
+            .unwrap();
+        let denied = manager
+            .reserve_api_key("client", &estimate(0, 0, 0.0))
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(denied.current_usage, 3.0);
+        assert_eq!(denied.retry_after_secs, None, "a batch has no known end");
+        drop(first);
     }
 }

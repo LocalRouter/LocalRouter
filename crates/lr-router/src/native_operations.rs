@@ -132,7 +132,8 @@ impl Router {
         })?;
         request.model = model.clone();
         request.wire_body(protocol)?;
-        self.check_client_rate_limits(client_id).await?;
+        // Held across the charge below so check and charge are one step.
+        let admission = self.check_client_rate_limits(client_id).await?;
         self.check_strategy_rate_limits(&strategy, &provider, &model)?;
         self.rate_limiter
             .record_api_key_usage(
@@ -144,6 +145,7 @@ impl Router {
                 },
             )
             .await?;
+        drop(admission);
         self.authorize_native_operation(client_id, NativeOperation::Ocr)?;
         let mut dispatch = NativeDispatch::new(self, client_id, &provider, &model, &strategy.id);
         let result = instance.ocr(request).await;
@@ -178,7 +180,8 @@ impl Router {
         })?;
         request.model = model.clone();
         request.wire_body(protocol)?;
-        self.check_client_rate_limits(client_id).await?;
+        // Held across the charge below so check and charge are one step.
+        let admission = self.check_client_rate_limits(client_id).await?;
         self.check_strategy_rate_limits(&strategy, &provider, &model)?;
         self.rate_limiter
             .record_api_key_usage(
@@ -190,6 +193,7 @@ impl Router {
                 },
             )
             .await?;
+        drop(admission);
         self.authorize_native_operation(client_id, NativeOperation::Rerank)?;
         let mut dispatch = NativeDispatch::new(self, client_id, &provider, &model, &strategy.id);
         let result = instance.rerank(request).await;
@@ -245,7 +249,8 @@ impl Router {
             ));
         }
         self.require_enabled_model(provider, model)?;
-        self.check_client_rate_limits(client_id).await?;
+        // Held across the charge below so check and charge are one step.
+        let admission = self.check_client_rate_limits(client_id).await?;
         self.check_strategy_rate_limits(&strategy, provider, model)?;
         self.rate_limiter
             .record_api_key_usage(
@@ -257,6 +262,7 @@ impl Router {
                 },
             )
             .await?;
+        drop(admission);
         self.authorize_native_operation(client_id, operation)?;
         Ok(NativeDispatch::new(
             self,
