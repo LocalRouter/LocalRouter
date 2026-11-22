@@ -368,6 +368,9 @@ fn make_leaf(ca: &TestCa, host: &str) -> (CertificateDer<'static>, PrivateKeyDer
 
 /// A TLS listener for `host` on an OS-assigned port, speaking HTTP/1.1.
 pub async fn tls_listener(ca: &TestCa, host: &str) -> (TcpListener, TlsAcceptor, u16) {
+    // Tests build this listener before the proxy, and rustls cannot pick a
+    // provider on its own when feature unification enables more than one.
+    lr_proxy::tls::ensure_crypto_provider();
     let (leaf, key) = make_leaf(ca, host);
     let mut config = ServerConfig::builder()
         .with_no_client_auth()

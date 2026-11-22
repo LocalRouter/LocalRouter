@@ -220,7 +220,8 @@ impl lr_proxy::active::Firewall for AppFirewall {
         if off {
             return BodyPolicy::Reject(403, "LLM access is disabled for this client".into());
         }
-        if let Some(kind) = rate_limit_exceeded(&self.metrics, strategy) {
+        let in_flight = self.state.rate_limiter.strategy_in_flight(&strategy.id);
+        if let Some(kind) = rate_limit_exceeded(&self.metrics, strategy, &in_flight) {
             return BodyPolicy::Reject(429, format!("Rate limit exceeded ({kind})"));
         }
         BodyPolicy::Buffered
