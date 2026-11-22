@@ -31,6 +31,40 @@ export type DiscoveredResourceIcon = string | null
 /** Rust: src-tauri/src/ui/commands.rs - show_approval_popup returns (). */
 export type ShowApprovalPopupResult = null
 
+/** Rust: src-tauri/src/ui/commands.rs - get_server_status returns this string. */
+export type ServerStatus = 'running' | 'stopped'
+
+/** Rust: crates/lr-mcp/src/gateway/sampling_approval.rs - SamplingMessagePreview struct */
+export interface SamplingMessagePreview {
+  role: string
+  content: string
+}
+
+/** Rust: crates/lr-mcp/src/gateway/sampling_approval.rs - SamplingApprovalDetails struct */
+export interface SamplingApprovalDetails {
+  request_id: string
+  server_id: string
+  message_count: number
+  system_prompt: string | null
+  /** The last few messages of the request */
+  messages_preview: SamplingMessagePreview[]
+  model_preferences: unknown | null
+  max_tokens: number | null
+  timeout_seconds: number
+  created_at_secs_ago: number
+}
+
+/** Rust: crates/lr-mcp/src/gateway/elicitation.rs - ElicitationDetails struct */
+export interface ElicitationDetails {
+  request_id: string
+  server_id: string
+  message: string
+  /** JSON Schema of the requested input */
+  schema: Record<string, unknown>
+  timeout_seconds: number
+  created_at_secs_ago: number
+}
+
 /**
  * Rust: src-tauri/src/ui/commands_ui_state.rs - get_ui_state returns
  * BTreeMap<String, serde_json::Value> (durable UI state, `ui_state.json`).
@@ -2906,11 +2940,6 @@ export interface RotateClientSecretParams {
   clientId: string
 }
 
-/** Params for get_client */
-export interface GetClientParams {
-  clientId: string
-}
-
 /** Params for get_client_value */
 export interface GetClientValueParams {
   id: string
@@ -5640,6 +5669,17 @@ export interface SetClientNativeOperationsParams { clientId: string; allowedOper
 
 /** Params for show_approval_popup; Tauri injects the invoking window. */
 export type ShowApprovalPopupParams = Record<string, never>
+
+/** Params for get_sampling_approval_details */
+export interface GetSamplingApprovalDetailsParams { requestId: string }
+/** Params for submit_sampling_approval */
+export interface SubmitSamplingApprovalParams { requestId: string; action: 'allow' | 'deny' }
+/** Params for get_elicitation_details */
+export interface GetElicitationDetailsParams { requestId: string }
+/** Params for submit_elicitation_response */
+export interface SubmitElicitationResponseParams { requestId: string; data: Record<string, unknown> }
+/** Params for cancel_elicitation */
+export interface CancelElicitationParams { requestId: string }
 
 /** Params for get_routing_profiles */
 export interface GetRoutingProfilesParams { strategyId?: string | null }

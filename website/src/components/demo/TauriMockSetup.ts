@@ -22,6 +22,7 @@ import { mockIPC, mockWindows, clearMocks } from '@tauri-apps/api/mocks'
 import { emit } from '@tauri-apps/api/event'
 import type { InvokeArgs } from '@tauri-apps/api/core'
 import type { ShowApprovalPopupResult, NativeOperation, GetClientNativeOperationsParams, SetClientNativeOperationsParams, UpstreamToolsPolicy, GetClientUpstreamToolsParams, SetClientUpstreamToolsParams, AutoModelConfig, NamedRouteStatus, NamedRouteVersions, RouteSnapshot, GetNamedRouteParams, MutateNamedRouteParams, ClientPrivacyStatus, GetClientPrivacyParams, SetClientPrivacyParams, AttestProviderPrivacyParams, ClientSecurityStatus, GetClientSecurityParams, SetClientSecurityParams, RevokeClientCredentialsParams, ApiPathSupport, McpConnectionDiscovery, SkillSourceInfo, UpdateMcpServerParams } from '@app/types/tauri-commands'
+import type { CancelElicitationParams, ElicitationDetails, GetElicitationDetailsParams, GetSamplingApprovalDetailsParams, SamplingApprovalDetails, ServerStatus, SubmitElicitationResponseParams, SubmitSamplingApprovalParams } from '@app/types/tauri-commands'
 import { toast } from 'sonner'
 import { mockReplay } from './mockReplay'
 import { mockData } from './mockData'
@@ -443,6 +444,21 @@ const engineCatalogFor = (instanceName: string): EmbeddedCatalogModel[] => {
 }
 
 const warnedCommands = new Set<string>()
+
+// Pending sampling approvals and elicitation requests, keyed by request id.
+// They are attributed to the demo's GitHub MCP server.
+const DEMO_POPUP_SERVER_ID = 'mcp-github'
+const mockSamplingApprovals = new Map<string, { createdAt: number; details: SamplingApprovalDetails }>()
+const mockElicitations = new Map<string, { createdAt: number; details: ElicitationDetails }>()
+const mockSecondsSince = (timestampMs: number) => Math.max(0, Math.floor((Date.now() - timestampMs) / 1000))
+/** Queues a pending popup request that expires like the backend's, after its timeout. */
+function queueMockPopupRequest<T extends { request_id: string; timeout_seconds: number }>(
+  pending: Map<string, { createdAt: number; details: T }>,
+  details: T,
+) {
+  pending.set(details.request_id, { createdAt: Date.now(), details })
+  setTimeout(() => pending.delete(details.request_id), details.timeout_seconds * 1000)
+}
 const mockUiState = new Map<string, unknown>()
 
 // Helper to generate a random ID
@@ -1460,13 +1476,16 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     toast.success('Server restarted (demo)')
     return null
   },
+  'get_server_status': (): ServerStatus => mockData.healthCache.server_running ? 'running' : 'stopped',
   'stop_server': () => {
     mockData.healthCache.server_running = false
+    void emit('server-status-changed', 'stopped' satisfies ServerStatus)
     toast.success('Server stopped (demo)')
     return null
   },
   'start_server': () => {
     mockData.healthCache.server_running = true
+    void emit('server-status-changed', 'running' satisfies ServerStatus)
     toast.success('Server started (demo)')
     return null
   },
@@ -1509,7 +1528,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       ...(args?.feature === 'secret_scanning' ? { effective_value: 'ask' } : {}),
     }
   }),
-  'get_client': (args) => mockData.clients.find(c => c.id === args?.id || c.client_id === args?.clientId),
   'create_client': (args) => {
     const newClient = {
       id: `client-${generateId()}`,
@@ -2148,7 +2166,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // ============================================================================
   'list_provider_instances': () => mockData.providers,
   'list_provider_types': () => mockData.providerTypes,
-  'get_provider_instance': (args) => mockData.providers.find(p => p.instance_name === args?.instanceName),
   'get_provider_config': (args) => {
     const provider = mockData.providers.find(p => p.instance_name === args?.instanceName)
     if (!provider) return {}
@@ -2540,7 +2557,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // MCP Servers
   // ============================================================================
   'list_mcp_servers': () => mockData.mcpServers,
-  'get_mcp_server': (args) => mockData.mcpServers.find(s => s.id === args?.id),
   'create_mcp_server': (args) => {
     const serverId = `mcp-${generateId()}`
     const newServer = {
@@ -4541,14 +4557,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     toast.success(`Skill "${args?.skillName}" deleted (demo)`)
     return null
   },
-  'add_skills_path': () => {
-    toast.success('Skills path added (demo)')
-    return null
-  },
-  'remove_skills_path': () => {
-    toast.success('Skills path removed (demo)')
-    return null
-  },
 
   // ============================================================================
   // Coding Agents
@@ -4803,7 +4811,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // ============================================================================
   // Marketplace
   // ============================================================================
-  'get_marketplace_config': () => mockData.marketplaceConfig,
   'marketplace_set_enabled': (args) => {
     mockData.marketplaceConfig.mcp_enabled = args?.enabled ?? true
     mockData.marketplaceConfig.skills_enabled = args?.enabled ?? true
@@ -5087,11 +5094,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       s.tags?.some(t => t.includes(query))
     )
   },
-  'search_marketplace': (_args) => {
-    // Combined search across both MCP servers and skills
-    // In real implementation this would search both MCP servers and skills
-    return [] as unknown[]
-  },
 
   // ============================================================================
   // Tray & UI
@@ -5250,18 +5252,6 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       total_duration_ms: hasInjection ? 387 : 340,
       scan_direction: 'request' as const,
     }
-  },
-  'test_safety_check_single_model': (args) => {
-    const text = args?.text || ''
-    const hasInjection = /ignore.*previous|ignore.*instructions|DAN\s+mode/i.test(text)
-    return [{
-      model_id: args?.modelId || 'granite_guardian',
-      is_safe: !hasInjection,
-      flagged_categories: hasInjection ? [{ category: 'Jailbreak', confidence: 0.88, native_label: 'jailbreak' }] : [],
-      confidence: hasInjection ? 0.88 : null,
-      raw_output: hasInjection ? 'Yes' : 'No',
-      check_duration_ms: 312,
-    }]
   },
   'get_safety_model_status': (args) => ({
     id: args?.modelId || 'granite_guardian',
@@ -5718,6 +5708,78 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
     toast.info(`Firewall popup triggered (demo, ${count} popup${count > 1 ? 's' : ''})`)
     return null
   },
+  // --------------------------------------------------------------------------
+  // Sampling approval and elicitation popups. The debug triggers queue a
+  // request the way the backend does; the popup commands answer for it.
+  // --------------------------------------------------------------------------
+  'debug_trigger_sampling_approval_popup': (): null => {
+    const requestId = `sampling-${generateId()}`
+    queueMockPopupRequest(mockSamplingApprovals, {
+      request_id: requestId,
+      server_id: DEMO_POPUP_SERVER_ID,
+      message_count: 1,
+      system_prompt: 'You are a helpful geography assistant.',
+      messages_preview: [{ role: 'user', content: 'What is the capital of France?' }],
+      model_preferences: null,
+      max_tokens: 500,
+      timeout_seconds: 120,
+      created_at_secs_ago: 0,
+    })
+    toast.info('Sampling approval popup triggered (demo)')
+    return null
+  },
+  'get_sampling_approval_details': (args?: GetSamplingApprovalDetailsParams): SamplingApprovalDetails => {
+    const pending = mockSamplingApprovals.get(args?.requestId ?? '')
+    if (!pending) throw `Sampling approval request ${args?.requestId} not found`
+    return { ...pending.details, created_at_secs_ago: mockSecondsSince(pending.createdAt) }
+  },
+  'submit_sampling_approval': (args?: SubmitSamplingApprovalParams): null => {
+    if (args?.action !== 'allow' && args?.action !== 'deny') throw `Invalid action: ${args?.action}`
+    if (!mockSamplingApprovals.delete(args.requestId)) throw `Sampling approval request ${args.requestId} not found`
+    toast.success(args.action === 'allow' ? 'Sampling request allowed (demo)' : 'Sampling request denied (demo)')
+    return null
+  },
+  'debug_trigger_elicitation_form_popup': (): null => {
+    const requestId = `elicitation-${generateId()}`
+    queueMockPopupRequest(mockElicitations, {
+      request_id: requestId,
+      server_id: DEMO_POPUP_SERVER_ID,
+      message: 'Please provide your deployment configuration:',
+      schema: {
+        type: 'object',
+        properties: {
+          environment: {
+            type: 'string',
+            title: 'Environment',
+            description: 'Target environment',
+            enum: ['development', 'staging', 'production'],
+          },
+          confirm_deploy: { type: 'boolean', title: 'Confirm deployment', default: false },
+          max_instances: { type: 'number', title: 'Max instances', description: 'Maximum number of instances', default: 3 },
+          notes: { type: 'string', title: 'Notes', description: 'Any additional notes' },
+        },
+      },
+      timeout_seconds: 120,
+      created_at_secs_ago: 0,
+    })
+    toast.info('Elicitation form popup triggered (demo)')
+    return null
+  },
+  'get_elicitation_details': (args?: GetElicitationDetailsParams): ElicitationDetails => {
+    const pending = mockElicitations.get(args?.requestId ?? '')
+    if (!pending) throw `Elicitation request ${args?.requestId} not found`
+    return { ...pending.details, created_at_secs_ago: mockSecondsSince(pending.createdAt) }
+  },
+  'submit_elicitation_response': (args?: SubmitElicitationResponseParams): null => {
+    if (!mockElicitations.delete(args?.requestId ?? '')) throw `Elicitation request ${args?.requestId} not found`
+    toast.success('Elicitation response submitted (demo)')
+    return null
+  },
+  'cancel_elicitation': (args?: CancelElicitationParams): null => {
+    if (!mockElicitations.delete(args?.requestId ?? '')) throw `Elicitation request ${args?.requestId} not found`
+    toast.info('Elicitation cancelled (demo)')
+    return null
+  },
   'debug_set_tray_overlay': (args: Record<string, unknown>) => {
     toast.info(`Tray overlay set to: ${args?.overlay ?? 'auto'}`)
     return null
@@ -5731,21 +5793,12 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   // ============================================================================
   // Window & System
   // ============================================================================
-  'show_main_window': () => null,
-  'hide_main_window': () => null,
   'open_path': (args) => {
     toast.info(`Opening: ${args?.path} (demo)`)
     return null
   },
   'reveal_path': (args) => {
     toast.info(`Showing: ${args?.path} (demo)`)
-    return null
-  },
-  'copy_to_clipboard': (args) => {
-    if (typeof args?.text === 'string') {
-      navigator.clipboard.writeText(args.text).catch(() => {})
-      toast.success('Copied to clipboard')
-    }
     return null
   },
   'copy_image_to_clipboard': () => {

@@ -2,22 +2,13 @@ import { SectionedText } from "@/components/shared/SectionedText"
 import { PagedItems } from "@/components/shared/PagedItems"
 import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import type { ShowApprovalPopupParams, ShowApprovalPopupResult } from "@/types/tauri-commands"
+import type { CancelElicitationParams, ElicitationDetails, GetElicitationDetailsParams, ShowApprovalPopupParams, ShowApprovalPopupResult, SubmitElicitationResponseParams } from "@/types/tauri-commands"
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow"
 import { LogicalSize } from "@tauri-apps/api/dpi"
 import { Button } from "@/components/ui/Button"
 import { Input } from "@/components/ui/Input"
 import { Switch } from "@/components/ui/Toggle"
 import { MessageSquare } from "lucide-react"
-
-interface ElicitationDetails {
-  request_id: string
-  server_id: string
-  message: string
-  schema: Record<string, unknown>
-  timeout_seconds: number
-  created_at_secs_ago: number
-}
 
 function SchemaField({ name, schema, value, onChange }: {
   name: string
@@ -109,7 +100,7 @@ export function ElicitationForm() {
         const label = window.label
         const requestId = label.replace("elicitation-form-", "")
 
-        const result = await invoke<ElicitationDetails>("get_elicitation_details", { requestId })
+        const result = await invoke<ElicitationDetails>("get_elicitation_details", { requestId } satisfies GetElicitationDetailsParams)
         setDetails(result)
 
         // Initialize form data with defaults from schema
@@ -175,7 +166,7 @@ export function ElicitationForm() {
       await invoke("submit_elicitation_response", {
         requestId: details.request_id,
         data: formData,
-      })
+      } satisfies SubmitElicitationResponseParams)
       await getCurrentWebviewWindow().close()
     } catch (err) {
       console.error("Failed to submit elicitation:", err)
@@ -188,7 +179,7 @@ export function ElicitationForm() {
     if (!details) return
     setSubmitting(true)
     try {
-      await invoke("cancel_elicitation", { requestId: details.request_id })
+      await invoke("cancel_elicitation", { requestId: details.request_id } satisfies CancelElicitationParams)
       await getCurrentWebviewWindow().close()
     } catch (err) {
       console.error("Failed to cancel elicitation:", err)

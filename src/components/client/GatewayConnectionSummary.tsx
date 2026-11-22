@@ -4,10 +4,10 @@ import { listenSafe } from '@/hooks/useTauriListener'
 import { Button } from '@/components/ui/Button'
 import { toast } from 'sonner'
 import { gatewayBaseUrl, gatewayPortExplanation } from '@/utils/gateway-connection'
-import type { ServerConfigInfo, Strategy, GetStrategyParams } from '@/types/tauri-commands'
+import type { ServerConfigInfo, ServerStatus, Strategy, GetStrategyParams } from '@/types/tauri-commands'
 
 export function GatewayConnectionSummary({ strategyId }: { strategyId: string }) {
-  const [state, setState] = useState<{ config: ServerConfigInfo; status: string; strategy: Strategy } | null>(null)
+  const [state, setState] = useState<{ config: ServerConfigInfo; status: ServerStatus; strategy: Strategy } | null>(null)
   const [error, setError] = useState<string | null>(null)
   useEffect(() => {
     let live = true
@@ -16,7 +16,7 @@ export function GatewayConnectionSummary({ strategyId }: { strategyId: string })
     const load = async () => {
       const request = ++generation
       try {
-        const [config, status, strategy] = await Promise.all([invoke<ServerConfigInfo>('get_server_config'), invoke<string>('get_server_status'), invoke<Strategy>('get_strategy', { strategyId } satisfies GetStrategyParams)])
+        const [config, status, strategy] = await Promise.all([invoke<ServerConfigInfo>('get_server_config'), invoke<ServerStatus>('get_server_status'), invoke<Strategy>('get_strategy', { strategyId } satisfies GetStrategyParams)])
         if (live && request === generation) { setState({ config, status, strategy }); setError(null) }
       } catch (e) { if (live && request === generation) { setState(null); setError(String(e)) } }
     }

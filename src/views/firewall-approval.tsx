@@ -415,10 +415,12 @@ export function FirewallApproval() {
       // Fetch allowed models for model/auto-router
       if (isModelLike) {
         try {
-          const [allModels, clientInfo] = await Promise.all([
+          const [allModels, clients] = await Promise.all([
             invoke<ModelInfo[]>("list_all_models"),
-            invoke<ClientInfo>("get_client", { clientId: details.client_id }),
+            invoke<ClientInfo[]>("list_clients"),
           ])
+          const clientInfo = clients.find((c) => c.id === details.client_id || c.client_id === details.client_id)
+          if (!clientInfo) throw new Error(`Client ${details.client_id} not found`)
           const filtered = allModels.filter((m) => {
             const perm = resolveModelPermission(clientInfo.model_permissions, m.provider, m.id)
             return perm === "allow" || perm === "ask"
