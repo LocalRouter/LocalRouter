@@ -199,7 +199,7 @@ export function SkillsView({ activeSubTab, onTabChange }: SkillsViewProps) {
       const group = groupOfSkill(selectedSkill)
       const source =
         sources.find((s) => s.path === selectedSkill.source_path) ??
-        ({ path: selectedSkill.source_path, label: selectedSkill.source_path, kind: "directory", exists: true, skill_count: 1 } as SkillSourceInfo)
+        ({ path: selectedSkill.source_path, label: selectedSkill.source_path, kind: "directory", exists: true, skill_count: 1, error: null } as SkillSourceInfo)
       return (
         <SkillDetail
           key={selectedSkill.name}

@@ -59,7 +59,7 @@ pub async fn download_model(
         info!("Downloading {}...", file);
         let downloaded = download_with_retry(&repo, file).await?;
         let dest = model_dir.join(file);
-        tokio::fs::copy(&downloaded, &dest)
+        install_file(downloaded, dest)
             .await
             .map_err(|e| format!("Failed to copy {}: {}", file, e))?;
 
@@ -74,6 +74,16 @@ pub async fn download_model(
 
     info!("Embedding model downloaded successfully");
     Ok(())
+}
+
+/// Copy a cached download to its final path without ever exposing a
+/// truncated file there: `is_downloaded` only checks that the file exists.
+async fn install_file(cached: std::path::PathBuf, dest: std::path::PathBuf) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || lr_utils::fs::copy_atomically(&cached, &dest))
+        .await
+        .map_err(|e| e.to_string())?
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 /// Check if model files are present

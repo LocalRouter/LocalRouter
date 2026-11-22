@@ -1524,6 +1524,8 @@ export interface SkillSourceInfo {
   kind: SkillSourceKind
   exists: boolean
   skill_count: number
+  /** Why the last scan could not load this source; null when it loaded */
+  error: string | null
 }
 
 /**

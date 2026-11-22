@@ -2021,6 +2021,9 @@ pub struct SkillSourceInfo {
     pub exists: bool,
     /// Number of discovered skills from this source (enabled or not)
     pub skill_count: usize,
+    /// Why the last scan could not load this source (e.g. an archive over
+    /// its extraction limits); `None` when it loaded
+    pub error: Option<String>,
 }
 
 /// Classify a skill source path and give it a short display name.
@@ -2070,6 +2073,7 @@ pub async fn list_skill_sources(
 
     let mut paths = config_manager.get().skills.paths;
     let skills = skill_manager.list();
+    let mut errors = skill_manager.source_errors();
     for skill in &skills {
         if !paths.contains(&skill.source_path) {
             paths.push(skill.source_path.clone());
@@ -2087,6 +2091,7 @@ pub async fn list_skill_sources(
             SkillSourceInfo {
                 exists: std::path::Path::new(&path).exists(),
                 skill_count: skills.iter().filter(|s| s.source_path == path).count(),
+                error: errors.remove(&path),
                 path,
                 label,
                 kind,

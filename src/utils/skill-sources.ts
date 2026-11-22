@@ -41,6 +41,7 @@ export function groupSkillsBySource<T extends Pick<SkillInfo, "name" | "source_p
         kind: "directory",
         exists: true,
         skill_count: bySource.get(path)!.length,
+        error: null,
       })
     }
   }

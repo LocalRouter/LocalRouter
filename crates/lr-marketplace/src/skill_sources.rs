@@ -19,8 +19,19 @@ use tracing::{debug, info, warn};
 type SkillMemoryCache = HashMap<String, (Instant, Vec<SkillListing>)>;
 
 // Bound downloads even when a server omits or understates Content-Length.
+/// Most bytes one downloaded skill file may hold.
 const MAX_SKILL_FILE_BYTES: usize = 16 * 1024 * 1024;
+/// Most bytes one skill install may download in total.
 const MAX_SKILL_DOWNLOAD_BYTES: usize = 64 * 1024 * 1024;
+/// Most files one skill may list besides `SKILL.md`. Each is a separate
+/// request, so this also bounds the requests one install can make.
+const MAX_SKILL_FILES: usize = 1000;
+/// Deepest file path in a skill, in components.
+const MAX_SKILL_PATH_DEPTH: usize = 32;
+/// Longest file path in a skill, in bytes.
+const MAX_SKILL_PATH_BYTES: usize = 1024;
+/// Longest single path component, in bytes (the limit of common filesystems).
+const MAX_SKILL_COMPONENT_BYTES: usize = 255;
 
 /// Skill sources client
 pub struct SkillSourcesClient {
@@ -31,6 +42,15 @@ pub struct SkillSourcesClient {
 }
 
 impl SkillSourcesClient {
+    /// A client that never routes loopback test servers through a proxy.
+    #[cfg(test)]
+    pub(crate) fn for_tests() -> Self {
+        Self {
+            http_client: reqwest::Client::builder().no_proxy().build().unwrap(),
+            ..Default::default()
+        }
+    }
+
     /// Create a new skill sources client
     pub fn new(sources: Vec<MarketplaceSkillSource>) -> Self {
         Self {
@@ -436,14 +456,33 @@ impl SkillSourcesClient {
     }
 
     /// Download a skill's files to a directory
+    ///
+    /// On failure the directory holds whatever was written so far; callers
+    /// pass a staging directory and discard it (see `crate::staging`).
     pub async fn download_skill(
         &self,
         listing: &SkillListing,
         target_dir: &std::path::Path,
     ) -> Result<(), MarketplaceError> {
         // Reject the entire manifest before any filesystem or network side effects.
+        if listing.files.len() > MAX_SKILL_FILES {
+            return Err(MarketplaceError::InstallError(format!(
+                "The skill lists {} files; the limit is {MAX_SKILL_FILES}",
+                listing.files.len()
+            )));
+        }
+        // Compared without regard to letter case, so the skill installs to the
+        // same tree on case-sensitive and case-insensitive filesystems.
+        let mut seen = std::collections::HashSet::new();
         for file in &listing.files {
             validate_skill_file_path(&file.path)?;
+            if !seen.insert(file.path.to_lowercase()) {
+                return Err(MarketplaceError::InstallError(format!(
+                    "The skill lists '{}' more than once (names differing only by letter \
+                     case count as the same file)",
+                    file.path
+                )));
+            }
             let relative_path = Path::new(&file.path);
             if relative_path.components().count() == 1
                 && relative_path
@@ -492,20 +531,30 @@ impl SkillSourcesClient {
     ) -> Result<Vec<u8>, MarketplaceError> {
         let mut response = self.http_client.get(url).send().await?.error_for_status()?;
         let limit = MAX_SKILL_FILE_BYTES.min(*remaining_bytes);
+        // Name the limit that is actually binding for this file.
+        let too_large = || {
+            MarketplaceError::InstallError(if *remaining_bytes < MAX_SKILL_FILE_BYTES {
+                format!(
+                    "The skill is larger than the {} MiB limit for one install",
+                    MAX_SKILL_DOWNLOAD_BYTES / (1024 * 1024)
+                )
+            } else {
+                format!(
+                    "A skill file is larger than the {} MiB limit for one file: {url}",
+                    MAX_SKILL_FILE_BYTES / (1024 * 1024)
+                )
+            })
+        };
         if response
             .content_length()
             .is_some_and(|length| length > limit as u64)
         {
-            return Err(MarketplaceError::InstallError(
-                "Skill download exceeds the size limit".to_string(),
-            ));
+            return Err(too_large());
         }
         let mut content = Vec::new();
         while let Some(chunk) = response.chunk().await? {
             if chunk.len() > limit.saturating_sub(content.len()) {
-                return Err(MarketplaceError::InstallError(
-                    "Skill download exceeds the size limit".to_string(),
-                ));
+                return Err(too_large());
             }
             content.extend_from_slice(&chunk);
         }
@@ -523,6 +572,29 @@ pub(crate) fn validate_skill_file_path(relative: &str) -> Result<(), Marketplace
     {
         return Err(MarketplaceError::InstallError(format!(
             "Invalid skill file path: {relative}"
+        )));
+    }
+    let shown = || relative.chars().take(80).collect::<String>();
+    if relative.len() > MAX_SKILL_PATH_BYTES {
+        return Err(MarketplaceError::InstallError(format!(
+            "Skill file path is longer than the {MAX_SKILL_PATH_BYTES}-byte limit: {}...",
+            shown()
+        )));
+    }
+    if relative
+        .split('/')
+        .any(|component| component.len() > MAX_SKILL_COMPONENT_BYTES)
+    {
+        return Err(MarketplaceError::InstallError(format!(
+            "Skill file name is longer than the {MAX_SKILL_COMPONENT_BYTES}-byte limit: {}...",
+            shown()
+        )));
+    }
+    if Path::new(relative).components().count() > MAX_SKILL_PATH_DEPTH {
+        return Err(MarketplaceError::InstallError(format!(
+            "Skill file path is nested deeper than the limit of {MAX_SKILL_PATH_DEPTH} \
+             folders: {}...",
+            shown()
         )));
     }
     Ok(())
@@ -706,6 +778,90 @@ mod tests {
             );
             assert!(!target.exists(), "invalid manifest created a directory");
         }
+    }
+
+    #[tokio::test]
+    async fn manifest_budgets_are_checked_before_io() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("not-created");
+        let client = SkillSourcesClient::default();
+        let listing = |paths: Vec<String>| -> SkillListing {
+            serde_json::from_value(serde_json::json!({
+                "name": "example", "source_id": "test", "source_label": "test",
+                "source_repo": "", "source_path": "", "source_branch": "main",
+                "skill_md_url": "not-a-valid-url", "is_multi_file": true,
+                "files": paths.iter().map(|path| serde_json::json!({
+                    "path": path, "url": "not-a-valid-url"
+                })).collect::<Vec<_>>()
+            }))
+            .unwrap()
+        };
+        let cases = [
+            (
+                (0..=MAX_SKILL_FILES).map(|i| format!("f{i}")).collect(),
+                "The skill lists 1001 files; the limit is 1000",
+            ),
+            (
+                vec!["Readme.md".to_string(), "README.md".to_string()],
+                "more than once",
+            ),
+            (vec!["a/b".to_string(), "a/b".to_string()], "more than once"),
+            (
+                vec![vec!["d"; MAX_SKILL_PATH_DEPTH + 1].join("/")],
+                "nested deeper than the limit of 32",
+            ),
+            (
+                vec!["n".repeat(MAX_SKILL_COMPONENT_BYTES + 1)],
+                "longer than the 255-byte limit",
+            ),
+            (
+                vec![vec!["n".repeat(200); 6].join("/")],
+                "longer than the 1024-byte limit",
+            ),
+        ];
+        for (paths, expected) in cases {
+            let error = client
+                .download_skill(&listing(paths), &target)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(expected), "{error}");
+            assert!(!target.exists(), "{expected}: created a directory");
+        }
+    }
+
+    #[tokio::test]
+    async fn size_errors_name_the_limit_that_was_hit() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/file", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut request = [0; 4096];
+                let _ = socket.read(&mut request).await;
+                // No Content-Length: only the received bytes can be counted.
+                let _ = socket
+                    .write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n0123456789")
+                    .await;
+            }
+        });
+        let client = SkillSourcesClient::for_tests();
+        let mut remaining = 4;
+        let error = client
+            .download_file(&url, &mut remaining)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Install failed: The skill is larger than the 64 MiB limit for one install"
+        );
+        assert_eq!(remaining, 4);
+        let mut remaining = MAX_SKILL_DOWNLOAD_BYTES;
+        assert_eq!(
+            client.download_file(&url, &mut remaining).await.unwrap(),
+            b"0123456789"
+        );
+        assert_eq!(remaining, MAX_SKILL_DOWNLOAD_BYTES - 10);
     }
 
     #[tokio::test]

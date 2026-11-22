@@ -1,9 +1,11 @@
 //! Skill manager - central coordination for skill discovery and access
 
+use super::archive;
 use super::discovery;
 use super::types::{SkillDefinition, SkillInfo};
 use dashmap::DashMap;
 use parking_lot::RwLock;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -23,7 +25,15 @@ pub struct SkillManager {
 
     /// Extraction directories pending cleanup: path -> time superseded
     pending_cleanup: Arc<DashMap<PathBuf, Instant>>,
+
+    /// Source path -> why its last scan could not load it
+    source_errors: RwLock<HashMap<String, String>>,
 }
+
+/// How long an archive staging directory must sit untouched before startup
+/// treats it as abandoned. The extraction root is shared by every running
+/// instance, so a younger one may belong to an extraction in progress.
+const STALE_STAGING_AGE: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 
 impl Default for SkillManager {
     fn default() -> Self {
@@ -39,6 +49,7 @@ impl SkillManager {
             app_handle: None,
             change_callback: RwLock::new(None),
             pending_cleanup: Arc::new(DashMap::new()),
+            source_errors: RwLock::new(HashMap::new()),
         }
     }
 
@@ -52,8 +63,10 @@ impl SkillManager {
         self.app_handle = Some(handle);
     }
 
-    /// Start the background cleanup task for old extraction directories
+    /// Start the background cleanup task for old extraction directories.
+    /// Also removes staging directories abandoned by an earlier run.
     pub fn start_cleanup_task(&self) {
+        archive::cleanup_stale_staging(&discovery::extraction_root(), STALE_STAGING_AGE);
         let pending = self.pending_cleanup.clone();
         tokio::spawn(async move {
             loop {
@@ -87,6 +100,7 @@ impl SkillManager {
     pub fn initial_scan(&self, paths: &[String], disabled_skills: &[String]) {
         let mut all_skills = Vec::new();
         let mut old_dirs = Vec::new();
+        let mut errors = HashMap::new();
 
         for path_str in paths {
             let path = PathBuf::from(path_str);
@@ -98,7 +112,15 @@ impl SkillManager {
             );
             all_skills.extend(result.skills);
             old_dirs.extend(result.old_extraction_dirs);
+            if let Some(error) = result.error {
+                errors.insert(path_str.clone(), error);
+            }
         }
+
+        // Extraction directories some skill of this scan is served from,
+        // whether or not it survives deduplication.
+        let in_use: Vec<PathBuf> = all_skills.iter().map(|s| s.skill_dir.clone()).collect();
+        let is_in_use = |dir: &PathBuf| in_use.iter().any(|skill_dir| skill_dir.starts_with(dir));
 
         // Apply disabled_skills
         for skill in &mut all_skills {
@@ -116,14 +138,25 @@ impl SkillManager {
         let deduped: Vec<SkillDefinition> = seen.into_values().collect();
         info!("Total skills after dedup: {}", deduped.len());
 
+        // An extraction queued for deletion is in use again when its archive
+        // was reverted to that content, or when a failed update fell back to it.
+        self.pending_cleanup.retain(|dir, _| !is_in_use(dir));
+
         // Atomic swap
         *self.skills.write() = Arc::new(deduped);
+        *self.source_errors.write() = errors;
 
         // Queue old dirs for cleanup
         let now = Instant::now();
-        for dir in old_dirs {
+        for dir in old_dirs.into_iter().filter(|dir| !is_in_use(dir)) {
             self.pending_cleanup.insert(dir, now);
         }
+    }
+
+    /// Why each source failed to load in the last scan, keyed by the source
+    /// path as configured. Sources that loaded are absent.
+    pub fn source_errors(&self) -> HashMap<String, String> {
+        self.source_errors.read().clone()
     }
 
     /// Rescan specific paths and atomically update the skill list
@@ -287,6 +320,45 @@ mod tests {
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].name, "my-skill");
         assert!(skills[0].enabled);
+    }
+
+    #[test]
+    fn source_errors_follow_the_latest_scan() {
+        let tmp = TempDir::new().unwrap();
+        let broken = tmp.path().join("broken.zip");
+        fs::write(&broken, b"not a zip").unwrap();
+        let source = broken.display().to_string();
+
+        let manager = SkillManager::new();
+        manager.initial_scan(std::slice::from_ref(&source), &[]);
+        let errors = manager.source_errors();
+        assert!(errors[&source].starts_with("not a readable zip archive"));
+
+        manager.initial_scan(&[], &[]);
+        assert!(manager.source_errors().is_empty());
+    }
+
+    #[test]
+    fn extraction_in_use_is_not_left_queued_for_deletion() {
+        let tmp = TempDir::new().unwrap();
+        let in_use = tmp.path().join("pack-0123");
+        fs::create_dir_all(in_use.join("my-skill")).unwrap();
+        create_test_skill(&in_use.join("my-skill"), "my-skill");
+        let superseded = tmp.path().join("pack-4567");
+        fs::create_dir(&superseded).unwrap();
+
+        let manager = SkillManager::new();
+        manager
+            .pending_cleanup
+            .insert(in_use.clone(), Instant::now());
+        manager
+            .pending_cleanup
+            .insert(superseded.clone(), Instant::now());
+        manager.initial_scan(&[in_use.display().to_string()], &[]);
+
+        assert_eq!(manager.list().len(), 1);
+        assert!(!manager.pending_cleanup.contains_key(&in_use));
+        assert!(manager.pending_cleanup.contains_key(&superseded));
     }
 
     #[test]
