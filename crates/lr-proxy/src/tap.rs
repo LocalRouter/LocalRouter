@@ -135,11 +135,336 @@ impl<B> Drop for TappedBody<B> {
     }
 }
 
+/// Whether a request body carries a non-identity `Content-Encoding`.
+pub(crate) fn content_encoded(headers: &http::HeaderMap) -> bool {
+    headers
+        .get_all(http::header::CONTENT_ENCODING)
+        .iter()
+        .any(|value| match value.to_str() {
+            Ok(value) => value.split(',').any(|encoding| {
+                let encoding = encoding.trim();
+                !encoding.is_empty() && !encoding.eq_ignore_ascii_case("identity")
+            }),
+            // Not even text: certainly not an identity body.
+            Err(_) => true,
+        })
+}
+
+#[derive(Default)]
+struct RequestTapState {
+    head: Vec<u8>,
+    total: u64,
+    complete: bool,
+    error: Option<String>,
+}
+
+/// Reads what a [`RequestTap`] has seen of a request body so far.
+#[derive(Clone)]
+pub(crate) struct RequestCaptureHandle {
+    state: std::sync::Arc<parking_lot::Mutex<RequestTapState>>,
+    encoded: bool,
+}
+
+impl RequestCaptureHandle {
+    pub(crate) fn snapshot(&self) -> crate::interceptor::BoundedCapture {
+        let state = self.state.lock();
+        crate::interceptor::BoundedCapture {
+            head: state.head.clone(),
+            total_len: state.total,
+            truncated: state.total > state.head.len() as u64,
+            complete: state.complete,
+            encoded: self.encoded,
+        }
+    }
+
+    /// Why reading the client's body failed, if it did.
+    pub(crate) fn error(&self) -> Option<String> {
+        self.state.lock().error.clone()
+    }
+
+    fn total(&self) -> u64 {
+        self.state.lock().total
+    }
+}
+
+/// A request body forwarded as it arrives. Nothing is retained except the
+/// first `cap` bytes and a running length, which the [`RequestCaptureHandle`]
+/// exposes to the monitor. Size hint and end-of-stream are the inner body's,
+/// so the forwarded request keeps its framing.
+pub(crate) struct RequestTap<B> {
+    inner: B,
+    cap: usize,
+    state: std::sync::Arc<parking_lot::Mutex<RequestTapState>>,
+}
+
+impl<B: Body> RequestTap<B> {
+    pub(crate) fn new(inner: B, cap: usize, encoded: bool) -> (Self, RequestCaptureHandle) {
+        let state = std::sync::Arc::new(parking_lot::Mutex::new(RequestTapState {
+            // An empty body is never polled by the sender.
+            complete: inner.is_end_stream(),
+            ..Default::default()
+        }));
+        let handle = RequestCaptureHandle {
+            state: state.clone(),
+            encoded,
+        };
+        (Self { inner, cap, state }, handle)
+    }
+}
+
+impl<B> Body for RequestTap<B>
+where
+    B: Body<Data = Bytes> + Unpin,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    type Data = Bytes;
+    type Error = Box<dyn std::error::Error + Send + Sync>;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        let polled = Pin::new(&mut self.inner).poll_frame(cx);
+        match polled {
+            Poll::Ready(Some(Ok(frame))) => {
+                let ended = self.inner.is_end_stream();
+                let mut state = self.state.lock();
+                if let Some(data) = frame.data_ref() {
+                    state.total += data.len() as u64;
+                    let room = self.cap.saturating_sub(state.head.len());
+                    state.head.extend_from_slice(&data[..room.min(data.len())]);
+                }
+                state.complete |= ended;
+                drop(state);
+                Poll::Ready(Some(Ok(frame)))
+            }
+            Poll::Ready(Some(Err(error))) => {
+                let error = error.into();
+                self.state.lock().error = Some(error.to_string());
+                Poll::Ready(Some(Err(error)))
+            }
+            Poll::Ready(None) => {
+                self.state.lock().complete = true;
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        self.inner.size_hint()
+    }
+}
+
+/// Read and discard a request body that is being refused, so the client can
+/// finish sending and then read the refusal instead of seeing its connection
+/// reset mid-upload. Holds only the bounded capture; gives up after `limit`
+/// bytes.
+pub(crate) async fn drain<B>(
+    body: B,
+    cap: usize,
+    limit: u64,
+    encoded: bool,
+) -> crate::interceptor::BoundedCapture
+where
+    B: Body<Data = Bytes> + Unpin,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    use http_body_util::BodyExt;
+    let (mut tap, handle) = RequestTap::new(body, cap, encoded);
+    while handle.total() <= limit {
+        match tap.frame().await {
+            Some(Ok(_)) => {}
+            Some(Err(_)) | None => break,
+        }
+    }
+    handle.snapshot()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use http_body_util::{BodyExt, Full};
     use std::sync::{Arc, Mutex};
+
+    #[tokio::test]
+    async fn request_tap_forwards_everything_and_keeps_a_bounded_head() {
+        let chunks =
+            (0..64u8).map(|i| Ok::<_, std::io::Error>(Frame::data(Bytes::from(vec![i; 1024]))));
+        let body = http_body_util::StreamBody::new(futures::stream::iter(chunks));
+        let (tap, handle) = RequestTap::new(body, 1500, false);
+        let before = handle.snapshot();
+        assert_eq!((before.total_len, before.complete), (0, false));
+
+        let forwarded = tap.collect().await.unwrap().to_bytes();
+        assert_eq!(forwarded.len(), 64 * 1024);
+        let capture = handle.snapshot();
+        // Exactly the cap: one whole chunk and the first part of the next.
+        assert_eq!(capture.head.len(), 1500);
+        assert_eq!(&capture.head[..], &forwarded[..1500]);
+        assert_eq!(capture.total_len, 64 * 1024);
+        assert!(capture.truncated && capture.complete && !capture.encoded);
+        assert!(capture.inspectable().is_none());
+        assert!(handle.error().is_none());
+    }
+
+    #[tokio::test]
+    async fn request_tap_keeps_the_size_hint_and_reports_small_bodies_whole() {
+        let (tap, handle) = RequestTap::new(Full::new(Bytes::from_static(b"{\"a\":1}")), 7, false);
+        assert_eq!(tap.size_hint().exact(), Some(7));
+        assert_eq!(
+            tap.collect().await.unwrap().to_bytes().as_ref(),
+            b"{\"a\":1}"
+        );
+        let capture = handle.snapshot();
+        assert!(!capture.truncated && capture.complete);
+        assert_eq!(capture.inspectable(), Some(&b"{\"a\":1}"[..]));
+
+        // An empty body is complete without ever being polled.
+        let (tap, handle) = RequestTap::new(Full::new(Bytes::new()), 16, false);
+        assert!(tap.is_end_stream());
+        assert!(handle.snapshot().complete);
+        assert!(handle.snapshot().inspectable().is_none());
+
+        // A zero cap records the length only.
+        let (tap, handle) = RequestTap::new(Full::new(Bytes::from_static(b"abc")), 0, true);
+        tap.collect().await.unwrap();
+        let capture = handle.snapshot();
+        assert!(capture.head.is_empty() && capture.truncated && capture.encoded);
+        assert_eq!(capture.total_len, 3);
+    }
+
+    #[tokio::test]
+    async fn request_tap_records_a_failed_client_body() {
+        let chunks = vec![
+            Ok(Frame::data(Bytes::from_static(b"partial"))),
+            Err(std::io::Error::other("client went away")),
+        ];
+        let body = http_body_util::StreamBody::new(futures::stream::iter(chunks));
+        let (tap, handle) = RequestTap::new(body, 64, false);
+        assert!(tap.collect().await.is_err());
+        let capture = handle.snapshot();
+        assert_eq!(capture.head, b"partial");
+        assert!(!capture.complete);
+        assert!(capture.inspectable().is_none());
+        assert_eq!(handle.error().as_deref(), Some("client went away"));
+    }
+
+    #[tokio::test]
+    async fn drain_discards_the_body_and_stops_at_the_limit() {
+        let chunks =
+            (0..100u8).map(|_| Ok::<_, std::io::Error>(Frame::data(Bytes::from(vec![b'x'; 1000]))));
+        let body = http_body_util::StreamBody::new(futures::stream::iter(chunks));
+        let capture = drain(body, 10, u64::MAX, false).await;
+        assert_eq!((capture.head.len(), capture.total_len), (10, 100_000));
+        assert!(capture.complete);
+
+        let chunks =
+            (0..100u8).map(|_| Ok::<_, std::io::Error>(Frame::data(Bytes::from(vec![b'x'; 1000]))));
+        let body = http_body_util::StreamBody::new(futures::stream::iter(chunks));
+        let capture = drain(body, 10, 2500, false).await;
+        // Reading stops with the first chunk that crosses the limit.
+        assert_eq!(capture.total_len, 3000);
+        assert!(!capture.complete);
+    }
+
+    #[test]
+    fn content_encoded_ignores_identity() {
+        let mut headers = http::HeaderMap::new();
+        assert!(!content_encoded(&headers));
+        headers.insert(http::header::CONTENT_ENCODING, "identity".parse().unwrap());
+        assert!(!content_encoded(&headers));
+        headers.insert(
+            http::header::CONTENT_ENCODING,
+            "Identity, zstd".parse().unwrap(),
+        );
+        assert!(content_encoded(&headers));
+        headers.insert(
+            http::header::CONTENT_ENCODING,
+            http::HeaderValue::from_bytes(b"\xff").unwrap(),
+        );
+        assert!(content_encoded(&headers));
+    }
+
+    /// hyper derives the outgoing request framing from the body's size hint:
+    /// an exact hint is sent as Content-Length, an unknown one as chunked.
+    /// Pass-through relies on this to keep the client's Content-Length.
+    #[tokio::test]
+    async fn hyper_keeps_content_length_for_an_exact_size_hint() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        struct Sized(Option<Bytes>, bool);
+        impl Body for Sized {
+            type Data = Bytes;
+            type Error = std::io::Error;
+            fn poll_frame(
+                mut self: Pin<&mut Self>,
+                _: &mut Context<'_>,
+            ) -> Poll<Option<Result<Frame<Bytes>, std::io::Error>>> {
+                Poll::Ready(self.0.take().map(|data| Ok(Frame::data(data))))
+            }
+            fn size_hint(&self) -> http_body::SizeHint {
+                match (&self.0, self.1) {
+                    (Some(data), true) => http_body::SizeHint::with_exact(data.len() as u64),
+                    (None, true) => http_body::SizeHint::with_exact(0),
+                    _ => http_body::SizeHint::default(),
+                }
+            }
+        }
+
+        for exact in [true, false] {
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                .await
+                .unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = tokio::spawn(async move {
+                let (mut tcp, _) = listener.accept().await.unwrap();
+                let mut seen = Vec::new();
+                let mut buffer = [0u8; 1024];
+                // Both framings end with the body's last bytes.
+                while !(seen.ends_with(b"hello") || seen.ends_with(b"0\r\n\r\n")) {
+                    let n = tcp.read(&mut buffer).await.unwrap();
+                    assert!(n > 0);
+                    seen.extend_from_slice(&buffer[..n]);
+                }
+                tcp.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                    .await
+                    .unwrap();
+                String::from_utf8(seen).unwrap().to_ascii_lowercase()
+            });
+            let tcp = tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .unwrap();
+            let (mut sender, conn) =
+                hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(tcp))
+                    .await
+                    .unwrap();
+            tokio::spawn(conn);
+            let (tap, _) =
+                RequestTap::new(Sized(Some(Bytes::from_static(b"hello")), exact), 0, false);
+            let request = hyper::Request::builder()
+                .method("POST")
+                .uri("/upload")
+                .header("host", "localhost")
+                .body(tap)
+                .unwrap();
+            assert_eq!(sender.send_request(request).await.unwrap().status(), 200);
+            let seen = server.await.unwrap();
+            if exact {
+                assert!(seen.contains("content-length: 5\r\n"), "{seen}");
+                assert!(!seen.contains("transfer-encoding"), "{seen}");
+                assert!(seen.ends_with("\r\n\r\nhello"), "{seen}");
+            } else {
+                assert!(seen.contains("transfer-encoding: chunked\r\n"), "{seen}");
+                assert!(!seen.contains("content-length"), "{seen}");
+                assert!(seen.ends_with("5\r\nhello\r\n0\r\n\r\n"), "{seen}");
+            }
+        }
+    }
 
     #[tokio::test]
     async fn streams_through_and_captures_within_cap() {

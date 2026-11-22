@@ -11,8 +11,8 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::interceptor::{
-    ClientCtx, ConnectDecision, ObservedExchange, PassthroughExchange, ProxyInterceptor,
-    RequestAction,
+    BodyPolicy, ClientCtx, ConnectDecision, ObservedExchange, PassthroughExchange,
+    ProxyInterceptor, RequestAction, RequestHead,
 };
 use crate::passive::PassiveInterceptor;
 use crate::wire;
@@ -41,6 +41,18 @@ pub struct FirewallRequest {
 /// and interactive approval.
 #[async_trait]
 pub trait Firewall: Send + Sync {
+    /// Decide from the head of a recognized LLM request how its body is
+    /// handled, before any of it is read. Return
+    /// [`BodyPolicy::Reject`] only for a refusal that
+    /// [`evaluate`](Self::evaluate) would reach whatever the body holds. The
+    /// default buffers, so `evaluate` sees every request.
+    ///
+    /// Not asked about requests the interceptor forwards without consulting
+    /// the firewall at all (unrecognized paths, duplicate hops when secrets
+    /// are not protected), nor about image requests and websocket upgrades.
+    fn body_policy(&self, _head: &RequestHead<'_>) -> BodyPolicy {
+        BodyPolicy::Buffered
+    }
     async fn evaluate(&self, req: &FirewallRequest) -> RequestAction;
     async fn evaluate_uninspectable(
         &self,
@@ -80,11 +92,39 @@ impl ProxyInterceptor for ActiveInterceptor {
         }
     }
 
+    fn body_policy(&self, head: &RequestHead<'_>) -> BodyPolicy {
+        // Mirrors the two early returns of `on_request`: a request it
+        // forwards without reading the body does not need one buffered.
+        if head.is_duplicate_hop() && !self.firewall.protects_secrets(head.client_id) {
+            return BodyPolicy::PassThrough;
+        }
+        match wire::detect(head.path) {
+            None => BodyPolicy::PassThrough,
+            // Whether an image request is inspected depends on its body.
+            Some(wire::WireFormat::Images) => BodyPolicy::Buffered,
+            Some(_) => match self.firewall.body_policy(head) {
+                // The firewall evaluates every recognized LLM request, so
+                // none of them can skip buffering yet.
+                BodyPolicy::PassThrough => BodyPolicy::Buffered,
+                policy => policy,
+            },
+        }
+    }
+
     async fn on_request(&self, ex: &ObservedExchange) -> RequestAction {
         // A request an earlier LocalRouter hop already handled was already
         // judged (and possibly rewritten) there — pass it through verbatim.
         if ex.is_duplicate_hop() && !self.firewall.protects_secrets(&ex.client_id) {
             return RequestAction::Forward;
+        }
+        // A pass-through request reaches the firewall only when the policy
+        // that let its body skip buffering changed before this call. Its body
+        // was never read, so it cannot be judged: refuse it.
+        if ex.request_capture.is_some() && wire::detect(&ex.path).is_some() {
+            return RequestAction::reject_json(
+                503,
+                "Request policy changed while the request was being forwarded; retry",
+            );
         }
         // Only recognized LLM API calls are subject to the firewall; anything
         // else (auth preflights, etc.) passes through untouched.
@@ -188,6 +228,9 @@ impl ProxyInterceptor for ActiveInterceptor {
 
 #[async_trait]
 impl crate::reverse::ReverseRecorder for ActiveInterceptor {
+    fn body_policy(&self, head: &RequestHead<'_>) -> BodyPolicy {
+        ProxyInterceptor::body_policy(self, head)
+    }
     async fn on_request(&self, ex: &crate::reverse::ReverseExchange) -> RequestAction {
         ProxyInterceptor::on_request(self, &crate::passive::observed_from_reverse(ex)).await
     }
@@ -356,6 +399,263 @@ mod tests {
             it.on_request(&ex).await,
             RequestAction::Reject { status: 403, .. }
         ));
+    }
+}
+
+#[cfg(test)]
+mod body_policy_tests {
+    use super::*;
+    use crate::interceptor::{ExchangeSource, StreamMasking, StreamPolicy, DEFAULT_STREAM_LAG};
+
+    /// A firewall with a fixed header-time answer.
+    struct Fixed {
+        policy: BodyPolicy,
+        protects: bool,
+    }
+    #[async_trait]
+    impl Firewall for Fixed {
+        fn body_policy(&self, _: &RequestHead<'_>) -> BodyPolicy {
+            self.policy.clone()
+        }
+        async fn evaluate(&self, _: &FirewallRequest) -> RequestAction {
+            RequestAction::reject_json(403, "evaluated")
+        }
+        fn protects_secrets(&self, _: &str) -> bool {
+            self.protects
+        }
+    }
+
+    fn interceptor(policy: BodyPolicy, protects: bool) -> ActiveInterceptor {
+        ActiveInterceptor::new(
+            PassiveInterceptor::new(Arc::new(lr_monitor::MonitorEventStore::new(4))),
+            Arc::new(Fixed { policy, protects }),
+        )
+    }
+
+    fn head<'a>(
+        path: &'a str,
+        headers: &'a http::HeaderMap,
+        trace: Option<&'a lr_types::RequestTrace>,
+    ) -> RequestHead<'a> {
+        RequestHead {
+            client_id: "client",
+            strategy_id: "strategy",
+            host: "api.openai.com",
+            port: 443,
+            method: "POST",
+            path,
+            headers,
+            trace,
+            provider_override: None,
+            source: ExchangeSource::Proxy,
+        }
+    }
+
+    fn policy(
+        it: &ActiveInterceptor,
+        path: &str,
+        trace: Option<&lr_types::RequestTrace>,
+    ) -> BodyPolicy {
+        ProxyInterceptor::body_policy(it, &head(path, &http::HeaderMap::new(), trace))
+    }
+
+    #[test]
+    fn unrecognized_paths_pass_through_whatever_the_firewall_says() {
+        for protects in [false, true] {
+            let it = interceptor(BodyPolicy::Reject(403, "no".into()), protects);
+            for path in [
+                "/v1/files",
+                "/api/blobs/sha256:abc",
+                "/oauth/token?x=1",
+                "/",
+            ] {
+                assert_eq!(policy(&it, path, None), BodyPolicy::PassThrough, "{path}");
+            }
+        }
+    }
+
+    #[test]
+    fn llm_paths_never_pass_through() {
+        // Even a firewall that asks for it: every LLM body is evaluated.
+        let it = interceptor(BodyPolicy::PassThrough, false);
+        for path in [
+            "/v1/messages",
+            "/v1/chat/completions",
+            "/v1/responses",
+            "/backend-api/codex/responses",
+            "/backend-api/codex/responses/compact",
+            "/api/chat",
+            "/api/generate",
+            "/v1/systemone",
+        ] {
+            assert_eq!(policy(&it, path, None), BodyPolicy::Buffered, "{path}");
+        }
+        // The default firewall policy buffers too.
+        struct Plain;
+        #[async_trait]
+        impl Firewall for Plain {
+            async fn evaluate(&self, _: &FirewallRequest) -> RequestAction {
+                RequestAction::Forward
+            }
+        }
+        let it = ActiveInterceptor::new(
+            PassiveInterceptor::new(Arc::new(lr_monitor::MonitorEventStore::new(4))),
+            Arc::new(Plain),
+        );
+        assert_eq!(policy(&it, "/v1/messages", None), BodyPolicy::Buffered);
+    }
+
+    #[test]
+    fn firewall_rejects_and_stream_policies_are_passed_on_for_llm_paths() {
+        let it = interceptor(BodyPolicy::Reject(429, "slow down".into()), true);
+        assert_eq!(
+            policy(&it, "/v1/messages", None),
+            BodyPolicy::Reject(429, "slow down".into())
+        );
+        let stream = BodyPolicy::Stream(StreamPolicy {
+            masking: StreamMasking::Redact,
+            needs_model: true,
+            whole_document: false,
+            lag: DEFAULT_STREAM_LAG,
+            restore_only: false,
+        });
+        let it = interceptor(stream.clone(), true);
+        assert_eq!(policy(&it, "/v1/responses", None), stream);
+    }
+
+    #[test]
+    fn image_requests_are_buffered_without_asking_the_firewall() {
+        let it = interceptor(BodyPolicy::Reject(403, "no".into()), true);
+        assert_eq!(
+            policy(&it, "/v1/images/generations", None),
+            BodyPolicy::Buffered
+        );
+    }
+
+    #[test]
+    fn duplicate_hops_pass_through_only_when_secrets_are_not_protected() {
+        let duplicate = lr_types::RequestTrace::parse("abc;hop=2").unwrap();
+        let first = lr_types::RequestTrace::parse("abc;hop=1").unwrap();
+        let reject = BodyPolicy::Reject(403, "no".into());
+
+        let it = interceptor(reject.clone(), false);
+        assert_eq!(
+            policy(&it, "/v1/messages", Some(&duplicate)),
+            BodyPolicy::PassThrough
+        );
+        assert_eq!(policy(&it, "/v1/messages", Some(&first)), reject);
+
+        let it = interceptor(reject.clone(), true);
+        assert_eq!(policy(&it, "/v1/messages", Some(&duplicate)), reject);
+    }
+
+    /// `on_request` forwards exactly the requests `body_policy` lets through
+    /// unbuffered, and refuses a pass-through request it would have judged.
+    #[tokio::test]
+    async fn pass_through_requests_are_never_evaluated_without_their_body() {
+        let duplicate = lr_types::RequestTrace::parse("abc;hop=2").unwrap();
+        let capture = Some(crate::interceptor::BoundedCapture::default());
+
+        let it = interceptor(BodyPolicy::Buffered, false);
+        for (path, trace) in [
+            ("/v1/files", None),
+            ("/v1/messages", Some(duplicate.clone())),
+        ] {
+            let ex = ObservedExchange {
+                method: "POST".into(),
+                path: path.into(),
+                trace,
+                request_capture: capture.clone(),
+                ..Default::default()
+            };
+            assert!(matches!(it.on_request(&ex).await, RequestAction::Forward));
+        }
+
+        // Secrets became protected after the duplicate hop was let through.
+        let it = interceptor(BodyPolicy::Buffered, true);
+        let ex = ObservedExchange {
+            method: "POST".into(),
+            path: "/v1/messages".into(),
+            trace: Some(duplicate),
+            request_capture: capture,
+            ..Default::default()
+        };
+        assert!(matches!(
+            it.on_request(&ex).await,
+            RequestAction::Reject { status: 503, .. }
+        ));
+    }
+
+    #[test]
+    fn reverse_recorder_shares_the_policy() {
+        let it = interceptor(BodyPolicy::Reject(403, "no".into()), true);
+        let headers = http::HeaderMap::new();
+        let mut blob = head("/api/blobs/sha256:abc", &headers, None);
+        blob.source = ExchangeSource::ReverseProxy;
+        assert_eq!(
+            crate::reverse::ReverseRecorder::body_policy(&it, &blob),
+            BodyPolicy::PassThrough
+        );
+        let mut chat = head("/api/chat", &headers, None);
+        chat.source = ExchangeSource::ReverseProxy;
+        assert_eq!(
+            crate::reverse::ReverseRecorder::body_policy(&it, &chat),
+            BodyPolicy::Reject(403, "no".into())
+        );
+    }
+
+    /// The header-time verdict on Content-Encoding is the decoder's verdict.
+    #[tokio::test]
+    async fn header_time_encoding_errors_match_the_decoder() {
+        for value in [
+            "zstd",
+            "gzip, br",
+            "identity",
+            "deflate,gzip,br,zstd",
+            "ZSTD",
+            "",
+            "gzip,",
+            "compress",
+            "gzip, snappy",
+            "identity, identity, identity, identity, identity",
+            "gzip, gzip, gzip, gzip, gzip",
+        ] {
+            let mut headers = http::HeaderMap::new();
+            headers.insert(http::header::CONTENT_ENCODING, value.parse().unwrap());
+            let decoded =
+                crate::request_body::inspect("/v1/responses", &headers, bytes::Bytes::new()).await;
+            let unsupported = decoded == Err(crate::request_body::DecodeError::Unsupported);
+            assert_eq!(
+                head("/v1/responses", &headers, None)
+                    .content_encoding_error()
+                    .is_some(),
+                unsupported,
+                "{value:?}"
+            );
+            // Paths that are not inspected are never decoded.
+            assert!(head("/v1/files", &headers, None)
+                .content_encoding_error()
+                .is_none());
+        }
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            http::header::CONTENT_ENCODING,
+            http::HeaderValue::from_bytes(b"\xff").unwrap(),
+        );
+        assert!(head("/v1/responses", &headers, None)
+            .content_encoding_error()
+            .is_some());
+        assert!(head("/v1/responses", &http::HeaderMap::new(), None)
+            .content_encoding_error()
+            .is_none());
+        // Split across header lines, the count still applies.
+        let mut headers = http::HeaderMap::new();
+        for _ in 0..5 {
+            headers.append(http::header::CONTENT_ENCODING, "gzip".parse().unwrap());
+        }
+        assert!(head("/v1/responses", &headers, None)
+            .content_encoding_error()
+            .is_some());
     }
 }
 

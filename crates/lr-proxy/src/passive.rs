@@ -15,8 +15,9 @@ use lr_monitor::{
 use lr_monitoring::metrics::{MetricsCollector, RequestMetrics};
 
 use crate::interceptor::{
-    ClientCtx, ClientNameResolver, ConnectDecision, ExchangeSource, ObservedExchange,
-    PassthroughExchange, PricingResolver, ProxyInterceptor, RequestAction, TokenUsage,
+    BodyPolicy, BoundedCapture, ClientCtx, ClientNameResolver, ConnectDecision, ExchangeSource,
+    ObservedExchange, PassthroughExchange, PricingResolver, ProxyInterceptor, RequestAction,
+    RequestHead, TokenUsage,
 };
 use crate::wire::{self, RequestMeta, ResponseMeta, WireFormat};
 
@@ -85,19 +86,18 @@ impl PassiveInterceptor {
         Option<String>,
         usize,
     ) {
-        let request_json = ex
-            .request_body
-            .as_ref()
-            .and_then(|b| serde_json::from_slice::<serde_json::Value>(b).ok());
+        let request_json =
+            request_bytes(ex).and_then(|b| serde_json::from_slice::<serde_json::Value>(b).ok());
         let req_meta = request_json
             .as_ref()
             .map(|b| wire::parse_request(format, b))
             .unwrap_or_default();
         // Raw wire payload, capped, so the exact bytes are always inspectable.
-        let raw_request = ex
-            .request_body
-            .as_ref()
-            .map(|b| cap_raw(&String::from_utf8_lossy(b)));
+        let raw_request = match (&ex.request_body, &ex.request_capture) {
+            (Some(body), _) => Some(cap_raw(&String::from_utf8_lossy(body))),
+            (None, Some(capture)) => raw_capture(capture),
+            (None, None) => None,
+        };
         let tool_count = request_json
             .as_ref()
             .and_then(|b| b.get("tools"))
@@ -315,13 +315,39 @@ impl PassiveInterceptor {
             }
             return;
         };
-        let (req_meta, _request_json, _raw_request, _tool_count) = Self::request_parts(format, ex);
+        let (req_meta, request_json, raw_request, tool_count) = Self::request_parts(format, ex);
         let (resp_meta, response_json, raw_response) = Self::response_parts(format, ex);
         let (model, cost_usd, total_tokens, status) = self.finalize(ex, &req_meta, &resp_meta);
+        // A pass-through body had not been read when the pending event was
+        // opened, so its request half is only known now.
+        let late_request = ex.request_body.is_none() && ex.request_capture.is_some();
 
         self.monitor.update(event_id, |event| {
             event.status = status;
             event.duration_ms = ex.latency_ms;
+            if late_request {
+                if let MonitorEventData::LlmCall {
+                    stream,
+                    message_count,
+                    has_tools,
+                    tool_count: tools,
+                    request_body,
+                    requested_model,
+                    streamed,
+                    raw_request: raw,
+                    ..
+                } = &mut event.data
+                {
+                    *stream = req_meta.stream;
+                    *message_count = req_meta.message_count;
+                    *has_tools = req_meta.has_tools;
+                    *tools = tool_count;
+                    *request_body = request_json.unwrap_or(serde_json::Value::Null);
+                    *requested_model = req_meta.model.clone();
+                    *streamed = Some(req_meta.stream);
+                    *raw = raw_request;
+                }
+            }
             if let MonitorEventData::LlmCall {
                 model: m,
                 status_code: sc,
@@ -358,6 +384,9 @@ impl PassiveInterceptor {
                 }
             }
         });
+        if late_request {
+            self.track_conversation(event_id, ex);
+        }
     }
 
     /// Record a fully-observed exchange as one combined event in a single push.
@@ -428,10 +457,8 @@ impl PassiveInterceptor {
     }
 
     fn track_conversation(&self, event_id: &str, ex: &ObservedExchange) {
-        if let Some(mut body) = ex
-            .request_body
-            .as_ref()
-            .and_then(|b| serde_json::from_slice::<serde_json::Value>(b).ok())
+        if let Some(mut body) =
+            request_bytes(ex).and_then(|b| serde_json::from_slice::<serde_json::Value>(b).ok())
         {
             let caller_session = ex
                 .secret_session
@@ -532,6 +559,8 @@ fn passthrough_from_observed(ex: &ObservedExchange) -> Option<PassthroughExchang
         method: (!ex.method.is_empty()).then(|| ex.method.clone()),
         path: Some(PassthroughExchange::strip_query(&ex.path)),
         status: ex.status,
+        // Known only for a body forwarded without buffering.
+        bytes_sent: ex.request_capture.as_ref().map_or(0, |c| c.total_len),
         latency_ms: ex.latency_ms,
         error: ex.error.clone(),
         ..Default::default()
@@ -611,6 +640,7 @@ pub(crate) fn observed_from_reverse(ex: &crate::reverse::ReverseExchange) -> Obs
         method: ex.method.clone(),
         path: ex.path.clone(),
         request_body: ex.request_body.clone(),
+        request_capture: ex.request_capture.clone(),
         request_body_error: ex.request_body_error,
         status: ex.status,
         response_body: ex.response_body.clone(),
@@ -628,6 +658,11 @@ pub(crate) fn observed_from_reverse(ex: &crate::reverse::ReverseExchange) -> Obs
 
 #[async_trait]
 impl crate::reverse::ReverseRecorder for PassiveInterceptor {
+    fn body_policy(&self, _head: &RequestHead<'_>) -> BodyPolicy {
+        // Observe-only: the body is never needed to decide anything.
+        BodyPolicy::PassThrough
+    }
+
     fn begin(&self, ex: &crate::reverse::ReverseExchange) -> Option<String> {
         self.emit_pending(&observed_from_reverse(ex))
     }
@@ -699,8 +734,9 @@ fn api_for(format: WireFormat) -> LlmApi {
 }
 
 /// Cap on the raw payload stored per event, so the in-memory monitor ring
-/// buffer stays bounded even for large exchanges.
-const RAW_CAP: usize = 256 * 1024;
+/// buffer stays bounded even for large exchanges. Also the most the
+/// transports capture of a request body they forward without buffering.
+pub(crate) const RAW_CAP: usize = 256 * 1024;
 
 /// Cap on the *parsed* body stored per event.
 ///
@@ -728,6 +764,51 @@ fn cap_raw(s: &str) -> String {
     format!("{}\n… [truncated {} bytes]", &s[..end], s.len() - end)
 }
 
+/// The request bytes the monitor may parse: the buffered body, or the capture
+/// of a pass-through body when it holds all of it undecoded.
+fn request_bytes(ex: &ObservedExchange) -> Option<&[u8]> {
+    ex.request_body.as_deref().or_else(|| {
+        ex.request_capture
+            .as_ref()
+            .and_then(BoundedCapture::inspectable)
+    })
+}
+
+/// Raw text shown for a request body that was forwarded without buffering.
+fn raw_capture(capture: &BoundedCapture) -> Option<String> {
+    if capture.total_len == 0 {
+        return None;
+    }
+    if capture.encoded {
+        return Some(format!(
+            "[{} bytes forwarded with their Content-Encoding; not decoded]",
+            capture.total_len
+        ));
+    }
+    if capture.head.is_empty() {
+        return None;
+    }
+    // The capture may end inside a multi-byte character; drop the fragment.
+    let text = match std::str::from_utf8(&capture.head) {
+        Ok(text) => text.to_string(),
+        Err(e) if e.error_len().is_none() => {
+            String::from_utf8_lossy(&capture.head[..e.valid_up_to()]).into_owned()
+        }
+        Err(_) => String::from_utf8_lossy(&capture.head).into_owned(),
+    };
+    let mut text = cap_raw(&text);
+    if capture.truncated {
+        text.push_str(&format!(
+            "\n… [truncated {} bytes]",
+            capture.total_len - capture.head.len() as u64
+        ));
+    }
+    if !capture.complete {
+        text.push_str("\n… [request body incomplete]");
+    }
+    Some(text)
+}
+
 #[async_trait]
 impl ProxyInterceptor for PassiveInterceptor {
     fn on_connect(&self, host: &str, client: &ClientCtx) -> ConnectDecision {
@@ -740,6 +821,11 @@ impl ProxyInterceptor for PassiveInterceptor {
             // Non-LLM hosts (auth, telemetry, everything else) are never decrypted.
             ConnectDecision::Tunnel
         }
+    }
+
+    fn body_policy(&self, _head: &RequestHead<'_>) -> BodyPolicy {
+        // Observe-only: the body is never needed to decide anything.
+        BodyPolicy::PassThrough
     }
 
     async fn on_request(&self, _exchange: &ObservedExchange) -> RequestAction {
@@ -807,6 +893,168 @@ mod tests {
         fn name_for(&self, client_id: &str) -> Option<String> {
             (client_id == "client-1").then(|| "Claude Code".to_string())
         }
+    }
+
+    /// A pass-through exchange as the transport hands it over: no buffered
+    /// body, a capture of what was forwarded.
+    fn pass_through(body: &[u8], cap: usize) -> ObservedExchange {
+        let mut ex = exchange();
+        ex.request_body = None;
+        ex.request_capture = Some(BoundedCapture {
+            head: body[..cap.min(body.len())].to_vec(),
+            total_len: body.len() as u64,
+            truncated: body.len() > cap,
+            complete: true,
+            encoded: false,
+        });
+        ex
+    }
+
+    fn llm_call(store: &MonitorEventStore, id: &str) -> serde_json::Value {
+        serde_json::to_value(store.get(id).expect("event")).unwrap()["data"].clone()
+    }
+
+    #[test]
+    fn pass_through_requests_get_their_request_half_on_completion() {
+        let store = Arc::new(MonitorEventStore::new(16));
+        let it = PassiveInterceptor::new(store.clone());
+        let body = exchange().request_body.unwrap();
+
+        // Opened before a single body byte was read.
+        let mut pending = pass_through(&body, RAW_CAP);
+        pending.request_capture = Some(BoundedCapture::default());
+        pending.status = None;
+        pending.response_body = None;
+        let id = it.emit_pending(&pending).expect("pending event");
+        let data = llm_call(&store, &id);
+        assert_eq!(data["model"], "");
+        assert!(data["request_body"].is_null());
+        assert!(data["raw_request"].is_null());
+
+        let mut done = pass_through(&body, RAW_CAP);
+        done.event_id = Some(id.clone());
+        it.complete(&id, &done);
+        let event = store.get(&id).unwrap();
+        assert_eq!(event.status, EventStatus::Complete);
+        // Correlated like a buffered request, from the same bytes.
+        assert!(event.conversation.is_some());
+        let data = llm_call(&store, &id);
+        assert_eq!(data["model"], "claude-sonnet-4-20250514");
+        assert_eq!(data["requested_model"], "claude-sonnet-4-20250514");
+        assert_eq!(data["message_count"], 1);
+        assert_eq!(data["has_tools"], true);
+        assert_eq!(data["tool_count"], 1);
+        assert_eq!(data["request_body"]["messages"][0]["content"], "hi");
+        assert_eq!(data["raw_request"], String::from_utf8(body).unwrap());
+        assert_eq!(data["input_tokens"], 5);
+    }
+
+    #[test]
+    fn a_buffered_request_is_not_overwritten_on_completion() {
+        // Only pass-through requests arrive late; a buffered one keeps the
+        // request half its pending event was opened with.
+        let store = Arc::new(MonitorEventStore::new(16));
+        let it = PassiveInterceptor::new(store.clone());
+        let id = it.emit_pending(&exchange()).expect("pending event");
+        let mut done = exchange();
+        done.request_body = Some(br#"{"model":"other","messages":[]}"#.to_vec());
+        it.complete(&id, &done);
+        let data = llm_call(&store, &id);
+        assert_eq!(data["requested_model"], "claude-sonnet-4-20250514");
+        assert_eq!(data["message_count"], 1);
+    }
+
+    #[test]
+    fn truncated_captures_are_shown_raw_and_never_parsed() {
+        let store = Arc::new(MonitorEventStore::new(16));
+        let it = PassiveInterceptor::new(store.clone());
+        let body = exchange().request_body.unwrap();
+        it.record(&pass_through(&body, 20));
+        let id = store.list(0, 10, None).events[0].id.clone();
+        let data = llm_call(&store, &id);
+        assert_eq!(
+            data["raw_request"],
+            format!(
+                "{}\n… [truncated {} bytes]",
+                String::from_utf8_lossy(&body[..20]),
+                body.len() - 20
+            )
+        );
+        assert!(data["request_body"].is_null());
+        assert_eq!(data["message_count"], 0);
+        // The model still comes from wherever it is known; here, nowhere.
+        assert_eq!(data["model"], "");
+    }
+
+    #[test]
+    fn capture_text_handles_every_shape() {
+        let capture = |head: &[u8], total: u64, complete: bool, encoded: bool| BoundedCapture {
+            head: head.to_vec(),
+            total_len: total,
+            truncated: total > head.len() as u64,
+            complete,
+            encoded,
+        };
+        // Nothing sent, and paths whose content is never captured.
+        assert_eq!(raw_capture(&capture(b"", 0, true, false)), None);
+        assert_eq!(raw_capture(&capture(b"", 4096, true, false)), None);
+        // Whole.
+        assert_eq!(
+            raw_capture(&capture(b"{}", 2, true, false)).as_deref(),
+            Some("{}")
+        );
+        // Cut inside a multi-byte character: the fragment is dropped, and the
+        // marker counts bytes of the body, not of the text.
+        let text = "naïve".as_bytes();
+        assert_eq!(
+            raw_capture(&capture(&text[..3], text.len() as u64, true, false)).as_deref(),
+            Some("na\n… [truncated 3 bytes]")
+        );
+        // Bytes that are not text at all are shown lossily, not dropped.
+        assert_eq!(
+            raw_capture(&capture(b"a\xffb", 3, true, false)).as_deref(),
+            Some("a\u{fffd}b")
+        );
+        // An upload that never finished.
+        assert_eq!(
+            raw_capture(&capture(b"{\"a\"", 4, false, false)).as_deref(),
+            Some("{\"a\"\n… [request body incomplete]")
+        );
+        // Compressed bytes are described, never rendered.
+        assert_eq!(
+            raw_capture(&capture(b"\x28\xb5\x2f\xfd", 9000, true, true)).as_deref(),
+            Some("[9000 bytes forwarded with their Content-Encoding; not decoded]")
+        );
+        // Only a whole identity-encoded body is offered for parsing.
+        assert!(capture(b"{}", 2, true, false).inspectable().is_some());
+        assert!(capture(b"{}", 2, false, false).inspectable().is_none());
+        assert!(capture(b"{}", 3, true, false).inspectable().is_none());
+        assert!(capture(b"{}", 2, true, true).inspectable().is_none());
+    }
+
+    #[test]
+    fn inspected_passthroughs_report_the_forwarded_length_only() {
+        let store = Arc::new(MonitorEventStore::new(16));
+        let it = PassiveInterceptor::new(store.clone());
+        let mut ex = pass_through(b"binary upload bytes", 0);
+        ex.path = "/v1/files?purpose=secret-query".into();
+        ex.status = None;
+        ex.response_body = None;
+        let id = it.emit_pending(&ex).expect("passthrough event");
+        ex.status = Some(200);
+        it.complete(&id, &ex);
+        let event = store.get(&id).unwrap();
+        assert_eq!(event.status, EventStatus::Complete);
+        let MonitorEventData::ProxyPassthrough {
+            bytes_sent, path, ..
+        } = &event.data
+        else {
+            panic!("expected a passthrough event");
+        };
+        assert_eq!(*bytes_sent, Some(19));
+        assert_eq!(path.as_deref(), Some("/v1/files"));
+        let text = serde_json::to_string(&event).unwrap();
+        assert!(!text.contains("binary upload") && !text.contains("secret-query"));
     }
 
     #[test]

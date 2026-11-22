@@ -74,11 +74,159 @@ impl RequestAction {
     }
 }
 
+/// The head of a decrypted request, available before any body byte is read.
+///
+/// [`ProxyInterceptor::body_policy`] decides from this alone whether the body
+/// has to be buffered for inspection, can be forwarded as it arrives, or is
+/// refused outright.
+#[derive(Debug, Clone, Copy)]
+pub struct RequestHead<'a> {
+    /// The client this request belongs to.
+    pub client_id: &'a str,
+    /// The client's routing strategy id.
+    pub strategy_id: &'a str,
+    /// Upstream host; the wrapped provider's name on the reverse proxy.
+    pub host: &'a str,
+    /// Upstream port, `0` on the reverse proxy.
+    pub port: u16,
+    /// Request method (e.g. `POST`).
+    pub method: &'a str,
+    /// Request path including the query string.
+    pub path: &'a str,
+    /// Request headers as they will be forwarded.
+    pub headers: &'a http::HeaderMap,
+    /// Cross-hop trace stamped on the forwarded request.
+    pub trace: Option<&'a lr_types::RequestTrace>,
+    /// Provider name when the host does not identify it (reverse proxy).
+    pub provider_override: Option<&'a str>,
+    /// Which proxy received the request.
+    pub source: ExchangeSource,
+}
+
+impl RequestHead<'_> {
+    /// Whether an earlier LocalRouter hop already handled this request.
+    pub fn is_duplicate_hop(&self) -> bool {
+        self.trace.is_some_and(|t| t.is_duplicate())
+    }
+
+    /// Catalog/metrics provider name, as [`crate::active::FirewallRequest`]
+    /// carries it.
+    pub fn provider(&self) -> String {
+        self.provider_override
+            .map(str::to_owned)
+            .unwrap_or_else(|| crate::wire::provider_for_host(self.host).to_string())
+    }
+
+    /// The content-decoding failure that is already certain from the headers:
+    /// a `Content-Encoding` the proxy cannot decode on a path it inspects.
+    /// Corrupt or oversized bodies are only known once the body is read.
+    pub fn content_encoding_error(&self) -> Option<crate::request_body::DecodeError> {
+        crate::wire::detect(self.path)?;
+        let mut count = 0usize;
+        for value in self.headers.get_all(http::header::CONTENT_ENCODING) {
+            let Ok(value) = value.to_str() else {
+                return Some(crate::request_body::DecodeError::Unsupported);
+            };
+            for encoding in value.split(',') {
+                let encoding = encoding.trim().to_ascii_lowercase();
+                count += 1;
+                if count > MAX_CONTENT_ENCODINGS
+                    || !matches!(
+                        encoding.as_str(),
+                        "identity" | "zstd" | "gzip" | "deflate" | "br"
+                    )
+                {
+                    return Some(crate::request_body::DecodeError::Unsupported);
+                }
+            }
+        }
+        None
+    }
+}
+
+/// Encodings a request may stack; mirrors the decoder in [`crate::request_body`].
+const MAX_CONTENT_ENCODINGS: usize = 4;
+
+/// Default lag between detection and release for a streamed request body.
+pub const DEFAULT_STREAM_LAG: usize = 16 * 1024 * 1024;
+
+/// What a streamed request body is subjected to while it is forwarded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamMasking {
+    /// Nothing is detected or masked; the original bytes are forwarded.
+    Off,
+    /// Secrets are detected and reported; the original bytes are forwarded.
+    Notify,
+    /// Secrets are detected and masked before the bytes are released.
+    Redact,
+}
+
+/// How an inspected request body is streamed to the upstream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamPolicy {
+    pub masking: StreamMasking,
+    /// Nothing is released until the request's `model` is known and permitted.
+    pub needs_model: bool,
+    /// A consumer needs the whole document, so nothing is released before the
+    /// body ends.
+    pub whole_document: bool,
+    /// Bytes the release cursor stays behind the detection cursor.
+    pub lag: usize,
+    /// A vault from earlier turns exists and only restores references.
+    pub restore_only: bool,
+}
+
+/// How the transport handles a request body, decided from the head alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BodyPolicy {
+    /// Nothing inspects this body: forward it as it arrives, with its length
+    /// and encoding intact. The transport still calls
+    /// [`ProxyInterceptor::on_request`], with `request_body: None` and
+    /// `request_capture: Some(..)`; only `Forward` and `Reject` are honored
+    /// there, a rewrite fails the request closed.
+    PassThrough,
+    /// Refuse the request with this status and message without contacting the
+    /// upstream.
+    Reject(u16, String),
+    /// Inspect and forward the body incrementally. The transports buffer such
+    /// requests until the streaming pipeline exists.
+    Stream(StreamPolicy),
+    /// Read the whole body before deciding anything.
+    Buffered,
+}
+
+/// A bounded view of a request body that was forwarded without being buffered.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BoundedCapture {
+    /// The first bytes of the body, at most the transport's capture cap.
+    /// Always empty on paths that are not LLM calls.
+    pub head: Vec<u8>,
+    /// Bytes of the body read so far; its full length once `complete`.
+    pub total_len: u64,
+    /// `head` holds less than `total_len` bytes.
+    pub truncated: bool,
+    /// The body was read to its end. False while it is still uploading, and
+    /// when the client or the upstream ended the exchange early.
+    pub complete: bool,
+    /// The body has a non-identity `Content-Encoding`, so `head` is not text.
+    pub encoded: bool,
+}
+
+impl BoundedCapture {
+    /// The whole body, when the capture holds all of it in a parseable form.
+    pub fn inspectable(&self) -> Option<&[u8]> {
+        (self.complete && !self.truncated && !self.encoded && !self.head.is_empty())
+            .then_some(self.head.as_slice())
+    }
+}
+
 /// A decrypted HTTP exchange handed to the interceptor for observation.
 ///
-/// Bodies are raw, size-capped byte copies captured by the transport (which
-/// stays protocol-agnostic); the interceptor decides how to parse them. Large
-/// or streaming payloads are truncated at the cap, never buffered unbounded.
+/// The request body is the whole decoded body when the transport buffered it
+/// for inspection, so it can be as large as the transport's request limit. A
+/// request forwarded without buffering has no `request_body`; it carries a
+/// bounded [`request_capture`](Self::request_capture) instead. The response
+/// body is a copy truncated at the transport's capture cap.
 #[derive(Debug, Clone, Default)]
 pub struct ObservedExchange {
     /// The client this exchange belongs to.
@@ -104,8 +252,12 @@ pub struct ObservedExchange {
     pub method: String,
     /// Request path (e.g. `/v1/messages`).
     pub path: String,
-    /// Raw request body bytes (capped), if any.
+    /// The whole decoded request body, when the transport buffered it.
     pub request_body: Option<Vec<u8>>,
+    /// Bounded capture of a request body that was not buffered. `Some` on a
+    /// request handed to [`ProxyInterceptor::on_request`] marks it as
+    /// pass-through, before any byte was read.
+    pub request_capture: Option<BoundedCapture>,
     /// Safe content-decoding failure; active policy must reject it rather than
     /// evaluating missing JSON. Passive forwarding retains the original bytes.
     pub request_body_error: Option<crate::request_body::DecodeError>,
@@ -243,6 +395,15 @@ pub trait ClientNameResolver: Send + Sync {
 pub trait ProxyInterceptor: Send + Sync {
     /// Decide MITM vs blind tunnel vs reject for a new `CONNECT`.
     fn on_connect(&self, host: &str, client: &ClientCtx) -> ConnectDecision;
+
+    /// Decide from the request head how the body is handled, before any of
+    /// it is read. The default buffers every body, which is always safe.
+    /// Return [`BodyPolicy::PassThrough`] only for a request whose body
+    /// [`on_request`](Self::on_request) would neither read nor change.
+    /// Not consulted for websocket upgrades, which are always buffered.
+    fn body_policy(&self, _head: &RequestHead<'_>) -> BodyPolicy {
+        BodyPolicy::Buffered
+    }
 
     /// Called with the decrypted request before it is forwarded. The firewall
     /// evaluates here and may forward, rewrite, or reject. Awaited by the
