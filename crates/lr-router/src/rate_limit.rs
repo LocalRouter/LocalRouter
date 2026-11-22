@@ -14,8 +14,6 @@
 //! counts as used until it is dropped. Native batches reserve in the durable
 //! `lr_batches` ledger; both kinds and recorded usage add up in one check.
 
-#![allow(dead_code)]
-
 use chrono::{DateTime, Duration, Utc};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
@@ -25,8 +23,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::fs;
-use tokio::time::{interval, Duration as TokioDuration};
-use tracing::{debug, error, warn};
+use tracing::{debug, warn};
 
 use lr_types::{AppError, AppResult};
 
@@ -252,36 +249,7 @@ impl fmt::Display for RateLimiterKey {
     }
 }
 
-impl RateLimiterKey {
-    #[allow(dead_code)]
-    fn from_string(s: &str) -> Option<Self> {
-        let parts: Vec<&str> = s.split(':').collect();
-        if parts.len() != 3 {
-            return None;
-        }
-
-        let limit_type = match parts[2] {
-            "Requests" => RateLimitType::Requests,
-            "InputTokens" => RateLimitType::InputTokens,
-            "OutputTokens" => RateLimitType::OutputTokens,
-            "TotalTokens" => RateLimitType::TotalTokens,
-            "Cost" => RateLimitType::Cost,
-            _ => return None,
-        };
-
-        match parts[0] {
-            "apikey" => Some(RateLimiterKey::ApiKey {
-                key_id: parts[1].to_string(),
-                limit_type,
-            }),
-            "router" => Some(RateLimiterKey::Router {
-                router_name: parts[1].to_string(),
-                limit_type,
-            }),
-            _ => None,
-        }
-    }
-}
+impl RateLimiterKey {}
 
 /// Usage information for a request
 #[derive(Debug, Clone)]
@@ -559,19 +527,6 @@ impl RateLimiterManager {
         Ok(())
     }
 
-    /// Start background task for periodic persistence
-    pub fn start_persistence_task(self: Arc<Self>, interval_secs: u64) {
-        tokio::spawn(async move {
-            let mut ticker = interval(TokioDuration::from_secs(interval_secs));
-            loop {
-                ticker.tick().await;
-                if let Err(e) = self.persist_state().await {
-                    error!("Failed to persist rate limiter state: {}", e);
-                }
-            }
-        });
-    }
-
     /// Add rate limiters for an API key
     pub fn add_api_key_limiters(&self, key_id: String, limiters: Vec<RateLimiter>) {
         self.api_key_limiters.insert(key_id, limiters);
@@ -580,16 +535,6 @@ impl RateLimiterManager {
     /// Add rate limiters for a router
     pub fn add_router_limiters(&self, router_name: String, limiters: Vec<RateLimiter>) {
         self.router_limiters.insert(router_name, limiters);
-    }
-
-    /// Remove rate limiters for an API key
-    pub fn remove_api_key_limiters(&self, key_id: &str) {
-        self.api_key_limiters.remove(key_id);
-    }
-
-    /// Remove rate limiters for a router
-    pub fn remove_router_limiters(&self, router_name: &str) {
-        self.router_limiters.remove(router_name);
     }
 
     /// Check if a request is allowed for a specific limiter
@@ -1012,36 +957,12 @@ impl RateLimiterManager {
             .next()?;
         Some((window.current_usage, window.limit, window.window_start))
     }
-
-    /// Completed usage, limit and window start of the first configured window
-    /// of a metric, once usage has been recorded for the router.
-    ///
-    /// Use [`Self::get_router_usage_windows`] for every window.
-    pub async fn get_router_usage(
-        &self,
-        router_name: &str,
-        limit_type: RateLimitType,
-    ) -> Option<(f64, f64, DateTime<Utc>)> {
-        let key = RateLimiterKey::Router {
-            router_name: router_name.to_string(),
-            limit_type,
-        };
-        if !self.states.contains_key(&key.to_string()) {
-            return None;
-        }
-        let window = self
-            .get_router_usage_windows(router_name, limit_type)
-            .await
-            .into_iter()
-            .next()?;
-        Some((window.current_usage, window.limit, window.window_start))
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::time::sleep;
+    use tokio::time::{sleep, Duration as TokioDuration};
 
     #[tokio::test]
     async fn exhausted_token_and_cost_budgets_block_subsequent_requests() {
