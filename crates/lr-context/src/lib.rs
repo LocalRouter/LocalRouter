@@ -733,15 +733,6 @@ impl ContentStore {
         *self.embedding_service.lock() = Some(service);
     }
 
-    /// Whether vector search is available (embedding service attached and loaded).
-    #[cfg(feature = "vector")]
-    pub fn has_vector_search(&self) -> bool {
-        self.embedding_service
-            .lock()
-            .as_ref()
-            .is_some_and(|s| s.is_loaded() || s.is_downloaded())
-    }
-
     /// Rebuild vector index from all currently indexed FTS5 content.
     ///
     /// Call this after attaching an embedding service to an existing store,
