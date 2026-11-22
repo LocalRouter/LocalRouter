@@ -4,7 +4,6 @@
 //! - Per-minute: Last 24 hours
 //! - Per-hour: Last 7 days
 
-#![allow(dead_code)]
 //! - Per-day: Last 90 days
 
 use chrono::{DateTime, Duration, DurationRound, Utc};
@@ -491,20 +490,6 @@ impl MetricsCollector {
                 metric_type
                     .strip_prefix("llm_model:")
                     .map(|name| name.to_string())
-            })
-            .collect()
-    }
-
-    /// Get all strategy IDs
-    pub fn get_strategy_ids(&self) -> Vec<String> {
-        self.db
-            .get_metric_types()
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|metric_type| {
-                metric_type
-                    .strip_prefix("llm_strategy:")
-                    .map(|id| id.to_string())
             })
             .collect()
     }
