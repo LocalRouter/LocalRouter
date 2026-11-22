@@ -3,8 +3,6 @@
 //! This module provides a temporary token storage system for OAuth 2.0 client credentials flow.
 //! Tokens are stored in-memory only (never persisted to disk) and expire after 1 hour.
 
-#![allow(dead_code)]
-
 use chrono::{DateTime, Duration, Utc};
 use lr_types::{AppError, AppResult};
 use lr_utils::crypto;
