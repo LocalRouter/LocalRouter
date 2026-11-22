@@ -145,14 +145,80 @@ fn limit_exceeded(
     (projected > limit.value).then_some(label)
 }
 
+/// Refusal for a request whose body cannot be decoded while a configured
+/// model or GuardRails restriction needs to read it.
+const READABLE_BODY_REQUIRED: &str =
+    "Configured model or GuardRails permissions require a readable request body";
+
+/// Whether a request for a stored response only retrieves, deletes or cancels
+/// it, and so carries no conversation of its own.
+fn is_retrieval(method: &str, path: &str) -> bool {
+    lr_proxy::wire::response_id(path).is_some()
+        && (matches!(method, "GET" | "DELETE")
+            || (method == "POST"
+                && path
+                    .split('?')
+                    .next()
+                    .is_some_and(|p| p.ends_with("/cancel"))))
+}
+
 #[async_trait::async_trait]
 impl lr_proxy::active::Firewall for AppFirewall {
+    /// The refusals [`evaluate`](Self::evaluate) reaches whatever the body
+    /// holds, answered before the body is read. Everything else is buffered:
+    /// the secret scan, GuardRails, the allowed-models list and the model
+    /// approval all read the body.
+    fn body_policy(
+        &self,
+        head: &lr_proxy::interceptor::RequestHead<'_>,
+    ) -> lr_proxy::interceptor::BodyPolicy {
+        use lr_config::PermissionState;
+        use lr_proxy::interceptor::BodyPolicy;
+        let config = self.config_manager.get();
+        let Some(client) = config.clients.iter().find(|c| c.id == head.client_id) else {
+            return BodyPolicy::Reject(403, "Client policy is no longer available".into());
+        };
+        if !client.enabled || !(client.llm_proxy_enabled() || client.llm_reverse_proxy_enabled()) {
+            return BodyPolicy::Reject(403, "Proxy access is disabled for this client".into());
+        }
+        let Some(strategy) = config
+            .strategies
+            .iter()
+            .find(|s| s.id == client.strategy_id)
+        else {
+            return BodyPolicy::Reject(403, "Client strategy is no longer available".into());
+        };
+        // An undecodable body is refused first, with the decoder's status.
+        if let Some(error) = head.content_encoding_error() {
+            if self.requires_readable_body(&config, client, strategy, &head.provider()) {
+                return BodyPolicy::Reject(error.status(), READABLE_BODY_REQUIRED.into());
+            }
+        }
+        let off = strategy
+            .auto_config
+            .as_ref()
+            .is_some_and(|a| a.permission == PermissionState::Off);
+        if is_retrieval(head.method, head.path) {
+            // Retrievals skip the model policy and the rate limits; only
+            // reading a stored response is refused while access is off.
+            if off && head.method == "GET" {
+                return BodyPolicy::Reject(403, "LLM access is disabled for this client".into());
+            }
+            return BodyPolicy::Buffered;
+        }
+        if off {
+            return BodyPolicy::Reject(403, "LLM access is disabled for this client".into());
+        }
+        if let Some(kind) = rate_limit_exceeded(&self.metrics, strategy) {
+            return BodyPolicy::Reject(429, format!("Rate limit exceeded ({kind})"));
+        }
+        BodyPolicy::Buffered
+    }
     async fn evaluate_uninspectable(
         &self,
         req: &lr_proxy::active::FirewallRequest,
         error: lr_proxy::request_body::DecodeError,
     ) -> lr_proxy::interceptor::RequestAction {
-        use lr_config::PermissionState;
         use lr_proxy::interceptor::RequestAction;
         let config = self.config_manager.get();
         let Some(client) = config
@@ -172,34 +238,8 @@ impl lr_proxy::active::Firewall for AppFirewall {
         else {
             return RequestAction::reject_json(403, "Client strategy is no longer available");
         };
-        let restricted_models = strategy.model_permissions.resolve_provider(&req.provider)
-            != PermissionState::Allow
-            || strategy
-                .model_permissions
-                .models
-                .iter()
-                .any(|(name, permission)| {
-                    name.starts_with(&format!("{}__", req.provider))
-                        && *permission != PermissionState::Allow
-                });
-        let actions = lr_server::routes::pipeline::merge_guardrail_category_actions(
-            client.guardrails.category_actions.as_deref(),
-            &config.guardrails.category_actions,
-        );
-        let restricted_content = config.guardrails.scan_requests
-            && !actions.is_empty()
-            && !lr_server::routes::pipeline::guardrails_allow_everything(&actions)
-            && self
-                .state
-                .safety_engine
-                .read()
-                .as_ref()
-                .is_some_and(|engine| engine.has_models());
-        if restricted_models || restricted_content {
-            return RequestAction::reject_json(
-                error.status(),
-                "Configured model or GuardRails permissions require a readable request body",
-            );
+        if self.requires_readable_body(&config, client, strategy, &req.provider) {
+            return RequestAction::reject_json(error.status(), READABLE_BODY_REQUIRED);
         }
         lr_server::routes::pipeline::secret_scan_warning(&self.state,&req.client_id,req.session_id.as_deref(),"Request encoding could not be inspected; original request forwarded without Secret Scan coverage");
         self.evaluate_policy(req).await
@@ -252,15 +292,7 @@ impl lr_proxy::active::Firewall for AppFirewall {
             action,
             lr_config::SecretScanAction::Redact | lr_config::SecretScanAction::Ask
         );
-        let resource = lr_proxy::wire::response_id(&req.path);
-        let retrieval = resource.is_some()
-            && (matches!(req.method.as_str(), "GET" | "DELETE")
-                || (req.method == "POST"
-                    && req
-                        .path
-                        .split('?')
-                        .next()
-                        .is_some_and(|p| p.ends_with("/cancel"))));
+        let retrieval = is_retrieval(&req.method, &req.path);
         if retrieval {
             let Some(strategy) = config
                 .strategies
@@ -416,6 +448,42 @@ impl lr_proxy::active::Firewall for AppFirewall {
 }
 
 impl AppFirewall {
+    /// Whether a model restriction or an active GuardRails policy has to read
+    /// the request body, so a body that cannot be decoded must be refused.
+    fn requires_readable_body(
+        &self,
+        config: &lr_config::AppConfig,
+        client: &lr_config::Client,
+        strategy: &lr_config::Strategy,
+        provider: &str,
+    ) -> bool {
+        use lr_config::PermissionState;
+        let restricted_models = strategy.model_permissions.resolve_provider(provider)
+            != PermissionState::Allow
+            || strategy
+                .model_permissions
+                .models
+                .iter()
+                .any(|(name, permission)| {
+                    name.starts_with(&format!("{provider}__"))
+                        && *permission != PermissionState::Allow
+                });
+        let actions = lr_server::routes::pipeline::merge_guardrail_category_actions(
+            client.guardrails.category_actions.as_deref(),
+            &config.guardrails.category_actions,
+        );
+        let restricted_content = config.guardrails.scan_requests
+            && !actions.is_empty()
+            && !lr_server::routes::pipeline::guardrails_allow_everything(&actions)
+            && self
+                .state
+                .safety_engine
+                .read()
+                .as_ref()
+                .is_some_and(|engine| engine.has_models());
+        restricted_models || restricted_content
+    }
+
     async fn evaluate_policy(
         &self,
         req: &lr_proxy::active::FirewallRequest,
@@ -855,6 +923,283 @@ mod tests {
             limit_exceeded(&limit(Cost, 1.0, true), 0, 0, 0.9, 0.0, 0.2),
             Some("cost")
         );
+    }
+}
+
+/// Header-time policy: every refusal `body_policy` gives must be one
+/// `evaluate` reaches too, and anything that reads the body stays buffered.
+#[cfg(test)]
+mod body_policy_tests {
+    use super::secret_policy_tests::fixture;
+    use super::*;
+    use lr_proxy::{
+        active::{Firewall, FirewallRequest},
+        interceptor::{BodyPolicy, ExchangeSource, RequestAction, RequestHead},
+    };
+
+    fn policy(
+        firewall: &AppFirewall,
+        request: &FirewallRequest,
+        headers: &hyper::HeaderMap,
+    ) -> BodyPolicy {
+        firewall.body_policy(&RequestHead {
+            client_id: &request.client_id,
+            strategy_id: "",
+            host: &request.host,
+            port: 443,
+            method: &request.method,
+            path: &request.path,
+            headers,
+            trace: None,
+            provider_override: None,
+            source: ExchangeSource::Proxy,
+        })
+    }
+
+    fn setup(root: &std::path::Path) -> (AppFirewall, FirewallRequest) {
+        fixture(
+            root,
+            lr_config::LlmMode::Proxy,
+            Arc::new(lr_api_keys::MockKeychain::new()),
+        )
+    }
+
+    fn rejects(policy: &BodyPolicy, status: u16, message: &str) -> bool {
+        matches!(policy, BodyPolicy::Reject(s, m) if *s == status && m.contains(message))
+    }
+
+    /// The buffered path refuses the same request, with the same status.
+    async fn evaluate_rejects(firewall: &AppFirewall, request: &FirewallRequest, status: u16) {
+        match firewall.evaluate(request).await {
+            RequestAction::Reject { status: s, .. } => assert_eq!(s, status),
+            _ => panic!("evaluate must refuse what body_policy refuses"),
+        }
+    }
+
+    #[tokio::test]
+    async fn inspected_requests_stay_buffered() {
+        let root = tempfile::tempdir().unwrap();
+        let (firewall, request) = setup(root.path());
+        let headers = hyper::HeaderMap::new();
+        // Redact (the fixture default), then every other secret-scan mode.
+        assert_eq!(policy(&firewall, &request, &headers), BodyPolicy::Buffered);
+        for action in [
+            lr_config::SecretScanAction::Off,
+            lr_config::SecretScanAction::Notify,
+            lr_config::SecretScanAction::Ask,
+        ] {
+            firewall
+                .config_manager
+                .update(|c| c.secret_scanning.action = action)
+                .unwrap();
+            assert_eq!(policy(&firewall, &request, &headers), BodyPolicy::Buffered);
+        }
+        // Model Ask needs the body for its popup.
+        firewall
+            .config_manager
+            .update(|c| {
+                c.strategies[0]
+                    .auto_config
+                    .get_or_insert_with(Default::default)
+                    .permission = lr_config::PermissionState::Ask;
+            })
+            .unwrap();
+        assert_eq!(policy(&firewall, &request, &headers), BodyPolicy::Buffered);
+        // A supported encoding is decoded and inspected, not refused.
+        let mut encoded = hyper::HeaderMap::new();
+        encoded.insert(hyper::header::CONTENT_ENCODING, "zstd".parse().unwrap());
+        assert_eq!(policy(&firewall, &request, &encoded), BodyPolicy::Buffered);
+    }
+
+    #[tokio::test]
+    async fn unknown_disabled_and_strategyless_clients_are_refused_from_the_head() {
+        let root = tempfile::tempdir().unwrap();
+        let (firewall, request) = setup(root.path());
+        let headers = hyper::HeaderMap::new();
+
+        let unknown = FirewallRequest {
+            client_id: "no-such-client".into(),
+            session_id: None,
+            secret_session: None,
+            host: request.host.clone(),
+            method: request.method.clone(),
+            path: request.path.clone(),
+            provider: request.provider.clone(),
+            model: request.model.clone(),
+            has_tools: false,
+            message_count: 1,
+            body: request.body.clone(),
+        };
+        assert!(rejects(
+            &policy(&firewall, &unknown, &headers),
+            403,
+            "Client policy is no longer available"
+        ));
+        evaluate_rejects(&firewall, &unknown, 403).await;
+
+        firewall
+            .config_manager
+            .update(|c| c.clients[0].enabled = false)
+            .unwrap();
+        assert!(rejects(
+            &policy(&firewall, &request, &headers),
+            403,
+            "Proxy access is disabled"
+        ));
+        evaluate_rejects(&firewall, &request, 403).await;
+        firewall
+            .config_manager
+            .update(|c| c.clients[0].enabled = true)
+            .unwrap();
+
+        // A client whose strategy no longer exists. Built directly, because a
+        // validated update refuses to create that state.
+        let mut firewall = firewall;
+        let mut config = firewall.config_manager.get();
+        config.strategies.clear();
+        firewall.config_manager =
+            lr_config::ConfigManager::new(config, root.path().join("strategyless.yaml"));
+        assert!(rejects(
+            &policy(&firewall, &request, &headers),
+            403,
+            "Client strategy is no longer available"
+        ));
+        evaluate_rejects(&firewall, &request, 403).await;
+    }
+
+    #[tokio::test]
+    async fn clients_outside_a_proxy_mode_are_refused_from_the_head() {
+        let root = tempfile::tempdir().unwrap();
+        let (firewall, request) = fixture(
+            root.path(),
+            lr_config::LlmMode::Gateway,
+            Arc::new(lr_api_keys::MockKeychain::new()),
+        );
+        assert!(rejects(
+            &policy(&firewall, &request, &hyper::HeaderMap::new()),
+            403,
+            "Proxy access is disabled"
+        ));
+        evaluate_rejects(&firewall, &request, 403).await;
+    }
+
+    #[tokio::test]
+    async fn disabled_llm_access_is_refused_from_the_head_except_for_cleanup_calls() {
+        let root = tempfile::tempdir().unwrap();
+        let (firewall, mut request) = setup(root.path());
+        let headers = hyper::HeaderMap::new();
+        firewall
+            .config_manager
+            .update(|c| {
+                c.strategies[0]
+                    .auto_config
+                    .get_or_insert_with(Default::default)
+                    .permission = lr_config::PermissionState::Off;
+            })
+            .unwrap();
+        assert!(rejects(
+            &policy(&firewall, &request, &headers),
+            403,
+            "LLM access is disabled"
+        ));
+        evaluate_rejects(&firewall, &request, 403).await;
+
+        // Reading a stored response is refused as well.
+        request.body = serde_json::Value::Null;
+        request.method = "GET".into();
+        request.path = "/backend-api/codex/responses/resp_stored".into();
+        assert!(rejects(
+            &policy(&firewall, &request, &headers),
+            403,
+            "LLM access is disabled"
+        ));
+        evaluate_rejects(&firewall, &request, 403).await;
+
+        // Deleting or cancelling one is not refused by `evaluate`, so the
+        // head alone must not refuse it either.
+        request.method = "DELETE".into();
+        assert_eq!(policy(&firewall, &request, &headers), BodyPolicy::Buffered);
+        assert!(!matches!(
+            firewall.evaluate(&request).await,
+            RequestAction::Reject { .. }
+        ));
+        request.method = "POST".into();
+        request.path = "/backend-api/codex/responses/resp_stored/cancel?reason=user".into();
+        assert_eq!(policy(&firewall, &request, &headers), BodyPolicy::Buffered);
+        assert!(!matches!(
+            firewall.evaluate(&request).await,
+            RequestAction::Reject { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn an_exceeded_rate_limit_is_refused_from_the_head_but_not_for_retrievals() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut firewall, mut request) = setup(root.path());
+        let headers = hyper::HeaderMap::new();
+        // A limit of zero is exceeded by the next request without recording
+        // any traffic. Built directly, because a validated update refuses it.
+        let mut config = firewall.config_manager.get();
+        config.strategies[0].rate_limits = vec![lr_config::StrategyRateLimit {
+            limit_type: lr_config::RateLimitType::Requests,
+            value: 0.0,
+            time_window: lr_config::RateLimitTimeWindow::Minute,
+            enabled: true,
+        }];
+        firewall.config_manager =
+            lr_config::ConfigManager::new(config, root.path().join("rate-limited.yaml"));
+        assert!(rejects(
+            &policy(&firewall, &request, &headers),
+            429,
+            "Rate limit exceeded (requests)"
+        ));
+        evaluate_rejects(&firewall, &request, 429).await;
+
+        request.body = serde_json::Value::Null;
+        request.method = "GET".into();
+        request.path = "/backend-api/codex/responses/resp_stored".into();
+        assert_eq!(policy(&firewall, &request, &headers), BodyPolicy::Buffered);
+        assert!(!matches!(
+            firewall.evaluate(&request).await,
+            RequestAction::Reject { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn an_undecodable_encoding_is_refused_from_the_head_only_while_restricted() {
+        let root = tempfile::tempdir().unwrap();
+        let (firewall, mut request) = setup(root.path());
+        let mut headers = hyper::HeaderMap::new();
+        headers.insert(hyper::header::CONTENT_ENCODING, "snappy".parse().unwrap());
+        // Unrestricted: the buffered path forwards it with a warning.
+        assert_eq!(policy(&firewall, &request, &headers), BodyPolicy::Buffered);
+
+        firewall
+            .config_manager
+            .update(|c| {
+                c.strategies[0].model_permissions.models.insert(
+                    "openai__forbidden-model".into(),
+                    lr_config::PermissionState::Off,
+                );
+            })
+            .unwrap();
+        assert!(rejects(
+            &policy(&firewall, &request, &headers),
+            415,
+            "require a readable request body"
+        ));
+        request.body = serde_json::Value::Null;
+        request.model = None;
+        match firewall
+            .evaluate_uninspectable(&request, lr_proxy::request_body::DecodeError::Unsupported)
+            .await
+        {
+            RequestAction::Reject { status, .. } => assert_eq!(status, 415),
+            _ => panic!("the buffered path must refuse it too"),
+        }
+        // The restriction is per provider: another provider's is irrelevant.
+        request.host = "api.anthropic.com".into();
+        assert_eq!(policy(&firewall, &request, &headers), BodyPolicy::Buffered);
     }
 }
 

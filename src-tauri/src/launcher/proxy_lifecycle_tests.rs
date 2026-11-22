@@ -43,6 +43,12 @@ impl ProxyInterceptor for LocalOnly {
             ConnectDecision::Reject("fixture permits localhost only")
         }
     }
+    fn body_policy(
+        &self,
+        head: &lr_proxy::interceptor::RequestHead<'_>,
+    ) -> lr_proxy::interceptor::BodyPolicy {
+        self.0.body_policy(head)
+    }
     async fn on_request(&self, ex: &ObservedExchange) -> RequestAction {
         self.0.on_request(ex).await
     }
