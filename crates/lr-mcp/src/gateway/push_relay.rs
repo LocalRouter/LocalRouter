@@ -10,6 +10,7 @@ pub mod ask;
 pub mod cursor;
 pub mod journal;
 pub mod limits;
+pub mod permission;
 pub mod relay;
 pub mod render;
 pub mod tools;
@@ -50,6 +51,17 @@ pub const EVENTS_TOP_LEVEL_CAPABILITY: &str = "events";
 pub const CLAUDE_CHANNEL_CAPABILITY: &str = "claude/channel";
 /// Notification a Claude Code channel server sends.
 pub const CLAUDE_CHANNEL_NOTIFICATION: &str = "notifications/claude/channel";
+/// Experimental capability of a channel server that relays Claude Code's
+/// tool-approval prompts (see [`permission`]).
+pub const CLAUDE_CHANNEL_PERMISSION_CAPABILITY: &str = "claude/channel/permission";
+/// Notification Claude Code sends a permission-relay server when a
+/// tool-approval dialog opens.
+pub const CLAUDE_CHANNEL_PERMISSION_REQUEST_NOTIFICATION: &str =
+    "notifications/claude/channel/permission_request";
+/// Notification a permission-relay server answers a prompt with.
+pub const CLAUDE_CHANNEL_PERMISSION_NOTIFICATION: &str = "notifications/claude/channel/permission";
+/// Classic notification that a subscribed resource changed.
+pub const RESOURCE_UPDATED_NOTIFICATION: &str = "notifications/resources/updated";
 /// Prefix of every MCP Events notification.
 pub const EVENTS_NOTIFICATION_PREFIX: &str = "notifications/events/";
 /// Upstream signal that its event catalogue changed.
@@ -206,7 +218,9 @@ impl ListenOptIn {
 }
 
 /// A push notification an upstream sent on a session's connection:
-/// `notifications/claude/channel`, or an `notifications/events/*` not
+/// `notifications/claude/channel`, a permission verdict
+/// (`notifications/claude/channel/permission`),
+/// `notifications/resources/updated`, or an `notifications/events/*` not
 /// correlated with an open [`crate::transport::RpcStream`].
 #[derive(Debug, Clone)]
 pub struct UpstreamPushNotification {
@@ -214,6 +228,22 @@ pub struct UpstreamPushNotification {
     pub session_key: String,
     pub client_id: String,
     pub notification: JsonRpcNotification,
+    /// What the session knows about the resource of a
+    /// `notifications/resources/updated`; `None` for every other method.
+    pub resource: Option<ResourceUpdateContext>,
+}
+
+/// The session's view of a resource an upstream reported as updated.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ResourceUpdateContext {
+    /// The session's client subscribed to the URI itself
+    /// (`resources/subscribe`), or nothing says the relay asked for it: the
+    /// client expects the native notification. `false` only when the update
+    /// exists solely because the relay subscribed on a consumer's behalf.
+    pub client_subscribed: bool,
+    /// The gateway's namespaced name of the resource (`<server>__<name>`),
+    /// when the session has listed it.
+    pub resource_name: Option<String>,
 }
 
 /// Per-request channels for the notifications of a downstream
@@ -323,6 +353,17 @@ pub trait PushRelayService: Send + Sync {
     /// The client sent `notifications/cancelled` for one of its requests on
     /// this session (e.g. an open `events/stream`).
     fn on_client_cancelled(&self, _session_key: &str, _request_id: &Value) {}
+
+    /// The client sent a notification the relay may act on
+    /// ([`CLAUDE_CHANNEL_PERMISSION_REQUEST_NOTIFICATION`]). Never forwarded
+    /// upstream by the gateway itself.
+    fn on_client_notification(
+        &self,
+        _ctx: &PushRelaySessionContext,
+        _method: &str,
+        _params: Option<&Value>,
+    ) {
+    }
 
     async fn events_list(
         &self,

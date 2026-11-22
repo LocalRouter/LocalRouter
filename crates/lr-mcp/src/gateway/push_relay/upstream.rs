@@ -8,6 +8,11 @@
 //! that session's client, so its subscriptions use the session's own
 //! connection.
 //!
+//! A resource-update subscription (U5) is a classic `resources/subscribe`
+//! for one URI, held while a consumer exists and re-issued periodically; its
+//! `notifications/resources/updated` arrive on the connection's notification
+//! path, not here.
+//!
 //! Ingress preference is push (`events/stream`, U1) then poll (`events/poll`,
 //! U2). A dropped stream reconnects with jittered exponential backoff,
 //! resuming from the last upstream cursor; a stream with no message within
@@ -44,6 +49,8 @@ const UPSTREAM_POLL_BATCH: u64 = 100;
 /// Upstream event ids remembered per subscription, so events replayed after
 /// a reconnect are not relayed twice.
 const REPLAY_WINDOW: usize = 1024;
+/// Time allowed for the `resources/unsubscribe` of a closing subscription.
+const UNSUBSCRIBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Whose connection a subscription runs on.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
@@ -72,12 +79,15 @@ pub struct SubscriptionSpec {
     pub arguments: Map<String, Value>,
     /// Modes the upstream offers for the event (push and/or poll).
     pub modes: Vec<EventDeliveryMode>,
+    /// A resource-update subscription: the URI to `resources/subscribe` to
+    /// instead of opening an MCP Events subscription.
+    pub resource_uri: Option<String>,
 }
 
 /// Live state of one subscription, for the UI.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct SubscriptionStatus {
-    /// `push` or `poll` once running.
+    /// `push`, `poll` or `resource` once running.
     pub ingress_mode: Option<String>,
     pub connected: bool,
     pub events_received: u64,
@@ -100,7 +110,9 @@ pub struct SubscriptionInfo {
 /// data, cursor?}`).
 pub type IngestFn = Arc<dyn Fn(&SubscriptionKey, Value, IngressMode) + Send + Sync>;
 
-/// Receives `notifications/claude/channel` from a relay-owned connection.
+/// Receives the push notifications of a relay-owned connection that belong
+/// to no stream: `notifications/claude/channel` and
+/// `notifications/resources/updated`.
 pub type ChannelFn = Arc<dyn Fn(&str, JsonRpcNotification) + Send + Sync>;
 
 /// A connection to one upstream that requests and streams can use.
@@ -112,6 +124,17 @@ pub trait UpstreamPort: Send + Sync {
     async fn supports_streams(&self) -> bool;
     /// Drop a connection that failed so the next use reconnects.
     async fn reset(&self) {}
+    /// `resources/subscribe` for a resource-update subscription.
+    async fn subscribe_resource(&self, uri: &str) -> AppResult<JsonRpcResponse> {
+        self.request("resources/subscribe", json!({ "uri": uri }))
+            .await
+    }
+    /// End a resource-update subscription (best effort).
+    async fn unsubscribe_resource(&self, uri: &str) {
+        let _ = self
+            .request("resources/unsubscribe", json!({ "uri": uri }))
+            .await;
+    }
 }
 
 fn request_id() -> Value {
@@ -314,7 +337,9 @@ impl RelayConnection {
         let on_channel = self.on_channel.clone();
         let callback: crate::transport::NotificationCallback =
             Arc::new(move |notification: JsonRpcNotification| {
-                if notification.method == super::CLAUDE_CHANNEL_NOTIFICATION {
+                if notification.method == super::CLAUDE_CHANNEL_NOTIFICATION
+                    || notification.method == super::RESOURCE_UPDATED_NOTIFICATION
+                {
                     on_channel(&server_id, notification);
                 }
             });
@@ -418,6 +443,20 @@ impl UpstreamPort for SessionPort {
                 )
             })
     }
+
+    // The session's connection is shared with the client's own
+    // `resources/subscribe`, so the gateway keeps track of who holds what.
+    async fn subscribe_resource(&self, uri: &str) -> AppResult<JsonRpcResponse> {
+        self.gateway
+            .relay_resource_subscribe(&self.session_key, &self.server_id, uri)
+            .await
+    }
+
+    async fn unsubscribe_resource(&self, uri: &str) {
+        self.gateway
+            .relay_resource_unsubscribe(&self.session_key, &self.server_id, uri)
+            .await
+    }
 }
 
 /// The next reconnect delay: doubled, capped, jittered into its upper half.
@@ -432,7 +471,15 @@ fn jittered(delay: Duration) -> Duration {
     delay / 2 + delay / 2 * fraction / 1000
 }
 
+/// How long an upstream stream may stay silent before it is treated as
+/// dead: the internal timeout, or three of the upstream's granted heartbeat
+/// intervals (SEP-3415) when that is longer.
+fn stream_watchdog(default: Duration, granted: Option<Duration>) -> Duration {
+    default.max(granted.map_or(Duration::ZERO, |interval| interval.saturating_mul(3)))
+}
+
 /// How one stream or poll run ended.
+#[derive(Debug)]
 enum RunEnd {
     /// The subscription was cancelled.
     Cancelled,
@@ -465,6 +512,9 @@ struct Runner {
     cursor: Option<String>,
     backoff: Duration,
     seen: std::collections::VecDeque<String>,
+    /// The resource this runner subscribed to upstream and has not yet
+    /// unsubscribed from.
+    resource_held: Option<String>,
 }
 
 impl Runner {
@@ -513,6 +563,15 @@ impl Runner {
     }
 
     async fn run(mut self) {
+        self.run_until_cancelled().await;
+        // The consumer is gone: give the upstream subscription back
+        if let Some(uri) = self.resource_held.take() {
+            let _ = tokio::time::timeout(UNSUBSCRIBE_TIMEOUT, self.port.unsubscribe_resource(&uri))
+                .await;
+        }
+    }
+
+    async fn run_until_cancelled(&mut self) {
         self.backoff = self.limits.read().upstream_reconnect_backoff_min();
         loop {
             if self.cancel.is_cancelled() {
@@ -521,7 +580,9 @@ impl Runner {
             let push = self.spec.modes.contains(&EventDeliveryMode::Push)
                 && self.port.supports_streams().await;
             let poll = self.spec.modes.contains(&EventDeliveryMode::Poll);
-            let (method, end) = if push {
+            let (method, end) = if let Some(uri) = self.spec.resource_uri.clone() {
+                ("resources/subscribe", self.resource_loop(&uri).await)
+            } else if push {
                 ("events/stream", self.stream_once().await)
             } else if poll {
                 ("events/poll", self.poll_loop().await)
@@ -567,6 +628,33 @@ impl Runner {
         }
     }
 
+    /// Hold a classic resource subscription: subscribe, then re-issue the
+    /// (idempotent) subscription at the resubscribe interval, which is also
+    /// how a connection that died is noticed.
+    async fn resource_loop(&mut self, uri: &str) -> RunEnd {
+        loop {
+            let response = tokio::select! {
+                _ = self.cancel.cancelled() => return RunEnd::Cancelled,
+                response = self.port.subscribe_resource(uri) => response,
+            };
+            match response {
+                Err(e) => return RunEnd::Failed(e.to_string()),
+                Ok(response) => {
+                    if let Some(error) = response.error {
+                        return RunEnd::Failed(upstream_error_text("resources/subscribe", &error));
+                    }
+                }
+            }
+            self.resource_held = Some(uri.to_string());
+            self.mark_connected(IngressMode::Resource);
+            let interval = self.limits.read().resource_resubscribe();
+            tokio::select! {
+                _ = self.cancel.cancelled() => return RunEnd::Cancelled,
+                _ = tokio::time::sleep(interval) => {}
+            }
+        }
+    }
+
     async fn stream_once(&mut self) -> RunEnd {
         let opened = tokio::select! {
             _ = self.cancel.cancelled() => return RunEnd::Cancelled,
@@ -583,8 +671,13 @@ impl Runner {
         // Only a stream the upstream confirmed may end normally: a final
         // result before anything else is a refusal, however it is worded.
         let mut active = false;
+        // The upstream's granted heartbeat interval (SEP-3415 `heartbeatMs`
+        // on `notifications/events/active`): the stream is dead after three
+        // of them without a message, when that is longer than the default.
+        let mut granted: Option<Duration> = None;
         loop {
-            let heartbeat = self.limits.read().upstream_heartbeat_timeout();
+            let heartbeat =
+                stream_watchdog(self.limits.read().upstream_heartbeat_timeout(), granted);
             let next = tokio::select! {
                 _ = self.cancel.cancelled() => return RunEnd::Cancelled,
                 next = tokio::time::timeout(heartbeat, stream.next()) => next,
@@ -614,6 +707,9 @@ impl Runner {
                             self.mark_connected(IngressMode::Push);
                             if let Some(cursor) = params.get("cursor").and_then(Value::as_str) {
                                 self.cursor = Some(cursor.to_string());
+                            }
+                            if let Some(ms) = params.get("heartbeatMs").and_then(Value::as_u64) {
+                                granted = Some(Duration::from_millis(ms));
                             }
                         }
                         "notifications/events/terminated" => {
@@ -788,6 +884,7 @@ impl UpstreamHub {
                 cursor: None,
                 backoff: Duration::ZERO,
                 seen: std::collections::VecDeque::new(),
+                resource_held: None,
             };
             tokio::spawn(runner.run());
             subscriptions.insert(
@@ -817,6 +914,21 @@ impl UpstreamHub {
         };
         for connection in unused {
             tokio::spawn(async move { connection.close().await });
+        }
+    }
+
+    /// Count an event that reached an open subscription outside its runner
+    /// (a resource update arrives on the connection's notification path).
+    /// Returns whether the subscription is open.
+    pub fn record_event(&self, key: &SubscriptionKey) -> bool {
+        match self.subscriptions.lock().get(key) {
+            Some(active) => {
+                let mut status = active.status.lock();
+                status.events_received += 1;
+                status.last_event_at = Some(chrono::Utc::now());
+                true
+            }
+            None => false,
         }
     }
 
@@ -868,5 +980,223 @@ mod tests {
             let delay = jittered(Duration::from_secs(4));
             assert!(delay >= Duration::from_secs(2) && delay <= Duration::from_secs(4));
         }
+    }
+
+    #[test]
+    fn watchdog_follows_a_longer_granted_heartbeat() {
+        let default = Duration::from_secs(90);
+        assert_eq!(stream_watchdog(default, None), default);
+        // 3 x 15 s is shorter than the default: the default stands
+        assert_eq!(
+            stream_watchdog(default, Some(Duration::from_secs(15))),
+            default
+        );
+        // A server (stdio may grant long intervals) that heartbeats every
+        // 5 minutes is alive for 15
+        assert_eq!(
+            stream_watchdog(default, Some(Duration::from_secs(300))),
+            Duration::from_secs(900)
+        );
+    }
+
+    /// A port that records resource calls and fails the first `fail` of them.
+    #[derive(Default)]
+    struct FakePort {
+        calls: parking_lot::Mutex<Vec<String>>,
+        fail: parking_lot::Mutex<usize>,
+        reject: bool,
+    }
+
+    impl FakePort {
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().clone()
+        }
+    }
+
+    #[async_trait]
+    impl UpstreamPort for FakePort {
+        async fn request(&self, method: &str, params: Value) -> AppResult<JsonRpcResponse> {
+            self.calls
+                .lock()
+                .push(format!("{method} {}", params["uri"].as_str().unwrap_or("")));
+            let failing = {
+                let mut fail = self.fail.lock();
+                let failing = *fail > 0;
+                *fail = fail.saturating_sub(1);
+                failing
+            };
+            if failing {
+                return Err(AppError::Mcp("connection lost".into()));
+            }
+            if self.reject {
+                return Ok(JsonRpcResponse::error(
+                    json!(1),
+                    crate::protocol::JsonRpcError::custom(-32601, "no subscriptions", None),
+                ));
+            }
+            Ok(JsonRpcResponse::success(json!(1), json!({})))
+        }
+
+        async fn open_stream(
+            &self,
+            _method: &str,
+            _params: Value,
+            _buffer: usize,
+        ) -> AppResult<RpcStream> {
+            Err(AppError::Mcp("no streams".into()))
+        }
+
+        async fn supports_streams(&self) -> bool {
+            false
+        }
+
+        async fn reset(&self) {
+            self.calls.lock().push("reset".to_string());
+        }
+    }
+
+    fn resource_runner(
+        port: Arc<FakePort>,
+        limits: PushRelayLimits,
+    ) -> (
+        Runner,
+        CancellationToken,
+        Arc<parking_lot::Mutex<SubscriptionStatus>>,
+    ) {
+        let cancel = CancellationToken::new();
+        let status = Arc::new(parking_lot::Mutex::new(SubscriptionStatus::default()));
+        let uri = "file:///a".to_string();
+        let mut arguments = Map::new();
+        arguments.insert("uri".to_string(), json!(uri));
+        let runner = Runner {
+            key: SubscriptionKey {
+                scope: ConnectionScope::Shared,
+                server_id: "srv".into(),
+                event: "resource.updated".into(),
+                args_key: r#"{"uri":"file:///a"}"#.into(),
+            },
+            server_name: "Srv".into(),
+            spec: SubscriptionSpec {
+                arguments,
+                modes: Vec::new(),
+                resource_uri: Some(uri),
+            },
+            port,
+            limits: Arc::new(parking_lot::RwLock::new(limits)),
+            ingest: Arc::new(|_, _, _| {}),
+            status: status.clone(),
+            cancel: cancel.clone(),
+            cursor: None,
+            backoff: Duration::ZERO,
+            seen: std::collections::VecDeque::new(),
+            resource_held: None,
+        };
+        (runner, cancel, status)
+    }
+
+    async fn until(what: &str, mut condition: impl FnMut() -> bool) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while !condition() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for {what}"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn resource_subscription_is_held_reissued_and_given_back() {
+        let port = Arc::new(FakePort::default());
+        let limits = PushRelayLimits {
+            resource_resubscribe_secs: 1,
+            ..Default::default()
+        };
+        let (runner, cancel, status) = resource_runner(port.clone(), limits);
+        let task = tokio::spawn(runner.run());
+
+        until("subscribed", || status.lock().connected).await;
+        assert_eq!(status.lock().ingress_mode.as_deref(), Some("resource"));
+        assert_eq!(port.calls(), vec!["resources/subscribe file:///a"]);
+
+        // The (idempotent) subscription is issued again at the interval
+        until("resubscribed", || port.calls().len() == 2).await;
+        assert_eq!(port.calls()[1], "resources/subscribe file:///a");
+
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            port.calls().last().map(String::as_str),
+            Some("resources/unsubscribe file:///a"),
+            "the last consumer going gives the subscription back"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_resource_subscription_retries_after_the_backoff() {
+        let port = Arc::new(FakePort::default());
+        *port.fail.lock() = 1;
+        let limits = PushRelayLimits {
+            upstream_reconnect_backoff_min_ms: 20,
+            upstream_reconnect_backoff_max_ms: 40,
+            ..Default::default()
+        };
+        let (runner, cancel, status) = resource_runner(port.clone(), limits);
+        let task = tokio::spawn(runner.run());
+
+        until("retried", || status.lock().connected).await;
+        assert_eq!(
+            port.calls(),
+            vec![
+                "resources/subscribe file:///a",
+                "reset",
+                "resources/subscribe file:///a"
+            ]
+        );
+        assert_eq!(status.lock().reconnects, 1);
+        assert!(status.lock().last_error.is_none());
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn refused_resource_subscription_is_reported_and_never_unsubscribed() {
+        let port = Arc::new(FakePort {
+            reject: true,
+            ..Default::default()
+        });
+        let limits = PushRelayLimits {
+            upstream_reconnect_backoff_min_ms: 5_000,
+            upstream_reconnect_backoff_max_ms: 5_000,
+            ..Default::default()
+        };
+        let (runner, cancel, status) = resource_runner(port.clone(), limits);
+        let task = tokio::spawn(runner.run());
+
+        until("refusal recorded", || status.lock().last_error.is_some()).await;
+        let error = status.lock().last_error.clone().unwrap();
+        assert!(
+            error.contains("resources/subscribe rejected by the server (-32601)"),
+            "{error}"
+        );
+        assert!(!status.lock().connected);
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            !port
+                .calls()
+                .iter()
+                .any(|c| c.starts_with("resources/unsubscribe")),
+            "nothing was subscribed, so nothing is unsubscribed"
+        );
     }
 }

@@ -2,8 +2,11 @@
 //! upstreams (HTTP poll over a relay-owned connection, stdio push and
 //! Claude channel on the session's process), gating and fallback tools,
 //! per-event Ask, Monitor records, Claude Channels egress and deduplication,
-//! webhook egress, the `/events/watch` stream, and the built-in test source
-//! that Try it out's Push panel sends through the same pipeline.
+//! webhook egress, the `/events/watch` stream, the built-in test source
+//! that Try it out's Push panel sends through the same pipeline, classic
+//! resource updates (`notifications/resources/updated`) as events, the
+//! Claude Channels permission relay, and the HTTP route's SSE answer to
+//! `events/stream` against the real server.
 
 use chrono::Utc;
 use futures_util::StreamExt;
@@ -453,6 +456,7 @@ fn occurrence(
         ingress: IngressMode::Push,
         args_key: "{}".to_string(),
         origin_session: None,
+        direct: None,
     })
 }
 
@@ -3504,4 +3508,1435 @@ async fn refused_upstream_stream_shows_in_server_push_status() {
         error.contains("-32026") && error.contains("Streaming requires the streaming endpoint"),
         "{error}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// P2: resource-update ingress (U5)
+// ---------------------------------------------------------------------------
+
+const RES_ID: &str = "res-srv";
+const RES_EVENT: &str = "res-srv__resource.updated";
+const RES_URI: &str = "file:///notes.txt";
+
+/// A stdio upstream with classic resource subscriptions: every
+/// `resources/subscribe` is answered and followed by one
+/// `notifications/resources/updated` for that URI. Subscribe and unsubscribe
+/// calls are appended to `$RES_LOG`.
+const RESOURCE_UPSTREAM: &str = r#"while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  sid=$(printf '%s' "$line" | sed -n 's/.*"id":\("[^"]*"\).*/\1/p')
+  [ -z "$id" ] && id="$sid"
+  uri=$(printf '%s' "$line" | sed -n 's/.*"uri":"\([^"]*\)".*/\1/p')
+  case "$line" in
+    *'"method":"server/discover"'*) printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32601,"message":"no"}}\n' "$id" ;;
+    *'"method":"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{},"resources":{"subscribe":true}},"serverInfo":{"name":"res","version":"1"}}}\n' "$id" ;;
+    *'"method":"resources/list"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"resources":[{"uri":"file:///notes.txt","name":"notes"}]}}\n' "$id" ;;
+    *'"method":"resources/subscribe"'*) printf 'subscribe %s\n' "$uri" >> "$RES_LOG"; printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"; sleep 0.3; printf '{"jsonrpc":"2.0","method":"notifications/resources/updated","params":{"uri":"%s"}}\n' "$uri" ;;
+    *'"method":"resources/unsubscribe"'*) printf 'unsubscribe %s\n' "$uri" >> "$RES_LOG"; printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id" ;;
+    *'"method":"notifications/'*) ;;
+    *) if [ -n "$id" ]; then printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[],"prompts":[],"resources":[]}}\n' "$id"; fi ;;
+  esac
+done"#;
+
+fn temp_log(prefix: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("{prefix}_{}.log", uuid::Uuid::new_v4()))
+}
+
+fn log_lines(path: &std::path::Path, needle: &str) -> usize {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| line.contains(needle))
+        .count()
+}
+
+fn scripted_stdio_server(
+    id: &str,
+    name: &str,
+    script: &str,
+    env: (&str, &std::path::Path),
+    capabilities: Value,
+    channels: bool,
+    resource_subscribe: bool,
+) -> McpServerConfig {
+    let mut server = McpServerConfig {
+        id: id.to_string(),
+        name: name.to_string(),
+        transport: McpTransportType::Stdio,
+        transport_config: McpTransportConfig::Stdio {
+            command: "sh".to_string(),
+            args: vec!["-c".to_string(), script.to_string()],
+            env: HashMap::from([(env.0.to_string(), env.1.to_string_lossy().to_string())]),
+            cwd: None,
+        },
+        auth_config: None,
+        discovered_oauth: None,
+        oauth_config: None,
+        enabled: true,
+        created_at: Utc::now(),
+        capability_snapshot: None,
+    };
+    server.capability_snapshot = Some(UpstreamCapabilitySnapshot {
+        fingerprint: lr_config::fingerprint_for(&server),
+        protocol_version: "2025-11-25".into(),
+        capabilities,
+        push: UpstreamPushSummary {
+            events_modes: BTreeMap::new(),
+            channels,
+            resource_subscribe,
+        },
+        event_catalogue: Vec::new(),
+        observed_at: Utc::now(),
+    });
+    server
+}
+
+fn resource_server(log: &std::path::Path) -> McpServerConfig {
+    scripted_stdio_server(
+        RES_ID,
+        "Res Srv",
+        RESOURCE_UPSTREAM,
+        ("RES_LOG", log),
+        json!({"tools": {}, "resources": {"subscribe": true}}),
+        false,
+        true,
+    )
+}
+
+fn monitor_record(h: &Harness, event_name: &str) -> Option<lr_monitor::MonitorEventData> {
+    h.monitor.lock().iter().rev().find_map(|e| match &e.data {
+        lr_monitor::MonitorEventData::McpPushEvent { event_name: n, .. } if n == event_name => {
+            Some(e.data.clone())
+        }
+        _ => None,
+    })
+}
+
+/// Open a downstream `events/stream` with arbitrary params under request id
+/// `id`; returns its notifications, the sink guard and the request's task.
+fn open_stream_with(
+    h: &Harness,
+    session: &str,
+    id: i64,
+    params: Value,
+) -> (
+    tokio::sync::mpsc::Receiver<JsonRpcNotification>,
+    localrouter::mcp::gateway::push_relay::PushStreamSinkGuard,
+    tokio::task::JoinHandle<Option<JsonRpcResponse>>,
+) {
+    let sinks = h.gateway.push_stream_sinks();
+    let (notifications, guard) = sinks.register(session, &json!(id), 64);
+    let gateway = h.gateway.clone();
+    let client = h.clients.read()[CLIENT].clone();
+    let servers = h.servers.clone();
+    let session = session.to_string();
+    let task = tokio::spawn(async move {
+        gateway
+            .handle_request_with_skills(
+                CLIENT,
+                Some(&session),
+                servers,
+                vec![],
+                client.mcp_permissions.clone(),
+                lr_config::SkillsPermissions::default(),
+                client.name.clone(),
+                PermissionState::Off,
+                PermissionState::Off,
+                None,
+                None,
+                PermissionState::default(),
+                PermissionState::default(),
+                None,
+                None,
+                lr_config::ClientMode::default(),
+                lr_config::ClientPushSettings::from_client(&client),
+                JsonRpcRequest::new(Some(json!(id)), "events/stream".into(), Some(params)),
+                None,
+            )
+            .await
+            .ok()
+    });
+    (notifications, guard, task)
+}
+
+/// The gate counts resource subscriptions, and a client that subscribed to a
+/// resource itself keeps receiving the native notification — now through the
+/// relay's controls — while the same update is an event every delivery mode
+/// can read.
+#[tokio::test]
+async fn resource_updates_reach_the_subscriber_natively_and_every_reader_as_an_event() {
+    let log = temp_log("pr_res_native");
+    let mut h = harness(vec![resource_server(&log)], fast_limits());
+    let init = h.initialize("s1", json!({})).await.result.unwrap();
+    assert_eq!(
+        init["capabilities"]["extensions"][EVENTS_EXTENSION_ID],
+        json!({"listChanged": true}),
+        "a server with resource subscriptions is a push source"
+    );
+    let list = h.send("s1", "events/list", None).await.result.unwrap();
+    assert_eq!(event_names(&list), vec![RES_EVENT.to_string()]);
+    let descriptor = &list["events"][0];
+    assert_eq!(
+        descriptor["inputSchema"]["properties"]["uri"]["type"],
+        "string"
+    );
+    assert_eq!(
+        descriptor["payloadSchema"]["required"],
+        json!(["uri"]),
+        "the payload carries the URI"
+    );
+    assert!(h.tool_names("s1").await.contains(&"EventPoll".to_string()));
+    let cursor = h.poll("s1", RES_EVENT, None).await["cursor"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // The client subscribes itself, the classic way
+    h.send("s1", "resources/list", None).await;
+    let subscribed = h
+        .send("s1", "resources/subscribe", Some(json!({"uri": RES_URI})))
+        .await;
+    assert!(subscribed.error.is_none(), "{:?}", subscribed.error);
+
+    let native = h
+        .next_notification(
+            "notifications/resources/updated",
+            &localrouter::mcp::gateway::types::session_server_notification_key("s1", RES_ID),
+            Duration::from_secs(10),
+        )
+        .await
+        .expect("the subscriber still gets the native notification");
+    assert_eq!(native.params.unwrap()["uri"], RES_URI);
+
+    // The same update is an occurrence in the client's journal. A reader
+    // that names no URI reads the updates of every subscribed resource.
+    let batch = h
+        .poll_until("s1", RES_EVENT, &cursor, |b| {
+            !b["events"].as_array().unwrap().is_empty()
+        })
+        .await;
+    let event = &batch["events"][0];
+    assert_eq!(event["name"], RES_EVENT);
+    assert!(event["eventId"].as_str().unwrap().starts_with("res-srv__"));
+    assert_eq!(event["data"]["uri"], RES_URI);
+    // The gateway's own name of the resource (it namespaces names, not URIs)
+    assert_eq!(event["data"]["resource"], "res-srv__notes");
+    let text = h
+        .call_tool("s1", "EventPoll", json!({"cursor": null, "limit": 5}))
+        .await;
+    assert!(text.contains("next_cursor"), "{text}");
+
+    match monitor_record(&h, RES_EVENT).expect("monitor record") {
+        lr_monitor::MonitorEventData::McpPushEvent {
+            ingress_mode,
+            egress_modes,
+            decision,
+            event_id,
+            ..
+        } => {
+            assert_eq!(ingress_mode, "resource");
+            assert_eq!(decision, "allowed");
+            assert!(egress_modes.contains(&"resource".to_string()));
+            assert_eq!(
+                json!(event_id),
+                event["eventId"],
+                "one id for every delivery"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    let status = h.relay.server_push_status(RES_ID);
+    assert!(status.events_received >= 1);
+    // The relay opened nothing upstream itself
+    assert!(h.relay.active_subscriptions().is_empty());
+    assert_eq!(log_lines(&log, "subscribe file"), 1);
+}
+
+/// Ask holds the native notification too, and Off drops it.
+#[tokio::test]
+async fn resource_updates_obey_ask_and_off() {
+    let log = temp_log("pr_res_ask");
+    let mut h = harness(vec![resource_server(&log)], fast_limits());
+    let mut ask = client(CLIENT);
+    ask.push_permissions.events.insert(
+        PushPermissions::event_key(RES_ID, "resource.updated"),
+        PushPermission::Ask,
+    );
+    h.set_client(ask);
+    h.initialize("s1", json!({})).await;
+    h.send("s1", "resources/list", None).await;
+    h.send("s1", "resources/subscribe", Some(json!({"uri": RES_URI})))
+        .await;
+    let key = localrouter::mcp::gateway::types::session_server_notification_key("s1", RES_ID);
+
+    wait_until("held", || !h.relay.pending_events(Some(CLIENT)).is_empty()).await;
+    assert!(
+        h.next_notification(
+            "notifications/resources/updated",
+            &key,
+            Duration::from_millis(400)
+        )
+        .await
+        .is_none(),
+        "a held update is not forwarded"
+    );
+    let held = h.relay.pending_events(Some(CLIENT)).remove(0);
+    assert_eq!(held.qualified_name, RES_EVENT);
+    assert_eq!(held.ingress_mode, "resource");
+    assert_eq!(held.data["uri"], RES_URI);
+    h.relay
+        .decide(&held.hold_id, PushDecision::new(PushDecisionAction::Allow))
+        .unwrap();
+    let native = h
+        .next_notification(
+            "notifications/resources/updated",
+            &key,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("released after approval");
+    assert_eq!(native.params.unwrap()["uri"], RES_URI);
+    wait_until("monitor", || {
+        h.monitor_decisions(RES_EVENT) == vec!["asked_allowed"]
+    })
+    .await;
+
+    // Off: the type leaves the catalogue and its updates are dropped
+    let mut off = client(CLIENT);
+    off.push_permissions.events.insert(
+        PushPermissions::event_key(RES_ID, "resource.updated"),
+        PushPermission::Off,
+    );
+    h.set_client(off);
+    let list = h.send("s1", "events/list", None).await.result.unwrap();
+    assert!(event_names(&list).is_empty());
+    h.send("s1", "resources/unsubscribe", Some(json!({"uri": RES_URI})))
+        .await;
+    h.send("s1", "resources/subscribe", Some(json!({"uri": RES_URI})))
+        .await;
+    wait_until("off recorded", || {
+        h.monitor_decisions(RES_EVENT).contains(&"off".to_string())
+    })
+    .await;
+    assert!(h
+        .next_notification(
+            "notifications/resources/updated",
+            &key,
+            Duration::from_millis(400)
+        )
+        .await
+        .is_none());
+}
+
+/// A consumer that names a URI makes the relay subscribe upstream on the
+/// session's connection, sharing that upstream subscription with the
+/// client's own `resources/subscribe`.
+#[tokio::test]
+async fn a_resource_event_consumer_opens_the_upstream_subscription_on_demand() {
+    let log = temp_log("pr_res_demand");
+    let mut h = harness(vec![resource_server(&log)], fast_limits());
+    h.initialize("s1", json!({})).await;
+    let key = localrouter::mcp::gateway::types::session_server_notification_key("s1", RES_ID);
+
+    // Arguments other than one `uri` are refused
+    let bad = h
+        .send(
+            "s1",
+            "events/poll",
+            Some(json!({"name": RES_EVENT, "arguments": {"path": "x"}})),
+        )
+        .await;
+    assert_eq!(bad.error.unwrap().code, -32602);
+
+    let (mut stream, _guard, task) = open_stream_with(
+        &h,
+        "s1",
+        41,
+        json!({"name": RES_EVENT, "arguments": {"uri": RES_URI}}),
+    );
+    let active = recv(&mut stream).await;
+    assert_eq!(active.method, "notifications/events/active");
+    assert_eq!(active.params.unwrap()["heartbeatMs"], 30_000);
+    wait_until("upstream subscribe", || {
+        log_lines(&log, "subscribe file") == 1
+    })
+    .await;
+    let event = next_event(&mut stream).await;
+    assert_eq!(event["name"], RES_EVENT);
+    assert_eq!(event["data"]["uri"], RES_URI);
+    // The client never subscribed itself: no native notification for it
+    assert!(h
+        .next_notification(
+            "notifications/resources/updated",
+            &key,
+            Duration::from_millis(400)
+        )
+        .await
+        .is_none());
+    let subscriptions = h.relay.active_subscriptions();
+    assert_eq!(subscriptions.len(), 1);
+    assert_eq!(subscriptions[0].event, "resource.updated");
+    assert_eq!(
+        subscriptions[0].arguments,
+        json!({"uri": RES_URI}).as_object().unwrap().clone()
+    );
+    assert_eq!(
+        subscriptions[0].status.ingress_mode.as_deref(),
+        Some("resource")
+    );
+    assert!(subscriptions[0].status.events_received >= 1);
+    let status = h.relay.server_push_status(RES_ID);
+    let resource = status
+        .event_types
+        .iter()
+        .find(|t| t.event == "resource.updated")
+        .unwrap();
+    assert_eq!(resource.state, "listening");
+    assert_eq!(resource.ingress_mode.as_deref(), Some("resource"));
+
+    // The client subscribes to the same resource itself; the stream ends;
+    // the upstream subscription stays for the client
+    h.send("s1", "resources/list", None).await;
+    h.send("s1", "resources/subscribe", Some(json!({"uri": RES_URI})))
+        .await;
+    h.next_notification(
+        "notifications/resources/updated",
+        &key,
+        Duration::from_secs(10),
+    )
+    .await
+    .expect("native notification once the client subscribed itself");
+    h.send(
+        "s1",
+        "notifications/cancelled",
+        Some(json!({"requestId": 41})),
+    )
+    .await;
+    let result = tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.result.unwrap()["resultType"], "complete");
+    wait_until("relay subscription closed", || {
+        h.relay.active_subscriptions().is_empty()
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(
+        log_lines(&log, "unsubscribe"),
+        0,
+        "the client's own subscription keeps the upstream one"
+    );
+    h.send("s1", "resources/unsubscribe", Some(json!({"uri": RES_URI})))
+        .await;
+    wait_until("client unsubscribe reaches upstream", || {
+        log_lines(&log, "unsubscribe") == 1
+    })
+    .await;
+
+    // The other order: while the relay holds the resource, the client's own
+    // unsubscribe leaves the upstream subscription; the relay ends it later
+    let (mut stream, _guard, task) = open_stream_with(
+        &h,
+        "s1",
+        42,
+        json!({"name": RES_EVENT, "arguments": {"uri": RES_URI}}),
+    );
+    next_event(&mut stream).await;
+    h.send("s1", "resources/subscribe", Some(json!({"uri": RES_URI})))
+        .await;
+    let unsubscribed = h
+        .send("s1", "resources/unsubscribe", Some(json!({"uri": RES_URI})))
+        .await;
+    assert!(unsubscribed.error.is_none());
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(log_lines(&log, "unsubscribe"), 1);
+    h.send(
+        "s1",
+        "notifications/cancelled",
+        Some(json!({"requestId": 42})),
+    )
+    .await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
+    wait_until("relay unsubscribe reaches upstream", || {
+        log_lines(&log, "unsubscribe") == 2
+    })
+    .await;
+}
+
+/// U5 has one switch: with it off a resource server is no push source and
+/// its updates are forwarded as before Push Relay.
+#[tokio::test]
+async fn resource_ingress_can_be_switched_off() {
+    let log = temp_log("pr_res_off");
+    let mut limits = fast_limits();
+    limits.resource_update_ingress = false;
+    let mut h = harness(vec![resource_server(&log)], limits);
+    let init = h.initialize("s1", json!({})).await.result.unwrap();
+    assert!(init["capabilities"]["extensions"][EVENTS_EXTENSION_ID].is_null());
+    assert!(h.relay.client_event_types(CLIENT).is_empty());
+    h.send("s1", "resources/list", None).await;
+    h.send("s1", "resources/subscribe", Some(json!({"uri": RES_URI})))
+        .await;
+    h.next_notification(
+        "notifications/resources/updated",
+        &localrouter::mcp::gateway::types::session_server_notification_key("s1", RES_ID),
+        Duration::from_secs(10),
+    )
+    .await
+    .expect("forwarded raw");
+    assert!(h.monitor_decisions(RES_EVENT).is_empty());
+    assert_eq!(h.relay.journal_len(CLIENT), 0);
+}
+
+/// An HTTP upstream answering `resources/subscribe` with an SSE body that
+/// carries one `notifications/resources/updated` before the result.
+struct SubscribeResponder {
+    subscribes: Arc<AtomicUsize>,
+}
+
+impl Respond for SubscribeResponder {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+        self.subscribes.fetch_add(1, Ordering::SeqCst);
+        let uri = body["params"]["uri"].clone();
+        let update = json!({"jsonrpc": "2.0", "method": "notifications/resources/updated",
+            "params": {"uri": uri}});
+        let result = json!({"jsonrpc": "2.0", "id": body["id"], "result": {}});
+        ResponseTemplate::new(200).set_body_raw(
+            format!("event: message\ndata: {update}\n\nevent: message\ndata: {result}\n\n"),
+            "text/event-stream",
+        )
+    }
+}
+
+/// On an HTTP upstream the relay subscribes over its own connection.
+#[tokio::test]
+async fn resource_updates_of_an_http_upstream_use_the_relay_connection() {
+    let upstream = MockServer::start().await;
+    let subscribes = Arc::new(AtomicUsize::new(0));
+    for (method, result) in [
+        (
+            "initialize",
+            json!({"protocolVersion": "2025-11-25",
+                "capabilities": {"tools": {}, "resources": {"subscribe": true}},
+                "serverInfo": {"name": "res-http", "version": "1"}}),
+        ),
+        ("tools/list", json!({"tools": []})),
+        ("resources/list", json!({"resources": []})),
+        ("prompts/list", json!({"prompts": []})),
+        ("resources/unsubscribe", json!({})),
+    ] {
+        Mock::given(http_method("POST"))
+            .and(JsonRpcMethod(method))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"jsonrpc": "2.0", "id": 1, "result": result})),
+            )
+            .mount(&upstream)
+            .await;
+    }
+    Mock::given(http_method("POST"))
+        .and(JsonRpcMethod("resources/subscribe"))
+        .respond_with(SubscribeResponder {
+            subscribes: subscribes.clone(),
+        })
+        .mount(&upstream)
+        .await;
+    Mock::given(http_method("POST"))
+        .respond_with(ResponseTemplate::new(202))
+        .mount(&upstream)
+        .await;
+
+    let mut server = http_server(upstream.uri());
+    server.capability_snapshot = Some(UpstreamCapabilitySnapshot {
+        fingerprint: lr_config::fingerprint_for(&server),
+        protocol_version: "2025-11-25".into(),
+        capabilities: json!({"tools": {}, "resources": {"subscribe": true}}),
+        push: UpstreamPushSummary {
+            events_modes: BTreeMap::new(),
+            channels: false,
+            resource_subscribe: true,
+        },
+        event_catalogue: Vec::new(),
+        observed_at: Utc::now(),
+    });
+    let h = harness(vec![server], fast_limits());
+    h.initialize("s1", json!({})).await;
+    let name = "http-push__resource.updated";
+    let arguments = json!({"uri": "https://example.test/doc"});
+
+    // The first poll bootstraps a cursor and opens the upstream subscription
+    let first = h
+        .send(
+            "s1",
+            "events/poll",
+            Some(json!({"name": name, "arguments": arguments})),
+        )
+        .await
+        .result
+        .unwrap();
+    wait_until("subscribed upstream", || {
+        subscribes.load(Ordering::SeqCst) >= 1
+    })
+    .await;
+    let subscriptions = h.relay.active_subscriptions();
+    assert_eq!(subscriptions.len(), 1);
+    assert_eq!(subscriptions[0].event, "resource.updated");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let event = loop {
+        let batch = h
+            .send(
+                "s1",
+                "events/poll",
+                Some(json!({"name": name, "arguments": arguments, "cursor": first["cursor"]})),
+            )
+            .await
+            .result
+            .unwrap();
+        if let Some(event) = batch["events"].as_array().unwrap().first() {
+            break event.clone();
+        }
+        assert!(Instant::now() < deadline, "no resource update arrived");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert_eq!(event["data"], json!({"uri": "https://example.test/doc"}));
+    assert_eq!(event["name"], name);
+
+    // A reader of another URI does not see it
+    let other = h
+        .send(
+            "s1",
+            "events/poll",
+            Some(
+                json!({"name": name, "arguments": {"uri": "https://example.test/other"},
+                "cursor": null}),
+            ),
+        )
+        .await
+        .result
+        .unwrap();
+    assert_eq!(other["events"], json!([]));
+}
+
+// ---------------------------------------------------------------------------
+// P2: Claude Channels permission relay
+// ---------------------------------------------------------------------------
+
+const PERM_ID: &str = "perm-srv";
+const PERM_EVENT: &str = "perm-srv__channel.permission";
+const PERM_REQUEST_EVENT: &str = "perm-srv__channel.permission_request";
+
+/// A stdio channel server that opted into the permission relay. It logs
+/// every prompt it receives to `$PERM_LOG` and answers it with `allow`
+/// (`deny` when the tool is `Write`). After the handshake it also sends one
+/// verdict for a prompt nobody opened.
+const PERMISSION_UPSTREAM: &str = r#"while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  sid=$(printf '%s' "$line" | sed -n 's/.*"id":\("[^"]*"\).*/\1/p')
+  [ -z "$id" ] && id="$sid"
+  case "$line" in
+    *'"method":"server/discover"'*) printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32601,"message":"no"}}\n' "$id" ;;
+    *'"method":"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{},"experimental":{"claude/channel":{},"claude/channel/permission":{}}},"serverInfo":{"name":"perm","version":"1"}}}\n' "$id" ;;
+    *'"method":"notifications/initialized"'*) sleep 0.2; printf '{"jsonrpc":"2.0","method":"notifications/claude/channel/permission","params":{"request_id":"zzzzz","behavior":"allow"}}\n' ;;
+    *'"method":"notifications/claude/channel/permission_request"'*)
+      printf '%s\n' "$line" >> "$PERM_LOG"
+      rid=$(printf '%s' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
+      behavior=allow
+      case "$line" in *'"tool_name":"Write"'*) behavior=deny ;; esac
+      sleep 0.2
+      printf '{"jsonrpc":"2.0","method":"notifications/claude/channel/permission","params":{"request_id":"%s","behavior":"%s"}}\n' "$rid" "$behavior"
+      sleep 0.2
+      printf '{"jsonrpc":"2.0","method":"notifications/claude/channel/permission","params":{"request_id":"%s","behavior":"deny"}}\n' "$rid" ;;
+    *'"method":"notifications/'*) ;;
+    *) if [ -n "$id" ]; then printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[],"prompts":[],"resources":[]}}\n' "$id"; fi ;;
+  esac
+done"#;
+
+fn permission_server(log: &std::path::Path) -> McpServerConfig {
+    scripted_stdio_server(
+        PERM_ID,
+        "Perm Srv",
+        PERMISSION_UPSTREAM,
+        ("PERM_LOG", log),
+        json!({"tools": {}, "experimental": {"claude/channel": {}, "claude/channel/permission": {}}}),
+        true,
+        false,
+    )
+}
+
+fn prompt(request_id: &str, tool: &str) -> Value {
+    json!({
+        "request_id": request_id,
+        "tool_name": tool,
+        "description": "List files",
+        "input_preview": "{\"command\":\"ls -la\"}",
+        "not_documented": true
+    })
+}
+
+const PERMISSION_REQUEST: &str = "notifications/claude/channel/permission_request";
+const PERMISSION_VERDICT: &str = "notifications/claude/channel/permission";
+
+#[tokio::test]
+async fn permission_prompts_are_relayed_and_the_first_verdict_returns() {
+    let log = temp_log("pr_perm");
+    let mut h = harness(vec![permission_server(&log)], fast_limits());
+
+    // Only a STDIO bridge session is offered the relay
+    let plain = h.initialize("plain", json!({})).await.result.unwrap();
+    assert!(plain["capabilities"]["experimental"].is_null());
+    h.gateway.set_stdio_bridge_session("bridge", true);
+    let init = h.initialize("bridge", json!({})).await.result.unwrap();
+    let experimental = &init["capabilities"]["experimental"];
+    assert_eq!(experimental[CLAUDE_CHANNEL_CAPABILITY], json!({}));
+    assert_eq!(experimental["claude/channel/permission"], json!({}));
+    // A verdict is not an event type a client can read
+    let list = h.send("bridge", "events/list", None).await.result.unwrap();
+    assert_eq!(
+        event_names(&list),
+        vec!["perm-srv__channel.message".to_string()]
+    );
+    assert!(h
+        .relay
+        .client_event_types(CLIENT)
+        .iter()
+        .any(|t| t.event_name == "channel.permission"));
+
+    // The upstream's unsolicited verdict (no open prompt) goes nowhere, on
+    // either session's connection
+    wait_until("stray verdicts refused", || {
+        h.monitor_decisions(PERM_EVENT) == vec!["denied", "denied"]
+    })
+    .await;
+
+    // A prompt from a session that is not a bridge session is ignored
+    h.send("plain", PERMISSION_REQUEST, Some(prompt("aaaaa", "Bash")))
+        .await;
+
+    h.send("bridge", PERMISSION_REQUEST, Some(prompt("abcde", "Bash")))
+        .await;
+    let key = session_notification_key("bridge");
+    let verdict = h
+        .next_notification(PERMISSION_VERDICT, &key, Duration::from_secs(10))
+        .await
+        .expect("verdict relayed to the bridge session");
+    assert_eq!(
+        verdict.params.unwrap(),
+        json!({"request_id": "abcde", "behavior": "allow"})
+    );
+    // The upstream's second answer to the same prompt is dropped
+    assert!(h
+        .next_notification(PERMISSION_VERDICT, &key, Duration::from_millis(500))
+        .await
+        .is_none());
+
+    // The upstream received exactly the four documented fields, once
+    let logged = std::fs::read_to_string(&log).unwrap();
+    let lines: Vec<&str> = logged.lines().collect();
+    assert_eq!(lines.len(), 1, "{logged}");
+    let forwarded: Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(forwarded["method"], PERMISSION_REQUEST);
+    assert!(forwarded.get("id").is_none_or(Value::is_null));
+    assert_eq!(
+        forwarded["params"],
+        json!({"request_id": "abcde", "tool_name": "Bash", "description": "List files",
+            "input_preview": "{\"command\":\"ls -la\"}"})
+    );
+
+    // Monitor: the prompt, the accepted verdict and the refused ones
+    assert_eq!(h.monitor_decisions(PERM_REQUEST_EVENT), vec!["allowed"]);
+    match monitor_record(&h, PERM_REQUEST_EVENT).unwrap() {
+        lr_monitor::MonitorEventData::McpPushEvent {
+            ingress_mode,
+            original_payload,
+            ..
+        } => {
+            assert_eq!(ingress_mode, "client");
+            assert_eq!(original_payload.unwrap()["tool_name"], "Bash");
+        }
+        other => panic!("{other:?}"),
+    }
+    wait_until("verdict records", || {
+        h.monitor_decisions(PERM_EVENT) == vec!["denied", "denied", "allowed", "denied"]
+    })
+    .await;
+    // A verdict never enters the journal
+    assert_eq!(h.relay.journal_len(CLIENT), 0);
+    assert_eq!(h.relay.pending_permission_requests("bridge"), 1);
+
+    // A reused request id is not relayed again
+    h.send("bridge", PERMISSION_REQUEST, Some(prompt("abcde", "Bash")))
+        .await;
+    // Malformed prompts are ignored
+    h.send(
+        "bridge",
+        PERMISSION_REQUEST,
+        Some(json!({"request_id": "bad id", "tool_name": "Bash", "description": "", "input_preview": ""})),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(log_lines(&log, "permission_request"), 1);
+    assert!(h
+        .next_notification(PERMISSION_VERDICT, &key, Duration::from_millis(300))
+        .await
+        .is_none());
+}
+
+#[tokio::test]
+async fn permission_verdicts_obey_ask_and_off() {
+    let log = temp_log("pr_perm_ask");
+    let mut h = harness(vec![permission_server(&log)], fast_limits());
+    let mut ask = client(CLIENT);
+    ask.push_permissions.events.insert(
+        PushPermissions::event_key(PERM_ID, "channel.permission"),
+        PushPermission::Ask,
+    );
+    h.set_client(ask);
+    h.gateway.set_stdio_bridge_session("bridge", true);
+    let init = h.initialize("bridge", json!({})).await.result.unwrap();
+    assert_eq!(
+        init["capabilities"]["experimental"]["claude/channel/permission"],
+        json!({})
+    );
+    let key = session_notification_key("bridge");
+
+    // Ask: the prompt goes out at once, the verdict is held for approval
+    h.send("bridge", PERMISSION_REQUEST, Some(prompt("bcdef", "Bash")))
+        .await;
+    wait_until("held verdict", || {
+        h.relay
+            .pending_events(Some(CLIENT))
+            .iter()
+            .any(|e| e.qualified_name == PERM_EVENT)
+    })
+    .await;
+    assert_eq!(log_lines(&log, "bcdef"), 1);
+    assert!(h
+        .next_notification(PERMISSION_VERDICT, &key, Duration::from_millis(400))
+        .await
+        .is_none());
+    let held = h
+        .relay
+        .pending_events(Some(CLIENT))
+        .into_iter()
+        .find(|e| e.qualified_name == PERM_EVENT)
+        .unwrap();
+    assert_eq!(held.data["behavior"], "allow");
+    assert_eq!(held.data["tool_name"], "Bash");
+    assert_eq!(held.data["input_preview"], "{\"command\":\"ls -la\"}");
+    wait_until("popup", || {
+        h.gateway
+            .firewall_manager
+            .list_pending()
+            .iter()
+            .any(|p| p.is_push_event_request)
+    })
+    .await;
+    let details = h
+        .gateway
+        .firewall_manager
+        .list_pending()
+        .into_iter()
+        .find(|p| p.is_push_event_request)
+        .and_then(|p| p.push_event_details)
+        .unwrap();
+    assert!(
+        details
+            .rendered_content
+            .contains("answers a Claude Code permission prompt with ALLOW"),
+        "{}",
+        details.rendered_content
+    );
+    assert!(details.rendered_content.contains("Tool: Bash"));
+
+    // The operator turns the remote "allow" into a "deny"; the request id
+    // of the delivered verdict stays the prompt's
+    h.relay
+        .decide(
+            &held.hold_id,
+            PushDecision {
+                action: PushDecisionAction::Allow,
+                edited_data: Some(json!({"request_id": "other", "behavior": "deny"})),
+            },
+        )
+        .unwrap();
+    let verdict = h
+        .next_notification(PERMISSION_VERDICT, &key, Duration::from_secs(5))
+        .await
+        .expect("verdict delivered after approval");
+    assert_eq!(
+        verdict.params.unwrap(),
+        json!({"request_id": "bcdef", "behavior": "deny"})
+    );
+    wait_until("monitor", || {
+        h.monitor_decisions(PERM_EVENT)
+            .contains(&"asked_edited".to_string())
+    })
+    .await;
+    assert_eq!(h.relay.journal_len(CLIENT), 0);
+
+    // A denied verdict is never delivered
+    h.send("bridge", PERMISSION_REQUEST, Some(prompt("cdefg", "Write")))
+        .await;
+    wait_until("second held verdict", || {
+        h.relay
+            .pending_events(Some(CLIENT))
+            .iter()
+            .any(|e| e.data["request_id"] == "cdefg")
+    })
+    .await;
+    let held = h
+        .relay
+        .pending_events(Some(CLIENT))
+        .into_iter()
+        .find(|e| e.data["request_id"] == "cdefg")
+        .unwrap();
+    assert_eq!(held.data["behavior"], "deny");
+    h.relay
+        .decide(&held.hold_id, PushDecision::new(PushDecisionAction::Deny))
+        .unwrap();
+    assert!(h
+        .next_notification(PERMISSION_VERDICT, &key, Duration::from_millis(500))
+        .await
+        .is_none());
+
+    // Off: the relay is not offered and prompts stay local
+    let mut off = client(CLIENT);
+    off.push_permissions.events.insert(
+        PushPermissions::event_key(PERM_ID, "channel.permission"),
+        PushPermission::Off,
+    );
+    h.set_client(off);
+    h.gateway.set_stdio_bridge_session("bridge-2", true);
+    let init = h.initialize("bridge-2", json!({})).await.result.unwrap();
+    let experimental = &init["capabilities"]["experimental"];
+    assert_eq!(experimental[CLAUDE_CHANNEL_CAPABILITY], json!({}));
+    assert!(experimental["claude/channel/permission"].is_null());
+    h.send(
+        "bridge-2",
+        PERMISSION_REQUEST,
+        Some(prompt("defgh", "Bash")),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(log_lines(&log, "defgh"), 0);
+}
+
+#[tokio::test]
+async fn permission_prompts_remembered_per_session_are_bounded() {
+    let log = temp_log("pr_perm_cap");
+    let mut limits = fast_limits();
+    limits.permission_pending_cap = 2;
+    let h = harness(vec![permission_server(&log)], limits);
+    h.gateway.set_stdio_bridge_session("bridge", true);
+    h.initialize("bridge", json!({})).await;
+    for id in ["aaaaa", "bbbbb", "ccccc"] {
+        h.send("bridge", PERMISSION_REQUEST, Some(prompt(id, "Bash")))
+            .await;
+    }
+    assert_eq!(h.relay.pending_permission_requests("bridge"), 2);
+    wait_until("all three forwarded", || {
+        log_lines(&log, "permission_request") == 3
+    })
+    .await;
+}
+
+// ---------------------------------------------------------------------------
+// The HTTP route: `events/stream` answered with an SSE body
+// ---------------------------------------------------------------------------
+
+/// Reads JSON-RPC messages from an SSE response body.
+struct SseReader {
+    body: futures_util::stream::BoxStream<'static, Option<Vec<u8>>>,
+    buffer: String,
+}
+
+impl SseReader {
+    fn new(response: reqwest::Response) -> Self {
+        Self {
+            body: Box::pin(
+                response
+                    .bytes_stream()
+                    .map(|chunk| chunk.ok().map(|bytes| bytes.to_vec())),
+            ),
+            buffer: String::new(),
+        }
+    }
+
+    /// The next JSON message, or `None` when the body ended or nothing
+    /// arrived within `timeout`.
+    async fn next(&mut self, timeout: Duration) -> Option<Value> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            while let Some(end) = self.buffer.find("\n\n") {
+                let frame: String = self.buffer.drain(..end + 2).collect();
+                let data: Vec<&str> = frame
+                    .lines()
+                    .filter_map(|line| line.strip_prefix("data:"))
+                    .map(str::trim_start)
+                    .collect();
+                if data.is_empty() {
+                    continue; // keep-alive comment
+                }
+                if let Ok(value) = serde_json::from_str(&data.join("\n")) {
+                    return Some(value);
+                }
+            }
+            let chunk = tokio::time::timeout_at(deadline, self.body.next())
+                .await
+                .ok()???;
+            self.buffer
+                .push_str(&String::from_utf8_lossy(&chunk).replace("\r\n", "\n"));
+        }
+    }
+
+    /// The next message with `method`, skipping heartbeats and others.
+    async fn next_method(&mut self, method: &str) -> Value {
+        loop {
+            let message = self
+                .next(Duration::from_secs(10))
+                .await
+                .unwrap_or_else(|| panic!("stream ended before {method}"));
+            if message["method"] == method {
+                return message;
+            }
+        }
+    }
+}
+
+const ROUTE_CLIENT: &str = "pr-route";
+
+/// Everything the route test needs from the running server.
+struct RouteServer {
+    url: String,
+    token: String,
+    state: localrouter::server::state::AppState,
+    _upstream: MockServer,
+}
+
+/// The real HTTP server with one client and one HTTP upstream that offers
+/// an MCP event, Claude Channels and resource subscriptions.
+async fn route_server() -> RouteServer {
+    use localrouter::clients::{ClientManager, TokenStore};
+
+    let upstream = MockServer::start().await;
+    for (method, result) in [
+        (
+            "initialize",
+            json!({"protocolVersion": "2025-11-25",
+                "capabilities": {"tools": {}, "events": {}, "resources": {"subscribe": true},
+                    "experimental": {"claude/channel": {}}},
+                "serverInfo": {"name": "push", "version": "1"}}),
+        ),
+        (
+            "events/list",
+            json!({"events": [{"name": "msg", "description": "msg happened",
+                "delivery": ["poll"], "inputSchema": {"type": "object", "properties": {}}}]}),
+        ),
+        (
+            "events/poll",
+            json!({"resultType": "complete", "events": [], "cursor": "c0", "hasMore": false,
+                "nextPollMs": 200}),
+        ),
+        ("tools/list", json!({"tools": []})),
+        ("resources/list", json!({"resources": []})),
+        ("prompts/list", json!({"prompts": []})),
+    ] {
+        Mock::given(http_method("POST"))
+            .and(JsonRpcMethod(method))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"jsonrpc": "2.0", "id": 1, "result": result})),
+            )
+            .mount(&upstream)
+            .await;
+    }
+    Mock::given(http_method("POST"))
+        .respond_with(ResponseTemplate::new(202))
+        .mount(&upstream)
+        .await;
+
+    let mut server = http_server(upstream.uri());
+    server.capability_snapshot = Some(UpstreamCapabilitySnapshot {
+        fingerprint: lr_config::fingerprint_for(&server),
+        protocol_version: "2025-11-25".into(),
+        capabilities: json!({"tools": {}, "events": {}, "resources": {"subscribe": true},
+            "experimental": {"claude/channel": {}}}),
+        push: UpstreamPushSummary {
+            events_modes: BTreeMap::from([("msg".to_string(), vec![EventDeliveryMode::Poll])]),
+            channels: true,
+            resource_subscribe: true,
+        },
+        event_catalogue: vec![json!({"name": "msg", "description": "msg happened",
+            "delivery": ["poll"], "inputSchema": {"type": "object", "properties": {}}})],
+        observed_at: Utc::now(),
+    });
+
+    let mut route_client = client(ROUTE_CLIENT);
+    route_client.enabled = true;
+    let config = AppConfig {
+        clients: vec![route_client.clone()],
+        strategies: vec![lr_config::Strategy::new("Default".to_string())],
+        mcp_servers: vec![server.clone()],
+        ..Default::default()
+    };
+    let config_manager = Arc::new(ConfigManager::new(
+        config,
+        std::env::temp_dir().join(format!("pr_route_{}.yaml", uuid::Uuid::new_v4())),
+    ));
+    let mcp_server_manager = Arc::new(McpServerManager::new());
+    mcp_server_manager.add_config(server);
+    let metrics_db = Arc::new(
+        MetricsDatabase::new(
+            std::env::temp_dir().join(format!("pr_route_{}.db", uuid::Uuid::new_v4())),
+        )
+        .unwrap(),
+    );
+    let metrics_collector = Arc::new(MetricsCollector::new(metrics_db));
+    let provider_registry = Arc::new(ProviderRegistry::new());
+    let rate_limiter = Arc::new(RateLimiterManager::new(None));
+    let router = Arc::new(Router::new(
+        config_manager.clone(),
+        provider_registry.clone(),
+        rate_limiter.clone(),
+        metrics_collector.clone(),
+        Arc::new(lr_router::FreeTierManager::new(None)),
+    ));
+    let token_store = Arc::new(TokenStore::new());
+    let (token, _) = token_store
+        .generate_token(ROUTE_CLIENT.to_string())
+        .unwrap();
+    let (state, _handle, port, _shutdown) = localrouter::server::start_server(
+        localrouter::server::ServerConfig {
+            host: "127.0.0.1".into(),
+            port: 0,
+            enable_cors: false,
+        },
+        router,
+        mcp_server_manager,
+        rate_limiter,
+        provider_registry,
+        config_manager,
+        Arc::new(ClientManager::new(vec![route_client])),
+        token_store,
+        metrics_collector,
+        None,
+    )
+    .await
+    .expect("server");
+    RouteServer {
+        url: format!("http://127.0.0.1:{port}/mcp"),
+        token,
+        state,
+        _upstream: upstream,
+    }
+}
+
+impl RouteServer {
+    fn relay(&self) -> Arc<PushRelay> {
+        self.state.push_relay.clone().expect("relay registered")
+    }
+
+    /// POST one JSON-RPC request as the test client's push-testing session.
+    async fn post(
+        &self,
+        http: &reqwest::Client,
+        id: i64,
+        method: &str,
+        params: Value,
+    ) -> reqwest::Response {
+        http.post(&self.url)
+            .bearer_auth(&self.token)
+            .header("Accept", "application/json, text/event-stream")
+            .header("X-LocalRouter-Push-Test", "1")
+            .json(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))
+            .send()
+            .await
+            .expect("request sent")
+    }
+
+    async fn open_stream(&self, http: &reqwest::Client, id: i64, params: Value) -> SseReader {
+        let response = self.post(http, id, "events/stream", params).await;
+        assert_eq!(response.status(), 200);
+        assert!(response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.starts_with("text/event-stream")));
+        SseReader::new(response)
+    }
+
+    fn admit(&self, name: &str, id: &str, ingress: IngressMode, args_key: &str, data: Value) {
+        self.relay().admit(
+            ROUTE_CLIENT,
+            Arc::new(Occurrence {
+                event_id: format!("http-push__{id}"),
+                name: format!("http-push__{name}"),
+                server_id: HTTP_ID.to_string(),
+                server_slug: "http-push".to_string(),
+                upstream_name: name.to_string(),
+                timestamp: Utc::now(),
+                data,
+                upstream_cursor: None,
+                ingress,
+                args_key: args_key.to_string(),
+                origin_session: None,
+                direct: None,
+            }),
+        );
+    }
+}
+
+/// The HTTP answer to `events/stream`: an SSE body that confirms the
+/// subscription, carries each kind of relayed event in order, heartbeats,
+/// resumes from a cursor, needs the client's token, and releases everything
+/// when the client goes away.
+#[tokio::test]
+async fn events_stream_route_delivers_resumes_authenticates_and_cleans_up() {
+    let server = route_server().await;
+    let relay = server.relay();
+    relay.set_limits(PushRelayLimits {
+        downstream_heartbeat_secs: 1,
+        max_streams_per_session: 4,
+        ..fast_limits()
+    });
+    let http = reqwest::Client::new();
+
+    // No token, or a wrong one: refused before anything is opened
+    let anonymous = http
+        .post(&server.url)
+        .json(
+            &json!({"jsonrpc": "2.0", "id": 1, "method": "events/stream",
+            "params": {"name": "http-push__msg"}}),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(anonymous.status(), 401);
+    let forged = http
+        .post(&server.url)
+        .bearer_auth("lr-not-a-real-token")
+        .json(
+            &json!({"jsonrpc": "2.0", "id": 1, "method": "events/stream",
+            "params": {"name": "http-push__msg"}}),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(forged.status(), 401);
+
+    let init = server
+        .post(
+            &http,
+            1,
+            "initialize",
+            json!({"protocolVersion": "2025-11-25", "capabilities": {},
+                "clientInfo": {"name": "route-test", "version": "1"}}),
+        )
+        .await;
+    assert_eq!(init.status(), 200);
+    let list: Value = server
+        .post(&http, 2, "events/list", json!({}))
+        .await
+        .json()
+        .await
+        .unwrap();
+    let mut names = event_names(&list["result"]);
+    names.sort();
+    assert_eq!(
+        names,
+        vec![
+            "http-push__channel.message",
+            "http-push__msg",
+            "http-push__resource.updated",
+            TEST_EVENT,
+        ]
+    );
+
+    // An unknown event type is answered on the stream with the error
+    let mut unknown = server
+        .open_stream(&http, 9, json!({"name": "http-push__nope"}))
+        .await;
+    let error = unknown.next(Duration::from_secs(5)).await.unwrap();
+    assert_eq!(error["id"], 9);
+    assert_eq!(error["error"]["code"], -32023);
+    assert!(unknown.next(Duration::from_secs(2)).await.is_none());
+
+    // One stream per kind of event
+    let mut msg = server
+        .open_stream(&http, 11, json!({"name": "http-push__msg"}))
+        .await;
+    let mut channel = server
+        .open_stream(&http, 12, json!({"name": "http-push__channel.message"}))
+        .await;
+    let mut resource = server
+        .open_stream(&http, 13, json!({"name": "http-push__resource.updated"}))
+        .await;
+    let mut test = server
+        .open_stream(&http, 14, json!({"name": TEST_EVENT}))
+        .await;
+    for (stream, id) in [
+        (&mut msg, 11),
+        (&mut channel, 12),
+        (&mut resource, 13),
+        (&mut test, 14),
+    ] {
+        let active = stream.next(Duration::from_secs(10)).await.unwrap();
+        assert_eq!(active["method"], "notifications/events/active", "{active}");
+        assert_eq!(active["params"]["truncated"], false);
+        assert_eq!(active["params"]["heartbeatMs"], 1000);
+        assert_eq!(
+            active["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"],
+            id
+        );
+        assert!(active["params"]["cursor"]
+            .as_str()
+            .unwrap()
+            .starts_with("lr1."));
+    }
+    // The stream of an MCP event type holds its upstream subscription
+    wait_until("upstream subscription", || {
+        relay
+            .active_subscriptions()
+            .iter()
+            .any(|s| s.event == "msg")
+    })
+    .await;
+
+    // The session is at its stream limit
+    let mut fifth = server
+        .open_stream(&http, 15, json!({"name": "http-push__msg"}))
+        .await;
+    let exhausted = fifth.next(Duration::from_secs(5)).await.unwrap();
+    assert_eq!(exhausted["error"]["code"], -32025);
+
+    // Two events of each kind, interleaved; each stream gets its own, in order
+    let resource_args = r#"{"uri":"file:///a"}"#;
+    for n in 1..=2 {
+        server.admit(
+            "msg",
+            &format!("m{n}"),
+            IngressMode::Push,
+            "{}",
+            json!({"n": n}),
+        );
+        server.admit(
+            "channel.message",
+            &format!("c{n}"),
+            IngressMode::Channel,
+            "",
+            json!({"content": format!("hello {n}"), "meta": {}}),
+        );
+        server.admit(
+            "resource.updated",
+            &format!("r{n}"),
+            IngressMode::Resource,
+            resource_args,
+            json!({"uri": "file:///a", "n": n}),
+        );
+        relay
+            .send_test_event(Some(ROUTE_CLIENT), Some(format!("test {n}")), None)
+            .unwrap();
+    }
+    let mut first_msg_cursor = String::new();
+    for (stream, id, name, prefix) in [
+        (&mut msg, 11, "http-push__msg", "http-push__m"),
+        (
+            &mut channel,
+            12,
+            "http-push__channel.message",
+            "http-push__c",
+        ),
+        (
+            &mut resource,
+            13,
+            "http-push__resource.updated",
+            "http-push__r",
+        ),
+    ] {
+        for n in 1..=2 {
+            let event = stream.next_method("notifications/events/event").await;
+            let params = &event["params"];
+            assert_eq!(params["name"], name);
+            assert_eq!(params["eventId"], format!("{prefix}{n}"), "in order");
+            assert_eq!(
+                params["_meta"]["io.modelcontextprotocol/subscriptionId"],
+                id
+            );
+            assert!(params["timestamp"].as_str().is_some());
+            if id == 11 && n == 1 {
+                first_msg_cursor = params["cursor"].as_str().unwrap().to_string();
+            }
+        }
+    }
+    for n in 1..=2 {
+        let event = test.next_method("notifications/events/event").await;
+        assert_eq!(event["params"]["name"], TEST_EVENT);
+        assert_eq!(event["params"]["data"]["message"], format!("test {n}"));
+    }
+    // A quiet stream heartbeats with its cursor
+    let heartbeat = msg.next_method("notifications/events/heartbeat").await;
+    assert!(heartbeat["params"]["cursor"]
+        .as_str()
+        .unwrap()
+        .starts_with("lr1."));
+
+    // The client goes away: the stream's slot, its sink and its upstream
+    // subscription are released
+    drop(msg);
+    drop(fifth);
+    wait_until("upstream subscription closed", || {
+        relay.active_subscriptions().is_empty()
+    })
+    .await;
+
+    // A cursor that is not LocalRouter's is refused as invalid params
+    let mut bad = server
+        .open_stream(
+            &http,
+            22,
+            json!({"name": "http-push__msg", "cursor": "not-a-cursor"}),
+        )
+        .await;
+    let refused = bad.next(Duration::from_secs(5)).await.unwrap();
+    assert_eq!(refused["error"]["code"], -32602);
+
+    // Resume: a new stream from the first event's cursor replays what
+    // followed it, then continues live
+    let mut resumed = server
+        .open_stream(
+            &http,
+            21,
+            json!({"name": "http-push__msg", "cursor": first_msg_cursor}),
+        )
+        .await;
+    let active = resumed.next(Duration::from_secs(10)).await.unwrap();
+    assert_eq!(active["method"], "notifications/events/active", "{active}");
+    assert_eq!(active["params"]["truncated"], false);
+    let replayed = resumed.next_method("notifications/events/event").await;
+    assert_eq!(replayed["params"]["eventId"], "http-push__m2");
+    server.admit("msg", "m3", IngressMode::Push, "{}", json!({"n": 3}));
+    let live = resumed.next_method("notifications/events/event").await;
+    assert_eq!(live["params"]["eventId"], "http-push__m3");
+
+    drop(resumed);
+    drop(channel);
+    drop(resource);
+    drop(test);
+    wait_until("everything released", || {
+        relay.active_subscriptions().is_empty()
+    })
+    .await;
+    // Every slot is free again: four streams open
+    let mut reopened = Vec::new();
+    for id in 31..=34 {
+        let mut stream = server
+            .open_stream(&http, id, json!({"name": "http-push__msg"}))
+            .await;
+        let active = stream.next(Duration::from_secs(10)).await.unwrap();
+        assert_eq!(active["method"], "notifications/events/active", "{active}");
+        reopened.push(stream);
+    }
 }

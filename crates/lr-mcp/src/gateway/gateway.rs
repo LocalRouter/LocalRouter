@@ -577,6 +577,121 @@ impl McpGateway {
         transports.open_rpc_stream(server_id, request, buffer).await
     }
 
+    /// Send a notification to one upstream over a session's own connection
+    /// (e.g. a Claude Code permission prompt to a channel server).
+    pub async fn upstream_notify(
+        &self,
+        session_key: &str,
+        server_id: &str,
+        method: &str,
+        params: Option<Value>,
+    ) -> AppResult<()> {
+        let transports = self.session_transports_for(session_key, server_id).await?;
+        let notification = JsonRpcRequest::new(None, method.to_string(), params);
+        transports
+            .send_request(server_id, notification)
+            .await
+            .map(|_| ())
+    }
+
+    /// Deliver to a session's client a notification its upstream `server_id`
+    /// sent on the session's own connection, the way the gateway forwards
+    /// such notifications itself. Returns whether anyone listened.
+    pub fn forward_upstream_notification(
+        &self,
+        session_key: &str,
+        server_id: &str,
+        notification: JsonRpcNotification,
+    ) -> bool {
+        self.notification_broadcast
+            .as_ref()
+            .is_some_and(|broadcast| {
+                broadcast
+                    .send((
+                        super::types::session_server_notification_key(session_key, server_id),
+                        notification,
+                    ))
+                    .is_ok()
+            })
+    }
+
+    /// `resources/subscribe` on a session's own connection for a Push Relay
+    /// consumer. The session remembers it, so the client's own
+    /// `resources/unsubscribe` of the same URI leaves the upstream
+    /// subscription in place.
+    pub async fn relay_resource_subscribe(
+        &self,
+        session_key: &str,
+        server_id: &str,
+        uri: &str,
+    ) -> AppResult<JsonRpcResponse> {
+        let held = (server_id.to_string(), uri.to_string());
+        // Recorded before the request: an upstream may send the first update
+        // before its answer, and that update is the relay's, not one the
+        // client asked for
+        let newly_held = match self.get_session(session_key) {
+            Some(session) => session
+                .write()
+                .await
+                .relay_resource_subscriptions
+                .insert(held.clone()),
+            None => false,
+        };
+        let response = self
+            .upstream_request(
+                session_key,
+                server_id,
+                "resources/subscribe",
+                Some(json!({ "uri": uri })),
+            )
+            .await;
+        let failed = !matches!(&response, Ok(r) if r.error.is_none());
+        // A failed first subscription holds nothing; a failed re-issue leaves
+        // the earlier subscription recorded until the runner gives it back
+        if failed && newly_held {
+            if let Some(session) = self.get_session(session_key) {
+                session
+                    .write()
+                    .await
+                    .relay_resource_subscriptions
+                    .remove(&held);
+            }
+        }
+        response
+    }
+
+    /// Drop the Push Relay's hold on a resource of a session's connection,
+    /// unsubscribing upstream unless the client subscribed to it itself.
+    pub async fn relay_resource_unsubscribe(&self, session_key: &str, server_id: &str, uri: &str) {
+        let Some(session) = self.get_session(session_key) else {
+            return;
+        };
+        let client_subscribed = {
+            let mut state = session.write().await;
+            state
+                .relay_resource_subscriptions
+                .remove(&(server_id.to_string(), uri.to_string()));
+            state
+                .subscribed_resources
+                .get(uri)
+                .is_some_and(|owner| owner == server_id)
+        };
+        if client_subscribed {
+            return;
+        }
+        if let Err(e) = self
+            .upstream_request(
+                session_key,
+                server_id,
+                "resources/unsubscribe",
+                Some(json!({ "uri": uri })),
+            )
+            .await
+        {
+            tracing::debug!("Push Relay could not unsubscribe {uri} on {server_id}: {e}");
+        }
+    }
+
     async fn session_transports_for(
         &self,
         session_key: &str,
@@ -1217,6 +1332,15 @@ impl McpGateway {
                             }
                         }
                     }
+                }
+            }
+
+            // A Claude Code permission prompt for the Push Relay to relay to
+            // the upstream channel servers that opted in
+            if method == super::push_relay::CLAUDE_CHANNEL_PERMISSION_REQUEST_NOTIFICATION {
+                if let Some(service) = self.push_relay() {
+                    let ctx = push_context(&*session.read().await);
+                    service.on_client_notification(&ctx, &method, request.params.as_ref());
                 }
             }
 
@@ -2370,20 +2494,32 @@ impl McpGateway {
                                 );
                             }
                         }
+                        let is_resource_update =
+                            method == super::push_relay::RESOURCE_UPDATED_NOTIFICATION;
                         if method == super::push_relay::CLAUDE_CHANNEL_NOTIFICATION
+                            || method == super::push_relay::CLAUDE_CHANNEL_PERMISSION_NOTIFICATION
+                            || is_resource_update
                             || method.starts_with(super::push_relay::EVENTS_NOTIFICATION_PREFIX)
                         {
                             let service = push_relay.read().clone();
                             if let Some(service) = service {
-                                let (session_key, client_id) = {
+                                let (session_key, client_id, resource) = {
                                     let state = session_inner.read().await;
-                                    (state.session_key.clone(), state.client_id.clone())
+                                    let resource = is_resource_update.then(|| {
+                                        resource_update_context(
+                                            &state,
+                                            &server_id_inner,
+                                            &notification,
+                                        )
+                                    });
+                                    (state.session_key.clone(), state.client_id.clone(), resource)
                                 };
                                 if service.on_upstream_notification(UpstreamPushNotification {
                                     server_id: server_id_inner.clone(),
                                     session_key,
                                     client_id,
                                     notification: notification.clone(),
+                                    resource,
                                 }) {
                                     return;
                                 }
@@ -5173,6 +5309,45 @@ async fn close_session_transports(session: &Arc<RwLock<GatewaySession>>) {
     };
     if let Some(transports) = transports {
         transports.close_all().await;
+    }
+}
+
+/// What a session knows about the resource an upstream reported as updated:
+/// whether its client expects the native notification, and the gateway's
+/// namespaced name of the resource.
+fn resource_update_context(
+    state: &GatewaySession,
+    server_id: &str,
+    notification: &JsonRpcNotification,
+) -> super::push_relay::ResourceUpdateContext {
+    let uri = notification
+        .params
+        .as_ref()
+        .and_then(|p| p.get("uri"))
+        .and_then(Value::as_str);
+    let Some(uri) = uri else {
+        return super::push_relay::ResourceUpdateContext {
+            client_subscribed: true,
+            resource_name: None,
+        };
+    };
+    let relay_holds = state
+        .relay_resource_subscriptions
+        .contains(&(server_id.to_string(), uri.to_string()));
+    let resource_name = state
+        .resource_uri_mapping
+        .get(uri)
+        .filter(|(owner, _)| owner == server_id)
+        .and_then(|(_, original)| {
+            state
+                .resource_mapping
+                .iter()
+                .find(|(_, (owner, name))| owner == server_id && name == original)
+                .map(|(namespaced, _)| namespaced.clone())
+        });
+    super::push_relay::ResourceUpdateContext {
+        client_subscribed: state.subscribed_resources.contains_key(uri) || !relay_holds,
+        resource_name,
     }
 }
 

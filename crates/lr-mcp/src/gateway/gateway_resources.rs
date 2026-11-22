@@ -677,6 +677,22 @@ impl McpGateway {
             }
         };
 
+        // The Push Relay still holds this resource on the same connection
+        // for an event consumer: only the client's own subscription ends.
+        {
+            let mut session_write = session.write().await;
+            if session_write
+                .relay_resource_subscriptions
+                .contains(&(server_id.clone(), uri.clone()))
+            {
+                session_write.unsubscribe_resource(&uri);
+                return Ok(JsonRpcResponse::success(
+                    request.id.unwrap_or(Value::Null),
+                    json!({}),
+                ));
+            }
+        }
+
         // Forward unsubscribe request to the backend server
         let transports = {
             let session_read = session.read().await;

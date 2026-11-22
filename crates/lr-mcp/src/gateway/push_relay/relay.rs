@@ -24,17 +24,26 @@ use tokio_util::sync::CancellationToken;
 
 use super::ask::{AskQueues, HeldEvent, HeldPushEventInfo, PushDecision, PushDecisionAction};
 use super::cursor::{canonical_json, CursorError, CursorKey, CursorPosition, CursorScope};
-use super::journal::{ClientJournal, IngressMode, JournalLimits, Occurrence, ReadScope};
+use super::journal::{
+    ClientJournal, DirectDelivery, IngressMode, JournalLimits, Occurrence, ReadScope,
+};
 use super::limits::PushRelayLimits;
+use super::permission::{
+    Behavior, PermissionRequest, PermissionRequests, Verdict, PERMISSION_EVENT_NAME,
+    PERMISSION_REQUEST_EVENT_NAME,
+};
 use super::render;
 use super::upstream::{
     ConnectionScope, SubscriptionInfo, SubscriptionKey, SubscriptionSpec, UpstreamHub,
 };
 use super::webhook;
 use super::{
-    PushAdvertisement, PushRelayService, PushRelaySessionContext, UpstreamPushNotification,
-    CLAUDE_CHANNEL_CAPABILITY, CLAUDE_CHANNEL_NOTIFICATION, EVENTS_EXTENSION_ID,
+    PushAdvertisement, PushRelayService, PushRelaySessionContext, RememberedPushSource,
+    UpstreamPushNotification, CLAUDE_CHANNEL_CAPABILITY, CLAUDE_CHANNEL_NOTIFICATION,
+    CLAUDE_CHANNEL_PERMISSION_CAPABILITY, CLAUDE_CHANNEL_PERMISSION_NOTIFICATION,
+    CLAUDE_CHANNEL_PERMISSION_REQUEST_NOTIFICATION, EVENTS_EXTENSION_ID,
     EVENTS_LIST_CHANGED_NOTIFICATION, EVENTS_NOTIFICATION_PREFIX, EVENTS_TOP_LEVEL_CAPABILITY,
+    RESOURCE_UPDATED_NOTIFICATION,
 };
 use crate::gateway::firewall::{InterceptCategory, PushApprovalKind, PushEventApprovalDetails};
 use crate::gateway::McpGateway;
@@ -52,6 +61,67 @@ pub const ERROR_UNSUPPORTED: i32 = -32026;
 
 /// Synthetic event type of an upstream Claude Code channel.
 pub const CHANNEL_EVENT_NAME: &str = "channel.message";
+/// Synthetic event type of a classic resource update
+/// (`notifications/resources/updated`), ingress U5.
+pub const RESOURCE_EVENT_NAME: &str = "resource.updated";
+
+/// Whether a server's remembered capabilities give it the synthetic
+/// `resource.updated` event type: it accepts `resources/subscribe`, and its
+/// own event catalogue has no event of that name (the upstream's would win).
+fn offers_resource_updates(snapshot: &lr_config::UpstreamCapabilitySnapshot) -> bool {
+    snapshot.push.resource_subscribe
+        && !snapshot
+            .event_catalogue
+            .iter()
+            .any(|e| e.get("name").and_then(Value::as_str) == Some(RESOURCE_EVENT_NAME))
+}
+
+/// Whether a server's remembered capabilities opt it into the Claude
+/// Channels permission relay: a channel server that declares
+/// `experimental["claude/channel/permission"]` as an object (`false` or
+/// absent opts out).
+fn offers_permission_relay(snapshot: &lr_config::UpstreamCapabilitySnapshot) -> bool {
+    snapshot.push.channels
+        && snapshot
+            .capabilities
+            .get("experimental")
+            .and_then(|e| e.get(CLAUDE_CHANNEL_PERMISSION_CAPABILITY))
+            .is_some_and(Value::is_object)
+}
+
+/// The `events/list` entry of the synthetic `resource.updated` event type.
+fn resource_descriptor() -> Value {
+    json!({
+        "name": RESOURCE_EVENT_NAME,
+        "description": "A resource of this server changed (notifications/resources/updated). \
+            Pass `uri` to watch one resource; without it, the updates of resources already \
+            subscribed to are delivered.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "uri": {
+                    "type": "string",
+                    "description": "URI of the resource to watch, as resources/list shows it"
+                }
+            }
+        },
+        "payloadSchema": {
+            "type": "object",
+            "properties": {
+                "uri": {"type": "string"},
+                "resource": {"type": "string"}
+            },
+            "required": ["uri"]
+        }
+    })
+}
+
+/// Arguments of one resource subscription.
+fn resource_arguments(uri: &str) -> Map<String, Value> {
+    let mut arguments = Map::new();
+    arguments.insert("uri".to_string(), json!(uri));
+    arguments
+}
 
 /// How long a poll keeps its upstream subscription open after the last read.
 const POLL_LEASE: Duration = Duration::from_secs(10 * 60);
@@ -111,10 +181,31 @@ pub struct CatalogueEntry {
     pub upstream_name: String,
     /// The upstream's `events/list` entry (empty for channel events).
     pub descriptor: Value,
-    /// Push/poll modes the upstream offers (empty for channel events).
+    /// Push/poll modes the upstream offers (empty for channel events and
+    /// resource updates).
     pub modes: Vec<EventDeliveryMode>,
     pub is_channel: bool,
+    /// The synthetic `resource.updated` type: subscribed upstream with
+    /// `resources/subscribe` for the `uri` argument.
+    pub is_resource: bool,
     pub permission: PushPermission,
+}
+
+impl CatalogueEntry {
+    /// Check a consumer's subscription arguments against what the type
+    /// accepts. A resource update takes nothing, or exactly one `uri`.
+    fn check_arguments(&self, arguments: &Map<String, Value>) -> Result<(), String> {
+        if !self.is_resource || arguments.is_empty() {
+            return Ok(());
+        }
+        if arguments.len() == 1 && arguments.get("uri").is_some_and(Value::is_string) {
+            return Ok(());
+        }
+        Err(format!(
+            "{} takes one optional argument, uri (a string)",
+            self.qualified_name
+        ))
+    }
 }
 
 /// An upstream server as the UI shows it.
@@ -454,6 +545,8 @@ pub struct PushRelay {
     streams: DashMap<String, CancellationToken>,
     webhooks: DashMap<String, Arc<WebhookSubscription>>,
     approved_urls: DashSet<(String, String)>,
+    /// Claude Code permission prompts awaiting a verdict, per bridge session.
+    permissions: Mutex<PermissionRequests>,
     local_base_url: RwLock<Option<String>>,
     background: AtomicBool,
     http: reqwest::Client,
@@ -475,7 +568,7 @@ impl PushRelay {
                 }),
                 Arc::new(move |server_id, notification| {
                     if let Some(relay) = channel_weak.upgrade() {
-                        relay.ingest_shared_channel(server_id, notification);
+                        relay.ingest_shared_notification(server_id, notification);
                     }
                 }),
             );
@@ -503,6 +596,7 @@ impl PushRelay {
                 streams: DashMap::new(),
                 webhooks: DashMap::new(),
                 approved_urls: DashSet::new(),
+                permissions: Mutex::new(PermissionRequests::default()),
                 local_base_url: RwLock::new(None),
                 background: AtomicBool::new(false),
             }
@@ -760,8 +854,21 @@ impl PushRelay {
             }),
             modes: vec![EventDeliveryMode::Push, EventDeliveryMode::Poll],
             is_channel: false,
+            is_resource: false,
             permission,
         })
+    }
+
+    /// Whether classic resource updates are an ingress (U5).
+    fn resource_ingress(&self) -> bool {
+        self.limits.read().resource_update_ingress
+    }
+
+    /// Enabled servers among `server_ids` whose remembered capabilities
+    /// include push this relay consumes.
+    fn push_sources(&self, server_ids: &[String]) -> Vec<RememberedPushSource> {
+        self.gateway
+            .remembered_push_sources(server_ids, self.resource_ingress())
     }
 
     /// The catalogue, with the test source added when `include_test` (the
@@ -779,7 +886,8 @@ impl PushRelay {
         if include_test {
             entries.extend(self.test_entry(client));
         }
-        for source in self.gateway.remembered_push_sources(visible, false) {
+        let resource_ingress = self.resource_ingress();
+        for source in self.push_sources(visible) {
             let slug = crate::gateway::types::slugify(&source.server_name);
             for descriptor in &source.snapshot.event_catalogue {
                 let Some(name) = descriptor.get("name").and_then(Value::as_str) else {
@@ -805,8 +913,26 @@ impl PushRelay {
                     descriptor: descriptor.clone(),
                     modes,
                     is_channel: false,
+                    is_resource: false,
                     permission,
                 });
+            }
+            if resource_ingress && offers_resource_updates(&source.snapshot) {
+                let permission = self.permission(client, &source.server_id, RESOURCE_EVENT_NAME);
+                if permission != PushPermission::Off {
+                    entries.push(CatalogueEntry {
+                        qualified_name: format!("{slug}__{RESOURCE_EVENT_NAME}"),
+                        server_id: source.server_id.clone(),
+                        server_slug: slug.clone(),
+                        server_name: source.server_name.clone(),
+                        upstream_name: RESOURCE_EVENT_NAME.to_string(),
+                        descriptor: resource_descriptor(),
+                        modes: Vec::new(),
+                        is_channel: false,
+                        is_resource: true,
+                        permission,
+                    });
+                }
             }
             if source.snapshot.push.channels {
                 let permission = self.permission(client, &source.server_id, CHANNEL_EVENT_NAME);
@@ -820,6 +946,7 @@ impl PushRelay {
                         descriptor: Value::Null,
                         modes: Vec::new(),
                         is_channel: true,
+                        is_resource: false,
                         permission,
                     });
                 }
@@ -914,6 +1041,14 @@ impl PushRelay {
         if entry.is_channel {
             return None;
         }
+        // A resource update is subscribed upstream per URI; a reader that
+        // names none opens nothing.
+        let (arguments, resource_uri) = if entry.is_resource {
+            let uri = arguments.get("uri").and_then(Value::as_str)?;
+            (resource_arguments(uri), Some(uri.to_string()))
+        } else {
+            (arguments.clone(), None)
+        };
         let config = self.gateway.server_manager.get_config(&entry.server_id)?;
         let scope = if matches!(
             config.transport_config,
@@ -941,8 +1076,9 @@ impl PushRelay {
                 args_key: canonical_json(&Value::Object(arguments.clone())),
             },
             SubscriptionSpec {
-                arguments: arguments.clone(),
+                arguments,
                 modes: entry.modes.clone(),
+                resource_uri,
             },
         ))
     }
@@ -1251,6 +1387,12 @@ impl PushRelay {
         for id in expired {
             self.end_webhook(&id);
         }
+        let permission_ttl = self.limits.read().permission_request_ttl();
+        self.permissions
+            .lock()
+            .sweep(permission_ttl, |session_key| {
+                self.gateway.get_session(session_key).is_some()
+            });
         self.prune_journals();
         self.check_list_changed();
         self.reconcile();
@@ -1317,6 +1459,7 @@ impl PushRelay {
         mode: IngressMode,
         args_key: String,
         origin_session: Option<String>,
+        direct: Option<DirectDelivery>,
     ) -> Option<Arc<Occurrence>> {
         let config = self.gateway.server_manager.get_config(server_id)?;
         let slug = crate::gateway::types::slugify(&config.name);
@@ -1346,6 +1489,7 @@ impl PushRelay {
             ingress: mode,
             args_key,
             origin_session,
+            direct,
         }))
     }
 
@@ -1372,6 +1516,7 @@ impl PushRelay {
                 ConnectionScope::Session(session_key) => Some(session_key.clone()),
                 ConnectionScope::Shared => None,
             },
+            None,
         ) else {
             return;
         };
@@ -1398,12 +1543,148 @@ impl PushRelay {
             IngressMode::Channel,
             String::new(),
             origin_session,
+            None,
         )
     }
 
-    /// A channel notification on a relay-owned connection: every client
-    /// consuming anything from that server receives it.
-    fn ingest_shared_channel(&self, server_id: &str, notification: JsonRpcNotification) {
+    /// The occurrence of one `notifications/resources/updated`. Its data is
+    /// the URI as the gateway lists the resource (the gateway keeps backend
+    /// URIs and namespaces resource names) and, when known, that namespaced
+    /// name.
+    fn resource_occurrence(
+        &self,
+        server_id: &str,
+        uri: &str,
+        resource_name: Option<&str>,
+        origin_session: Option<String>,
+        direct: Option<DirectDelivery>,
+    ) -> Option<Arc<Occurrence>> {
+        let mut data = json!({ "uri": uri });
+        if let Some(name) = resource_name {
+            data["resource"] = json!(name);
+        }
+        self.occurrence(
+            server_id,
+            RESOURCE_EVENT_NAME,
+            &json!({ "data": data }),
+            IngressMode::Resource,
+            canonical_json(&Value::Object(resource_arguments(uri))),
+            origin_session,
+            direct,
+        )
+    }
+
+    /// Whether `server_id` currently has the `resource.updated` event type.
+    fn has_resource_event(&self, server_id: &str) -> bool {
+        self.resource_ingress()
+            && self
+                .gateway
+                .server_manager
+                .get_config(server_id)
+                .is_some_and(|config| {
+                    config
+                        .current_capability_snapshot()
+                        .is_some_and(offers_resource_updates)
+                })
+    }
+
+    /// A resource update on a session's own connection. It is admitted to
+    /// that session's client when the client subscribed to the resource
+    /// itself (it then also gets the native notification once released) or
+    /// a consumer of the client holds the relay's subscription for the URI.
+    /// Returns `false` to leave the notification to the gateway's raw
+    /// forwarding (U5 off, or a server without the event type).
+    fn ingest_session_resource(&self, n: &UpstreamPushNotification) -> bool {
+        let params = n.notification.params.clone().unwrap_or(Value::Null);
+        let Some(uri) = params.get("uri").and_then(Value::as_str) else {
+            return false;
+        };
+        if !self.has_resource_event(&n.server_id) {
+            return false;
+        }
+        self.record_received(&n.server_id, RESOURCE_EVENT_NAME);
+        let context = n.resource.clone().unwrap_or(super::ResourceUpdateContext {
+            client_subscribed: true,
+            resource_name: None,
+        });
+        let key = SubscriptionKey {
+            scope: ConnectionScope::Session(n.session_key.clone()),
+            server_id: n.server_id.clone(),
+            event: RESOURCE_EVENT_NAME.to_string(),
+            args_key: canonical_json(&Value::Object(resource_arguments(uri))),
+        };
+        let consumed = self.hub.record_event(&key) && self.consumers(&key).contains(&n.client_id);
+        if !context.client_subscribed && !consumed {
+            // The relay's subscription just closed: nobody reads this one
+            return true;
+        }
+        // The same change also arrives on the relay-owned connection when a
+        // consumer of this client holds the relay's subscription there (an
+        // HTTP upstream): that copy is the one the journal keeps.
+        let shared = SubscriptionKey {
+            scope: ConnectionScope::Shared,
+            ..key.clone()
+        };
+        let journaled_elsewhere = self.consumers(&shared).contains(&n.client_id);
+        let direct = context
+            .client_subscribed
+            .then(|| DirectDelivery::ResourceUpdated {
+                session_key: n.session_key.clone(),
+                server_id: n.server_id.clone(),
+                params: params.clone(),
+                journal: !journaled_elsewhere,
+            });
+        if let Some(occurrence) = self.resource_occurrence(
+            &n.server_id,
+            uri,
+            context.resource_name.as_deref(),
+            Some(n.session_key.clone()),
+            direct,
+        ) {
+            self.admit(&n.client_id, occurrence);
+        }
+        true
+    }
+
+    /// A resource update on a relay-owned connection: the consumers of the
+    /// relay's subscription for that URI receive it.
+    fn ingest_shared_resource(&self, server_id: &str, notification: &JsonRpcNotification) {
+        let Some(uri) = notification
+            .params
+            .as_ref()
+            .and_then(|p| p.get("uri"))
+            .and_then(Value::as_str)
+        else {
+            return;
+        };
+        let key = SubscriptionKey {
+            scope: ConnectionScope::Shared,
+            server_id: server_id.to_string(),
+            event: RESOURCE_EVENT_NAME.to_string(),
+            args_key: canonical_json(&Value::Object(resource_arguments(uri))),
+        };
+        if !self.hub.record_event(&key) {
+            return;
+        }
+        self.record_received(server_id, RESOURCE_EVENT_NAME);
+        let Some(occurrence) = self.resource_occurrence(server_id, uri, None, None, None) else {
+            return;
+        };
+        for client_id in self.consumers(&key) {
+            self.admit(&client_id, occurrence.clone());
+        }
+    }
+
+    /// A push notification on a relay-owned connection that belongs to no
+    /// stream: a channel message or a resource update.
+    fn ingest_shared_notification(&self, server_id: &str, notification: JsonRpcNotification) {
+        if notification.method == RESOURCE_UPDATED_NOTIFICATION {
+            self.ingest_shared_resource(server_id, &notification);
+            return;
+        }
+        if notification.method != CLAUDE_CHANNEL_NOTIFICATION {
+            return;
+        }
         self.record_received(server_id, CHANNEL_EVENT_NAME);
         let Some(occurrence) = self.channel_occurrence(server_id, &notification, None) else {
             return;
@@ -1452,7 +1733,7 @@ impl PushRelay {
             }
             PushPermission::Allow => {
                 let data = occurrence.data.clone();
-                self.append(&client.id, occurrence.clone(), data.clone());
+                self.release(&client.id, occurrence.clone(), data.clone());
                 self.monitor(
                     &client,
                     &occurrence,
@@ -1465,6 +1746,58 @@ impl PushRelay {
             }
             PushPermission::Ask => self.hold(&client, occurrence),
         }
+    }
+
+    /// Release an occurrence to a client once it is allowed (or approved):
+    /// make its direct delivery, if it has one, and append it to the journal
+    /// every delivery mode reads. A permission verdict is delivered directly
+    /// and never journaled.
+    fn release(&self, client_id: &str, occurrence: Arc<Occurrence>, data: Value) {
+        match &occurrence.direct {
+            Some(DirectDelivery::PermissionVerdict {
+                session_key,
+                request_id,
+            }) => {
+                // An edit may change the answer, never the prompt it answers
+                let behavior = [&data, &occurrence.data]
+                    .into_iter()
+                    .find_map(|d| d.get("behavior")?.as_str().and_then(Behavior::parse));
+                if let Some(behavior) = behavior {
+                    self.gateway.send_session_notification(
+                        session_key,
+                        notification(
+                            CLAUDE_CHANNEL_PERMISSION_NOTIFICATION,
+                            Verdict::params(request_id, behavior),
+                        ),
+                    );
+                }
+                return;
+            }
+            Some(DirectDelivery::ResourceUpdated {
+                session_key,
+                server_id,
+                params,
+                journal,
+            }) => {
+                let mut params = params.clone();
+                if let (Some(uri), Some(obj)) = (
+                    data.get("uri").filter(|u| u.is_string()),
+                    params.as_object_mut(),
+                ) {
+                    obj.insert("uri".to_string(), uri.clone());
+                }
+                self.gateway.forward_upstream_notification(
+                    session_key,
+                    server_id,
+                    notification(RESOURCE_UPDATED_NOTIFICATION, params),
+                );
+                if !journal {
+                    return;
+                }
+            }
+            None => {}
+        }
+        self.append(client_id, occurrence, data);
     }
 
     fn append(&self, client_id: &str, occurrence: Arc<Occurrence>, data: Value) {
@@ -1500,7 +1833,7 @@ impl PushRelay {
                 event_name: occurrence.name.clone(),
                 event_id: occurrence.event_id.clone(),
                 ingress_mode: occurrence.ingress.as_str().to_string(),
-                egress_modes: self.egress_modes(&client.id),
+                egress_modes: self.egress_for(&client.id, occurrence),
                 decision: decision.to_string(),
                 original_payload: keep_payload.then(|| occurrence.data.clone()),
                 delivered_payload: delivered.filter(|_| keep_payload).cloned(),
@@ -1510,6 +1843,21 @@ impl PushRelay {
             status,
             held_ms,
         )
+    }
+
+    /// The ways an occurrence reaches a client: its consumers' delivery
+    /// modes, plus (or, for a verdict, only) its direct delivery.
+    fn egress_for(&self, client_id: &str, occurrence: &Occurrence) -> Vec<String> {
+        match &occurrence.direct {
+            Some(DirectDelivery::PermissionVerdict { .. }) => vec!["channel".to_string()],
+            Some(DirectDelivery::ResourceUpdated { .. }) => {
+                let mut modes = self.egress_modes(client_id);
+                modes.push("resource".to_string());
+                modes.sort();
+                modes
+            }
+            None => self.egress_modes(client_id),
+        }
     }
 
     fn update_monitor(
@@ -1627,10 +1975,15 @@ impl PushRelay {
             event_id: held.occurrence.event_id.clone(),
             ingress_mode: held.occurrence.ingress.as_str().to_string(),
             data: held.occurrence.data.clone(),
-            rendered_content: render::channel_content(
-                &entry,
-                self.limits.read().channel_max_content_bytes,
-            ),
+            rendered_content: match &held.occurrence.direct {
+                Some(DirectDelivery::PermissionVerdict { .. }) => {
+                    render::permission_verdict_content(
+                        &held.occurrence.server_slug,
+                        &held.occurrence.data,
+                    )
+                }
+                _ => render::channel_content(&entry, self.limits.read().channel_max_content_bytes),
+            },
             webhook_url: None,
             pending_for_client,
             pending_of_type,
@@ -1732,14 +2085,14 @@ impl PushRelay {
             } else {
                 "asked_allowed"
             };
-            self.append(&held.client_id, occurrence.clone(), data.clone());
+            self.release(&held.client_id, occurrence.clone(), data.clone());
             self.update_monitor(
                 &held.monitor_id,
                 label,
                 Some(data),
                 lr_monitor::EventStatus::Complete,
                 held_ms,
-                self.egress_modes(&held.client_id),
+                self.egress_for(&held.client_id, &occurrence),
             );
         } else {
             self.update_monitor(
@@ -1748,7 +2101,7 @@ impl PushRelay {
                 None,
                 lr_monitor::EventStatus::Complete,
                 held_ms,
-                self.egress_modes(&held.client_id),
+                self.egress_for(&held.client_id, &occurrence),
             );
         }
     }
@@ -1911,6 +2264,29 @@ impl PushRelay {
                         unsupported_reason: None,
                     });
                 }
+                if offers_permission_relay(&snapshot) {
+                    event_types.push(UpstreamEventTypeInfo {
+                        name: PERMISSION_EVENT_NAME.to_string(),
+                        description: Some(
+                            "Answers to Claude Code permission prompts relayed to this server"
+                                .to_string(),
+                        ),
+                        modes: vec!["channel".to_string()],
+                        ingress: Some("channel".to_string()),
+                        supported: true,
+                        unsupported_reason: None,
+                    });
+                }
+                if self.resource_ingress() && offers_resource_updates(&snapshot) {
+                    event_types.push(UpstreamEventTypeInfo {
+                        name: RESOURCE_EVENT_NAME.to_string(),
+                        description: Some("Updates of subscribed resources".to_string()),
+                        modes: vec!["resource".to_string()],
+                        ingress: Some("resource".to_string()),
+                        supported: true,
+                        unsupported_reason: None,
+                    });
+                }
                 Some(UpstreamSourceInfo {
                     server_id: config.id.clone(),
                     server_name: config.name.clone(),
@@ -1936,7 +2312,8 @@ impl PushRelay {
         };
         let visible = self.visible_servers(&client);
         let mut out = Vec::new();
-        for source in self.gateway.remembered_push_sources(&visible, false) {
+        let resource_ingress = self.resource_ingress();
+        for source in self.push_sources(&visible) {
             let slug = crate::gateway::types::slugify(&source.server_name);
             let mut names: Vec<String> = source
                 .snapshot
@@ -1951,6 +2328,12 @@ impl PushRelay {
                 .collect();
             if source.snapshot.push.channels {
                 names.push(CHANNEL_EVENT_NAME.to_string());
+            }
+            if offers_permission_relay(&source.snapshot) {
+                names.push(PERMISSION_EVENT_NAME.to_string());
+            }
+            if resource_ingress && offers_resource_updates(&source.snapshot) {
+                names.push(RESOURCE_EVENT_NAME.to_string());
             }
             for name in names {
                 out.push(ClientEventTypeInfo {
@@ -2066,6 +2449,7 @@ impl PushRelay {
             ingress: IngressMode::Test,
             args_key: canonical_json(&Value::Object(Map::new())),
             origin_session: None,
+            direct: None,
         });
         for id in &client_ids {
             self.admit(id, occurrence.clone());
@@ -2118,6 +2502,7 @@ impl PushRelay {
             upstream_cursor: None,
             args_key: String::new(),
             origin_session: None,
+            direct: None,
         });
         let entry = super::journal::JournalEntry::preview(occurrence);
         let max = self.limits.read().channel_max_content_bytes.max(64);
@@ -2195,6 +2580,9 @@ impl PushRelay {
         else {
             return not_found(id);
         };
+        if let Err(e) = entry.check_arguments(&params.arguments) {
+            return invalid_params(id, e);
+        }
         self.claim(&ctx.session_key, &entry.qualified_name);
         self.hold_poll_demand(
             &ctx.client_id,
@@ -2310,6 +2698,9 @@ impl PushRelay {
         else {
             return not_found(id);
         };
+        if let Err(e) = entry.check_arguments(&params.arguments) {
+            return invalid_params(id, e);
+        }
         let max_streams = self.limits.read().max_streams_per_session;
         {
             let Some(mut session) = self.sessions.get_mut(&ctx.session_key) else {
@@ -2326,19 +2717,21 @@ impl PushRelay {
             session.streams += 1;
             session.claimed.insert(entry.qualified_name.clone());
         }
+        // Released when this future ends, including when the transport
+        // aborts it because the client went away
+        let _slot = StreamSlotGuard {
+            relay: self.this(),
+            session_key: ctx.session_key.clone(),
+        };
         let names = vec![entry.qualified_name.clone()];
         let scope = CursorScope::new(&names, &params.arguments);
-        let result = match self.position(&ctx.client_id, &scope, params.cursor.as_deref()) {
+        match self.position(&ctx.client_id, &scope, params.cursor.as_deref()) {
             Err(e) => invalid_params(id.clone(), e.message()),
             Ok((position, reset)) => {
                 self.run_stream(ctx, &id, &entry, &params.arguments, &scope, position, reset)
                     .await
             }
-        };
-        if let Some(mut session) = self.sessions.get_mut(&ctx.session_key) {
-            session.streams = session.streams.saturating_sub(1);
         }
-        result
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2356,6 +2749,16 @@ impl PushRelay {
         let cancel = CancellationToken::new();
         self.streams.insert(stream_key.clone(), cancel.clone());
         let holder_id = format!("stream:{stream_key}");
+        // The stream's registration and its upstream demand end with this
+        // future, however it ends (see `StreamSlotGuard`)
+        let _registration = StreamRegistrationGuard {
+            relay: self.this(),
+            stream_key: stream_key.clone(),
+        };
+        let _holder = HolderGuard {
+            relay: self.this(),
+            id: holder_id.clone(),
+        };
         let keys = self
             .subscription_for(&ctx.client_id, Some(&ctx.session_key), entry, arguments)
             .into_iter()
@@ -2373,7 +2776,11 @@ impl PushRelay {
         let read_scope = Self::read_scope(&names, arguments);
         let journal = self.journal(&ctx.client_id);
         let mut changed = journal.lock().subscribe();
-        let mut heartbeat = tokio::time::interval(self.limits.read().downstream_heartbeat());
+        // The interval LocalRouter grants (SEP-3415 `heartbeatMs`); a
+        // client's own suggestion is not taken, which the SEP allows.
+        let heartbeat_interval = self.limits.read().downstream_heartbeat();
+        let heartbeat_ms = heartbeat_interval.as_millis() as u64;
+        let mut heartbeat = tokio::time::interval(heartbeat_interval);
         heartbeat.tick().await;
         let mut first = true;
         let mut pending_truncation = reset;
@@ -2392,6 +2799,7 @@ impl PushRelay {
                         json!({
                             "cursor": self.cursor_key.issue(&ctx.client_id, scope, start),
                             "truncated": pending_truncation || batch.truncated,
+                            "heartbeatMs": heartbeat_ms,
                         }),
                     )
                     .await
@@ -2458,8 +2866,6 @@ impl PushRelay {
                 } => break,
             }
         }
-        self.streams.remove(&stream_key);
-        self.remove_holder(&holder_id);
         tracing::debug!(
             "Push Relay stream {} for {} ended ({})",
             entry.qualified_name,
@@ -2547,6 +2953,9 @@ impl PushRelay {
         let Some(client) = self.client(&ctx.client_id) else {
             return not_found(id);
         };
+        if let Err(e) = entry.check_arguments(&params.arguments) {
+            return invalid_params(id, e);
+        }
         self.claim(&ctx.session_key, &entry.qualified_name);
         let args_key = canonical_json(&Value::Object(params.arguments.clone()));
         let sub_id = Self::webhook_id(&ctx.client_id, url, &entry.qualified_name, &args_key);
@@ -2990,6 +3399,225 @@ impl PushRelay {
     }
 
     // ---------------------------------------------------------------
+    // Claude Channels permission relay
+    // ---------------------------------------------------------------
+
+    /// Upstream channel servers a bridge session's permission prompts go to:
+    /// visible servers that opted into the relay
+    /// (`experimental["claude/channel/permission"]`) and whose
+    /// `channel.permission` type is not Off for the client. Empty for any
+    /// session that is not a STDIO bridge session push can reach.
+    fn permission_targets(&self, ctx: &PushRelaySessionContext) -> Vec<(String, String)> {
+        if !ctx.is_stdio_bridge {
+            return Vec::new();
+        }
+        let Some(client) = self.client(&ctx.client_id) else {
+            return Vec::new();
+        };
+        if !self.push_possible(&client) {
+            return Vec::new();
+        }
+        self.gateway
+            .remembered_push_sources(&ctx.visible_servers, false)
+            .into_iter()
+            .filter(|source| offers_permission_relay(&source.snapshot))
+            .filter(|source| {
+                self.permission(&client, &source.server_id, PERMISSION_EVENT_NAME)
+                    != PushPermission::Off
+            })
+            .map(|source| {
+                let slug = crate::gateway::types::slugify(&source.server_name);
+                (source.server_id, slug)
+            })
+            .collect()
+    }
+
+    /// Permission prompts a session has open (awaiting a verdict).
+    pub fn pending_permission_requests(&self, session_key: &str) -> usize {
+        self.permissions.lock().len_for_session(session_key)
+    }
+
+    /// One Monitor record of a prompt forwarded (or not) to one server.
+    fn monitor_permission_request(
+        &self,
+        ctx: &PushRelaySessionContext,
+        client: &lr_config::Client,
+        server_id: &str,
+        slug: &str,
+        payload: &Value,
+        error: Option<String>,
+    ) {
+        let keep_payload = !client.security.privacy.redact_payloads();
+        let failed = error.is_some();
+        self.gateway.emit_monitor_event(
+            lr_monitor::MonitorEventType::McpPushEvent,
+            Some(client.id.clone()),
+            Some(client.name.clone()),
+            self.gateway.monitor_session_id(&ctx.session_key),
+            lr_monitor::MonitorEventData::McpPushEvent {
+                server_id: server_id.to_string(),
+                server_name: Some(slug.to_string()),
+                event_name: format!("{slug}__{PERMISSION_REQUEST_EVENT_NAME}"),
+                event_id: format!(
+                    "{slug}__{}",
+                    payload
+                        .get("request_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                ),
+                ingress_mode: "client".to_string(),
+                egress_modes: vec!["channel".to_string()],
+                decision: if failed { "denied" } else { "allowed" }.to_string(),
+                original_payload: keep_payload.then(|| payload.clone()),
+                delivered_payload: (keep_payload && !failed).then(|| payload.clone()),
+                held_ms: None,
+                error,
+            },
+            if failed {
+                lr_monitor::EventStatus::Error
+            } else {
+                lr_monitor::EventStatus::Complete
+            },
+            None,
+        );
+    }
+
+    /// A Claude Code permission prompt from a bridge session: remember it
+    /// and forward its four documented fields to every upstream that opted
+    /// in, on the session's own connection. Prompts are not held under Ask
+    /// (the local dialog is open at the same time); the verdict is.
+    fn relay_permission_request(&self, ctx: &PushRelaySessionContext, params: Option<&Value>) {
+        self.observe(ctx);
+        let targets = self.permission_targets(ctx);
+        if targets.is_empty() {
+            return;
+        }
+        let Some(client) = self.client(&ctx.client_id) else {
+            return;
+        };
+        let request = match PermissionRequest::parse(params) {
+            Ok(request) => request,
+            Err(e) => {
+                tracing::debug!("Push Relay: ignoring a malformed permission prompt: {e}");
+                return;
+            }
+        };
+        let payload = request.params();
+        let (max_bytes, cap) = {
+            let limits = self.limits.read();
+            (limits.max_event_bytes, limits.permission_pending_cap)
+        };
+        if Occurrence::data_bytes(&payload) as u64 > max_bytes {
+            for (server_id, slug) in &targets {
+                self.monitor_permission_request(
+                    ctx,
+                    &client,
+                    server_id,
+                    slug,
+                    &json!({"request_id": request.request_id, "tool_name": request.tool_name}),
+                    Some(format!("Permission prompt exceeds {max_bytes} bytes")),
+                );
+            }
+            return;
+        }
+        let server_ids: HashSet<String> = targets.iter().map(|(id, _)| id.clone()).collect();
+        if !self
+            .permissions
+            .lock()
+            .open(&ctx.session_key, request, server_ids, cap)
+        {
+            tracing::warn!(
+                "Push Relay: a permission prompt reused a request id; it is not relayed"
+            );
+            return;
+        }
+        let relay = self.this();
+        let ctx = ctx.clone();
+        tokio::spawn(async move {
+            for (server_id, slug) in targets {
+                let sent = relay
+                    .gateway
+                    .upstream_notify(
+                        &ctx.session_key,
+                        &server_id,
+                        CLAUDE_CHANNEL_PERMISSION_REQUEST_NOTIFICATION,
+                        Some(payload.clone()),
+                    )
+                    .await;
+                relay.monitor_permission_request(
+                    &ctx,
+                    &client,
+                    &server_id,
+                    &slug,
+                    &payload,
+                    sent.err()
+                        .map(|e| format!("Could not reach the server: {e}")),
+                );
+            }
+        });
+    }
+
+    /// A permission verdict from an upstream channel server on a session's
+    /// own connection. Accepted only for a prompt that session has open,
+    /// from a server the prompt went to, and only once; then it is an
+    /// occurrence of `<server>__channel.permission` under the client's
+    /// permission (Allow / Ask / Off), delivered to that session alone.
+    fn ingest_verdict(&self, n: &UpstreamPushNotification) {
+        let Some(client) = self.client(&n.client_id) else {
+            return;
+        };
+        self.record_received(&n.server_id, PERMISSION_EVENT_NAME);
+        let verdict = match Verdict::parse(n.notification.params.as_ref()) {
+            Ok(verdict) => verdict,
+            Err(e) => {
+                tracing::debug!(
+                    "Push Relay: ignoring a malformed permission verdict from {}: {e}",
+                    n.server_id
+                );
+                return;
+            }
+        };
+        let accepted =
+            self.permissions
+                .lock()
+                .accept(&n.session_key, &verdict.request_id, &n.server_id);
+        let mut data = Verdict::params(&verdict.request_id, verdict.behavior);
+        if let Ok(request) = &accepted {
+            data["tool_name"] = json!(request.tool_name);
+            data["description"] = json!(request.description);
+            data["input_preview"] = json!(request.input_preview);
+        }
+        let Some(occurrence) = self.occurrence(
+            &n.server_id,
+            PERMISSION_EVENT_NAME,
+            &json!({ "data": data }),
+            IngressMode::Channel,
+            String::new(),
+            Some(n.session_key.clone()),
+            Some(DirectDelivery::PermissionVerdict {
+                session_key: n.session_key.clone(),
+                request_id: verdict.request_id.clone(),
+            }),
+        ) else {
+            return;
+        };
+        match accepted {
+            Ok(_) => self.admit(&client.id, occurrence),
+            Err(refusal) => {
+                self.monitor(
+                    &client,
+                    &occurrence,
+                    "denied",
+                    None,
+                    lr_monitor::EventStatus::Error,
+                    None,
+                    Some(refusal.message().to_string()),
+                );
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------
     // Fallback tools (D5) and /events/watch
     // ---------------------------------------------------------------
 
@@ -3113,8 +3741,18 @@ impl PushRelay {
             ),
             Some(_) => return Err("events must be an array of event names".into()),
         };
+        let filter = match arguments.get("filter") {
+            None | Some(Value::Null) => Map::new(),
+            Some(Value::Object(map)) => map.clone(),
+            Some(_) => return Err("filter must be an object".into()),
+        };
         let entries: Vec<CatalogueEntry> = match requested {
-            None => catalogue,
+            // Reading every type: a filter written for some of them leaves
+            // out the types that cannot take it
+            None => catalogue
+                .into_iter()
+                .filter(|e| e.check_arguments(&filter).is_ok())
+                .collect(),
             Some(names) => {
                 let mut out = Vec::new();
                 for name in names {
@@ -3135,11 +3773,9 @@ impl PushRelay {
         if entries.is_empty() {
             return Err("No events are available.".into());
         }
-        let filter = match arguments.get("filter") {
-            None | Some(Value::Null) => Map::new(),
-            Some(Value::Object(map)) => map.clone(),
-            Some(_) => return Err("filter must be an object".into()),
-        };
+        for entry in &entries {
+            entry.check_arguments(&filter)?;
+        }
         Ok((entries, filter))
     }
 
@@ -3428,6 +4064,32 @@ impl WatchError {
     }
 }
 
+/// Gives a session its `events/stream` slot back.
+struct StreamSlotGuard {
+    relay: Arc<PushRelay>,
+    session_key: String,
+}
+
+impl Drop for StreamSlotGuard {
+    fn drop(&mut self) {
+        if let Some(mut session) = self.relay.sessions.get_mut(&self.session_key) {
+            session.streams = session.streams.saturating_sub(1);
+        }
+    }
+}
+
+/// Forgets a downstream stream's cancellation handle.
+struct StreamRegistrationGuard {
+    relay: Arc<PushRelay>,
+    stream_key: String,
+}
+
+impl Drop for StreamRegistrationGuard {
+    fn drop(&mut self) {
+        self.relay.streams.remove(&self.stream_key);
+    }
+}
+
 /// Removes a demand holder when the consumer goes away.
 struct HolderGuard {
     relay: Arc<PushRelay>,
@@ -3457,6 +4119,10 @@ impl PushRelayService for PushRelay {
         if ctx.is_stdio_bridge {
             ad.experimental
                 .insert(CLAUDE_CHANNEL_CAPABILITY.to_string(), json!({}));
+            if !self.permission_targets(ctx).is_empty() {
+                ad.experimental
+                    .insert(CLAUDE_CHANNEL_PERMISSION_CAPABILITY.to_string(), json!({}));
+            }
         }
         ad
     }
@@ -3478,6 +4144,11 @@ impl PushRelayService for PushRelay {
             return Vec::new();
         }
         vec![
+            // SEP-3415's own key for the catalogue-changed notification
+            super::ListenOptIn {
+                opt_in: "eventsListChanged".to_string(),
+                method_prefix: EVENTS_LIST_CHANGED_NOTIFICATION.to_string(),
+            },
             super::ListenOptIn {
                 opt_in: "events".to_string(),
                 method_prefix: EVENTS_NOTIFICATION_PREFIX.to_string(),
@@ -3500,17 +4171,38 @@ impl PushRelayService for PushRelay {
         if !self.push_possible_for(&n.client_id) {
             return false;
         }
-        if n.notification.method == CLAUDE_CHANNEL_NOTIFICATION {
-            self.record_received(&n.server_id, CHANNEL_EVENT_NAME);
-            if let Some(occurrence) =
-                self.channel_occurrence(&n.server_id, &n.notification, Some(n.session_key.clone()))
-            {
-                self.admit(&n.client_id, occurrence);
+        match n.notification.method.as_str() {
+            CLAUDE_CHANNEL_NOTIFICATION => {
+                self.record_received(&n.server_id, CHANNEL_EVENT_NAME);
+                if let Some(occurrence) = self.channel_occurrence(
+                    &n.server_id,
+                    &n.notification,
+                    Some(n.session_key.clone()),
+                ) {
+                    self.admit(&n.client_id, occurrence);
+                }
+                true
             }
+            CLAUDE_CHANNEL_PERMISSION_NOTIFICATION => {
+                self.ingest_verdict(&n);
+                true
+            }
+            RESOURCE_UPDATED_NOTIFICATION => self.ingest_session_resource(&n),
+            // Uncorrelated `notifications/events/*` belong to no stream the
+            // relay opened; nothing is forwarded raw.
+            _ => true,
         }
-        // Uncorrelated `notifications/events/*` belong to no stream the relay
-        // opened; nothing is forwarded raw.
-        true
+    }
+
+    fn on_client_notification(
+        &self,
+        ctx: &PushRelaySessionContext,
+        method: &str,
+        params: Option<&Value>,
+    ) {
+        if method == CLAUDE_CHANNEL_PERMISSION_REQUEST_NOTIFICATION {
+            self.relay_permission_request(ctx, params);
+        }
     }
 
     fn on_client_cancelled(&self, session_key: &str, request_id: &Value) {
@@ -3574,4 +4266,139 @@ pub struct PushDecisionRequest {
     pub hold_id: String,
     #[serde(flatten)]
     pub decision: PushDecision,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn snapshot(
+        capabilities: Value,
+        channels: bool,
+        resource_subscribe: bool,
+        catalogue: Vec<Value>,
+    ) -> lr_config::UpstreamCapabilitySnapshot {
+        lr_config::UpstreamCapabilitySnapshot {
+            fingerprint: "sha256:test".to_string(),
+            protocol_version: "2025-11-25".to_string(),
+            capabilities,
+            push: lr_config::UpstreamPushSummary {
+                events_modes: Default::default(),
+                channels,
+                resource_subscribe,
+            },
+            event_catalogue: catalogue,
+            observed_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn permission_relay_needs_a_channel_server_that_declares_an_object() {
+        let declared =
+            json!({"experimental": {"claude/channel": {}, "claude/channel/permission": {}}});
+        assert!(offers_permission_relay(&snapshot(
+            declared.clone(),
+            true,
+            false,
+            vec![]
+        )));
+        // Not a channel server: the capability alone means nothing
+        assert!(!offers_permission_relay(&snapshot(
+            declared,
+            false,
+            false,
+            vec![]
+        )));
+        // `false` opts out, as does leaving it out
+        for capabilities in [
+            json!({"experimental": {"claude/channel": {}, "claude/channel/permission": false}}),
+            json!({"experimental": {"claude/channel": {}}}),
+            json!({}),
+        ] {
+            assert!(!offers_permission_relay(&snapshot(
+                capabilities,
+                true,
+                false,
+                vec![]
+            )));
+        }
+    }
+
+    #[test]
+    fn resource_event_needs_subscriptions_and_yields_to_an_upstream_event_of_that_name() {
+        assert!(offers_resource_updates(&snapshot(
+            json!({}),
+            false,
+            true,
+            vec![]
+        )));
+        assert!(!offers_resource_updates(&snapshot(
+            json!({}),
+            false,
+            false,
+            vec![]
+        )));
+        assert!(offers_resource_updates(&snapshot(
+            json!({}),
+            false,
+            true,
+            vec![json!({"name": "message.received"})]
+        )));
+        assert!(!offers_resource_updates(&snapshot(
+            json!({}),
+            false,
+            true,
+            vec![json!({"name": RESOURCE_EVENT_NAME, "delivery": ["poll"]})]
+        )));
+    }
+
+    fn entry(is_resource: bool) -> CatalogueEntry {
+        CatalogueEntry {
+            qualified_name: "srv__x".to_string(),
+            server_id: "srv".to_string(),
+            server_slug: "srv".to_string(),
+            server_name: "Srv".to_string(),
+            upstream_name: "x".to_string(),
+            descriptor: Value::Null,
+            modes: Vec::new(),
+            is_channel: false,
+            is_resource,
+            permission: PushPermission::Allow,
+        }
+    }
+
+    #[test]
+    fn resource_arguments_are_nothing_or_one_uri() {
+        let args = |value: Value| value.as_object().unwrap().clone();
+        let resource = entry(true);
+        assert!(resource.check_arguments(&Map::new()).is_ok());
+        assert!(resource
+            .check_arguments(&args(json!({"uri": "file:///a"})))
+            .is_ok());
+        for bad in [
+            json!({"uri": 5}),
+            json!({"path": "file:///a"}),
+            json!({"uri": "file:///a", "extra": true}),
+        ] {
+            assert!(
+                resource.check_arguments(&args(bad.clone())).is_err(),
+                "{bad}"
+            );
+        }
+        // Other event types keep whatever arguments their server defines
+        assert!(entry(false)
+            .check_arguments(&args(json!({"anything": [1, 2]})))
+            .is_ok());
+
+        let descriptor = resource_descriptor();
+        assert_eq!(descriptor["name"], RESOURCE_EVENT_NAME);
+        assert_eq!(
+            descriptor["inputSchema"]["properties"]["uri"]["type"],
+            "string"
+        );
+        assert_eq!(
+            canonical_json(&Value::Object(resource_arguments("file:///a"))),
+            r#"{"uri":"file:///a"}"#
+        );
+    }
 }

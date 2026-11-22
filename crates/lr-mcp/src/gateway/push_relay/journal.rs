@@ -22,8 +22,11 @@ pub enum IngressMode {
     Push,
     /// Upstream `events/poll`.
     Poll,
-    /// Upstream `notifications/claude/channel`.
+    /// Upstream `notifications/claude/channel` (and the verdicts of its
+    /// permission relay, `notifications/claude/channel/permission`).
     Channel,
+    /// Upstream `notifications/resources/updated`.
+    Resource,
     /// The built-in test source (`send_push_test_event`), not an upstream.
     Test,
 }
@@ -34,6 +37,7 @@ impl IngressMode {
             Self::Push => "push",
             Self::Poll => "poll",
             Self::Channel => "channel",
+            Self::Resource => "resource",
             Self::Test => "test",
         }
     }
@@ -61,6 +65,36 @@ pub struct Occurrence {
     /// stdio subscription or a channel message on that session's process);
     /// `None` for a relay-owned connection shared by every consumer.
     pub origin_session: Option<String>,
+    /// Delivery outside the journal, made when the occurrence is released to
+    /// the client (allowed, or approved after an Ask hold).
+    pub direct: Option<DirectDelivery>,
+}
+
+/// A delivery the relay makes itself when an occurrence is released.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DirectDelivery {
+    /// The session subscribed to the resource itself (`resources/subscribe`):
+    /// it also receives the native `notifications/resources/updated`, as the
+    /// notification of `server_id` on its own connection.
+    ResourceUpdated {
+        session_key: String,
+        server_id: String,
+        /// The upstream notification's params, forwarded with the delivered
+        /// `uri`.
+        params: Value,
+        /// Also append the occurrence to the journal. `false` when the same
+        /// update reaches the client's journal through the relay's own
+        /// subscription on another connection, so it is not read twice.
+        journal: bool,
+    },
+    /// A Claude Channels permission verdict for a prompt this session has
+    /// open. It reaches that session as
+    /// `notifications/claude/channel/permission` and is never journaled: no
+    /// other reader can use it.
+    PermissionVerdict {
+        session_key: String,
+        request_id: String,
+    },
 }
 
 impl Occurrence {
@@ -111,9 +145,14 @@ pub struct ReadScope {
     /// Server-qualified names; `None` reads every name.
     pub names: Option<HashSet<String>>,
     /// Canonical subscription arguments; `None` reads any. Channel
-    /// occurrences carry no arguments and match every scope.
+    /// occurrences carry no arguments and match every scope. A resource
+    /// update carries `{"uri": …}`; a reader without arguments (`{}`) reads
+    /// the updates of every URI.
     pub args_key: Option<String>,
 }
+
+/// Canonical JSON of no arguments.
+const NO_ARGUMENTS: &str = "{}";
 
 impl ReadScope {
     pub fn matches(&self, entry: &JournalEntry) -> bool {
@@ -122,10 +161,10 @@ impl ReadScope {
             .as_ref()
             .is_none_or(|names| names.contains(&occurrence.name))
             && (occurrence.ingress == IngressMode::Channel
-                || self
-                    .args_key
-                    .as_ref()
-                    .is_none_or(|key| key == &occurrence.args_key))
+                || self.args_key.as_ref().is_none_or(|key| {
+                    key == &occurrence.args_key
+                        || (occurrence.ingress == IngressMode::Resource && key == NO_ARGUMENTS)
+                }))
     }
 }
 
@@ -298,6 +337,7 @@ mod tests {
             ingress: IngressMode::Push,
             args_key: args_key.to_string(),
             origin_session: None,
+            direct: None,
         })
     }
 
@@ -411,6 +451,30 @@ mod tests {
         let mut s = scope(&["srv__channel.message"]);
         s.args_key = Some(r#"{"x":1}"#.into());
         assert_eq!(journal.read(0, &s, 10).entries.len(), 1);
+    }
+
+    #[test]
+    fn resource_updates_match_their_uri_or_a_reader_without_arguments() {
+        let mut journal = ClientJournal::new();
+        let l = limits(100, 1 << 20);
+        let name = "srv__resource.updated";
+        let mut update = (*occurrence(name, r#"{"uri":"file:///a"}"#, json!({}))).clone();
+        update.ingress = IngressMode::Resource;
+        journal.append(Arc::new(update), json!({"uri": "file:///a"}), &l);
+
+        // A reader that names no URI reads the updates of every URI
+        assert_eq!(journal.read(0, &scope(&[name]), 10).entries.len(), 1);
+        let mut same = scope(&[name]);
+        same.args_key = Some(r#"{"uri":"file:///a"}"#.into());
+        assert_eq!(journal.read(0, &same, 10).entries.len(), 1);
+        let mut other = scope(&[name]);
+        other.args_key = Some(r#"{"uri":"file:///b"}"#.into());
+        assert!(journal.read(0, &other, 10).entries.is_empty());
+
+        // Only resource updates get the wildcard: an event with arguments
+        // still needs a reader with the same arguments
+        journal.append(occurrence("srv__a", r#"{"x":1}"#, json!(1)), json!(1), &l);
+        assert!(journal.read(0, &scope(&["srv__a"]), 10).entries.is_empty());
     }
 
     #[test]

@@ -164,11 +164,12 @@ pub struct PushSourceInfo {
     /// unsupported.
     pub events: Vec<PushEventTypeInfo>,
     /// LocalRouter can consume push from this server (events with push/poll,
-    /// or Channels).
+    /// Channels, or resource subscriptions).
     pub has_consumable_push: bool,
     /// Enabled clients that may receive at least one of this server's push
     /// sources: MCP access to the server and a permission other than Off
-    /// for one of its supported event types or its channel messages. Zero
+    /// for one of its supported event types, its channel messages or its
+    /// resource updates. Zero
     /// when the global default is Off and no override enables any of them.
     pub receiving_clients: usize,
 }
@@ -185,6 +186,12 @@ fn event_descriptions(catalogue: &[serde_json::Value]) -> BTreeMap<String, Strin
             Some((name.to_string(), desc.to_string()))
         })
         .collect()
+}
+
+/// Whether classic resource updates are a push source (the relay's U5
+/// switch, an internal constant).
+fn resource_update_ingress() -> bool {
+    lr_mcp::gateway::push_relay::PushRelayLimits::default().resource_update_ingress
 }
 
 /// Describe a server from its configuration (and its remembered snapshot).
@@ -216,7 +223,7 @@ pub fn push_source_info(server: &lr_config::McpServerConfig) -> PushSourceInfo {
                 events,
                 snap.push.channels,
                 snap.push.resource_subscribe,
-                snap.push.has_consumable_push(false),
+                snap.push.has_consumable_push(resource_update_ingress()),
             )
         }
         None => (Vec::new(), false, false, false),
@@ -247,6 +254,9 @@ pub fn receiving_clients(config: &lr_config::AppConfig, source: &PushSourceInfo)
         .collect();
     if source.channels {
         names.push(lr_mcp::gateway::push_relay::relay::CHANNEL_EVENT_NAME);
+    }
+    if source.resource_subscribe && resource_update_ingress() {
+        names.push(lr_mcp::gateway::push_relay::relay::RESOURCE_EVENT_NAME);
     }
     if names.is_empty() || !source.enabled {
         return 0;
@@ -310,7 +320,7 @@ pub async fn list_push_sources(
 #[derive(Debug, Clone, Serialize)]
 pub struct PushEventIngressStatus {
     pub event: String,
-    /// `push`, `poll` or `channel` while LocalRouter listens.
+    /// `push`, `poll`, `channel` or `resource` while LocalRouter listens.
     pub ingress_mode: Option<String>,
     /// `listening`, `connecting`, `reconnecting` or `idle`.
     pub state: String,
@@ -1069,6 +1079,37 @@ mod tests {
             msg.description.as_deref(),
             Some("message.received happened")
         );
+    }
+
+    #[test]
+    fn resource_subscriptions_are_consumable_push() {
+        let mut server = server_with_snapshot(vec![], false);
+        if let Some(snapshot) = server.capability_snapshot.as_mut() {
+            snapshot.push.resource_subscribe = true;
+        }
+        let info = push_source_info(&server);
+        assert!(info.resource_subscribe);
+        assert!(info.has_consumable_push);
+
+        // A client with MCP access receives its resource updates unless
+        // that event type is off for it
+        let mut client =
+            lr_config::Client::new_with_strategy("C".to_string(), "default".to_string());
+        client.mcp_permissions.global = lr_config::PermissionState::Allow;
+        let mut config = lr_config::AppConfig {
+            mcp_servers: vec![server.clone()],
+            clients: vec![client],
+            ..Default::default()
+        };
+        assert_eq!(receiving_clients(&config, &info), 1);
+        config.clients[0].push_permissions.events.insert(
+            PushPermissions::event_key(
+                &server.id,
+                lr_mcp::gateway::push_relay::relay::RESOURCE_EVENT_NAME,
+            ),
+            PushPermission::Off,
+        );
+        assert_eq!(receiving_clients(&config, &info), 0);
     }
 
     #[test]

@@ -169,6 +169,12 @@ pub struct GatewaySession {
     /// Tracks which resources this session has subscribed to for change notifications
     pub subscribed_resources: HashMap<String, String>,
 
+    /// Resources the Push Relay subscribed to on this session's own upstream
+    /// connections for an event consumer: `(server_id, uri)`. Such a
+    /// subscription shares the upstream one with the client's own
+    /// `resources/subscribe` of the same URI.
+    pub relay_resource_subscriptions: HashSet<(String, String)>,
+
     /// MCP permissions snapshot for this client (for change detection)
     pub mcp_permissions: lr_config::McpPermissions,
 
@@ -323,6 +329,7 @@ impl GatewaySession {
             roots,
             client_cwd: None,
             subscribed_resources: HashMap::new(),
+            relay_resource_subscriptions: HashSet::new(),
             mcp_permissions: lr_config::McpPermissions::default(),
             listing_snapshot: None,
             skills_permissions: lr_config::SkillsPermissions::default(),
