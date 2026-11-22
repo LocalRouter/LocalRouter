@@ -1202,26 +1202,6 @@ export interface SetupParameter {
   sensitive: boolean
 }
 
-/**
- * Provider health status.
- * Rust: src-tauri/src/providers/mod.rs - ProviderHealth struct
- */
-export interface ProviderHealth {
-  status: 'healthy' | 'degraded' | 'unhealthy' | 'unknown'
-  latency_ms?: number | null
-  last_checked?: string | null
-  error_message?: string | null
-}
-
-/**
- * Provider key status for listing.
- * Rust: src-tauri/src/ui/commands_providers.rs - ProviderKeyStatus struct
- */
-export interface ProviderKeyStatus {
-  provider: string
-  has_key: boolean
-}
-
 // =============================================================================
 // Model Types
 // Rust: src-tauri/src/providers/mod.rs
@@ -1434,19 +1414,6 @@ export interface McpServerInfo {
 }
 
 /**
- * MCP server health status.
- * Rust: crates/lr-mcp/src/manager.rs - McpServerHealth struct
- */
-export interface McpServerHealth {
-  server_id: string
-  server_name: string
-  status: 'healthy' | 'ready' | 'unhealthy' | 'unknown'
-  latency_ms?: number | null
-  error?: string | null
-  last_check?: string | null
-}
-
-/**
  * MCP server capabilities (tools, resources, prompts).
  * Rust: src-tauri/src/ui/commands_mcp.rs - McpServerCapabilities struct
  */
@@ -1506,16 +1473,6 @@ export interface McpPromptArgument {
   required?: boolean
 }
 
-/**
- * MCP token stats for a client.
- * Rust: src-tauri/src/ui/commands_mcp.rs - McpTokenStats struct
- */
-export interface McpTokenStats {
-  total_input_tokens: number
-  total_output_tokens: number
-  servers: Record<string, { input_tokens: number; output_tokens: number }>
-}
-
 // =============================================================================
 // Skills Types
 // Rust: crates/lr-skills/src/types.rs
@@ -1560,30 +1517,6 @@ export interface SkillSourceInfo {
   skill_count: number
   /** Why the last scan could not load this source; null when it loaded */
   error: string | null
-}
-
-/**
- * Skill definition with full details.
- * Rust: crates/lr-skills/src/types.rs - SkillDefinition struct
- */
-export interface SkillDefinition {
-  name: string
-  version?: string | null
-  description?: string | null
-  author?: string | null
-  tags: string[]
-  mcp_servers?: string[] | null
-  tools?: SkillToolDefinition[] | null
-  extra: Record<string, unknown>
-}
-
-/**
- * Skill tool definition.
- */
-export interface SkillToolDefinition {
-  name: string
-  description?: string | null
-  input_schema?: Record<string, unknown> | null
 }
 
 /**
@@ -2031,18 +1964,8 @@ export interface CatalogSourceEntry {
   activated: boolean
 }
 
-/** Params for terminate_session */
-export interface TerminateSessionParams {
-  sessionId: string
-}
-
 /** Params for get_session_context_sources */
 export interface GetSessionContextSourcesParams {
-  sessionId: string
-}
-
-/** Params for get_session_context_stats */
-export interface GetSessionContextStatsParams {
   sessionId: string
 }
 
@@ -2174,30 +2097,6 @@ export interface PreviewRagReadParams {
 // Statistics & Metrics Types
 // Rust: crates/lr-server/src/state.rs, crates/lr-monitoring/src/graphs.rs
 // =============================================================================
-
-/**
- * Aggregate statistics for the dashboard.
- * Rust: crates/lr-server/src/state.rs - AggregateStats struct
- */
-export interface AggregateStats {
-  total_requests: number
-  total_tokens: number
-  total_cost: number
-  successful_requests: number
-}
-
-/**
- * Feature-level statistics for the dashboard.
- * Rust: crates/lr-server/src/state.rs - FeatureStatsSnapshot struct
- */
-export interface FeatureStatsSnapshot {
-  routellm_strong: number
-  routellm_weak: number
-  json_repairs: number
-  compression_tokens_saved: number
-  compression_cost_saved_micros: number
-  context_mgmt_tokens_saved: number
-}
 
 /**
  * Graph data for charts.
@@ -2508,28 +2407,6 @@ export interface TrayStatsSettings {
 // =============================================================================
 
 /**
- * OAuth provider information.
- * Rust: src-tauri/src/ui/commands.rs - OAuthProviderInfo struct
- */
-export interface OAuthProviderInfo {
-  provider_id: string
-  provider_name: string
-}
-
-/**
- * OAuth client information.
- * Rust: src-tauri/src/ui/commands.rs - OAuthClientInfo struct
- */
-export interface OAuthClientInfo {
-  id: string
-  name: string
-  client_id: string
-  linked_server_ids: string[]
-  enabled: boolean
-  created_at: string
-}
-
-/**
  * OAuth flow result.
  * Rust: src-tauri/src/ui/commands.rs - OAuthFlowResult struct
  */
@@ -2702,23 +2579,6 @@ export interface InstalledSkill {
 // =============================================================================
 
 /**
- * Pending firewall approval info.
- * Rust: src-tauri/src/state.rs - PendingApprovalInfo struct
- */
-export interface PendingApprovalInfo {
-  request_id: string
-  client_id: string
-  client_name: string
-  item_type: 'mcp_tool' | 'mcp_resource' | 'skill_tool'
-  item_name: string
-  server_id?: string | null
-  server_name?: string | null
-  skill_name?: string | null
-  description?: string | null
-  created_at: string
-}
-
-/**
  * Firewall approval action.
  * Rust: crates/lr-mcp/src/gateway/firewall.rs - FirewallApprovalAction enum
  */
@@ -2748,28 +2608,6 @@ export interface ActiveConnection {
 // =============================================================================
 
 /**
- * Model catalog metadata.
- * Rust: crates/lr-catalog/catalog/catalog.rs - CatalogMetadata struct
- */
-export interface CatalogMetadata {
-  version: string
-  generated_at: string
-  provider_count: number
-  model_count: number
-}
-
-/**
- * Model catalog statistics.
- * Rust: crates/lr-catalog/catalog/catalog.rs - CatalogStats struct
- */
-export interface CatalogStats {
-  total_providers: number
-  total_models: number
-  models_with_pricing: number
-  models_with_context_window: number
-}
-
-/**
  * Model pricing override.
  * Rust: crates/lr-config/src/types.rs - ModelPricingOverride struct
  */
@@ -2782,49 +2620,6 @@ export interface ModelPricingOverride {
 // Inline OAuth Flow Types (for MCP server creation)
 // Rust: src-tauri/src/ui/commands_mcp.rs
 // =============================================================================
-
-/**
- * Inline OAuth discovery info.
- * Rust: src-tauri/src/ui/commands_mcp.rs - InlineOAuthDiscovery struct
- */
-export interface InlineOAuthDiscovery {
-  auth_url: string
-  token_url: string
-  scopes: string[]
-  /** Authorization server issuer identifier (RFC 8414), when discovered */
-  issuer?: string | null
-}
-
-/**
- * Inline OAuth flow result.
- * Rust: src-tauri/src/ui/commands_mcp.rs - InlineOAuthFlowResult struct
- */
-export interface InlineOAuthFlowResult {
-  flow_id: string
-  auth_url: string
-  redirect_uri: string
-  state: string
-  discovery: InlineOAuthDiscovery
-}
-
-/**
- * Inline OAuth flow status.
- * Rust: src-tauri/src/ui/commands_mcp.rs - InlineOAuthFlowStatus struct
- */
-export interface InlineOAuthFlowStatus {
-  status: 'pending' | 'success' | 'error' | 'cancelled'
-  tokens?: OAuthTokens | null
-  error?: string | null
-}
-
-/**
- * OAuth tokens from successful flow.
- */
-export interface OAuthTokens {
-  access_token: string
-  refresh_token?: string | null
-  expires_at?: string | null
-}
 
 // =============================================================================
 // MCP OAuth Discovery
@@ -3047,21 +2842,6 @@ export interface ReverseProxySetupInfo {
   restart_hint: string | null
 }
 
-/**
- * Suggested reverse-proxy settings for a template.
- * Rust: src-tauri/src/ui/commands_reverse_proxy.rs - ReverseProxyDefaults struct
- */
-export interface ReverseProxyDefaults {
-  provider_key: string
-  provider_label: string
-  listen_port: number
-  upstream_url: string
-  /** Matching provider instance already configured in LocalRouter, if any. */
-  provider_instance: string | null
-  /** Whether that provider currently answers on the port we'd take over. */
-  provider_detected: boolean
-}
-
 /** Params for get_client_reverse_proxy_setup */
 export interface GetClientReverseProxySetupParams {
   clientId: string
@@ -3093,11 +2873,6 @@ export interface SetClientReverseProxyConfigParams {
   listenPort: number
   upstreamUrl: string
   providerInstance?: string | null
-}
-
-/** Params for get_reverse_proxy_defaults */
-export interface GetReverseProxyDefaultsParams {
-  templateId: string
 }
 
 /** Params for get_client_proxy_setup */
@@ -3154,11 +2929,6 @@ export interface TryItOutAppParams {
   clientId: string
 }
 
-/** Params for configure_app_permanent */
-export interface ConfigureAppPermanentParams {
-  clientId: string
-}
-
 /** Params for toggle_client_sync_config */
 export interface ToggleClientSyncConfigParams {
   clientId: string
@@ -3206,11 +2976,6 @@ export interface UpdateStrategyParams {
 
 /** Params for delete_strategy */
 export interface DeleteStrategyParams {
-  strategyId: string
-}
-
-/** Params for get_clients_using_strategy */
-export interface GetClientsUsingStrategyParams {
   strategyId: string
 }
 
@@ -3282,18 +3047,6 @@ export interface SetClientMarketplacePermissionParams {
   state: PermissionState
 }
 
-/** Params for set_client_sampling_permission */
-export interface SetClientSamplingPermissionParams {
-  clientId: string
-  state: PermissionState
-}
-
-/** Params for set_client_elicitation_permission */
-export interface SetClientElicitationPermissionParams {
-  clientId: string
-  state: PermissionState
-}
-
 /** Params for clear_client_mcp_child_permissions */
 export interface ClearClientMcpChildPermissionsParams {
   clientId: string
@@ -3322,22 +3075,6 @@ export interface ClearClientModelChildPermissionsParams {
 // Rust: src-tauri/src/ui/commands_providers.rs
 // =============================================================================
 
-/** Params for set_provider_api_key */
-export interface SetProviderApiKeyParams {
-  provider: string
-  apiKey: string
-}
-
-/** Params for has_provider_api_key */
-export interface HasProviderApiKeyParams {
-  provider: string
-}
-
-/** Params for delete_provider_api_key */
-export interface DeleteProviderApiKeyParams {
-  provider: string
-}
-
 /** Params for create_provider_instance */
 export interface CreateProviderInstanceParams {
   instanceName: string
@@ -3363,11 +3100,6 @@ export interface RenameProviderInstanceParams {
   newName: string
 }
 
-/** Params for get_provider_api_key */
-export interface GetProviderApiKeyParams {
-  instanceName: string
-}
-
 /** Params for remove_provider_instance */
 export interface RemoveProviderInstanceParams {
   instanceName: string
@@ -3386,11 +3118,6 @@ export interface SetProviderEnabledParams {
 
 /** Params for check_single_provider_health */
 export interface CheckSingleProviderHealthParams {
-  instanceName: string
-}
-
-/** Params for list_provider_models */
-export interface ListProviderModelsParams {
   instanceName: string
 }
 
@@ -3428,38 +3155,9 @@ export interface CloneMcpServerParams {
   serverId: string
 }
 
-/** Params for start_mcp_server */
-export interface StartMcpServerParams {
-  serverId: string
-}
-
-/** Params for stop_mcp_server */
-export interface StopMcpServerParams {
-  serverId: string
-}
-
-/** Params for get_mcp_server_health */
-export interface GetMcpServerHealthParams {
-  serverId: string
-}
-
 /** Params for check_single_mcp_health */
 export interface CheckSingleMcpHealthParams {
   serverId: string
-}
-
-/** Params for update_mcp_server_name */
-export interface UpdateMcpServerNameParams {
-  serverId: string
-  name: string
-}
-
-/** Params for update_mcp_server_config */
-export interface UpdateMcpServerConfigParams {
-  serverId: string
-  name: string
-  transportConfig: Record<string, unknown>
-  authConfig?: Record<string, unknown> | null
 }
 
 /** Params for update_mcp_server. OAuth updates accept `oauth` or legacy `o_auth`;
@@ -3475,23 +3173,6 @@ export interface UpdateMcpServerParams {
 export interface ToggleMcpServerEnabledParams {
   serverId: string
   enabled: boolean
-}
-
-/** Params for list_mcp_tools */
-export interface ListMcpToolsParams {
-  serverId: string
-}
-
-/** Params for call_mcp_tool */
-export interface CallMcpToolParams {
-  serverId: string
-  toolName: string
-  arguments: Record<string, unknown>
-}
-
-/** Params for get_mcp_token_stats */
-export interface GetMcpTokenStatsParams {
-  clientId: string
 }
 
 /** Params for get_mcp_server_capabilities */
@@ -3543,23 +3224,6 @@ export interface RevokeMcpOAuthTokensParams {
   serverId: string
 }
 
-/** Params for start_inline_oauth_flow */
-export interface StartInlineOAuthFlowParams {
-  mcpUrl: string
-  clientId?: string | null
-  clientSecret?: string | null
-}
-
-/** Params for poll_inline_oauth_status */
-export interface PollInlineOAuthStatusParams {
-  flowId: string
-}
-
-/** Params for cancel_inline_oauth_flow */
-export interface CancelInlineOAuthFlowParams {
-  flowId: string
-}
-
 /** Params for preview_routing_policy. Rust: commands_decision_routing.rs */
 export interface PreviewRoutingPolicyParams {
   routeSnapshot?: RouteSnapshot | null
@@ -3578,11 +3242,6 @@ export interface PreviewRoutingPolicyParams {
 // Skills Commands
 // Rust: src-tauri/src/ui/commands.rs
 // =============================================================================
-
-/** Params for get_skill */
-export interface GetSkillParams {
-  skillName: string
-}
 
 /** Params for add_skill_source */
 export interface AddSkillSourceParams {
@@ -3678,34 +3337,6 @@ export interface GetStrategyMetricsParams {
   metricType: MetricType
 }
 
-/** Params for compare_api_keys */
-export interface CompareApiKeysParams {
-  apiKeyIds: string[]
-  timeRange: TimeRange
-  metricType: MetricType
-}
-
-/** Params for compare_providers */
-export interface CompareProvidersParams {
-  providers: string[]
-  timeRange: TimeRange
-  metricType: MetricType
-}
-
-/** Params for compare_models */
-export interface CompareModelsParams {
-  models: string[]
-  timeRange: TimeRange
-  metricType: MetricType
-}
-
-/** Params for compare_strategies */
-export interface CompareStrategiesParams {
-  strategyIds: string[]
-  timeRange: TimeRange
-  metricType: MetricType
-}
-
 // =============================================================================
 // MCP Metrics Commands
 // Rust: src-tauri/src/ui/commands_mcp_metrics.rs
@@ -3733,26 +3364,6 @@ export interface GetMcpServerMetricsParams {
 
 /** Params for get_mcp_method_breakdown */
 export interface GetMcpMethodBreakdownParams {
-  scope: string
-  timeRange: TimeRange
-}
-
-/** Params for compare_mcp_clients */
-export interface CompareMcpClientsParams {
-  clientIds: string[]
-  timeRange: TimeRange
-  metricType: McpMetricType
-}
-
-/** Params for compare_mcp_servers */
-export interface CompareMcpServersParams {
-  serverIds: string[]
-  timeRange: TimeRange
-  metricType: McpMetricType
-}
-
-/** Params for get_mcp_latency_percentiles */
-export interface GetMcpLatencyPercentilesParams {
   scope: string
   timeRange: TimeRange
 }
@@ -3829,16 +3440,6 @@ export interface PollOAuthStatusParams {
   providerId: string
 }
 
-/** Params for cancel_oauth_flow */
-export interface CancelOAuthFlowParams {
-  providerId: string
-}
-
-/** Params for delete_oauth_credentials */
-export interface DeleteOAuthCredentialsParams {
-  providerId: string
-}
-
 /** Params for get_oauth_token */
 export interface GetOAuthTokenParams {
   providerId: string
@@ -3855,50 +3456,6 @@ export interface OAuthCredentialView {
 // OAuth Client Commands
 // Rust: src-tauri/src/ui/commands.rs
 // =============================================================================
-
-/** Params for create_oauth_client */
-export interface CreateOAuthClientParams {
-  name?: string | null
-}
-
-/** Params for get_oauth_client_secret */
-export interface GetOAuthClientSecretParams {
-  id: string
-}
-
-/** Params for delete_oauth_client */
-export interface DeleteOAuthClientParams {
-  id: string
-}
-
-/** Params for update_oauth_client_name */
-export interface UpdateOAuthClientNameParams {
-  id: string
-  name: string
-}
-
-/** Params for toggle_oauth_client_enabled */
-export interface ToggleOAuthClientEnabledParams {
-  id: string
-  enabled: boolean
-}
-
-/** Params for link_mcp_server */
-export interface LinkMcpServerParams {
-  clientId: string
-  serverId: string
-}
-
-/** Params for unlink_mcp_server */
-export interface UnlinkMcpServerParams {
-  clientId: string
-  serverId: string
-}
-
-/** Params for get_oauth_client_linked_servers */
-export interface GetOAuthClientLinkedServersParams {
-  clientId: string
-}
 
 // =============================================================================
 // Firewall Commands
@@ -3951,11 +3508,6 @@ export interface DebugSetTrayOverlayParams {
 // Marketplace Commands
 // Rust: src-tauri/src/ui/commands_marketplace.rs
 // =============================================================================
-
-/** Params for marketplace_set_enabled */
-export interface MarketplaceSetEnabledParams {
-  enabled: boolean
-}
 
 /** Params for marketplace_set_mcp_enabled */
 export interface MarketplaceSetMcpEnabledParams {
@@ -4028,17 +3580,6 @@ export interface MarketplaceInstallRespondParams {
   config?: Record<string, unknown> | null
 }
 
-/** Params for set_client_marketplace_enabled */
-export interface SetClientMarketplaceEnabledParams {
-  clientId: string
-  enabled: boolean
-}
-
-/** Params for get_client_marketplace_enabled */
-export interface GetClientMarketplaceEnabledParams {
-  clientId: string
-}
-
 // =============================================================================
 // Tray Graph Commands
 // Rust: src-tauri/src/ui/commands.rs
@@ -4067,26 +3608,6 @@ export interface RenderTrayStatsPreviewParams {
 // Pricing Override Commands
 // Rust: src-tauri/src/ui/commands.rs
 // =============================================================================
-
-/** Params for get_pricing_override */
-export interface GetPricingOverrideParams {
-  provider: string
-  model: string
-}
-
-/** Params for set_pricing_override */
-export interface SetPricingOverrideParams {
-  provider: string
-  model: string
-  inputPerMillion: number
-  outputPerMillion: number
-}
-
-/** Params for delete_pricing_override */
-export interface DeletePricingOverrideParams {
-  provider: string
-  model: string
-}
 
 // =============================================================================
 // Utility Commands
@@ -4231,11 +3752,6 @@ export interface TestSafetyCheckParams {
   clientId?: string | null
 }
 
-/** Params for get_safety_model_status */
-export interface GetSafetyModelStatusParams {
-  modelId: string
-}
-
 /** Params for test_safety_model */
 export interface TestSafetyModelParams {
   modelId: string
@@ -4300,11 +3816,6 @@ export interface SetProviderFreeTierUsageParams {
   dailyRequests: number | null
   monthlyRequests: number | null
   monthlyTokens: number | null
-}
-
-/** Params for get_default_free_tier */
-export interface GetDefaultFreeTierParams {
-  providerType: string
 }
 
 /** Progress event from provider model pull */
@@ -5544,11 +5055,6 @@ export interface GetMonitorEventDetailParams {
 /** Params for set_monitor_max_capacity */
 export interface SetMonitorMaxCapacityParams {
   capacity: number
-}
-
-/** Params for set_monitor_max_bytes */
-export interface SetMonitorMaxBytesParams {
-  maxBytes: number
 }
 
 /** Category of requests to intercept from the monitor page */

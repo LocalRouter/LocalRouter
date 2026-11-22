@@ -1687,21 +1687,6 @@ pub async fn delete_strategy(
     Ok(())
 }
 
-/// Get all clients using a specific strategy
-#[tauri::command]
-pub async fn get_clients_using_strategy(
-    strategy_id: String,
-    config_manager: State<'_, ConfigManager>,
-) -> Result<Vec<lr_config::Client>, String> {
-    let config = config_manager.get();
-    Ok(config
-        .clients
-        .iter()
-        .filter(|c| c.strategy_id == strategy_id)
-        .cloned()
-        .collect())
-}
-
 // ============================================================================
 // Feature Client Status Commands
 // ============================================================================
@@ -2931,14 +2916,6 @@ async fn update_permission_for_deny_permanent(
     Ok(())
 }
 
-/// List all pending firewall approval requests
-#[tauri::command]
-pub async fn list_pending_firewall_approvals(
-    state: State<'_, Arc<lr_server::state::AppState>>,
-) -> Result<Vec<lr_mcp::gateway::firewall::PendingApprovalInfo>, String> {
-    Ok(state.mcp_gateway.firewall_manager.list_pending())
-}
-
 /// Get details for a specific pending firewall approval request
 #[tauri::command]
 pub async fn get_firewall_approval_details(
@@ -3749,80 +3726,6 @@ pub async fn set_client_marketplace_permission(
     Ok(())
 }
 
-/// Set Sampling permission for a client
-#[tauri::command]
-pub async fn set_client_sampling_permission(
-    client_id: String,
-    state: PermissionState,
-    config_manager: State<'_, ConfigManager>,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    tracing::info!(
-        "Setting Sampling permission for client {}: state={:?}",
-        client_id,
-        state
-    );
-
-    let mut found = false;
-    config_manager
-        .update(|cfg| {
-            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
-                client.mcp_sampling_permission = state.clone();
-                found = true;
-            }
-        })
-        .map_err(|e| e.to_string())?;
-
-    if !found {
-        return Err(format!("Client not found: {}", client_id));
-    }
-
-    config_manager.save().await.map_err(|e| e.to_string())?;
-
-    if let Err(e) = app.emit("clients-changed", ()) {
-        tracing::error!("Failed to emit clients-changed event: {}", e);
-    }
-
-    Ok(())
-}
-
-/// Set Elicitation permission for a client
-#[tauri::command]
-pub async fn set_client_elicitation_permission(
-    client_id: String,
-    state: PermissionState,
-    config_manager: State<'_, ConfigManager>,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    tracing::info!(
-        "Setting Elicitation permission for client {}: state={:?}",
-        client_id,
-        state
-    );
-
-    let mut found = false;
-    config_manager
-        .update(|cfg| {
-            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
-                client.mcp_elicitation_permission = state.clone();
-                found = true;
-            }
-        })
-        .map_err(|e| e.to_string())?;
-
-    if !found {
-        return Err(format!("Client not found: {}", client_id));
-    }
-
-    config_manager.save().await.map_err(|e| e.to_string())?;
-
-    if let Err(e) = app.emit("clients-changed", ()) {
-        tracing::error!("Failed to emit clients-changed event: {}", e);
-    }
-
-    Ok(())
-}
-
 // ============================================================================
 // Client Template & Mode Commands
 // ============================================================================
@@ -4406,64 +4309,6 @@ pub async fn try_it_out_app(
         llm_mode: client.llm_mode,
         mcp_mode: client.mcp_mode,
     })
-}
-
-/// Permanently configure the app to route through LocalRouter (modifies config files)
-#[tauri::command]
-pub async fn configure_app_permanent(
-    client_id: String,
-    config_manager: State<'_, ConfigManager>,
-    client_manager: State<'_, Arc<lr_clients::ClientManager>>,
-    provider_registry: State<'_, Arc<lr_providers::registry::ProviderRegistry>>,
-) -> Result<LaunchResult, String> {
-    use crate::launcher;
-
-    let config = config_manager.get();
-    let client = config
-        .clients
-        .iter()
-        .find(|c| c.id == client_id)
-        .ok_or_else(|| format!("Client not found: {}", client_id))?;
-
-    let template_id = client
-        .template_id
-        .as_deref()
-        .ok_or("Client has no template_id set")?;
-
-    let integration = launcher::get_integration(template_id)
-        .ok_or_else(|| format!("No integration found for template: {}", template_id))?;
-
-    let base_url = format!("http://{}:{}", config.server.host, config.server.port);
-
-    let client_secret = client_manager
-        .get_secret(&client_id)
-        .map_err(|e| format!("Failed to get client secret: {}", e))?
-        .ok_or("Client secret not found in keychain")?;
-
-    if integration.needs_model_list() {
-        let models = if client.llm_mode == LlmMode::Gateway {
-            let strategy = config
-                .strategies
-                .iter()
-                .find(|s| s.id == client.strategy_id);
-            build_integration_model_list(strategy, provider_registry.inner()).await?
-        } else {
-            vec![]
-        };
-        let ctx = launcher::ConfigSyncContext {
-            base_url,
-            client_secret,
-            client_id,
-            models,
-            llm_mode: client.llm_mode,
-            mcp_mode: client.mcp_mode,
-        };
-        let _guard = launcher::EXTERNAL_CONFIG_LOCK.lock();
-        return integration.sync_config(&ctx);
-    }
-
-    let _guard = launcher::EXTERNAL_CONFIG_LOCK.lock();
-    integration.configure_permanent(&base_url, &client_secret, &client_id)
 }
 
 // ============================================================================

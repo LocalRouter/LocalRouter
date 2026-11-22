@@ -66,30 +66,6 @@ pub async fn marketplace_get_config(
     Ok(config.marketplace)
 }
 
-/// Set marketplace enabled state (sets both MCP and Skills)
-#[tauri::command]
-pub async fn marketplace_set_enabled(
-    enabled: bool,
-    config_manager: State<'_, ConfigManager>,
-    marketplace_service: State<'_, Option<Arc<MarketplaceService>>>,
-) -> Result<(), String> {
-    config_manager
-        .update(|cfg| {
-            cfg.marketplace.mcp_enabled = enabled;
-            cfg.marketplace.skills_enabled = enabled;
-        })
-        .map_err(|e| e.to_string())?;
-
-    config_manager.save().await.map_err(|e| e.to_string())?;
-
-    if let Some(ref service) = *marketplace_service.inner() {
-        let config = config_manager.get();
-        service.update_config(config.marketplace);
-    }
-
-    Ok(())
-}
-
 /// Set MCP marketplace enabled state
 #[tauri::command]
 pub async fn marketplace_set_mcp_enabled(
@@ -183,15 +159,6 @@ pub async fn marketplace_reset_registry_url(
     }
 
     Ok(default_url)
-}
-
-/// List skill sources
-#[tauri::command]
-pub async fn marketplace_list_skill_sources(
-    config_manager: State<'_, ConfigManager>,
-) -> Result<Vec<lr_config::MarketplaceSkillSource>, String> {
-    let config = config_manager.get();
-    Ok(config.marketplace.skill_sources)
 }
 
 /// Add a skill source
@@ -652,48 +619,6 @@ pub async fn marketplace_install_respond(
 // ============================================================================
 // Client Marketplace Access Commands
 // ============================================================================
-
-/// Set client marketplace access
-#[tauri::command]
-pub async fn set_client_marketplace_enabled(
-    client_id: String,
-    enabled: bool,
-    config_manager: State<'_, ConfigManager>,
-) -> Result<(), String> {
-    config_manager
-        .update(|cfg| {
-            if let Some(client) = cfg.clients.iter_mut().find(|c| c.id == client_id) {
-                client.marketplace_enabled = enabled;
-            }
-
-            // If enabling for any client, also enable marketplace globally
-            if enabled {
-                cfg.marketplace.mcp_enabled = true;
-                cfg.marketplace.skills_enabled = true;
-            }
-        })
-        .map_err(|e| e.to_string())?;
-
-    config_manager.save().await.map_err(|e| e.to_string())?;
-
-    Ok(())
-}
-
-/// Get client marketplace access
-#[tauri::command]
-pub async fn get_client_marketplace_enabled(
-    client_id: String,
-    config_manager: State<'_, ConfigManager>,
-) -> Result<bool, String> {
-    let config = config_manager.get();
-    let client = config
-        .clients
-        .iter()
-        .find(|c| c.id == client_id)
-        .ok_or_else(|| format!("Client '{}' not found", client_id))?;
-
-    Ok(client.marketplace_enabled)
-}
 
 /// Get marketplace tool definitions for display in the UI.
 ///

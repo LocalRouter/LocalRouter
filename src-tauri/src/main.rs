@@ -14,8 +14,8 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 // Re-exported crate aliases from lib.rs
 use localrouter::{
-    api_keys, clients, config, marketplace, mcp, monitoring, oauth_browser, oauth_clients,
-    providers, router, server, skills, utils,
+    api_keys, clients, config, marketplace, mcp, monitoring, oauth_browser, providers, router,
+    server, skills, utils,
 };
 
 use lr_providers::factory::{
@@ -267,14 +267,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
     // Initialize OAuth token store for short-lived access tokens
     // Tokens are stored in-memory only (1 hour expiry)
     let token_store = Arc::new(clients::TokenStore::new());
-
-    // Initialize OAuth client manager for MCP server authentication
-    let oauth_client_manager = {
-        let config = config_manager.get();
-        Arc::new(oauth_clients::OAuthClientManager::new(
-            config.oauth_clients.clone(),
-        ))
-    };
 
     // Initialize keychain for secure storage
     let keychain = api_keys::keychain_trait::CachedKeychain::auto().unwrap_or_else(|e| {
@@ -826,7 +818,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             app.manage(config_manager.clone());
             app.manage(client_manager.clone());
             app.manage(token_store.clone());
-            app.manage(oauth_client_manager.clone());
             app.manage(mcp_server_manager.clone());
             app.manage(mcp_oauth_manager.clone());
             app.manage(mcp_oauth_browser_manager.clone());
@@ -2664,10 +2655,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
 
             ui::commands::get_config,
             ui::commands::reload_config,
-            ui::commands::set_provider_api_key,
-            ui::commands::has_provider_api_key,
-            ui::commands::delete_provider_api_key,
-            ui::commands::list_providers_with_key_status,
             // Provider registry commands
             ui::commands::list_provider_types,
             ui::commands::list_provider_instances,
@@ -2675,19 +2662,15 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::get_provider_config,
             ui::commands::update_provider_instance,
             ui::commands::rename_provider_instance,
-            ui::commands::get_provider_api_key,
             ui::commands::remove_provider_instance,
             ui::commands::clone_provider_instance,
             ui::commands::set_provider_enabled,
-            ui::commands::get_providers_health,
-            ui::commands::start_provider_health_checks,
             ui::commands::check_single_provider_health,
             // Centralized health cache commands
             ui::commands::get_health_cache,
             ui::commands::refresh_all_health,
             ui::commands::get_periodic_health_enabled,
             ui::commands::set_periodic_health_enabled,
-            ui::commands::list_provider_models,
             ui::commands::list_all_models,
             ui::commands::list_all_models_detailed,
             ui::commands::list_provider_models_detailed,
@@ -2696,8 +2679,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::set_provider_model_settings,
             ui::commands::get_cached_models,
             ui::commands::refresh_models_incremental,
-            ui::commands::get_catalog_stats,
-            ui::commands::get_catalog_metadata,
             // Feature support matrix commands
             ui::commands::get_provider_feature_support,
             ui::commands::get_all_provider_feature_support,
@@ -2708,33 +2689,18 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::update_server_config,
             ui::commands::restart_server,
             // Monitoring & statistics commands
-            ui::commands::get_aggregate_stats,
-            ui::commands::get_feature_stats,
             // Metrics commands
             ui::commands_metrics::get_global_metrics,
             ui::commands_metrics::get_traffic_timeline,
             ui::commands_metrics::get_api_key_metrics,
             ui::commands_metrics::get_provider_metrics,
             ui::commands_metrics::get_model_metrics,
-            ui::commands_metrics::list_tracked_models,
-            ui::commands_metrics::list_tracked_providers,
-            ui::commands_metrics::list_tracked_api_keys,
-            ui::commands_metrics::compare_api_keys,
-            ui::commands_metrics::compare_providers,
-            ui::commands_metrics::compare_models,
             ui::commands_metrics::get_strategy_metrics,
-            ui::commands_metrics::list_tracked_strategies,
-            ui::commands_metrics::compare_strategies,
             // MCP metrics commands
             ui::commands_mcp_metrics::get_global_mcp_metrics,
             ui::commands_mcp_metrics::get_client_mcp_metrics,
             ui::commands_mcp_metrics::get_mcp_server_metrics,
             ui::commands_mcp_metrics::get_mcp_method_breakdown,
-            ui::commands_mcp_metrics::list_tracked_mcp_clients,
-            ui::commands_mcp_metrics::list_tracked_mcp_servers,
-            ui::commands_mcp_metrics::compare_mcp_clients,
-            ui::commands_mcp_metrics::compare_mcp_servers,
-            ui::commands_mcp_metrics::get_mcp_latency_percentiles,
             // Network interface commands
             ui::commands::get_network_interfaces,
             ui::commands::get_executable_path,
@@ -2743,41 +2709,20 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::stop_server,
             ui::commands::start_server,
             // OAuth commands
-            ui::commands::list_oauth_providers,
             ui::commands::start_oauth_flow,
             ui::commands::poll_oauth_status,
-            ui::commands::cancel_oauth_flow,
             ui::commands::list_oauth_credentials,
-            ui::commands::delete_oauth_credentials,
             ui::commands::get_oauth_token,
             // OAuth client commands (for MCP)
-            ui::commands::list_oauth_clients,
-            ui::commands::create_oauth_client,
-            ui::commands::get_oauth_client_secret,
-            ui::commands::delete_oauth_client,
-            ui::commands::update_oauth_client_name,
-            ui::commands::toggle_oauth_client_enabled,
-            ui::commands::link_mcp_server,
-            ui::commands::unlink_mcp_server,
-            ui::commands::get_oauth_client_linked_servers,
             // MCP server commands
             ui::commands::list_mcp_servers,
             ui::commands::create_mcp_server,
             ui::commands::delete_mcp_server,
             ui::commands::clone_mcp_server,
-            ui::commands::start_mcp_server,
-            ui::commands::stop_mcp_server,
-            ui::commands::get_mcp_server_health,
-            ui::commands::get_all_mcp_server_health,
             ui::commands::start_mcp_health_checks,
             ui::commands::check_single_mcp_health,
-            ui::commands::update_mcp_server_name,
-            ui::commands::update_mcp_server_config,
             ui::commands::update_mcp_server,
             ui::commands::toggle_mcp_server_enabled,
-            ui::commands::list_mcp_tools,
-            ui::commands::call_mcp_tool,
-            ui::commands::get_mcp_token_stats,
             // MCP OAuth browser flow commands
             ui::commands::start_mcp_oauth_browser_flow,
             ui::commands::poll_mcp_oauth_browser_status,
@@ -2787,9 +2732,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::test_mcp_oauth_connection,
             ui::commands::revoke_mcp_oauth_tokens,
             // Inline OAuth flow commands (for MCP server creation)
-            ui::commands::start_inline_oauth_flow,
-            ui::commands::poll_inline_oauth_status,
-            ui::commands::cancel_inline_oauth_flow,
             // Unified client management commands
             ui::commands::list_clients,
             ui::commands::create_client,
@@ -2819,7 +2761,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::create_strategy,
             ui::commands::update_strategy,
             ui::commands::delete_strategy,
-            ui::commands::get_clients_using_strategy,
             ui::commands::get_feature_clients_status,
             // Client template, mode & guardrails commands
             ui::commands::set_client_llm_mode,
@@ -2833,7 +2774,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands_reverse_proxy::start_client_reverse_proxy,
             ui::commands_reverse_proxy::stop_client_reverse_proxy,
             ui::commands_reverse_proxy::set_client_reverse_proxy_config,
-            ui::commands_reverse_proxy::get_reverse_proxy_defaults,
             ui::commands::get_proxy_ca_trust_status,
             ui::commands::trust_proxy_ca,
             ui::commands::untrust_proxy_ca,
@@ -2843,7 +2783,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             // App launcher commands
             ui::commands::get_app_capabilities,
             ui::commands::try_it_out_app,
-            ui::commands::configure_app_permanent,
             // Config sync commands
             ui::commands::toggle_client_sync_config,
             ui::commands::sync_client_config,
@@ -2856,7 +2795,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::redact_secret_permanently,
             ui::commands::list_client_dismissed_secrets,
             ui::commands::remove_client_dismissed_secret,
-            ui::commands::list_pending_firewall_approvals,
             ui::commands::get_firewall_approval_details,
             ui::commands::get_firewall_full_arguments,
             // Unified permission commands
@@ -2864,8 +2802,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::set_client_skills_permission,
             ui::commands::set_client_model_permission,
             ui::commands::set_client_marketplace_permission,
-            ui::commands::set_client_sampling_permission,
-            ui::commands::set_client_elicitation_permission,
             ui::commands::clear_client_mcp_child_permissions,
             ui::commands::clear_client_skills_child_permissions,
             ui::commands::clear_client_model_child_permissions,
@@ -2874,7 +2810,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::set_mcp_gateway_settings,
             ui::commands::get_skill_tools,
             // OpenAPI documentation commands
-            ui::commands::get_openapi_spec,
             // Internal testing commands
             ui::commands::get_internal_test_token,
             ui::commands::create_test_client_for_strategy,
@@ -2882,9 +2817,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::get_llm_logs,
             ui::commands::get_mcp_logs,
             // Pricing override commands
-            ui::commands::get_pricing_override,
-            ui::commands::set_pricing_override,
-            ui::commands::delete_pricing_override,
             // Tray graph settings commands
             ui::commands::get_tray_graph_settings,
             ui::commands::update_tray_graph_settings,
@@ -2920,9 +2852,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::update_memory_config,
             ui::commands::open_memory_folder,
             ui::commands::memory_test_sample,
-            ui::commands::memory_test_index,
-            ui::commands::memory_test_search,
-            ui::commands::memory_test_reset,
             ui::commands::list_memory_clients,
             ui::commands::search_client_memory,
             ui::commands::read_client_memory,
@@ -2937,7 +2866,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::reindex_client_memory,
             ui::commands::read_memory_archive_file,
             // Secret Scanning commands
-            ui::commands::rebuild_secret_scanner,
             ui::commands_secret_store::list_redacted_secrets,
             ui::commands_secret_store::reveal_redacted_secret,
             ui::commands_secret_store::mark_redacted_secret_not_secret,
@@ -2969,7 +2897,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::get_json_repair_config,
             ui::commands::update_json_repair_config,
             ui::commands::test_json_repair,
-            ui::commands::get_safety_model_status,
             ui::commands::test_safety_model,
             ui::commands::get_all_safety_categories,
             // Safety model management commands
@@ -3055,7 +2982,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             // Skills commands
             ui::commands::list_skills,
             ui::commands::list_skill_sources,
-            ui::commands::get_skill,
             ui::commands::get_context_management_config,
             ui::commands::update_context_management_config,
             // Push Relay commands
@@ -3081,9 +3007,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands::set_client_tools_indexing,
             ui::commands::preview_catalog_compression,
             ui::commands::list_active_sessions,
-            ui::commands::terminate_session,
             ui::commands::get_session_context_sources,
-            ui::commands::get_session_context_stats,
             ui::commands::query_session_context_index,
             ui::commands::preview_rag_index,
             ui::commands::preview_rag_search,
@@ -3102,11 +3026,9 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             // Marketplace commands
             ui::commands_marketplace::update_marketplace_tool_names,
             ui::commands_marketplace::marketplace_get_config,
-            ui::commands_marketplace::marketplace_set_enabled,
             ui::commands_marketplace::marketplace_set_mcp_enabled,
             ui::commands_marketplace::marketplace_set_skills_enabled,
             ui::commands_marketplace::marketplace_set_registry_url,
-            ui::commands_marketplace::marketplace_list_skill_sources,
             ui::commands_marketplace::marketplace_add_skill_source,
             ui::commands_marketplace::marketplace_remove_skill_source,
             ui::commands_marketplace::marketplace_add_default_skill_sources,
@@ -3124,8 +3046,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands_marketplace::marketplace_get_pending_install,
             ui::commands_marketplace::marketplace_list_pending_installs,
             ui::commands_marketplace::marketplace_install_respond,
-            ui::commands_marketplace::set_client_marketplace_enabled,
-            ui::commands_marketplace::get_client_marketplace_enabled,
             ui::commands_marketplace::get_marketplace_tool_definitions,
             // Free tier commands
             ui::commands_free_tier::get_free_tier_status,
@@ -3134,7 +3054,6 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands_free_tier::get_provider_model_metadata,
             ui::commands_free_tier::reset_provider_free_tier_usage,
             ui::commands_free_tier::set_provider_free_tier_usage,
-            ui::commands_free_tier::get_default_free_tier,
             ui::commands_free_tier::reset_cost_backoff,
             // Coding agents commands
             ui::commands_coding_agents::list_coding_agents,
@@ -3164,9 +3083,7 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             ui::commands_monitor::clear_monitor_events,
             ui::commands_monitor::get_monitor_stats,
             ui::commands_monitor::set_monitor_max_capacity,
-            ui::commands_monitor::set_monitor_max_bytes,
             ui::commands_monitor::set_monitor_intercept_rule,
-            ui::commands_monitor::get_monitor_intercept_rule,
         ])
         .on_window_event(|window, event| {
             ui::popup_activation::on_window_event(window, event);
