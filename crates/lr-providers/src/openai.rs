@@ -65,7 +65,6 @@ pub struct OpenAIProvider {
     base_url: String,
 }
 
-#[allow(dead_code)]
 impl OpenAIProvider {
     /// Create a new OpenAI provider with the given API key
     pub fn new(api_key: String) -> Self {
@@ -416,14 +415,14 @@ impl OpenAIProvider {
 
 // OpenAI API response types
 
+// `object`/`created`/`owned_by` are never read but are required fields of
+// the API response, so they stay part of the deserialized shape.
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct OpenAIModel {
     id: String,
-    #[allow(dead_code)]
     object: String,
-    #[allow(dead_code)]
     created: i64,
-    #[allow(dead_code)]
     owned_by: String,
 }
 
@@ -622,7 +621,6 @@ fn audio_mime_type(file_name: &str) -> String {
 }
 
 #[async_trait]
-#[allow(dead_code)]
 impl ModelProvider for OpenAIProvider {
     fn native_batch_kind(&self) -> Option<crate::batches::NativeBatchKind> {
         (matches!(self.auth, ProviderAuth::ApiKey(_)) && !self.is_chatgpt_backend())

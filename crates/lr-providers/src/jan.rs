@@ -27,7 +27,6 @@ pub struct JanProvider {
     client: ClientWithMiddleware,
 }
 
-#[allow(dead_code)]
 impl JanProvider {
     /// Creates a new Jan provider with default settings
     pub fn new() -> Self {
@@ -78,7 +77,6 @@ impl JanProvider {
     }
 }
 
-#[allow(dead_code)]
 impl Default for JanProvider {
     fn default() -> Self {
         Self::new()
@@ -91,6 +89,7 @@ impl Default for JanProvider {
 struct JanModel {
     id: String,
     #[allow(dead_code)]
+    // Deserialized from the API response; required, so it stays part of the shape.
     object: String,
 }
 
@@ -178,7 +177,6 @@ struct JanDelta {
 }
 
 #[async_trait]
-#[allow(dead_code)]
 impl ModelProvider for JanProvider {
     fn name(&self) -> &str {
         "jan"

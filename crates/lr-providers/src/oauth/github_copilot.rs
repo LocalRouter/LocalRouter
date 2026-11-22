@@ -82,6 +82,9 @@ struct DeviceCodeResponse {
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum TokenResponse {
+    // `token_type`/`scope` are never read but stay required: this enum is
+    // untagged, so they take part in choosing the variant.
+    #[allow(dead_code)]
     Success {
         access_token: String,
         token_type: String,

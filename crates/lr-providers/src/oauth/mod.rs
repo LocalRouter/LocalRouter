@@ -7,8 +7,6 @@
 //! OAuth credentials are stored separately from API keys in the keychain and
 //! an owner-private JSON credential store.
 
-#![allow(dead_code)]
-
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -193,51 +191,9 @@ impl OAuthManager {
         Ok(result)
     }
 
-    /// Cancel OAuth flow for a provider
-    pub async fn cancel_oauth(&self, provider_id: &str) -> AppResult<()> {
-        let provider = self.get_provider(provider_id).ok_or_else(|| {
-            AppError::Provider(format!("OAuth provider '{}' not found", provider_id))
-        })?;
-
-        provider.cancel_oauth_flow().await;
-        Ok(())
-    }
-
     /// Get stored credentials for a provider
     pub async fn get_credentials(&self, provider_id: &str) -> AppResult<Option<OAuthCredentials>> {
         self.storage.get_credentials(provider_id).await
-    }
-
-    /// Get valid (non-expired) credentials, refreshing if needed
-    pub async fn get_valid_credentials(
-        &self,
-        provider_id: &str,
-    ) -> AppResult<Option<OAuthCredentials>> {
-        let credentials = self.storage.get_credentials(provider_id).await?;
-
-        if let Some(creds) = credentials {
-            if creds.is_expired() && creds.refresh_token.is_some() {
-                // Try to refresh
-                let provider = self.get_provider(provider_id).ok_or_else(|| {
-                    AppError::Provider(format!("OAuth provider '{}' not found", provider_id))
-                })?;
-
-                match provider.refresh_tokens(&creds).await {
-                    Ok(new_creds) => {
-                        self.storage.store_credentials(&new_creds).await?;
-                        Ok(Some(new_creds))
-                    }
-                    Err(_) => {
-                        // Refresh failed, return None (user needs to re-authenticate)
-                        Ok(None)
-                    }
-                }
-            } else {
-                Ok(Some(creds))
-            }
-        } else {
-            Ok(None)
-        }
     }
 
     /// Delete stored credentials for a provider

@@ -29,7 +29,6 @@ pub struct LocalAIProvider {
     client: ClientWithMiddleware,
 }
 
-#[allow(dead_code)]
 impl LocalAIProvider {
     /// Creates a new LocalAI provider with default settings
     pub fn new() -> Self {
@@ -88,7 +87,6 @@ impl LocalAIProvider {
     }
 }
 
-#[allow(dead_code)]
 impl Default for LocalAIProvider {
     fn default() -> Self {
         Self::new()
@@ -101,6 +99,7 @@ impl Default for LocalAIProvider {
 struct LocalAIModel {
     id: String,
     #[allow(dead_code)]
+    // Deserialized from the API response; required, so it stays part of the shape.
     object: String,
 }
 
@@ -192,13 +191,12 @@ struct LocalAIDelta {
 #[derive(Debug, Deserialize)]
 struct LocalAIApplyResponse {
     uuid: String,
-    #[allow(dead_code)]
-    status: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct LocalAIJobStatus {
     #[allow(dead_code)]
+    // Deserialized from the API response; required, so it stays part of the shape.
     uuid: String,
     #[serde(default)]
     progress: f64,
@@ -211,7 +209,6 @@ struct LocalAIJobStatus {
 }
 
 #[async_trait]
-#[allow(dead_code)]
 impl ModelProvider for LocalAIProvider {
     fn name(&self) -> &str {
         "localai"

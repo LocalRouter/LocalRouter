@@ -501,38 +501,6 @@ pub(crate) fn engine_missing(provider: &str, what: &str) -> AppError {
     ))
 }
 
-/// Parse a comma-separated list setting, keeping only allowed values in the
-/// order the user gave. Unknown values are an error.
-pub(crate) fn parse_list(
-    config: &HashMap<String, String>,
-    key: &str,
-    allowed: &[&str],
-    default: &[&str],
-) -> Result<Vec<String>, AppError> {
-    let raw = config.get(key).map(|s| s.trim()).unwrap_or_default();
-    if raw.is_empty() {
-        return Ok(default.iter().map(|s| s.to_string()).collect());
-    }
-    let mut out: Vec<String> = Vec::new();
-    for item in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-        if !allowed.contains(&item) {
-            return Err(AppError::Config(format!(
-                "Unknown value '{item}' for {key}; expected one of: {}",
-                allowed.join(", ")
-            )));
-        }
-        if !out.iter().any(|x| x == item) {
-            out.push(item.to_string());
-        }
-    }
-    if out.is_empty() {
-        return Err(AppError::Config(format!(
-            "{key} must list at least one value"
-        )));
-    }
-    Ok(out)
-}
-
 pub(crate) fn parse_minutes(
     config: &HashMap<String, String>,
     key: &str,
@@ -610,21 +578,6 @@ mod tests {
 
     fn cfg(k: &str, v: &str) -> HashMap<String, String> {
         [(k.to_string(), v.to_string())].into_iter().collect()
-    }
-
-    #[test]
-    fn list_parsing() {
-        let allowed = ["a", "b", "c"];
-        assert_eq!(
-            parse_list(&HashMap::new(), "x", &allowed, &["a"]).unwrap(),
-            vec!["a"]
-        );
-        assert_eq!(
-            parse_list(&cfg("x", " c, a ,c"), "x", &allowed, &["a"]).unwrap(),
-            vec!["c", "a"]
-        );
-        assert!(parse_list(&cfg("x", "a,z"), "x", &allowed, &["a"]).is_err());
-        assert!(parse_list(&cfg("x", " , "), "x", &allowed, &["a"]).is_err());
     }
 
     #[test]

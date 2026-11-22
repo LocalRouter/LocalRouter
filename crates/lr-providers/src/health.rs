@@ -116,7 +116,6 @@ impl HealthCheckManager {
     }
 
     /// Check health for a single provider instance
-    #[allow(dead_code)]
     pub async fn check_health(&self, instance_name: &str) -> Option<ProviderHealth> {
         let provider = self
             .providers

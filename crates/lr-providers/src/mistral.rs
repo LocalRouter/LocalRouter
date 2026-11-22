@@ -31,7 +31,6 @@ pub struct MistralProvider {
     base_url: Option<String>,
 }
 
-#[allow(dead_code)]
 impl MistralProvider {
     /// Create a new Mistral provider with an API key targeting the default endpoint.
     pub fn new(api_key: String) -> AppResult<Self> {
@@ -69,82 +68,6 @@ impl MistralProvider {
             AppError::Provider(format!("No API key found for provider '{}'", name))
         })?;
         Self::new(api_key)
-    }
-
-    /// Get known model information
-    fn get_known_models() -> Vec<ModelInfo> {
-        vec![
-            ModelInfo {
-                id: "mistral-large-latest".to_string(),
-                name: "Mistral Large".to_string(),
-                provider: "mistral".to_string(),
-                parameter_count: None,
-                context_window: 128_000,
-                supports_streaming: true,
-                capabilities: vec![Capability::Chat, Capability::FunctionCalling],
-                detailed_capabilities: None,
-            },
-            ModelInfo {
-                id: "mistral-small-latest".to_string(),
-                name: "Mistral Small".to_string(),
-                provider: "mistral".to_string(),
-                parameter_count: None,
-                context_window: 32_000,
-                supports_streaming: true,
-                capabilities: vec![Capability::Chat, Capability::FunctionCalling],
-                detailed_capabilities: None,
-            },
-            ModelInfo {
-                id: "codestral-latest".to_string(),
-                name: "Codestral (Code Specialist)".to_string(),
-                provider: "mistral".to_string(),
-                parameter_count: None,
-                context_window: 32_000,
-                supports_streaming: true,
-                capabilities: vec![Capability::Chat, Capability::Completion],
-                detailed_capabilities: None,
-            },
-            ModelInfo {
-                id: "mistral-medium-latest".to_string(),
-                name: "Mistral Medium".to_string(),
-                provider: "mistral".to_string(),
-                parameter_count: None,
-                context_window: 32_000,
-                supports_streaming: true,
-                capabilities: vec![Capability::Chat, Capability::FunctionCalling],
-                detailed_capabilities: None,
-            },
-            ModelInfo {
-                id: "open-mistral-7b".to_string(),
-                name: "Open Mistral 7B".to_string(),
-                provider: "mistral".to_string(),
-                parameter_count: Some(7_000_000_000),
-                context_window: 32_000,
-                supports_streaming: true,
-                capabilities: vec![Capability::Chat],
-                detailed_capabilities: None,
-            },
-            ModelInfo {
-                id: "open-mixtral-8x7b".to_string(),
-                name: "Open Mixtral 8x7B".to_string(),
-                provider: "mistral".to_string(),
-                parameter_count: Some(47_000_000_000),
-                context_window: 32_000,
-                supports_streaming: true,
-                capabilities: vec![Capability::Chat],
-                detailed_capabilities: None,
-            },
-            ModelInfo {
-                id: "open-mixtral-8x22b".to_string(),
-                name: "Open Mixtral 8x22B".to_string(),
-                provider: "mistral".to_string(),
-                parameter_count: Some(141_000_000_000),
-                context_window: 64_000,
-                supports_streaming: true,
-                capabilities: vec![Capability::Chat, Capability::FunctionCalling],
-                detailed_capabilities: None,
-            },
-        ]
     }
 }
 
@@ -204,13 +127,10 @@ struct MistralModel {
 #[derive(Debug, Deserialize)]
 struct MistralModelCapabilities {
     #[serde(default)]
-    completion_chat: bool,
-    #[serde(default)]
     function_calling: bool,
 }
 
 #[async_trait]
-#[allow(dead_code)]
 impl ModelProvider for MistralProvider {
     fn ocr_protocol(&self) -> Option<crate::ocr::OcrProtocol> {
         Some(crate::ocr::OcrProtocol::Mistral)
@@ -597,13 +517,6 @@ impl ModelProvider for MistralProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_known_models() {
-        let models = MistralProvider::get_known_models();
-        assert!(!models.is_empty());
-        assert!(models.iter().any(|m| m.id == "mistral-large-latest"));
-    }
 
     #[tokio::test]
     async fn test_pricing() {

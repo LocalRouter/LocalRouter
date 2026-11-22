@@ -41,7 +41,6 @@ pub struct AnthropicProvider {
     base_url: String,
 }
 
-#[allow(dead_code)]
 impl AnthropicProvider {
     /// Create a new Anthropic provider with an API key
     pub fn new(api_key: String) -> AppResult<Self> {
@@ -431,7 +430,6 @@ impl AnthropicProvider {
 }
 
 #[async_trait]
-#[allow(dead_code)]
 impl ModelProvider for AnthropicProvider {
     fn upstream_api(&self) -> lr_types::LlmApi {
         lr_types::LlmApi::AnthropicMessages
@@ -1288,20 +1286,11 @@ enum AnthropicResponseContent {
     },
     /// Extended thinking block (when thinking is enabled)
     #[serde(rename = "thinking")]
-    Thinking {
-        thinking: String,
-        #[serde(default)]
-        #[allow(dead_code)]
-        signature: Option<String>,
-    },
+    Thinking { thinking: String },
     /// Thinking block redacted by Anthropic's safety systems; the payload
     /// is encrypted and only meaningful when passed back to the API.
     #[serde(rename = "redacted_thinking")]
-    RedactedThinking {
-        #[serde(default)]
-        #[allow(dead_code)]
-        data: Option<String>,
-    },
+    RedactedThinking {},
 }
 
 #[derive(Debug, Deserialize)]

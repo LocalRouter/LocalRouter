@@ -45,7 +45,6 @@ pub struct GeminiProvider {
     base_url: String,
 }
 
-#[allow(dead_code)]
 impl GeminiProvider {
     /// Creates a new Gemini provider with the given API key
     pub fn new(api_key: String) -> Self {
@@ -220,7 +219,6 @@ impl GeminiProvider {
 }
 
 #[async_trait]
-#[allow(dead_code)]
 impl ModelProvider for GeminiProvider {
     fn upstream_api(&self) -> lr_types::LlmApi {
         lr_types::LlmApi::GeminiGenerateContent

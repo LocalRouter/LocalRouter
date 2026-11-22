@@ -29,7 +29,6 @@ pub struct XAIProvider {
     base_url: String,
 }
 
-#[allow(dead_code)]
 impl XAIProvider {
     /// Create a new xAI provider with an API key
     pub fn new(api_key: String) -> AppResult<Self> {
@@ -54,42 +53,6 @@ impl XAIProvider {
             AppError::Provider(format!("No API key found for provider '{}'", name))
         })?;
         Self::new(api_key)
-    }
-
-    /// Get known model information
-    fn get_known_models() -> Vec<ModelInfo> {
-        vec![
-            ModelInfo {
-                id: "grok-2".to_string(),
-                name: "Grok 2".to_string(),
-                provider: "xai".to_string(),
-                parameter_count: None,
-                context_window: 131_072,
-                supports_streaming: true,
-                capabilities: vec![Capability::Chat, Capability::FunctionCalling],
-                detailed_capabilities: None,
-            },
-            ModelInfo {
-                id: "grok-2-mini".to_string(),
-                name: "Grok 2 Mini".to_string(),
-                provider: "xai".to_string(),
-                parameter_count: None,
-                context_window: 131_072,
-                supports_streaming: true,
-                capabilities: vec![Capability::Chat, Capability::FunctionCalling],
-                detailed_capabilities: None,
-            },
-            ModelInfo {
-                id: "grok-beta".to_string(),
-                name: "Grok Beta".to_string(),
-                provider: "xai".to_string(),
-                parameter_count: None,
-                context_window: 131_072,
-                supports_streaming: true,
-                capabilities: vec![Capability::Chat],
-                detailed_capabilities: None,
-            },
-        ]
     }
 }
 
@@ -143,7 +106,6 @@ struct XAIModel {
 }
 
 #[async_trait]
-#[allow(dead_code)]
 impl ModelProvider for XAIProvider {
     fn name(&self) -> &str {
         "xai"
@@ -440,13 +402,6 @@ impl ModelProvider for XAIProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_known_models() {
-        let models = XAIProvider::get_known_models();
-        assert!(!models.is_empty());
-        assert!(models.iter().any(|m| m.id == "grok-2"));
-    }
 
     #[tokio::test]
     async fn test_pricing() {

@@ -29,7 +29,6 @@ pub struct PerplexityProvider {
     base_url: String,
 }
 
-#[allow(dead_code)]
 impl PerplexityProvider {
     /// Create a new Perplexity provider with an API key
     pub fn new(api_key: String) -> AppResult<Self> {
@@ -142,7 +141,6 @@ struct OpenAIStreamChoice {
 }
 
 #[async_trait]
-#[allow(dead_code)]
 impl ModelProvider for PerplexityProvider {
     fn search_protocol(&self) -> Option<crate::search::SearchProtocol> {
         Some(crate::search::SearchProtocol::Perplexity)

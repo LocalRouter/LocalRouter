@@ -29,7 +29,6 @@ pub struct CerebrasProvider {
     base_url: String,
 }
 
-#[allow(dead_code)]
 impl CerebrasProvider {
     /// Create a new Cerebras provider with an API key
     pub fn new(api_key: String) -> AppResult<Self> {
@@ -54,32 +53,6 @@ impl CerebrasProvider {
             AppError::Provider(format!("No API key found for provider '{}'", name))
         })?;
         Self::new(api_key)
-    }
-
-    /// Get known model information
-    fn get_known_models() -> Vec<ModelInfo> {
-        vec![
-            ModelInfo {
-                id: "llama3.1-70b".to_string(),
-                name: "Llama 3.1 70B".to_string(),
-                provider: "cerebras".to_string(),
-                parameter_count: Some(70_000_000_000),
-                context_window: 128_000,
-                supports_streaming: true,
-                capabilities: vec![Capability::Chat, Capability::FunctionCalling],
-                detailed_capabilities: None,
-            },
-            ModelInfo {
-                id: "llama3.1-8b".to_string(),
-                name: "Llama 3.1 8B".to_string(),
-                provider: "cerebras".to_string(),
-                parameter_count: Some(8_000_000_000),
-                context_window: 128_000,
-                supports_streaming: true,
-                capabilities: vec![Capability::Chat, Capability::FunctionCalling],
-                detailed_capabilities: None,
-            },
-        ]
     }
 }
 
@@ -133,7 +106,6 @@ struct CerebrasModel {
 }
 
 #[async_trait]
-#[allow(dead_code)]
 impl ModelProvider for CerebrasProvider {
     fn name(&self) -> &str {
         "cerebras"
@@ -410,13 +382,6 @@ impl ModelProvider for CerebrasProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_known_models() {
-        let models = CerebrasProvider::get_known_models();
-        assert!(!models.is_empty());
-        assert!(models.iter().any(|m| m.id == "llama3.1-70b"));
-    }
 
     #[tokio::test]
     async fn test_pricing() {

@@ -27,7 +27,6 @@ pub struct LlamaCppProvider {
     client: ClientWithMiddleware,
 }
 
-#[allow(dead_code)]
 impl LlamaCppProvider {
     /// Creates a new llama.cpp provider with default settings
     pub fn new() -> Self {
@@ -78,7 +77,6 @@ impl LlamaCppProvider {
     }
 }
 
-#[allow(dead_code)]
 impl Default for LlamaCppProvider {
     fn default() -> Self {
         Self::new()
@@ -91,6 +89,7 @@ impl Default for LlamaCppProvider {
 struct LlamaCppModel {
     id: String,
     #[allow(dead_code)]
+    // Deserialized from the API response; required, so it stays part of the shape.
     object: String,
 }
 
@@ -184,7 +183,6 @@ struct LlamaCppDelta {
 }
 
 #[async_trait]
-#[allow(dead_code)]
 impl ModelProvider for LlamaCppProvider {
     /// llama-server returns OpenAI-format `logprobs` / `top_logprobs` on
     /// `/v1/chat/completions`.

@@ -29,7 +29,6 @@ pub struct DeepInfraProvider {
     base_url: String,
 }
 
-#[allow(dead_code)]
 impl DeepInfraProvider {
     /// Create a new DeepInfra provider with an API key
     pub fn new(api_key: String) -> AppResult<Self> {
@@ -54,62 +53,6 @@ impl DeepInfraProvider {
             AppError::Provider(format!("No API key found for provider '{}'", name))
         })?;
         Self::new(api_key)
-    }
-
-    /// Get known model information
-    fn get_known_models() -> Vec<ModelInfo> {
-        vec![
-            ModelInfo {
-                id: "meta-llama/Meta-Llama-3.1-405B-Instruct".to_string(),
-                name: "Llama 3.1 405B Instruct".to_string(),
-                provider: "deepinfra".to_string(),
-                parameter_count: Some(405_000_000_000),
-                context_window: 32_000,
-                supports_streaming: true,
-                capabilities: vec![Capability::Chat],
-                detailed_capabilities: None,
-            },
-            ModelInfo {
-                id: "meta-llama/Meta-Llama-3.1-70B-Instruct".to_string(),
-                name: "Llama 3.1 70B Instruct".to_string(),
-                provider: "deepinfra".to_string(),
-                parameter_count: Some(70_000_000_000),
-                context_window: 128_000,
-                supports_streaming: true,
-                capabilities: vec![Capability::Chat],
-                detailed_capabilities: None,
-            },
-            ModelInfo {
-                id: "meta-llama/Meta-Llama-3.1-8B-Instruct".to_string(),
-                name: "Llama 3.1 8B Instruct".to_string(),
-                provider: "deepinfra".to_string(),
-                parameter_count: Some(8_000_000_000),
-                context_window: 128_000,
-                supports_streaming: true,
-                capabilities: vec![Capability::Chat],
-                detailed_capabilities: None,
-            },
-            ModelInfo {
-                id: "Qwen/Qwen2.5-72B-Instruct".to_string(),
-                name: "Qwen 2.5 72B Instruct".to_string(),
-                provider: "deepinfra".to_string(),
-                parameter_count: Some(72_000_000_000),
-                context_window: 32_000,
-                supports_streaming: true,
-                capabilities: vec![Capability::Chat],
-                detailed_capabilities: None,
-            },
-            ModelInfo {
-                id: "mistralai/Mixtral-8x7B-Instruct-v0.1".to_string(),
-                name: "Mixtral 8x7B Instruct".to_string(),
-                provider: "deepinfra".to_string(),
-                parameter_count: Some(47_000_000_000),
-                context_window: 32_000,
-                supports_streaming: true,
-                capabilities: vec![Capability::Chat],
-                detailed_capabilities: None,
-            },
-        ]
     }
 }
 
@@ -179,7 +122,6 @@ fn audio_mime_type(file_name: &str) -> String {
 }
 
 #[async_trait]
-#[allow(dead_code)]
 impl ModelProvider for DeepInfraProvider {
     fn name(&self) -> &str {
         "deepinfra"
@@ -696,13 +638,6 @@ impl ModelProvider for DeepInfraProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_known_models() {
-        let models = DeepInfraProvider::get_known_models();
-        assert!(!models.is_empty());
-        assert!(models.iter().any(|m| m.id.contains("Llama-3.1-405B")));
-    }
 
     #[tokio::test]
     async fn test_pricing() {
