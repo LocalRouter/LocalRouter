@@ -1,6 +1,6 @@
 # Push Relay — phase 2: resource-update ingress and the Channels permission relay
 
-**Status: in progress on `feat/push-relay-p2`.**
+**Status: implemented on `feat/push-relay-p2`, under review. Not merged.**
 
 Design: `plan/2026-10-30-PUSH_RELAY.md` (P2 row of "Phases"). Handoff notes of P0/P1:
 `plan/2026-10-30-PUSH_RELAY_HANDOFF.md`. Webhook egress (D3), the third P2 item, already shipped
@@ -22,18 +22,18 @@ over event payloads.
 
 - [x] Read both plan files; verify their file references against the code
 - [x] Save this plan
-- [ ] U5: event type, gate, demand-driven upstream `resources/subscribe`, ingest, native delivery
-- [ ] Permission relay: advertisement, request forwarding, verdict admission and delivery
-- [ ] SEP-3415 final-text deltas (`heartbeatMs`, `eventsListChanged`)
-- [ ] Unit tests (journal scope, permission table, hub resource mode)
-- [ ] `push_relay_e2e_tests.rs`: a U5 scenario, a permission-relay scenario, the route-level
+- [x] U5: event type, gate, demand-driven upstream `resources/subscribe`, ingest, native delivery
+- [x] Permission relay: advertisement, request forwarding, verdict admission and delivery
+- [x] SEP-3415 final-text deltas (`heartbeatMs`, `eventsListChanged`)
+- [x] Unit tests (journal scope, permission table, hub resource mode)
+- [x] `push_relay_e2e_tests.rs`: a U5 scenario, a permission-relay scenario, the route-level
       `events/stream` test
-- [ ] UI / docs / demo touch-ups for the two new event types
-- [ ] Update the status and checklists of the two 2026-10-30 plan files
-- [ ] **Plan Review** — compare this plan with the implementation, implement anything missed
-- [ ] **Test Coverage Review** — add tests for uncovered paths of new and changed code
-- [ ] **Bug Hunt** — re-read the implementation looking for bugs
-- [ ] Validation (fmt, clippy, targeted tests), commit and push
+- [x] UI / docs / demo touch-ups for the two new event types
+- [x] Update the status and checklists of the two 2026-10-30 plan files
+- [x] **Plan Review** — compare this plan with the implementation, implement anything missed
+- [x] **Test Coverage Review** — add tests for uncovered paths of new and changed code
+- [x] **Bug Hunt** — re-read the implementation looking for bugs
+- [x] Validation (fmt, clippy, targeted tests), commit and push
 
 ## File references checked against the code
 
@@ -159,4 +159,68 @@ own `events` key.
 
 ## Deviations and things left open
 
-Filled in at the end of the work.
+- **Resume on the route is by cursor only.** `events/stream` is a JSON-RPC POST whose SSE answer
+  carries a `cursor` on every event and heartbeat; a client resumes by sending it as
+  `params.cursor`. `Last-Event-ID` is not read (SEP-3415 defines no SSE event ids for it, and the
+  route emits none), so the route test covers cursor resume and the refusal of a foreign cursor.
+- **A verdict held under Ask counts as the first answer.** The prompt is marked answered when a
+  verdict is admitted, before the Ask decision. If the user denies the held verdict, a later
+  verdict from another server for the same prompt is refused (`AlreadyAnswered`); the local
+  dialog still decides.
+- **U5 widens the gate.** Any server that declares `resources.subscribe` now makes push possible
+  for the clients that use it (events capability, `<events>` instructions, EventPoll / EventWait),
+  and its classic `notifications/resources/updated` pass through the relay's permission. Setting
+  such a server's push permission to Off for a client drops its native resource notifications for
+  that client (recorded in Monitor). `resource_update_ingress` is the one switch.
+- **Secret scanning / guardrails.** The P2 payloads bypass no control that applies to the same
+  content elsewhere: the secret-placeholder middleware (`lr-server/src/secret_placeholders.rs`)
+  and guardrails sit on the LLM routes, not on the MCP gateway routes (`/`, `/mcp`), so tool-call
+  arguments and results of a direct MCP client are not scanned either. A relayed prompt's
+  `input_preview` goes to the upstream channel server unscanned (documented for the user); the
+  verdict and the resource update carry only ids, a behaviour and a URI. Scanning event payloads
+  remains P3.
+- **Not applied from the Final SEP-3415:** `Mcp-Param-*` headers for `x-mcp-header`-annotated
+  arguments on upstream `events/*` requests, and honouring a client's suggested `heartbeatMs`.
+- **Still unverified against a real Claude Code:** the 2026-07-28 probe (open question 1) and
+  whether Claude Code accepts `claude/channel/permission` from a relay in front of several
+  upstreams. Both need an interactive session.
+
+## Plan Review
+
+Every design point above is implemented: the synthetic `resource.updated` type and its gate and
+switch, the demand-driven `resources/subscribe` (session and relay-owned connections) with
+re-issue and give-back, the shared-subscription bookkeeping in both orders, native delivery
+behind Allow / Ask / Off, one `event_id` per update, the permission advertisement, forwarding of
+the four documented fields, verdict admission (open prompt, target server, first wins, repeated
+id), direct-only delivery of verdicts, the pending cap and TTL sweep, raw forwarding for clients
+push cannot reach, and the SEP-3415 deltas. Added during review: the demo mock
+(`website/src/components/demo/mockPushRelay.ts`) now counts resource subscriptions as consumable
+push and shows a listening resource subscription, matching `push_source_info`.
+
+## Test Coverage Review
+
+- Unit: `permission.rs` (parsing, first-wins, repeated ids, cap, sweep), `journal.rs` (resource
+  scope wildcard), `relay.rs` (opt-in detection, resource type, argument checks), `upstream.rs`
+  (resource runner hold / re-issue / give-back, retry, refusal; watchdog), `render.rs` (verdict
+  popup text), `routes/mcp.rs` (`eventsListChanged` vs `events` opt-ins),
+  `commands_push_relay.rs` (resource sources consumable, receiving clients).
+- E2E (`push_relay_e2e_tests.rs`): native + journal delivery, Ask / Off, on-demand subscription
+  and the shared-subscription orders, the U5 switch, the HTTP relay-owned connection, the
+  permission relay (forwarding, first verdict, refusals), its Ask / Off, the per-session bound,
+  and the route-level `events/stream` test (auth failure, one stream per event kind in order,
+  heartbeat with `heartbeatMs`, stream limit, cursor resume, bad cursor, disconnect cleanup).
+- Frontend unit: labels of the `resource` / `client` ingress and `resource` egress, the live
+  status line for a resource subscription.
+
+## Bug Hunt
+
+- Fixed: `relay_resource_subscribe` recorded the relay's hold only after the upstream answered,
+  so an update an upstream sends before its answer was taken for the client's own subscription
+  and forwarded natively to a client that never subscribed. The hold is now recorded before the
+  request and removed again only when a first subscription fails.
+- Fixed (earlier in this phase): a downstream `events/stream` whose HTTP client disconnected kept
+  its slot, cancellation handle and upstream demand; cleanup moved into drop guards.
+- Checked: no lock is held across an await in the new relay paths; verdict edits can change only
+  `behavior`; a verdict for another session's id is refused; a client's own `resources/unsubscribe`
+  while the relay holds the URI does not reach upstream, and the relay's give-back skips a URI the
+  client still holds.
