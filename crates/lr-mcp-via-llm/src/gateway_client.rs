@@ -25,9 +25,6 @@ pub struct McpTool {
 pub struct McpPrompt {
     /// Namespaced prompt name (e.g. "github__pr_template")
     pub name: String,
-    /// Prompt description (populated from MCP server, will be surfaced in prompt catalog)
-    #[allow(dead_code)]
-    pub description: Option<String>,
     /// Prompt arguments (empty = no-arg prompt)
     pub arguments: Vec<McpPromptArgument>,
 }
@@ -41,7 +38,6 @@ pub struct McpPromptArgument {
 }
 
 /// Wrapper around McpGateway for MCP via LLM operations
-#[allow(dead_code)]
 pub struct GatewayClient<'a> {
     gateway: &'a McpGateway,
     client_id: String,
@@ -480,10 +476,6 @@ impl<'a> GatewayClient<'a> {
 
                         Some(McpPrompt {
                             name: p.get("name")?.as_str()?.to_string(),
-                            description: p
-                                .get("description")
-                                .and_then(|d| d.as_str())
-                                .map(|s| s.to_string()),
                             arguments,
                         })
                     })

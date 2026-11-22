@@ -786,12 +786,6 @@ async fn streaming_loop(
                         full_assistant_message,
                         mcp_handles,
                         client_tool_call_ids,
-                        accumulated_prompt_tokens: 0,
-                        accumulated_completion_tokens: 0,
-                        mcp_tools_called: mcp_calls
-                            .iter()
-                            .map(|tc| tc.function.name.clone())
-                            .collect(),
                         messages_before_mixed: request.messages.clone(),
                         started_at,
                         accumulated_usage_entries: Vec::new(),
@@ -1121,8 +1115,6 @@ async fn streaming_loop(
 
 /// Accumulator for building a complete ToolCall from streaming deltas
 struct ToolCallAccumulator {
-    #[allow(dead_code)]
-    index: u32,
     id: String,
     tool_type: String,
     name: String,
@@ -1153,7 +1145,6 @@ fn accumulate_tool_call_deltas(
         // Extend the accumulator list if needed
         while accumulators.len() <= idx {
             accumulators.push(ToolCallAccumulator {
-                index: accumulators.len() as u32,
                 id: String::new(),
                 tool_type: "function".to_string(),
                 name: String::new(),

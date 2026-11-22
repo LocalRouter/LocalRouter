@@ -90,9 +90,6 @@ mod session_tests {
             },
             mcp_handles: vec![handle],
             client_tool_call_ids: vec!["client-1".to_string()],
-            accumulated_prompt_tokens: 0,
-            accumulated_completion_tokens: 0,
-            mcp_tools_called: vec![],
             messages_before_mixed: vec![],
             started_at: std::time::Instant::now(),
             accumulated_usage_entries: vec![],
@@ -131,9 +128,6 @@ mod session_tests {
             },
             mcp_handles: handles,
             client_tool_call_ids: vec![],
-            accumulated_prompt_tokens: 0,
-            accumulated_completion_tokens: 0,
-            mcp_tools_called: vec![],
             messages_before_mixed: vec![],
             started_at: std::time::Instant::now(),
             accumulated_usage_entries: vec![],
@@ -356,12 +350,10 @@ mod tool_injection_tests {
         let prompts = vec![
             McpPrompt {
                 name: "github__review".to_string(),
-                description: Some("Review code".to_string()),
                 arguments: vec![],
             },
             McpPrompt {
                 name: "github__template".to_string(),
-                description: None,
                 arguments: vec![McpPromptArgument {
                     name: "type".to_string(),
                     description: Some("Template type".to_string()),
@@ -627,9 +619,6 @@ mod manager_tests {
             },
             mcp_handles: vec![],
             client_tool_call_ids: client_ids.iter().map(|s| s.to_string()).collect(),
-            accumulated_prompt_tokens: 0,
-            accumulated_completion_tokens: 0,
-            mcp_tools_called: vec![],
             messages_before_mixed: vec![],
             started_at: std::time::Instant::now(),
             accumulated_usage_entries: vec![],

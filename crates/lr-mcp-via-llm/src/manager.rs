@@ -112,31 +112,12 @@ impl McpViaLlmManager {
         self.config.read().clone()
     }
 
-    /// Record a seen client tool for a given client.
-    pub fn record_seen_client_tool(&self, client_id: &str, tool_name: &str) {
-        self.seen_client_tools
-            .entry(client_id.to_string())
-            .or_default()
-            .insert(tool_name.to_string());
-    }
-
     /// Get all seen client tools for a given client.
     pub fn get_seen_client_tools(&self, client_id: &str) -> Vec<String> {
         self.seen_client_tools
             .get(client_id)
             .map(|s| s.iter().cloned().collect())
             .unwrap_or_default()
-    }
-
-    /// Get the gateway session key for a client (if a session exists).
-    pub fn get_gateway_session_key(&self, client_id: &str) -> Option<String> {
-        let ttl = Duration::from_secs(self.config.read().session_ttl_seconds);
-        self.sessions_by_client.get(client_id).and_then(|sessions| {
-            sessions
-                .iter()
-                .find(|s| !s.read().is_expired(ttl))
-                .map(|s| s.read().gateway_session_key.clone())
-        })
     }
 
     /// Get an existing session or create a new one for this client.

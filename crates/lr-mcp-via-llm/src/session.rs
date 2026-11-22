@@ -15,7 +15,6 @@ use unicode_normalization::UnicodeNormalization;
 
 /// Tracks a pending mixed tool execution where MCP tools run in the background
 /// while we wait for the client to return its tool results.
-#[allow(dead_code)]
 pub struct PendingMixedExecution {
     /// The full assistant message containing ALL tool calls (MCP + client)
     pub full_assistant_message: ChatMessage,
@@ -23,12 +22,6 @@ pub struct PendingMixedExecution {
     pub mcp_handles: Vec<JoinHandle<(String, Result<String, String>)>>,
     /// Tool call IDs that were sent to the client
     pub client_tool_call_ids: Vec<String>,
-    /// Accumulated prompt tokens from iterations before the mixed call
-    pub accumulated_prompt_tokens: u64,
-    /// Accumulated completion tokens from iterations before the mixed call
-    pub accumulated_completion_tokens: u64,
-    /// MCP tools called in iterations before the mixed call
-    pub mcp_tools_called: Vec<String>,
     /// Messages as they were before the mixed tool call (for history reconstruction)
     pub messages_before_mixed: Vec<ChatMessage>,
     /// When the mixed execution started
@@ -103,7 +96,7 @@ pub struct McpViaLlmSession {
 }
 
 impl McpViaLlmSession {
-    #[allow(dead_code)] // kept for legacy test/integration_tests callers; production uses `new_with_key`.
+    #[cfg(test)]
     pub fn new(session_id: String, client_id: String) -> Self {
         Self::new_with_key(session_id, client_id, None)
     }
