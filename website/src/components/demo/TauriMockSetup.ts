@@ -586,10 +586,10 @@ function openaiFeatureSupport(instanceName: string): ProviderFeatureSupport {
       { name: 'Audio Transcription', endpoint: '/v1/audio/transcriptions', support: 'supported', notes: 'Whisper for speech-to-text, TTS-1/TTS-1-HD for text-to-speech' },
       { name: 'Audio Speech (TTS)', endpoint: '/v1/audio/speech', support: 'supported', notes: 'Whisper for speech-to-text, TTS-1/TTS-1-HD for text-to-speech' },
       { name: 'System One Decisions', endpoint: '/v1/systemone', support: 'translated', notes: 'Translated onto chat completions by LocalRouter (logprobs when available, otherwise JSON)' },
-      { name: 'Moderations', endpoint: '/v1/moderations', support: 'not_implemented', notes: 'OpenAI supports natively via text-moderation-latest; LocalRouter proxy not yet built' },
-      { name: 'Responses API', endpoint: '/v1/responses', support: 'not_implemented', notes: 'OpenAI supports natively; LocalRouter proxy not yet built' },
-      { name: 'Batch Processing', endpoint: '/v1/batches', support: 'not_implemented', notes: 'OpenAI supports native async batches; LocalRouter proxy not yet built' },
-      { name: 'Realtime (WebSocket)', endpoint: '/v1/realtime', support: 'not_implemented', notes: 'WebSocket-based real-time audio/text streaming not yet available in LocalRouter' },
+      { name: 'Moderations', endpoint: '/v1/moderations', support: 'translated', notes: "Answered by LocalRouter GuardRails, not the provider's moderation API; this provider is used only when a GuardRails safety model is configured on it" },
+      { name: 'Responses API', endpoint: '/v1/responses', support: 'translated', notes: 'Translated onto chat completions by LocalRouter; stored turns are kept locally' },
+      { name: 'Batch Processing', endpoint: '/v1/batches', support: 'supported', notes: 'Native asynchronous batches, including cancellation' },
+      { name: 'Realtime (WebSocket)', endpoint: '/v1/realtime', support: 'supported', notes: 'Native realtime sessions relayed over WebSocket' },
     ],
     model_features: [
       { name: 'Function Calling', support: 'supported', notes: 'GPT-4o, GPT-4 Turbo, and GPT-3.5 Turbo support tool calling' },
@@ -626,10 +626,28 @@ function systemOneFeatureSupport(base: ProviderFeatureSupport, providerType: str
     endpoints: base.endpoints.map(e => {
       if (e.name === 'System One Decisions') return { ...e, support: 'supported' as const, notes: 'Typed choice / score / yes-no decisions with calibrated probabilities' }
       if (e.name === 'Chat Completions' || e.name === 'Completions (legacy)' || e.name === 'Streaming') return { ...e, support: 'not_supported' as const, notes: 'Decision-only provider: answers System One questions, not chat' }
-      if (e.support === 'supported') return { ...e, support: 'not_supported' as const, notes: 'Not offered by this provider' }
+      if (e.support === 'supported' || e.support === 'translated') return { ...e, support: 'not_supported' as const, notes: 'Not offered by this provider' }
       return e
     }),
     model_features: base.model_features.map(f => ({ ...f, support: 'not_supported' as const, notes: 'Chat-model feature; not applicable to decision models' })),
+  }
+}
+
+type MockEndpointSupport = ProviderFeatureSupport['endpoints'][number]
+
+const NATIVE_BATCH_PROVIDER_TYPES = ['openai', 'openrouter']
+const NATIVE_REALTIME_PROVIDER_TYPES = ['llmgateway', 'openai']
+
+/** Batches and realtime are native-only: providers without a mapping report them unsupported. */
+function nativeBatchAndRealtimeFor(providerType: string | undefined): (e: MockEndpointSupport) => MockEndpointSupport {
+  return e => {
+    if (e.endpoint === '/v1/batches' && !NATIVE_BATCH_PROVIDER_TYPES.includes(providerType ?? '')) {
+      return { ...e, support: 'not_supported', notes: 'LocalRouter has no native batch mapping for this provider' }
+    }
+    if (e.endpoint === '/v1/realtime' && !NATIVE_REALTIME_PROVIDER_TYPES.includes(providerType ?? '')) {
+      return { ...e, support: 'not_supported', notes: 'LocalRouter has no native realtime mapping for this provider' }
+    }
+    return e
   }
 }
 
@@ -3706,6 +3724,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
   'get_provider_feature_support': (args): ProviderFeatureSupport => {
     const base = openaiFeatureSupport(args?.instanceName || 'openai')
     const instance = mockData.providers.find(p => p.instance_name === args?.instanceName)
+    base.endpoints = base.endpoints.map(nativeBatchAndRealtimeFor(instance ? instance.provider_type : 'openai'))
     if (instance?.provider_type === 'anthropic') {
       base.endpoints = base.endpoints.map(endpoint => endpoint.endpoint === '/v1/messages' || endpoint.endpoint === '/v1/messages/count_tokens' ? { ...endpoint, support: 'supported' as const, notes: 'Verified native Anthropic transport' } : endpoint)
     }
@@ -3725,8 +3744,8 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
         if (e.name === 'Anthropic Messages' || e.name === 'Count Messages Tokens') return { ...e, support: 'supported' as const, notes: 'Verified native Anthropic transport' }
         if (e.name === 'Embeddings') return { ...e, support: 'not_supported' as const, notes: 'Anthropic does not offer an embeddings API' }
         if (e.name === 'Image Generation') return { ...e, support: 'not_supported' as const, notes: 'Anthropic does not offer image generation' }
-        if (e.name === 'Audio Transcription' || e.name === 'Audio Speech (TTS)') return { ...e, support: 'not_implemented' as const, notes: 'Anthropic does not offer audio endpoints' }
-        return e
+        if (e.name === 'Audio Transcription' || e.name === 'Audio Speech (TTS)') return { ...e, support: 'not_supported' as const, notes: 'Anthropic does not offer audio endpoints' }
+        return nativeBatchAndRealtimeFor('anthropic')(e)
       }),
       model_features: openai.model_features.map(f => {
         if (f.name === 'Extended Thinking') return { ...f, support: 'partial' as const, notes: 'Only Claude 4.5 Sonnet/Opus support extended thinking with configurable budget (1K\u201399K tokens); other Claude models do not' }
@@ -3746,7 +3765,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       provider_instance: 'gemini',
       endpoints: openai.endpoints.map(e => {
         if (e.name === 'Embeddings') return { ...e, notes: 'Gemini text-embedding models; single-input only (no batch)' }
-        return e
+        return nativeBatchAndRealtimeFor('gemini')(e)
       }),
       model_features: openai.model_features.map(f => {
         if (f.name === 'Thinking Level') return { ...f, support: 'partial' as const, notes: 'Only Gemini 2.0 Flash Thinking and Gemini 3 models support thinking level (low/medium/high); other Gemini models do not' }
@@ -3769,7 +3788,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
         if (e.name === 'Image Generation') return { ...e, support: 'not_supported' as const, notes: 'Ollama does not support image generation' }
         if (e.name === 'Audio Transcription' || e.name === 'Audio Speech (TTS)') return { ...e, support: 'not_supported' as const, notes: 'Ollama does not support audio endpoints' }
         if (e.name === 'Embeddings') return { ...e, notes: 'Ollama supports embeddings for models that have embedding capabilities' }
-        return e
+        return nativeBatchAndRealtimeFor('ollama')(e)
       }),
       model_features: openai.model_features.map(f => {
         if (f.name === 'Structured Outputs') return { ...f, support: 'not_supported' as const, notes: 'Ollama does not support strict JSON schema enforcement' }

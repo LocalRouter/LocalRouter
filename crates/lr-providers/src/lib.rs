@@ -27,7 +27,8 @@ pub enum SupportLevel {
     Translated,
     /// Not available for this provider
     NotSupported,
-    /// Planned but not yet implemented
+    /// Planned but not yet implemented. No endpoint or feature reports this
+    /// today; the variant stays so serialized values keep loading.
     NotImplemented,
 }
 
@@ -657,6 +658,69 @@ pub fn default_feature_support(
         chat_support("Server-sent events for real-time token streaming");
     let has_images = provider.supports_image_generation();
 
+    // `/v1/moderations` is answered by GuardRails safety models, which run on
+    // a chat provider chosen in Settings; the request is never forwarded to a
+    // provider's own moderation endpoint.
+    let (moderations_level, moderations_notes) = if has_chat {
+        (
+            SupportLevel::Translated,
+            "Answered by LocalRouter GuardRails, not the provider's moderation API; this provider is used only when a GuardRails safety model is configured on it",
+        )
+    } else {
+        (
+            SupportLevel::NotSupported,
+            "GuardRails safety models need a chat provider; this provider cannot host one",
+        )
+    };
+    // `/v1/responses` routes through the chat pipeline; `api_path_support`
+    // says whether the provider speaks the Responses API upstream.
+    let (responses_level, responses_notes) = match provider.api_path_support("responses") {
+        _ if !has_chat => (
+            SupportLevel::NotSupported,
+            "This provider does not answer chat-style requests",
+        ),
+        SupportLevel::Supported => (
+            SupportLevel::Supported,
+            "Forwarded to the provider's native Responses API",
+        ),
+        SupportLevel::Translated => (
+            SupportLevel::Translated,
+            "Translated onto chat completions by LocalRouter; stored turns are kept locally",
+        ),
+        other => (other, "This provider does not answer the Responses API"),
+    };
+    // Batches are native-only: there is no emulation on top of chat.
+    let (batch_level, batch_notes) = match provider.native_batch_kind() {
+        Some(batches::NativeBatchKind::Openai) => (
+            SupportLevel::Supported,
+            "Native asynchronous batches, including cancellation",
+        ),
+        Some(batches::NativeBatchKind::Openrouter) => (
+            SupportLevel::Supported,
+            "Native asynchronous batches, including remote batch deletion",
+        ),
+        None => (
+            SupportLevel::NotSupported,
+            "LocalRouter has no native batch mapping for this provider",
+        ),
+    };
+    // Realtime is native-only too, and depends on the instance's credentials
+    // and gateway settings.
+    let (realtime_level, realtime_notes) = match provider.realtime_transport() {
+        Ok(Some(_)) => (
+            SupportLevel::Supported,
+            "Native realtime sessions relayed over WebSocket",
+        ),
+        Ok(None) => (
+            SupportLevel::NotSupported,
+            "LocalRouter has no native realtime mapping for this provider",
+        ),
+        Err(_) => (
+            SupportLevel::NotSupported,
+            "Realtime is unavailable with this instance's current configuration",
+        ),
+    };
+
     let endpoints = vec![
         EndpointSupport {
             name: "Anthropic Messages".into(),
@@ -753,12 +817,12 @@ pub fn default_feature_support(
             support: if provider.supports_transcription() {
                 SupportLevel::Supported
             } else {
-                SupportLevel::NotImplemented
+                SupportLevel::NotSupported
             },
             notes: Some(if provider.supports_transcription() {
                 "Speech-to-text transcription (e.g., Whisper)".into()
             } else {
-                "Audio transcription endpoint not yet available in LocalRouter".into()
+                "LocalRouter has no speech-to-text mapping for this provider".into()
             }),
         },
         EndpointSupport {
@@ -767,12 +831,12 @@ pub fn default_feature_support(
             support: if provider.supports_speech() {
                 SupportLevel::Supported
             } else {
-                SupportLevel::NotImplemented
+                SupportLevel::NotSupported
             },
             notes: Some(if provider.supports_speech() {
                 "Text-to-speech audio generation".into()
             } else {
-                "Text-to-speech endpoint not yet available in LocalRouter".into()
+                "LocalRouter has no text-to-speech mapping for this provider".into()
             }),
         },
         EndpointSupport {
@@ -816,29 +880,26 @@ pub fn default_feature_support(
         EndpointSupport {
             name: "Moderations".into(),
             endpoint: "/v1/moderations".into(),
-            support: SupportLevel::NotImplemented,
-            notes: Some("Content moderation endpoint not yet available in LocalRouter".into()),
+            support: moderations_level,
+            notes: Some(moderations_notes.into()),
         },
         EndpointSupport {
             name: "Responses API".into(),
             endpoint: "/v1/responses".into(),
-            support: SupportLevel::NotImplemented,
-            notes: Some("OpenAI Responses API not yet available in LocalRouter".into()),
+            support: responses_level,
+            notes: Some(responses_notes.into()),
         },
         EndpointSupport {
             name: "Batch Processing".into(),
             endpoint: "/v1/batches".into(),
-            support: SupportLevel::NotImplemented,
-            notes: Some("Asynchronous batch processing not yet available in LocalRouter".into()),
+            support: batch_level,
+            notes: Some(batch_notes.into()),
         },
         EndpointSupport {
             name: "Realtime (WebSocket)".into(),
             endpoint: "/v1/realtime".into(),
-            support: SupportLevel::NotImplemented,
-            notes: Some(
-                "WebSocket-based real-time audio/text streaming not yet available in LocalRouter"
-                    .into(),
-            ),
+            support: realtime_level,
+            notes: Some(realtime_notes.into()),
         },
     ];
 
@@ -3019,6 +3080,217 @@ pub fn build_feature_endpoint_matrix() -> FeatureEndpointMatrix {
 
 #[cfg(test)]
 mod tests {
+
+    /// The compatibility matrix must report what the server routes can do
+    /// with each provider instance, from the same hooks those routes call.
+    mod endpoint_matrix {
+        use crate::gateway::GatewayKind;
+        use crate::openai::OpenAIProvider;
+        use crate::openai_compatible::OpenAICompatibleProvider;
+        use crate::openrouter::OpenRouterProvider;
+        use crate::systemone::{SystemOneFlavor, SystemOneProvider};
+        use crate::{ModelProvider, ProviderFeatureSupport, SupportLevel};
+
+        fn row(support: &ProviderFeatureSupport, endpoint: &str) -> (SupportLevel, String) {
+            let rows: Vec<_> = support
+                .endpoints
+                .iter()
+                .filter(|e| e.endpoint == endpoint)
+                .collect();
+            assert_eq!(rows.len(), 1, "exactly one row for {endpoint}");
+            (
+                rows[0].support.clone(),
+                rows[0].notes.clone().unwrap_or_default(),
+            )
+        }
+
+        fn level(support: &ProviderFeatureSupport, endpoint: &str) -> SupportLevel {
+            row(support, endpoint).0
+        }
+
+        fn chatgpt_subscription() -> OpenAIProvider {
+            OpenAIProvider::with_base_url(
+                "subscription-token".into(),
+                "https://chatgpt.com/backend-api/codex".into(),
+            )
+            .unwrap()
+        }
+
+        fn generic() -> OpenAICompatibleProvider {
+            OpenAICompatibleProvider::new(
+                "generic".into(),
+                "https://gateway.example/v1".into(),
+                Some("key".into()),
+            )
+        }
+
+        fn providers() -> Vec<Box<dyn ModelProvider>> {
+            vec![
+                Box::new(OpenAIProvider::new("key".into())),
+                Box::new(chatgpt_subscription()),
+                Box::new(OpenRouterProvider::new("key".into())),
+                Box::new(generic()),
+                Box::new(
+                    generic()
+                        .with_gateway_preferences(GatewayKind::Llmgateway, Default::default())
+                        .unwrap(),
+                ),
+                Box::new(SystemOneProvider::new(SystemOneFlavor::Laya, None, None).unwrap()),
+            ]
+        }
+
+        #[test]
+        fn openai_api_key_instance_reports_native_batches_and_realtime() {
+            let support = OpenAIProvider::new("key".into()).get_feature_support("openai");
+            assert_eq!(level(&support, "/v1/batches"), SupportLevel::Supported);
+            assert_eq!(level(&support, "/v1/realtime"), SupportLevel::Supported);
+            assert_eq!(level(&support, "/v1/responses"), SupportLevel::Translated);
+            assert_eq!(level(&support, "/v1/moderations"), SupportLevel::Translated);
+            assert!(row(&support, "/v1/moderations").1.contains("GuardRails"));
+        }
+
+        #[test]
+        fn chatgpt_subscription_instance_reports_only_native_responses() {
+            let support = chatgpt_subscription().get_feature_support("chatgpt");
+            assert_eq!(level(&support, "/v1/responses"), SupportLevel::Supported);
+            assert_eq!(level(&support, "/v1/batches"), SupportLevel::NotSupported);
+            assert_eq!(level(&support, "/v1/realtime"), SupportLevel::NotSupported);
+        }
+
+        #[test]
+        fn openrouter_reports_native_batches_without_realtime() {
+            let support = OpenRouterProvider::new("key".into()).get_feature_support("openrouter");
+            assert_eq!(level(&support, "/v1/batches"), SupportLevel::Supported);
+            assert_eq!(level(&support, "/v1/realtime"), SupportLevel::NotSupported);
+            assert_eq!(level(&support, "/v1/responses"), SupportLevel::Translated);
+        }
+
+        #[test]
+        fn generic_compatible_instance_does_not_claim_unmapped_endpoints() {
+            let support = generic().get_feature_support("generic");
+            for endpoint in [
+                "/v1/batches",
+                "/v1/realtime",
+                "/v1/audio/transcriptions",
+                "/v1/audio/speech",
+            ] {
+                assert_eq!(
+                    level(&support, endpoint),
+                    SupportLevel::NotSupported,
+                    "{endpoint}"
+                );
+            }
+            assert_eq!(level(&support, "/v1/responses"), SupportLevel::Translated);
+        }
+
+        #[test]
+        fn gateway_realtime_follows_the_instance_configuration() {
+            let plain = generic()
+                .with_gateway_preferences(GatewayKind::Llmgateway, Default::default())
+                .unwrap();
+            assert_eq!(
+                level(&plain.get_feature_support("gateway"), "/v1/realtime"),
+                SupportLevel::Supported
+            );
+
+            // Gateway controls have no realtime mapping, so the transport
+            // refuses to build and the matrix must not advertise it.
+            let controlled = generic()
+                .with_gateway_preferences(
+                    GatewayKind::Llmgateway,
+                    serde_json::from_value(serde_json::json!({"only": ["openai"]})).unwrap(),
+                )
+                .unwrap();
+            assert!(controlled.realtime_transport().is_err());
+            let (support, notes) = row(&controlled.get_feature_support("gateway"), "/v1/realtime");
+            assert_eq!(support, SupportLevel::NotSupported);
+            assert!(notes.contains("current configuration"), "{notes}");
+        }
+
+        #[test]
+        fn decision_only_provider_reports_none_of_the_chat_backed_endpoints() {
+            let support = SystemOneProvider::new(SystemOneFlavor::Laya, None, None)
+                .unwrap()
+                .get_feature_support("laya");
+            for endpoint in [
+                "/v1/moderations",
+                "/v1/responses",
+                "/v1/batches",
+                "/v1/realtime",
+            ] {
+                assert_eq!(
+                    level(&support, endpoint),
+                    SupportLevel::NotSupported,
+                    "{endpoint}"
+                );
+            }
+        }
+
+        #[test]
+        fn rows_agree_with_the_hooks_the_server_routes_use() {
+            for provider in providers() {
+                let support = provider.get_feature_support("instance");
+                let name = provider.name().to_string();
+                assert_eq!(
+                    level(&support, "/v1/batches") == SupportLevel::Supported,
+                    provider.native_batch_kind().is_some(),
+                    "batches for {name}"
+                );
+                assert_eq!(
+                    level(&support, "/v1/realtime") == SupportLevel::Supported,
+                    provider.realtime_transport().ok().flatten().is_some(),
+                    "realtime for {name}"
+                );
+                let responses = level(&support, "/v1/responses");
+                if provider.supports_chat() {
+                    assert_eq!(
+                        responses,
+                        provider.api_path_support("responses"),
+                        "responses for {name}"
+                    );
+                } else {
+                    assert_eq!(
+                        responses,
+                        SupportLevel::NotSupported,
+                        "responses for {name}"
+                    );
+                }
+                assert_eq!(
+                    level(&support, "/v1/moderations") == SupportLevel::Translated,
+                    provider.supports_chat(),
+                    "moderations for {name}"
+                );
+                assert_eq!(
+                    level(&support, "/v1/audio/transcriptions") == SupportLevel::Supported,
+                    provider.supports_transcription(),
+                    "transcription for {name}"
+                );
+                assert_eq!(
+                    level(&support, "/v1/audio/speech") == SupportLevel::Supported,
+                    provider.supports_speech(),
+                    "speech for {name}"
+                );
+            }
+        }
+
+        #[test]
+        fn no_row_claims_a_routed_endpoint_is_unbuilt() {
+            for provider in providers() {
+                let support = provider.get_feature_support("instance");
+                for endpoint in &support.endpoints {
+                    assert_ne!(
+                        endpoint.support,
+                        SupportLevel::NotImplemented,
+                        "{} on {}",
+                        endpoint.name,
+                        provider.name()
+                    );
+                    let notes = endpoint.notes.clone().unwrap_or_default();
+                    assert!(!notes.contains("not yet"), "{}: {notes}", endpoint.name);
+                }
+            }
+        }
+    }
 
     #[test]
     fn logprobs_from_wire_openai_format() {

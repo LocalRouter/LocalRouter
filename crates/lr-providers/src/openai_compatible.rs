@@ -1244,15 +1244,8 @@ impl ModelProvider for OpenAICompatibleProvider {
                 ));
             }
         }
-        for e in &mut support.endpoints {
-            if e.support == super::SupportLevel::NotImplemented {
-                e.support = super::SupportLevel::Partial;
-                e.notes = Some(format!(
-                    "May be available depending on upstream server; {} is not guaranteed by generic OpenAI-compatible API",
-                    e.name
-                ));
-            }
-        }
+        // Endpoint rows keep the defaults: an endpoint reaches the upstream
+        // server only through a mapping this provider implements.
 
         support
     }

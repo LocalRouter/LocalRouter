@@ -32,11 +32,6 @@ pub mod tray_support;
 pub mod tray_usage;
 pub mod usage_poller;
 
-// TODO: Implement UI integration
-// - Tauri command handlers
-// - System tray menu
-// - IPC communication
-
 pub mod commands_decision_routing;
 pub mod commands_named_routes;
 

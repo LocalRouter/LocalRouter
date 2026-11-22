@@ -309,12 +309,15 @@ fn build_app(state: AppState, enable_cors: bool, shutdown: CancellationToken) ->
     let oauth_state = routes::oauth::OAuthState {
         client_manager: state.client_manager.clone(),
         token_store: state.token_store.clone(),
-        token_rate_limiter: Arc::new(dashmap::DashMap::new()),
+        token_rate_limiter: Arc::new(routes::oauth::TokenRateLimiter::default()),
         monitor_store: state.monitor_store.clone(),
     };
 
     let oauth_routes = Router::new()
         .route("/oauth/token", post(routes::token_endpoint))
+        .layer(axum::extract::DefaultBodyLimit::max(
+            routes::oauth::MAX_TOKEN_REQUEST_BYTES,
+        ))
         .with_state(oauth_state);
 
     let batch_routes = Router::new()

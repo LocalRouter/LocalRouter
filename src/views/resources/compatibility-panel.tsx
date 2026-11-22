@@ -92,7 +92,6 @@ export function CompatibilityPanel() {
         <SupportLevelBadge level="partial" />
         <SupportLevelBadge level="translated" />
         <SupportLevelBadge level="not_supported" />
-        <SupportLevelBadge level="not_implemented" />
       </div>
     </div>
   )
