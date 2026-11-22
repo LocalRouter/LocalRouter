@@ -57,16 +57,6 @@ pub fn current() -> Sandbox {
     })
 }
 
-/// Whether this process is confined by Flatpak.
-pub fn is_flatpak() -> bool {
-    current() == Sandbox::Flatpak
-}
-
-/// Whether this process was installed as a Snap.
-pub fn is_snap() -> bool {
-    current() == Sandbox::Snap
-}
-
 /// Pure sandbox detection, parameterised over its inputs for testing.
 ///
 /// Flatpak wins over Snap: the two are never both true in practice, and if a
