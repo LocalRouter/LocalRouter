@@ -46,6 +46,9 @@ interface Client {
   marketplace_permission: PermissionState
 }
 
+/** One toast slot for config-file reload results, so a fix replaces the error. */
+const CONFIG_RELOAD_TOAST_ID = 'config-file-reload'
+
 function App() {
   const [activeView, setActiveView] = useState<View>('dashboard')
   const [activeSubTab, setActiveSubTab] = useState<string | null>(null)
@@ -94,6 +97,28 @@ function App() {
       // Subscribe to configuration changes
       listenSafe('config-changed', (event: any) => {
         console.log('Configuration changed:', event.payload)
+      }),
+
+      // settings.yaml was edited outside the app but could not be applied.
+      // The running configuration is unchanged; the toast stays until it is
+      // dismissed or the file is fixed, since the next change made in the
+      // app would overwrite the edit.
+      listenSafe<string>('config-reload-failed', (event) => {
+        toast.error('settings.yaml was changed on disk but not applied', {
+          id: CONFIG_RELOAD_TOAST_ID,
+          description: `${event.payload} — the running configuration is unchanged. Fix the file, or the next change made in the app will overwrite it.`,
+          duration: Infinity,
+          closeButton: true,
+        })
+      }),
+
+      // settings.yaml was reloaded from disk (or a rejected edit was fixed).
+      listenSafe<{ applied: boolean }>('config-reloaded', (event) => {
+        if (event.payload?.applied) {
+          toast.success('Configuration reloaded from settings.yaml', { id: CONFIG_RELOAD_TOAST_ID })
+        } else {
+          toast.dismiss(CONFIG_RELOAD_TOAST_ID)
+        }
       }),
 
       // Subscribe to clients-changed events (for debugging)

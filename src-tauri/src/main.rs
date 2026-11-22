@@ -763,14 +763,62 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                 }
             }
 
-            // File watcher disabled - it was causing duplicate config-changed events
-            // when saving from the app. The update() method already emits events.
-            // TODO: Re-enable with proper suppression if external file editing is needed
-            // let watcher = config_manager.start_watching().map_err(|e| {
-            //     tracing::error!("Failed to start config file watcher: {}", e);
-            //     e
-            // })?;
-            // app.manage(watcher);
+            // Pick up edits made to settings.yaml outside the app. The app's
+            // own saves are recognized by content hash and do not reload; an
+            // edit that fails validation leaves the running config in place
+            // and is reported to the UI (`config-reload-failed`).
+            match config_manager.start_watching() {
+                Ok(watcher) => {
+                    app.manage(watcher);
+                }
+                Err(e) => {
+                    // Not fatal: the app works, outside edits just need a restart.
+                    tracing::error!("Failed to start config file watcher: {}", e);
+                }
+            }
+
+            // A reload from disk can change anything, so tell every view to
+            // refetch, not only the ones listening for `config-changed`. The
+            // backend listeners of these events (reverse-proxy and proxy
+            // reconciliation, client config sync, MCP permission notices,
+            // push relay) run as they would for an edit made in the app.
+            {
+                let app_handle = app.handle().clone();
+                app.listen(lr_config::EVENT_CONFIG_RELOADED, move |event| {
+                    let applied = serde_json::from_str::<lr_config::ConfigReloaded>(event.payload())
+                        .map(|payload| payload.applied)
+                        .unwrap_or(false);
+                    if !applied {
+                        return;
+                    }
+                    // Off the event-dispatch thread: these emits run other
+                    // listeners, and the tray rebuild is not instant.
+                    let app_handle = app_handle.clone();
+                    tauri::async_runtime::spawn(async move {
+                        for name in [
+                            "clients-changed",
+                            "strategies-changed",
+                            "providers-changed",
+                            "mcp-servers-changed",
+                            "skills-changed",
+                        ] {
+                            if let Err(e) = app_handle.emit(name, ()) {
+                                tracing::error!(
+                                    "Failed to emit {} after config reload: {}",
+                                    name,
+                                    e
+                                );
+                            }
+                        }
+                        if let Err(e) = ui::tray::rebuild_tray_menu(&app_handle) {
+                            tracing::error!(
+                                "Failed to rebuild tray menu after config reload: {}",
+                                e
+                            );
+                        }
+                    });
+                });
+            }
 
             // Store managers
             app.manage(Arc::new(lr_replay::ReplayManager::new(config_manager.config_path().parent().ok_or("Config directory is unavailable")?.join("replay"))));

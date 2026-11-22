@@ -169,29 +169,38 @@ pub async fn load_config(path: &Path) -> AppResult<AppConfig> {
     }
 }
 
-/// Load and parse configuration from a specific file
-async fn load_config_from_file(path: &Path) -> AppResult<AppConfig> {
-    debug!("Loading configuration from {:?}", path);
+/// SHA-256 of a config file's exact bytes.
+///
+/// Identifies what is on disk without any reference to time: the save path
+/// records the hash of what it wrote, so the file watcher can tell the app's
+/// own writes from someone else's edit.
+pub type ContentHash = [u8; 32];
 
-    // Check file size before reading to prevent excessive memory usage
-    let metadata = fs::metadata(path)
-        .await
-        .map_err(|e| AppError::Config(format!("Failed to read config metadata: {}", e)))?;
-    if metadata.len() > MAX_CONFIG_FILE_SIZE {
+/// Hash config file bytes.
+pub fn content_hash(bytes: &[u8]) -> ContentHash {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes).into()
+}
+
+/// Turn config file bytes into a validated configuration: size check, parse,
+/// migrate, self-heal, validate.
+///
+/// Pure with respect to the filesystem — it reads nothing, writes nothing and
+/// never falls back to a backup — so it is safe to run against a file the
+/// user is in the middle of editing.
+pub(crate) fn parse_config_bytes(bytes: &[u8]) -> AppResult<AppConfig> {
+    if bytes.len() as u64 > MAX_CONFIG_FILE_SIZE {
         return Err(AppError::Config(format!(
             "Config file too large: {} bytes (max {} bytes)",
-            metadata.len(),
+            bytes.len(),
             MAX_CONFIG_FILE_SIZE
         )));
     }
-
-    // Read file contents
-    let contents = fs::read_to_string(path)
-        .await
+    let contents = std::str::from_utf8(bytes)
         .map_err(|e| AppError::Config(format!("Failed to read configuration file: {}", e)))?;
 
     // Parse YAML
-    let mut config: AppConfig = serde_yaml::from_str(&contents)
+    let mut config: AppConfig = serde_yaml::from_str(contents)
         .map_err(|e| AppError::Config(format!("Failed to parse configuration YAML: {}", e)))?;
 
     // Migrate if necessary
@@ -222,11 +231,42 @@ async fn load_config_from_file(path: &Path) -> AppResult<AppConfig> {
     // Validate configuration
     validation::validate_config(&config)?;
 
-    // In production, migrate any plaintext secrets file to the system keychain.
-    // This runs on every config load so the user can copy dev config to prod at any time.
-    #[cfg(not(debug_assertions))]
-    migrate_secrets_file_to_keychain(&config);
+    Ok(config)
+}
 
+/// Work that follows every successful load from disk.
+///
+/// In production, migrate any plaintext secrets file to the system keychain.
+/// This runs on every config load so the user can copy dev config to prod at any time.
+#[cfg_attr(debug_assertions, allow(unused_variables))]
+pub(crate) fn after_load(config: &AppConfig) {
+    #[cfg(not(debug_assertions))]
+    migrate_secrets_file_to_keychain(config);
+}
+
+/// Load and parse configuration from a specific file
+async fn load_config_from_file(path: &Path) -> AppResult<AppConfig> {
+    debug!("Loading configuration from {:?}", path);
+
+    // Check file size before reading to prevent excessive memory usage
+    let metadata = fs::metadata(path)
+        .await
+        .map_err(|e| AppError::Config(format!("Failed to read config metadata: {}", e)))?;
+    if metadata.len() > MAX_CONFIG_FILE_SIZE {
+        return Err(AppError::Config(format!(
+            "Config file too large: {} bytes (max {} bytes)",
+            metadata.len(),
+            MAX_CONFIG_FILE_SIZE
+        )));
+    }
+
+    // Read file contents
+    let contents = fs::read(path)
+        .await
+        .map_err(|e| AppError::Config(format!("Failed to read configuration file: {}", e)))?;
+
+    let config = parse_config_bytes(&contents)?;
+    after_load(&config);
     Ok(config)
 }
 
@@ -235,6 +275,11 @@ async fn load_config_from_file(path: &Path) -> AppResult<AppConfig> {
 /// Creates a timestamped backup of the existing file before writing.
 /// Keeps up to MAX_BACKUPS most recent backups.
 pub async fn save_config(config: &AppConfig, path: &Path) -> AppResult<()> {
+    save_config_hashed(config, path).await.map(|_| ())
+}
+
+/// [`save_config`], returning the hash of the bytes that are now on disk.
+pub(crate) async fn save_config_hashed(config: &AppConfig, path: &Path) -> AppResult<ContentHash> {
     debug!("Saving configuration to {:?}", path);
 
     // Ensure parent directory exists
@@ -346,7 +391,7 @@ pub async fn save_config(config: &AppConfig, path: &Path) -> AppResult<()> {
     }
 
     info!("Configuration saved successfully to {:?}", path);
-    Ok(())
+    Ok(content_hash(yaml.as_bytes()))
 }
 
 /// List available backup files, sorted by most recent first

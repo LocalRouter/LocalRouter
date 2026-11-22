@@ -74,11 +74,13 @@ pub async fn get_config(
 
 /// Manually reload configuration from disk
 ///
-/// Forces a reload of the configuration file.
-/// The file watcher will automatically reload on external changes, but this command
-/// can be used to force a reload on demand.
+/// Forces a reload of the configuration file, through the same path the file
+/// watcher uses for external edits. The file is validated first: if it is
+/// missing or invalid, the running configuration is kept and the error is
+/// returned (and emitted as "config-reload-failed").
 ///
-/// Emits "config-changed" event to all frontend listeners.
+/// Emits "config-changed" and "config-reloaded" to all frontend listeners
+/// when the configuration actually changed.
 #[tauri::command]
 pub async fn reload_config(config_manager: State<'_, ConfigManager>) -> Result<(), String> {
     config_manager.reload().await.map_err(|e| e.to_string())
