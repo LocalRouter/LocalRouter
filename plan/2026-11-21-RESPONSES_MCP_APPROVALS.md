@@ -115,20 +115,69 @@ final message (or only the client-owned calls for a mixed turn).
   replays only the client-visible history.
 - Chat streaming still forwards MCP tool-call deltas (unchanged on purpose).
 
+## Review
+
+### Plan Review
+
+Every design item is implemented: `TurnOptions` (manager.rs, exported from
+lib.rs), delta withholding (`strip_tool_call_deltas` in
+orchestrator_stream.rs), session re-keying, `check_mcp_via_llm_model_firewall`
+used by chat and responses, endpoint label on `apply_model_access_checks`,
+duplicate-hop skip, free-tier paid-fallback approval (`route_complete` /
+`route_stream`), test-only session DB path, accurate header comment. A side
+fix fell out of the continuation test: `reconstruct_history` now keeps a
+system message the client first sends on a later turn (it was dropped when
+the stored history had no client system message).
+
+### Test Coverage Review
+
+- `lr-mcp-via-llm`: chained response ids stay on one session; an unknown id
+  starts a new one; `strip_tool_call_deltas` (tool-only chunk dropped, text /
+  role kept, empty chunk untouched); late system message reconstruction.
+- `lr-server` (`routes/responses_tests.rs`, real router, gateway, firewall
+  manager and orchestrator with a scripted provider and a virtual MCP
+  server): plain request JSON and event sequence; plain streaming client
+  tool call; model-permission Ask (normal and MCP-via-LLM client x stream x
+  Allow/Deny, popup shows injected tools); popup edits reach the provider;
+  auto-router Ask; free-tier paid-fallback Ask; MCP tool approval
+  Allow/Deny; MCP tool loop non-streaming and streaming (event order,
+  sequence numbers, stable item id, no gateway tool in any event);
+  continuation via the orchestrator session and via stored history only;
+  client tool round trip; mixed gateway + client calls.
+- Not covered by a route test: Secret Scan Ask and guardrail approvals.
+  Both run in `run_turn_pipeline`, which this change does not touch and
+  which already had them for `/v1/responses`.
+
+### Bug Hunt
+
+- Re-keying happens when the turn starts. If the turn then fails, the
+  session carries the id of a response that was never stored; a retry that
+  names the older `previous_response_id` falls back to hash matching. Two
+  continuations branching from one response id race the same way (the
+  later one wins the key). Both degrade to the pre-existing hash matching,
+  not to wrong history.
+- Streaming MCP-via-LLM on `/v1/responses` finalizes the endpoint monitor
+  event with the Responses view (`skip_monitor_completion: false`), as it did
+  before; chat skips it so the orchestrator's per-iteration view stays.
+  Unchanged.
+- Rebuilding the provider request after popup edits keeps
+  `pre_computed_routing`; the credential-scope cache extension is only set
+  for non-MCP-via-LLM clients, so nothing else is lost.
+
 ## Checklist
 
 - [x] Read chat / pipeline / orchestrator / responses paths; record findings
 - [x] Save this plan
-- [ ] `TurnOptions` + session key stamping + delta withholding in `lr-mcp-via-llm`
-- [ ] Shared `check_mcp_via_llm_model_firewall`; endpoint label
-- [ ] `responses.rs`: duplicate hop, firewall pass, free-tier approval, options
-- [ ] Header comment in `responses.rs` made accurate
-- [ ] Tests: `lr-mcp-via-llm` (session key, withholding)
-- [ ] Tests: `lr-server` route-level (approval Allow/Deny streaming + not,
+- [x] `TurnOptions` + session key stamping + delta withholding in `lr-mcp-via-llm`
+- [x] Shared `check_mcp_via_llm_model_firewall`; endpoint label
+- [x] `responses.rs`: duplicate hop, firewall pass, free-tier approval, options
+- [x] Header comment in `responses.rs` made accurate
+- [x] Tests: `lr-mcp-via-llm` (session key, withholding)
+- [x] Tests: `lr-server` route-level (approval Allow/Deny streaming + not,
       MCP loop output and event sequence, continuation, plain request)
-- [ ] OpenAPI: no request/response type change expected; confirm
-- [ ] Plan Review: compare implementation against this plan, close gaps
-- [ ] Test Coverage Review: uncovered paths in new/modified code
-- [ ] Bug Hunt: re-read the diff for races, off-by-one, state errors
+- [x] OpenAPI: no request/response type change; nothing to update
+- [x] Plan Review: compare implementation against this plan, close gaps
+- [x] Test Coverage Review: uncovered paths in new/modified code
+- [x] Bug Hunt: re-read the diff for races, off-by-one, state errors
 - [ ] fmt, clippy (workspace, all targets), `cargo test -p lr-server -p lr-mcp-via-llm`
 - [ ] Commit and push the branch
