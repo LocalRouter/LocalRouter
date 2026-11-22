@@ -249,8 +249,6 @@ impl fmt::Display for RateLimiterKey {
     }
 }
 
-impl RateLimiterKey {}
-
 /// Usage information for a request
 #[derive(Debug, Clone)]
 pub struct UsageInfo {

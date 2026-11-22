@@ -60,8 +60,6 @@ pub enum Liveness {
     Unknown,
 }
 
-impl Liveness {}
-
 /// Filter on a discovery call.
 #[derive(Debug, Clone, Default)]
 pub struct DiscoverFilter {

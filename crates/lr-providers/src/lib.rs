@@ -1469,8 +1469,6 @@ pub struct ModelCapabilities {
     pub performance: Option<PerformanceMetrics>,
 }
 
-impl ModelCapabilities {}
-
 /// Pricing information for a model
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct PricingInfo {
