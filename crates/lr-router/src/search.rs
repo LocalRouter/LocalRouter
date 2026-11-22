@@ -107,7 +107,8 @@ impl Router {
         })?;
         request.model = Some(model.clone());
         request.wire_body(protocol)?;
-        self.check_client_rate_limits(client_id).await?;
+        // Held across the charge below so check and charge are one step.
+        let admission = self.check_client_rate_limits(client_id).await?;
         self.check_strategy_rate_limits(&strategy, &provider, &model)?;
         // A search has no token meter. Unknown request fees are kept unknown in
         // response/monitor metadata; no cost-limited request reaches this point.
@@ -120,6 +121,7 @@ impl Router {
         self.rate_limiter
             .record_api_key_usage(client_id, &usage)
             .await?;
+        drop(admission);
         self.authorize_ranked_search(client_id)?;
         let mut dispatch = SearchDispatch {
             router: self,

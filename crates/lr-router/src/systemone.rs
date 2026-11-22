@@ -94,7 +94,7 @@ impl Router {
         }
 
         let (_client, strategy) = self.validate_client_and_strategy(client_id)?;
-        self.check_client_rate_limits(client_id).await?;
+        let _admission = self.check_client_rate_limits(client_id).await?;
         self.route_systemone(client_id, &strategy, request).await
     }
 

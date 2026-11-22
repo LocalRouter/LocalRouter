@@ -96,9 +96,15 @@ pub(crate) struct AppFirewall {
 /// ([`lr_router`]'s `check_strategy_rate_limits`): projected usage over the
 /// rolling window must not exceed any enabled limit. Returns the exceeded limit
 /// type (for the client-facing message) when the request should be blocked.
+///
+/// `in_flight` is what the strategy's gateway requests hold while they are
+/// still running (metrics only show completed ones). Proxied exchanges are
+/// not reserved themselves: concurrent proxied requests can still pass
+/// together.
 fn rate_limit_exceeded(
     metrics: &lr_monitoring::metrics::MetricsCollector,
     strategy: &lr_config::Strategy,
+    in_flight: &lr_router::rate_limit::ReservedUsage,
 ) -> Option<&'static str> {
     if strategy.rate_limits.is_empty() {
         return None;
@@ -108,6 +114,11 @@ fn rate_limit_exceeded(
         let window_secs = limit.time_window.to_seconds();
         let (requests, tokens, cost) =
             metrics.get_recent_usage_for_strategy(&strategy.id, window_secs);
+        let requests = requests.saturating_add(in_flight.requests);
+        let tokens = tokens
+            .saturating_add(in_flight.input_tokens)
+            .saturating_add(in_flight.output_tokens);
+        let cost = cost + in_flight.cost_usd.unwrap_or(0.0);
         if let Some(kind) = limit_exceeded(limit, requests, tokens, cost, avg_tokens, avg_cost) {
             return Some(kind);
         }
@@ -458,7 +469,8 @@ impl AppFirewall {
         }
 
         // Rate limits (shared with the gateway).
-        if let Some(kind) = rate_limit_exceeded(&self.metrics, strategy) {
+        let in_flight = self.state.rate_limiter.strategy_in_flight(&strategy.id);
+        if let Some(kind) = rate_limit_exceeded(&self.metrics, strategy, &in_flight) {
             return RequestAction::reject_json(429, &format!("Rate limit exceeded ({kind})"));
         }
 

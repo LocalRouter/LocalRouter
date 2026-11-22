@@ -37,7 +37,7 @@ mod upstream_tools;
 // Re-export commonly used types
 pub use endpoint_cache::EndpointCapabilityCache;
 pub use free_tier::FreeTierManager;
-pub use rate_limit::{RateLimiterManager, UsageInfo};
+pub use rate_limit::{AdmissionReservation, RateLimiterManager, UsageInfo};
 
 /// Router error classification for auto-routing fallback decisions
 #[derive(Debug, Clone)]
@@ -288,6 +288,7 @@ async fn wrap_stream_with_usage_tracking(
     free_tier: FreeTierUsage,
     pricing: lr_providers::PricingInfo,
     free_tier_only: bool,
+    admission: AdmissionReservation,
 ) -> Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>> {
     // Decide now, while the request's trace is still in scope (the stream is
     // polled later, outside it): a duplicate hop must not charge usage.
@@ -310,6 +311,7 @@ async fn wrap_stream_with_usage_tracking(
             pricing,
             free_tier_only,
         })),
+        admission: parking_lot::Mutex::new(Some(admission)),
     });
 
     let recorder_map = recorder.clone();
@@ -376,6 +378,8 @@ pub(crate) struct FreeTierUsage {
 struct StreamUsageRecorder {
     state: parking_lot::Mutex<StreamUsageState>,
     record: parking_lot::Mutex<Option<StreamUsageSink>>,
+    /// The request's in-flight reservation, held until its usage is recorded.
+    admission: parking_lot::Mutex<Option<AdmissionReservation>>,
 }
 
 impl StreamUsageRecorder {
@@ -391,6 +395,8 @@ impl StreamUsageRecorder {
     }
 
     fn finish(&self) {
+        // Released on every way out of this function.
+        let admission = self.admission.lock().take();
         let Some(sink) = self.record.lock().take() else {
             return;
         };
@@ -406,40 +412,27 @@ impl StreamUsageRecorder {
             output_tokens: output,
             cost_usd: cost,
         };
-        let task = async move {
-            if let Err(e) = sink
-                .rate_limiter
-                .record_api_key_usage(&sink.client_id, &usage)
-                .await
-            {
-                warn!(
-                    "Failed to record streaming usage for API key '{}': {}",
-                    sink.client_id, e
-                );
-            }
-            if !sink.provider.is_empty() {
-                sink.free_tier_manager.record_usage(
-                    &sink.provider,
-                    &sink.free_tier.kind,
-                    sink.free_tier.model_is_free,
-                    input + output,
-                    cost,
-                );
-                // Cost watchdog: track whether this stream cost money
-                if sink.free_tier_only {
-                    if cost > 0.0 {
-                        sink.free_tier_manager.record_cost_trigger(&sink.provider);
-                    } else {
-                        sink.free_tier_manager.record_cost_free(&sink.provider);
-                    }
+        // Synchronous on purpose: this also runs when the stream is dropped,
+        // and the reservation must not outlive the usage it stood in for.
+        sink.rate_limiter.charge_api_key(&sink.client_id, &usage);
+        // The actual usage is on the books: the estimate can go.
+        drop(admission);
+        if !sink.provider.is_empty() {
+            sink.free_tier_manager.record_usage(
+                &sink.provider,
+                &sink.free_tier.kind,
+                sink.free_tier.model_is_free,
+                input + output,
+                cost,
+            );
+            // Cost watchdog: track whether this stream cost money
+            if sink.free_tier_only {
+                if cost > 0.0 {
+                    sink.free_tier_manager.record_cost_trigger(&sink.provider);
+                } else {
+                    sink.free_tier_manager.record_cost_free(&sink.provider);
                 }
             }
-        };
-        match tokio::runtime::Handle::try_current() {
-            Ok(handle) => {
-                handle.spawn(task);
-            }
-            Err(_) => warn!("No async runtime to record streaming usage"),
         }
     }
 }
@@ -868,6 +861,11 @@ impl Router {
         self.prepare_document_request(client_id, &mut request)?;
         let (_client, mut strategy) = self.validate_client_and_strategy(client_id)?;
         strategy.free_tier_only = false;
+        // The paid retry is a new dispatch: admit it like any request and hold
+        // the reservation until this call is over.
+        let _admission = self
+            .admit_client(client_id, &Self::chat_usage_estimate(&request))
+            .await?;
 
         if request.model == "localrouter/auto" {
             self.complete_with_auto_routing(client_id, &strategy, request)
@@ -899,9 +897,14 @@ impl Router {
         self.prepare_document_request(client_id, &mut request)?;
         let (_client, mut strategy) = self.validate_client_and_strategy(client_id)?;
         strategy.free_tier_only = false;
+        // The paid retry is a new dispatch: admit it like any request. The
+        // stream carries the reservation until its usage is recorded.
+        let admission = self
+            .admit_client(client_id, &Self::chat_usage_estimate(&request))
+            .await?;
 
         if request.model == "localrouter/auto" {
-            self.stream_complete_with_auto_routing(client_id, &strategy, request)
+            self.stream_complete_with_auto_routing(client_id, &strategy, request, admission)
                 .await
         } else {
             let (provider, model) = Self::parse_model_string(&request.model);
@@ -991,6 +994,7 @@ impl Router {
                     free_tier,
                     pricing,
                     strategy.free_tier_only,
+                    admission,
                 )
                 .await,
                 None,
@@ -1047,29 +1051,57 @@ impl Router {
         Ok((client, strategy))
     }
 
-    /// Check client-level rate limits
-    async fn check_client_rate_limits(&self, client_id: &str) -> AppResult<()> {
-        let usage_estimate = UsageInfo {
-            input_tokens: 0,
-            output_tokens: 0,
-            cost_usd: 0.0,
-        };
+    /// Admit a request against its client's rate limits, holding the request
+    /// itself (no token or cost estimate) while it is in flight.
+    async fn check_client_rate_limits(&self, client_id: &str) -> AppResult<AdmissionReservation> {
+        self.admit_client(
+            client_id,
+            &UsageInfo {
+                input_tokens: 0,
+                output_tokens: 0,
+                cost_usd: 0.0,
+            },
+        )
+        .await
+    }
 
-        let rate_check = self
+    /// Admit a request against its client's rate limits and reserve
+    /// `estimate` in the same step. The reservation is this request's for all
+    /// of its failover attempts; keep it until the usage has been recorded.
+    async fn admit_client(
+        &self,
+        client_id: &str,
+        estimate: &UsageInfo,
+    ) -> AppResult<AdmissionReservation> {
+        match self
             .rate_limiter
-            .check_api_key(client_id, &usage_estimate)
-            .await?;
-
-        if !rate_check.allowed {
-            warn!(
-                "Client '{}' rate limited. Retry after {} seconds",
-                client_id,
-                rate_check.retry_after_secs.unwrap_or(0)
-            );
-            return Err(AppError::RateLimitExceeded);
+            .reserve_api_key(client_id, estimate)
+            .await?
+        {
+            Ok(admission) => Ok(admission),
+            Err(rate_check) => {
+                warn!(
+                    "Client '{}' rate limited. Retry after {} seconds",
+                    client_id,
+                    rate_check.retry_after_secs.unwrap_or(0)
+                );
+                Err(AppError::RateLimitExceeded)
+            }
         }
+    }
 
-        Ok(())
+    /// What a chat request is expected to use, known before a model is
+    /// chosen: its prompt, and the output it caps itself at. Cost depends on
+    /// the model and is not estimated.
+    fn chat_usage_estimate(request: &CompletionRequest) -> UsageInfo {
+        UsageInfo {
+            input_tokens: lr_providers::usage_estimate::prompt_tokens(
+                &request.messages,
+                request.tools.as_deref(),
+            ),
+            output_tokens: request.max_tokens.map_or(0, u64::from),
+            cost_usd: 0.0,
+        }
     }
 
     /// Find provider for a model when no provider is specified in model string.
@@ -1203,7 +1235,10 @@ impl Router {
     }
 
     /// Check strategy rate limits using metrics-based approach
-    /// Returns error if projected usage would exceed any configured limits
+    /// Returns error if projected usage would exceed any configured limits.
+    ///
+    /// Counts what the strategy's admitted requests hold in flight but
+    /// reserves nothing: see [`Self::reserve_strategy_rate_limits`].
     fn check_strategy_rate_limits(
         &self,
         strategy: &lr_config::Strategy,
@@ -1213,11 +1248,66 @@ impl Router {
         if strategy.rate_limits.is_empty() {
             return Ok(());
         }
-
-        // Get pre-estimates from recent usage (last 10 minutes)
         let (avg_tokens, avg_cost) = self
             .metrics_collector
             .get_pre_estimate_for_strategy(&strategy.id, 10);
+        self.strategy_limits_have_room(
+            strategy,
+            avg_tokens,
+            avg_cost,
+            &self.rate_limiter.strategy_in_flight(&strategy.id),
+        )
+    }
+
+    /// Admit a request against its strategy's rate limits and hold its share
+    /// (one request, the strategy's average tokens and cost) while it is in
+    /// flight. Metrics only show completed requests, so without this every
+    /// concurrent request would see the same room.
+    fn reserve_strategy_rate_limits(
+        &self,
+        strategy: &lr_config::Strategy,
+    ) -> AppResult<AdmissionReservation> {
+        if strategy.rate_limits.is_empty() {
+            return Ok(AdmissionReservation::unreserved());
+        }
+        let (avg_tokens, avg_cost) = self
+            .metrics_collector
+            .get_pre_estimate_for_strategy(&strategy.id, 10);
+        let estimate = rate_limit::ReservedUsage {
+            requests: 1,
+            input_tokens: if avg_tokens.is_finite() && avg_tokens > 0.0 {
+                avg_tokens.ceil() as u64
+            } else {
+                0
+            },
+            output_tokens: 0,
+            cost_usd: Some(if avg_cost.is_finite() {
+                avg_cost.max(0.0)
+            } else {
+                0.0
+            }),
+        };
+        self.rate_limiter
+            .reserve_strategy(&strategy.id, estimate, |in_flight| {
+                self.strategy_limits_have_room(strategy, avg_tokens, avg_cost, in_flight)
+            })
+    }
+
+    /// Whether one more request fits every enabled limit of the strategy,
+    /// given recorded metrics, the requests in flight, and the averages a
+    /// new request is projected at.
+    fn strategy_limits_have_room(
+        &self,
+        strategy: &lr_config::Strategy,
+        avg_tokens: f64,
+        avg_cost: f64,
+        in_flight: &rate_limit::ReservedUsage,
+    ) -> AppResult<()> {
+        let in_flight_requests = in_flight.requests as f64;
+        let in_flight_tokens = in_flight
+            .input_tokens
+            .saturating_add(in_flight.output_tokens) as f64;
+        let in_flight_cost = in_flight.cost_usd.unwrap_or(0.0);
 
         for limit in &strategy.rate_limits {
             if !limit.enabled {
@@ -1230,16 +1320,20 @@ impl Router {
                 .get_recent_usage_for_strategy(&strategy.id, window_secs);
 
             let (projected_usage, limit_value) = match limit.limit_type {
-                lr_config::RateLimitType::Requests => (current_requests as f64 + 1.0, limit.value),
-                lr_config::RateLimitType::TotalTokens => {
-                    (current_tokens as f64 + avg_tokens, limit.value)
-                }
+                lr_config::RateLimitType::Requests => (
+                    current_requests as f64 + in_flight_requests + 1.0,
+                    limit.value,
+                ),
+                lr_config::RateLimitType::TotalTokens => (
+                    current_tokens as f64 + in_flight_tokens + avg_tokens,
+                    limit.value,
+                ),
                 lr_config::RateLimitType::Cost => {
                     // Special case: if avg_cost is 0 (free models), don't count against cost limit
                     if avg_cost == 0.0 {
                         continue;
                     }
-                    (current_cost + avg_cost, limit.value)
+                    (current_cost + in_flight_cost + avg_cost, limit.value)
                 }
                 _ => continue, // InputTokens/OutputTokens not supported for pre-check
             };
@@ -1821,20 +1915,25 @@ impl Router {
                 }
             }
 
-            // Check strategy rate limits before trying this model
-            if let Err(e) = self.check_strategy_rate_limits(strategy, provider, model) {
-                warn!(
-                    "Strategy rate limit exceeded for {}/{}, trying next model: {}",
-                    provider, model, e
-                );
-                last_error = Some(RouterError::RateLimited {
-                    provider: provider.clone(),
-                    model: model.clone(),
-                    retry_after_secs: 60,
-                });
-                attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "rate_limited", "error": e.to_string()}));
-                continue;
-            }
+            // Check strategy rate limits before trying this model. The
+            // attempt's share is released when the attempt fails, so the
+            // next model does not count this request twice.
+            let _strategy_admission = match self.reserve_strategy_rate_limits(strategy) {
+                Ok(admission) => admission,
+                Err(e) => {
+                    warn!(
+                        "Strategy rate limit exceeded for {}/{}, trying next model: {}",
+                        provider, model, e
+                    );
+                    last_error = Some(RouterError::RateLimited {
+                        provider: provider.clone(),
+                        model: model.clone(),
+                        retry_after_secs: 60,
+                    });
+                    attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "rate_limited", "error": e.to_string()}));
+                    continue;
+                }
+            };
 
             let attempt_revision = self.provider_registry.routing_revision();
             let attempt_start = std::time::Instant::now();
@@ -2022,6 +2121,7 @@ impl Router {
         client_id: &str,
         strategy: &lr_config::Strategy,
         request: CompletionRequest,
+        mut admission: AdmissionReservation,
     ) -> AppResult<(
         Pin<Box<dyn Stream<Item = AppResult<CompletionChunk>> + Send>>,
         Option<serde_json::Value>,
@@ -2162,20 +2262,25 @@ impl Router {
                 }
             }
 
-            // Check strategy rate limits before trying this model
-            if let Err(e) = self.check_strategy_rate_limits(strategy, provider, model) {
-                warn!(
-                    "Strategy rate limit exceeded for {}/{}, trying next model: {}",
-                    provider, model, e
-                );
-                last_error = Some(RouterError::RateLimited {
-                    provider: provider.clone(),
-                    model: model.clone(),
-                    retry_after_secs: 60,
-                });
-                attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "rate_limited", "error": e.to_string()}));
-                continue;
-            }
+            // Check strategy rate limits before trying this model. The
+            // attempt's share is released when the attempt fails, so the
+            // next model does not count this request twice.
+            let strategy_admission = match self.reserve_strategy_rate_limits(strategy) {
+                Ok(admission) => admission,
+                Err(e) => {
+                    warn!(
+                        "Strategy rate limit exceeded for {}/{}, trying next model: {}",
+                        provider, model, e
+                    );
+                    last_error = Some(RouterError::RateLimited {
+                        provider: provider.clone(),
+                        model: model.clone(),
+                        retry_after_secs: 60,
+                    });
+                    attempts.push(serde_json::json!({"provider": provider, "model": model, "outcome": "rate_limited", "error": e.to_string()}));
+                    continue;
+                }
+            };
 
             // Get provider instance
             let provider_instance = match self.provider_registry.get_provider(provider) {
@@ -2278,6 +2383,7 @@ impl Router {
                     );
                     let resolved_model = format!("{}/{}", provider, model);
                     let free_tier = self.free_tier_usage(provider, model);
+                    admission.absorb(strategy_admission);
                     return Ok((
                         wrap_stream_with_usage_tracking(
                             stream,
@@ -2289,6 +2395,7 @@ impl Router {
                             free_tier,
                             pricing,
                             strategy.free_tier_only,
+                            admission,
                         )
                         .await,
                         Some(routing_meta),
@@ -2645,8 +2752,12 @@ impl Router {
         // 1. Validate client and get strategy
         let (_client, strategy) = self.validate_client_and_strategy(client_id)?;
 
-        // 2. Check client-level rate limits
-        self.check_client_rate_limits(client_id).await?;
+        // 2. Admit against client-level rate limits. The reservation covers
+        // every failover attempt and is released once this call is over,
+        // after the usage of a completed request has been recorded.
+        let _admission = self
+            .admit_client(client_id, &Self::chat_usage_estimate(&request))
+            .await?;
 
         // 3. Route based on requested model
         if request.model == "localrouter/auto" {
@@ -2656,8 +2767,8 @@ impl Router {
                 .await;
         }
 
-        // 4. For specific model requests, check strategy rate limits
-        self.check_strategy_rate_limits(&strategy, "", "")?;
+        // 4. For specific model requests, admit against strategy rate limits
+        let _strategy_admission = self.reserve_strategy_rate_limits(&strategy)?;
 
         // 5. Parse and validate model
         let (provider, model) = Self::parse_model_string(&request.model);
@@ -2858,6 +2969,7 @@ impl Router {
                     free_tier,
                     pricing,
                     false, // internal test — not free tier mode
+                    AdmissionReservation::unreserved(),
                 )
                 .await,
                 None,
@@ -2867,14 +2979,17 @@ impl Router {
         // 1. Validate client and get strategy
         let (_client, strategy) = self.validate_client_and_strategy(client_id)?;
 
-        // 2. Check rate limits
-        self.check_client_rate_limits(client_id).await?;
+        // 2. Admit against rate limits. The stream carries the reservation
+        // until its usage is recorded, including when the client drops it.
+        let mut admission = self
+            .admit_client(client_id, &Self::chat_usage_estimate(&request))
+            .await?;
 
         // 3. Route - handle auto-routing for streaming
         if request.model == "localrouter/auto" {
             debug!("Using auto-routing for streaming client '{}'", client_id);
             return self
-                .stream_complete_with_auto_routing(client_id, &strategy, request)
+                .stream_complete_with_auto_routing(client_id, &strategy, request, admission)
                 .await;
         }
 
@@ -2893,8 +3008,8 @@ impl Router {
             (provider, model)
         };
 
-        // 5. Check strategy rate limits
-        self.check_strategy_rate_limits(&strategy, &final_provider, &final_model)?;
+        // 5. Admit against strategy rate limits
+        admission.absorb(self.reserve_strategy_rate_limits(&strategy)?);
 
         // 6. Check free tier constraints for specific model requests
         if strategy.free_tier_only {
@@ -3020,6 +3135,7 @@ impl Router {
                 free_tier,
                 pricing,
                 strategy.free_tier_only,
+                admission,
             )
             .await,
             None,
@@ -3301,7 +3417,7 @@ impl Router {
         let (_client, strategy) = self.validate_client_and_strategy(client_id)?;
 
         // 2. Check client-level rate limits
-        self.check_client_rate_limits(client_id).await?;
+        let _admission = self.check_client_rate_limits(client_id).await?;
 
         // 3. Route based on requested model
         if request.model == "localrouter/auto" {
@@ -3454,7 +3570,7 @@ impl Router {
         }
 
         let (_client, strategy) = self.validate_client_and_strategy(client_id)?;
-        self.check_client_rate_limits(client_id).await?;
+        let _admission = self.check_client_rate_limits(client_id).await?;
 
         if request.model == "localrouter/auto" {
             debug!(
@@ -3565,7 +3681,7 @@ impl Router {
         }
 
         let (_client, strategy) = self.validate_client_and_strategy(client_id)?;
-        self.check_client_rate_limits(client_id).await?;
+        let _admission = self.check_client_rate_limits(client_id).await?;
 
         if request.model == "localrouter/auto" {
             debug!(
@@ -3679,7 +3795,7 @@ impl Router {
         }
 
         let (_client, strategy) = self.validate_client_and_strategy(client_id)?;
-        self.check_client_rate_limits(client_id).await?;
+        let _admission = self.check_client_rate_limits(client_id).await?;
 
         if request.model == "localrouter/auto" {
             debug!("Using auto-routing for speech client '{}'", client_id);
@@ -3958,6 +4074,7 @@ mod tests {
             },
             lr_providers::PricingInfo::free(),
             false,
+            AdmissionReservation::unreserved(),
         )
         .await;
         let chunks: Vec<_> = wrapped.collect().await;
@@ -4210,55 +4327,8 @@ mod tests {
         assert!(matches!(result.unwrap_err(), AppError::Unauthorized));
     }
 
-    // ============================================================================
-    // Routing Strategy Tests - REMOVED (tests used obsolete ApiKeyConfig)
-    // ============================================================================
-    // Tests were removed during migration to unified Client architecture.
-    // New tests should be written using the Client structure.
-
-    // ============================================================================
-    // TODO: Provider Retry Integration Tests
-    // ============================================================================
-    //
-    // Future work: Add integration tests that test actual provider retry logic with mock
-    // provider implementations. These tests should cover:
-    //
-    // 1. **Provider Failures with Retry**:
-    //    - First provider fails with retryable error (Provider, RateLimitExceeded, etc.)
-    //    - Router retries with next provider in prioritized list
-    //    - Verify call counts and retry order
-    //
-    // 2. **Non-Retryable Errors**:
-    //    - Provider fails with Validation error
-    //    - Router stops immediately without retrying
-    //
-    // 3. **All Providers Fail**:
-    //    - All providers in prioritized list fail
-    //    - Router returns last error
-    //
-    // 4. **Health Check Failures**:
-    //    - Provider health check fails
-    //    - Router logs warning but continues with request
-    //    - Completion still works if provider is functional
-    //
-    // 5. **Success on First Try**:
-    //    - First provider succeeds
-    //    - No retries attempted
-    //    - Other providers never called
-    //
-    // **Implementation Requirements**:
-    // - Create MockProviderFactory that implements ProviderFactory trait
-    // - MockProvider with configurable failure modes (count, error type)
-    // - Track call counts to verify retry logic
-    // - Test with ProviderRegistry.create_provider() for proper architecture
-    //
-    // **Current Status**: Unit tests in routing_strategy_tests provide comprehensive
-    // coverage of configuration logic and is_model_allowed() behavior. Integration
-    // tests require ProviderRegistry architecture support.
-    //
-    // ============================================================================
-
-    // Placeholder for future integration tests - see TODO comment above
+    // Routing, failover and admission through mock providers are covered in
+    // `failover_tests.rs`.
 
     // ============================================================================
     // Test normalize_model_id
@@ -4364,4 +4434,6 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+mod failover_tests;
 mod session_routing;
