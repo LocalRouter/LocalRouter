@@ -366,6 +366,12 @@ impl MonitorEventStore {
     /// Correlate before request truncation, while honoring the capture policy.
     /// State lives with retained events and disappears on eviction/clear.
     pub fn track_conversation(&self, id: &str, body: &serde_json::Value) {
+        self.track_conversation_with(id, crate::conversation::CorrelationParts::from_body(body));
+    }
+
+    /// [`track_conversation`](Self::track_conversation) from the parts a
+    /// streamed request collected instead of a whole body.
+    pub fn track_conversation_with(&self, id: &str, parts: crate::conversation::CorrelationParts) {
         // Avoid hashing protected captures, and keep long-context hashing outside
         // the store write lock so capture/list/update operations remain responsive.
         {
@@ -380,7 +386,7 @@ impl MonitorEventStore {
                 return;
             }
         }
-        let Some(correlation) = crate::conversation::Correlation::from_body(body) else {
+        let Some(correlation) = crate::conversation::Correlation::from_parts(parts) else {
             return;
         };
         let mut events = self.events.write();

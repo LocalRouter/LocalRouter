@@ -29,33 +29,130 @@ fn hash(value: &Value) -> [u8; 32] {
     writer.0.finalize().into()
 }
 
+/// Most messages whose hashes are kept; a longer history only correlates
+/// through an explicit ID or a response chain.
+const MAX_HISTORY: usize = 2048;
+
+/// What correlation reads from a request's `messages` (or `input`) array,
+/// collected one element at a time so a streamed request needs no whole body.
+#[derive(Debug, Default, Clone)]
+pub struct MessageHistory {
+    len: usize,
+    hashes: Vec<[u8; 32]>,
+    assistant: Vec<bool>,
+    has_user: bool,
+    /// Content of the first `user` message; `Some(None)` when it has none.
+    first_user: Option<Option<String>>,
+}
+
+impl MessageHistory {
+    /// Add the next element of the array.
+    pub fn push(&mut self, message: &Value) {
+        self.len += 1;
+        let user = message.get("role").and_then(Value::as_str) == Some("user");
+        if user && self.first_user.is_none() {
+            self.first_user = Some(message.get("content").map(crate::preview::content));
+        }
+        self.has_user |= user;
+        if self.len > MAX_HISTORY {
+            // Never retain unbounded hashes.
+            self.hashes = Vec::new();
+            self.assistant = Vec::new();
+            return;
+        }
+        self.hashes.push(hash(message));
+        self.assistant.push(
+            matches!(
+                message.get("role").and_then(Value::as_str),
+                Some("assistant" | "tool")
+            ) || matches!(
+                message.get("type").and_then(Value::as_str),
+                Some("function_call" | "function_call_output")
+            ),
+        );
+    }
+
+    /// Elements added so far.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    fn of(messages: &[Value]) -> Self {
+        let mut history = Self::default();
+        for message in messages {
+            history.push(message);
+        }
+        history
+    }
+}
+
+/// The parts of a request body correlation reads, for a body that is not
+/// held whole. [`CorrelationParts::from_body`] of a whole body gives the
+/// parts the streamed path collects.
+#[derive(Debug, Default, Clone)]
+pub struct CorrelationParts {
+    /// `extensions["localrouter.session"]`, as forwarded.
+    pub session: Option<Value>,
+    /// The top-level `previous_response_id`, when it is a string.
+    pub previous_response_id: Option<String>,
+    /// The `messages` array, or `input` when there is no `messages` member.
+    pub history: Option<MessageHistory>,
+    /// The top-level `input`, when it is a string.
+    pub input_string: Option<String>,
+}
+
+impl CorrelationParts {
+    pub fn from_body(body: &Value) -> Self {
+        let messages = body
+            .get("messages")
+            .or_else(|| body.get("input"))
+            .and_then(Value::as_array);
+        Self {
+            session: body.pointer("/extensions/localrouter.session").cloned(),
+            previous_response_id: body
+                .get("previous_response_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            history: messages.map(|m| MessageHistory::of(m)),
+            input_string: body.get("input").and_then(Value::as_str).map(str::to_owned),
+        }
+    }
+}
+
 impl Correlation {
+    #[cfg(test)]
     pub fn from_body(body: &Value) -> Option<Self> {
-        let options = body.pointer("/extensions/localrouter.session");
+        Self::from_parts(CorrelationParts::from_body(body))
+    }
+
+    pub fn from_parts(parts: CorrelationParts) -> Option<Self> {
+        let options = parts.session.as_ref();
         let explicit = options
             .and_then(|s| s.get("id"))
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty() && s.len() <= 256 && !s.chars().any(char::is_control))
             .map(|s| hash(&Value::String(s.into())));
-        let previous_response = body
-            .get("previous_response_id")
-            .and_then(Value::as_str)
+        let previous_response = parts
+            .previous_response_id
+            .as_deref()
             .filter(|s| !s.is_empty() && s.len() <= 256)
             .map(|s| hash(&Value::String(s.into())));
-        let messages = body
-            .get("messages")
-            .or_else(|| body.get("input"))
-            .and_then(Value::as_array);
+        let messages = parts.history.as_ref();
         // A very large history can still use an explicit ID; never retain unbounded hashes.
-        let history = messages.filter(|m| m.len() <= 2048);
+        let history = messages.filter(|m| m.len <= MAX_HISTORY);
         let title = messages
-            .and_then(|m| {
-                m.iter()
-                    .find(|v| v.get("role").and_then(Value::as_str) == Some("user"))
+            .and_then(|m| m.first_user.clone())
+            .flatten()
+            .or_else(|| {
+                parts
+                    .input_string
+                    .as_ref()
+                    .map(|s| crate::preview::content(&Value::String(s.clone())))
             })
-            .and_then(|m| m.get("content"))
-            .or_else(|| body.get("input").filter(|v| v.is_string()))
-            .map(crate::preview::content)
             .unwrap_or_default()
             .split_whitespace()
             .collect::<Vec<_>>()
@@ -65,11 +162,8 @@ impl Correlation {
             .collect();
         if explicit.is_none()
             && previous_response.is_none()
-            && !body.get("input").is_some_and(Value::is_string)
-            && history.is_none_or(|m| {
-                !m.iter()
-                    .any(|v| v.get("role").and_then(Value::as_str) == Some("user"))
-            })
+            && parts.input_string.is_none()
+            && history.is_none_or(|m| !m.has_user)
         {
             return None;
         }
@@ -80,24 +174,8 @@ impl Correlation {
                 .and_then(|s| s.get("reset"))
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
-            history: history
-                .map(|m| m.iter().map(hash).collect())
-                .unwrap_or_default(),
-            assistant: history
-                .map(|m| {
-                    m.iter()
-                        .map(|v| {
-                            matches!(
-                                v.get("role").and_then(Value::as_str),
-                                Some("assistant" | "tool")
-                            ) || matches!(
-                                v.get("type").and_then(Value::as_str),
-                                Some("function_call" | "function_call_output")
-                            )
-                        })
-                        .collect()
-                })
-                .unwrap_or_default(),
+            history: history.map(|m| m.hashes.clone()).unwrap_or_default(),
+            assistant: history.map(|m| m.assistant.clone()).unwrap_or_default(),
             title,
         })
     }

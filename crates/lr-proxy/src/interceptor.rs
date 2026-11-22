@@ -188,11 +188,40 @@ pub enum BodyPolicy {
     /// Refuse the request with this status and message without contacting the
     /// upstream.
     Reject(u16, String),
-    /// Inspect and forward the body incrementally. The transports buffer such
-    /// requests until the streaming pipeline exists.
+    /// Inspect and forward the body incrementally (MITM HTTP only; the
+    /// reverse proxy buffers such requests). A body of at most `lag` bytes is
+    /// still read whole and judged by [`ProxyInterceptor::on_request`]; a
+    /// larger one is offered to [`ProxyInterceptor::open_stream`].
     Stream(StreamPolicy),
     /// Read the whole body before deciding anything.
     Buffered,
+}
+
+/// How a body above the stream lag is handled, decided by
+/// [`ProxyInterceptor::open_stream`] once its metadata is known.
+pub enum StreamOpen {
+    /// Forward it through this session as it arrives.
+    Stream {
+        session: Box<dyn crate::request_stream::StreamSession>,
+        /// Restores references in the response, as for `RequestAction::Protect`.
+        vault: Option<std::sync::Arc<lr_secret_scanner::placeholders::Vault>>,
+    },
+    /// Read it whole and judge it with `on_request`, as a buffered request.
+    Buffer,
+    /// Refuse it without contacting the upstream.
+    Reject(RequestAction),
+}
+
+/// What the monitor knows about a request body that was streamed.
+#[derive(Debug, Clone, Default)]
+pub struct StreamedRequest {
+    /// Request metadata from the sniffer.
+    pub meta: crate::wire::RequestMeta,
+    pub tool_count: usize,
+    /// Explicit conversation id the body carries in its metadata fields.
+    pub conversation_id: Option<String>,
+    /// Correlation inputs, once the whole body was forwarded.
+    pub correlation: Option<lr_monitor::CorrelationParts>,
 }
 
 /// A bounded view of a request body that was forwarded without being buffered.
@@ -258,6 +287,9 @@ pub struct ObservedExchange {
     /// request handed to [`ProxyInterceptor::on_request`] marks it as
     /// pass-through, before any byte was read.
     pub request_capture: Option<BoundedCapture>,
+    /// Set when the body was streamed: `request_capture` then holds the head
+    /// of the forwarded (masked) bytes, and this the sniffed metadata.
+    pub request_stream: Option<StreamedRequest>,
     /// Safe content-decoding failure; active policy must reject it rather than
     /// evaluating missing JSON. Passive forwarding retains the original bytes.
     pub request_body_error: Option<crate::request_body::DecodeError>,
@@ -410,6 +442,18 @@ pub trait ProxyInterceptor: Send + Sync {
     /// transport (so an "ask" rule can pause for user approval).
     async fn on_request(&self, _exchange: &ObservedExchange) -> RequestAction {
         RequestAction::Forward
+    }
+
+    /// Decide how a [`BodyPolicy::Stream`] body that outgrew its lag is
+    /// handled. `exchange` has no body; `metadata` is what the sniffer has
+    /// seen so far (its `model` is known). The default reads it whole.
+    async fn open_stream(
+        &self,
+        _exchange: &ObservedExchange,
+        _metadata: &lr_secret_scanner::request_stream::RequestMetadata,
+        _policy: &StreamPolicy,
+    ) -> StreamOpen {
+        StreamOpen::Buffer
     }
 
     /// Called by the transport once the request has been accepted for forwarding

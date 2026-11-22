@@ -8,6 +8,7 @@ mod trim;
 mod truncate;
 mod types;
 
+pub use conversation::{CorrelationParts, MessageHistory};
 pub use guard::MonitorEventGuard;
 pub use lr_types::LlmApi;
 pub use size::{event_size, json_size};

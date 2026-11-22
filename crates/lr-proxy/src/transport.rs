@@ -439,6 +439,7 @@ async fn proxy_request(
     let mut req_bytes = Bytes::new();
     let mut request_tap = None;
     let mut capture: Option<RequestCaptureHandle> = None;
+    let mut streamed: Option<Box<crate::request_stream::StreamStart>> = None;
     match policy {
         BodyPolicy::Reject(status, message) => {
             // A client that waits for `100 Continue` has sent no body yet and
@@ -462,11 +463,47 @@ async fn proxy_request(
             request_tap = Some(tap);
             capture = Some(handle);
         }
+        // A body above the stream lag is forwarded while it uploads, if the
+        // firewall agrees once its model is known; anything smaller, or
+        // anything the pipeline cannot stream, ends up buffered as below.
+        BodyPolicy::Stream(stream_policy) => {
+            match prepare_stream(
+                body,
+                &parts.headers,
+                stream_policy,
+                &ctx,
+                &base,
+                capture_cap,
+            )
+            .await
+            {
+                Prepared::Buffered(bytes) => {
+                    req_bytes = bytes;
+                    let inspected =
+                        crate::request_body::inspect(&path, &parts.headers, req_bytes.clone())
+                            .await;
+                    base.request_body = inspected
+                        .as_ref()
+                        .ok()
+                        .filter(|b| !b.is_empty())
+                        .map(|b| b.to_vec());
+                    base.request_body_error = inspected.err();
+                }
+                Prepared::Failed { too_large, error } => {
+                    return body_read_failed(&ctx, base, started, too_large, error)
+                }
+                Prepared::Rejected { action, capture } => {
+                    base.request_capture = Some(capture);
+                    return reject(&ctx, base, started, action);
+                }
+                Prepared::Stream(start) => streamed = Some(start),
+            }
+        }
         // Buffer the request body so we can both forward and inspect it.
         // Bodies above the inspection limit are still forwarded;
         // `request_body::inspect` and the firewall decide how to treat what
         // they cannot fully inspect.
-        BodyPolicy::Buffered | BodyPolicy::Stream(_) => {
+        BodyPolicy::Buffered => {
             req_bytes = match http_body_util::Limited::new(body, MAX_REQUEST_BODY)
                 .collect()
                 .await
@@ -474,39 +511,7 @@ async fn proxy_request(
                 Ok(c) => c.to_bytes(),
                 Err(e) => {
                     let too_large = e.is::<http_body_util::LengthLimitError>();
-                    let (status, error) = if too_large {
-                        (
-                            StatusCode::PAYLOAD_TOO_LARGE,
-                            format!(
-                                "request body exceeds LocalRouter's {} MiB proxy limit",
-                                MAX_REQUEST_BODY / (1024 * 1024)
-                            ),
-                        )
-                    } else {
-                        (
-                            StatusCode::BAD_REQUEST,
-                            format!("failed reading request body: {e}"),
-                        )
-                    };
-                    tracing::warn!("proxy {}: {error}", status.as_u16());
-                    let failed = ObservedExchange {
-                        client_id: base.client_id,
-                        session_id: base.session_id,
-                        strategy_id: base.strategy_id,
-                        host: base.host,
-                        port,
-                        method: base.method,
-                        path: base.path,
-                        status: Some(status.as_u16()),
-                        error: Some(error.clone()),
-                        latency_ms: Some(started.elapsed().as_millis() as u64),
-                        ..Default::default()
-                    };
-                    let interceptor = ctx.interceptor.clone();
-                    tokio::spawn(async move {
-                        interceptor.on_response(&failed).await;
-                    });
-                    return proxy_error(status, &error);
+                    return body_read_failed(&ctx, base, started, too_large, e.to_string());
                 }
             };
             let inspected =
@@ -525,47 +530,70 @@ async fn proxy_request(
     // websocket message inside the connection instead (see websocket::WsSession),
     // so don't ask it to judge the empty upgrade body (Ask-mode would pop a
     // model-less approval dialog).
-    let action = if is_ws_upgrade && wire::detect(&base.path).is_some() {
+    // A streamed body was judged by `open_stream`; its session protects it.
+    let action = if streamed.is_some() || (is_ws_upgrade && wire::detect(&base.path).is_some()) {
         RequestAction::Forward
     } else {
         ctx.interceptor.on_request(&base).await
     };
     let mut secret_vault = None;
-    let forward_body: UpstreamBody = match action {
-        RequestAction::Forward => match request_tap.take() {
-            Some(tap) => tap.boxed_unsync(),
-            None => buffered_body(req_bytes),
-        },
-        // A pass-through body was never read, so there is nothing a rewrite
-        // could have been derived from. Refuse rather than forward bytes the
-        // interceptor meant to replace.
-        RequestAction::Replace(_) | RequestAction::Protect { .. } if capture.is_some() => {
-            tracing::error!("proxy: interceptor rewrote a pass-through request; refusing it");
-            return reject(
-                &ctx,
-                base,
-                started,
-                RequestAction::reject_json(
-                    StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-                    "Request policy changed while the request was being forwarded",
-                ),
-            );
+    let mut progress: Option<crate::request_stream::StreamProgress> = None;
+    let forward_body: UpstreamBody = if let Some((start, vault)) = streamed.take().map(|s| {
+        let vault = s.vault.clone();
+        (s, vault)
+    }) {
+        // The forwarded body is decoded and possibly rewritten, and its
+        // length is unknown: hyper frames it as chunked.
+        crate::request_body::rewritten(&mut parts.headers);
+        secret_vault = vault;
+        base.request_stream = Some(crate::request_stream::streamed_request(
+            start.format,
+            start.pipeline.metadata(),
+            None,
+        ));
+        base.request_capture = Some(Default::default());
+        let (body, stream_progress) = (*start).spawn();
+        progress = Some(stream_progress);
+        body.boxed_unsync()
+    } else {
+        match action {
+            RequestAction::Forward => match request_tap.take() {
+                Some(tap) => tap.boxed_unsync(),
+                None => buffered_body(req_bytes),
+            },
+            // A pass-through body was never read, so there is nothing a rewrite
+            // could have been derived from. Refuse rather than forward bytes the
+            // interceptor meant to replace.
+            RequestAction::Replace(_) | RequestAction::Protect { .. } if capture.is_some() => {
+                tracing::error!("proxy: interceptor rewrote a pass-through request; refusing it");
+                return reject(
+                    &ctx,
+                    base,
+                    started,
+                    RequestAction::reject_json(
+                        StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                        "Request policy changed while the request was being forwarded",
+                    ),
+                );
+            }
+            RequestAction::Replace(new_body) => {
+                crate::request_body::rewritten(&mut parts.headers);
+                base.request_body = Some(new_body.clone());
+                buffered_body(Bytes::from(new_body))
+            }
+            RequestAction::Protect { body, vault } => {
+                crate::request_body::rewritten(&mut parts.headers);
+                // Monitoring sees only the masked outbound request.
+                base.request_body = Some(body.clone());
+                secret_vault = Some(vault);
+                buffered_body(Bytes::from(body))
+            }
+            // Record the blocked call so it shows in the monitor, then answer
+            // the client directly without ever contacting the upstream.
+            rejected @ RequestAction::Reject { .. } => {
+                return reject(&ctx, base, started, rejected)
+            }
         }
-        RequestAction::Replace(new_body) => {
-            crate::request_body::rewritten(&mut parts.headers);
-            base.request_body = Some(new_body.clone());
-            buffered_body(Bytes::from(new_body))
-        }
-        RequestAction::Protect { body, vault } => {
-            crate::request_body::rewritten(&mut parts.headers);
-            // Monitoring sees only the masked outbound request.
-            base.request_body = Some(body.clone());
-            secret_vault = Some(vault);
-            buffered_body(Bytes::from(body))
-        }
-        // Record the blocked call so it shows in the monitor, then answer
-        // the client directly without ever contacting the upstream.
-        rejected @ RequestAction::Reject { .. } => return reject(&ctx, base, started, rejected),
     };
 
     // The firewall allowed the request through — open a pending monitor event now
@@ -582,7 +610,11 @@ async fn proxy_request(
     let pending_ctx = ctx.clone();
     let pending_base = base.clone();
     let pending_id = event_id.clone();
-    let pending_capture = capture.clone();
+    let request_progress = Progress {
+        tap: capture.clone(),
+        stream: progress,
+    };
+    let pending_capture = request_progress.clone();
     let mut pending = crate::tap::CancellationGuard::new(move || {
         // Only a pending event needs closing; a cancelled request without one
         // (a websocket upgrade) is not an upstream failure.
@@ -592,7 +624,7 @@ async fn proxy_request(
         fail_pending(
             &pending_ctx,
             &pending_base,
-            pending_capture.as_ref(),
+            &pending_capture,
             pending_id,
             started,
             "Proxy request cancelled before response delivery",
@@ -607,7 +639,7 @@ async fn proxy_request(
             fail_pending(
                 &ctx,
                 &base,
-                capture.as_ref(),
+                &request_progress,
                 event_id,
                 started,
                 &format!("upstream connect: {e}"),
@@ -623,7 +655,7 @@ async fn proxy_request(
                 fail_pending(
                     &ctx,
                     &base,
-                    capture.as_ref(),
+                    &request_progress,
                     event_id,
                     started,
                     &format!("upstream handshake: {e}"),
@@ -649,7 +681,21 @@ async fn proxy_request(
                 Some(client) => format!("client request body: {client}"),
                 None => format!("upstream request: {e}"),
             };
-            fail_pending(&ctx, &base, capture.as_ref(), event_id, started, &error);
+            // A streamed upload LocalRouter ended itself names its reason.
+            if let Some(abort) = request_progress.stream.as_ref().and_then(|p| p.abort()) {
+                let status = StatusCode::from_u16(abort.status).unwrap_or(StatusCode::BAD_GATEWAY);
+                tracing::warn!("proxy {}: {}", status.as_u16(), abort.message);
+                fail_pending(
+                    &ctx,
+                    &base,
+                    &request_progress,
+                    event_id,
+                    started,
+                    &abort.message,
+                );
+                return proxy_error(status, &abort.message);
+            }
+            fail_pending(&ctx, &base, &request_progress, event_id, started, &error);
             return bad_gateway(&error);
         }
     };
@@ -746,7 +792,7 @@ async fn proxy_request(
     recorded.status = Some(status);
     recorded.response_is_sse = is_sse;
     recorded.response_is_ndjson = is_ndjson;
-    let request_capture = capture;
+    let request_capture = request_progress;
     let on_end: Box<dyn FnOnce(crate::tap::Capture) + Send> = Box::new(move |capture| {
         let bytes = capture.bytes;
         if let Some((tracker, endpoint)) = usage_body {
@@ -760,11 +806,9 @@ async fn proxy_request(
         let mut ex = recorded;
         ex.error = capture.error;
         ex.response_body = (!bytes.is_empty()).then_some(bytes);
-        if let Some(request) = &request_capture {
-            // What was forwarded by now; the upload may still be running
-            // when the upstream answered early.
-            ex.request_capture = Some(request.snapshot());
-        }
+        // What was forwarded by now; the upload may still be running when
+        // the upstream answered early.
+        request_capture.apply(&mut ex);
         ex.latency_ms = Some(started.elapsed().as_millis() as u64);
         tokio::spawn(async move {
             interceptor.on_response(&ex).await;
@@ -808,19 +852,39 @@ async fn connect_upstream(
 /// `begin()`ed pending event, or — for requests without one, such as websocket
 /// upgrades — records the failure as its own event, so the cause the client
 /// only sees as a 502 is visible in the monitor.
+/// What the transport can report about a request body that was not
+/// buffered: a pass-through tap, or a streamed upload.
+#[derive(Clone, Default)]
+struct Progress {
+    tap: Option<RequestCaptureHandle>,
+    stream: Option<crate::request_stream::StreamProgress>,
+}
+
+impl Progress {
+    fn apply(&self, ex: &mut ObservedExchange) {
+        if let Some(tap) = &self.tap {
+            ex.request_capture = Some(tap.snapshot());
+        }
+        if let Some(stream) = &self.stream {
+            ex.request_capture = Some(stream.snapshot());
+            if let Some(summary) = stream.summary() {
+                ex.request_stream = Some(summary);
+            }
+        }
+    }
+}
+
 fn fail_pending(
     ctx: &Arc<ProxyContext>,
     base: &ObservedExchange,
-    capture: Option<&RequestCaptureHandle>,
+    capture: &Progress,
     event_id: Option<String>,
     started: std::time::Instant,
     error: &str,
 ) {
     let interceptor = ctx.interceptor.clone();
     let mut ex = base.clone();
-    if let Some(capture) = capture {
-        ex.request_capture = Some(capture.snapshot());
-    }
+    capture.apply(&mut ex);
     ex.event_id = event_id;
     ex.status = Some(StatusCode::BAD_GATEWAY.as_u16());
     ex.error = Some(error.to_owned());
@@ -828,6 +892,187 @@ fn fail_pending(
     tokio::spawn(async move {
         interceptor.on_response(&ex).await;
     });
+}
+
+/// Answer a request whose body could not be read for buffering, and record
+/// the failure.
+fn body_read_failed(
+    ctx: &Arc<ProxyContext>,
+    base: ObservedExchange,
+    started: std::time::Instant,
+    too_large: bool,
+    error: String,
+) -> Response<BoxedBody> {
+    let (status, error) = if too_large {
+        (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!(
+                "request body exceeds LocalRouter's {} MiB proxy limit",
+                MAX_REQUEST_BODY / (1024 * 1024)
+            ),
+        )
+    } else {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("failed reading request body: {error}"),
+        )
+    };
+    tracing::warn!("proxy {}: {error}", status.as_u16());
+    let failed = ObservedExchange {
+        client_id: base.client_id,
+        session_id: base.session_id,
+        strategy_id: base.strategy_id,
+        host: base.host,
+        port: base.port,
+        method: base.method,
+        path: base.path,
+        status: Some(status.as_u16()),
+        error: Some(error.clone()),
+        latency_ms: Some(started.elapsed().as_millis() as u64),
+        ..Default::default()
+    };
+    let interceptor = ctx.interceptor.clone();
+    tokio::spawn(async move {
+        interceptor.on_response(&failed).await;
+    });
+    proxy_error(status, &error)
+}
+
+/// The outcome of reading a [`BodyPolicy::Stream`] body up to the point
+/// where it either ended or outgrew its lag.
+enum Prepared {
+    /// The whole body, for the buffered path.
+    Buffered(Bytes),
+    Failed {
+        too_large: bool,
+        error: String,
+    },
+    Rejected {
+        action: RequestAction,
+        capture: crate::interceptor::BoundedCapture,
+    },
+    Stream(Box<crate::request_stream::StreamStart>),
+}
+
+/// Read a streamable body. Until it outgrows the lag (or when it cannot be
+/// streamed) it is held whole, raw, under the buffered limit; nothing is
+/// forwarded before the interceptor opens the stream.
+async fn prepare_stream(
+    mut body: Incoming,
+    headers: &hyper::HeaderMap,
+    policy: crate::interceptor::StreamPolicy,
+    ctx: &Arc<ProxyContext>,
+    base: &ObservedExchange,
+    capture_cap: usize,
+) -> Prepared {
+    use crate::interceptor::StreamOpen;
+    let mut raw: Vec<Bytes> = Vec::new();
+    let mut raw_len = 0usize;
+    let format = wire::detect(&base.path);
+    // Undecodable encodings and unknown formats are judged on the buffered
+    // path, exactly as before.
+    let mut streaming = match (crate::request_body::StreamDecoder::new(headers), format) {
+        (Ok(decoder), Some(format)) => Some((
+            decoder,
+            crate::request_stream::RequestPipeline::new(
+                policy.lag,
+                crate::request_stream::MAX_HOLD,
+            ),
+            format,
+        )),
+        _ => None,
+    };
+    loop {
+        let frame = match body.frame().await {
+            None => break,
+            Some(Err(error)) => {
+                return Prepared::Failed {
+                    too_large: false,
+                    error: error.to_string(),
+                }
+            }
+            Some(Ok(frame)) => frame,
+        };
+        let Ok(data) = frame.into_data() else {
+            continue;
+        };
+        raw_len += data.len();
+        if raw_len > MAX_REQUEST_BODY {
+            return Prepared::Failed {
+                too_large: true,
+                error: String::new(),
+            };
+        }
+        raw.push(data.clone());
+        let Some((decoder, pipeline, _)) = streaming.as_mut() else {
+            continue;
+        };
+        let mut released = Vec::new();
+        let decoded = decoder.push(&data, |piece| {
+            // Before the stream opens nothing is released.
+            let _ = pipeline.push(piece, None, &mut released);
+            std::ops::ControlFlow::Continue(())
+        });
+        if decoded.is_err() || pipeline.unstreamable().is_some() {
+            streaming = None;
+            continue;
+        }
+        if !pipeline.ready_to_open() {
+            continue;
+        }
+        let metadata = pipeline.metadata().clone();
+        match ctx.interceptor.open_stream(base, &metadata, &policy).await {
+            StreamOpen::Buffer => streaming = None,
+            StreamOpen::Reject(action) => {
+                // Read and discard the rest, so the client can read the refusal.
+                let rest = crate::tap::drain(
+                    body,
+                    0,
+                    MAX_REQUEST_BODY.saturating_sub(raw_len) as u64,
+                    false,
+                )
+                .await;
+                let mut head = Vec::new();
+                for chunk in &raw {
+                    let room = capture_cap.saturating_sub(head.len());
+                    head.extend_from_slice(&chunk[..room.min(chunk.len())]);
+                }
+                let total_len = raw_len as u64 + rest.total_len;
+                let capture = crate::interceptor::BoundedCapture {
+                    truncated: total_len > head.len() as u64,
+                    head,
+                    total_len,
+                    complete: rest.complete,
+                    encoded: crate::tap::content_encoded(headers),
+                };
+                return Prepared::Rejected { action, capture };
+            }
+            StreamOpen::Stream { session, vault } => {
+                let (decoder, mut pipeline, format) = streaming.take().expect("streaming");
+                pipeline.open();
+                return Prepared::Stream(Box::new(crate::request_stream::StreamStart {
+                    body,
+                    decoder,
+                    pipeline,
+                    session,
+                    format,
+                    capture_cap,
+                    vault,
+                }));
+            }
+        }
+    }
+    Prepared::Buffered(match raw.len() {
+        0 => Bytes::new(),
+        1 => raw.pop().expect("one chunk"),
+        _ => {
+            let mut whole = bytes::BytesMut::with_capacity(raw_len);
+            for chunk in raw {
+                whole.extend_from_slice(&chunk);
+            }
+            whole.freeze()
+        }
+    })
 }
 
 /// Whether the client holds its body back until it is told to continue.
