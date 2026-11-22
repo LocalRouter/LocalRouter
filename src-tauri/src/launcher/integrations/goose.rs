@@ -393,8 +393,6 @@ mod tests {
             ],
             llm_mode: LlmMode::Gateway,
             mcp_mode: McpMode::Gateway,
-            proxy_url: None,
-            ca_cert_path: None,
         }
     }
 

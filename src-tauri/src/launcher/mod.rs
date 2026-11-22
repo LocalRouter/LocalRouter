@@ -13,10 +13,17 @@ pub mod ca_trust;
 pub mod integrations;
 pub mod proxy;
 pub mod proxy_setup;
+pub mod proxy_sync;
 pub mod reverse_proxy;
 pub mod reverse_setup;
 
 use crate::ui::commands_clients::{AppCapabilities, LaunchResult};
+
+/// Serializes every read-modify-write of an external app's config file
+/// (integration sync, proxy apply/undo, proxy sync). Several of those paths
+/// edit the same file (e.g. Goose's `config.yaml`), and an interleaved pair
+/// would silently drop one side's change.
+pub static EXTERNAL_CONFIG_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
 /// Context for syncing external app config files
 pub struct ConfigSyncContext {
@@ -29,30 +36,14 @@ pub struct ConfigSyncContext {
     pub llm_mode: lr_config::LlmMode,
     /// Current MCP access mode — controls whether MCP config is synced.
     pub mcp_mode: lr_config::McpMode,
-    /// HTTPS inspection-proxy URL (with embedded basic-auth), when the proxy is
-    /// running. `None` disables proxy sync even in a proxy `llm_mode`.
-    // TODO(https-proxy): consumed by the Claude Code proxy setup writer (Part E).
-    #[allow(dead_code)]
-    pub proxy_url: Option<String>,
-    /// Path to the proxy root CA the client must trust (`NODE_EXTRA_CA_CERTS`).
-    // TODO(https-proxy): consumed by the Claude Code proxy setup writer (Part E).
-    #[allow(dead_code)]
-    pub ca_cert_path: Option<String>,
 }
 
 impl ConfigSyncContext {
     /// Whether native LLM gateway config should be written (gateway mode only).
-    /// Proxy modes use [`Self::should_sync_proxy`] instead.
+    /// HTTPS-proxy config is not part of this sync: it is applied explicitly
+    /// through [`proxy_setup`] and kept current by [`proxy_sync`].
     pub fn should_sync_llm(&self) -> bool {
         self.llm_mode == lr_config::LlmMode::Gateway
-    }
-
-    /// Whether HTTPS-proxy env config should be written (a proxy `llm_mode`
-    /// with the proxy actually running).
-    // TODO(https-proxy): called by the Claude Code proxy setup writer (Part E).
-    #[allow(dead_code)]
-    pub fn should_sync_proxy(&self) -> bool {
-        self.llm_mode == lr_config::LlmMode::Proxy && self.proxy_url.is_some()
     }
 
     /// Whether MCP config should be written (direct MCP gateway only;

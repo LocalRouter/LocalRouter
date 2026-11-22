@@ -763,14 +763,62 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                 }
             }
 
-            // File watcher disabled - it was causing duplicate config-changed events
-            // when saving from the app. The update() method already emits events.
-            // TODO: Re-enable with proper suppression if external file editing is needed
-            // let watcher = config_manager.start_watching().map_err(|e| {
-            //     tracing::error!("Failed to start config file watcher: {}", e);
-            //     e
-            // })?;
-            // app.manage(watcher);
+            // Pick up edits made to settings.yaml outside the app. The app's
+            // own saves are recognized by content hash and do not reload; an
+            // edit that fails validation leaves the running config in place
+            // and is reported to the UI (`config-reload-failed`).
+            match config_manager.start_watching() {
+                Ok(watcher) => {
+                    app.manage(watcher);
+                }
+                Err(e) => {
+                    // Not fatal: the app works, outside edits just need a restart.
+                    tracing::error!("Failed to start config file watcher: {}", e);
+                }
+            }
+
+            // A reload from disk can change anything, so tell every view to
+            // refetch, not only the ones listening for `config-changed`. The
+            // backend listeners of these events (reverse-proxy and proxy
+            // reconciliation, client config sync, MCP permission notices,
+            // push relay) run as they would for an edit made in the app.
+            {
+                let app_handle = app.handle().clone();
+                app.listen(lr_config::EVENT_CONFIG_RELOADED, move |event| {
+                    let applied = serde_json::from_str::<lr_config::ConfigReloaded>(event.payload())
+                        .map(|payload| payload.applied)
+                        .unwrap_or(false);
+                    if !applied {
+                        return;
+                    }
+                    // Off the event-dispatch thread: these emits run other
+                    // listeners, and the tray rebuild is not instant.
+                    let app_handle = app_handle.clone();
+                    tauri::async_runtime::spawn(async move {
+                        for name in [
+                            "clients-changed",
+                            "strategies-changed",
+                            "providers-changed",
+                            "mcp-servers-changed",
+                            "skills-changed",
+                        ] {
+                            if let Err(e) = app_handle.emit(name, ()) {
+                                tracing::error!(
+                                    "Failed to emit {} after config reload: {}",
+                                    name,
+                                    e
+                                );
+                            }
+                        }
+                        if let Err(e) = ui::tray::rebuild_tray_menu(&app_handle) {
+                            tracing::error!(
+                                "Failed to rebuild tray menu after config reload: {}",
+                                e
+                            );
+                        }
+                    });
+                });
+            }
 
             // Store managers
             app.manage(Arc::new(lr_replay::ReplayManager::new(config_manager.config_path().parent().ok_or("Config directory is unavailable")?.join("replay"))));
@@ -825,6 +873,26 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             app.manage(server_manager.clone());
             app.manage(app_router.clone());
             if let Some(proxy) = proxy_service.clone() {
+                // Keeps the listener bound where the config says, and tool
+                // configs that were set up for the proxy pointing at it:
+                // rebinds on a server restart or a changed `proxy.host/port`,
+                // rewrites a configured tool's proxy URL when the port or the
+                // client's secret changes, and removes it when the client
+                // leaves proxy mode or is deleted.
+                let proxy_sync = launcher::proxy_sync::ProxyClientSync::spawn(
+                    proxy.clone(),
+                    config_manager.clone(),
+                    client_manager.clone(),
+                );
+                let sync = proxy_sync.clone();
+                app.listen("clients-changed", move |_event| sync.clients_changed());
+                let sync = proxy_sync.clone();
+                app.listen("config-changed", move |_event| sync.config_changed());
+                let sync = proxy_sync.clone();
+                app.listen("server-restart-requested", move |_event| {
+                    sync.restart_requested()
+                });
+                app.manage(proxy_sync);
                 app.manage(proxy);
             }
             if let Some(reverse) = reverse_proxy_service.clone() {
@@ -3137,6 +3205,12 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                 // Engines are child processes; don't leave them running. This
                 // may run inside the async runtime, so it must not block on it.
                 exit_supervisor.stop_all_blocking();
+                // Stop accepting proxied connections. Tool configs are left
+                // as they are: like permanent gateway config, they are meant
+                // to still be in place when the app starts again.
+                if let Some(proxy) = app.try_state::<Arc<launcher::proxy::ProxyService>>() {
+                    proxy.stop();
+                }
                 // Stop usage polling and write the usage state, whose saves
                 // are otherwise spaced 30 s apart.
                 if let Some(poller) = app.try_state::<Arc<ui::usage_poller::UsagePoller>>() {
