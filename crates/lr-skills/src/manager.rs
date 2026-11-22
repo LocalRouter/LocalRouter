@@ -255,11 +255,6 @@ impl SkillManager {
             .map_err(|e| format!("Failed to read resource '{}': {}", relative_path, e))
     }
 
-    /// Get the skill directory path (for script executor)
-    pub fn get_skill_dir(&self, skill_name: &str) -> Option<PathBuf> {
-        self.get(skill_name).map(|s| s.skill_dir)
-    }
-
     /// Emit skills-changed event to frontend
     fn emit_skills_changed(&self) {
         let callback = self.change_callback.read().clone();
