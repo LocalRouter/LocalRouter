@@ -145,9 +145,6 @@ pub struct SseTransport {
     /// Whether the transport is closed
     closed: Arc<RwLock<bool>>,
 
-    /// Whether the SSE stream is connected and ready
-    stream_ready: Arc<RwLock<bool>>,
-
     /// Notification callback
     notification_callback: Arc<RwLock<Option<SseNotificationCallback>>>,
 
@@ -155,7 +152,6 @@ pub struct SseTransport {
     request_callback: Arc<RwLock<Option<crate::transport::RequestCallback>>>,
 
     /// Background task handle for SSE stream reader
-    #[allow(dead_code)]
     stream_task: Arc<RwLock<Option<JoinHandle<()>>>>,
 
     /// Open long-lived requests (see [`Transport::open_rpc_stream`]). Legacy
@@ -564,7 +560,6 @@ impl SseTransport {
             pending,
             next_id: Arc::new(RwLock::new(1)),
             closed,
-            stream_ready,
             notification_callback,
             request_callback,
             stream_task: Arc::new(RwLock::new(stream_task.0.take())),
@@ -2730,7 +2725,6 @@ mod tests {
             pending: Arc::new(RwLock::new(HashMap::new())),
             next_id: Arc::new(RwLock::new(1)),
             closed: Arc::new(RwLock::new(false)),
-            stream_ready: Arc::new(RwLock::new(false)),
             notification_callback: Arc::new(RwLock::new(None)),
             request_callback: Arc::new(RwLock::new(None)),
             stream_task: Arc::new(RwLock::new(None)),

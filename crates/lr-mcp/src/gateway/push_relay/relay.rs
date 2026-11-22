@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use dashmap::{DashMap, DashSet};
 use futures_util::stream::BoxStream;
 use parking_lot::{Mutex, RwLock};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{json, Map, Value};
 use tokio::sync::{mpsc, Notify};
 use tokio_util::sync::CancellationToken;
@@ -2512,16 +2512,6 @@ impl PushRelay {
         ))
     }
 
-    /// Clear a session-scoped decision (the configured permission applies again).
-    pub fn clear_session_override(&self, client_id: &str, server_id: &str, event_name: &str) {
-        self.overrides.remove(&(
-            client_id.to_string(),
-            server_id.to_string(),
-            event_name.to_string(),
-        ));
-        self.refresh();
-    }
-
     // ---------------------------------------------------------------
     // Reading the journal
     // ---------------------------------------------------------------
@@ -4258,14 +4248,6 @@ impl PushRelayService for PushRelay {
         self.observe(ctx);
         Ok(self.handle_unsubscribe(ctx, &request))
     }
-}
-
-/// Serde helper so the UI can send decisions as JSON.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PushDecisionRequest {
-    pub hold_id: String,
-    #[serde(flatten)]
-    pub decision: PushDecision,
 }
 
 #[cfg(test)]

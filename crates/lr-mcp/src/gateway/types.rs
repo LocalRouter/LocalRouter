@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
@@ -417,22 +415,6 @@ impl ClientCapabilities {
             .unwrap_or(false)
     }
 
-    /// Check if client explicitly declared support for notifications/resources/list_changed
-    pub fn supports_resources_list_changed(&self) -> bool {
-        self.resources
-            .as_ref()
-            .and_then(|r| r.list_changed)
-            .unwrap_or(false)
-    }
-
-    /// Check if client explicitly declared support for notifications/prompts/list_changed
-    pub fn supports_prompts_list_changed(&self) -> bool {
-        self.prompts
-            .as_ref()
-            .and_then(|p| p.list_changed)
-            .unwrap_or(false)
-    }
-
     /// Check if client declared support for sampling/createMessage requests
     pub fn supports_sampling(&self) -> bool {
         self.sampling.is_some()
@@ -441,14 +423,6 @@ impl ClientCapabilities {
     /// Check if client declared support for elicitation (any form)
     pub fn supports_elicitation(&self) -> bool {
         self.elicitation.is_some()
-    }
-
-    /// Check if client declared support for form-based elicitation
-    pub fn supports_elicitation_form(&self) -> bool {
-        self.elicitation
-            .as_ref()
-            .map(|e| e.form.is_some())
-            .unwrap_or(false)
     }
 }
 
@@ -607,14 +581,6 @@ pub struct DeferredServer {
     pub batches: Vec<DeferredServerBatch>,
     /// Total bytes saved by deferring definitions.
     pub definition_savings: usize,
-}
-
-/// Type of deferred catalog item (used for tracking which types are deferred per server).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DeferredItemType {
-    Tools,
-    Resources,
-    Prompts,
 }
 
 /// Server failure info for partial failure handling

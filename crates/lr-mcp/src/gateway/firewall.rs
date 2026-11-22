@@ -6,8 +6,6 @@
 //!
 //! Follows the same oneshot-channel pattern as `ElicitationManager`.
 
-#![allow(dead_code)]
-
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::json;

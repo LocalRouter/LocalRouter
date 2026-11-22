@@ -50,16 +50,8 @@ type WsSink = Arc<
 /// Supports concurrent requests with request/response correlation.
 /// Supports notification handling for server-initiated messages.
 pub struct WebSocketTransport {
-    /// WebSocket URL
-    #[allow(dead_code)]
-    url: String,
-
     /// WebSocket write handle
     write: WsSink,
-
-    /// Custom headers (stored for reconnection)
-    #[allow(dead_code)]
-    headers: HashMap<String, String>,
 
     /// Pending requests waiting for responses
     /// Maps request ID to response sender
@@ -109,9 +101,7 @@ impl WebSocketTransport {
         let (write, mut read) = ws_stream.split();
 
         let transport = Self {
-            url: url.clone(),
             write: Arc::new(Mutex::new(Some(write))),
-            headers,
             pending: Arc::new(RwLock::new(HashMap::new())),
             next_id: Arc::new(RwLock::new(1)),
             closed: Arc::new(RwLock::new(false)),
@@ -427,9 +417,7 @@ mod tests {
     #[tokio::test]
     async fn test_request_id_generation() {
         let transport = WebSocketTransport {
-            url: "ws://localhost:3000".to_string(),
             write: Arc::new(Mutex::new(None)),
-            headers: HashMap::new(),
             pending: Arc::new(RwLock::new(HashMap::new())),
             next_id: Arc::new(RwLock::new(1)),
             closed: Arc::new(RwLock::new(false)),

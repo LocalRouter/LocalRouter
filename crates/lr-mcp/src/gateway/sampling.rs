@@ -3,8 +3,6 @@
 //! Enables backend MCP servers to request LLM completions through the gateway.
 //! The gateway routes these requests to configured LLM providers.
 
-#![allow(dead_code)]
-
 use crate::protocol::{SamplingContent, SamplingMessage, SamplingRequest, SamplingResponse};
 use lr_providers::{ChatMessage, ChatMessageContent, CompletionRequest, CompletionResponse};
 use lr_types::{AppError, AppResult};

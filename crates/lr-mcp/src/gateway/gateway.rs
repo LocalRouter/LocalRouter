@@ -79,7 +79,6 @@ pub struct McpGateway {
         Option<Arc<tokio::sync::broadcast::Sender<(String, JsonRpcNotification)>>>,
 
     /// Router for LLM provider access (for sampling/createMessage support)
-    #[allow(dead_code)]
     pub(crate) router: Arc<Router>,
 
     /// Elicitation manager for handling structured user input requests
@@ -96,11 +95,6 @@ pub struct McpGateway {
     /// Wrapped in RwLock so it can be replaced with a shared instance from AppState.
     pub(crate) sampling_approval_manager:
         Arc<parking_lot::RwLock<Arc<super::sampling_approval::SamplingApprovalManager>>>,
-
-    /// Sampling passthrough manager for forwarding to external clients.
-    /// Wrapped in RwLock so it can be replaced with a shared instance from AppState.
-    pub(crate) sampling_passthrough_manager:
-        Arc<parking_lot::RwLock<Arc<super::sampling_approval::SamplingPassthroughManager>>>,
 
     /// Callback to send a server-initiated request to a connected external client.
     /// Returns a oneshot receiver for the response. Used for passthrough mode.
@@ -243,11 +237,6 @@ impl McpGateway {
             None => Arc::new(super::sampling_approval::SamplingApprovalManager::new(120)),
         };
 
-        // Create sampling passthrough manager
-        let sampling_passthrough_manager = Arc::new(
-            super::sampling_approval::SamplingPassthroughManager::new(120),
-        );
-
         Self {
             sessions: Arc::new(DashMap::new()),
             server_manager,
@@ -266,9 +255,6 @@ impl McpGateway {
             coding_agent_approval_manager,
             sampling_approval_manager: Arc::new(parking_lot::RwLock::new(
                 sampling_approval_manager,
-            )),
-            sampling_passthrough_manager: Arc::new(parking_lot::RwLock::new(
-                sampling_passthrough_manager,
             )),
             virtual_servers: Arc::new(parking_lot::RwLock::new(Vec::new())),
             on_context_saved: Arc::new(parking_lot::RwLock::new(None)),
@@ -397,15 +383,6 @@ impl McpGateway {
         *self.live_elicitation_mode.write() = settings.elicitation_mode.clone();
     }
 
-    /// Replace the sampling passthrough manager with a shared instance.
-    /// Call this to share the same manager between gateway and server response endpoints.
-    pub fn set_sampling_passthrough_manager(
-        &self,
-        manager: Arc<super::sampling_approval::SamplingPassthroughManager>,
-    ) {
-        *self.sampling_passthrough_manager.write() = manager;
-    }
-
     /// Register a virtual MCP server (skills, marketplace, coding agents, etc.)
     /// Register the Push Relay. From then on downstream `events/*` requests,
     /// push capabilities and instructions, and upstream push notifications
@@ -474,13 +451,6 @@ impl McpGateway {
         } else {
             self.push_test_sessions.remove(session_key);
         }
-    }
-
-    /// The Push Relay context of a live session.
-    pub async fn push_session_context(&self, session_key: &str) -> Option<PushRelaySessionContext> {
-        let session = self.get_session(session_key)?;
-        let state = session.read().await;
-        Some(push_context(&state))
     }
 
     /// Each upstream's declared capabilities for a live session (which
@@ -4714,38 +4684,6 @@ impl McpGateway {
         }
     }
 
-    /// Terminate all sessions for a given client ID.
-    pub async fn terminate_sessions_for_client(&self, client_id: &str) -> usize {
-        // Snapshot first: awaiting session locks while iterating would hold
-        // DashMap shard locks across the await.
-        let all_sessions: Vec<(String, Arc<RwLock<GatewaySession>>)> = self
-            .sessions
-            .iter()
-            .map(|entry| (entry.key().clone(), entry.value().clone()))
-            .collect();
-        let mut keys_to_remove = Vec::new();
-        for (key, session) in all_sessions {
-            if session.read().await.client_id == client_id {
-                keys_to_remove.push(key);
-            }
-        }
-
-        let count = keys_to_remove.len();
-        for key in &keys_to_remove {
-            if let Some((_, session)) = self.sessions.remove(key) {
-                close_session_transports(&session).await;
-            }
-        }
-        if count > 0 {
-            tracing::info!(
-                "Gateway: terminated {} session(s) for client_id={}",
-                count,
-                client_id
-            );
-        }
-        count
-    }
-
     /// Get catalog sources for a specific session by session key.
     pub async fn get_session_context_sources(
         &self,
@@ -4796,44 +4734,6 @@ impl McpGateway {
             .collect();
         entries.sort_by(|a, b| a.source_label.cmp(&b.source_label));
         Ok(entries)
-    }
-
-    /// Get context stats for a specific session from the native ContentStore.
-    pub async fn get_session_context_stats(
-        &self,
-        session_key: &str,
-    ) -> Result<serde_json::Value, String> {
-        let session_arc = self
-            .sessions
-            .get(session_key)
-            .ok_or_else(|| format!("Session not found: {session_key}"))?
-            .clone();
-        let session = session_arc.read().await;
-
-        let state = session
-            .virtual_server_state
-            .get("_context_mode")
-            .ok_or("Context management not available for this session")?;
-        let cm = state
-            .as_any()
-            .downcast_ref::<super::context_mode::ContextModeSessionState>()
-            .ok_or("Invalid context mode state")?;
-
-        if !cm.enabled {
-            return Err("Context management is not enabled for this session".to_string());
-        }
-
-        // Return basic stats from the native ContentStore
-        Ok(serde_json::json!({
-            "content": [{
-                "type": "text",
-                "text": format!(
-                    "Context store active. Indexed sources: {}, Activated tools: {}",
-                    cm.catalog_sources.len(),
-                    cm.activated_tools.len(),
-                ),
-            }]
-        }))
     }
 
     /// Query the context index for a specific session using native search.
@@ -4897,41 +4797,6 @@ impl McpGateway {
             }
             Err(e) => Err(format!("Search failed: {}", e)),
         }
-    }
-
-    /// Get the instructions context snapshot for a session (for compression preview UI).
-    pub async fn get_session_instructions_context(
-        &self,
-        session_key: &str,
-    ) -> Result<super::merger::InstructionsContext, String> {
-        let session_arc = self
-            .sessions
-            .get(session_key)
-            .ok_or_else(|| format!("Session not found: {session_key}"))?
-            .clone();
-        let session = session_arc.read().await;
-        session
-            .instructions_context
-            .clone()
-            .ok_or_else(|| "Session has no instructions context (not yet initialized)".to_string())
-    }
-
-    /// Get the instructions context for a client by finding their active session.
-    pub async fn get_client_instructions_context(
-        &self,
-        client_id: &str,
-    ) -> Result<super::merger::InstructionsContext, String> {
-        for entry in self.sessions.iter() {
-            let session = entry.value().read().await;
-            if session.client_id == client_id && !session.is_expired() {
-                if let Some(ctx) = &session.instructions_context {
-                    return Ok(ctx.clone());
-                }
-            }
-        }
-        Err(format!(
-            "No active session for client {client_id}. Connect the client first to preview its compression."
-        ))
     }
 
     /// Build a preview InstructionsContext for a client without requiring an active session.

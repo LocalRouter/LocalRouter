@@ -39,11 +39,6 @@ impl PushDecisionAction {
         matches!(self, Self::Allow | Self::AllowSession | Self::AllowAlways)
     }
 
-    /// Applies to every later event of the type, not just this one.
-    pub fn is_type_wide(&self) -> bool {
-        !matches!(self, Self::Allow | Self::Deny)
-    }
-
     pub fn is_permanent(&self) -> bool {
         matches!(self, Self::AllowAlways | Self::DenyAlways)
     }

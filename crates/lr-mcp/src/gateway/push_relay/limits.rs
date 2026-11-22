@@ -173,10 +173,6 @@ impl PushRelayLimits {
         Duration::from_secs(self.permission_request_ttl_secs)
     }
 
-    pub fn poll_max_wait(&self) -> Duration {
-        Duration::from_secs(self.poll_max_wait_secs)
-    }
-
     pub fn watch_max_lifetime(&self) -> Duration {
         Duration::from_secs(self.watch_max_lifetime_secs)
     }
