@@ -5025,7 +5025,10 @@ export interface TestSecretScanParams {
 // Rust: crates/lr-providers/src/lib.rs
 // =============================================================================
 
-/** Level of support for a feature or endpoint */
+/**
+ * Level of support for a feature or endpoint. `not_implemented` is reserved:
+ * the backend reports no endpoint or feature with it today.
+ */
 export type SupportLevel = 'supported' | 'partial' | 'translated' | 'not_supported' | 'not_implemented'
 
 /** Support information for a single API endpoint */

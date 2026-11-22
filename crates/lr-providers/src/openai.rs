@@ -1733,36 +1733,17 @@ impl ModelProvider for OpenAIProvider {
             }
         }
 
-        // OpenAI endpoint-specific notes
+        // OpenAI endpoint-specific notes. Moderations, Responses, batches and
+        // realtime keep the default rows, which follow this instance's
+        // credentials (API key vs. ChatGPT subscription).
         for e in &mut support.endpoints {
-            match e.name.as_str() {
-                "Moderations" => {
-                    e.support = super::SupportLevel::NotImplemented;
-                    e.notes = Some("OpenAI supports natively via text-moderation-latest; LocalRouter proxy not yet built".into());
-                }
-                "Responses API" => {
-                    e.support = super::SupportLevel::NotImplemented;
-                    e.notes =
-                        Some("OpenAI supports natively; LocalRouter proxy not yet built".into());
-                }
-                "Batch Processing" => {
-                    e.support = super::SupportLevel::NotImplemented;
-                    e.notes = Some(
-                        "OpenAI supports native async batches; LocalRouter proxy not yet built"
-                            .into(),
-                    );
-                }
-                "Audio Transcription" | "Audio Speech (TTS)" => {
-                    e.support = super::SupportLevel::Supported;
-                    e.notes = Some(
-                        "Whisper for speech-to-text, TTS-1/TTS-1-HD for text-to-speech".into(),
-                    );
-                }
-                "Realtime (WebSocket)" => {
-                    e.support = super::SupportLevel::NotImplemented;
-                    e.notes = Some("OpenAI supports natively — planned".into());
-                }
-                _ => {}
+            if matches!(
+                e.name.as_str(),
+                "Audio Transcription" | "Audio Speech (TTS)"
+            ) {
+                e.support = super::SupportLevel::Supported;
+                e.notes =
+                    Some("Whisper for speech-to-text, TTS-1/TTS-1-HD for text-to-speech".into());
             }
         }
 
