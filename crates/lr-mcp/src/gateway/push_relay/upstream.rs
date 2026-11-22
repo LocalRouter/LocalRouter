@@ -11,7 +11,11 @@
 //! Ingress preference is push (`events/stream`, U1) then poll (`events/poll`,
 //! U2). A dropped stream reconnects with jittered exponential backoff,
 //! resuming from the last upstream cursor; a stream with no message within
-//! the heartbeat timeout is treated as dead.
+//! the heartbeat timeout is treated as dead. A stream the upstream confirmed
+//! and then closed with a plain result (servers bound a stream's lifetime)
+//! is reopened at once from its cursor, without backoff. Every failure is
+//! logged at WARN and kept as the subscription's `last_error`, which the
+//! server's push status shows.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -28,7 +32,7 @@ use super::limits::PushRelayLimits;
 use crate::gateway::types::InitializeResult;
 use crate::gateway::McpGateway;
 use crate::manager::McpServerManager;
-use crate::protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
+use crate::protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, ProtocolRevision};
 use crate::transport::{RpcStream, RpcStreamMessage, Transport};
 use lr_config::EventDeliveryMode;
 use lr_types::{AppError, AppResult};
@@ -114,17 +118,46 @@ fn request_id() -> Value {
     json!(format!("_lr_push_{}", uuid::Uuid::new_v4()))
 }
 
-/// Create and initialise a relay-owned connection to `server_id`: the
-/// transport, the legacy `initialize` handshake and
-/// `notifications/initialized`. Notifications the upstream sends on it go to
-/// `on_notification`.
+/// Timeout of the `server/discover` probe that picks the protocol revision
+/// (the gateway's own probe uses the same bound).
+const DISCOVER_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Protocol revision per server as the gateway last determined it
+/// (`McpGateway::backend_revision_cache`).
+pub type RevisionCache = Arc<dashmap::DashMap<String, ProtocolRevision>>;
+
+/// Client name LocalRouter's relay-owned connections identify as.
+const RELAY_CLIENT_NAME: &str = "LocalRouter Push Relay";
+
+/// Create and initialise a relay-owned connection to `server_id`, choosing
+/// the protocol revision the way the gateway does for sessions: a
+/// `server/discover` probe first, and a 2026-07-28 server is used
+/// statelessly (every request carries the revision in `_meta`, so the
+/// `MCP-Protocol-Version` header says 2026-07-28 too). Otherwise the legacy
+/// `initialize` handshake and `notifications/initialized`. Servers such as
+/// VocalCord answer `initialize` with an older revision yet serve
+/// `events/poll` and `events/stream` only to 2026-07-28 requests, so skipping
+/// the probe leaves every subscription rejected. A revision the gateway
+/// already determined (`known`) is used without probing again. Notifications
+/// the upstream sends on the connection go to `on_notification`.
 pub async fn connect_relay_upstream(
     manager: &McpServerManager,
     server_id: &str,
+    known: Option<ProtocolRevision>,
     on_notification: crate::transport::NotificationCallback,
-) -> AppResult<(Arc<dyn Transport>, InitializeResult)> {
+) -> AppResult<(Arc<dyn Transport>, ProtocolRevision)> {
     let transport = manager.create_transport(server_id).await?;
     transport.set_notification_callback(on_notification);
+
+    let stateless = match known {
+        Some(revision) => revision.is_stateless(),
+        None => probe_stateless(transport.as_ref(), server_id).await,
+    };
+    if stateless {
+        transport.set_protocol_revision(ProtocolRevision::V2026_07_28);
+        return Ok((transport, ProtocolRevision::V2026_07_28));
+    }
+
     let initialize = JsonRpcRequest::new(
         Some(request_id()),
         "initialize".to_string(),
@@ -132,7 +165,7 @@ pub async fn connect_relay_upstream(
             "protocolVersion": crate::protocol::MCP_PROTOCOL_VERSION,
             "capabilities": {"extensions": {crate::protocol::EVENTS_EXTENSION_ID: {}}},
             "clientInfo": {
-                "name": "LocalRouter Push Relay",
+                "name": RELAY_CLIENT_NAME,
                 "version": env!("CARGO_PKG_VERSION")
             }
         })),
@@ -155,19 +188,95 @@ pub async fn connect_relay_upstream(
         .result
         .filter(|_| response.error.is_none())
         .and_then(|value| serde_json::from_value::<InitializeResult>(value).ok());
-    let Some(result) = result else {
+    if result.is_none() {
         let _ = transport.close().await;
         return Err(AppError::Mcp(format!(
             "Push Relay connection to {server_id}: initialize failed"
         )));
-    };
+    }
     let initialized = JsonRpcRequest::new(
         None,
         "notifications/initialized".to_string(),
         Some(json!({})),
     );
     let _ = tokio::time::timeout(HANDSHAKE_TIMEOUT, transport.send_request(initialized)).await;
-    Ok((transport, result))
+    Ok((transport, ProtocolRevision::V2025_11_25))
+}
+
+/// `server/discover` with 2026-07-28 `_meta`: true when the server lists
+/// 2026-07-28 among its versions. Any error or timeout means legacy.
+async fn probe_stateless(transport: &dyn Transport, server_id: &str) -> bool {
+    let mut discover = JsonRpcRequest::new(
+        Some(request_id()),
+        "server/discover".to_string(),
+        Some(json!({})),
+    );
+    add_stateless_meta(&mut discover);
+    let response =
+        match tokio::time::timeout(DISCOVER_TIMEOUT, transport.send_request(discover)).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(e)) => {
+                tracing::debug!("Push Relay: {server_id} does not answer server/discover: {e}");
+                return false;
+            }
+            Err(_) => {
+                tracing::debug!("Push Relay: server/discover to {server_id} timed out");
+                return false;
+            }
+        };
+    if response.error.is_some() {
+        return false;
+    }
+    response
+        .result
+        .as_ref()
+        .and_then(|r| {
+            r.get("protocolVersions")
+                .or_else(|| r.get("supportedVersions"))
+        })
+        .and_then(Value::as_array)
+        .is_some_and(|versions| {
+            versions
+                .iter()
+                .any(|v| v.as_str() == Some(crate::protocol::MCP_PROTOCOL_VERSION_STATELESS))
+        })
+}
+
+/// Add the reserved 2026-07-28 `_meta` keys (revision, client info, client
+/// capabilities with MCP Events) to a request, keeping values already there.
+fn add_stateless_meta(request: &mut JsonRpcRequest) {
+    use crate::protocol::meta_keys;
+    let params = request.params.get_or_insert_with(|| json!({}));
+    let Some(params) = params.as_object_mut() else {
+        return;
+    };
+    let meta = params.entry("_meta").or_insert_with(|| json!({}));
+    if !meta.is_object() {
+        *meta = json!({});
+    }
+    if let Some(meta) = meta.as_object_mut() {
+        meta.entry(meta_keys::PROTOCOL_VERSION.to_string())
+            .or_insert_with(|| json!(crate::protocol::MCP_PROTOCOL_VERSION_STATELESS));
+        meta.entry(meta_keys::CLIENT_INFO.to_string())
+            .or_insert_with(
+                || json!({"name": RELAY_CLIENT_NAME, "version": env!("CARGO_PKG_VERSION")}),
+            );
+        let capabilities = meta
+            .entry(meta_keys::CLIENT_CAPABILITIES.to_string())
+            .or_insert_with(|| json!({}));
+        crate::protocol::declare_events_extension(capabilities);
+    }
+}
+
+/// A request on a relay-owned connection: MCP Events declared on `events/*`
+/// on every revision, and the 2026-07-28 `_meta` on a stateless connection.
+fn relay_request(method: &str, params: Value, revision: ProtocolRevision) -> JsonRpcRequest {
+    let mut request = JsonRpcRequest::new(Some(request_id()), method.to_string(), Some(params));
+    crate::protocol::declare_events_on_request(&mut request);
+    if revision.is_stateless() {
+        add_stateless_meta(&mut request);
+    }
+    request
 }
 
 /// A relay-owned connection to one upstream, connected on first use and
@@ -176,23 +285,30 @@ pub struct RelayConnection {
     manager: Arc<McpServerManager>,
     server_id: String,
     on_channel: ChannelFn,
-    transport: tokio::sync::Mutex<Option<Arc<dyn Transport>>>,
+    revisions: RevisionCache,
+    transport: tokio::sync::Mutex<Option<(Arc<dyn Transport>, ProtocolRevision)>>,
 }
 
 impl RelayConnection {
-    pub fn new(manager: Arc<McpServerManager>, server_id: String, on_channel: ChannelFn) -> Self {
+    pub fn new(
+        manager: Arc<McpServerManager>,
+        server_id: String,
+        on_channel: ChannelFn,
+        revisions: RevisionCache,
+    ) -> Self {
         Self {
             manager,
             server_id,
             on_channel,
+            revisions,
             transport: tokio::sync::Mutex::new(None),
         }
     }
 
-    async fn transport(&self) -> AppResult<Arc<dyn Transport>> {
+    async fn transport(&self) -> AppResult<(Arc<dyn Transport>, ProtocolRevision)> {
         let mut slot = self.transport.lock().await;
-        if let Some(transport) = slot.as_ref() {
-            return Ok(transport.clone());
+        if let Some(connection) = slot.as_ref() {
+            return Ok(connection.clone());
         }
         let server_id = self.server_id.clone();
         let on_channel = self.on_channel.clone();
@@ -202,14 +318,16 @@ impl RelayConnection {
                     on_channel(&server_id, notification);
                 }
             });
-        let (transport, _) =
-            connect_relay_upstream(&self.manager, &self.server_id, callback).await?;
-        *slot = Some(transport.clone());
-        Ok(transport)
+        let known = self.revisions.get(&self.server_id).map(|r| *r.value());
+        let connection =
+            connect_relay_upstream(&self.manager, &self.server_id, known, callback).await?;
+        self.revisions.insert(self.server_id.clone(), connection.1);
+        *slot = Some(connection.clone());
+        Ok(connection)
     }
 
     pub async fn close(&self) {
-        if let Some(transport) = self.transport.lock().await.take() {
+        if let Some((transport, _)) = self.transport.lock().await.take() {
             let _ = transport.close().await;
         }
     }
@@ -218,10 +336,10 @@ impl RelayConnection {
 #[async_trait]
 impl UpstreamPort for RelayConnection {
     async fn request(&self, method: &str, params: Value) -> AppResult<JsonRpcResponse> {
-        let transport = self.transport().await?;
-        let mut request = JsonRpcRequest::new(Some(request_id()), method.to_string(), Some(params));
-        crate::protocol::declare_events_on_request(&mut request);
-        transport.send_request(request).await
+        let (transport, revision) = self.transport().await?;
+        transport
+            .send_request(relay_request(method, params, revision))
+            .await
     }
 
     async fn open_stream(
@@ -230,20 +348,29 @@ impl UpstreamPort for RelayConnection {
         params: Value,
         buffer: usize,
     ) -> AppResult<RpcStream> {
-        let transport = self.transport().await?;
-        let mut request = JsonRpcRequest::new(Some(request_id()), method.to_string(), Some(params));
-        crate::protocol::declare_events_on_request(&mut request);
-        transport.open_rpc_stream(request, buffer).await
+        let (transport, revision) = self.transport().await?;
+        transport
+            .open_rpc_stream(relay_request(method, params, revision), buffer)
+            .await
     }
 
     async fn supports_streams(&self) -> bool {
         match self.transport().await {
-            Ok(transport) => transport.supports_rpc_streams(),
+            Ok((transport, _)) => transport.supports_rpc_streams(),
             Err(_) => true,
         }
     }
 
     async fn reset(&self) {
+        // A failure on a legacy connection may mean the server now wants
+        // 2026-07-28 (or the earlier probe timed out): probe again next time.
+        let legacy = matches!(
+            self.transport.lock().await.as_ref(),
+            Some((_, revision)) if !revision.is_stateless()
+        );
+        if legacy {
+            self.revisions.remove(&self.server_id);
+        }
         self.close().await;
     }
 }
@@ -305,11 +432,30 @@ fn jittered(delay: Duration) -> Duration {
     delay / 2 + delay / 2 * fraction / 1000
 }
 
-/// Stream helper result: `Ok` when cancelled, `Err` when it should reconnect.
-type RunResult = Result<(), String>;
+/// How one stream or poll run ended.
+enum RunEnd {
+    /// The subscription was cancelled.
+    Cancelled,
+    /// The upstream closed an active stream normally (a final result with
+    /// no error, e.g. VocalCord's `resultType: complete` at its lifetime
+    /// limit). Reopen it at once from the last cursor.
+    Completed,
+    /// The attempt failed; reconnect after the backoff.
+    Failed(String),
+}
+
+/// The text of an upstream JSON-RPC error, for logs and the UI.
+fn upstream_error_text(method: &str, error: &crate::protocol::JsonRpcError) -> String {
+    format!(
+        "{method} rejected by the server ({}): {}",
+        error.code, error.message
+    )
+}
 
 struct Runner {
     key: SubscriptionKey,
+    /// The server's display name, for logs.
+    server_name: String,
     spec: SubscriptionSpec,
     port: Arc<dyn UpstreamPort>,
     limits: Arc<parking_lot::RwLock<PushRelayLimits>>,
@@ -375,21 +521,36 @@ impl Runner {
             let push = self.spec.modes.contains(&EventDeliveryMode::Push)
                 && self.port.supports_streams().await;
             let poll = self.spec.modes.contains(&EventDeliveryMode::Poll);
-            let result = if push {
-                self.stream_once().await
+            let (method, end) = if push {
+                ("events/stream", self.stream_once().await)
             } else if poll {
-                self.poll_loop().await
+                ("events/poll", self.poll_loop().await)
             } else {
                 return;
             };
-            let Err(error) = result else {
-                return;
+            let error = match end {
+                RunEnd::Cancelled => return,
+                RunEnd::Completed => {
+                    tracing::debug!(
+                        "Push Relay: {} ({}) closed the {} stream for {}; reopening from the last cursor",
+                        self.server_name,
+                        self.key.server_id,
+                        method,
+                        self.key.event
+                    );
+                    continue;
+                }
+                RunEnd::Failed(error) => error,
             };
-            tracing::debug!(
-                "Push Relay subscription {}/{} reconnecting: {}",
-                self.key.server_id,
+            let delay = jittered(self.backoff);
+            tracing::warn!(
+                "Push Relay: {} for '{}' on {} ({}) failed: {}; retrying in {:.1}s",
+                method,
                 self.key.event,
-                error
+                self.server_name,
+                self.key.server_id,
+                error,
+                delay.as_secs_f32()
             );
             {
                 let mut status = self.status.lock();
@@ -398,7 +559,6 @@ impl Runner {
                 status.reconnects += 1;
             }
             self.port.reset().await;
-            let delay = jittered(self.backoff);
             self.backoff = next_backoff(self.backoff, &self.limits.read());
             tokio::select! {
                 _ = self.cancel.cancelled() => return,
@@ -407,26 +567,37 @@ impl Runner {
         }
     }
 
-    async fn stream_once(&mut self) -> RunResult {
-        let mut stream = self
-            .port
-            .open_stream(
+    async fn stream_once(&mut self) -> RunEnd {
+        let opened = tokio::select! {
+            _ = self.cancel.cancelled() => return RunEnd::Cancelled,
+            opened = self.port.open_stream(
                 "events/stream",
                 self.params(&[]),
                 crate::transport::rpc_stream::DEFAULT_RPC_STREAM_BUFFER,
-            )
-            .await
-            .map_err(|e| e.to_string())?;
+            ) => opened,
+        };
+        let mut stream = match opened {
+            Ok(stream) => stream,
+            Err(e) => return RunEnd::Failed(e.to_string()),
+        };
+        // Only a stream the upstream confirmed may end normally: a final
+        // result before anything else is a refusal, however it is worded.
+        let mut active = false;
         loop {
             let heartbeat = self.limits.read().upstream_heartbeat_timeout();
             let next = tokio::select! {
-                _ = self.cancel.cancelled() => return Ok(()),
+                _ = self.cancel.cancelled() => return RunEnd::Cancelled,
                 next = tokio::time::timeout(heartbeat, stream.next()) => next,
             };
             let message = match next {
-                Err(_) => return Err("no heartbeat from upstream stream".into()),
-                Ok(None) => return Err("upstream stream ended".into()),
-                Ok(Some(Err(e))) => return Err(e.to_string()),
+                Err(_) => {
+                    return RunEnd::Failed(format!(
+                        "no message on the upstream stream for {}s",
+                        heartbeat.as_secs()
+                    ))
+                }
+                Ok(None) => return RunEnd::Failed("upstream stream ended without a result".into()),
+                Ok(Some(Err(e))) => return RunEnd::Failed(e.to_string()),
                 Ok(Some(Ok(message))) => message,
             };
             match message {
@@ -434,48 +605,68 @@ impl Runner {
                     let params = notification.params.unwrap_or(Value::Null);
                     match notification.method.as_str() {
                         "notifications/events/event" => {
+                            active = true;
                             self.mark_connected(IngressMode::Push);
                             self.deliver(params, IngressMode::Push);
                         }
                         "notifications/events/active" | "notifications/events/heartbeat" => {
+                            active = true;
                             self.mark_connected(IngressMode::Push);
                             if let Some(cursor) = params.get("cursor").and_then(Value::as_str) {
                                 self.cursor = Some(cursor.to_string());
                             }
                         }
                         "notifications/events/terminated" => {
-                            return Err("upstream terminated the stream".into())
+                            return RunEnd::Failed(format!(
+                                "upstream terminated the stream: {}",
+                                params
+                                    .pointer("/error/message")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("no reason given")
+                            ))
                         }
                         "notifications/events/error" => {
-                            tracing::debug!(
-                                "Upstream {} reported an events error: {}",
+                            let message = params
+                                .pointer("/error/message")
+                                .and_then(Value::as_str)
+                                .unwrap_or("no message");
+                            tracing::warn!(
+                                "Push Relay: {} ({}) reported an error on the '{}' stream: {}",
+                                self.server_name,
                                 self.key.server_id,
-                                params
+                                self.key.event,
+                                message
                             );
                         }
                         _ => {}
                     }
                 }
                 RpcStreamMessage::Result(response) => {
-                    return Err(match response.error {
-                        Some(error) => format!("upstream stream error: {}", error.message),
-                        None => "upstream stream completed".into(),
-                    });
+                    return match response.error {
+                        Some(error) => RunEnd::Failed(upstream_error_text("events/stream", &error)),
+                        None if active => RunEnd::Completed,
+                        None => RunEnd::Failed(
+                            "upstream completed events/stream before confirming it".into(),
+                        ),
+                    };
                 }
             }
         }
     }
 
-    async fn poll_loop(&mut self) -> RunResult {
+    async fn poll_loop(&mut self) -> RunEnd {
         loop {
             let params = self.params(&[("maxEvents", json!(UPSTREAM_POLL_BATCH))]);
             let response = tokio::select! {
-                _ = self.cancel.cancelled() => return Ok(()),
+                _ = self.cancel.cancelled() => return RunEnd::Cancelled,
                 response = self.port.request("events/poll", params) => response,
-            }
-            .map_err(|e| e.to_string())?;
+            };
+            let response = match response {
+                Ok(response) => response,
+                Err(e) => return RunEnd::Failed(e.to_string()),
+            };
             if let Some(error) = response.error {
-                return Err(format!("upstream poll error: {}", error.message));
+                return RunEnd::Failed(upstream_error_text("events/poll", &error));
             }
             let result = response.result.unwrap_or(Value::Null);
             self.mark_connected(IngressMode::Poll);
@@ -497,7 +688,7 @@ impl Runner {
                     .unwrap_or(1_000),
             );
             tokio::select! {
-                _ = self.cancel.cancelled() => return Ok(()),
+                _ = self.cancel.cancelled() => return RunEnd::Cancelled,
                 _ = tokio::time::sleep(delay) => {}
             }
         }
@@ -553,6 +744,7 @@ impl UpstreamHub {
                         self.gateway.server_manager.clone(),
                         key.server_id.clone(),
                         self.on_channel.clone(),
+                        self.gateway.backend_revision_cache.clone(),
                     ))
                 })
                 .clone(),
@@ -578,8 +770,15 @@ impl UpstreamHub {
             }
             let cancel = CancellationToken::new();
             let status = Arc::new(parking_lot::Mutex::new(SubscriptionStatus::default()));
+            let server_name = self
+                .gateway
+                .server_manager
+                .get_config(&key.server_id)
+                .map(|c| c.name)
+                .unwrap_or_else(|| key.server_id.clone());
             let runner = Runner {
                 key: key.clone(),
+                server_name,
                 spec: spec.clone(),
                 port: self.port_for(&key),
                 limits: self.limits.clone(),
