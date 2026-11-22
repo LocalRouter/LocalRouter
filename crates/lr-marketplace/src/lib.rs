@@ -8,6 +8,7 @@ pub mod install;
 pub mod install_popup;
 pub mod registry;
 pub mod skill_sources;
+mod staging;
 pub mod tools;
 pub mod types;
 
@@ -19,6 +20,7 @@ use crate::skill_sources::SkillSourcesClient;
 use lr_config::MarketplaceConfig;
 use parking_lot::RwLock;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -60,6 +62,9 @@ pub type SkillInstallCallback = Arc<
 /// Virtual server ID for marketplace (used in connection graph, not MCP panel)
 pub const MARKETPLACE_ID: &str = "marketplace";
 
+/// Directory of marketplace-installed skills, inside the data directory
+const SKILLS_DIR: &str = "marketplace-skills";
+
 /// Central marketplace service
 pub struct MarketplaceService {
     /// MCP registry client
@@ -88,6 +93,11 @@ pub struct MarketplaceService {
 
     /// Callback for performing actual skill installation
     skill_install_callback: RwLock<Option<SkillInstallCallback>>,
+
+    /// One lock per skill directory, so installs of the same skill run one
+    /// at a time. Keyed by the lowercased `<source>/<name>`. Shared by
+    /// clones, which install into the same directory.
+    install_locks: Arc<parking_lot::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
 }
 
 impl MarketplaceService {
@@ -95,6 +105,7 @@ impl MarketplaceService {
     pub fn new(config: MarketplaceConfig, data_dir: PathBuf) -> Self {
         let registry_url = config.registry_url.clone();
         let cache = Self::load_cache(&data_dir);
+        staging::recover(&data_dir.join(SKILLS_DIR));
 
         Self {
             registry_client: McpRegistryClient::new(registry_url),
@@ -106,6 +117,7 @@ impl MarketplaceService {
             app_handle: RwLock::new(None),
             mcp_install_callback: RwLock::new(None),
             skill_install_callback: RwLock::new(None),
+            install_locks: Default::default(),
         }
     }
 
@@ -119,6 +131,7 @@ impl MarketplaceService {
     ) -> Self {
         let registry_url = config.registry_url.clone();
         let cache = Self::load_cache(&data_dir);
+        staging::recover(&data_dir.join(SKILLS_DIR));
 
         Self {
             registry_client: McpRegistryClient::new(registry_url),
@@ -133,6 +146,7 @@ impl MarketplaceService {
             app_handle: RwLock::new(None),
             mcp_install_callback: RwLock::new(None),
             skill_install_callback: RwLock::new(None),
+            install_locks: Default::default(),
         }
     }
 
@@ -218,11 +232,24 @@ impl MarketplaceService {
 
     /// Get the data directory for marketplace-installed skills
     pub fn skills_data_dir(&self) -> PathBuf {
-        self.data_dir.join("marketplace-skills")
+        self.data_dir.join(SKILLS_DIR)
+    }
+
+    fn install_lock(&self, relative: &str) -> Arc<tokio::sync::Mutex<()>> {
+        self.install_locks
+            .lock()
+            .entry(relative.to_lowercase())
+            .or_default()
+            .clone()
     }
 
     /// Install under the managed skills directory with path confinement and
     /// bounded downloads. Listing labels must each be a single directory name.
+    ///
+    /// The install is atomic: the skill is downloaded into a staging
+    /// directory, checked, and renamed into place. A failure leaves the
+    /// skill directory as it was (absent, or the previously installed
+    /// version). Installs of the same skill are serialized.
     pub async fn download_skill(
         &self,
         listing: &SkillListing,
@@ -239,18 +266,39 @@ impl MarketplaceService {
         std::fs::create_dir_all(&root).map_err(|e| {
             MarketplaceError::InstallError(format!("Failed to create skills directory: {e}"))
         })?;
-        let manifest_path = skill_sources::prepare_skill_file_path(
-            &root,
-            &format!("{}/{}/SKILL.md", listing.source_label, listing.name),
-        )?;
-        let target = manifest_path
-            .parent()
-            .ok_or_else(|| MarketplaceError::InstallError("Missing skill directory".to_string()))?
-            .to_path_buf();
+        let relative = format!("{}/{}", listing.source_label, listing.name);
+        let lock = self.install_lock(&relative);
+        let _serialized = lock.lock().await;
+
+        let staged = staging::StagedInstall::create(&root)?;
+        let download_dir = staged.download_dir();
         self.skill_sources_client
-            .download_skill(listing, &target)
+            .download_skill(listing, &download_dir)
             .await?;
-        Ok(target)
+        staging::validate_downloaded_skill(&download_dir)?;
+        staged.promote(&root, &relative)
+    }
+
+    /// Delete an installed skill directory, serialized with installs of the
+    /// same skill so a delete never interleaves with an install's swap.
+    /// `skill_dir` must already be confirmed as a managed skill directory.
+    pub async fn remove_installed_skill(&self, skill_dir: &Path) -> Result<(), String> {
+        let root = self.skills_data_dir();
+        let root = root.canonicalize().unwrap_or(root);
+        let relative = skill_dir
+            .strip_prefix(&root)
+            .map_err(|_| format!("Not a marketplace skill directory: {}", skill_dir.display()))?
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
+        let lock = self.install_lock(&relative);
+        let _serialized = lock.lock().await;
+        match std::fs::remove_dir_all(skill_dir) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(format!("Failed to delete skill directory: {e}")),
+        }
     }
 
     /// Get the configured search tool name
@@ -495,6 +543,7 @@ impl Clone for MarketplaceService {
             app_handle: RwLock::new(self.app_handle.read().clone()),
             mcp_install_callback: RwLock::new(self.mcp_install_callback.read().clone()),
             skill_install_callback: RwLock::new(self.skill_install_callback.read().clone()),
+            install_locks: self.install_locks.clone(),
         }
     }
 }

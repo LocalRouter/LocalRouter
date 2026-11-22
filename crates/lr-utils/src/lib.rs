@@ -2,6 +2,7 @@
 
 pub mod binary;
 pub mod crypto;
+pub mod fs;
 pub mod install_source;
 pub mod paths;
 pub mod sandbox;

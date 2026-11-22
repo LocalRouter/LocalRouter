@@ -5,6 +5,7 @@
 //! Skills are discovered from configured paths, managed per-client, and exposed
 //! as MCP tools through the gateway.
 
+pub mod archive;
 pub mod discovery;
 pub mod executor;
 pub mod fuzzy;

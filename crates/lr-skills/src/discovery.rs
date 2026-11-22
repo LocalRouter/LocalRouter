@@ -1,23 +1,30 @@
 //! Skill discovery - scanning directories and parsing SKILL.md files
 
+use super::archive::{self, ExtractionLimits};
 use super::types::{SkillDefinition, SkillMetadata};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
 
 /// Result of discovery from a single path
+#[derive(Default)]
 pub struct DiscoveryResult {
     /// Discovered skills
     pub skills: Vec<SkillDefinition>,
     /// Old extraction directories that can be cleaned up (from previous zip extractions)
     pub old_extraction_dirs: Vec<PathBuf>,
+    /// Why the source could not be (fully) loaded, in words fit for the user
+    pub error: Option<String>,
 }
 
 /// Compute SHA-256 hash of a file, returning first 16 bytes as 32-char hex string
 pub fn content_hash_of_file(path: &Path) -> Result<String, String> {
-    let data =
-        std::fs::read(path).map_err(|e| format!("Failed to read file for hashing: {}", e))?;
-    let hash = Sha256::digest(&data);
+    let mut file =
+        std::fs::File::open(path).map_err(|e| format!("Failed to read file for hashing: {}", e))?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher)
+        .map_err(|e| format!("Failed to read file for hashing: {}", e))?;
+    let hash = hasher.finalize();
     let hex: String = hash.iter().take(16).map(|b| format!("{:02x}", b)).collect();
     Ok(hex)
 }
@@ -163,10 +170,7 @@ pub fn discover_skills(path: &Path) -> DiscoveryResult {
 
     if !path.exists() {
         warn!("Skill path does not exist: {}", source);
-        return DiscoveryResult {
-            skills: Vec::new(),
-            old_extraction_dirs: Vec::new(),
-        };
+        return DiscoveryResult::default();
     }
 
     if path.is_file() {
@@ -181,23 +185,17 @@ pub fn discover_skills(path: &Path) -> DiscoveryResult {
         }
 
         warn!("Unsupported skill file type: {}", source);
-        return DiscoveryResult {
-            skills: Vec::new(),
-            old_extraction_dirs: Vec::new(),
-        };
+        return DiscoveryResult::default();
     }
 
     if path.is_dir() {
         return DiscoveryResult {
             skills: discover_from_directory(path, &source),
-            old_extraction_dirs: Vec::new(),
+            ..Default::default()
         };
     }
 
-    DiscoveryResult {
-        skills: Vec::new(),
-        old_extraction_dirs: Vec::new(),
-    }
+    DiscoveryResult::default()
 }
 
 /// Discover skills from a directory
@@ -234,123 +232,93 @@ fn discover_from_directory(dir: &Path, source: &str) -> Vec<SkillDefinition> {
     skills
 }
 
+/// Where archives are extracted: `<temp>/localrouter-skills/`.
+pub fn extraction_root() -> PathBuf {
+    std::env::temp_dir().join("localrouter-skills")
+}
+
+/// Whether `name` is `<stem>-<hash>`, the directory name of one extraction of
+/// the archive called `stem`. The hash must match exactly so that `foo.zip`
+/// never claims the extraction of `foo-bar.zip`.
+fn is_extraction_of(name: &str, stem: &str) -> bool {
+    name.strip_prefix(stem)
+        .and_then(|rest| rest.strip_prefix('-'))
+        .is_some_and(|hash| hash.len() == 32 && hash.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
 /// Discover skills from a zip/skill file
 ///
-/// Uses hash-based extraction directories: `/tmp/localrouter-skills/{stem}-{hash}/`
-/// If the hash dir already exists, skips extraction (reuse).
+/// Uses hash-based extraction directories: `<temp>/localrouter-skills/{stem}-{hash}/`
+/// A whole existing extraction of the same content is reused.
 /// Returns old extraction dirs (same stem, different hash) for cleanup.
 fn discover_from_zip(zip_path: &Path, source: &str) -> DiscoveryResult {
-    // Compute content hash
+    discover_from_zip_in(
+        zip_path,
+        source,
+        &extraction_root(),
+        &ExtractionLimits::default(),
+    )
+}
+
+/// [`discover_from_zip`] with an explicit extraction root and budgets.
+///
+/// The archive is extracted into a staging directory and renamed to
+/// `{stem}-{hash}` only when complete, so an existing hash directory is always
+/// a whole extraction. When the archive cannot be extracted, the most recent
+/// earlier extraction of the same archive keeps being served and the reason
+/// is reported in [`DiscoveryResult::error`].
+pub(crate) fn discover_from_zip_in(
+    zip_path: &Path,
+    source: &str,
+    root: &Path,
+    limits: &ExtractionLimits,
+) -> DiscoveryResult {
     let hash = match content_hash_of_file(zip_path) {
         Ok(h) => h,
         Err(e) => {
             warn!("Failed to hash zip file {:?}: {}", zip_path, e);
             return DiscoveryResult {
-                skills: Vec::new(),
-                old_extraction_dirs: Vec::new(),
+                error: Some(e),
+                ..Default::default()
             };
         }
     };
 
-    let temp_dir = std::env::temp_dir().join("localrouter-skills");
     let file_stem = zip_path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("skill");
-    let extract_dir = temp_dir.join(format!("{}-{}", file_stem, hash));
+    let extract_dir = root.join(format!("{}-{}", file_stem, hash));
 
-    // Collect old extraction dirs (same stem, different hash) for cleanup
+    // Earlier extractions of this archive (same stem, other content), for
+    // cleanup. One whose marker names another archive (a same-named file in
+    // another folder) is that archive's and is left alone; an unmarked one
+    // predates markers and is claimed as before.
+    let identity = archive::archive_identity(zip_path);
     let mut old_dirs = Vec::new();
-    let prefix = format!("{}-", file_stem);
-    if let Ok(entries) = std::fs::read_dir(&temp_dir) {
+    if let Ok(entries) = std::fs::read_dir(root) {
         for entry in entries.flatten() {
             let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            if name_str.starts_with(&prefix) && entry.path() != extract_dir && entry.path().is_dir()
+            let path = entry.path();
+            if is_extraction_of(&name.to_string_lossy(), file_stem)
+                && path != extract_dir
+                && path.is_dir()
+                && archive::extraction_source(&path).is_none_or(|from| from == identity)
             {
-                old_dirs.push(entry.path());
+                old_dirs.push(path);
             }
         }
     }
 
-    // If hash dir already exists, reuse it
-    if extract_dir.is_dir() {
-        debug!(
-            "Reusing existing extraction for {} (hash: {})",
-            source, hash
-        );
-        let mut skills = discover_from_directory(&extract_dir, source);
-        for skill in &mut skills {
-            skill.content_hash = Some(hash.clone());
-        }
-        return DiscoveryResult {
-            skills,
-            old_extraction_dirs: old_dirs,
-        };
+    // Returns at once when a whole extraction of this content already exists.
+    if let Err(e) = archive::extract_archive_atomically(zip_path, &extract_dir, limits) {
+        warn!("Failed to extract skill archive {:?}: {}", zip_path, e);
+        return fall_back_to_previous_extraction(source, &identity, old_dirs, e.to_string());
     }
-
-    // Need to extract
-    let file = match std::fs::File::open(zip_path) {
-        Ok(f) => f,
-        Err(e) => {
-            warn!("Failed to open zip file {:?}: {}", zip_path, e);
-            return DiscoveryResult {
-                skills: Vec::new(),
-                old_extraction_dirs: old_dirs,
-            };
-        }
-    };
-
-    let mut archive = match zip::ZipArchive::new(file) {
-        Ok(a) => a,
-        Err(e) => {
-            warn!("Failed to read zip archive {:?}: {}", zip_path, e);
-            return DiscoveryResult {
-                skills: Vec::new(),
-                old_extraction_dirs: old_dirs,
-            };
-        }
-    };
-
-    if let Err(e) = std::fs::create_dir_all(&extract_dir) {
-        warn!("Failed to create extraction directory: {}", e);
-        return DiscoveryResult {
-            skills: Vec::new(),
-            old_extraction_dirs: old_dirs,
-        };
-    }
-
-    // Extract all files
-    for i in 0..archive.len() {
-        let mut entry = match archive.by_index(i) {
-            Ok(e) => e,
-            Err(e) => {
-                warn!("Failed to read zip entry {}: {}", i, e);
-                continue;
-            }
-        };
-
-        let entry_path = match entry.enclosed_name() {
-            Some(p) => extract_dir.join(p),
-            None => {
-                warn!("Skipping zip entry with unsafe path");
-                continue;
-            }
-        };
-
-        if entry.is_dir() {
-            let _ = std::fs::create_dir_all(&entry_path);
-        } else {
-            if let Some(parent) = entry_path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            if let Ok(mut outfile) = std::fs::File::create(&entry_path) {
-                if let Err(e) = std::io::copy(&mut entry, &mut outfile) {
-                    warn!("Failed to extract {:?}: {}", entry_path, e);
-                }
-            }
-        }
-    }
+    debug!(
+        "Using extraction {:?} for {} (hash: {})",
+        extract_dir, source, hash
+    );
 
     let mut skills = discover_from_directory(&extract_dir, source);
     for skill in &mut skills {
@@ -359,6 +327,36 @@ fn discover_from_zip(zip_path: &Path, source: &str) -> DiscoveryResult {
     DiscoveryResult {
         skills,
         old_extraction_dirs: old_dirs,
+        error: None,
+    }
+}
+
+/// The archive could not be extracted: keep the newest earlier extraction of
+/// this same archive in service (and off the cleanup list) rather than
+/// dropping its skills.
+fn fall_back_to_previous_extraction(
+    source: &str,
+    identity: &Path,
+    mut old_dirs: Vec<PathBuf>,
+    reason: String,
+) -> DiscoveryResult {
+    let modified = |dir: &PathBuf| std::fs::metadata(dir).and_then(|m| m.modified()).ok();
+    let newest = (0..old_dirs.len())
+        .filter(|&i| archive::extraction_source(&old_dirs[i]).as_deref() == Some(identity))
+        .max_by_key(|&i| modified(&old_dirs[i]));
+    let Some(newest) = newest else {
+        return DiscoveryResult {
+            error: Some(reason),
+            ..Default::default()
+        };
+    };
+    let previous = old_dirs.swap_remove(newest);
+    DiscoveryResult {
+        skills: discover_from_directory(&previous, source),
+        old_extraction_dirs: old_dirs,
+        error: Some(format!(
+            "{reason}. The previously extracted version is still in use."
+        )),
     }
 }
 
@@ -559,5 +557,223 @@ Body"#,
         let result = discover_skills(skill_dir);
         assert_eq!(result.skills.len(), 1);
         assert_eq!(result.skills[0].scripts, vec!["run.sh".to_string()]);
+    }
+
+    use crate::archive::test_support::{write_zip, Entry};
+
+    const SKILL_V1: &[u8] = b"---\nname: zipped\ndescription: one\n---\nBody one";
+    const SKILL_V2: &[u8] = b"---\nname: zipped\ndescription: two\n---\nBody two";
+
+    fn names_in(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .map(|entries| {
+                entries
+                    .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn zip_skill_is_extracted_and_reused() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("root");
+        let zip = write_zip(
+            tmp.path(),
+            "pack.zip",
+            &[
+                Entry::File("zipped/SKILL.md", SKILL_V1),
+                Entry::File("zipped/scripts/run.sh", b"echo hi"),
+            ],
+        );
+        let limits = ExtractionLimits::default();
+        let first = discover_from_zip_in(&zip, "src", &root, &limits);
+        assert!(first.error.is_none());
+        assert_eq!(first.skills.len(), 1);
+        assert_eq!(first.skills[0].scripts, vec!["scripts/run.sh"]);
+        assert!(first.skills[0].content_hash.is_some());
+        assert!(first.old_extraction_dirs.is_empty());
+        assert_eq!(names_in(&root).len(), 1, "only the finished extraction");
+
+        let again = discover_from_zip_in(&zip, "src", &root, &limits);
+        assert_eq!(again.skills[0].skill_dir, first.skills[0].skill_dir);
+    }
+
+    #[test]
+    fn failed_zip_extraction_installs_nothing_and_names_the_limit() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("root");
+        // The manifest is written before the oversized file is reached.
+        let zip = write_zip(
+            tmp.path(),
+            "pack.zip",
+            &[
+                Entry::File("SKILL.md", SKILL_V1),
+                Entry::File("assets/big.bin", &[0u8; 8192]),
+            ],
+        );
+        let limits = ExtractionLimits {
+            max_total_bytes: 4096,
+            ..Default::default()
+        };
+        let result = discover_from_zip_in(&zip, "src", &root, &limits);
+        assert!(result.skills.is_empty());
+        assert_eq!(
+            result.error.as_deref(),
+            Some("the archive expands to more than the 4 KiB limit")
+        );
+        assert!(names_in(&root).is_empty(), "no partial skill, no staging");
+
+        // The failure is not cached: the same archive loads under a larger budget.
+        let result = discover_from_zip_in(&zip, "src", &root, &ExtractionLimits::default());
+        assert_eq!(result.skills.len(), 1);
+    }
+
+    #[test]
+    fn failed_zip_update_keeps_the_previous_version() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("root");
+        let limits = ExtractionLimits::default();
+        let zip = write_zip(tmp.path(), "pack.zip", &[Entry::File("SKILL.md", SKILL_V1)]);
+        let v1 = discover_from_zip_in(&zip, "src", &root, &limits);
+        let v1_dir = v1.skills[0].skill_dir.clone();
+
+        // The update holds a valid manifest followed by a link.
+        write_zip(
+            tmp.path(),
+            "pack.zip",
+            &[
+                Entry::File("SKILL.md", SKILL_V2),
+                Entry::Link("references", "/etc"),
+            ],
+        );
+        let failed = discover_from_zip_in(&zip, "src", &root, &limits);
+        let error = failed.error.expect("the failure is reported");
+        assert!(error.contains("links are not allowed"), "{error}");
+        assert!(error.contains("previously extracted version"), "{error}");
+        assert_eq!(failed.skills.len(), 1);
+        assert_eq!(failed.skills[0].skill_dir, v1_dir);
+        assert_eq!(failed.skills[0].body, "Body one");
+        assert!(
+            !failed.old_extraction_dirs.contains(&v1_dir),
+            "the version in use must not be queued for deletion"
+        );
+        assert_eq!(names_in(&root).len(), 1);
+        assert_eq!(names_in(&v1_dir), [".localrouter-extraction", "SKILL.md"]);
+    }
+
+    #[test]
+    fn successful_zip_update_is_a_complete_new_tree() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("root");
+        let limits = ExtractionLimits::default();
+        let zip = write_zip(
+            tmp.path(),
+            "pack.zip",
+            &[
+                Entry::File("SKILL.md", SKILL_V1),
+                Entry::File("scripts/old.sh", b"old"),
+            ],
+        );
+        let v1 = discover_from_zip_in(&zip, "src", &root, &limits);
+        let v1_dir = v1.skills[0].skill_dir.clone();
+
+        write_zip(
+            tmp.path(),
+            "pack.zip",
+            &[
+                Entry::File("SKILL.md", SKILL_V2),
+                Entry::File("scripts/new.sh", b"new"),
+            ],
+        );
+        let v2 = discover_from_zip_in(&zip, "src", &root, &limits);
+        assert!(v2.error.is_none());
+        assert_eq!(v2.skills[0].body, "Body two");
+        // No file of the old version leaks into the new one.
+        assert_eq!(v2.skills[0].scripts, vec!["scripts/new.sh"]);
+        assert_ne!(v2.skills[0].skill_dir, v1_dir);
+        assert_eq!(v2.old_extraction_dirs, vec![v1_dir.clone()]);
+        // The old version stays intact until the manager's delayed cleanup.
+        assert!(v1_dir.join("scripts/old.sh").is_file());
+    }
+
+    #[test]
+    fn cleanup_never_claims_another_archives_extraction() {
+        let hash = "0123456789abcdef0123456789abcdef";
+        assert!(is_extraction_of(&format!("foo-{hash}"), "foo"));
+        assert!(!is_extraction_of(&format!("foo-bar-{hash}"), "foo"));
+        assert!(!is_extraction_of(&format!("foo-{}", &hash[1..]), "foo"));
+        assert!(!is_extraction_of(".staging-foo", "foo"));
+        assert!(!is_extraction_of(&format!("foo{hash}"), "foo"));
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("root");
+        let limits = ExtractionLimits::default();
+        let longer = write_zip(
+            tmp.path(),
+            "foo-bar.zip",
+            &[Entry::File("SKILL.md", SKILL_V1)],
+        );
+        discover_from_zip_in(&longer, "a", &root, &limits);
+        let shorter = write_zip(tmp.path(), "foo.zip", &[Entry::File("SKILL.md", SKILL_V2)]);
+        let result = discover_from_zip_in(&shorter, "b", &root, &limits);
+        assert!(result.old_extraction_dirs.is_empty());
+    }
+
+    #[test]
+    fn same_named_archives_in_different_folders_keep_their_extractions() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("root");
+        let limits = ExtractionLimits::default();
+        for folder in ["a", "b"] {
+            fs::create_dir(tmp.path().join(folder)).unwrap();
+        }
+        let a = write_zip(
+            &tmp.path().join("a"),
+            "pack.zip",
+            &[Entry::File("SKILL.md", SKILL_V1)],
+        );
+        let b = write_zip(
+            &tmp.path().join("b"),
+            "pack.zip",
+            &[Entry::File("SKILL.md", SKILL_V2)],
+        );
+        let a_dir = discover_from_zip_in(&a, "a", &root, &limits).skills[0]
+            .skill_dir
+            .clone();
+        let from_b = discover_from_zip_in(&b, "b", &root, &limits);
+        assert!(
+            from_b.old_extraction_dirs.is_empty(),
+            "claimed a's extraction"
+        );
+
+        // A broken update of b never falls back to a's skills.
+        fs::write(&b, b"not a zip").unwrap();
+        let broken = discover_from_zip_in(&b, "b", &root, &limits);
+        assert_eq!(broken.skills.len(), 1);
+        assert_eq!(broken.skills[0].body, "Body two");
+        assert_ne!(broken.skills[0].skill_dir, a_dir);
+        assert!(!broken.old_extraction_dirs.contains(&a_dir));
+    }
+
+    #[test]
+    fn unreadable_zip_reports_an_error() {
+        let tmp = TempDir::new().unwrap();
+        let zip = tmp.path().join("broken.skill");
+        fs::write(&zip, b"not a zip").unwrap();
+        let result = discover_from_zip_in(
+            &zip,
+            "src",
+            &tmp.path().join("root"),
+            &ExtractionLimits::default(),
+        );
+        assert!(result.skills.is_empty());
+        assert!(result
+            .error
+            .unwrap()
+            .starts_with("not a readable zip archive"));
+        assert!(names_in(&tmp.path().join("root")).is_empty());
     }
 }

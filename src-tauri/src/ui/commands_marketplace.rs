@@ -553,11 +553,8 @@ pub async fn marketplace_delete_skill(
         super::skill_paths::managed_skill_directory(&skills_dir, std::path::Path::new(&skill_path))
             .map_err(|e| format!("Cannot delete skill '{skill_name}': {e}"))?;
 
-    // Delete the skill directory
-    if skill_path_buf.exists() {
-        std::fs::remove_dir_all(&skill_path_buf)
-            .map_err(|e| format!("Failed to delete skill directory: {}", e))?;
-    }
+    // Delete the skill directory, never in the middle of an install of it
+    service.remove_installed_skill(&skill_path_buf).await?;
 
     // Remove path from config
     config_manager

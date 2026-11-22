@@ -3988,6 +3988,7 @@ const mockHandlers: Record<string, (args?: any) => unknown> = {
       kind: path === '~/.localrouter/skills' ? 'user' as const : 'directory' as const,
       exists: true,
       skill_count: mockData.skills.filter(s => s.source_path === path).length,
+      error: null,
     }))
   },
   'get_skill': (args) => mockData.skills.find(s => s.name === args?.name),
