@@ -5,9 +5,7 @@
 //! McpServerManager, SkillManager) is done by Tauri commands which have
 //! access to these managers.
 
-use crate::types::{
-    InstalledServer, InstalledSkill, MarketplaceError, McpInstallConfig, McpServerListing,
-};
+use crate::types::{MarketplaceError, McpInstallConfig, McpServerListing};
 use chrono::Utc;
 use lr_config::{McpAuthConfig, McpServerConfig, McpTransportConfig, McpTransportType};
 use std::collections::HashMap;
@@ -180,22 +178,6 @@ pub fn generate_default_mcp_config(listing: &McpServerListing) -> McpInstallConf
         cwd: None,
         auth_type: "none".to_string(),
         bearer_token: None,
-    }
-}
-
-/// Create the install result for a successfully installed server
-pub fn create_installed_server_result(config: &McpServerConfig) -> InstalledServer {
-    InstalledServer {
-        server_id: config.id.clone(),
-        name: config.name.clone(),
-    }
-}
-
-/// Create the install result for a successfully installed skill
-pub fn create_installed_skill_result(name: &str, path: &str) -> InstalledSkill {
-    InstalledSkill {
-        name: name.to_string(),
-        path: path.to_string(),
     }
 }
 
