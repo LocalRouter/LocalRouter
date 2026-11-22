@@ -292,11 +292,6 @@ impl CompressionService {
     pub fn config(&self) -> &PromptCompressionConfig {
         &self.config
     }
-
-    /// Get model paths
-    pub fn get_paths(&self) -> (&PathBuf, &PathBuf) {
-        (&self.model_path, &self.tokenizer_path)
-    }
 }
 
 // SAFETY: CompressionService's internal model Mutex serializes all GPU access.
