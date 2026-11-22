@@ -1673,15 +1673,18 @@ fn build_subscription_notification(
     push_opt_ins: &[lr_mcp::gateway::ListenOptIn],
     subscription_id: &serde_json::Value,
 ) -> Option<lr_mcp::protocol::JsonRpcNotification> {
-    let sub_type = subscription_type_for_method(&notification.method).or_else(|| {
-        push_opt_ins
+    let opted_in = |key: &str| notifications.get(key).and_then(|v| v.as_bool()) == Some(true);
+    let subscribed = match subscription_type_for_method(&notification.method) {
+        // Filtered by URI below
+        Some("resourceSubscriptions") => true,
+        Some(sub_type) => opted_in(sub_type),
+        // Several push opt-ins may cover one method (`eventsListChanged` and
+        // the wider `events`); any of them the client opted into delivers it
+        None => push_opt_ins
             .iter()
-            .find(|o| o.matches(&notification.method))
-            .map(|o| o.opt_in.as_str())
-    })?;
-    if sub_type != "resourceSubscriptions"
-        && notifications.get(sub_type).and_then(|v| v.as_bool()) != Some(true)
-    {
+            .any(|o| o.matches(&notification.method) && opted_in(&o.opt_in)),
+    };
+    if !subscribed {
         return None;
     }
 
@@ -2238,6 +2241,67 @@ mod tests {
             &accepted,
             &opt_ins,
             &serde_json::json!(9)
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn events_list_changed_passes_under_either_opt_in() {
+        // SEP-3415 names `eventsListChanged`; the relay's wider `events` key
+        // covers the same notification
+        let opt_ins = vec![
+            lr_mcp::gateway::ListenOptIn {
+                opt_in: "eventsListChanged".into(),
+                method_prefix: "notifications/events/list_changed".into(),
+            },
+            lr_mcp::gateway::ListenOptIn {
+                opt_in: "events".into(),
+                method_prefix: "notifications/events/".into(),
+            },
+        ];
+        let changed = notification("notifications/events/list_changed", serde_json::json!({}));
+        let event = notification("notifications/events/event", serde_json::json!({}));
+        let accept = |requested: serde_json::Value| {
+            accepted_opt_ins(requested.as_object().unwrap().clone(), &opt_ins)
+        };
+
+        let sep_key = accept(serde_json::json!({"eventsListChanged": true}));
+        assert!(sep_key.contains_key("eventsListChanged"));
+        assert!(build_subscription_notification(
+            &changed,
+            &sep_key,
+            &opt_ins,
+            &serde_json::json!(1)
+        )
+        .is_some());
+        // The narrow key does not open the stream to event notifications
+        assert!(
+            build_subscription_notification(&event, &sep_key, &opt_ins, &serde_json::json!(1))
+                .is_none()
+        );
+
+        let wide_key = accept(serde_json::json!({"events": true}));
+        assert!(build_subscription_notification(
+            &changed,
+            &wide_key,
+            &opt_ins,
+            &serde_json::json!(1)
+        )
+        .is_some());
+        assert!(build_subscription_notification(
+            &event,
+            &wide_key,
+            &opt_ins,
+            &serde_json::json!(1)
+        )
+        .is_some());
+
+        let neither = accept(serde_json::json!({"eventsListChanged": false}));
+        assert!(build_subscription_notification(
+            &changed,
+            &neither,
+            &opt_ins,
+            &serde_json::json!(1)
         )
         .is_none());
     }

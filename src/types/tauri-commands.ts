@@ -1714,8 +1714,8 @@ export type PushIngressState = 'listening' | 'connecting' | 'reconnecting' | 'id
 export interface PushEventIngressStatus {
   /** The upstream's own event name (`channel.message` for Claude Code channel messages) */
   event: string
-  /** push, poll or channel while LocalRouter listens */
-  ingress_mode: 'push' | 'poll' | 'channel' | null
+  /** push, poll, channel or resource (a held `resources/subscribe`) while LocalRouter listens */
+  ingress_mode: 'push' | 'poll' | 'channel' | 'resource' | null
   state: PushIngressState
   /** Why the last attempt failed (while reconnecting) */
   last_error: string | null
@@ -1897,7 +1897,7 @@ export interface PushEventApprovalDetails {
   /** `<server slug>__<event>` */
   qualified_name: string
   event_id: string
-  /** `push`, `poll` or `channel` (empty for webhook URL approvals) */
+  /** `push`, `poll`, `channel` or `resource` (empty for webhook URL approvals) */
   ingress_mode: string
   /** The event's data as received (`{url}` for webhook URL approvals) */
   data: unknown

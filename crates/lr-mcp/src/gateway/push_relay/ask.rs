@@ -280,6 +280,7 @@ mod tests {
                 ingress: IngressMode::Push,
                 args_key: "{}".into(),
                 origin_session: None,
+                direct: None,
             }),
             held_at: Instant::now(),
             held_at_utc: chrono::Utc::now(),

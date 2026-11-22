@@ -1,6 +1,8 @@
 # Push Relay — relay and translate server push between upstream MCP servers and clients
 
-**Status: implemented on `feat/push-relay` (P0, P1 and webhook egress); under review.**
+**Status: P0, P1 and webhook egress are merged. P2 (resource-update ingress U5 and the Claude
+Channels permission relay) is implemented on `feat/push-relay-p2`, under review — see
+`plan/2026-11-21-PUSH_RELAY_P2.md`. P3 is not started.**
 
 Push Relay is a new Optimize feature. It takes every form of server-initiated push that upstream
 MCP servers offer (MCP Events push/poll/webhook, Claude Code Channels, classic resource updates),
@@ -42,11 +44,11 @@ Prior art this plan builds on:
 
 | Fact | Source |
 | --- | --- |
-| MCP Events is **SEP-3415**, an open draft (Extensions Track), PR modelcontextprotocol/modelcontextprotocol#3415, pinned here at `b08e4f9dd684f39d846d94089487fbeb28e666f5`. No acceptance date. Error codes are provisional. | PR #3415; VocalCord and NetGet both pin this revision |
+| MCP Events is **SEP-3415** (Extensions Track), PR modelcontextprotocol/modelcontextprotocol#3415. The relay was built against `b08e4f9dd684f39d846d94089487fbeb28e666f5`; the SEP was merged as **Final** on 2026-11-19 (merge commit `8a18b4b3292b9f9b3aee73f6325f9f62f19a89f9`). Between the two, capability location, methods, notifications and error codes did not change; `heartbeatMs` (suggested on `events/stream`, granted on `notifications/events/active`) and `x-mcp-header` / `Mcp-Param-*` for subscription arguments were added. | PR #3415; `seps/3415-events-extension.md`; checked 2026-11-21 |
 | Events are defined only for protocol **2026-07-28** (stateless: `server/discover`, per-request `_meta` client capabilities, no `initialize`). NetGet and VocalCord also serve the methods on legacy `initialize` sessions as a backport. | SEP-3415; NetGet `src/mcp_stdio/AGENTS.md` |
 | Server capability: `capabilities.extensions["io.modelcontextprotocol/events"] = {listChanged?}`. ChatGPT and OpenClaw read a **top-level `capabilities.events`** instead, so interoperable servers advertise both. | SEP-3415; experimental-ext-triggers-events issues #8, #17 |
 | Methods: `events/list`; poll `events/poll`; push `events/stream` (`notifications/events/{active,event,heartbeat,error,terminated}`, tagged with `_meta["io.modelcontextprotocol/subscriptionId"]`); webhook `events/subscribe` / `events/unsubscribe` (HTTPS callback, `whsec_` secret, Standard Webhooks signatures, verification challenge, TTL lease). | SEP-3415; VocalCord README |
-| Claude Code Channels: server declares `experimental["claude/channel"] = {}` and sends `notifications/claude/channel {content: string, meta?: Record<string,string>}`; the model sees `<channel source="…" k="v">content</channel>`. No acknowledgement; silently dropped if the session did not opt in. Optional permission relay via `experimental["claude/channel/permission"]`. | code.claude.com/docs/en/channels-reference |
+| Claude Code Channels: server declares `experimental["claude/channel"] = {}` and sends `notifications/claude/channel {content: string, meta?: Record<string,string>}`; the model sees `<channel source="…" k="v">content</channel>`. No acknowledgement; silently dropped if the session did not opt in. Optional permission relay via `experimental["claude/channel/permission"]`: Claude Code sends `notifications/claude/channel/permission_request {request_id, tool_name, description, input_preview}` when a tool-approval dialog opens, and the server may answer `notifications/claude/channel/permission {request_id, behavior: "allow" \| "deny"}`; the local dialog stays open and the first answer wins. v2.1.234+ sends prompts only to servers registered as channels for the session. | code.claude.com/docs/en/channels-reference (permission relay re-read 2026-11-21) |
 | Channels are **stdio only**, research preview, opt-in at launch: `claude --dangerously-load-development-channels server:<name>` (interactive only; ignored with `-p` / Agent SDK); `--channels` accepts only Anthropic's allowlist or an org's `allowedChannelPlugins`; org switch `channelsEnabled`. | code.claude.com/docs/en/channels |
 | On Claude Code's v2 MCP runtime, a channel server that connects on 2026-07-28 is not registered as a channel ("that revision can't carry channel messages"). Claude Code probes stdio servers for 2026-07-28; **a server that does not support that revision connects on the earlier handshake and registers as a channel as before.** | code.claude.com/docs/en/mcp ("MCP client runtimes", "Push messages with channels") |
 | 2026-07-28 replaced the HTTP GET stream and `resources/subscribe` with `subscriptions/listen` (SEP-2575), and moved Tasks to an extension. | 2026-07-28 changelog |
@@ -119,7 +121,7 @@ upstream MCP servers                 LocalRouter                         clients
 | U1 | Events push, `events/stream` | stdio; HTTP (POST with SSE response) | Holds the stream; resumes from the last cursor on reconnect; heartbeat watchdog | 1 |
 | U2 | Events poll, `events/poll` | stdio; HTTP | Polls at the server's `nextPollMs` (floor 1 s), drains immediately while `hasMore`, only while a consumer exists | 1 |
 | U4 | Claude Channels, `notifications/claude/channel` | stdio | Synthetic event type `<server>__channel.message`, payload `{content, meta}` | 1 |
-| U5 | Classic `notifications/resources/updated` | either | Optional synthetic `<server>__resource.updated {uri}` | 2 |
+| U5 | Classic `notifications/resources/updated` | either | Synthetic `<server>__resource.updated {uri, resource}`; the relay holds `resources/subscribe` for a consumer that names a `uri`, and a client's own subscription keeps its native notification, behind the same permission | 2 (done) |
 
 Ingress preference when an upstream offers several modes: **push → poll**. LocalRouter is a
 long-running local process, so holding a stream is cheapest and lowest-latency. Upstream
@@ -161,7 +163,8 @@ of:
 
 - Events push or poll on at least one event type (webhook-only event types do not count);
 - Claude Channels (`experimental["claude/channel"]`);
-- `resources/updated`, if U5 is enabled.
+- `resources/updated` (`resources.subscribe`). U5 is on; its one switch is the internal
+  `PushRelayLimits::resource_update_ingress`.
 
 If nothing qualifies, LocalRouter exposes nothing: no events capability, no channel capability,
 no `<events>` instructions block, no fallback tools. The client sees today's behaviour.
@@ -378,7 +381,10 @@ default was written beside it), `enabled: true` is ignored, and the key is not w
 - **Edits are recorded**: Monitor keeps both the original and the delivered payload (subject to
   privacy settings), so a modification is never invisible.
 - Secret scanning and guardrails can be applied to event payloads in a later phase; v1 only routes
-  them through Monitor's existing redaction.
+  them through Monitor's existing redaction. The same holds for the P2 payloads: a resource
+  update carries only a URI, a relayed permission prompt carries Claude Code's tool input preview
+  to the upstream channel server unscanned (Claude Code masks recognisable credentials itself
+  from v2.1.234).
 
 ### Monitor grouping
 
@@ -579,6 +585,10 @@ to reach a bound quickly.
 | `webhook_retries` | 6 attempts: 5 s, 30 s, 2 min, 10 min, 30 min | Then the subscription is suspended until refreshed |
 | `webhook_max_subscriptions` | 100 per client | Active webhook subscriptions |
 | `webhook_lease` | default 1 h, min 60 s, max 24 h | Subscription TTL |
+| `resource_update_ingress` | on | Whether classic resource updates are an ingress (U5) |
+| `resource_resubscribe` | 5 min | How often an upstream `resources/subscribe` held for a consumer is re-issued (its liveness check) |
+| `permission_pending_cap` | 64 per session | Claude Code permission prompts remembered while they await a verdict; the oldest goes first |
+| `permission_request_ttl` | 1 h | Age after which a permission prompt takes no verdict |
 
 ## Configuration and UI
 
@@ -710,7 +720,7 @@ STDIO bridge and launch flag.
 | --- | --- |
 | P0 | Gateway foundations 1–6; STDIO bridge rewrite and negotiation; Claude Code template default to the STDIO bridge |
 | P1 | Event store, journal and cursors; ingress U1, U2, U4; egress D1, D2, D4, D5 and `/events/watch`; gating; per-event Ask with hold/edit; Monitor `McpPushEvent` and its grouping; internal limits, config and UI; landing page section, docs and demo |
-| P2 | Webhook egress D3; ingress U5; Channels permission relay (`claude/channel/permission`) |
+| P2 | Webhook egress D3 (shipped with P1); ingress U5; Channels permission relay (`claude/channel/permission`) — **done**, design and decisions in `plan/2026-11-21-PUSH_RELAY_P2.md` |
 | P3 | Resource-update hints D6 for VS Code Copilot; guardrails/secret scanning over event payloads |
 
 ## Testing
@@ -740,6 +750,12 @@ upstream that, like VocalCord, offers push and poll only to a client declaring M
 ## Open questions
 
 1. The exact wire form of Claude Code's 2026-07-28 probe, and that declining it yields channel
-   registration — to be captured from a real Claude Code in P0.
-2. SEP-3415 may change before acceptance (capability location, error codes, list-changed
-   transport); re-pin and re-check at implementation time.
+   registration. **Still open** (re-checked 2026-11-21): the Claude Code docs still name no
+   method. The bridge implements the default derived from the 2026-07-28 stdio transport and the
+   TypeScript SDK v2 (`server/discover` answered -32601, `crates/lr-mcp/src/bridge/negotiation.rs`);
+   a capture from a real interactive Claude Code is still missing. The permission relay depends on
+   the same registration.
+2. ~~SEP-3415 may change before acceptance.~~ **Resolved**: Final since 2026-11-19; the deltas and
+   what was applied are in `plan/2026-11-21-PUSH_RELAY_P2.md` ("Open protocol questions"). Not yet
+   applied: `Mcp-Param-*` headers on upstream `events/*` requests for `x-mcp-header`-annotated
+   arguments, and honouring a client's suggested `heartbeatMs`.

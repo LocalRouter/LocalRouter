@@ -28,8 +28,11 @@ The one lossy edge is Claude Code Channels: a channel message carries no cursor,
 | MCP Events stream (`events/stream`) | STDIO, HTTP | Holds the stream, resumes from the last cursor on reconnect, watches heartbeats |
 | MCP Events poll (`events/poll`) | STDIO, HTTP | Polls at the server's suggested interval, only while some app consumes that event type |
 | Claude Code Channel (`notifications/claude/channel`) | STDIO | Becomes the event type `<server>__channel.message` |
+| Resource update (`notifications/resources/updated`) | STDIO, HTTP | Becomes the event type `<server>__resource.updated`, for servers that accept `resources/subscribe` |
 
 When a server offers several modes, LocalRouter prefers the stream, then polling. Upstream subscriptions are opened only while at least one app consumes the event type, and closed when the last one goes.
+
+**Resource updates.** A server that accepts resource subscriptions counts as offering push. Its event `<server>__resource.updated` carries `{"uri", "resource"}`: the URI exactly as `resources/list` shows it, and LocalRouter's name for the resource (`<server>__<name>`). An app watches one resource by passing `uri` as the event's argument (`events/stream`, `events/poll`, `events/subscribe`, or the `filter` of `EventPoll` / `EventWait`); LocalRouter then holds the upstream `resources/subscribe` for as long as some app reads it. Without a `uri`, the app reads the updates of every resource it is already subscribed to. An app that calls `resources/subscribe` itself still receives the native `notifications/resources/updated`, after the same permission as the event: Allow delivers it, Ask holds it for approval, Off drops it.
 
 **Upstream webhooks are not consumed.** Receiving them would need a public inbound HTTPS endpoint, and every webhook-capable server found also offers streaming or polling, which LocalRouter uses instead. An event type a server offers only by webhook is shown in the UI as "webhook-only — not supported".
 
@@ -70,6 +73,8 @@ Each event type resolves to one of three actions, the most specific level winnin
 - **Allow** — the event is delivered and recorded in Monitor.
 - **Ask** — every individual event of that type is held for approval.
 - **Off** — the event type disappears for that client: it is absent from `events/list`, Channels and the fallback tools, and the upstream is not subscribed on that client's behalf.
+
+Three event types are LocalRouter's own names for push that has no MCP Events name: `channel.message` (Claude Code Channel messages), `resource.updated` (resource updates) and `channel.permission` (answers to relayed Claude Code permission prompts, below). They take the same permissions as any other event type of their server.
 
 The global default is the only global control. With it at **Off**, a client receives push only from what its own settings turn on: one event type set to Allow for one client gives that client that event type and nothing else, while every other client sees no push at all. A client nothing reaches is told nothing about push — no capability, tools or instructions — and LocalRouter does no push work for it.
 
@@ -157,6 +162,22 @@ claude --dangerously-load-development-channels server:localrouter
 - After adding a push-capable upstream server, restart `claude`.
 
 Existing HTTP configurations are not rewritten; the client page offers a "switch to STDIO bridge" action, and the HTTP setup remains available as a tools-only alternative.
+
+<!-- @entry push-relay-permission-relay -->
+
+### Claude Code Permission Prompts
+
+A Claude Code channel server can opt in to relay tool-approval prompts, so you can approve or deny a tool call from another device (Claude Code's `claude/channel/permission` capability). LocalRouter relays these between Claude Code and the upstream channel servers that opted in:
+
+1. When at least one upstream server the client can use declares the capability, LocalRouter declares it to Claude Code on the STDIO bridge.
+2. When a permission dialog opens, Claude Code sends the prompt (request id, tool name, description and input preview). LocalRouter forwards those four fields to each such server, on that Claude session's own connection, and records it in Monitor.
+3. The server's answer comes back as the event type `<server>__channel.permission`. LocalRouter accepts it only for a prompt that session has open, only from a server the prompt was sent to, and only once — the first answer wins. It is delivered to that Claude session alone and is never part of the event journal.
+
+The local dialog in the terminal stays open throughout; whichever answer arrives first applies.
+
+The permission of `channel.permission` controls the relay per client and server. **Allow** relays answers as they arrive. **Ask** forwards the prompt but holds each answer in the approval popup, which shows the tool, its description and its input; you can allow it, deny it, or change the answer before it reaches Claude Code. **Off** turns the relay off: the capability is not declared for that server and prompts are not sent to it.
+
+The prompt's input preview can contain commands and file contents, and it goes to the upstream channel server, which typically sends it on to a chat platform. Set `channel.permission` to Off for servers that should not see it.
 
 <!-- @entry push-relay-openclaw -->
 

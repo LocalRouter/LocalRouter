@@ -426,7 +426,7 @@ export function PushEventApprovalCard({
               {details.ingress_mode && (
                 <>
                   <span className="text-muted-foreground">Via:</span>
-                  <span>{details.ingress_mode === "channel" ? "Claude channel" : details.ingress_mode === "test" ? "LocalRouter test source" : `MCP Events (${details.ingress_mode})`}</span>
+                  <span>{details.ingress_mode === "channel" ? "Claude channel" : details.ingress_mode === "resource" ? "Resource update" : details.ingress_mode === "test" ? "LocalRouter test source" : `MCP Events (${details.ingress_mode})`}</span>
                 </>
               )}
             </>

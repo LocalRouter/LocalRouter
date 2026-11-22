@@ -83,6 +83,32 @@ pub fn channel_content(entry: &JournalEntry, max: usize) -> String {
     format!("{}{note}", truncate_bytes(&full, keep))
 }
 
+/// What the approval popup shows for a held Claude Code permission verdict:
+/// which server answered, the answer, and the prompt it answers (present
+/// in `data` once the verdict matched an open prompt).
+pub fn permission_verdict_content(server: &str, data: &serde_json::Value) -> String {
+    let text = |key: &str| data.get(key).and_then(|v| v.as_str()).unwrap_or_default();
+    let answer = match text("behavior") {
+        "allow" => "ALLOW",
+        "deny" => "DENY",
+        _ => "an unknown answer",
+    };
+    let mut out = format!(
+        "[{server}] answers a Claude Code permission prompt with {answer} (request {})",
+        text("request_id")
+    );
+    if !text("tool_name").is_empty() {
+        out.push_str(&format!("\nTool: {}", text("tool_name")));
+    }
+    if !text("description").is_empty() {
+        out.push_str(&format!("\n{}", text("description")));
+    }
+    if !text("input_preview").is_empty() {
+        out.push_str(&format!("\n{}", text("input_preview")));
+    }
+    out
+}
+
 /// The channel message that stands in for events beyond the rate limit.
 pub fn coalesced_content(count: usize) -> String {
     format!(
@@ -209,6 +235,7 @@ mod tests {
             ingress,
             args_key: "{}".into(),
             origin_session: None,
+            direct: None,
         });
         let limits = JournalLimits {
             max_events: 10,
@@ -250,6 +277,25 @@ mod tests {
             json!({"content": "hello", "meta": {"chat": "1"}}),
         );
         assert!(channel_content(&e, 1000).ends_with("\nhello"));
+    }
+
+    #[test]
+    fn permission_verdict_shows_the_answer_and_the_prompt() {
+        let text = permission_verdict_content(
+            "telegram",
+            &json!({"request_id": "abcde", "behavior": "allow", "tool_name": "Bash",
+                "description": "List files", "input_preview": "{\"command\":\"ls\"}"}),
+        );
+        assert_eq!(
+            text,
+            "[telegram] answers a Claude Code permission prompt with ALLOW (request abcde)\n\
+             Tool: Bash\nList files\n{\"command\":\"ls\"}"
+        );
+        let bare = permission_verdict_content(
+            "telegram",
+            &json!({"request_id": "abcde", "behavior": "deny"}),
+        );
+        assert!(bare.ends_with("with DENY (request abcde)"));
     }
 
     #[test]

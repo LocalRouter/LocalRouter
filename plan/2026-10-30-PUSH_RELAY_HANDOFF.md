@@ -146,9 +146,11 @@ returns an uninitialised `Arc<dyn Transport>` (you must send `initialize` /
   gateway session key (`Mcp-Session-Id`-derived key, else client id) before every POST.
 - `subscriptions/listen`: opt-in keys returned by `listen_opt_ins` are accepted when sent as
   `true`, and notifications whose method starts with that opt-in's `method_prefix` pass (tagged
-  with the subscription id). SEP-2575 has no key for events, so the relay names its own (the
-  tests use `events` → `notifications/events/` and `claudeChannel` →
-  `notifications/claude/channel`). Without a relay the filter is unchanged.
+  with the subscription id). The relay offers SEP-3415's `eventsListChanged` →
+  `notifications/events/list_changed`, and its own `events` → `notifications/events/` and
+  `claudeChannel` → `notifications/claude/channel` (which also covers the permission verdict,
+  `notifications/claude/channel/permission`). A notification passes when any opt-in covering
+  it was requested. Without a relay the filter is unchanged.
 
 ## Tests
 
@@ -310,8 +312,9 @@ UI.
 - Monitor "Ask for this event type from now on" is a client config write
   (`set_push_event_permission(.., Some(Ask))`); the Monitor intercept rule with
   `InterceptCategory::PushEvent` turns Allow into Ask while active.
-- Not implemented: U5 / D6 (resource updates), the Channels permission relay, guardrails over
-  payloads (P2/P3 per plan); UI, TS types, docs, website, demo (UI agent).
+- U5 (resource updates) and the Channels permission relay are implemented in P2 — see "Phase 2"
+  at the end of this file. Not implemented: D6 (resource-update hints) and guardrails over
+  payloads (P3 per plan).
 - Real peers: `netget_events_reach_a_client_through_the_real_bridge` (`#[ignore]`d) starts the
   real HTTP server with `netget --mcp --llm-agent` as a stdio upstream and drives it through
   the real `localrouter --mcp-bridge`: legacy handshake advertises `claude/channel` + events,
@@ -327,8 +330,10 @@ UI.
   messages of its own on that connection (it only does after a legacy `initialize`); its MCP
   Events are what reach the client. Channel ingress (U4) is covered by the scripted stdio
   upstream test instead.
-- Not covered by an automated route-level test: the HTTP SSE answer to `events/stream` and the
-  bridge GET-stream registration (exercised by the real bridge run above).
+- The HTTP SSE answer to `events/stream` is covered by
+  `events_stream_route_delivers_resumes_authenticates_and_cleans_up` (`push_relay_e2e_tests.rs`,
+  real server). Still not covered by an automated test: the bridge GET-stream registration
+  (exercised by the real bridge run above).
 
 # Declaring MCP Events to upstreams
 
@@ -400,3 +405,28 @@ permissions, so every event type inherits the global default. Each session's req
 (All: every enabled server; Direct: the one target) bound what it is offered. Nothing about the
 stand-in client is persisted, so permanent Ask decisions for it are not saved. The panel shows
 per-client permission controls only against a client.
+
+# Phase 2 — resource updates and the Channels permission relay
+
+Design, decisions and the open protocol questions: `plan/2026-11-21-PUSH_RELAY_P2.md`.
+
+| Piece | Where |
+| --- | --- |
+| Contract | `gateway/push_relay.rs`: `RESOURCE_UPDATED_NOTIFICATION`, `CLAUDE_CHANNEL_PERMISSION_CAPABILITY`, `CLAUDE_CHANNEL_PERMISSION_REQUEST_NOTIFICATION`, `CLAUDE_CHANNEL_PERMISSION_NOTIFICATION`; `UpstreamPushNotification.resource: Option<ResourceUpdateContext { client_subscribed, resource_name }>`; `PushRelayService::on_client_notification(ctx, method, params)`. |
+| Gateway | `register_notification_handlers_on_transports` hands `notifications/resources/updated` and `notifications/claude/channel/permission` to the relay (raw forwarding when it returns `false`); the client-notification branch hands it `notifications/claude/channel/permission_request`. New: `upstream_notify`, `forward_upstream_notification`, `relay_resource_subscribe` / `relay_resource_unsubscribe`, `GatewaySession::relay_resource_subscriptions`; `handle_resources_unsubscribe` leaves the upstream subscription while the relay holds the URI. |
+| Journal | `IngressMode::Resource`; `Occurrence.direct: Option<DirectDelivery>` (`ResourceUpdated` = also forward the native notification to the subscribing session, `PermissionVerdict` = deliver to the session and never journal); a reader with no arguments reads resource updates of every URI. |
+| Hub | `SubscriptionSpec.resource_uri`; `Runner::resource_loop` (`resources/subscribe`, re-issued every `resource_resubscribe_secs`, `resources/unsubscribe` when the last consumer goes); `UpstreamPort::subscribe_resource` / `unsubscribe_resource` (the session port goes through the gateway's bookkeeping); `UpstreamHub::record_event`; the relay-owned connection passes resource updates to the relay. |
+| Relay | `RESOURCE_EVENT_NAME` (`resource.updated`), `CatalogueEntry.is_resource` / `check_arguments`, `ingest_session_resource`, `ingest_shared_resource`, `release` (the one place an allowed or approved occurrence is delivered), `permission_targets`, `relay_permission_request`, `ingest_verdict`, `pending_permission_requests`. `permission.rs`: wire forms and the per-session table of open prompts. |
+| Limits | `resource_update_ingress`, `resource_resubscribe_secs`, `permission_pending_cap`, `permission_request_ttl_secs`. |
+| UI | `push_source_info` counts resource subscriptions as consumable push and `receiving_clients` counts `resource.updated`; labels for the `resource` ingress and egress and the `client` ingress of a relayed prompt (`push-relay-utils.ts`, `monitor/push-event.ts`, `FirewallApprovalCard.tsx`); no new Tauri command. `channel.permission` and `resource.updated` have no row of their own in the permission tree (as `channel.message` has none): the server-level permission, a config entry, or an "always" decision in the approval popup set them. |
+
+Monitor: a resource update is an `McpPushEvent` with ingress `resource` (egress includes
+`resource` when the native notification was delivered); a forwarded prompt is one with event name
+`<server>__channel.permission_request`, ingress `client`; a verdict is
+`<server>__channel.permission`, ingress `channel`, decision `denied` with an error when it was
+refused (no open prompt, not a server the prompt went to, already answered, reused id).
+
+Also fixed: a downstream `events/stream` whose HTTP client disconnected kept its session slot, its
+cancellation handle and its upstream demand, because the route aborts the request's task and the
+relay cleaned up after the loop. The cleanup is now in drop guards (`StreamSlotGuard`,
+`StreamRegistrationGuard`, `HolderGuard`).

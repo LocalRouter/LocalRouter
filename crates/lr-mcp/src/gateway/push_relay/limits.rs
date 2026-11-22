@@ -78,6 +78,18 @@ pub struct PushRelayLimits {
     pub webhook_lease_min_secs: u64,
     /// Longest webhook subscription TTL accepted.
     pub webhook_lease_max_secs: u64,
+    /// Whether classic resource updates are an ingress (U5): servers that
+    /// declare `resources.subscribe` count as push sources and get the
+    /// `resource.updated` event type. The one switch that turns U5 off.
+    pub resource_update_ingress: bool,
+    /// How often an upstream `resources/subscribe` held for a consumer is
+    /// re-issued (it is idempotent); a failure reconnects.
+    pub resource_resubscribe_secs: u64,
+    /// Claude Code permission prompts remembered per STDIO bridge session
+    /// while they await a verdict; the oldest is forgotten first.
+    pub permission_pending_cap: usize,
+    /// Age after which a permission prompt takes no verdict any more.
+    pub permission_request_ttl_secs: u64,
 }
 
 impl Default for PushRelayLimits {
@@ -109,6 +121,10 @@ impl Default for PushRelayLimits {
             webhook_lease_default_secs: 60 * 60,
             webhook_lease_min_secs: 60,
             webhook_lease_max_secs: 24 * 60 * 60,
+            resource_update_ingress: true,
+            resource_resubscribe_secs: 5 * 60,
+            permission_pending_cap: 64,
+            permission_request_ttl_secs: 60 * 60,
         }
     }
 }
@@ -147,6 +163,14 @@ impl PushRelayLimits {
 
     pub fn downstream_heartbeat(&self) -> Duration {
         Duration::from_secs(self.downstream_heartbeat_secs)
+    }
+
+    pub fn resource_resubscribe(&self) -> Duration {
+        Duration::from_secs(self.resource_resubscribe_secs.max(1))
+    }
+
+    pub fn permission_request_ttl(&self) -> Duration {
+        Duration::from_secs(self.permission_request_ttl_secs)
     }
 
     pub fn poll_max_wait(&self) -> Duration {

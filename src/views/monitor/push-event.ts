@@ -17,6 +17,8 @@ export const PUSH_INGRESS_LABELS: Record<string, string> = {
   push: 'MCP Events stream',
   poll: 'MCP Events poll',
   channel: 'Claude channel',
+  resource: 'Resource update',
+  client: 'Claude Code permission prompt',
   test: 'LocalRouter test source',
 }
 
@@ -27,6 +29,7 @@ export const PUSH_EGRESS_LABELS: Record<string, string> = {
   channel: 'Claude Channels',
   webhook: 'Webhook',
   tools: 'EventPoll / EventWait tools',
+  resource: 'notifications/resources/updated',
 }
 
 /** A record's decision, with the older `blocked` read as `off`. */
