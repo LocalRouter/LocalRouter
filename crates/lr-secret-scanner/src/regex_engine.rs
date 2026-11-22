@@ -13,6 +13,57 @@ use crate::filters::is_placeholder;
 use crate::patterns::builtin::{builtin_patterns, PatternDef};
 use crate::types::{ExtractedText, SecretFinding, SecretRule};
 
+/// Findings of many texts, deduplicated by value as one scan over all of them
+/// deduplicates: the first location of a value is kept, reported under the
+/// most specific rule that matched it anywhere.
+#[derive(Debug, Default)]
+pub struct FindingAccumulator {
+    findings: Vec<SecretFinding>,
+    /// Priority (rule index) of the rule behind each finding.
+    ranks: Vec<usize>,
+    by_value: HashMap<String, usize>,
+}
+
+impl FindingAccumulator {
+    /// Add ranked findings, in text order. Returns the positions of findings
+    /// whose value was not seen before.
+    pub fn add(&mut self, ranked: impl IntoIterator<Item = (usize, SecretFinding)>) -> Vec<usize> {
+        let mut added = Vec::new();
+        for (rank, finding) in ranked {
+            match self.by_value.get(&finding.raw_text) {
+                Some(&i) => {
+                    // Same value seen before: keep the first location,
+                    // but report it under the more specific rule.
+                    if rank < self.ranks[i] {
+                        let message_index = self.findings[i].message_index;
+                        self.findings[i] = SecretFinding {
+                            message_index,
+                            ..finding
+                        };
+                        self.ranks[i] = rank;
+                    }
+                }
+                None => {
+                    self.by_value
+                        .insert(finding.raw_text.clone(), self.findings.len());
+                    added.push(self.findings.len());
+                    self.findings.push(finding);
+                    self.ranks.push(rank);
+                }
+            }
+        }
+        added
+    }
+
+    pub fn findings(&self) -> &[SecretFinding] {
+        &self.findings
+    }
+
+    pub fn into_findings(self) -> Vec<SecretFinding> {
+        self.findings
+    }
+}
+
 /// Metadata about a compiled rule (for UI display)
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct RuleMetadata {
@@ -190,36 +241,24 @@ impl RegexEngine {
         texts: impl IntoIterator<Item = &'a ExtractedText>,
         force_entropy_threshold: Option<f32>,
     ) -> Vec<SecretFinding> {
-        let mut findings: Vec<SecretFinding> = Vec::new();
-        // Priority (rule index) of the rule behind each finding.
-        let mut ranks: Vec<usize> = Vec::new();
-        let mut by_value: HashMap<String, usize> = HashMap::new();
-
+        let mut findings = FindingAccumulator::default();
         for text in texts {
-            for (rank, finding) in self.scan_text(text, force_entropy_threshold) {
-                match by_value.get(&finding.raw_text) {
-                    Some(&i) => {
-                        // Same value seen before: keep the first location,
-                        // but report it under the more specific rule.
-                        if rank < ranks[i] {
-                            let message_index = findings[i].message_index;
-                            findings[i] = SecretFinding {
-                                message_index,
-                                ..finding
-                            };
-                            ranks[i] = rank;
-                        }
-                    }
-                    None => {
-                        by_value.insert(finding.raw_text.clone(), findings.len());
-                        findings.push(finding);
-                        ranks.push(rank);
-                    }
-                }
-            }
+            findings.add(self.scan_text(text, force_entropy_threshold));
         }
+        findings.into_findings()
+    }
 
-        findings
+    /// [`scan_refs`](Self::scan_refs) for texts scanned in separate calls:
+    /// each finding paired with its rule's priority, for a
+    /// [`FindingAccumulator`].
+    pub(crate) fn scan_ranked<'a>(
+        &self,
+        texts: impl IntoIterator<Item = &'a ExtractedText>,
+    ) -> Vec<(usize, SecretFinding)> {
+        texts
+            .into_iter()
+            .flat_map(|text| self.scan_text(text, None))
+            .collect()
     }
 
     /// Findings in one text, in text order, each paired with its rule's

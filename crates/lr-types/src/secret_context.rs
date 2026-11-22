@@ -60,6 +60,10 @@ pub fn current() -> Option<Arc<dyn SecretContext>> {
 pub async fn scope<F: Future>(context: Option<Arc<dyn SecretContext>>, future: F) -> F::Output {
     CONTEXT.scope(context, future).await
 }
+/// [`scope`] for synchronous work, such as one step of a streamed request.
+pub fn sync_scope<R>(context: Option<Arc<dyn SecretContext>>, f: impl FnOnce() -> R) -> R {
+    CONTEXT.sync_scope(context, f)
+}
 
 /// Transactional request adapter. Only an explicit human denial is fatal.
 pub fn protect(context: &dyn SecretContext, value: &mut Value) -> AppResult<()> {
