@@ -54,21 +54,9 @@ impl AskPopupApprovalService {
         }
     }
 
-    pub fn with_popup_trigger(mut self, trigger: Arc<dyn PopupTrigger>) -> Self {
-        self.popup_callback = Some(trigger);
-        self
-    }
-
     /// Resolve a pending tool approval (called by the popup system)
     pub fn resolve_tool_approval(&self, approval_id: &str, status: ApprovalStatus) {
         if let Some((_, sender)) = self.pending_tool_senders.remove(approval_id) {
-            let _ = sender.send(status);
-        }
-    }
-
-    /// Resolve a pending question (called by the popup system)
-    pub fn resolve_question(&self, approval_id: &str, status: QuestionStatus) {
-        if let Some((_, sender)) = self.pending_question_senders.remove(approval_id) {
             let _ = sender.send(status);
         }
     }
