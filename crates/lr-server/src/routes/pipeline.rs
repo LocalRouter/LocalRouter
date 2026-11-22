@@ -1765,59 +1765,15 @@ pub async fn scan_request_for_secrets_fresh(
     // its approval decisions. Gateway/proxy callers supply the parent request.
     let fallback_session = uuid::Uuid::new_v4().to_string();
     let session_id = session_id.unwrap_or(&fallback_session);
-    let config = state.config_manager.get();
     let client = state.client_manager.get_client(client_id);
-
-    // Resolve effective action: per-client override > global
-    let effective_action = client
-        .as_ref()
-        .and_then(|c| c.secret_scanning.action.as_ref())
-        .unwrap_or(&config.secret_scanning.action);
-
-    if *effective_action == lr_config::SecretScanAction::Off {
-        return SecretScanOutcome::Allow;
-    }
-
-    // Check time-based bypass (unless monitor intercept overrides)
-    let bypass = state
-        .secret_scan_approval_tracker
-        .has_valid_bypass(client_id)
-        && !state.mcp_gateway.firewall_manager.should_intercept(
-            client_id,
-            lr_mcp::gateway::firewall::InterceptCategory::SecretScan,
-        );
-
-    // Check if scanner is initialized and has rules
-    // Clone Arc out of the RwLock to avoid holding the guard across await points
-    let scanner = {
-        let guard = state.secret_scanner.read();
-        guard.as_ref().cloned()
-    };
-    let Some(scanner) = scanner else {
-        if *effective_action == lr_config::SecretScanAction::Redact {
-            secret_scan_warning(
-                state,
-                client_id,
-                Some(session_id),
-                &format!(
-                    "{}; request forwarded without new detection",
-                    state.secret_scanner_unavailable_reason()
-                ),
-            );
-        }
+    // The policy context: effective action, bypass, scanner and remembered
+    // decisions. Shared with the streamed request path.
+    let Some(policy) = stream_scan::SecretScanPolicy::resolve(state, client_id, session_id) else {
         return SecretScanOutcome::Allow;
     };
-    if !scanner.has_rules() {
-        if *effective_action == lr_config::SecretScanAction::Redact {
-            secret_scan_warning(
-                state,
-                client_id,
-                Some(session_id),
-                "Secret scanner has no rules; request forwarded without new detection",
-            );
-        }
-        return SecretScanOutcome::Allow;
-    }
+    let effective_action = &policy.action;
+    let bypass = policy.bypass;
+    let scanner = policy.scanner.clone();
 
     // Extract text from request using guardrails text extractor. It recognizes
     // every request shape we inspect (chat messages, Responses input,
@@ -1871,49 +1827,18 @@ pub async fn scan_request_for_secrets_fresh(
 
     // Remembered redactions take priority over ignored values and time bypasses.
     let mut redaction = lr_secret_scanner::redaction::Redaction::default();
-    let scanning = client.as_ref().map(|c| &c.secret_scanning);
-    let salt = scanning.and_then(|s| s.dismiss_salt.as_deref());
-    let entries = scanning
-        .map(|s| s.dismissed_secrets.as_slice())
-        .unwrap_or_default();
-    let redact_digests: Vec<_> = entries
-        .iter()
-        .filter(|e| e.redact)
-        .map(|e| lr_secret_scanner::dismissal::DismissedDigest {
-            hash: &e.hash,
-            iterations: e.iterations,
-            hint: Some(&e.hint),
-        })
-        .collect();
-    let ignore_digests: Vec<_> = entries
-        .iter()
-        .filter(|e| !e.redact)
-        .map(|e| lr_secret_scanner::dismissal::DismissedDigest {
-            hash: &e.hash,
-            iterations: e.iterations,
-            hint: Some(&e.hint),
-        })
-        .collect();
     let mut dismissed_count = 0;
     result.findings.retain(|finding| {
-        if state.secret_dismissal_cache.is_dismissed(
-            &format!("redact:{client_id}"),
-            salt,
-            &redact_digests,
-            &finding.raw_text,
-        ) {
-            redaction.add(&finding.raw_text);
-            false
-        } else if state.secret_dismissal_cache.is_dismissed(
-            client_id,
-            salt,
-            &ignore_digests,
-            &finding.raw_text,
-        ) {
-            dismissed_count += 1;
-            false
-        } else {
-            true
+        match policy.remembered(state, client_id, &finding.raw_text) {
+            stream_scan::Remembered::Redact => {
+                redaction.add(&finding.raw_text);
+                false
+            }
+            stream_scan::Remembered::Ignore => {
+                dismissed_count += 1;
+                false
+            }
+            stream_scan::Remembered::New => true,
         }
     });
 
@@ -2001,52 +1926,13 @@ pub async fn scan_request_for_secrets_fresh(
             .findings
             .iter()
             .map(|finding| {
-                let mut entry =
-                    serde_json::to_value(finding).unwrap_or_else(|_| serde_json::json!({}));
-                let mut value = serde_json::json!({"value":finding.raw_text});
-                if let Some(context) = lr_types::secret_context::current() {
-                    if context.redact_monitor(&mut value).is_err() {
-                        value["value"] = serde_json::Value::Null;
-                    }
-                }
-                if let SecretScanOutcome::Redact(plan) = &outcome {
-                    plan.apply(&mut value);
-                }
-                let redacted = value["value"]
-                    .as_str()
-                    .is_some_and(|v| v != finding.raw_text);
-                entry["value"] = value["value"].clone();
-                entry["redacted"] = serde_json::Value::Bool(redacted);
-                entry["replacement"] = if redacted {
-                    value["value"].clone()
-                } else {
-                    serde_json::Value::Null
-                };
-                entry["action"] = serde_json::Value::String(
-                    if matches!(&outcome, SecretScanOutcome::Deny(_)) {
-                        "blocked"
-                    } else if redacted {
-                        "redacted"
-                    } else {
-                        "allowed"
-                    }
-                    .into(),
-                );
-                if let Some(text) = texts.get(finding.message_index) {
-                    entry["location"] = serde_json::Value::String(text.label.clone());
-                    let position = text.text.find(&finding.raw_text).unwrap_or_default();
-                    let mut start = position.saturating_sub(120);
-                    while !text.text.is_char_boundary(start) {
-                        start += 1;
-                    }
-                    let mut end = (position + finding.raw_text.len() + 120).min(text.text.len());
-                    while !text.text.is_char_boundary(end) {
-                        end -= 1;
-                    }
-                    entry["context_excerpt"] =
-                        serde_json::Value::String(text.text[start..end].to_owned());
-                }
-                entry
+                let location = texts.get(finding.message_index).map(|text| {
+                    (
+                        text.label.as_str(),
+                        stream_scan::finding_excerpt(&text.text, &finding.raw_text),
+                    )
+                });
+                stream_scan::monitor_finding_entry(finding, location, &outcome)
             })
             .collect(),
     );
@@ -3012,6 +2898,8 @@ pub(crate) async fn run_turn_pipeline(
         is_duplicate: false,
     })
 }
+
+pub mod stream_scan;
 
 #[cfg(test)]
 mod tests {
