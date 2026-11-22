@@ -256,10 +256,6 @@ pub(crate) struct FinalizeInputs<'a> {
 pub(crate) struct FinalizeMetrics {
     pub cost: f64,
     pub cost_known: bool,
-    /// Not read by callers today but surfaced here so future streaming
-    /// finalize paths can reuse the same figure without recomputing.
-    #[allow(dead_code)]
-    pub latency_ms: u64,
     pub pricing: lr_providers::PricingInfo,
     pub completed_at: Instant,
 }
@@ -444,7 +440,6 @@ pub(crate) async fn finalize_metrics_and_monitor(
         return FinalizeMetrics {
             cost,
             cost_known,
-            latency_ms,
             pricing,
             completed_at,
         };
@@ -468,7 +463,6 @@ pub(crate) async fn finalize_metrics_and_monitor(
     FinalizeMetrics {
         cost,
         cost_known,
-        latency_ms,
         pricing,
         completed_at,
     }

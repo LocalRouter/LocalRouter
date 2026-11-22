@@ -467,30 +467,6 @@ pub fn build_streaming_response_body(
 
 // ---- Auth & Access Control events ----
 
-/// Emit an AuthError monitor event (middleware-level auth failures).
-pub fn emit_auth_error(
-    state: &AppState,
-    error_type: &str,
-    endpoint: &str,
-    message: &str,
-    status_code: u16,
-) {
-    state.monitor_store.push(
-        MonitorEventType::AuthError,
-        None,
-        None,
-        None,
-        MonitorEventData::AuthError {
-            error_type: error_type.to_string(),
-            endpoint: endpoint.to_string(),
-            message: message.to_string(),
-            status_code,
-        },
-        EventStatus::Error,
-        None,
-    );
-}
-
 /// Emit an AccessDenied monitor event (route-level access control).
 pub fn emit_access_denied(
     state: &AppState,
@@ -633,48 +609,7 @@ pub fn emit_moderation_event(state: &AppState, reason: &str, message: &str, stat
 
 // ---- OAuth events ----
 
-/// Emit an OAuthEvent monitor event.
-pub fn emit_oauth_event(
-    state: &AppState,
-    action: &str,
-    client_id_hint: Option<&str>,
-    message: &str,
-    status_code: u16,
-) {
-    state.monitor_store.push(
-        MonitorEventType::OAuthEvent,
-        client_id_hint.map(|s| s.to_string()),
-        None,
-        None,
-        MonitorEventData::OAuthEvent {
-            action: action.to_string(),
-            client_id_hint: client_id_hint.map(|s| s.to_string()),
-            message: message.to_string(),
-            status_code,
-        },
-        EventStatus::Error,
-        None,
-    );
-}
-
 // ---- Internal error events ----
-
-/// Emit an InternalError monitor event.
-pub fn emit_internal_error(state: &AppState, error_type: &str, message: &str, status_code: u16) {
-    state.monitor_store.push(
-        MonitorEventType::InternalError,
-        None,
-        None,
-        None,
-        MonitorEventData::InternalError {
-            error_type: error_type.to_string(),
-            message: truncate_string(message, 1000),
-            status_code,
-        },
-        EventStatus::Error,
-        None,
-    );
-}
 
 // ---- Guardrail events (combined: request + response) ----
 
@@ -709,63 +644,6 @@ pub fn record_guardrail_scan(
         EventStatus::Complete,
         Some(latency_ms),
     );
-}
-
-/// Emit a pending GuardrailResponseScan event for output safety checks. Returns event ID.
-pub fn emit_guardrail_response_scan(
-    state: &AppState,
-    client_ctx: Option<&ClientAuthContext>,
-    session_id: Option<&str>,
-    direction: &str,
-    text_preview: &str,
-    models_used: Vec<String>,
-) -> String {
-    let (client_id, client_name) = resolve_client_ctx(state, client_ctx);
-    state.monitor_store.push(
-        MonitorEventType::GuardrailResponseScan,
-        client_id,
-        client_name,
-        session_id.map(|s| s.to_string()),
-        MonitorEventData::GuardrailResponseScan {
-            direction: direction.to_string(),
-            text_preview: truncate_string(text_preview, 500),
-            models_used,
-            result: None,
-            flagged_categories: None,
-            action_taken: None,
-            latency_ms: None,
-        },
-        EventStatus::Pending,
-        None,
-    )
-}
-
-/// Complete a GuardrailResponseScan event with the scan result.
-pub fn complete_guardrail_response_scan(
-    state: &AppState,
-    event_id: &str,
-    result: &str,
-    flagged_categories: Vec<lr_monitor::FlaggedCategory>,
-    action_taken: &str,
-    latency_ms: u64,
-) {
-    state.monitor_store.update(event_id, |event| {
-        event.status = EventStatus::Complete;
-        event.duration_ms = Some(latency_ms);
-        if let MonitorEventData::GuardrailResponseScan {
-            result: ref mut r,
-            flagged_categories: ref mut fc,
-            action_taken: ref mut at,
-            latency_ms: ref mut lm,
-            ..
-        } = &mut event.data
-        {
-            *r = Some(result.to_string());
-            *fc = Some(flagged_categories);
-            *at = Some(action_taken.to_string());
-            *lm = Some(latency_ms);
-        }
-    });
 }
 
 // ---- Secret scan events (combined: request + response) ----
@@ -804,35 +682,6 @@ pub fn record_secret_scan(
 }
 
 // ---- Routing events ----
-
-/// Emit a RoutingDecision event when final model routing is determined.
-pub fn emit_routing_decision(
-    state: &AppState,
-    client_ctx: Option<&ClientAuthContext>,
-    session_id: Option<&str>,
-    routing_type: &str,
-    original_model: &str,
-    final_model: &str,
-    candidate_models: Option<Vec<String>>,
-    firewall_action: Option<&str>,
-) {
-    let (client_id, client_name) = resolve_client_ctx(state, client_ctx);
-    state.monitor_store.push(
-        MonitorEventType::RoutingDecision,
-        client_id,
-        client_name,
-        session_id.map(|s| s.to_string()),
-        MonitorEventData::RoutingDecision {
-            routing_type: routing_type.to_string(),
-            original_model: original_model.to_string(),
-            final_model: final_model.to_string(),
-            candidate_models,
-            firewall_action: firewall_action.map(|s| s.to_string()),
-        },
-        EventStatus::Complete,
-        None,
-    );
-}
 
 // ---- Prompt compression events ----
 

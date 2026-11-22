@@ -327,14 +327,6 @@ pub fn check_strategy_permission(strategy: &Strategy) -> HelperResult<()> {
     Ok(())
 }
 
-/// Compatibility wrapper — does not emit monitor events.
-pub fn check_llm_access(client: &Client) -> HelperResult<()> {
-    if client.llm_gateway_enabled() {
-        return Ok(());
-    }
-    Err(ApiErrorResponse::forbidden(llm_denied_reason(client).1))
-}
-
 /// The monitor event code + human message explaining why direct MCP access is denied.
 fn mcp_denied_reason(client: &Client) -> (&'static str, &'static str) {
     if client.is_mcp_via_llm() {
@@ -359,14 +351,6 @@ pub fn check_mcp_access_with_state(state: &AppState, client: &Client) -> HelperR
     let (code, msg) = mcp_denied_reason(client);
     emit_access_denied(state, &client.id, code, msg, 403);
     Err(ApiErrorResponse::forbidden(msg))
-}
-
-/// Compatibility wrapper — does not emit monitor events.
-pub fn check_mcp_access(client: &Client) -> HelperResult<()> {
-    if client.mcp_direct_enabled() {
-        return Ok(());
-    }
-    Err(ApiErrorResponse::forbidden(mcp_denied_reason(client).1))
 }
 
 #[cfg(test)]

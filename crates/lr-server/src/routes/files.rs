@@ -61,7 +61,7 @@ pub(crate) async fn blocking<T: Send + 'static>(
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
-#[allow(dead_code)]
+#[allow(dead_code)] // OpenAPI schema only; the handler reads the multipart body itself.
 pub struct FileUpload {
     #[schema(value_type=String, format=Binary)]
     file: Vec<u8>,
