@@ -1,5 +1,4 @@
 //! Core types for unified OAuth browser flows
-#![allow(dead_code)]
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -14,11 +13,6 @@ impl FlowId {
     /// Generate a new unique flow ID
     pub fn new() -> Self {
         Self(Uuid::new_v4())
-    }
-
-    /// Create a FlowId from an existing UUID
-    pub fn from_uuid(uuid: Uuid) -> Self {
-        Self(uuid)
     }
 
     /// Parse a FlowId from a string
