@@ -659,18 +659,34 @@ impl RequestDedupeFlag {
 /// The running-or-idle proxy service.
 pub struct ProxyService {
     ca: Arc<CertAuthority>,
-    host: String,
+    /// Listen host for the next bind (replaced when the configured host changes).
+    host: Mutex<String>,
     interceptor: Arc<dyn lr_proxy::interceptor::ProxyInterceptor>,
     resolver: Arc<AppClientResolver>,
     dedupe: RequestDedupeFlag,
     usage: Arc<lr_usage::UsageTracker>,
     running: Mutex<Option<RunningProxy>>,
+    /// Serializes start/stop/restart so two lifecycle requests cannot
+    /// interleave (e.g. a server restart racing a config-driven rebind).
+    lifecycle: tokio::sync::Mutex<()>,
 }
 
 struct RunningProxy {
+    /// Host the listener is bound on.
+    host: String,
+    /// Port that was asked for (0 = OS-assigned), to tell whether the
+    /// configured endpoint still matches what is bound.
+    requested_port: u16,
+    /// Port actually bound.
     port: u16,
     shutdown: tokio::sync::oneshot::Sender<()>,
+    /// The accept loop; finished once the listening socket is released.
+    task: tokio::task::JoinHandle<()>,
 }
+
+/// How long [`ProxyService::shutdown`] waits for the accept loop to release
+/// the listening socket before giving up on it.
+const SHUTDOWN_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 impl ProxyService {
     /// Build the service (generates/loads the root CA), without starting it.
@@ -711,13 +727,37 @@ impl ProxyService {
         let interceptor = lr_proxy::active::ActiveInterceptor::new(recorder, firewall);
         Ok(Self {
             ca,
-            host,
+            host: Mutex::new(host),
             interceptor: Arc::new(interceptor),
             resolver: Arc::new(AppClientResolver { client_manager }),
             dedupe,
             usage,
             running: Mutex::new(None),
+            lifecycle: tokio::sync::Mutex::new(()),
         })
+    }
+
+    /// A service with a throwaway CA under `ca_dir` and a recorder-only
+    /// interceptor, for exercising the listener lifecycle without the app.
+    #[cfg(test)]
+    fn for_lifecycle_tests(ca_dir: &std::path::Path) -> Self {
+        Self {
+            ca: Arc::new(CertAuthority::load_or_create(ca_dir).unwrap()),
+            host: Mutex::new("127.0.0.1".to_string()),
+            interceptor: Arc::new(PassiveInterceptor::new(Arc::new(
+                lr_monitor::MonitorEventStore::new(8),
+            ))),
+            resolver: Arc::new(AppClientResolver {
+                client_manager: Arc::new(lr_clients::ClientManager::with_keychain(
+                    vec![],
+                    Arc::new(lr_api_keys::keychain_trait::MockKeychain::new()),
+                )),
+            }),
+            dedupe: RequestDedupeFlag::new(false),
+            usage: Arc::new(lr_usage::UsageTracker::new(Default::default())),
+            running: Mutex::new(None),
+            lifecycle: tokio::sync::Mutex::new(()),
+        }
     }
 
     /// Path to the root CA clients must trust (`NODE_EXTRA_CA_CERTS`).
@@ -726,6 +766,7 @@ impl ProxyService {
     }
 
     /// The bound port, if the proxy is currently running.
+    #[cfg(test)]
     pub fn port(&self) -> Option<u16> {
         self.running.lock().as_ref().map(|r| r.port)
     }
@@ -737,6 +778,11 @@ impl ProxyService {
     /// Start the listener on `port` (0 = OS-assigned). Idempotent: a no-op if
     /// already running. Returns the bound port.
     pub async fn start(&self, port: u16) -> AppResult<u16> {
+        let _lifecycle = self.lifecycle.lock().await;
+        self.start_locked(port).await
+    }
+
+    async fn start_locked(&self, port: u16) -> AppResult<u16> {
         if let Some(r) = self.running.lock().as_ref() {
             return Ok(r.port);
         }
@@ -750,16 +796,17 @@ impl ProxyService {
         .with_dedupe_flag(self.dedupe.0.clone())
         .with_usage_tracker(self.usage.clone());
 
-        let listener = ProxyManager::bind(&self.host, port)
+        let host = self.host.lock().clone();
+        let listener = ProxyManager::bind(&host, port)
             .await
-            .map_err(|e| AppError::Internal(format!("proxy bind {}:{port}: {e}", self.host)))?;
+            .map_err(|e| AppError::Internal(format!("proxy bind {host}:{port}: {e}")))?;
         let bound = listener
             .local_addr()
             .map_err(|e| AppError::Internal(format!("proxy local_addr: {e}")))?
             .port();
 
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             manager
                 .serve(listener, async {
                     let _ = rx.await;
@@ -767,17 +814,20 @@ impl ProxyService {
                 .await;
         });
 
+        tracing::info!("HTTPS inspection proxy listening on {host}:{bound}");
         *self.running.lock() = Some(RunningProxy {
+            host,
+            requested_port: port,
             port: bound,
             shutdown: tx,
+            task,
         });
-        tracing::info!("HTTPS inspection proxy listening on {}:{bound}", self.host);
         Ok(bound)
     }
 
-    /// Stop the listener if running.
-    // TODO(https-proxy): called on config-driven restart / app teardown (follow-up).
-    #[allow(dead_code)]
+    /// Signal the listener to stop, without waiting for the socket to be
+    /// released. For app exit, where nothing rebinds afterwards and the
+    /// caller may not be able to await.
     pub fn stop(&self) {
         if let Some(r) = self.running.lock().take() {
             let _ = r.shutdown.send(());
@@ -785,10 +835,67 @@ impl ProxyService {
         }
     }
 
+    /// Stop the listener and wait until the accept loop has released the
+    /// socket, so the same port can be bound again straight away. Connections
+    /// already being served run to completion on their own tasks. The app
+    /// itself only needs this as part of [`Self::restart`] / [`Self::ensure`];
+    /// at exit it uses [`Self::stop`].
+    #[cfg(test)]
+    pub async fn shutdown(&self) {
+        let _lifecycle = self.lifecycle.lock().await;
+        self.shutdown_locked().await;
+    }
+
+    async fn shutdown_locked(&self) {
+        let Some(running) = self.running.lock().take() else {
+            return;
+        };
+        let _ = running.shutdown.send(());
+        if tokio::time::timeout(SHUTDOWN_WAIT, running.task)
+            .await
+            .is_err()
+        {
+            tracing::warn!(
+                "HTTPS inspection proxy accept loop did not stop within {SHUTDOWN_WAIT:?}"
+            );
+        }
+        tracing::info!("HTTPS inspection proxy stopped");
+    }
+
+    /// Stop the listener (if any) and bind it again on `host:port`. Returns
+    /// the bound port. On a bind failure the proxy is left stopped.
+    pub async fn restart(&self, host: &str, port: u16) -> AppResult<u16> {
+        let _lifecycle = self.lifecycle.lock().await;
+        self.shutdown_locked().await;
+        *self.host.lock() = host.to_string();
+        self.start_locked(port).await
+    }
+
+    /// Make the listener match the configured endpoint: rebinds when the host
+    /// or requested port differs from what is running, or when nothing is
+    /// running (an earlier bind may have failed). Returns `true` when the
+    /// listener was (re)bound, i.e. client proxy URLs may have changed.
+    pub async fn ensure(&self, host: &str, port: u16) -> AppResult<bool> {
+        let _lifecycle = self.lifecycle.lock().await;
+        let matches = self
+            .running
+            .lock()
+            .as_ref()
+            .is_some_and(|r| r.host == host && r.requested_port == port);
+        if matches {
+            return Ok(false);
+        }
+        self.shutdown_locked().await;
+        *self.host.lock() = host.to_string();
+        self.start_locked(port).await.map(|_| true)
+    }
+
     /// The `HTTPS_PROXY` URL for a client (embeds Basic auth).
     pub fn client_proxy_url(&self, client_id: &str, secret: &str) -> Option<String> {
-        self.port()
-            .map(|port| proxy_url(&self.host, port, client_id, secret))
+        let running = self.running.lock();
+        running
+            .as_ref()
+            .map(|r| proxy_url(&r.host, r.port, client_id, secret))
     }
 }
 
@@ -807,6 +914,99 @@ mod tests {
             proxy_url("127.0.0.1", 3626, "cid", "lr-secret"),
             "http://cid:lr-secret@127.0.0.1:3626"
         );
+    }
+
+    async fn port_accepts(port: u16) -> bool {
+        tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .is_ok()
+    }
+
+    #[tokio::test]
+    async fn shutdown_releases_the_port_and_clears_the_client_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = ProxyService::for_lifecycle_tests(dir.path());
+        assert!(svc.client_proxy_url("cid", "sec").is_none());
+
+        let port = svc.start(0).await.unwrap();
+        assert!(svc.is_running());
+        assert!(port_accepts(port).await);
+        assert_eq!(
+            svc.client_proxy_url("cid", "sec").unwrap(),
+            format!("http://cid:sec@127.0.0.1:{port}")
+        );
+
+        svc.shutdown().await;
+        assert!(!svc.is_running());
+        assert!(svc.client_proxy_url("cid", "sec").is_none());
+        // The socket is released by the time shutdown returns, so the same
+        // port can be bound again immediately.
+        assert!(!port_accepts(port).await);
+        let rebound = tokio::net::TcpListener::bind(("127.0.0.1", port)).await;
+        assert!(rebound.is_ok(), "port {port} was still held after shutdown");
+    }
+
+    #[tokio::test]
+    async fn restart_rebinds_the_same_port_without_a_stale_listener() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = ProxyService::for_lifecycle_tests(dir.path());
+        let port = svc.start(0).await.unwrap();
+
+        // Restarting onto the very port that is in use only works if the old
+        // listener is really gone first.
+        let again = svc.restart("127.0.0.1", port).await.unwrap();
+        assert_eq!(again, port);
+        assert!(svc.is_running());
+        assert!(port_accepts(port).await);
+        svc.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn ensure_rebinds_only_when_the_configured_endpoint_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = ProxyService::for_lifecycle_tests(dir.path());
+
+        // Nothing running yet: ensure starts it.
+        assert!(svc.ensure("127.0.0.1", 0).await.unwrap());
+        let first = svc.port().unwrap();
+
+        // Same configured endpoint: left alone, same socket.
+        assert!(!svc.ensure("127.0.0.1", 0).await.unwrap());
+        assert_eq!(svc.port(), Some(first));
+
+        // A different configured port moves the listener; the old one is gone.
+        let free = {
+            let probe = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                .await
+                .unwrap();
+            probe.local_addr().unwrap().port()
+        };
+        assert!(svc.ensure("127.0.0.1", free).await.unwrap());
+        assert_eq!(svc.port(), Some(free));
+        assert!(!port_accepts(first).await);
+        assert!(port_accepts(free).await);
+        svc.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn a_failed_rebind_leaves_the_proxy_stopped_and_retryable() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = ProxyService::for_lifecycle_tests(dir.path());
+        svc.start(0).await.unwrap();
+
+        let blocker = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let taken = blocker.local_addr().unwrap().port();
+        assert!(svc.restart("127.0.0.1", taken).await.is_err());
+        assert!(!svc.is_running());
+        assert!(svc.client_proxy_url("cid", "sec").is_none());
+
+        // Once the port frees up, the next ensure brings the proxy back.
+        drop(blocker);
+        assert!(svc.ensure("127.0.0.1", taken).await.unwrap());
+        assert_eq!(svc.port(), Some(taken));
+        svc.shutdown().await;
     }
 
     fn limit(

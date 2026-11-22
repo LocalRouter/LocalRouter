@@ -14,7 +14,7 @@ use crate::launcher::integrations::{
     aider, claude_code, codex, continue_dev, goose, jsonc, openclaw, opencode, vscode, zed,
 };
 use crate::ui::commands_clients::LaunchResult;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// How the permanent config for a template is produced.
 enum AutoWrite {
@@ -416,6 +416,12 @@ fn goose_config_path() -> PathBuf {
 
 /// Apply a plan's automatic configuration, writing with a backup.
 pub fn apply(plan: &ProxyPlan) -> Result<LaunchResult, String> {
+    apply_in(plan, &backup::default_backup_dir())
+}
+
+/// [`apply`] with an explicit backup directory, so tests keep their backups
+/// (and the pruning of old ones) out of the user's real directory.
+pub fn apply_in(plan: &ProxyPlan, backup_dir: &Path) -> Result<LaunchResult, String> {
     let (Some(auto), Some(path)) = (plan.auto.as_ref(), plan.file.as_ref()) else {
         return Err(
             "Automatic setup isn't available for this tool. Use the manual instructions."
@@ -476,7 +482,7 @@ pub fn apply(plan: &ProxyPlan) -> Result<LaunchResult, String> {
         }
     };
 
-    let backup_path = backup::write_with_backup(path, data.as_bytes())?;
+    let backup_path = backup::write_with_backup_in(path, data.as_bytes(), backup_dir)?;
 
     let mut message = format!("Configured the proxy in {}", path.display());
     message.push_str(&extra_message);
@@ -502,6 +508,11 @@ pub fn apply(plan: &ProxyPlan) -> Result<LaunchResult, String> {
 /// A missing target file means there is nothing to undo — reported as success
 /// rather than an error, so the button is idempotent.
 pub fn unapply(plan: &ProxyPlan) -> Result<LaunchResult, String> {
+    unapply_in(plan, &backup::default_backup_dir())
+}
+
+/// [`unapply`] with an explicit backup directory (see [`apply_in`]).
+pub fn unapply_in(plan: &ProxyPlan, backup_dir: &Path) -> Result<LaunchResult, String> {
     let (Some(undo), Some(path)) = (plan.undo.as_ref(), plan.file.as_ref()) else {
         return Err("There is nothing for LocalRouter to undo for this tool.".to_string());
     };
@@ -598,7 +609,7 @@ pub fn unapply(plan: &ProxyPlan) -> Result<LaunchResult, String> {
         });
     };
 
-    let backup_path = backup::write_with_backup(path, data.as_bytes())?;
+    let backup_path = backup::write_with_backup_in(path, data.as_bytes(), backup_dir)?;
 
     let mut message = format!("Removed the proxy configuration from {}", path.display());
     message.push_str(&extra_message);

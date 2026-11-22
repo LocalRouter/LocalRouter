@@ -1063,7 +1063,10 @@ pub async fn rotate_client_secret(
     client_manager: State<'_, Arc<lr_clients::ClientManager>>,
     config_manager: State<'_, ConfigManager>,
     provider_registry: State<'_, Arc<lr_providers::registry::ProviderRegistry>>,
+    app: tauri::AppHandle,
 ) -> Result<String, String> {
+    use tauri::Manager;
+
     token_store.revoke_client_tokens(&client_id);
 
     tracing::info!("Rotating secret for client: {}", client_id);
@@ -1071,6 +1074,12 @@ pub async fn rotate_client_secret(
     let new_secret = client_manager
         .rotate_secret(&client_id)
         .map_err(|e| e.to_string())?;
+
+    // A tool configured for the HTTPS proxy carries the secret in its proxy
+    // URL; rewrite it, or the tool is locked out until reconfigured by hand.
+    if let Some(sync) = app.try_state::<crate::launcher::proxy_sync::ProxyClientSync>() {
+        sync.clients_changed();
+    }
 
     // If sync_config is enabled, update external config with new secret
     let config = config_manager.get();
@@ -4083,6 +4092,7 @@ pub async fn configure_client_proxy(
     }
 
     let plan = proxy_setup::plan_for(template_id.as_deref(), Some(&proxy_url), &ca_cert_path);
+    let _guard = crate::launcher::EXTERNAL_CONFIG_LOCK.lock();
     proxy_setup::apply(&plan)
 }
 
@@ -4111,6 +4121,7 @@ pub async fn unconfigure_client_proxy(
     // Undo does not need a running proxy — the config may well be why the
     // user's tool is broken.
     let plan = proxy_setup::plan_for(template_id.as_deref(), None, &ca_cert_path);
+    let _guard = crate::launcher::EXTERNAL_CONFIG_LOCK.lock();
     proxy_setup::unapply(&plan)
 }
 
@@ -4394,8 +4405,6 @@ pub async fn try_it_out_app(
         models,
         llm_mode: client.llm_mode,
         mcp_mode: client.mcp_mode,
-        proxy_url: None,
-        ca_cert_path: None,
     })
 }
 
@@ -4448,12 +4457,12 @@ pub async fn configure_app_permanent(
             models,
             llm_mode: client.llm_mode,
             mcp_mode: client.mcp_mode,
-            proxy_url: None,
-            ca_cert_path: None,
         };
+        let _guard = launcher::EXTERNAL_CONFIG_LOCK.lock();
         return integration.sync_config(&ctx);
     }
 
+    let _guard = launcher::EXTERNAL_CONFIG_LOCK.lock();
     integration.configure_permanent(&base_url, &client_secret, &client_id)
 }
 
@@ -4598,11 +4607,6 @@ pub async fn sync_client_config_inner(
         vec![]
     };
 
-    // Proxy connection info for clients in a proxy llm_mode.
-    // TODO(https-proxy): populate from the ProxyManager (bound port + root CA
-    // path) once it is wired into the launcher. None disables proxy sync.
-    let (proxy_url, ca_cert_path): (Option<String>, Option<String>) = (None, None);
-
     let ctx = launcher::ConfigSyncContext {
         base_url,
         client_secret,
@@ -4610,10 +4614,11 @@ pub async fn sync_client_config_inner(
         models,
         llm_mode: client.llm_mode,
         mcp_mode: client.mcp_mode,
-        proxy_url,
-        ca_cert_path,
     };
 
+    // HTTPS-proxy config is not written here: it is applied explicitly
+    // (`configure_client_proxy`) and kept current by `launcher::proxy_sync`.
+    let _guard = launcher::EXTERNAL_CONFIG_LOCK.lock();
     integration.sync_config(&ctx).map(Some)
 }
 

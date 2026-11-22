@@ -825,6 +825,26 @@ async fn run_gui_mode() -> anyhow::Result<()> {
             app.manage(server_manager.clone());
             app.manage(app_router.clone());
             if let Some(proxy) = proxy_service.clone() {
+                // Keeps the listener bound where the config says, and tool
+                // configs that were set up for the proxy pointing at it:
+                // rebinds on a server restart or a changed `proxy.host/port`,
+                // rewrites a configured tool's proxy URL when the port or the
+                // client's secret changes, and removes it when the client
+                // leaves proxy mode or is deleted.
+                let proxy_sync = launcher::proxy_sync::ProxyClientSync::spawn(
+                    proxy.clone(),
+                    config_manager.clone(),
+                    client_manager.clone(),
+                );
+                let sync = proxy_sync.clone();
+                app.listen("clients-changed", move |_event| sync.clients_changed());
+                let sync = proxy_sync.clone();
+                app.listen("config-changed", move |_event| sync.config_changed());
+                let sync = proxy_sync.clone();
+                app.listen("server-restart-requested", move |_event| {
+                    sync.restart_requested()
+                });
+                app.manage(proxy_sync);
                 app.manage(proxy);
             }
             if let Some(reverse) = reverse_proxy_service.clone() {
@@ -3137,6 +3157,12 @@ async fn run_gui_mode() -> anyhow::Result<()> {
                 // Engines are child processes; don't leave them running. This
                 // may run inside the async runtime, so it must not block on it.
                 exit_supervisor.stop_all_blocking();
+                // Stop accepting proxied connections. Tool configs are left
+                // as they are: like permanent gateway config, they are meant
+                // to still be in place when the app starts again.
+                if let Some(proxy) = app.try_state::<Arc<launcher::proxy::ProxyService>>() {
+                    proxy.stop();
+                }
                 // Stop usage polling and write the usage state, whose saves
                 // are otherwise spaced 30 s apart.
                 if let Some(poller) = app.try_state::<Arc<ui::usage_poller::UsagePoller>>() {
