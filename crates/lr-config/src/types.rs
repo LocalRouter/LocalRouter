@@ -1458,14 +1458,6 @@ impl McpServerAccess {
     pub fn has_any_access(&self) -> bool {
         !matches!(self, McpServerAccess::None)
     }
-
-    /// Get the list of specific servers if in Specific mode
-    pub fn specific_servers(&self) -> Option<&Vec<String>> {
-        match self {
-            McpServerAccess::Specific(servers) => Some(servers),
-            _ => None,
-        }
-    }
 }
 
 /// Skills access control configuration
@@ -1499,14 +1491,6 @@ impl SkillsAccess {
     /// Check if any skills access is granted
     pub fn has_any_access(&self) -> bool {
         !matches!(self, SkillsAccess::None)
-    }
-
-    /// Get the list of skill names (for Specific mode)
-    pub fn specific_skills(&self) -> Option<&Vec<String>> {
-        match self {
-            SkillsAccess::Specific(names) => Some(names),
-            _ => None,
-        }
     }
 }
 
@@ -2086,15 +2070,6 @@ impl FirewallRules {
         }
         // Fallback
         &self.default_policy
-    }
-
-    /// Check if any rules are configured (non-default)
-    pub fn has_any_rules(&self) -> bool {
-        !matches!(self.default_policy, FirewallPolicy::Allow)
-            || !self.server_rules.is_empty()
-            || !self.tool_rules.is_empty()
-            || !self.skill_rules.is_empty()
-            || !self.skill_tool_rules.is_empty()
     }
 }
 
@@ -2696,14 +2671,6 @@ pub struct CodingAgentsPermissions {
 }
 
 impl CodingAgentsPermissions {
-    /// Resolve permission for a specific agent
-    pub fn resolve_agent(&self, agent_prefix: &str) -> PermissionState {
-        self.agents
-            .get(agent_prefix)
-            .cloned()
-            .unwrap_or_else(|| self.global.clone())
-    }
-
     /// Check if any agent access is possible
     pub fn has_any_access(&self) -> bool {
         self.global.is_enabled() || self.agents.values().any(|s| s.is_enabled())
@@ -5059,36 +5026,6 @@ impl ProviderConfig {
             enabled: true,
             provider_config: Some(serde_json::json!({
                 "base_url": "http://localhost:4891/v1"
-            })),
-            api_key_ref: None,
-            free_tier: None,
-            models: Default::default(),
-        }
-    }
-
-    /// Create default LocalAI provider configuration
-    pub fn default_localai() -> Self {
-        Self {
-            name: "LocalAI".to_string(),
-            provider_type: ProviderType::LocalAI,
-            enabled: true,
-            provider_config: Some(serde_json::json!({
-                "base_url": "http://localhost:8080/v1"
-            })),
-            api_key_ref: None,
-            free_tier: None,
-            models: Default::default(),
-        }
-    }
-
-    /// Create default llama.cpp provider configuration
-    pub fn default_llamacpp() -> Self {
-        Self {
-            name: "llama.cpp".to_string(),
-            provider_type: ProviderType::LlamaCpp,
-            enabled: true,
-            provider_config: Some(serde_json::json!({
-                "base_url": "http://localhost:8080/v1"
             })),
             api_key_ref: None,
             free_tier: None,

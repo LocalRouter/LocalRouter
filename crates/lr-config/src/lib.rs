@@ -3,8 +3,6 @@
 //! Handles loading, saving, and managing application configuration.
 //! Supports file watching and event emission for real-time config updates.
 
-#![allow(dead_code)]
-
 use chrono::Utc;
 use lr_types::{AppError, AppResult};
 use parking_lot::RwLock;
@@ -638,34 +636,6 @@ impl ConfigManager {
         })?;
 
         Ok(())
-    }
-
-    /// Rename a strategy (clears parent if changing from default name)
-    pub fn rename_strategy(&self, strategy_id: &str, new_name: &str) -> AppResult<()> {
-        // First check if strategy exists
-        {
-            let cfg = self.config.read();
-            if !cfg.strategies.iter().any(|s| s.id == strategy_id) {
-                return Err(AppError::Config("Strategy not found".into()));
-            }
-        }
-
-        self.update(|cfg| {
-            if let Some(strategy) = cfg.strategies.iter_mut().find(|s| s.id == strategy_id) {
-                // Check if renaming from default pattern
-                if let Some(parent_id) = &strategy.parent {
-                    if let Some(client) = cfg.clients.iter().find(|c| c.id == *parent_id) {
-                        let default_name = format!("{}'s strategy", client.name);
-                        if strategy.name == default_name && new_name != default_name {
-                            // Clear parent when customizing name
-                            strategy.parent = None;
-                        }
-                    }
-                }
-
-                strategy.name = new_name.to_string();
-            }
-        })
     }
 }
 

@@ -235,69 +235,6 @@ fn migrate_to_v2(mut config: AppConfig) -> AppResult<AppConfig> {
     Ok(config)
 }
 
-/// Migrate OAuthClientConfig to unified Client
-#[allow(dead_code)]
-fn migrate_oauth_client_to_client(
-    oauth_client: &super::OAuthClientConfig,
-    keychain: &dyn lr_api_keys::keychain_trait::KeychainStorage,
-) -> AppResult<(super::Client, String)> {
-    use crate::Client;
-
-    // Retrieve the old OAuth client secret from keychain
-    let old_service = "LocalRouter-OAuthClients";
-    let secret = keychain
-        .get(old_service, &oauth_client.id)?
-        .ok_or_else(|| {
-            lr_types::AppError::Config(format!(
-                "OAuth client secret not found in keychain: {}",
-                oauth_client.id
-            ))
-        })?;
-
-    // Create new client with preserved client_id
-    // Note: strategy_id would need to be created/assigned separately
-    let mut client = Client::new_with_strategy(oauth_client.name.clone(), String::new());
-
-    // Store secret in new keychain location
-    let new_service = "LocalRouter-Clients";
-    keychain.store(new_service, &client.id, &secret)?;
-
-    // Delete old keychain entry
-    if let Err(e) = keychain.delete(old_service, &oauth_client.id) {
-        tracing::warn!(
-            "Failed to delete old OAuth client from keychain ({}): {}",
-            oauth_client.id,
-            e
-        );
-    }
-
-    // Copy linked server IDs to mcp_server_access
-    client.mcp_server_access = if oauth_client.linked_server_ids.is_empty() {
-        crate::McpServerAccess::None
-    } else {
-        crate::McpServerAccess::Specific(oauth_client.linked_server_ids.clone())
-    };
-
-    // OAuth clients don't have LLM provider access by default
-    client.allowed_llm_providers = vec![];
-
-    // Preserve enabled status
-    client.enabled = oauth_client.enabled;
-
-    // Preserve timestamps
-    client.created_at = oauth_client.created_at;
-    if let Some(last_used) = oauth_client.last_used {
-        client.last_used = Some(last_used);
-    }
-
-    info!(
-        "Migrated OAuth client '{}' ({}) to unified client",
-        oauth_client.name, oauth_client.client_id
-    );
-
-    Ok((client, secret))
-}
-
 /// Migrate to version 3: Skills system
 ///
 /// Adds default skills configuration and skills_access to clients.
