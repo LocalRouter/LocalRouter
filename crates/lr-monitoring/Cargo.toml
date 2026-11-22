@@ -9,7 +9,6 @@ description = "Metrics collection and monitoring for LocalRouter"
 
 [dependencies]
 lr-types = { workspace = true }
-lr-config = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }

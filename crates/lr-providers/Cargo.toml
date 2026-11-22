@@ -33,10 +33,8 @@ async-stream = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
 parking_lot = { workspace = true }
-dashmap = { workspace = true }
 base64 = { workspace = true }
 utoipa = { workspace = true }
-ollama-rs = { workspace = true }
 keyring = { workspace = true }
 anyhow = { workspace = true }
 sha2 = { workspace = true }

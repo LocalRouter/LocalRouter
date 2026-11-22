@@ -237,7 +237,6 @@ SOFTWARE.
 | oauth2 | 4.4.2 | MIT OR Apache-2.0 | https://github.com/ramosbugs/oauth2-rs |
 | objc | 0.2.7 | MIT | http://github.com/SSheldon/rust-objc |
 | objc2 | 0.6.3 | MIT | https://github.com/madsmtm/objc2 |
-| ollama-rs | 0.2.2 | MIT | — |
 | once_cell | 1.21.3 | MIT OR Apache-2.0 | https://github.com/matklad/once_cell |
 | onig | 6.5.1 | MIT | https://github.com/iwillspeak/rust-onig |
 | open | 5.3.3 | MIT | https://github.com/Byron/open-rs |
