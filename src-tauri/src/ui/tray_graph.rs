@@ -2,9 +2,6 @@
 //!
 //! Generates 32x32 PNG sparkline graphs showing token usage over time.
 
-#![allow(dead_code)]
-
-use chrono::{DateTime, Utc};
 use image::{codecs::png::PngEncoder, ImageEncoder, Rgba, RgbaImage};
 use std::io::Cursor;
 use tracing::error;
@@ -25,10 +22,9 @@ pub enum TrayOverlay {
 }
 
 /// Data point for graph rendering
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub struct DataPoint {
-    /// Timestamp of this data point
-    pub timestamp: DateTime<Utc>,
     /// Total tokens (input + output)
     pub total_tokens: u64,
 }
@@ -40,8 +36,6 @@ pub struct GraphConfig {
     pub foreground: Rgba<u8>,
     /// Background color (can be transparent)
     pub background: Rgba<u8>,
-    /// Whether this is a template icon (macOS adaptive)
-    pub template_mode: bool,
 }
 
 impl GraphConfig {
@@ -57,26 +51,24 @@ impl GraphConfig {
         Self {
             foreground: Rgba([0, 0, 0, 255]), // Black; macOS recolors at draw time
             background: Rgba([0, 0, 0, 0]),   // Transparent
-            template_mode: true,
         }
     }
 
     /// Create config for Windows/Linux (fixed color)
+    // Only called by the non-macOS `platform_graph_config` (and tests).
+    #[cfg_attr(all(target_os = "macos", not(test)), allow(dead_code))]
     pub fn windows_linux() -> Self {
         Self {
             foreground: Rgba([0, 120, 215, 255]),   // Blue
             background: Rgba([240, 240, 240, 255]), // Light gray
-            template_mode: false,
         }
     }
-
-    /// Legacy: Create config for macOS template mode (not used anymore)
-    #[allow(dead_code)]
+    /// White-on-transparent template config used by the rendering tests.
+    #[cfg(test)]
     pub fn macos_template() -> Self {
         Self {
-            foreground: Rgba([255, 255, 255, 255]), // White (inverted by macOS)
-            background: Rgba([0, 0, 0, 0]),         // Transparent
-            template_mode: true,
+            foreground: Rgba([255, 255, 255, 255]),
+            background: Rgba([0, 0, 0, 0]),
         }
     }
 }
@@ -124,69 +116,6 @@ impl StatusDotColors {
             AggregateHealthStatus::Green => Self::green(dark_mode),
             AggregateHealthStatus::Yellow => Self::yellow(dark_mode),
             AggregateHealthStatus::Red => Self::red(dark_mode),
-        }
-    }
-}
-
-/// Draw a filled circle (status dot) on the image
-///
-/// # Arguments
-/// * `img` - The image to draw on
-/// * `center_x` - X coordinate of the center
-/// * `center_y` - Y coordinate of the center
-/// * `radius` - Radius of the circle
-/// * `color` - Fill color
-fn draw_filled_circle(
-    img: &mut RgbaImage,
-    center_x: i32,
-    center_y: i32,
-    radius: i32,
-    color: Rgba<u8>,
-) {
-    let width = img.width() as i32;
-    let height = img.height() as i32;
-
-    for y in (center_y - radius)..=(center_y + radius) {
-        for x in (center_x - radius)..=(center_x + radius) {
-            // Check if within image bounds
-            if x >= 0 && x < width && y >= 0 && y < height {
-                // Check if within circle using distance formula
-                let dx = x - center_x;
-                let dy = y - center_y;
-                if dx * dx + dy * dy <= radius * radius {
-                    img.put_pixel(x as u32, y as u32, color);
-                }
-            }
-        }
-    }
-}
-
-/// Draw a hollow circle (ring) on the image
-fn draw_hollow_circle(
-    img: &mut RgbaImage,
-    center_x: i32,
-    center_y: i32,
-    outer_radius: i32,
-    thickness: i32,
-    color: Rgba<u8>,
-) {
-    let inner_radius = outer_radius - thickness;
-    let inner_radius_sq = inner_radius * inner_radius;
-    let outer_radius_sq = outer_radius * outer_radius;
-    let width = img.width() as i32;
-    let height = img.height() as i32;
-
-    for y in (center_y - outer_radius)..=(center_y + outer_radius) {
-        for x in (center_x - outer_radius)..=(center_x + outer_radius) {
-            if x >= 0 && x < width && y >= 0 && y < height {
-                let dx = x - center_x;
-                let dy = y - center_y;
-                let dist_sq = dx * dx + dy * dy;
-                // Draw if within the ring (between inner and outer radius)
-                if dist_sq <= outer_radius_sq && dist_sq >= inner_radius_sq {
-                    img.put_pixel(x as u32, y as u32, color);
-                }
-            }
         }
     }
 }
@@ -286,105 +215,6 @@ fn draw_question_mark(img: &mut RgbaImage, color: Rgba<u8>) {
     }
 }
 
-/// Draw a thick line between two points using Bresenham's algorithm with thickness
-fn draw_thick_line(
-    img: &mut RgbaImage,
-    x0: i32,
-    y0: i32,
-    x1: i32,
-    y1: i32,
-    thickness: i32,
-    color: Rgba<u8>,
-) {
-    let width = img.width() as i32;
-    let height = img.height() as i32;
-    let half_t = thickness / 2;
-
-    let dx = (x1 - x0).abs();
-    let dy = (y1 - y0).abs();
-    let sx = if x0 < x1 { 1 } else { -1 };
-    let sy = if y0 < y1 { 1 } else { -1 };
-    let mut err = dx - dy;
-
-    let mut x = x0;
-    let mut y = y0;
-
-    loop {
-        // Draw a filled circle at each point for thickness
-        for ty in -half_t..=half_t {
-            for tx in -half_t..=half_t {
-                if tx * tx + ty * ty <= half_t * half_t {
-                    let px = x + tx;
-                    let py = y + ty;
-                    if px >= 0 && px < width && py >= 0 && py < height {
-                        img.put_pixel(px as u32, py as u32, color);
-                    }
-                }
-            }
-        }
-
-        if x == x1 && y == y1 {
-            break;
-        }
-
-        let e2 = 2 * err;
-        if e2 > -dy {
-            err -= dy;
-            x += sx;
-        }
-        if e2 < dx {
-            err += dx;
-            y += sy;
-        }
-    }
-}
-
-/// Draw the LocalRouter logo (two circles connected by S-curve)
-///
-/// Draws two hollow circles at opposite corners connected by a wavy routing line.
-/// The logo is drawn with low opacity so the graph bars can be seen through it.
-fn draw_logo(img: &mut RgbaImage, base_color: Rgba<u8>) {
-    // Use the base color but with very low alpha for transparency
-    let color = Rgba([base_color[0], base_color[1], base_color[2], 60]); // ~24% opacity
-
-    // Logo fits in the graph area (approximately 3-28 in both dimensions)
-    // Scale from 100x100 viewBox to ~26x26 pixel area
-    // Top-left circle: originally at (20, 20) with r=12 → scaled to (8, 8) with r=4
-    // Bottom-right circle: originally at (80, 80) with r=12 → scaled to (24, 24) with r=4
-
-    // Draw top-left hollow circle
-    draw_hollow_circle(img, 8, 8, 5, 2, color);
-
-    // Draw bottom-right hollow circle
-    draw_hollow_circle(img, 24, 24, 5, 2, color);
-
-    // Draw the S-curve connecting them
-    // Original path: M 32 22 C 75 15, 90 40, 50 50 C 10 60, 25 85, 68 78
-    // Simplified to a series of line segments approximating the curve
-    // Scale factor: 0.26, offset: 3
-
-    // Approximate the bezier curve with line segments
-    // Points along the curve (scaled from 100x100 to 32x32 with offset 3):
-    let curve_points: [(i32, i32); 9] = [
-        (11, 9),  // Start near top-left circle
-        (14, 8),  // Curve up-right
-        (18, 9),  // Continue right
-        (20, 12), // Curve down
-        (16, 16), // Center area
-        (12, 18), // Curve left
-        (10, 21), // Continue down-left
-        (14, 24), // Curve right
-        (20, 23), // End near bottom-right circle
-    ];
-
-    // Draw lines connecting the points
-    for i in 0..curve_points.len() - 1 {
-        let (x0, y0) = curve_points[i];
-        let (x1, y1) = curve_points[i + 1];
-        draw_thick_line(img, x0, y0, x1, y1, 3, color);
-    }
-}
-
 /// Height of the tray icon and side length of a full graph pane.
 ///
 /// 36px maps 1:1 onto Retina device pixels once macOS scales the image to
@@ -411,6 +241,7 @@ const CUTOUT_SIZE: u32 = 13;
 /// Scaling configuration: 1 pixel = 5 tokens while the P95 fits.
 pub const TOKENS_PER_PIXEL: u64 = 5;
 /// Bar height available in a full-size graph pane.
+#[cfg(test)]
 pub const MAX_BAR_HEIGHT: u32 = PANE_SIZE - 2 * (BORDER_WIDTH + INNER_MARGIN); // 30
 
 /// Gap between panes and between a stacked label and its graph.
@@ -418,6 +249,7 @@ pub const PANE_GAP: u32 = 6;
 /// Height reserved for a label drawn above content (glyph + spacing).
 const LABEL_ROW_HEIGHT: u32 = crate::ui::tray_font::ABOVE_LABEL_GLYPH_HEIGHT + 3;
 /// Height of a graph pane drawn under a label (≈ 60 % of full size).
+#[cfg(test)]
 pub const SMALL_GRAPH_HEIGHT: u32 = PANE_SIZE - LABEL_ROW_HEIGHT;
 /// Vertical margin around a number inside its box.
 const NUMBER_MARGIN: u32 = 3;
@@ -462,6 +294,7 @@ pub fn scale_reference<'a>(values: impl IntoIterator<Item = &'a u64>) -> u64 {
 /// Bar height in pixels for one value in a full-size pane: fixed 5
 /// tokens/px while the reference fits, otherwise scaled to the reference.
 /// Zero values stay zero; non-zero values are at least 1px.
+#[cfg(test)]
 pub fn bar_height(value: u64, scale_reference: u64) -> u32 {
     bar_height_with(
         value,
@@ -665,6 +498,7 @@ fn render_pane(
 /// Creates a filled vertical bar chart showing token usage over time,
 /// exactly `GRAPH_WIDTH` bars wide, with a rounded 1px frame and the
 /// optional overlay in the carved-out top-left corner.
+#[cfg(test)]
 pub fn generate_graph(
     data_points: &[DataPoint],
     config: &GraphConfig,
@@ -1150,7 +984,6 @@ pub fn platform_graph_config(_dark_mode: bool) -> GraphConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Duration;
 
     #[test]
     fn test_generate_empty_graph() {
@@ -1163,10 +996,7 @@ mod tests {
     #[test]
     fn test_generate_single_point_graph() {
         let config = GraphConfig::macos_template();
-        let data = vec![DataPoint {
-            timestamp: Utc::now(),
-            total_tokens: 1000,
-        }];
+        let data = vec![DataPoint { total_tokens: 1000 }];
         let png = generate_graph(&data, &config, TrayOverlay::None, false);
         assert!(png.is_some());
         assert!(!png.unwrap().is_empty());
@@ -1175,13 +1005,11 @@ mod tests {
     #[test]
     fn test_generate_multiple_points_graph() {
         let config = GraphConfig::macos_template();
-        let now = Utc::now();
         let mut data = Vec::new();
 
         // Create 15 data points with varying token counts
         for i in 0..15 {
             data.push(DataPoint {
-                timestamp: now - Duration::minutes(15 - i),
                 total_tokens: (i * 100) as u64,
             });
         }
@@ -1194,20 +1022,16 @@ mod tests {
     #[test]
     fn test_fixed_scale() {
         let config = GraphConfig::macos_template();
-        let now = Utc::now();
 
         // Test with small numbers (should use fixed scale: 1px = 5 tokens)
         let data = vec![
             DataPoint {
-                timestamp: now - Duration::minutes(2),
                 total_tokens: 50, // Should be 10px
             },
             DataPoint {
-                timestamp: now - Duration::minutes(1),
                 total_tokens: 100, // Should be 20px
             },
             DataPoint {
-                timestamp: now,
                 total_tokens: 150, // Should be 30px (max fixed scale)
             },
         ];
@@ -1220,22 +1044,14 @@ mod tests {
     #[test]
     fn test_auto_scale() {
         let config = GraphConfig::macos_template();
-        let now = Utc::now();
 
         // Test with large numbers (should trigger auto-scaling)
         let data = vec![
             DataPoint {
-                timestamp: now - Duration::minutes(2),
                 total_tokens: 1_000,
             },
-            DataPoint {
-                timestamp: now - Duration::minutes(1),
-                total_tokens: 500,
-            },
-            DataPoint {
-                timestamp: now,
-                total_tokens: 750,
-            },
+            DataPoint { total_tokens: 500 },
+            DataPoint { total_tokens: 750 },
         ];
 
         let png = generate_graph(&data, &config, TrayOverlay::None, false);
@@ -1252,37 +1068,23 @@ mod tests {
     #[test]
     fn test_windows_linux_config() {
         let config = GraphConfig::windows_linux();
-        assert!(!config.template_mode);
         assert_eq!(config.foreground, Rgba([0, 120, 215, 255]));
-    }
-
-    #[test]
-    fn test_macos_template_config() {
-        let config = GraphConfig::macos_template();
-        assert!(config.template_mode);
-        assert_eq!(config.foreground, Rgba([255, 255, 255, 255]));
-        assert_eq!(config.background, Rgba([0, 0, 0, 0])); // Transparent
     }
 
     #[test]
     fn test_percentile_scaling_with_outlier() {
         let config = GraphConfig::macos_template();
-        let now = Utc::now();
 
         // Test with an outlier: most values around 100-120, but one at 1000
         // P95 should be around 120, not 1000, so graph should use 120 as scale reference
         let mut data = Vec::new();
         for i in 0..20 {
             data.push(DataPoint {
-                timestamp: now - Duration::minutes(20 - i),
                 total_tokens: 100 + ((i % 3) * 10) as u64, // 100, 110, 120, repeated
             });
         }
         // Add one outlier
-        data.push(DataPoint {
-            timestamp: now,
-            total_tokens: 1000,
-        });
+        data.push(DataPoint { total_tokens: 1000 });
 
         let png = generate_graph(&data, &config, TrayOverlay::None, false);
         assert!(png.is_some());
@@ -1295,13 +1097,11 @@ mod tests {
     #[test]
     fn test_consistent_tokens_over_time() {
         let config = GraphConfig::macos_template();
-        let now = Utc::now();
 
         // Test with consistent token counts (simulating the user's scenario)
         let mut data = Vec::new();
-        for i in 0..26 {
+        for _ in 0..26 {
             data.push(DataPoint {
-                timestamp: now - Duration::minutes(26 - i),
                 total_tokens: 100, // Consistent 100 tokens per minute
             });
         }
@@ -1373,10 +1173,7 @@ mod tests {
     fn test_graph_with_lr_letters() {
         // Test that graph renders with LR letters overlay
         let config = GraphConfig::macos_template();
-        let data = vec![DataPoint {
-            timestamp: Utc::now(),
-            total_tokens: 100,
-        }];
+        let data = vec![DataPoint { total_tokens: 100 }];
         let png = generate_graph(&data, &config, TrayOverlay::None, false);
         assert!(png.is_some());
         assert!(!png.unwrap().is_empty());
@@ -1386,10 +1183,7 @@ mod tests {
     fn test_graph_with_warning_overlay() {
         // Test that graph renders with warning overlay
         let config = GraphConfig::macos_template();
-        let data = vec![DataPoint {
-            timestamp: Utc::now(),
-            total_tokens: 100,
-        }];
+        let data = vec![DataPoint { total_tokens: 100 }];
         let png = generate_graph(
             &data,
             &config,
@@ -1482,10 +1276,8 @@ mod tests {
 
     #[test]
     fn single_pane_matches_generate_graph() {
-        let now = Utc::now();
         let data: Vec<DataPoint> = (0..30)
             .map(|i| DataPoint {
-                timestamp: now - Duration::seconds(30 - i),
                 total_tokens: (i as u64 * 7) % 90,
             })
             .collect();
@@ -1853,12 +1645,9 @@ mod tests {
     fn write_test_graph_to_file() {
         use std::fs::File;
         use std::io::Write;
-
-        let now = Utc::now();
         let mut data = Vec::new();
         for i in 0..26 {
             data.push(DataPoint {
-                timestamp: now - Duration::seconds(26 - i),
                 total_tokens: (i as u64 * 5) + 10, // Varying values
             });
         }

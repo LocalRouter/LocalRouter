@@ -14,8 +14,6 @@
 //! - Submenu structure for clients
 //! - Header text format ("LocalRouter on {host}:{port}")
 
-#![allow(dead_code)]
-
 use crate::ui::tray::{rebuild_tray_menu, UpdateNotificationState};
 use lr_clients::ClientManager;
 use lr_config::{ConfigManager, McpMode};
@@ -874,7 +872,6 @@ pub(crate) async fn handle_copy_url<R: Runtime>(app: &AppHandle<R>) -> tauri::Re
 //
 //     Ok(())
 // }
-#[allow(dead_code)]
 pub(crate) async fn handle_prioritized_list<R: Runtime>(
     app: &AppHandle<R>,
     key_id: &str,

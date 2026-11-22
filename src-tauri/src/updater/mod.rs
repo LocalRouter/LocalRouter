@@ -3,30 +3,13 @@
 //! Handles background update check scheduling and configuration.
 //! The actual update checking is done by the Tauri updater plugin from the frontend.
 
-#![allow(dead_code)]
-
 use chrono::{DateTime, Utc};
 use lr_config::{ConfigManager, UpdateConfig, UpdateMode};
 use lr_utils::install_source::InstallSource;
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_updater::UpdaterExt;
 use tracing::{debug, error, info, warn};
-
-/// Update information returned to the frontend
-/// This matches the structure from @tauri-apps/plugin-updater
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UpdateInfo {
-    /// Latest available version
-    pub version: String,
-    /// Release notes in markdown
-    pub notes: String,
-    /// Download URL for this platform
-    pub download_url: String,
-    /// Release date
-    pub published_at: String,
-}
 
 /// Save the last check timestamp to config
 pub async fn save_last_check_timestamp(config_manager: &ConfigManager) -> Result<(), String> {

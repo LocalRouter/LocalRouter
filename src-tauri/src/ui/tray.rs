@@ -2,8 +2,6 @@
 //!
 //! Handles system tray icon and menu.
 
-#![allow(dead_code)]
-
 use crate::ui::tray_menu::{
     build_tray_menu, copy_to_clipboard, handle_add_mcp_to_client, handle_copy_mcp_bearer,
     handle_copy_mcp_url, handle_copy_proxy_ca_path, handle_copy_proxy_command,

@@ -54,9 +54,9 @@ impl ConfigSyncContext {
 }
 
 /// Trait for all app integrations
-#[allow(dead_code)]
 pub trait AppIntegration: Send + Sync {
     /// Human-readable name
+    #[allow(dead_code)] // Integration metadata; only asserted by tests today.
     fn name(&self) -> &str;
 
     /// Check if the app binary is installed and return its path/version
