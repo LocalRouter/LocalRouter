@@ -1625,3 +1625,86 @@ async fn client_denial_by_in_flight_requests_says_when_the_window_frees_up() {
     gate.add_permits(1);
     first.await.unwrap().unwrap();
 }
+
+// ============================================================================
+// n > 1 on providers that answer one choice
+// ============================================================================
+
+fn n_request(model: &str, n: u32) -> CompletionRequest {
+    let mut request = request(model);
+    request.n = Some(n);
+    request
+}
+
+#[tokio::test]
+async fn n_choices_are_topped_up_from_a_single_choice_provider() {
+    let h = harness(vec![ok("a")]).await;
+    h.limit_client(vec![RateLimiter::new(
+        RateLimitType::InputTokens,
+        1_000_000.0,
+        60,
+    )]);
+
+    let (response, _) = h
+        .router
+        .complete(&h.client_id, n_request("a/m", 3))
+        .await
+        .unwrap();
+
+    assert_eq!(h.script("a").calls(), 3);
+    let indexes: Vec<u32> = response.choices.iter().map(|c| c.index).collect();
+    assert_eq!(indexes, vec![0, 1, 2]);
+    assert_eq!(response.usage.prompt_tokens, 3 * PROMPT_TOKENS);
+    assert_eq!(response.usage.completion_tokens, 3 * COMPLETION_TOKENS);
+    // Every call's usage is charged.
+    assert_eq!(
+        h.recorded(RateLimitType::InputTokens).await,
+        (3 * PROMPT_TOKENS) as f64
+    );
+}
+
+#[tokio::test]
+async fn n_of_one_or_unset_makes_a_single_call() {
+    let h = harness(vec![ok("a")]).await;
+    h.router
+        .complete(&h.client_id, n_request("a/m", 1))
+        .await
+        .unwrap();
+    h.complete("a/m").await.unwrap();
+    assert_eq!(h.script("a").calls(), 2);
+}
+
+#[tokio::test]
+async fn a_failed_top_up_fails_the_request_but_charges_what_ran() {
+    let h = harness(vec![ok("a")]).await;
+    h.limit_client(vec![RateLimiter::new(
+        RateLimitType::InputTokens,
+        1_000_000.0,
+        60,
+    )]);
+    let script = h.script("a").clone();
+    let probed = script.clone();
+    script.probe(move || {
+        if probed.calls() == 3 {
+            probed.set(Behavior::Fail(Fail::Unavailable));
+        }
+    });
+
+    let error = h
+        .router
+        .complete(&h.client_id, n_request("a/m", 4))
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, AppError::ProviderUnavailable { .. }),
+        "{error:?}"
+    );
+    // Stopped at the failure, no further calls.
+    assert_eq!(h.script("a").calls(), 3);
+    // The two calls that answered are still charged.
+    assert_eq!(
+        h.recorded(RateLimitType::InputTokens).await,
+        (2 * PROMPT_TOKENS) as f64
+    );
+}

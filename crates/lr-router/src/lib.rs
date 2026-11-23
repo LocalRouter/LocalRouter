@@ -24,6 +24,7 @@ pub mod endpoint_cache;
 pub mod explanation;
 pub mod free_tier;
 mod messages;
+mod n_choices;
 mod native_operations;
 pub use native_operations::NativeDispatch;
 mod privacy;
@@ -1777,6 +1778,9 @@ impl Router {
             request.endpoint_type(),
             self.provider_registry.routing_revision(),
         );
+        let requested_choices = modified_request.n;
+        let single_choice = (requested_choices.unwrap_or(1) > 1)
+            .then(|| n_choices::single_choice_request(&modified_request));
         // Execute the completion
         let mut response = match lr_providers::messages::dispatch_complete(
             provider_instance.as_ref(),
@@ -1801,6 +1805,33 @@ impl Router {
         drop(observation);
         if let Some(handle) = &explicit_session_handle {
             handle.record(provider, model);
+        }
+        // `n > 1` on a provider that answered fewer choices: ask for the
+        // rest one at a time. A failure still charges the calls that
+        // succeeded before it is returned.
+        let mut top_up_error = None;
+        if let Some(single_choice) = &single_choice {
+            for _ in 0..n_choices::missing(requested_choices, &response) {
+                match lr_providers::messages::dispatch_complete(
+                    provider_instance.as_ref(),
+                    single_choice.clone(),
+                )
+                .await
+                {
+                    Ok(extra) if extra.choices.is_empty() => {
+                        top_up_error = Some(AppError::Provider(format!(
+                            "Provider '{provider}' returned no choice for an additional n > 1 completion"
+                        )));
+                        break;
+                    }
+                    Ok(extra) => n_choices::merge(&mut response, extra),
+                    Err(e) => {
+                        self.record_retry_hint(provider, model, &e);
+                        top_up_error = Some(e);
+                        break;
+                    }
+                }
+            }
         }
         if let Some(accounting) =
             lr_providers::session::prompt_cache_accounting(&pricing, &response.usage)
@@ -1844,6 +1875,9 @@ impl Router {
         response.model = model.to_string();
 
         accounting.await;
+        if let Some(e) = top_up_error {
+            return Err(e);
+        }
         if let Some(ticket) = cache_ticket {
             if response_cache::cacheable_chat_response(&response) {
                 let details = response.usage.prompt_tokens_details.as_ref();
