@@ -14,10 +14,12 @@
 //!   512 MiB). The reservation lasts until the response body is finished,
 //!   because the parsed request lives that long. A request that cannot
 //!   reserve within the wait (`server.large_body_wait_ms`, 3 s) gets a 503
-//!   with `Retry-After`. All three are read live per request; a changed
-//!   budget takes effect for new requests while requests already holding
-//!   permits release them into the budget they came from, so the bytes held
-//!   at once briefly stay within the old plus the new budget.
+//!   with `Retry-After`. All three are read live per request. A changed
+//!   budget resizes the one semaphore in place: growing adds permits at
+//!   once; shrinking removes the free permits and records the rest as a
+//!   debt that requests already holding permits pay as they release them,
+//!   so no new reservation is granted until the bytes held fall under the
+//!   new budget.
 //!
 //! Every layer below reads the same live limit, and a body rejected here is
 //! answered with the structured 413/503 regardless of how the extractor that
@@ -57,11 +59,81 @@ const ACCEPTED: u8 = 0;
 const TOO_LARGE: u8 = 1;
 const BUSY: u8 = 2;
 
-/// The budget's semaphore and its size in permits. Replaced as a whole when
-/// the configured budget changes.
+/// The budget's semaphore and its configured size in permits.
+///
+/// The semaphore is never replaced. Invariant: permits held plus permits
+/// available minus `debt` equals `units`, and `debt` is non-zero only while
+/// no permit is available (restored by [`Budget::settle`] before each
+/// reservation when a cancelled waiter broke it), so a new reservation is
+/// granted only from the configured budget.
 struct Budget {
     semaphore: Arc<Semaphore>,
     units: usize,
+    /// Permits still to remove after the budget shrank below what in-flight
+    /// requests hold: forgotten instead of returned when they are released.
+    debt: usize,
+}
+
+impl Budget {
+    /// Resize to `units`, paying any debt first when growing and removing
+    /// free permits first when shrinking.
+    fn resize(&mut self, units: usize) {
+        if units > self.units {
+            let grow = units - self.units;
+            let paid = grow.min(self.debt);
+            self.debt -= paid;
+            self.semaphore.add_permits(grow - paid);
+        } else if units < self.units {
+            let shrink = self.units - units;
+            let removed = self.semaphore.forget_permits(shrink);
+            self.debt += shrink - removed;
+        }
+        self.units = units;
+    }
+
+    /// Pay debt from free permits. A waiter that gave up returns the permits
+    /// it was partly assigned straight to the semaphore, bypassing the debt;
+    /// this takes them back before the next reservation.
+    fn settle(&mut self) {
+        if self.debt > 0 {
+            self.debt -= self.semaphore.forget_permits(self.debt);
+        }
+    }
+}
+
+/// Permits a request holds from the budget. Released into the budget when
+/// dropped, after paying any debt a shrunk budget left.
+struct Reservation {
+    permit: Option<OwnedSemaphorePermit>,
+    budget: Arc<Mutex<Budget>>,
+}
+
+impl Reservation {
+    fn merge(&mut self, more: OwnedSemaphorePermit) {
+        match self.permit.as_mut() {
+            Some(held) => held.merge(more),
+            None => self.permit = Some(more),
+        }
+    }
+}
+
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        let Some(mut permit) = self.permit.take() else {
+            return;
+        };
+        // Released under the lock, so a concurrent resize sees either the
+        // permits held or the permits returned, never neither.
+        let mut budget = self.budget.lock();
+        let pay = budget.debt.min(permit.num_permits());
+        if pay > 0 {
+            if let Some(paid) = permit.split(pay) {
+                paid.forget();
+                budget.debt -= pay;
+            }
+        }
+        drop(permit);
+    }
 }
 
 /// Shared state of the body-limit middleware for one server instance.
@@ -110,6 +182,7 @@ impl BodyLimits {
             budget: Arc::new(Mutex::new(Budget {
                 semaphore: Arc::new(Semaphore::new(units)),
                 units,
+                debt: 0,
             })),
             overridden,
             fixed: None,
@@ -122,18 +195,15 @@ impl BodyLimits {
             .unwrap_or_else(|| self.config.large_body_limits())
     }
 
-    /// The semaphore of a budget of `bytes`, replacing the current one if the
-    /// configured size changed. Permits held from a replaced semaphore go
-    /// back to it and are dropped with it.
+    /// The budget's semaphore and size in permits for a budget of `bytes`,
+    /// resized first if the configured size changed.
     fn budget_for(&self, bytes: usize) -> (Arc<Semaphore>, usize) {
         let units = budget_units(bytes);
         let mut budget = self.budget.lock();
         if budget.units != units {
-            *budget = Budget {
-                semaphore: Arc::new(Semaphore::new(units)),
-                units,
-            };
+            budget.resize(units);
         }
+        budget.settle();
         (budget.semaphore.clone(), budget.units)
     }
 
@@ -160,6 +230,17 @@ impl BodyLimits {
     pub(crate) fn available_bytes(&self) -> usize {
         self.budget.lock().semaphore.available_permits() * UNIT
     }
+
+    /// Bytes still to be removed from what in-flight requests hold.
+    #[cfg(test)]
+    pub(crate) fn debt_bytes(&self) -> usize {
+        self.budget.lock().debt * UNIT
+    }
+
+    #[cfg(test)]
+    pub(crate) fn resize_budget(&self, bytes: usize) {
+        self.budget_for(bytes);
+    }
 }
 
 /// Permits for a budget of `bytes` (at least one).
@@ -167,8 +248,8 @@ fn budget_units(bytes: usize) -> usize {
     bytes.div_ceil(UNIT).clamp(1, Semaphore::MAX_PERMITS)
 }
 
-/// Permits for `bytes`, capped at the whole budget so one request larger than
-/// the budget can still run alone instead of waiting forever.
+/// Permits for `bytes`, capped at the whole (current) budget so one request
+/// larger than the budget can still run alone instead of waiting forever.
 fn units_for(bytes: usize, budget_units: usize) -> usize {
     bytes.div_ceil(UNIT).min(budget_units)
 }
@@ -212,7 +293,7 @@ pub async fn middleware(
     if declared.is_some_and(|length| length > limit as u64) {
         return too_large(limit).into_response();
     }
-    let holder: Arc<Mutex<Option<OwnedSemaphorePermit>>> = Arc::new(Mutex::new(None));
+    let holder: Arc<Mutex<Option<Reservation>>> = Arc::new(Mutex::new(None));
     let mut reserved = 0;
     if let Some(length) = declared.map(|length| length as usize) {
         if length > settings.threshold {
@@ -220,7 +301,10 @@ pub async fn middleware(
             let acquire = budget.clone().acquire_many_owned(units as u32);
             match tokio::time::timeout(settings.wait, acquire).await {
                 Ok(Ok(permit)) => {
-                    *holder.lock() = Some(permit);
+                    *holder.lock() = Some(Reservation {
+                        permit: Some(permit),
+                        budget: limits.budget.clone(),
+                    });
                     reserved = units;
                 }
                 _ => return busy().into_response(),
@@ -235,7 +319,7 @@ pub async fn middleware(
         limit,
         threshold: settings.threshold,
         reserved,
-        budget_units,
+        budget: limits.budget.clone(),
         semaphore: PollSemaphore::new(budget),
         holder: holder.clone(),
         pending: None,
@@ -291,9 +375,11 @@ struct GuardedBody {
     limit: usize,
     threshold: usize,
     reserved: usize,
-    budget_units: usize,
+    /// Read for the current size: a body larger than a budget that shrank
+    /// meanwhile still runs alone once the budget is free.
+    budget: Arc<Mutex<Budget>>,
     semaphore: PollSemaphore,
-    holder: Arc<Mutex<Option<OwnedSemaphorePermit>>>,
+    holder: Arc<Mutex<Option<Reservation>>>,
     pending: Option<Frame<Bytes>>,
     deadline: Option<Pin<Box<tokio::time::Sleep>>>,
     wait: Duration,
@@ -323,7 +409,12 @@ impl http_body::Body for GuardedBody {
         let this = self.get_mut();
         loop {
             if this.pending.is_some() {
-                let wanted = units_for(this.seen, this.budget_units);
+                let units = {
+                    let mut budget = this.budget.lock();
+                    budget.settle();
+                    budget.units
+                };
+                let wanted = units_for(this.seen, units);
                 if wanted > this.reserved {
                     let step = wanted - this.reserved;
                     match this.semaphore.poll_acquire_many(cx, step as u32) {
@@ -333,7 +424,12 @@ impl http_body::Body for GuardedBody {
                             let mut holder = this.holder.lock();
                             match holder.as_mut() {
                                 Some(held) => held.merge(permit),
-                                None => *holder = Some(permit),
+                                None => {
+                                    *holder = Some(Reservation {
+                                        permit: Some(permit),
+                                        budget: this.budget.clone(),
+                                    })
+                                }
                             }
                         }
                         Poll::Ready(None) => return this.reject(Rejected::Busy),
@@ -387,7 +483,7 @@ impl http_body::Body for GuardedBody {
 /// response is finished or dropped.
 struct HoldReservation {
     inner: Body,
-    _holder: Arc<Mutex<Option<OwnedSemaphorePermit>>>,
+    _holder: Arc<Mutex<Option<Reservation>>>,
 }
 
 impl http_body::Body for HoldReservation {
