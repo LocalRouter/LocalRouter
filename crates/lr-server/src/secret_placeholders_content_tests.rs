@@ -657,3 +657,81 @@ async fn audio_and_image_edit_handlers_scan_their_prompts() {
         }
     }
 }
+
+/// An image edit the client may not make is refused before its prompt is
+/// scanned: no Ask or Notify popup opens for a request that is refused.
+#[tokio::test]
+async fn a_refused_image_edit_opens_no_secret_scan_popup() {
+    use axum::extract::FromRequest;
+    for action in [
+        lr_config::SecretScanAction::Ask,
+        lr_config::SecretScanAction::Notify,
+    ] {
+        let (_root, state) = with_action(action.clone());
+        state
+            .config_manager
+            .update(|config| {
+                config.strategies[0].model_permissions.global = lr_config::PermissionState::Off;
+                config.strategies[0].model_permissions.providers.clear();
+                config.strategies[0].model_permissions.models.clear();
+            })
+            .unwrap();
+        let owner = state.config_manager.get().clients[0].id.clone();
+        let secret = secret();
+        let request = upload(&[
+            ("model", None, b"provider/model"),
+            ("prompt", None, secret.as_bytes()),
+            ("image", Some("a.png"), b"png"),
+        ]);
+        let multipart = axum::extract::Multipart::from_request(request, &())
+            .await
+            .unwrap();
+        let storage: Arc<dyn lr_api_keys::KeychainStorage> =
+            Arc::new(lr_api_keys::MockKeychain::new());
+        let vault = Arc::new(Vault::for_client(storage, &owner));
+        let auth = AuthContext {
+            api_key_id: owner,
+            credential_scope: None,
+            model_selection: None,
+        };
+        // Inside the boundary's vault scope, so Ask could mask and would
+        // open its popup if the scan ran; the popup would block the handler.
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            crate::content_scan::with_form_vault(
+                vault,
+                crate::routes::image_edits(State(state.clone()), Extension(auth), None, multipart),
+            ),
+        )
+        .await
+        .expect("refused without waiting for a popup");
+        let error = result.expect_err("refused");
+        assert_eq!(
+            error.status,
+            axum::http::StatusCode::FORBIDDEN,
+            "{action:?}"
+        );
+        assert_ne!(
+            error.error.error.code.as_deref(),
+            Some("secret_scan_unmaskable"),
+            "{action:?}: refused for access, not by the scan"
+        );
+        assert!(
+            !state
+                .mcp_gateway
+                .firewall_manager
+                .list_pending()
+                .iter()
+                .any(|p| p.is_secret_scan_request),
+            "{action:?}: no secret scan popup"
+        );
+        // The unscanned prompt is not recorded with the refusal.
+        for summary in state.monitor_store.list(0, 100, None).events {
+            let event = state.monitor_store.get(&summary.id).unwrap();
+            assert!(
+                !serde_json::to_string(&event).unwrap().contains(VALUE),
+                "{action:?}: the prompt reached a monitor event"
+            );
+        }
+    }
+}

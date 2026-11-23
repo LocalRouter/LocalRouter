@@ -44,6 +44,11 @@ pub(crate) struct StagedInstall {
     /// startup [`recover`] of another LocalRouter instance sharing the data
     /// directory leaves it alone.
     lock: Option<std::fs::File>,
+    /// Held while an installed version is being replaced and until the
+    /// replaced version is removed with the staging directory (fields drop
+    /// after `Drop::drop`): skill readers in this process wait out a path
+    /// that is missing meanwhile (see [`lr_utils::fs::PathReplace`]).
+    replace: Option<lr_utils::fs::PathReplace>,
 }
 
 /// Lock file inside each staging directory.
@@ -98,6 +103,7 @@ impl StagedInstall {
             dir,
             keep: false,
             lock: Some(lock),
+            replace: None,
         })
     }
 
@@ -129,10 +135,23 @@ impl StagedInstall {
             }
         };
         if had_previous {
+            // Covers both ways below: a reader may resolve the skill
+            // directory to the old version just before an exchange and look
+            // up a file in it after the drop removed it, and two renames
+            // leave the directory missing in between.
+            self.replace = Some(lr_utils::fs::PathReplace::begin());
             // Where the OS can exchange the two directories in one step, the
             // skill directory never goes missing; the old version ends up in
             // `new`, which the drop removes with the rest of the staging.
-            match lr_utils::fs::exchange_paths(&new, &target) {
+            #[cfg(test)]
+            let exchange = if tests::TWO_STEP_ONLY.with(std::cell::Cell::get) {
+                Ok(false)
+            } else {
+                lr_utils::fs::exchange_paths(&new, &target)
+            };
+            #[cfg(not(test))]
+            let exchange = lr_utils::fs::exchange_paths(&new, &target);
+            match exchange {
                 Ok(true) => return Ok(target),
                 Ok(false) => {}
                 Err(e) => warn!(
@@ -621,7 +640,11 @@ mod tests {
         assert!(tree(&data.path().join(STAGING_DIR)).is_empty());
     }
 
-    /// Readers never find an installed skill missing while it is updated.
+    /// Readers never find an installed skill missing while it is updated
+    /// with an atomic exchange. They retry while a replace is in progress: a
+    /// lookup that resolved the skill directory to the old version just
+    /// before the exchange finds that version's files removed with the
+    /// staging directory right after it.
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn an_update_never_leaves_the_skill_directory_missing() {
@@ -633,7 +656,11 @@ mod tests {
         std::thread::scope(|scope| {
             scope.spawn(|| {
                 while !done.load(std::sync::atomic::Ordering::SeqCst) {
-                    if std::fs::symlink_metadata(target.join("SKILL.md")).is_err() {
+                    if lr_utils::fs::retry_while_missing(|| {
+                        std::fs::symlink_metadata(target.join("SKILL.md"))
+                    })
+                    .is_err()
+                    {
                         missing.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     }
                 }
@@ -658,6 +685,59 @@ mod tests {
         // The old versions went with their staging directories.
         assert!(tree(&skills.join(STAGING_DIR)).is_empty());
         assert!(!target.join("scripts").exists());
+    }
+
+    thread_local! {
+        /// Makes `promote` on this thread skip the atomic exchange, as on a
+        /// filesystem without one.
+        pub(super) static TWO_STEP_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// Where the filesystem has no atomic exchange, an update replaces the
+    /// skill in two renames; readers using `retry_while_missing` wait out the
+    /// gap instead of failing, on every platform.
+    #[test]
+    fn readers_wait_out_a_two_rename_update() {
+        let data = tempfile::tempdir().unwrap();
+        let skills = data.path().to_path_buf();
+        let target = install_v1(&skills);
+        let done = std::sync::atomic::AtomicBool::new(false);
+        let failed = std::sync::atomic::AtomicUsize::new(0);
+        let reads = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                while !done.load(std::sync::atomic::Ordering::SeqCst) {
+                    reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if lr_utils::fs::retry_while_missing(|| {
+                        std::fs::read_to_string(target.join("SKILL.md"))
+                    })
+                    .is_err()
+                    {
+                        failed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                }
+            });
+            TWO_STEP_ONLY.with(|only| only.set(true));
+            for round in 0..100 {
+                let staged = StagedInstall::create(&skills).unwrap();
+                let manifest = if round % 2 == 0 {
+                    MANIFEST_V2
+                } else {
+                    MANIFEST_V1
+                };
+                std::fs::write(staged.download_dir().join("SKILL.md"), manifest).unwrap();
+                staged.promote(&skills, "Source/example").unwrap();
+            }
+            TWO_STEP_ONLY.with(|only| only.set(false));
+            done.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        assert!(reads.load(std::sync::atomic::Ordering::SeqCst) > 0);
+        assert_eq!(failed.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(
+            std::fs::read_to_string(target.join("SKILL.md")).unwrap(),
+            MANIFEST_V1
+        );
+        assert!(tree(&skills.join(STAGING_DIR)).is_empty());
     }
 
     #[test]

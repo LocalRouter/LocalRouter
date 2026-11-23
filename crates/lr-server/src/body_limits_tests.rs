@@ -411,8 +411,8 @@ async fn large_body_settings_are_read_live_from_the_configuration() {
         .status();
     assert_eq!(status, 200);
 
-    // A larger budget applies to new requests at once; the held request's
-    // permits go back to the budget they came from.
+    // A larger budget applies to new requests at once; the held request
+    // keeps its permits and returns them to the same budget.
     manager
         .update(|c| c.server.large_body_budget_bytes = 64 * MIB_U as u64)
         .unwrap();
@@ -423,8 +423,273 @@ async fn large_body_settings_are_read_live_from_the_configuration() {
         .unwrap()
         .status();
     assert_eq!(status, 200);
-    assert_eq!(limits.available_bytes(), 64 * MIB_U);
+    assert_eq!(limits.available_bytes(), 52 * MIB_U);
     release.notify_one();
     drop(axum::body::to_bytes(held.into_body(), KIB).await.unwrap());
     assert_eq!(limits.available_bytes(), 64 * MIB_U);
+}
+
+/// A live budget of `budget` MiB, a 1 MiB threshold and a short wait.
+fn live(budget: usize) -> (Arc<lr_config::ConfigManager>, BodyLimits) {
+    let manager = config(64 * MIB_U as u64);
+    manager
+        .update(|c| {
+            c.server.large_body_threshold_bytes = MIB_U as u64;
+            c.server.large_body_budget_bytes = (budget * MIB_U) as u64;
+            c.server.large_body_wait_ms = 50;
+        })
+        .unwrap();
+    let limits = BodyLimits::new(manager.clone());
+    (manager, limits)
+}
+
+/// Shrinking the budget below what in-flight requests hold admits no new
+/// large body until the held bytes fall under the new budget.
+#[tokio::test]
+async fn a_shrunk_budget_admits_nothing_until_held_bytes_fit() {
+    let (manager, limits) = live(32);
+    let release = Arc::new(tokio::sync::Notify::new());
+    let app = app(
+        limits.clone(),
+        Arc::new(AtomicUsize::new(0)),
+        release.clone(),
+    );
+    let first = app
+        .clone()
+        .oneshot(sized("/hold", 12 * MIB_U))
+        .await
+        .unwrap();
+    let second = app
+        .clone()
+        .oneshot(sized("/hold", 12 * MIB_U))
+        .await
+        .unwrap();
+    assert_eq!(limits.available_bytes(), 8 * MIB_U);
+
+    // 24 MiB held against a 16 MiB budget: 8 MiB of debt, nothing free.
+    manager
+        .update(|c| c.server.large_body_budget_bytes = 16 * MIB_U as u64)
+        .unwrap();
+    for request in [
+        sized("/v1/chat/completions", 2 * MIB_U),
+        chunked("/v1/chat/completions", 2 * MIB_U),
+    ] {
+        let status = app.clone().oneshot(request).await.unwrap().status();
+        assert_eq!(status, 503, "the old budget's free bytes are gone");
+    }
+    assert_eq!(limits.available_bytes(), 0);
+    assert_eq!(limits.debt_bytes(), 8 * MIB_U);
+
+    // Releasing 12 MiB pays the debt first: 4 MiB free.
+    release.notify_one();
+    drop(axum::body::to_bytes(first.into_body(), KIB).await.unwrap());
+    assert_eq!(limits.debt_bytes(), 0);
+    assert_eq!(limits.available_bytes(), 4 * MIB_U);
+    let status = app
+        .clone()
+        .oneshot(sized("/v1/chat/completions", 6 * MIB_U))
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(status, 503);
+    let status = app
+        .clone()
+        .oneshot(sized("/v1/chat/completions", 3 * MIB_U))
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(status, 200);
+
+    release.notify_one();
+    drop(axum::body::to_bytes(second.into_body(), KIB).await.unwrap());
+    assert_eq!(limits.available_bytes(), 16 * MIB_U);
+    assert_eq!(limits.debt_bytes(), 0);
+}
+
+/// Growing the budget pays an outstanding debt before adding free bytes.
+#[tokio::test]
+async fn a_grown_budget_pays_its_debt_before_adding_bytes() {
+    let (manager, limits) = live(32);
+    let release = Arc::new(tokio::sync::Notify::new());
+    let app = app(
+        limits.clone(),
+        Arc::new(AtomicUsize::new(0)),
+        release.clone(),
+    );
+    let held = app
+        .clone()
+        .oneshot(sized("/hold", 24 * MIB_U))
+        .await
+        .unwrap();
+    limits.resize_budget(16 * MIB_U);
+    assert_eq!(limits.debt_bytes(), 8 * MIB_U);
+
+    // 40 MiB: 24 held, 16 free.
+    manager
+        .update(|c| c.server.large_body_budget_bytes = 40 * MIB_U as u64)
+        .unwrap();
+    let status = app
+        .clone()
+        .oneshot(sized("/v1/chat/completions", 14 * MIB_U))
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(status, 200);
+    assert_eq!(limits.debt_bytes(), 0);
+    assert_eq!(limits.available_bytes(), 16 * MIB_U);
+    let status = app
+        .clone()
+        .oneshot(sized("/v1/chat/completions", 17 * MIB_U))
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(status, 503);
+
+    release.notify_one();
+    drop(axum::body::to_bytes(held.into_body(), KIB).await.unwrap());
+    assert_eq!(limits.available_bytes(), 40 * MIB_U);
+}
+
+/// A body larger than a budget that shrank while it was being read still
+/// runs alone instead of waiting for permits the budget no longer has.
+#[tokio::test]
+async fn a_body_outgrowing_a_shrunk_budget_still_runs_alone() {
+    let (manager, limits) = live(32);
+    let app = app(
+        limits.clone(),
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(tokio::sync::Notify::new()),
+    );
+    let (sender, receiver) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(4);
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .body(Body::from_stream(
+            tokio_stream::wrappers::ReceiverStream::new(receiver),
+        ))
+        .unwrap();
+    let task = tokio::spawn(app.clone().oneshot(request));
+    sender
+        .send(Ok(Bytes::from(vec![b'a'; 2 * MIB_U])))
+        .await
+        .unwrap();
+    // Wait until the first reservation is taken.
+    while limits.available_bytes() == 32 * MIB_U {
+        tokio::task::yield_now().await;
+    }
+    manager
+        .update(|c| c.server.large_body_budget_bytes = 16 * MIB_U as u64)
+        .unwrap();
+    limits.resize_budget(16 * MIB_U);
+    sender
+        .send(Ok(Bytes::from(vec![b'a'; 22 * MIB_U])))
+        .await
+        .unwrap();
+    drop(sender);
+    let response = task.await.unwrap().unwrap();
+    assert_eq!(response.status(), 200);
+    // The whole (shrunk) budget is held until the response is finished.
+    assert_eq!(limits.available_bytes(), 0);
+    let body = axum::body::to_bytes(response.into_body(), KIB)
+        .await
+        .unwrap();
+    assert_eq!(&body[..], (24 * MIB_U).to_string().as_bytes());
+    assert_eq!(limits.available_bytes(), 16 * MIB_U);
+    assert_eq!(limits.debt_bytes(), 0);
+}
+
+/// Under concurrent reservations and resizes the bytes held never exceed
+/// the largest budget configured, and everything is accounted for at the
+/// end.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_resizes_never_overcommit_the_budget() {
+    const BIG: usize = 64;
+    const SMALL: usize = 16;
+    let limits = BodyLimits::with_budget(config(MIB_U as u64), BIG * UNIT, UNIT, Duration::ZERO);
+    let held = Arc::new(AtomicUsize::new(0));
+    let peak = Arc::new(AtomicUsize::new(0));
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut workers = Vec::new();
+    for worker in 0..8usize {
+        let (limits, held, peak, stop) = (limits.clone(), held.clone(), peak.clone(), stop.clone());
+        workers.push(tokio::spawn(async move {
+            let mut round = 0usize;
+            while !stop.load(Ordering::SeqCst) {
+                round += 1;
+                let units = 1 + (worker * 7 + round) % 12;
+                let semaphore = limits.budget.lock().semaphore.clone();
+                let Ok(Ok(permit)) = tokio::time::timeout(
+                    Duration::from_millis(5),
+                    semaphore.acquire_many_owned(units as u32),
+                )
+                .await
+                else {
+                    continue;
+                };
+                let reservation = Reservation {
+                    permit: Some(permit),
+                    budget: limits.budget.clone(),
+                };
+                let now = held.fetch_add(units, Ordering::SeqCst) + units;
+                peak.fetch_max(now, Ordering::SeqCst);
+                tokio::task::yield_now().await;
+                held.fetch_sub(units, Ordering::SeqCst);
+                drop(reservation);
+            }
+        }));
+    }
+    for step in 0..400 {
+        let units = if step % 2 == 0 { SMALL } else { BIG };
+        limits.budget.lock().resize(units);
+        tokio::task::yield_now().await;
+    }
+    stop.store(true, Ordering::SeqCst);
+    for worker in workers {
+        worker.await.unwrap();
+    }
+    assert!(
+        peak.load(Ordering::SeqCst) <= BIG,
+        "held {} permits against a budget of at most {BIG}",
+        peak.load(Ordering::SeqCst)
+    );
+    let budget = limits.budget.lock();
+    assert_eq!(budget.units, BIG);
+    assert_eq!(budget.debt, 0);
+    assert_eq!(budget.semaphore.available_permits(), BIG);
+}
+
+/// Permits partly assigned to a waiter that gives up return to the
+/// semaphore directly; they pay an outstanding debt before the next request
+/// can take them.
+#[tokio::test]
+async fn permits_of_an_abandoned_waiter_pay_the_debt_first() {
+    let limits = BodyLimits::with_budget(config(MIB_U as u64), 10 * UNIT, UNIT, Duration::ZERO);
+    let reserve = |units: u32| {
+        let semaphore = limits.budget.lock().semaphore.clone();
+        Reservation {
+            permit: Some(semaphore.try_acquire_many_owned(units).unwrap()),
+            budget: limits.budget.clone(),
+        }
+    };
+    let held = reserve(6);
+    let other = reserve(4);
+    let semaphore = limits.budget.lock().semaphore.clone();
+    let mut waiter = Box::pin(semaphore.clone().acquire_many_owned(8));
+    assert!(futures::poll!(waiter.as_mut()).is_pending());
+    // The 4 released permits go to the waiter, not to the free pool.
+    drop(other);
+    assert_eq!(limits.available_bytes(), 0);
+    // Shrink to 4 while 6 are held: nothing free to remove, 6 of debt.
+    limits.budget.lock().resize(4);
+    assert_eq!(limits.debt_bytes(), 6 * UNIT);
+    // The waiter gives up; its 4 permits come back free despite the debt.
+    drop(waiter);
+    assert_eq!(limits.available_bytes(), 4 * UNIT);
+    // The next request settles them against the debt first.
+    limits.resize_budget(4 * UNIT);
+    assert_eq!(limits.available_bytes(), 0);
+    assert_eq!(limits.debt_bytes(), 2 * UNIT);
+    drop(held);
+    assert_eq!(limits.available_bytes(), 4 * UNIT);
+    assert_eq!(limits.debt_bytes(), 0);
 }
