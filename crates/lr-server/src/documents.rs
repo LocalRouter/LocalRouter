@@ -199,6 +199,24 @@ pub fn public_representation(value: &Value) -> Value {
 
 /// Scan actual decoded text while preserving the original native wire payload.
 /// PDFs remain opaque: callers must enforce configured blocking scan policies.
+/// Whether [`scan_projection`] would change anything: only `file` and
+/// `input_file` content parts are projected. Without them the request is its
+/// own projection, and the whole-request clone can be skipped.
+pub fn has_file_parts(value: &Value) -> bool {
+    ["messages", "input"]
+        .into_iter()
+        .filter_map(|key| value.get(key).and_then(Value::as_array))
+        .flatten()
+        .filter_map(|message| message.get("content").and_then(Value::as_array))
+        .flatten()
+        .any(|part| {
+            matches!(
+                part.get("type").and_then(Value::as_str),
+                Some("file" | "input_file")
+            )
+        })
+}
+
 pub fn scan_projection(value: &Value) -> AppResult<(Value, bool)> {
     let mut projected = value.clone();
     let mut opaque = false;

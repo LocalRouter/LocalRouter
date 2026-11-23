@@ -46,6 +46,7 @@ interface ServerConfig {
   port: number
   actual_port?: number
   enable_cors: boolean
+  max_request_body_bytes: number
 }
 
 interface HowToConnectProps {

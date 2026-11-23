@@ -586,13 +586,11 @@ mod agentic_loop_tests {
             &config,
             vec![],
             None,
+            Default::default(),
             None,
             None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            Default::default(),
+            false,
         )
         .await
         .expect("should succeed");
@@ -646,13 +644,11 @@ mod agentic_loop_tests {
             &config,
             vec![],
             None,
+            Default::default(),
             None,
             None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            Default::default(),
+            false,
         )
         .await
         .expect("should succeed");
@@ -722,13 +718,11 @@ mod agentic_loop_tests {
             &config,
             vec![],
             None,
+            Default::default(),
             None,
             None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            Default::default(),
+            false,
         )
         .await
         .expect("should succeed");
@@ -791,13 +785,11 @@ mod agentic_loop_tests {
             &config,
             vec![],
             None,
+            Default::default(),
             None,
             None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            Default::default(),
+            false,
         )
         .await
         .expect("should succeed");
@@ -858,13 +850,11 @@ mod agentic_loop_tests {
             &config,
             vec![],
             None,
+            Default::default(),
             None,
             None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            Default::default(),
+            false,
         )
         .await
         .expect("should succeed");
@@ -918,13 +908,11 @@ mod agentic_loop_tests {
             &config,
             vec![],
             None,
+            Default::default(),
             None,
             None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            Default::default(),
+            false,
         )
         .await
         .expect("should succeed after LLM retries");
@@ -974,13 +962,11 @@ mod agentic_loop_tests {
             &config,
             vec![],
             None,
+            Default::default(),
             None,
             None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            Default::default(),
+            false,
         )
         .await
         .expect("should succeed");
@@ -1045,13 +1031,11 @@ mod mcp_server_verification_tests {
             &config,
             vec![],
             None,
+            Default::default(),
             None,
             None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            Default::default(),
+            false,
         )
         .await
         .expect("should succeed");
@@ -1109,13 +1093,11 @@ mod mcp_server_verification_tests {
             &config,
             vec![],
             None,
+            Default::default(),
             None,
             None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            Default::default(),
+            false,
         )
         .await
         .expect("should succeed");
@@ -1168,13 +1150,11 @@ mod mcp_server_verification_tests {
             &config,
             vec![],
             None,
+            Default::default(),
             None,
             None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            Default::default(),
+            false,
         )
         .await
         .expect("should succeed");
@@ -1219,13 +1199,11 @@ mod mcp_server_verification_tests {
             &config,
             vec![],
             None,
+            Default::default(),
             None,
             None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            Default::default(),
+            false,
         )
         .await
         .expect("should succeed");
@@ -1288,13 +1266,11 @@ mod mixed_tool_tests {
             &config,
             vec![],
             None,
+            Default::default(),
             None,
             None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            Default::default(),
+            false,
         )
         .await
         .expect("should succeed");
@@ -1369,13 +1345,11 @@ mod mixed_tool_tests {
             &config,
             vec![],
             None,
+            Default::default(),
             None,
             None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            Default::default(),
+            false,
         )
         .await
         .expect("phase 1 should succeed");
@@ -1417,6 +1391,8 @@ mod mixed_tool_tests {
             &config,
             vec![],
             &cm_config,
+            Default::default(),
+            false,
         )
         .await
         .expect("resume should succeed");
@@ -1432,6 +1408,14 @@ mod mixed_tool_tests {
                     text,
                     lr_providers::ChatMessageContent::Text(t) if t == "All done!"
                 ));
+                // `usage` is this request's call; the loop's metadata covers
+                // the whole turn, the gateway tool run before the stop included.
+                assert_eq!(resp.usage.prompt_tokens, 10);
+                let meta = &resp.extensions.as_ref().unwrap()["mcp_via_llm"];
+                assert_eq!(meta["mcp_tools_called"], serde_json::json!(["fs__read"]));
+                assert_eq!(meta["iterations"], 2);
+                assert_eq!(meta["total_prompt_tokens"], 20);
+                assert_eq!(resp.request_usage_entries.as_ref().map(Vec::len), Some(2));
             }
             _ => panic!("Expected Complete after resume"),
         }
@@ -1478,13 +1462,11 @@ mod guardrail_tests {
             &config,
             vec![],
             Some(gate),
+            Default::default(),
             None,
             None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            Default::default(),
+            false,
         )
         .await
         .expect("should succeed");
@@ -1531,13 +1513,11 @@ mod guardrail_tests {
             &config,
             vec![],
             Some(gate),
+            Default::default(),
             None,
             None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            Default::default(),
+            false,
         )
         .await;
 
@@ -1587,13 +1567,11 @@ mod guardrail_tests {
             &config,
             vec![],
             Some(gate),
+            Default::default(),
             None,
             None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            Default::default(),
+            false,
         )
         .await
         .expect("should succeed");
@@ -1652,13 +1630,11 @@ mod error_handling_tests {
             &config,
             vec![],
             None,
+            Default::default(),
             None,
             None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            Default::default(),
+            false,
         )
         .await;
 
@@ -1710,13 +1686,11 @@ mod error_handling_tests {
             &config,
             vec![],
             None,
+            Default::default(),
             None,
             None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            Default::default(),
+            false,
         )
         .await
         .expect("should succeed despite tool error");
@@ -1784,13 +1758,11 @@ mod error_handling_tests {
             &config,
             vec![],
             None,
+            Default::default(),
             None,
             None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            Default::default(),
+            false,
         )
         .await
         .expect("should succeed");
@@ -1862,13 +1834,11 @@ mod metadata_tests {
             &config,
             vec![],
             None,
+            Default::default(),
             None,
             None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            Default::default(),
+            false,
         )
         .await
         .expect("should succeed");
@@ -1919,13 +1889,11 @@ mod metadata_tests {
             &config,
             vec![],
             None,
+            Default::default(),
             None,
             None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            Default::default(),
+            false,
         )
         .await
         .expect("should succeed");
@@ -1973,13 +1941,11 @@ mod metadata_tests {
             &config,
             vec![],
             None,
+            Default::default(),
             None,
             None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            Default::default(),
+            false,
         )
         .await
         .expect("should succeed");
@@ -2038,13 +2004,11 @@ mod session_tests {
             &config,
             vec![],
             None,
+            Default::default(),
             None,
             None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            Default::default(),
+            false,
         )
         .await
         .expect("should succeed");
@@ -2089,13 +2053,11 @@ mod session_tests {
             &config,
             vec![],
             None,
+            Default::default(),
             None,
             None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            Default::default(),
+            false,
         )
         .await
         .expect("should succeed");
@@ -2113,9 +2075,10 @@ mod session_key_tests {
     use crate::manager::{McpViaLlmManager, TurnOptions};
     use std::collections::HashMap;
 
-    /// A turn is found by the id of the response before it and re-keyed to
-    /// the id of the response it produces, so a chain of turns stays on one
-    /// session even when the visible history no longer hash-matches.
+    /// A turn is found by the id of the response before it and its session
+    /// is keyed to the id of the response it produces, so a chain of turns
+    /// stays on one gateway session even when the visible history no longer
+    /// hash-matches. Each turn runs on its own copy of the session.
     #[tokio::test]
     async fn a_chain_of_response_ids_stays_on_one_session() {
         let env = setup_test_env(
@@ -2134,7 +2097,7 @@ mod session_key_tests {
             let options = TurnOptions {
                 resume_session_key: resume.map(str::to_string),
                 session_key: Some(key.to_string()),
-                withhold_tool_call_deltas: false,
+                ..Default::default()
             };
             manager.handle_request(
                 env.gateway.clone(),
@@ -2159,8 +2122,61 @@ mod session_key_tests {
             .unwrap();
 
         let sessions = manager.sessions_by_client.get(&env.client.id).unwrap();
-        assert_eq!(sessions.len(), 1, "every turn resumed the first session");
-        assert_eq!(sessions[0].read().explicit_key.as_deref(), Some("resp_3"));
+        let keys: Vec<Option<String>> = sessions
+            .iter()
+            .map(|s| s.read().explicit_key.clone())
+            .collect();
+        assert_eq!(
+            keys,
+            [Some("resp_1"), Some("resp_2"), Some("resp_3")].map(|k| k.map(str::to_string))
+        );
+        let gateway = sessions[0].read().gateway_session_key.clone();
+        assert!(
+            sessions
+                .iter()
+                .all(|s| s.read().gateway_session_key == gateway),
+            "every turn continued the first turn's gateway session"
+        );
+    }
+
+    /// A turn that fails is not keyed: a retry naming the same earlier
+    /// response continues from that response, not from the failed attempt.
+    #[tokio::test]
+    async fn a_failed_turn_leaves_no_key_behind() {
+        let env = setup_test_env(
+            vec![make_response(Some("first answer"), None)],
+            vec![make_mcp_tool("fs__read", "Read a file")],
+            HashMap::new(),
+        )
+        .await;
+        let manager = McpViaLlmManager::new(make_config());
+        let turn = |resume: Option<&str>, key: &str| {
+            manager.handle_request(
+                env.gateway.clone(),
+                &env.router,
+                &env.client,
+                make_request("question"),
+                vec![],
+                None,
+                None,
+                None,
+                TurnOptions {
+                    resume_session_key: resume.map(str::to_string),
+                    session_key: Some(key.to_string()),
+                    ..Default::default()
+                },
+            )
+        };
+        turn(None, "resp_1").await.unwrap();
+        // The script is used up: this turn's LLM call fails.
+        assert!(turn(Some("resp_1"), "resp_2").await.is_err());
+
+        let sessions = manager.sessions_by_client.get(&env.client.id).unwrap();
+        let keys: Vec<Option<String>> = sessions
+            .iter()
+            .map(|s| s.read().explicit_key.clone())
+            .collect();
+        assert_eq!(keys, [Some("resp_1".to_string()), None]);
     }
 
     /// Without a key to resume by, unrelated history starts a new session.
@@ -2193,7 +2209,7 @@ mod session_key_tests {
                     TurnOptions {
                         resume_session_key: resume.map(str::to_string),
                         session_key: Some(key.to_string()),
-                        withhold_tool_call_deltas: false,
+                        ..Default::default()
                     },
                 )
                 .await

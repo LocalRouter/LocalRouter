@@ -1260,17 +1260,53 @@ pub struct ServerConfig {
 
     /// Enable CORS for local development
     pub enable_cors: bool,
+
+    /// Largest request body, in bytes, the native API accepts on its JSON
+    /// routes (chat, completions, responses, messages, embeddings, ...).
+    /// Audio (25 MiB), image edit (50 MiB), file (16 MiB + multipart
+    /// framing) and batch-control routes keep their own fixed limits.
+    /// Bounded by [`MIN_REQUEST_BODY_BYTES`]..=[`MAX_REQUEST_BODY_BYTES`].
+    #[serde(default = "default_max_request_body_bytes")]
+    pub max_request_body_bytes: u64,
+}
+
+/// Default native API request-body limit (16 MiB).
+pub const DEFAULT_MAX_REQUEST_BODY_BYTES: u64 = 16 * 1024 * 1024;
+/// Smallest configurable native API request-body limit (1 MiB).
+pub const MIN_REQUEST_BODY_BYTES: u64 = 1024 * 1024;
+/// Largest configurable native API request-body limit (256 MiB, the HTTPS
+/// proxy's cap). The native server holds whole requests in memory, so larger
+/// values are refused by validation.
+pub const MAX_REQUEST_BODY_BYTES: u64 = 256 * 1024 * 1024;
+
+fn default_max_request_body_bytes() -> u64 {
+    DEFAULT_MAX_REQUEST_BODY_BYTES
+}
+
+impl ServerConfig {
+    /// The configured native API body limit, clamped to the supported range
+    /// so a value that bypassed validation can never disable the limit.
+    pub fn request_body_limit(&self) -> usize {
+        self.max_request_body_bytes
+            .clamp(MIN_REQUEST_BODY_BYTES, MAX_REQUEST_BODY_BYTES) as usize
+    }
 }
 
 /// HTTPS inspection-proxy configuration.
 ///
-/// When enabled, LocalRouter listens as an HTTPS forward proxy so tools that
+/// LocalRouter listens as an HTTPS forward proxy on `host:port` so tools that
 /// set `HTTPS_PROXY` (e.g. Claude Code) route their LLM traffic through it for
-/// passive inspection in the monitor. Disabled by default; the launcher may
-/// auto-start it when a client is in a proxy `llm_mode`.
+/// inspection in the monitor. The listener always runs; whether a tool's
+/// traffic goes through it is decided per client by its proxy `llm_mode` and
+/// the tool's own configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyConfig {
-    /// Whether the proxy listener should run.
+    /// Deprecated and ignored: the listener always runs.
+    ///
+    /// Kept so existing settings files (which all contain `enabled: false`,
+    /// the old default) keep deserializing. Honouring it would turn the proxy
+    /// off for every existing install; a switch, if one is wanted, needs a
+    /// new field with a migration.
     pub enabled: bool,
 
     /// Proxy listen host (loopback by default).
@@ -1278,6 +1314,13 @@ pub struct ProxyConfig {
 
     /// Proxy listen port.
     pub port: u16,
+
+    /// Upstream hosts that receive rewritten (masked) request bodies with a
+    /// `Content-Length` instead of chunked framing. The proxy holds such a
+    /// body until it ended (encrypted on disk beyond RAM) before sending it.
+    /// Hosts that refuse a chunked body are also learned at runtime.
+    #[serde(default)]
+    pub content_length_hosts: Vec<String>,
 }
 
 /// Detection of requests that traverse LocalRouter more than once (gateway →
@@ -1391,6 +1434,7 @@ impl Default for ProxyConfig {
             enabled: false,
             host: "127.0.0.1".to_string(),
             port: default_port,
+            content_length_hosts: Vec::new(),
         }
     }
 }
@@ -3106,6 +3150,16 @@ pub struct SecretScanningConfig {
     /// Allowlist regex patterns that exclude matches (global only)
     #[serde(default)]
     pub allowlist: Vec<String>,
+
+    /// Strict streaming for the HTTPS proxy (global only). Request bodies
+    /// above the stream lag (16 MiB) are normally forwarded while they
+    /// upload, staying 16 MiB behind detection, so a secret that first
+    /// becomes detectable more than 16 MiB after an earlier occurrence of it
+    /// can have that occurrence forwarded. Strict mode holds such bodies
+    /// (encrypted on disk beyond RAM) until the whole body was scanned and
+    /// every Ask answered, for Redact and Ask. Off by default.
+    #[serde(default)]
+    pub strict_streaming: bool,
 }
 
 impl SecretScanningConfig {
@@ -3129,6 +3183,7 @@ impl Default for SecretScanningConfig {
             entropy_threshold: default_entropy_threshold(),
             scan_system_messages: false,
             allowlist: Vec::new(),
+            strict_streaming: false,
         }
     }
 }
@@ -4934,6 +4989,7 @@ impl Default for ServerConfig {
             host: "127.0.0.1".to_string(),
             port: default_port,
             enable_cors: true,
+            max_request_body_bytes: DEFAULT_MAX_REQUEST_BODY_BYTES,
         }
     }
 }
@@ -5599,6 +5655,29 @@ mod tests {
         #[cfg(not(debug_assertions))]
         assert_eq!(server.port, 3625);
         assert!(server.enable_cors);
+        assert_eq!(server.max_request_body_bytes, 16 * 1024 * 1024);
+        assert_eq!(server.request_body_limit(), 16 * 1024 * 1024);
+    }
+
+    #[test]
+    fn server_config_without_body_limit_deserializes_to_the_default() {
+        let server: ServerConfig =
+            serde_yaml::from_str("host: 127.0.0.1\nport: 3625\nenable_cors: true\n").unwrap();
+        assert_eq!(
+            server.max_request_body_bytes,
+            DEFAULT_MAX_REQUEST_BODY_BYTES
+        );
+    }
+
+    #[test]
+    fn request_body_limit_is_clamped_to_the_supported_range() {
+        let mut server = ServerConfig {
+            max_request_body_bytes: 0,
+            ..ServerConfig::default()
+        };
+        assert_eq!(server.request_body_limit() as u64, MIN_REQUEST_BODY_BYTES);
+        server.max_request_body_bytes = u64::MAX;
+        assert_eq!(server.request_body_limit() as u64, MAX_REQUEST_BODY_BYTES);
     }
 
     #[test]

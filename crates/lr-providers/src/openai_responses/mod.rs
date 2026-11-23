@@ -25,6 +25,6 @@ pub use emit::{completion_to_response_object, ResponsesEmitter, ResponsesSseFram
 pub use http::{
     create_response, create_response_raw, stream_response, NATIVE_RESPONSES_API_EXT_KEY,
 };
-pub use request::translate_completion_request;
+pub use request::{retain_for_upstream, translate_completion_request, INPUT_REASONING_EXTENSION};
 pub use response::response_to_completion;
 pub use stream::{responses_to_completion_chunks, NATIVE_RESPONSES_SSE_EXT_KEY};

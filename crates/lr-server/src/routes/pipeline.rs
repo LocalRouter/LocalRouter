@@ -2546,6 +2546,12 @@ pub(crate) struct TurnContext {
     /// Provider-shape request ready for `router.complete` /
     /// `router.stream_complete` or the MCP-via-LLM orchestrator.
     pub provider_request: ProviderCompletionRequest,
+    /// Session ID threaded onto monitor events for this turn.
+    pub session_id: String,
+    /// Stage-counted endpoint label (e.g. `/v1/chat/completions`) — the
+    /// caller echoes it on the monitor events it emits after the pipeline
+    /// (the MCP-via-LLM orchestrator's per-call and error events).
+    pub endpoint: &'static str,
     /// Number of prompt tokens compression removed from the original
     /// message payload. Passed to the finalize helper for the
     /// `feature_compression` cost-saved metric.
@@ -2683,6 +2689,8 @@ pub(crate) async fn run_turn_pipeline(
         return Ok(TurnContext {
             chat_req,
             provider_request,
+            session_id,
+            endpoint,
             compression_tokens_saved: 0,
             guardrail_handle: None,
             is_duplicate: true,
@@ -2881,6 +2889,8 @@ pub(crate) async fn run_turn_pipeline(
     Ok(TurnContext {
         chat_req,
         provider_request,
+        session_id,
+        endpoint,
         compression_tokens_saved,
         guardrail_handle,
         is_duplicate: false,

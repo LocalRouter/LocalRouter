@@ -118,6 +118,14 @@ impl From<lr_mcp_via_llm::McpViaLlmError> for ApiErrorResponse {
     fn from(error: lr_mcp_via_llm::McpViaLlmError) -> Self {
         match error {
             lr_mcp_via_llm::McpViaLlmError::Router(error) => error.into(),
+            lr_mcp_via_llm::McpViaLlmError::GuardrailDenied(_) => {
+                Self::forbidden(format!("MCP-via-LLM error: {error}")).with_code("guardrail_denied")
+            }
+            lr_mcp_via_llm::McpViaLlmError::Timeout(_) => Self::new(
+                StatusCode::GATEWAY_TIMEOUT,
+                "timeout_error",
+                format!("MCP-via-LLM error: {error}"),
+            ),
             error => Self::bad_gateway(format!("MCP-via-LLM error: {error}")),
         }
     }

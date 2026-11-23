@@ -29,15 +29,20 @@ and WS caps to 256 MiB after a ~67 MB Codex conversation failed against 16 MiB /
       remove repeated full parses; fix stale interceptor.rs doc (doc fixed in 1.2).
 - [x] 1.10 Phase 1 tests (unit, parity, security invariants, TLS e2e, memory bound).
       Live Codex/Claude Code run not done (no network in this task).
-- [ ] 2. Phase 2: WebSocket per-message streaming (frame-level decoder, incremental re-fragmenting),
-      optional zstd re-encode of HTTP upstream body.
-- [ ] 3. Phase 3: encrypted disk spill; Ask-mode hold-on-finding; late model with restricted
+- [x] 2. Phase 2: WebSocket per-message streaming (frame-level decoder, incremental re-fragmenting).
+      See "Phase 2 as built". The optional zstd re-encode of HTTP upstream bodies is **not done**.
+- [x] 3. Phase 3: encrypted disk spill; Ask-mode hold-on-finding; late model with restricted
       models; model-Ask popup preview for oversized bodies; Notify/Ask popup excerpts.
+      Plus strict mode, the §3.9 length-required fallback and the Phase 1 review fixes.
+      See "Phase 3 as built" (deviation: nothing is released while an Ask question is open).
 - [ ] 4. Phase 4: guardrails text-projection hold (+spill); reverse-proxy LLM paths;
-      response-side capture head+tail; WS server-message cap.
-- [ ] 5. Phase 5: native server memory/limit work (stays buffered; documented).
+      response-side capture head+tail. (WS server-message cap: done with Phase 2, 64 MiB.)
+- [x] 5. Phase 5: native server memory/limit work (stays buffered; documented).
+      See "Phase 5 as built".
 - [ ] Plan Review: compare implementation against every item in this plan; implement gaps.
+      (Done for Phase 3, see "Phase 3 as built".)
 - [ ] Test Coverage Review: cover every new branch, error, fallback and cancellation path.
+      (Done for Phase 3.)
 - [ ] Bug Hunt: reread with fresh eyes (off-by-one at window cuts, UTF-8/escape carry, races
       between head/tail cursors, cancellation, abort semantics, leaked plaintext).
 - [ ] Local validation (rustup stable clippy -D warnings --all-targets, fmt --check,
@@ -894,6 +899,317 @@ event's metadata) instead of three to four times.
 - `tests/streamed_inspection_e2e.rs`: real TLS, an upstream recording every byte (also of
   aborted bodies) and searching raw/escaped/nested/base64/percent spellings across reads.
 
+## Phase 5 as built (2026-11-22, branch feat/native-server-body-limits)
+
+The native server stays buffered. What changed:
+- **Configurable limit** `server.max_request_body_bytes` (serde default 16 MiB, validated
+  1–256 MiB, clamped at use). Read live per request (`ConfigManager::request_body_limit`), so
+  the settings change ("Request Limits" card, `update_server_config { maxRequestBodyBytes }`)
+  applies without a restart and every layer sees the same value. Fixed limits stay: audio
+  25 MiB, image edits 50 MiB, files `MAX_FILE_BYTES + 64 KiB`, batch control 32 KiB (extractor).
+- **`body_limits.rs`** replaces `RequestBodyLimitLayer` on the main, audio and image routers,
+  inside `AuthLayer` (unauthenticated callers cannot hold budget): Content-Length over the limit
+  → 413 unread; received bytes over it → 413; any body-read failure the middleware caused is
+  answered with its structured error (`request_too_large` / `request_body_budget_exhausted`)
+  whatever the extractor mapped it to. Bodies > 8 MiB reserve permits (1 KiB units) from a
+  512 MiB global budget: up front from Content-Length, or as chunks arrive (chunk held, client
+  back-pressured). Waits up to 3 s, then 503 + `Retry-After: 2`. The reservation lives until
+  the response body ends. A body larger than the budget takes the whole budget (runs alone).
+- **One copy** (N2/N3): `secret_placeholders` buffers into an exactly sized buffer
+  (Content-Length, or chunks joined once), parses once, drops the bytes, and hands the value on
+  through `gateway_json::parsed_request` (extension + lazy body that serializes only if a
+  non-`GatewayJson` consumer reads it). `GatewayJson` takes the value, otherwise reads bytes →
+  `from_slice` → drops bytes; `from_value` moves strings. The documents scan projection is
+  built only when file parts exist and dropped after the scan. No `from_reader`/spill (no
+  SpillBuffer on master).
+- **Fail closed**: an over-budget body is refused with 413 in every mode (the budget equals the
+  live transport limit, so this is what the transport would do); a body read error is refused
+  (400) instead of forwarding the prefix; the "could not be encoded; original content forwarded"
+  fallback is gone (only the protected value can be forwarded).
+- Measured (thread-local allocation counter, `limit_tests::native_boundary_peak_memory_per_request`,
+  4.2–4.5 MB bodies, peak growth / body size; before → after):
+  Redact 4.21→2.16x (one chunk), 6.20→3.16x (chunked), 7.00→4.24x and 8.94→5.29x (8192 small
+  turns); Notify 2.10→1.05x, 4.10→2.05x, 3.48→1.71x, 5.41→2.77x. Remaining Redact overhead is
+  the scanner's text extraction and the follow-up detector's scan.
+
+Bugs found and fixed: unscanned forward of over-budget bodies (fail-open, divergent limits);
+files capped at 16 MiB by the outer transport layer although files allow 16 MiB + framing;
+plain-text 413/415/400/422 from axum/tower-http instead of structured errors; compressed
+bodies (`Content-Encoding`) reported as malformed JSON (now 415
+`unsupported_content_encoding`); partial body forwarded on read errors; original body
+forwarded when re-encoding failed; Value + raw bytes + projection held for the whole request.
+
+Not done: audio/image multipart bodies are still fully buffered by their handlers; Redact mode
+on non-inference POST routes (embeddings, …) still forwards unscanned with a warning
+(pre-existing policy); budget is fixed (not configurable).
+
+- [x] Phase 5 Plan Review · [x] Test Coverage Review · [x] Bug Hunt
+
+## Phase 2 as built (2026-11-22)
+
+All in `crates/lr-proxy/src/websocket.rs`; tests in `crates/lr-proxy/src/websocket_stream_tests.rs`
+plus regressions in the existing `websocket.rs` test modules. `request_stream.rs` and
+`transport.rs` are unchanged; the doc of `ProxyInterceptor::body_policy` / `Firewall::body_policy`
+now says websockets ask per message.
+
+### Frame codec
+- `FrameReader` emits `FrameEvent::{DataStart{opcode}, DataChunk(bytes), DataEnd, Control(msg)}`.
+  Payload bytes are unmasked as they arrive (the key offset is carried across reads), so nothing
+  waits for a whole frame. Control frames are collected whole (≤ 125 bytes).
+- Poisons (as before) on RSV bits, unknown opcodes, fragmented or > 125-byte control frames,
+  continuation without a start, a new data frame mid-message, a frame above its limit; **new**: a
+  64-bit length with the most significant bit set, a 1-byte close body, a non-UTF-8 close reason.
+- `FrameDecoder` (message level, public API unchanged) is built on it, with `with_limit`.
+- `close_frame` now carries a reason (cut at a character boundary to fit 125 bytes).
+
+### Client messages
+Per client data message (`Inbound::{Holding, Streaming, Discarding}`):
+- At `DataStart` the relay asks `ProxyInterceptor::body_policy` with a synthesized head (`POST` to
+  the connection's path, no headers). Only a `Stream(policy)` answer matters: it starts a
+  `RequestPipeline::new(policy.lag, max_message)` watching the message. Every other answer, and a
+  pipeline that gives up, keeps the held path; refusals stay with `on_request` so a message ≤ L is
+  judged exactly as before.
+- Held: raw bytes are kept (cap `MAX_MESSAGE`, 256 MiB → 1009, as before) and judged at the end by
+  `on_client_message` / `on_request` (Forward / Replace / Protect / Reject with the synthesized
+  error event, connection stays open). Text is validated as UTF-8 per message.
+- When the pipeline is `ready_to_open` (more than L bytes, `model` known, conversation member
+  started) the relay calls `open_stream`. `Buffer` keeps holding; `Reject` drops the rest of the
+  message and answers the error event at its end (recorded like a held refusal, with a bounded
+  capture of what arrived); `Stream` opens a cycle (pending monitor event with sniffed metadata,
+  restorer from the vault) and streams.
+- Streaming: bytes are given to the pipeline in steps on `spawn_blocking` (after every read, or
+  each 256 KiB). Released output is sent as frames of ≤ 1 MiB: the first with the data opcode,
+  then continuations, FIN on the last frame at the message end. Client ping/pong (and close) are
+  forwarded between fragments, after the data that preceded them. The hold cap applies to what the
+  pipeline holds, not to the message: `MAX_MESSAGE` is a hold cap, so a streamed message has no
+  size limit. The per-frame cap stays 256 MiB.
+- Stop (`StreamAbort`: hold cap, invalid JSON/UTF-8, give-up after open, masking failure):
+  - before any fragment went out: like a refusal (rest dropped, error event, socket open, cycle
+    recorded with the abort status);
+  - after: close **1008** upstream (and shut its write side) so the partial message is never
+    completed, record the stopped cycle with its status and every other open cycle with an error,
+    deliver held restoration originals, send the client the error event, then close **1011**.
+  - A client that disconnects mid-stream leaves the upstream with a 1001 close, never a FIN frame.
+- Control messages: only messages ≤ 64 KiB are parsed to detect `response.cancel` / content-free
+  `response.interrupt`; a larger message is never parsed for this and goes through the firewall.
+- Monitor: a streamed cycle stores `CycleRequest::Streamed` — the bounded head (≤ 256 KiB) of the
+  forwarded (masked) bytes and the sniffed `StreamedRequest`, completed with correlation at the
+  message end — instead of the whole body.
+
+### Server messages (Phase 4 item)
+Reassembled whole with a 64 MiB cap (`MAX_SERVER_MESSAGE`). Above it the client gets 1009 with a
+reason, the upstream also gets 1009, held originals are delivered first, and open cycles record
+the reason. Restoration (`ResponseRestorer::message`), routing by `response_id`/`item_id`,
+terminal detection, `codex.rate_limits` and the bounded SSE-shaped capture are unchanged.
+
+### Bugs found and fixed
+1. Data written after a close frame: when the upstream closed while restoration held content, the
+   relay forwarded the close and then wrote the held originals; likewise after its own 1009/1002
+   close. Writers (`Peer`) now refuse to write after a close, and originals are delivered before
+   the close. Regression: `held_originals_precede_the_forwarded_close`.
+2. On an unrelayable upstream message the upstream got no close frame; it now gets the code.
+3. Malformed frames accepted: 64-bit length MSB set, 1-byte close payload, non-UTF-8 close reason.
+4. Whole-frame wait (a 256 MiB frame was buffered before any byte was looked at) and full parse of
+   every client message for control detection (W1, W4).
+
+### Not done / remaining
+- zstd re-encode of transformed HTTP bodies (§3.8): not done, see the checklist.
+- A pass-through policy (passive interceptor) still holds websocket messages whole; streaming them
+  unmodified would need an `on_request`-less path.
+- Messages streamed need `model` before the conversation; a client that sends `model` after a huge
+  `input` keeps the held path (and its 256 MiB cap), as on HTTP.
+- No real-TLS websocket e2e for streaming (the relay tests run over in-memory duplex streams);
+  `mitm_e2e`'s existing websocket cases exercise the transport wiring.
+- Not checked: `ResponseRestorer::message` with a server message containing raw newlines (pretty
+  printed JSON) may skip restoration of that message (no leak; placeholders stay).
+
+### Tests
+`websocket_stream_tests.rs`: incremental delivery and key-offset carry at 1/3/5/4096-byte reads,
+fragment/control ordering, empty messages, malformed frames, bounded close reasons, decoder limit
+across fragments; relay: upstream sees the first fragment before the client sends the last, ping
+between fragments, UTF-8 split by 7-byte frames, invalid UTF-8 mid-stream → 1008 and no FIN,
+refusal mid-message (1008 upstream, error event + 1011 to the client, both cycles recorded with
+errors, nothing from the refused unit onwards forwarded), refusals before forwarding keep the
+socket open (open_stream refusal and a held ≤ L refusal), control-message bypass bounded,
+streamed message 5× above the hold cap vs. a held one → 1009, security invariant (every byte the
+upstream received, raw/escaped spellings, before/after the lag, frame splits, partial stopped
+message), bounded streamed cycle keeps the terminal event, server-message cap → 1009 both sides,
+client disconnect mid-stream → 1001 and no FIN.
+
+## Phase 3 as built (2026-11-23)
+
+### Spill buffer (§3.13) — `crates/lr-proxy/src/spill.rs`
+- `SpillBuffer`: append-only log addressed by absolute offset, 64 KiB chunks. The newest
+  bytes stay in RAM up to `ram_limit` (default 64 MiB per buffer, not L: holding about L is
+  normal while streaming, and spilling at L would write every large body to disk once);
+  older full chunks move to an anonymous file from `tempfile::tempfile_in` (unlinked at
+  creation on Unix, delete-on-close on Windows) in `config_dir()/proxy/spill`, created 0700.
+- Every chunk is sealed with ring ChaCha20-Poly1305 under a random per-buffer key; nonce =
+  a per-buffer counter (never reused, also when a slot is reused), AAD = the chunk's absolute
+  index, so a chunk cannot be moved or replayed. The key lives in a `Zeroizing<[u8; 32]>`;
+  ring keys are built per operation from it (ring itself does not zeroize). RAM chunks and
+  scratch buffers are zeroized when freed.
+- Caps: per buffer `request_cap` (2 GiB) and across all buffers `global_budget` (4 GiB of
+  disk), both 413. Slots of discarded chunks are reused and the file is emptied once nothing
+  is on disk, so a long body that streams through costs only what is held at once.
+- `SpillConfig::cleanup_stale` runs when `ProxyService` is built (removes files a crash left).
+  `ProxyManager` defaults to a directory under the system temp dir; the app passes
+  `config_dir()/proxy/spill` (`ProxyManager::with_spill`).
+- Used for: the raw pre-open body, the pipeline's hold (`RequestPipeline::with_hold`; units
+  above 8 MiB are parsed from a decrypting reader), and held outputs (Sized / tee-hold).
+
+### Driver and intake — `crates/lr-proxy/src/stream_driver.rs`
+- `Intake` (before the stream opens): keeps the raw body (spill-backed). A body of at most
+  the lag is only counted (identity) or decoded to count (encoded) — **no lexing and no
+  decoded copy** (fixes "lexed before the buffered path" and "held twice"). Once the decoded
+  size exceeds the lag the raw bytes are decoded again into a `RequestPipeline` that lexes and
+  holds; raw + decoded are then both held (spillable) until the firewall decides. A body that
+  cannot be streamed only keeps raw and is limited to the buffered 256 MiB as before; while it
+  may still stream (e.g. `model` last) raw may grow to the spill cap.
+- `transport::prepare_stream` keeps reading (and holding) the client's upload while
+  `open_stream` is awaited (model approval popups take up to 120 s). If bytes that arrived
+  meanwhile make the body unstreamable, a `Stream` decision falls back to the buffered path
+  (nothing was sent).
+- `StreamStart::spawn` returns `StreamHandle { body, progress, ready }`. The transport
+  connects upstream **only when `ready` resolves**: first released bytes (chunked), the end
+  of the body (Sized, strict), or at once (tee). An abort before that answers the client
+  directly (`StreamAbort::json` gives the Secret Scan denial body) and the upstream is never
+  contacted. After that, an abort drops the sender, the body errors, hyper closes the
+  connection without completing the request.
+- After any abort the driver drains the client's remaining upload (≤ 256 MiB, ≤ 30 s) so the
+  client can read the answer.
+- Outputs (`Output`): `Chunked`; `Sized` (output held in a spill buffer, sent with a
+  `Content-Length` at the end); `Tee { length, hold }`.
+
+### Tee for Off/Notify (fix) — `Output::Tee`, `RequestPipeline::inspect_only`
+`open_stream` returns `tee: true` for Off/Notify unless the client has remembered "always
+redact" digests (`StreamSecretScan::remembers_redactions`; then the lagged pipeline applies
+them as before). The client's original bytes go upstream with their `Content-Length` and
+`Content-Encoding` (no re-assembly, no whitespace normalization). Every batch is decoded and
+lexed **before** it is forwarded, and the last byte is held back until the decoder and the
+lexer validated the end, so an invalid body or a repeated key is never delivered complete.
+The pipeline inspects every unit as soon as it is complete (lag 0) and emits nothing;
+correlation uses the original values. A client that sent chunked to a length-required host
+gets its original bytes held and sent with a length.
+
+### Ask hold-on-finding (§3.6)
+- Bodies ≤ L: unchanged (buffered, `handle_secret_scan_approval`).
+- `StreamMasking::Ask`; `AppFirewall::stream_policy` streams Ask; `open_stream` creates a
+  masking vault for Ask.
+- `StreamSession` gained `pending()`, `question() -> Option<Question>` and
+  `answer(Answer) -> Result<Vec<String>, StreamAbort>` (defaults: none).
+  `StreamSecretScan` (lr-server `stream_scan.rs`) queues every new finding (not remembered,
+  no time bypass); `question()` builds the one-finding popup (±64 KiB masked context,
+  `request_json: None`) under the request's 60 s deadline; `answer()` applies the decision as
+  `handle_secret_scan_approval` does: Allow*: nothing; RedactOnce: request-local plan (applied
+  at the tail, also to earlier held units); ReplaceSecrets: register; ContinueWithRedaction /
+  timeout / popup failure: register this and every queued and later finding; other actions:
+  warn + register; Deny: record the scan as blocked, then `StreamAbort` 403 with
+  `secret_scan_denied_by_user`.
+- **Deviation from §3.6:** while a question is open the pipeline releases **nothing** (not
+  only "from the finding's unit on"). Units before the finding that are within the lag can
+  hold earlier occurrences the answer decides about (Redact masks those); releasing them
+  before the answer would forward a value the user may choose to redact. Units already
+  released were at least the lag behind (the same residual risk as Redact).
+- The driver asks one question at a time and keeps reading the client's upload into the
+  hold (spill) while it waits. A question raised by the last units is answered before the
+  body is finished.
+
+### Model gate, model Ask (§3.7)
+- Restricted models / late `model`: the stream opens only once `model` is known (Phase 1);
+  until then the body is held (now spill-backed instead of the 256 MiB RAM cap), and a refusal
+  answers 403 with nothing sent.
+- Model Ask without a standing grant: `open_stream` asks with
+  `FirewallManager::request_model_approval_with_preview` — the popup shows the first ≤ 1 MiB
+  of the decoded body (`PREVIEW_LIMIT`), masked with the scanner's findings and the client
+  vault's known originals, read-only (no full arguments, no Modify, edited arguments
+  ignored). Allow* opens the stream; anything else 403 "Denied by user"; timeout 403.
+- Payload change (Tauri sync): `RequestPreview { text, total_bytes, truncated }` on
+  `FirewallApprovalSession`/`PendingApprovalInfo.request_preview` (lr-mcp firewall.rs),
+  `RequestPreview` in `src/types/tauri-commands.ts`, `ApprovalDetails.request_preview` in
+  `src/views/firewall-approval.tsx`, rendered by `FirewallApprovalCard` (Modify hidden). The
+  demo mock returns no pending approvals (unchanged).
+
+### Strict mode (§3.1)
+`secret_scanning.strict_streaming` (global, serde default false) → `StreamPolicy::strict` →
+`RequestPipeline::hold_until_end`: bodies above L still take the spill pipeline (instead of
+the 256 MiB buffered path) but nothing is released (nor the upstream contacted) before the
+whole body was inspected and every question answered. Applies to Redact and Ask; a tee is
+not held. The Secret Scanning page has the switch with the residual-risk explanation.
+
+### Length-required fallback (§3.9) — `crates/lr-proxy/src/framing.rs`
+`LengthRequiredHosts` (configured `proxy.content_length_hosts`, serde default empty, plus
+hosts learned at runtime). A streamed body sent chunked that gets `411`, or `400` whose
+JSON `error.code`/`error.type` (or top-level `code`/`type`) is `length_required` (structured
+only), teaches the host; that request fails (it cannot be replayed), later ones to the host
+use `Output::Sized`. Learned hosts live for the process (shared across listener restarts);
+not persisted.
+
+### Fixes from the Phase 1/1a reviews
+1. Double hold before open: see Intake (one raw copy for bodies ≤ L).
+2. Notify/Off tee with exact bytes: see Tee.
+3. Decoder limits: the expansion-ratio guard is gone (`DecodeLimits { max_decoded }` only);
+   the streaming path accepts every body the buffered path accepts; bombs stop at the byte
+   budget (test: 80 MiB of zeros in every coding decodes, an 8 MiB budget stops at 8 MiB).
+4. Pass-through drain: `RequestTap::drain_when_abandoned` drains (≤ 256 MiB, ≤ 30 s) a body
+   dropped unfinished (upstream unreachable, early answer and close); `tap::drain` (refusals)
+   has a 30 s timeout. Proven by an e2e test that fails with a broken pipe without the fix.
+5. `duplicate_keys`: folded into `RequestPipeline::unstreamable`, so every gate (open
+   condition, post-open abort, tee hold-back, buffered fallback after a `Stream` decision)
+   fails closed; regression test for a repeated nested `metadata.user_id`.
+6. Lexing ≤ L bodies: see Intake.
+
+### Bugs found and fixed (bug hunt)
+- Pre-open, a repeated nested key was not "unstreamable": the pipeline cleared and
+  re-lexed its hold on every push (and the tee would have forwarded it). Fixed (5).
+- A `Stream` decision for a body that became unstreamable while the decision was awaited
+  would have streamed a body the pipeline had given up on. Now falls back to buffered.
+- A 413 on the raw body before open for a still-streamable body (late `model`) above
+  256 MiB; now held with spill.
+- Ask gate initially stopped release only from the finding's unit: earlier held units could
+  leave before the answer (caught by a unit test). Now nothing is released while asking.
+- Tee mode correlation would have hashed the session's rewritten values instead of the
+  forwarded originals, and a dropped member was skipped although the original bytes carry
+  it. Both use the originals now.
+- The model-approval preview could have shown secrets in plaintext; it is masked with the
+  scanner and the client vault.
+
+### Tests
+- `spill_tests.rs`: round trip across chunkings, no plaintext in the file and no visible
+  file, 0700 dir, tamper and moved-chunk detection, slot reuse and budget release, request
+  cap and global budget (413), unique nonces, stale cleanup.
+- `request_stream_tests.rs`: a question stops all release until answered and masks earlier
+  held occurrences (chunk 1/97/4096), denial ends before the denied unit, strict releases
+  nothing before the end, inspect-only emits nothing with correct correlation, repeated
+  nested key, spill-backed hold forwards the same bytes and releases the budget.
+- `request_body.rs`: compressible bodies decode like buffered; bombs stop at the budget.
+- `framing.rs`: configured/learned hosts; only structured length errors count.
+- `tests/streamed_inspection_e2e.rs` (real TLS): Ask denial mid-stream (upstream got a
+  partial, never complete body, no leak, client 403 JSON), Ask denial before release (no
+  upstream contact), Ask answers mask held content, strict sends nothing before the end, tee
+  forwards exact bytes with Content-Length and Content-Encoding, configured length-required
+  host gets Content-Length, a host refusing chunked with 411 is learned, a late `model` body
+  > RAM limit held on disk (refused: nothing sent; allowed: masked, spill budget back to 0,
+  no file left), pass-through upload drained on an unreachable upstream.
+- `launcher/proxy_stream_tests.rs`: open_stream decisions (strict mismatch → buffer, Ask
+  streams, model Ask popup with masked read-only preview: allow → stream, deny → 403), tee
+  decisions (Off/Notify tee, Redact and remembered redactions do not), Ask with the real
+  scanner and popups: one popup per finding, nothing released while asking, RedactOnce /
+  ReplaceSecrets / Allow / Deny applied.
+
+### Not done / open
+- Persisting learned length-required hosts across restarts (process memory only);
+  `content_length_hosts` is read when the listener starts (no live reload).
+- No UI test renders the preview card (the repo's unit tests are logic-only); covered by
+  tsc/build.
+- Live Codex / Claude Code runs and the authenticated-upstream chunked question (open
+  question 1) remain unverified (no network).
+- Out of scope here: WebSocket streaming, native server (Phase 2/5); guardrails hold,
+  reverse-proxy LLM paths and response capture (Phase 4). Seams for Phase 4: a guardrails
+  hold can be another `StreamSession` question/gate (`pending`/`question`/`answer`) or a
+  strict-mode hold over the spill buffer; the reverse proxy can reuse `Intake` +
+  `StreamStart` once it streams `BodyPolicy::Stream`.
+
 ## Open questions / uncertainties
 1. Do api.openai.com, chatgpt.com and api.anthropic.com accept chunked request bodies on the
    authenticated path, at large sizes? The edge accepts them (step 1.1 results above).
@@ -944,16 +1260,15 @@ event's metadata) instead of three to four times.
   interleaves restoration with lexing and its lenient passthrough-on-error contract differs.
 
 ### 1.4 `lr_proxy::request_body::StreamDecoder`
-- `StreamDecoder::new(&HeaderMap)` / `with_limits(&HeaderMap, DecodeLimits { max_decoded: 1 GiB,
-  max_ratio: 1024, ratio_floor: 64 MiB })` → `Err(Unsupported)` for the same headers the batch
+- `StreamDecoder::new(&HeaderMap)` / `with_limits(&HeaderMap, DecodeLimits { max_decoded: 1 GiB })` → `Err(Unsupported)` for the same headers the batch
   path rejects. `push(&[u8], FnMut(&[u8]) -> ControlFlow<()>)` delivers decoded pieces of at most
   `DECODED_BLOCK` (64 KiB); `finish(self) -> Result<u64, _>`; `is_identity()`, `encoded_bytes()`,
   `decoded_bytes()`. Synchronous and `Send` (use `spawn_blocking` for large chunks).
-- `StreamDecodeError::{Unsupported, Corrupt, Truncated, BudgetExceeded, ExpansionRatio, Aborted}`
+- `StreamDecodeError::{Unsupported, Corrupt, Truncated, BudgetExceeded, Aborted}`
   with `status()`, `message()` and `as_batch() -> Option<DecodeError>`.
-- The byte budget applies to every stage of a stack and to the encoded input. The ratio guard
-  compares each stage's output with the encoded bytes received so far and only above
-  `ratio_floor`; it is the one place where streaming rejects a body the batch path accepts.
+- The byte budget applies to every stage of a stack and to the encoded input. (The original
+  expansion-ratio guard was removed in Phase 3: it rejected bodies the buffered path accepts;
+  the budget alone stops bombs.)
 - Bytes after the end of a brotli stream are ignored, because the batch decoder ignores them.
 - Fixed in the batch path: `deflate` bodies decoding to more than 8 KiB were rejected as invalid
   (a first `FlushDecompress::Finish` call is one-shot in miniz_oxide).

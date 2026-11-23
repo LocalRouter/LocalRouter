@@ -48,6 +48,7 @@ interface Client {
 
 /** One toast slot for config-file reload results, so a fix replaces the error. */
 const CONFIG_RELOAD_TOAST_ID = 'config-file-reload'
+const CONFIG_MERGE_TOAST_ID = 'config-file-merge'
 
 function App() {
   const [activeView, setActiveView] = useState<View>('dashboard')
@@ -107,6 +108,18 @@ function App() {
         toast.error('settings.yaml was changed on disk but not applied', {
           id: CONFIG_RELOAD_TOAST_ID,
           description: `${event.payload} — the running configuration is unchanged. Fix the file, or the next change made in the app will overwrite it.`,
+          duration: Infinity,
+          closeButton: true,
+        })
+      }),
+
+      // settings.yaml was edited outside the app while the app had unsaved
+      // changes to the same settings: the file's values were kept for those
+      // (or the app's save was refused). Everything else was combined.
+      listenSafe<string>('config-merge-conflict', (event) => {
+        toast.warning('settings.yaml and the app changed the same settings', {
+          id: CONFIG_MERGE_TOAST_ID,
+          description: event.payload,
           duration: Infinity,
           closeButton: true,
         })
