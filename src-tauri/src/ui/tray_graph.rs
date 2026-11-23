@@ -47,6 +47,8 @@ impl GraphConfig {
     /// status overlays therefore get flattened to the menu-bar tint —
     /// the overlay shape (exclamation / question / down-arrow) is what
     /// distinguishes them.
+    // Only called by the macOS `platform_graph_config`.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub fn macos(_dark_mode: bool) -> Self {
         Self {
             foreground: Rgba([0, 0, 0, 255]), // Black; macOS recolors at draw time
