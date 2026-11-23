@@ -759,6 +759,48 @@ pub struct McpHealthCheckResult {
     pub error: Option<String>,
 }
 
+/// Start an MCP server
+///
+/// Used by the LocalRouter management MCP server (`admin_mcp::operations`).
+pub async fn start_mcp_server(
+    server_id: String,
+    mcp_manager: State<'_, Arc<McpServerManager>>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    tracing::info!("Starting MCP server: {}", server_id);
+
+    mcp_manager
+        .start_server(&server_id)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Notify frontend
+    let _ = app.emit("mcp-servers-changed", ());
+
+    Ok(())
+}
+
+/// Stop an MCP server
+///
+/// Used by the LocalRouter management MCP server (`admin_mcp::operations`).
+pub async fn stop_mcp_server(
+    server_id: String,
+    mcp_manager: State<'_, Arc<McpServerManager>>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    tracing::info!("Stopping MCP server: {}", server_id);
+
+    mcp_manager
+        .stop_server(&server_id)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Notify frontend
+    let _ = app.emit("mcp-servers-changed", ());
+
+    Ok(())
+}
+
 /// Start streaming health checks for all MCP servers
 ///
 /// Emits "mcp-health-check" events as each server's health check completes.

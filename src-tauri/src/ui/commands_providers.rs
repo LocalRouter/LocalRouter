@@ -100,6 +100,16 @@ fn delete_provider_secrets(instance_name: &str) {
     }
 }
 
+/// Check if a provider has an API key stored
+///
+/// Used by the LocalRouter management MCP server (`admin_mcp::operations`).
+///
+/// # Security
+/// Only reports whether a key exists, never the key value.
+pub async fn has_provider_api_key(provider: String) -> Result<bool, String> {
+    lr_providers::key_storage::has_provider_key(&provider).map_err(|e| e.to_string())
+}
+
 // ============================================================================
 // Provider Registry Management Commands
 // ============================================================================
